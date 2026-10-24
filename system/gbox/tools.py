@@ -475,6 +475,32 @@ def _wake_for_close(ad):
             pass
 
 
+def _warm_priority(ad, nice: int) -> None:
+    """Linux: the emulator's whole process tree at this niceness (sudo renice: lowering it back needs privilege). A
+    MercMode game booting / waiting in the background runs at 10 so the playing game and its stream encoder keep the
+    CPU (2026-10-24: a background boot starved the stream - "Reconnecting..." - and the freeze watchdog closed the
+    playing game); the swapped-in game goes back to 0."""
+    if sys.platform != "linux":
+        return
+    proc = getattr(ad, "proc", None)
+    if not proc or proc.poll() is not None:
+        return
+    pids, todo = [], [proc.pid]
+    while todo:
+        pid = todo.pop()
+        pids.append(pid)
+        for task in Path(f"/proc/{pid}/task").glob("*/children"):
+            try:
+                todo += [int(c) for c in task.read_text().split()]
+            except (OSError, ValueError):
+                pass
+    try:
+        subprocess.run(["sudo", "-n", "renice", "-n", str(nice), "-p", *map(str, pids)],
+                       capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _park_warm(ad) -> dict:
     """A MercMode warm launch (launch_game warm=true) is paused as soon as it runs: no emulation and no audio until the
     control plane resumes it at the round boundary. {"paused": False, "reason"} when the emulator cannot pause; the
@@ -1037,6 +1063,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             detail["ghost_runs"] = {"state": "unsupported", "reason": f"ghost-run recorder setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if inp.warm:
+        _warm_priority(ad, 10)
         detail["warm"] = _park_warm(ad)
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
@@ -1656,6 +1683,7 @@ def session_op(inp: SessionIn, ctx: Ctx):
     if inp.op in ("pause", "resume") and "warm" in (inp.args or {}):
         # MercMode warm pool: args.warm=true parks the game paused between its turns (closed later without a save);
         # resume clears it, so the game is an ordinary live session again once it is swapped in.
+        _warm_priority(ad, 10 if inp.op == "pause" else 0)      # parked: background priority; swapped in: normal
         res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "warm"})
         ad.gbox_warm = inp.op == "pause" and inp.args.get("warm") is True
         return {"result": (res if isinstance(res, dict) else {"value": str(res)[:200]}) | {"warm": ad.gbox_warm},
