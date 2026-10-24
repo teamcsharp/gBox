@@ -7561,7 +7561,18 @@ const pollStatusRight = singleFlightPoll(async () => {
   const c = (key, cls, ic, label, tip) => `<span class="c ${cls}" data-k="${esc(key)}" title="${esc(tip)} · click for details"><i></i>${ic} ${esc(label)}</span>`;
   let h = c("api", ws.ok ? "ok" : "bad", "🌐", "Spark API", ws.ok ? "control plane reachable" : "control plane unreachable");
   h += c("service", svc, "🛠️", "service", `Spark gbox.service: ${svc === "ok" ? "active" : svc === "warn" ? "SSH ok, service down" : "unreachable"}`);
-  for (const w of ws.ok ? ws.data : []) h += c("worker:" + w.id, w.online ? "ok" : "bad", w.os === "windows" ? "🪟" : "🐧", w.name, `${w.name} · ${w.os} · ${w.online ? "online" : "offline"}`);
+  // one chip per PC: a restart re-registers a PC under a new id and leaves the old ids behind, offline
+  const byName = new Map();
+  for (const w of ws.ok ? ws.data : []) {
+    const had = byName.get(w.name);
+    if (!had || (w.online && !had.online) || (!!w.online === !!had.online && (w.last_seen || 0) >= (had.last_seen || 0))) byName.set(w.name, w);
+  }
+  const local = byName.has(S?.workerName) && !byName.get(S.workerName).online ? await gbox.winWorker?.('status').catch(() => null) : null;
+  for (const w of byName.values()) {
+    const viaLocal = w.name === S?.workerName && !w.online && local?.running;   // this PC's worker serves its own local gBox
+    h += c("worker:" + w.id, w.online ? "ok" : viaLocal ? "warn" : "bad", w.os === "windows" ? "🪟" : "🐧", w.name,
+      `${w.name} · ${w.os} · ${w.online ? "online" : viaLocal ? "running for This PC's local gBox; the Spark sees it through the bridge" : "offline"}`);
+  }
   const mine = ss.ok && ss.data.filter(x => x.state === "running").sort((a, b) => (b.started || 0) - (a.started || 0))[0];
   h += mine ? `<span class="emu" data-k="emu:${esc(mine.session_id)}" title="${esc(mine.title)} · click for details">${EMU_ICON[mine.adapter] || "🎮 " + esc(mine.adapter)}</span>`
             : `<span class="emu mut">no emulator</span>`;
