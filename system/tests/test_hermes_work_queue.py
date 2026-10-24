@@ -609,6 +609,9 @@ def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
     assert str(q.mode._PROMPT.parents[2]) not in create
 
 
+REGISTERED = []
+
+
 def _required_node_tick(monkeypatch, requests, *, pooled=True, cloud=False, unavailable=False):
     from gbox import hermes_local, hermes_pool, hermes_recovery
     from gbox.config import HermesLocalConfig
@@ -632,6 +635,8 @@ def _required_node_tick(monkeypatch, requests, *, pooled=True, cloud=False, unav
     monkeypatch.setattr(q.mode, '_handoff', lambda: '')
     monkeypatch.setattr(q.mode, '_workdir', lambda rid, _: '/tasks/' + rid)
     monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
+    REGISTERED.clear()
+    monkeypatch.setattr(hermes_local, 'register_provider', lambda path, s: REGISTERED.append((s.provider, s.proxy_url)))
     def api(path, body=None):
         if path == '/api/favorites': return {'count': 0, 'items': []}
         if path == '/api/requests': return requests
@@ -813,10 +818,10 @@ def test_round_review_pins_strict_node_and_preserves_active_claims(env, monkeypa
     assert [d['inference_node'] for d in result['dispatched']] == ['sparkDeux']
     command = calls[0]
     assert command[0] == ('edit' if reuse else 'create')
-    assert command[command.index('--provider') + 1] == 'second'
+    # Hermes 0.22 has no `cron create --base-url`: the strict endpoint is its own registered provider
+    assert command[command.index('--provider') + 1] == 'second-strict' and '--base-url' not in command
     assert command[command.index('--model') + 1] == 'qwen'
-    assert command[command.index('--base-url') + 1] == (
-        'http://127.0.0.1:8765/api/llm/local/strict-nodes/sparkDeux/v1')
+    assert REGISTERED == [('second-strict', 'http://127.0.0.1:8765/api/llm/local/strict-nodes/sparkDeux/v1')]
     prompt = command[command.index('--prompt') + 1] if reuse else command[2]
     assert 'READ-ONLY REQUEST' in prompt and 'do not edit source, saves or memory' in prompt
     assert jobs[1] == before
