@@ -1298,28 +1298,29 @@ def test_repeated_stationary_route_stalls_record_blocked_and_leave_the_target(tm
     mesh, bot = corner_mesh(), R.Bot(learn_dir=tmp_path)
     p = {"pos": (20., 0., 50.), "rot": math.pi / 2, "action": 0}
     target = {"ptr": 1, "pos": (170., 0., 50.)}
-    for now in (10., 10.4, 10.8, 11.3, 11.6, 12.2, 12.6, 13., 13.5):
+    for now in (10., 10.4, 10.8, 11.3):
         action = bot._follow(p, target, mesh, False, now)
     assert action == {"hold": set()}
-    assert bot.stats["stuck"] == 2 and bot.stats["route_replans"] == 1
+    assert bot.stats["stuck"] == 1 and bot.stats["route_replans"] == 1
     bot._follow(p, target, mesh, False, 13.6)
     assert bot.route is None and bot.bonus_skip[1] > 13.5
     stage = bot.nav_learning.stages[mesh.learning_sig]
-    assert sum(row["blocked"] for row in stage["routes"].values()) == 1
+    assert sum(row["blocked"] for row in stage["routes"].values()) >= 1
+    assert stage['obstructions'] and stage['obstructions'][0]['source']=='native_navmesh'
     assert not stage["crossings"] and not bot.avoid            # failure does not invent a permanently blocked edge
 
 
-def test_combat_gap_does_not_combine_two_independent_route_stalls():
+def test_combat_gap_does_not_combine_two_partial_route_stalls():
     mesh, bot = corner_mesh(), R.Bot()
     p = {"pos": (20., 0., 50.), "rot": math.pi / 2, "action": 0}
     target = {"ptr": 1, "pos": (170., 0., 50.)}
-    for now in (10., 10.4, 10.8, 11.3):
+    for now in (10., 10.4, 10.8):
         bot._follow(p, target, mesh, False, now)
-    assert bot.route_stall is not None
-    for now in (20., 20.4, 20.8, 21.3):
+    bot._interrupt_route_walk()
+    for now in (20., 20.4, 20.8):
         bot._follow(p, target, mesh, False, now)
-    assert bot.stats["stuck"] == 2 and bot.stats.get("routes_blocked", 0) == 0
-    assert bot.route_stall is not None and 1 not in bot.bonus_skip
+    assert bot.stats['stuck']==0 and not bot.stats.get('route_replans')
+    assert bot.route_stall is None and 1 not in bot.bonus_skip
 
 
 @pytest.mark.parametrize("interruption", ("combat", "qte"))

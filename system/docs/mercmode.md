@@ -1,5 +1,35 @@
 # MercMode
 
+The panel now includes an edition-by-edition coverage inventory from
+`gbox/mercs/research_profiles.py`: RE3 Mad Jackal, RE4 classic/VR/remake,
+RE5 original/Reunion/United/No Mercy, RE6 original/No Mercy, Mercenaries 3D,
+and Village/Additional Orders. This inventory is a development target list.
+Only the host-verified RE4 and RE5 adapters can currently participate in
+rotation. Other entries require native drivers and are never silently enabled.
+
+The operator's cross-title **Mercenaries United** project uses the separate
+project key `mercenaries-cross-title-united-v1`; it is not the existing RE5
+United edition. Actual Hermes inbox requests, pinned to `sparkDeux`, are:
+
+| Request | Work | Completion evidence |
+| --- | --- | --- |
+| #3111 / `95d7e20cadc244e3` | Shared architecture, exact owned asset/build inventory and vertical slice | One loaded stage with collision/navigation, character moveset/loadout, enemies, clock/combo/score, human control, autoplay and replay |
+| #3112 / `ab0e702203aa451a` | Bow-specific 10x fire/reload, native collision context and post-DYING healing | Guarded reversible native rates and measured owned projectile launches/impacts; ordinary healing; no invulnerability |
+| #3113 / `54ceec01e2ef47af` | Per-edition/character guide research and behavior evaluations | Attributed summaries, prerequisite observations, counterexamples and measured evaluation; inaccessible sources identified |
+| #3114 / `412028856f044524` | RE6 PS3 BLUS30855 native lifecycle and observer, then gameplay | Exact-build character/stage/menu ACK, actor ownership, timer/score/health/navigation, terminal results and idle-worker acceptance |
+
+Requests are persisted in the normal Hermes queue. A request number or queue
+entry is not proof of a running job or completed work. Existing GPU capacity,
+claims and tasks remain in place. Native changes use isolated task workspaces
+and reviewable patches, preserving the watched solo run.
+
+Recovering C-like functions in Ghidra does not produce a complete rebuildable
+game. Moving RE6 Leon's behavior to an RE5 stage requires compatible animation,
+state machines, damage, inventory, collision, traversal, scripting and scoring,
+in addition to skeleton retargeting. The first prototype must prove an owned
+asset can be decoded, round-tripped and used with those systems. Private game
+binaries and extracted assets stay outside source control.
+
 MercMode is an independent screensaver choice per registered PC, including
 `lilspark`, `i9-NUC`, and `JAYBUILTFINALE`. It is off until enabled for that host.
 Open the MercMode panel, choose titles and rounds per title, and save that PC.

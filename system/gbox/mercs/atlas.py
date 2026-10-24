@@ -338,11 +338,33 @@ class NavigationAtlas:
                        "kills_attributed": None, "damage_attributed": None}
         if mine_review["placements_verified"] > mine_review["retreats_completed"]:
             actions.append("Check measured separation after every planted mine; deployment does not prove the escape completed.")
+        sections = []
+        for left,right in zip(samples,samples[1:]):
+            dt = right['at']-left['at']
+            f,nf = left.get('frame',{}),right.get('frame',{})
+            weapon = f.get('weapon')
+            if not 0<dt<=2. or not isinstance(weapon,dict) or weapon.get('item_id') is None:
+                continue
+            identity = weapon.get('owner'),weapon['item_id']
+            if not sections or sections[-1]['identity']!=list(identity) or sections[-1]['end']!=left['at']:
+                if len(sections)>=256:break
+                sections.append({'identity':list(identity),'weapon':weapon,'start':left['at'],'end':left['at'],
+                    'observed_s':0.,'kills_observed':0,'score_gain_observed':0,'hp_loss_observed':0})
+            section=sections[-1];section['end']=right['at'];section['observed_s']=round(section['observed_s']+dt,3)
+            for key,target in (('kills','kills_observed'),('score','score_gain_observed')):
+                a,b=f.get('clock',{}).get(key),nf.get('clock',{}).get(key)
+                if type(a) in (int,float) and type(b) in (int,float) and b>=a:
+                    section[target]+=b-a
+            a,b=(f.get('player') or {}).get('hp'),(nf.get('player') or {}).get('hp')
+            if type(a) in (int,float) and type(b) in (int,float) and b<a:
+                section['hp_loss_observed']+=a-b
         return {"distance": round(distance,2), 'distance_m':round(distance/(100.*scale),3),
                 'units_per_m':100.*scale, "commanded_stationary_s": round(stationary,2),
                 "oscillations": reversals, "target_changes": max(0,len(targets)-1),
                 "time_bonuses_acquired": len(set(checkpoints)), "checkpoint_order": checkpoints,
                 "mines": mine_review,
+                'weapon_sections':sections,
+                'weapon_section_evidence':'Sampled equipped item intervals and native counter deltas; kills are not attributed to that weapon. Gaps over two seconds are excluded.',
                 "events": {kind: sum(e["kind"] == kind for e in events) for kind in sorted({e["kind"] for e in events})},
                 "metrics": metrics, "next_round_actions": actions,
                 "rank_verified": bool(metrics.get("rank_verified")), "rank": metrics.get("rank")}

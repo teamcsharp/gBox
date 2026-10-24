@@ -120,6 +120,22 @@
     const r = VIEW.x * (x - v.cx), u = VIEW.z * (z - v.cz), c = Math.cos(v.rot), s = Math.sin(v.rot);
     return [v.w / 2 + (r * c - u * s) * v.scale, v.h / 2 - (r * s + u * c) * v.scale];
   }
+  function unproject(v, x, y) {
+    const a = (x - v.w / 2) / v.scale, b = -(y - v.h / 2) / v.scale;
+    const c = Math.cos(v.rot), s = Math.sin(v.rot);
+    return [v.cx + (a * c + b * s) / VIEW.x, v.cz + (-a * s + b * c) / VIEW.z];
+  }
+  function panView(camera, size, dx, dy) {
+    const v = viewOf(camera, size), a = unproject(v, 0, 0), b = unproject(v, dx, dy);
+    return { ...camera, cx: camera.cx + a[0] - b[0], cz: camera.cz + a[1] - b[1] };
+  }
+  function zoomView(camera, size, x, y, factor, units = 'cm') {
+    const before = unproject(viewOf(camera, size), x, y);
+    const next = { ...camera, radius: Math.max(perM(units), Math.min(400 * perM(units), camera.radius * factor)) };
+    const after = unproject(viewOf(next, size), x, y);
+    next.cx += before[0] - after[0]; next.cz += before[1] - after[1];
+    return next;
+  }
   // a heading's direction on the canvas (unit vector)
   function screenDir(v, h) {
     const a = project(v, 0, 0), b = project(v, Math.sin(h), Math.cos(h)), dx = b[0] - a[0], dy = b[1] - a[1], n = Math.hypot(dx, dy) || 1;
@@ -174,6 +190,10 @@
       out.push({ kind: "enemy", id: e.id, x, y, flags: fl, level: lv(e.pos), r: Math.max(4.5, 35 * v.scale * perM(units) / 100),
                  tip: [`Majini ${e.id ?? ""}`.trim(), e.hp != null ? `${e.hp}${e.hp_max ? "/" + e.hp_max : ""} health` : "", away(e.pos),
                        lv(e.pos) !== "same" ? lv(e.pos) : "", ...words].filter(Boolean).join(" · ") });
+    }
+    for (const item of f.items || []) {
+      const [x,y] = project(v,item.pos[0],item.pos[2]);
+      out.push({kind:'item',id:item.id,x,y,level:lv(item.pos),tip:`${item.name || 'Recovery item'} · ${away(item.pos)}${lv(item.pos) !== 'same' ? ' · '+lv(item.pos) : ''}`});
     }
     if (plan.target?.pos && plan.target.kind !== "enemy") {
       const [x, y] = project(v, plan.target.pos[0], plan.target.pos[2]);
@@ -308,6 +328,12 @@
       }
     }
     for (const m of ms) {
+      if (m.kind === 'item') {
+        ctx.globalAlpha = m.level === 'same' ? 1 : .55;
+        ctx.fillStyle = t.halo; ctx.fillRect(m.x-6,m.y-6,12,12);
+        ctx.fillStyle = t.plan; ctx.fillRect(m.x-2,m.y-5,4,10); ctx.fillRect(m.x-5,m.y-2,10,4);
+        ctx.globalAlpha = 1;
+      }
       if (m.kind !== "bonus") continue;
       ctx.globalAlpha = m.taken ? 0.45 : m.level === "same" ? 1 : 0.55;
       hourglass(ctx, m.x, m.y, m.near ? 7.5 : 6.5);
@@ -474,8 +500,10 @@
       `<button class="act" type="button" data-tm-heading aria-pressed="false" title="Turn the map with the player: his facing is up">Heading up</button>` +
       `<button class="act" type="button" data-tm-zoom="out" aria-label="Zoom out" title="Zoom out">−</button>` +
       `<button class="act" type="button" data-tm-zoom="in" aria-label="Zoom in" title="Zoom in">+</button></div>` +
-      `<div class="tm-stage"><canvas role="img" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
+      `<div class="tm-stage"><canvas role="img" tabindex="0" style="touch-action:none;cursor:grab" aria-label="Top-down map of the round"></canvas><div class="tm-status" data-tm="status"></div>` +
       `<div class="tm-tip" data-tm="tip" hidden></div></div>` +
+      `<div class="mut" data-tm="interaction">Hover to hold the view. Wheel to zoom; drag to pan. Follow resumes tracking.</div>` +
+      `<div class="tm-bar" data-tm="goal-box" hidden><span data-tm="goal" role="status" aria-live="polite"></span><button type="button" class="act" data-tm="cancel-goal">Cancel goal</button></div>` +
       `<div class="tm-legend" aria-label="Legend"><span>${ICON.player}Player</span><span>${ICON.enemy}Majini</span>` +
       `<span>${ICON.hidden}out of sight</span><span>${ICON.attack}attacking</span><span>${ICON.time}time bonus</span>` +
       `<span>${ICON.combo}combo bonus</span><span>${ICON.route}route</span><span>${ICON.stand}stand spot</span>` +
@@ -505,6 +533,7 @@
     const $ = k => sect.querySelector(`[data-tm="${k}"]`), tip = $("tip");
     const o = prefs();
     let frame = null, stage = null, ms = [], radius = null, size = { w: 0, h: 0 }, stopped = false, lastSeq = null;
+    let camera = null, held = null, manual = false, over = false, drag = null, goalBusy = false;
     const visible = () => !stopped && sect.isConnected && sect.open && !sect.hidden && doc.visibilityState !== "hidden";
 
     function fit() {
@@ -524,20 +553,26 @@
       if (!ctx) return;
       const dpr = canvas.width / Math.max(size.w, 1);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const w = want(frame, stage, o);
-      radius = radius == null || o.mode === "stage" || frame?.seq !== lastSeq && Math.abs(w.radius - radius) / w.radius > 0.6
-        ? w.radius : radius + (w.radius - radius) * 0.35;            // follow: ease the zoom, no jumps between frames
+      const w = held || want(frame, stage, o);
+      radius = held ? w.radius : radius == null || o.mode === "stage" || frame?.seq !== lastSeq && Math.abs(w.radius - radius) / w.radius > 0.6
+        ? w.radius : radius + (w.radius - radius) * 0.35;
       lastSeq = frame?.seq;
-      ms = draw(ctx, { frame, stage, view: viewOf({ ...w, radius }, size), theme: themeOf(box) });
+      camera = { ...w, radius };
+      ms = draw(ctx, { frame, stage, view: viewOf(camera, size), theme: themeOf(box) });
       const h = hud(frame);
       $("clock").textContent = h.clock; $("phase").textContent = h.phase; $("combo").textContent = h.combo;
       $("score").textContent = h.score; $("status").textContent = h.status;
       $("nearest").textContent = h.nearest ? `Nearest: ${h.nearest}` : "";
       $("target").textContent = [h.target && `Target: ${h.target}`, h.note].filter(Boolean).join(" · ");
+      const goal = frame?.operator_goal;
+      if (goal && !goalBusy) goalMessage(`${goal.label || 'Map goal'}: ${goal.state}${goal.reason ? ' · ' + goal.reason : ''}`, !['completed','cancelled','expired','unavailable','observed_removed'].includes(goal.state));
       canvas.setAttribute("aria-label", `Top-down map: ${(frame?.enemies || []).length} Majini, ` +
         `${(frame?.bonuses || []).filter(b => !b.taken).length} bonuses left` + (h.nearest ? `; nearest ${h.nearest}` : ""));
     }
     function show(f) {
+      if (frame && (!f || f.stage !== frame.stage || f.goal_round !== frame.goal_round)) {
+        held = null; manual = false; drag = null; $("goal-box").hidden = true;
+      }
       frame = f;
       if (!!f === sect.hidden) {                      // frames came (a round of a Mercenaries title), or went for good
         sect.hidden = !f;
@@ -557,10 +592,11 @@
       if (b.dataset.tmMode) o.mode = b.dataset.tmMode;
       else if (b.hasAttribute("data-tm-heading")) o.headingUp = !o.headingUp;
       else if (b.dataset.tmZoom) { o.zoom = Math.min(4, Math.max(0.25, (o.zoom || 1) * (b.dataset.tmZoom === "in" ? 1 / 1.4 : 1.4))); if (o.mode === "stage") o.mode = "follow"; }
-      radius = null; savePrefs(o); paintButtons(); render();
+      held = null; manual = false; radius = null; savePrefs(o); paintButtons(); render();
+      if (over && camera) held = { ...camera };
     });
     paintButtons();
-    function hover(e) {
+    function hit(e) {
       const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
       let best = null, bd = 16;
       for (const m of ms) {
@@ -568,16 +604,71 @@
         const d = Math.hypot(m.x - x, m.y - y);
         if (d < bd) { best = m; bd = d; }
       }
-      tip.hidden = !best;
+      return { best, r, x, y };
+    }
+    function hover(e) {
+      const {best,r,x,y} = hit(e);
+      tip.hidden = !best || !!drag?.moved;
       if (best) {
         tip.textContent = best.tip;
         const left = Math.min(Math.max(4, x + 12), Math.max(4, r.width - tip.offsetWidth - 4));
         tip.style.left = left + "px"; tip.style.top = Math.max(4, y - 30) + "px";
       }
     }
-    canvas.addEventListener("pointermove", hover);
-    canvas.addEventListener("pointerdown", hover);
-    canvas.addEventListener("pointerleave", () => { tip.hidden = true; });
+    function goalMessage(message, cancellable = false) {
+      $("goal-box").hidden = false; $("goal").textContent = message; $("cancel-goal").hidden = !cancellable;
+    }
+    async function command(body, label) {
+      if (goalBusy || stopped) return;
+      goalBusy = true; const round = frame?.goal_round;
+      goalMessage(`Requesting ${label}…`);
+      try {
+        const reply = await api(`/api/autoplay/tactical/${encodeURIComponent(sid)}/goal`, body);
+        if (stopped || round !== frame?.goal_round) return;
+        goalMessage(`${reply.label || label}: ${reply.state || 'queued'}`, reply.state === 'queued');
+      } catch (e) { if (!stopped && round === frame?.goal_round) goalMessage(e.message || 'Map goal could not be queued.'); }
+      finally { goalBusy = false; }
+    }
+    $("cancel-goal").addEventListener('click', () => command({cancel:true}, 'map goal cancellation'));
+    canvas.addEventListener('pointerenter', () => { over = true; if (!held && camera) held = {...camera}; });
+    canvas.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || !camera) return;
+      e.preventDefault(); canvas.focus({preventScroll:true}); held = {...camera};
+      drag = {id:e.pointerId, x:e.clientX, y:e.clientY, camera:{...camera}, moved:false};
+      try { canvas.setPointerCapture?.(e.pointerId); } catch {} hover(e);
+    });
+    canvas.addEventListener('pointermove', e => {
+      if (drag && drag.id === e.pointerId) {
+        const dx = e.clientX-drag.x, dy = e.clientY-drag.y;
+        if (Math.hypot(dx,dy)>4) drag.moved = true;
+        if (drag.moved) { manual = true; held = panView(drag.camera,size,dx,dy); render(); }
+      }
+      hover(e);
+    });
+    canvas.addEventListener('pointerup', e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const clicked = !drag.moved; drag = null;
+      if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+      if (clicked) {
+        const m = hit(e).best;
+        if (m && ['bonus','item'].includes(m.kind) && !m.taken) {
+          if (!frame?.goal_round || !frame?.goal_capabilities?.includes(m.kind) || !frame.live)
+            goalMessage('This session is not ready for map commands.');
+          else command({round:frame.goal_round,stage:frame.stage,kind:m.kind,id:m.id,seq:frame.seq}, m.tip);
+        }
+      }
+    });
+    const endDrag = () => { drag = null; tip.hidden = true; if (!over && !manual) held = null; };
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('lostpointercapture', endDrag);
+    canvas.addEventListener('pointerleave', () => { over = false; tip.hidden = true; if (!drag && !manual) { held = null; render(); } });
+    canvas.addEventListener('wheel', e => {
+      if (!camera || !Number.isFinite(e.deltaY) || !e.deltaY) return;
+      e.preventDefault(); const r = canvas.getBoundingClientRect();
+      const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? size.h : 1);
+      held = zoomView(camera,size,e.clientX-r.left,e.clientY-r.top,Math.exp(Math.max(-.7,Math.min(.7,delta*.002))),frame?.units);
+      manual = true; render();
+    }, {passive:false});
     sect.addEventListener("toggle", () => { if (sect.open) { feed.poke(); render(); } });
     const onVis = () => { if (doc.visibilityState !== "hidden") feed.poke(); };
     doc.addEventListener("visibilitychange", onVis);
@@ -587,7 +678,7 @@
       stopped = true; feed.stop(); ro && ro.disconnect(); doc.removeEventListener("visibilitychange", onVis);
       if (current === ctl) current = null;
     }
-    const ctl = { stop, render, get frame() { return frame; } };
+    const ctl = { stop, render, get frame() { return frame; }, get view() { return camera && {...camera}; } };
     current = ctl;
     return ctl;
   }
@@ -669,7 +760,7 @@
     return svg;
   }
 
-  const api = { html, mount, detach, create, hud, want, viewOf, project, screenDir, marks, draw, phaseLabel, clockText,
+  const api = { html, mount, detach, create, hud, want, viewOf, project, unproject, panView, zoomView, screenDir, marks, draw, phaseLabel, clockText,
                 metres, themeOf, renderSVG, VIEW, _stages: stages };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxTacticalMap = api;

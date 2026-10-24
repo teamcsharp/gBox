@@ -132,6 +132,9 @@ def report_for(title, row, atlas, session, provenance=None):
                        'verified': assistance.get('verified') is True,
                        'effects': [str(x)[:80] for x in assistance.get('effects', [])[:20]]},
         'metrics': {group: {key: scalar(data.get(key)) for key in keys} for group, keys in METRICS.items()},
+        'last_obstruction': {k:v for k,v in (data.get('nav_obstruction_context') or {}).items()
+            if k in ('floor','pos','goal','reason','source','collision_class','at')}
+            if isinstance(data.get('nav_obstruction_context'),dict) else None,
         'atlas': atlas, 'eligibility': {'eligible': eligible, 'needs_analysis': eligible and not clean_s,
             'reason': 'terminal solo round; rank uncertainty is investigated' if eligible
                       else 'native terminal outcome or exact solo session provenance is unavailable'},

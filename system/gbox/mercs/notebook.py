@@ -206,6 +206,15 @@ class Notebook:
     def finish(self, stage, mode, character, outcome, stats, *, round_id=None):
         rid = round_id or uuid.uuid4().hex
         data = {k: v for k, v in stats.items() if isinstance(v, (str, int, float, bool, type(None)))}
+        context = stats.get('nav_obstruction_context')
+        if isinstance(context,dict):
+            try:
+                if len(json.dumps(context,allow_nan=False))<=6000:
+                    data['nav_obstruction_context']=context
+            except (ValueError,TypeError):
+                pass
+        from .research_profiles import profile
+        data['guide_profile'] = profile(self.map_id, mode)
         for key, limit in (('round_policy_source_ids',5),('round_semantic_round_ids',2)):
             values=stats.get(key)
             if isinstance(values,list):

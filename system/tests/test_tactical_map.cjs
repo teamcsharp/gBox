@@ -100,6 +100,18 @@ test('the marks: who is where, their flags and levels, the route from the player
   assert.ok(fm.some(m => m.kind === 'nearest'));
 });
 
+test('rotation-aware zoom anchors the cursor and pan moves the map with the drag',()=>{
+  const size={w:400,h:300},camera={cx:300,cz:-500,rot:1.1,radius:2000};
+  const v=T.viewOf(camera,size),world=T.unproject(v,81,239);
+  assert.ok(Math.hypot(...T.project(v,...world).map((n,i)=>n-[81,239][i]))<1e-8);
+  const zoom=T.zoomView(camera,size,81,239,.5,'cm');
+  assert.equal(zoom.radius,1000);
+  assert.ok(Math.hypot(...T.project(T.viewOf(zoom,size),...world).map((n,i)=>n-[81,239][i]))<1e-8);
+  const pan=T.panView(camera,size,60,-40);
+  const a=T.project(v,...world),b=T.project(T.viewOf(pan,size),...world);
+  assert.ok(Math.abs(b[0]-a[0]-60)<1e-8&&Math.abs(b[1]-a[1]+40)<1e-8);
+});
+
 // a 2D context that records what was drawn
 function recorder() {
   const calls = [];
@@ -254,6 +266,42 @@ test('in the browser: the section shows itself with the round, draws the stage c
     assert.ok(phone.right <= phone.inner && phone.scroll <= phone.inner, JSON.stringify(phone));
     assert.ok(phone.width > 300, 'the map takes the phone\'s width: ' + JSON.stringify(phone));
     await shoot('tactical-map-phone.png');
+    await evaluate(`ctl.stop()`);
+  });
+});
+
+test('browser map holds rotation on hover, zooms and pans, clicks a bonus without turning a drag into a command',async()=>{
+  await page(async(evaluate)=>{
+    const run=code=>evaluate('(async()=>{'+code+'})()');
+    await run(`document.body.innerHTML=GBoxTacticalMap.html('w1-j9');
+      window.frame=${JSON.stringify({...FRAME,goal_round:'a'.repeat(32),goal_capabilities:['bonus','item']})};
+      window.stage=${JSON.stringify(STAGE)};window.commands=[];
+      window.api=async(p,body)=>{if(p.endsWith('/goal')){commands.push(body);return {state:'queued',label:'Time bonus'};}return p.includes('/stage/')?stage:frame;};
+      window.ctl=GBoxTacticalMap.mount(document,{sid:'w1-j9',api,setTimer:fn=>{window.nextMapPoll=fn;return 1;},clearTimer:()=>{}});
+      await nextMapPoll();await Promise.resolve();
+      document.querySelector('[data-tm-heading]').click();
+      window.c=document.querySelector('.tmap canvas');window.r=c.getBoundingClientRect();
+      c.dispatchEvent(new PointerEvent('pointerenter',{clientX:r.left+30,clientY:r.top+30}));
+      window.held=ctl.view;frame={...frame,seq:8,player:{...frame.player,facing:1.8,pos:[300,0,300]}};await nextMapPoll();`);
+    const held=await evaluate(`JSON.stringify(ctl.view)===JSON.stringify(held)`);assert.equal(held,true);
+    const zoom=await evaluate(`(()=>{const before=ctl.view.radius;c.dispatchEvent(new WheelEvent('wheel',{deltaY:-160,clientX:r.left+100,clientY:r.top+100,cancelable:true}));return ctl.view.radius<before;})()`);
+    assert.equal(zoom,true);
+    await evaluate(`window.beforePan=ctl.view;
+      c.dispatchEvent(new PointerEvent('pointerdown',{button:0,pointerId:1,clientX:r.left+100,clientY:r.top+100}));
+      c.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,clientX:r.left+160,clientY:r.top+140}));
+      c.dispatchEvent(new PointerEvent('pointerup',{pointerId:1,clientX:r.left+160,clientY:r.top+140}));`);
+    assert.equal(await evaluate(`commands.length`),0);
+    assert.equal(await evaluate(`ctl.view.cx!==beforePan.cx||ctl.view.cz!==beforePan.cz`),true);
+    await run(`document.querySelector('[data-tm-mode=stage]').click();
+      window.v=GBoxTacticalMap.viewOf(ctl.view,{w:c.clientWidth,h:parseFloat(c.style.height)});
+      window.mark=GBoxTacticalMap.marks(frame,v).find(m=>m.kind==='bonus'&&m.id===11);
+      c.dispatchEvent(new PointerEvent('pointerdown',{button:0,pointerId:2,clientX:r.left+mark.x,clientY:r.top+mark.y}));
+      c.dispatchEvent(new PointerEvent('pointerup',{pointerId:2,clientX:r.left+mark.x,clientY:r.top+mark.y}));await Promise.resolve();`);
+    assert.deepEqual(await evaluate(`commands`),[{round:'a'.repeat(32),stage:STAGE.key,kind:'bonus',id:11,seq:8}]);
+    await run(`document.querySelector('[data-tm=cancel-goal]').click();await Promise.resolve();`);
+    assert.deepEqual(await evaluate(`commands.at(-1)`),{cancel:true});
+    await run(`c.dispatchEvent(new PointerEvent('pointerleave'));document.querySelector('[data-tm-mode=follow]').click();frame={...frame,seq:9,player:{...frame.player,facing:2.1}};await nextMapPoll();`);
+    assert.ok(Math.abs((await evaluate(`ctl.view.rot`))+2.1)<.001);
     await evaluate(`ctl.stop()`);
   });
 });

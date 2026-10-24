@@ -12,7 +12,9 @@
         <small>RE5 retains installed data and shader caches. RPCS3 still boots through its menus; instant saved-state loading is unavailable.</small>
         ${host.history?.last_round?`<p>Last verified round: ${escape(host.history.last_round.map_id)} · ${escape(host.history.last_round.character||'character not decoded')} · ${escape(host.history.last_round.witness?.screen)}</p>`:''}
         ${host.preparation?.checked_at?`<p>Cached assets checked ${escape(new Date(host.preparation.checked_at*1000).toLocaleString())}. ${host.preparation.rpcs3?.re5_installed_data_present?'RE5 installed data found.':'RE5 installed data not found in this runtime.'}</p>`:''}
-      </fieldset>`).join('')+`<p data-status role="status"></p></div>`;
+      </fieldset>`).join('')+
+      (data.experience_coverage?.length?`<details><summary>Mercenaries coverage targets</summary><p>Each edition needs its own verified game driver. Availability on this PC is listed above.</p>${data.experience_coverage.map(row=>`<p><b>${escape(row.name)}</b> · ${row.state==='verified_adapter_available'?'adapter available; host checks apply':'native driver required'}<br><small>${escape(row.reason)}</small></p>`).join('')}</details>`:'')+
+      `<p data-status role="status"></p></div>`;
   }
   function mount(options){
     const target=options.root,api=options.api;

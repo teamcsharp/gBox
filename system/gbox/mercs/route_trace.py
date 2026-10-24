@@ -18,7 +18,7 @@ from . import tactical
 
 COUNTERS = ("stuck", "routes_blocked", "routes_given_up", "crossings_avoided", "idle_breakouts", "route_replans", "nav_recoveries",
             "hits_taken", "mine_attempts", "mines_placed", "mine_detonations_observed", "mine_retreats_completed",
-            "mine_pickups_avoided", "qte_presses")
+            "mine_pickups_avoided", "qte_presses", "nav_boundary_traces")
 BONUS_CORRELATION_S = 3.0
 BONUS_PICKUP_RADIUS = 250.0       # same-floor proximity in game centimetres, at both observations
 BONUS_MIN_CLOCK_GAIN = 25.0       # the smallest hourglass is 30 s; ordinary +5/+10 kill credits are insufficient
@@ -149,6 +149,8 @@ class Recorder:
             return
         plan = tactical.take_plan(bot)
         frame = self.tracker.frame(snap, plan, "playing", now)
+        if 'nav_boundary_traces' in changed and isinstance(stats.get('nav_obstruction_context'),dict):
+            frame['obstruction'] = dict(stats['nav_obstruction_context'])
         ground = snap.get("ground_mines") or {}
         if isinstance(ground, dict):
             frame["mines"] = [{"actor": ptr, **dict(row)} for ptr,row in list(ground.items())[:256] if isinstance(row,dict)]

@@ -77,7 +77,7 @@
     sessionTarget.onchange=()=>renderDemonstrations();sessionbar.append(sessionTarget,button('Find live sessions',findSessions),sessionNote);
     const eventTitle=el('small','mut','Recorded events'),eventList=el('div','mr-events');center.append(mapWrap,controls,kpis,chart,chartKey,teachbar,teachingNote,sessionbar,demonstrations,editbar,validation,eventTitle,eventList);
     side.append(el('h3',null,'Tracked state & provenance'));const sections=new Map();
-    for(const key of ['Player','All players','Assistance & teaching','Clock','Plan','Enemies','Bonuses','Mines','Inputs & prompt','Live diagnostics','Run review','Round learning','Navigation & mine learning','Vector evidence','Source IDs']){
+    for(const key of ['Player','All players','Assistance & teaching','Clock','Plan','Enemies','Bonuses','Mines','Weapon & sections','Map goal & obstruction','Inputs & prompt','Live diagnostics','Run review','Round learning','Navigation & mine learning','Vector evidence','Source IDs']){
       const detail=el('details'),summary=el('summary',null,key),content=el('div');detail.append(summary,content);detail.open=['Player','Clock'].includes(key);detail.ontoggle=()=>renderSide(true);side.append(detail);sections.set(key,{detail,content});
     }
     side.append(button('Inspect complete reviewer payload',()=>inspect('Complete reviewer payload',{run:current,frame:frame(),frame_source:live&&liveFrame?liveSource:{source_id:current?.source_id,recorded:true},notebook:data?.notebook,review:current?.review,provenance:data?.provenance},'Recorded and current live sources are identified separately')));
@@ -140,6 +140,8 @@
       if(!force&&Date.now()-lastSide<400)return;lastSide=Date.now();const f=frame(),s=samples[sampleIndex(samples,at)]||{};
       const groups={'Player':f.player,'All players':playersOf(f),'Assistance & teaching':{sample_assistance:f.assistance,run_assistance:current?.assistance,demonstrations:(data?.suggestions||[]).filter(r=>r.kind==='recorded_demonstration')},'Clock':f.clock,'Plan':f.plan,'Enemies':f.enemies,'Bonuses':f.bonuses,'Mines':f.mines,'Inputs & prompt':{inputs:s.inputs,input_provenance:f.input_provenance,prompt:s.prompt},'Run review':current?.review,'Round learning':data?.notebook?.observed,
         'Navigation & mine learning':data?.navigation_learning,'Vector evidence':data?.notebook?{performance_features:data.notebook.vector,feature_definitions:data.notebook.vector_features,vector_kind:data.notebook.vector_kind,source_id:data.notebook.source_id,knowledge_delivered:data.notebook.knowledge_delivered,...data?.knowledge}:null,
+        'Weapon & sections':{controlled_actor_weapon:f.weapon,recorded_sections:current?.review?.weapon_sections,evidence:current?.review?.weapon_section_evidence},
+        'Map goal & obstruction':{operator_goal:f.operator_goal,obstruction:f.obstruction},
         'Live diagnostics':liveStats,'Source IDs':{atlas:current?.source_id,notebook:data?.notebook?.source_id,geometry:current?.geometry,...data?.provenance,live_frame:liveSource}};
       for(const [key,{detail,content}] of sections){if(!detail.open&&!force)continue;content.replaceChildren();const value=groups[key];if(value==null){content.append(el('p','mut','Not recorded'));continue;}
         const rows=Array.isArray(value)?value.map((v,i)=>[String(i),v]):typeof value==='object'?Object.entries(value):[['value',value]];

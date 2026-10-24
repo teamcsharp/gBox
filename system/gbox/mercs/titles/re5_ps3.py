@@ -1047,6 +1047,8 @@ class Bot:
         self.nav_learning = re5_nav.Learning(nav_path)
         from ..route_guidance import Guidance
         self.operator_guidance = Guidance(lesson_store.ROOT.parent.parent,'BLUS30491')
+        from ..map_goals import Goals
+        self.map_goals = Goals()
         from ..tour import GoalCommitment
         self.bonus_commitment = GoalCommitment()
         self.checkpoint_clear_since = None
@@ -1247,6 +1249,9 @@ class Bot:
                 self.combat.suspend_observation(now)
             return
         if not self.round_active:
+            self.map_goals.reset()
+            from ..research_profiles import profile
+            self.stats['guide_profile'] = profile('BLUS30491',snap.get('mercenaries_mode'))
             guidance = getattr(self, 'operator_guidance', None)
             if guidance is not None:
                 guidance.practice_state = None
@@ -1309,6 +1314,8 @@ class Bot:
             self.round_active, self.round_end = True, None
             if self.combat is not None:
                 self.combat.start_round(now)
+        if getattr(self,'_round_player',None) is not None and self._round_player != p.get('ptr'):
+            self.map_goals.reset()
         self._round_player = p.get("ptr")
         if not self.round_input_ready:
             timer = snap.get("timer")
@@ -1327,6 +1334,8 @@ class Bot:
             self.nav_last_good = tuple(p["pos"])
         geometry = mesh.learning_sig if mesh is not None else None
         if geometry != self.nav_geometry:
+            if self.nav_geometry is not None:
+                self.map_goals.reset()
             self.bonus_commitment.reset()
             self.nav_trail, self.nav_hazards = [], []
             self.blocked_links.clear()
@@ -1422,7 +1431,7 @@ class Bot:
 
     def plan(self) -> dict:
         """What the bot is doing, for the tactical map (gbox/mercs/tactical.py): no RAM reads, only state held."""
-        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue", "leave_proximity_bomb", "practice_human_route") else None
+        walking = self.route if self.stats.get("phase") in ("gather_time", "break_for_time", "stand", "pursue", "leave_proximity_bomb", "practice_human_route", "operator_collect", "operator_collect_item") else None
         nb = None
         if self.route_len:
             ptr, d = min(((k, v) for k, v in self.route_len.items() if v is not None), key=lambda kv: kv[1],
@@ -1430,12 +1439,17 @@ class Bot:
             if ptr is not None:
                 nb = {"id": ptr, "kind": "time", "dist": round(d), "eta_s": round(d / RUN_SPEED, 1)}
         return {"phase": self.stats.get("phase"), "target": self.plan_target,
+                "goal_round": self.map_goals.round, "goal_capabilities": ['bonus', 'item'],
+                "operator_goal": self.map_goals.public(),
                 "trail": list(self.nav_trail), "hazards": list(self.nav_hazards),
                 "enemy_awareness": getattr(self.combat, "awareness", []),
                 "route": [tuple(w) for w in walking] if walking else None,
                 "stand": {"pos": self.spawn, "r": STAND_R} if self.spawn else None,
                 "nearest_bonus": nb, "enemy_flags": dict(self.flags),
                 "note": str(self.stats.get("bonus_target") or self.stats.get("aim") or "")[:80]}
+
+    def receive_map_goal(self, value):
+        self.map_goals.receive(value, self.clock())
 
     def _idle_breakout(self, snap, act):
         """Stationary decisions invalidate the cached plan, never authorize blind movement."""
@@ -1457,6 +1471,7 @@ class Bot:
         return act
 
     def tick(self, snap: dict) -> dict:
+        self.map_goals.defer('Waiting for mandatory action, healing, mine retreat or nearby threats to clear')
         self._following_route = False
         p = snap.get("player")
         if p:
@@ -1734,6 +1749,30 @@ class Bot:
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
+        operator = self.map_goals.resolve(snap, now)
+        if operator is not None:
+            if close_foes:
+                self.map_goals.defer('Dispatching a nearby exposed threat before collection')
+            elif mesh is None:
+                self.map_goals.defer('Waiting for measured native navigation geometry')
+            else:
+                goal = self.map_goals.goal
+                key = operator['ptr'] if goal['kind'] == 'bonus' else ('health', operator['ptr'])
+                if self.bonus_skip.get(key, 0) > now:
+                    self.map_goals.defer('Prior approach was blocked; retaining goal while its retry cools down')
+                elif goal['kind'] == 'item':
+                    action = self._seek_health(p, snap, now, requested=operator)
+                    if action is not None:
+                        self.stats['phase'] = 'operator_collect_item'
+                        return action
+                    self.map_goals.defer('No supported route or exact recovery-item pickup prompt')
+                else:
+                    self.stats['phase'] = 'operator_collect'
+                    self.plan_target = {'kind': 'bonus', 'id': operator['ptr'], 'pos': operator['pos']}
+                    self.aiming_since = None
+                    if math.dist(p['pos'], operator['pos']) > BONUS_TAKE or abs(p['pos'][1]-operator['pos'][1]) >= BONUS_LEVEL_DY:
+                        return self._follow(p, operator, mesh, snap.get('stage_prompt'), now)
+                    return self._take(p, operator, snap.get('stage_prompt'), now)
         selected_demo = self.stats.get('selected_route_id')
         if selected_demo and mesh is not None and not close_foes:
             mine_margins = [(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
@@ -2210,6 +2249,13 @@ class Bot:
         # are retained in the stage atlas even when this round has not found a route.
         time_cands = [candidate for candidate in cands if candidate.get("kind", "time") == "time"]
         cands = time_cands or cands
+        if not time_cands:
+            # Activate optional combo rewards where current exposed enemy flow
+            # can use them; a map click is an explicit operator exception.
+            cands = [b for b in cands if any(math.dist(e['pos'],b['pos'])<=1200. for e in live)]
+            if not cands:
+                self.stats['bonus_target']='Combo pickup deferred until an exposed combat opportunity'
+                return None
         b = min(cands, key=lambda b: cost(b) +
                 (self.nav_learning.route_penalty(mesh, p["pos"], b["pos"]) if mesh is not None else 0.0))
         if mesh is not None and clock is not None and len(cands) > 1:
@@ -2372,13 +2418,15 @@ class Bot:
         self.stats["heal_status"] = "equipping recovery item"
         return {"tap": re5_weapons.quick_key(quick)}
 
-    def _seek_health(self,p,snap,now):
+    def _seek_health(self,p,snap,now,requested=None):
         """Pause the held checkpoint to reach a verified recovery item using existing safe floor paths."""
         hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
-        if hp_max<=0 or hp<=1 or hp>HEAL_AT*hp_max or snap.get('recovery_active'):
+        if hp_max<=0 or hp<=1 or requested is None and hp>HEAL_AT*hp_max or snap.get('recovery_active'):
             return None
         from . import re5_health
         rows = [row for row in snap.get('health_items') or [] if row.get('id') in HEAL_IDS and row.get('evidence')]
+        if requested is not None:
+            rows = [row for row in rows if row['ptr'] == requested['ptr'] and row.get('handle') == requested.get('handle')]
         if not rows:
             self.stats['health_seek_status'] = 'no verified ground recovery item observed'
             return None
@@ -2780,10 +2828,8 @@ class Bot:
         keys = self._walk(p, heading(w[0] - pos[0], w[2] - pos[2]), now, precise=True, run=flat >= WP_REACHED)
         self.route_command_at = now  # repeated turns/unstick jitter without progress also consume the route budget
         if self.stats["stuck"] > stuck:
-            if self.route_stall is not None:
-                return self._block_route(tgt, now, "repeated stationary approach; trying another target")
-            self.route_stall = tuple(pos)
-            self.route_midpoints, self.route_at = True, -math.inf
+            # Do not send the generic blind back/side step beside walls or mines.
+            return self._block_route(tgt, now, "stationary floor approach; recording nearby native boundaries and replanning")
         return {"hold": keys}
 
     def _mine_retreat(self, p, snap, now):
@@ -3070,12 +3116,17 @@ class Bot:
                                                 "reason": reason[:160], "at": now}])[-64:]
         self._nav_finish("blocked")
         link = getattr(self.route[0], "link", None) if self.route else None
-        self.nav_learning.blocked(getattr(self, "_route_mesh", None), link)
+        mesh = getattr(self, '_route_mesh', None)
+        self.nav_learning.blocked(mesh, link)
+        context = self.nav_learning.obstruction(mesh, getattr(self,'_route_pos',tgt['pos']),tgt['pos'],reason)
+        if context:
+            self.stats['nav_obstruction_context'] = context
+            self.stats['nav_boundary_traces'] = self.stats.get('nav_boundary_traces',0)+1
         self.nav_learning.save()
         attempts = self.route_failures.get(tgt["ptr"], 0)
         if link is not None and link not in self.blocked_links and attempts < 2:
             self.blocked_links.add(link)
-            self.blocked_until[link] = now+8.
+            self.blocked_until[link] = now+self.nav_learning.retry_delay(mesh,link)
             self.route_failures[tgt["ptr"]] = attempts + 1
             self.route = self.route_len = None
             self.route_at, self.route_best = -math.inf, math.inf

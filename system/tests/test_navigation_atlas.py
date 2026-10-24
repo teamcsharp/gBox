@@ -111,6 +111,18 @@ def test_round_review_identifies_stationary_commands_and_goal_reversals():
     assert result["events"] == {"hits_taken": 1}
 
 
+def test_review_keeps_weapon_sections_and_native_counter_deltas_without_kill_attribution():
+    samples=[]
+    for at,wid,kills,score in ((0,0x10f,0,0),(1,0x10f,1,400),(2,0x116,2,800),(3,0x116,3,1200),(10,0x116,7,5000)):
+        f=frame([20,0,30]);f['weapon']={'owner':123,'item_id':wid};f['clock']={'kills':kills,'score':score}
+        samples.append({'at':at,'frame':f})
+    review=NavigationAtlas.review(samples,[],{})
+    assert [s['weapon']['item_id'] for s in review['weapon_sections']]==[0x10f,0x116]
+    assert [s['kills_observed'] for s in review['weapon_sections']]==[2,1]
+    assert sum(s['observed_s'] for s in review['weapon_sections'])==3.
+    assert 'not attributed' in review['weapon_section_evidence']
+
+
 def test_recorder_writes_atlas_off_input_thread_and_confirms_clock_gained_pickups(tmp_path):
     class Bot:
         def plan(self): return {"phase": "gather_time"}

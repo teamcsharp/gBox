@@ -27,6 +27,16 @@ function request(value,ownedJobs){
     ||/^\/api\/autoplay\/tactical\/(?:stage\/)?[A-Za-z0-9_:%.-]{1,180}$/.test(p);
   const job=/^\/api\/jobs\/((?:[0-9a-f]{16}|[0-9a-f]{32}))$/.exec(p);
   if(method==='GET'&&value.body===undefined&&(read||p==='/api/jobs'||job&&ownedJobs.has(job[1])))return {path:u.pathname+u.search,method};
+  if(method==='POST'&&/^\/api\/autoplay\/tactical\/[A-Za-z0-9_-]{1,96}\/goal$/.test(p)){
+    const b=value.body;
+    if(!b||typeof b!=='object'||JSON.stringify(b).length>2048
+      ||!(b.cancel===true&&Object.keys(b).length===1
+        ||Object.keys(b).length===5&&Object.keys(b).every(k=>['round','stage','kind','id','seq'].includes(k))
+          &&RID.test(b.round||'')&&/^[A-Za-z0-9._-]{1,120}$/.test(b.stage||'')
+          &&['bonus','item'].includes(b.kind)&&Number.isSafeInteger(b.id)&&Number.isSafeInteger(b.seq)&&b.seq>0))
+      throw Error('Invalid map collection goal.');
+    return {path:p,method,body:b};
+  }
   if(method==='POST'&&(/^\/api\/mercs\/reviewer\/(suggestions|demonstrations)$/.test(p)
       ||/^\/api\/mercs\/reviewer\/demonstrations\/[0-9a-f]{32}\/adopt$/.test(p))){
     if(!value.body||typeof value.body!=='object'||JSON.stringify(value.body).length>2*1024*1024)throw Error('Invalid route request.');

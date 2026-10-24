@@ -575,7 +575,8 @@ class Screensaver:
                 'scheduler_owner':'local' if _local_scheduler(w) else 'this_control_plane',
                 'titles':mercmode.inventory(self.store,w),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {})})
-        out['mercmode']={'hosts':hosts}
+        from .mercs.research_profiles import coverage, VERSION
+        out['mercmode']={'hosts':hosts,'experience_coverage':coverage(),'research_version':VERSION}
         if self.builder is not None:
             out["roulette"] = self.builder.status()
         return out

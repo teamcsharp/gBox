@@ -1,5 +1,28 @@
 # RE5 Reunion policy and round evidence
 
+The 2026-10-23 research refresh is versioned in `gbox/mercs/research_profiles.py`.
+Every new Notebook round includes the edition-scoped source IDs, short original
+summaries, evaluation objectives and runtime rules; the existing knowledge outbox
+publishes this with the measured round. Source prose supplies no navigation points
+or native addresses. Runtime automatic combo pickups now require an observed exposed
+combat opportunity near the pickup; an explicit map collection goal can request a
+return to a missed combo bonus. Immediate danger and healing still take precedence.
+
+[GameWith](https://gamewith.net/resident-evil-5/article/show/12370) supports time
+collection, combo continuity, health and environmental crowd control. Its blanket
+60-second bonus description is not imported as a native constant: the loaded RE5
+reader observes both 30- and 60-second hourglasses. [AbsoluteSteve's guide](https://gamefaqs.gamespot.com/ps3/989571-resident-evil-5-lost-in-nightmares/faqs/55979)
+separates stage/spawn knowledge and character loadouts; its Versus sections are not
+solo policies. [Jerecaine's Reunion FAQ](https://gamefaqs.gamespot.com/pc/958470-resident-evil-5/faqs/61756)
+provides character-specific tactics whose damage assumptions need reevaluation under
+modifiers. Community bow-drop observations remain calibration hypotheses until
+owner-linked projectile launches and impacts can be measured.
+
+IGN access was blocked by robots.txt in this research pass. The requested original
+GameFAQs URL was unavailable; the matching guide number and author were located in
+an indexed alternate listing. Neither failure is represented as having read unseen
+guidance. Full copyrighted guides are not stored in the research profile.
+
 `gbox/mercs/titles/re5_strategy.py` is a pure decision module. It orders opportunities;
 the title adapter still owns validated RAM reads, navigation, inventory controls,
 prompt handling and the laser obstruction gate. It cannot fire, heal, write RAM,

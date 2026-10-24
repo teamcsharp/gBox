@@ -38,8 +38,12 @@ optional overhead camera is evaluated under "An overhead camera in the game" bel
   - Combo ×N with its window, and the bot's phase (Gather time, Combo bonus, Stand, Break for time).
   - The nearest bonus ("Time bonus · 29 m · ~6.5 s"; `~` marks an estimate) and the target.
   - Between rounds it says where the game is, and it says when the frames stopped.
-- **Views.** Follow keeps the player and what he is going for in view, on the stage. Stage shows the whole stage. Heading up
-  turns the map with him. − and + zoom. Hover or tap a mark for its details.
+- **Views.** Follow keeps the player and goal in view; Stage fits the stage. Heading up turns with the player.
+  Hover holds the current centre, rotation and scale while live actors continue updating. The wheel zooms about
+  the cursor, and primary-button dragging pans. Manual views remain held until Follow or Stage is selected.
+- **Collection commands.** Click an available time/combo bonus or a verified recovery item to request collection.
+  The status names the queued, active or deferred goal, and Cancel goal releases it. A drag sends no command.
+  Recovery items have a green cross. Other unknown ground objects are not offered as collectable items.
 
 Colors (checked for color-vision deficiency with the dataviz validator, light and dark):
 
@@ -236,10 +240,38 @@ This uses existing RAM readers and the game's navmesh. Ghidra is the reverse eng
 source for those readers, not a running visual debugger or a new in-game drawing hook.
 The existing tactical map remains the live view; the local evidence supplies history.
 
-RE5 character selection currently covers Reunion's eight cursor entries. It chooses
-randomly among the least-played entries and excludes the last character. Character
-menu evidence includes the full roster, requested name and RAM cursor name. Status
-reports `character_cursor_verified` when the confirmation press was sent at the
-requested RAM cursor; this does not independently verify the spawned character.
-Original Mercenaries and switching between both modes remain unimplemented: their
-menu/roster mappings and unlock access require verification on the exact game build.
+RE5 selection now covers original Mercenaries and Reunion: eighteen character/costume
+entries across eight stages (144 combinations). A queued explicit selection is retained
+until native round-start mode, character and stage agree. A cursor press alone cannot
+acknowledge a request. Automatic retry-menu behavior still requires live acceptance.
+
+## Live collection intent and obstruction evidence (2026-10-23)
+
+`POST /api/autoplay/tactical/{sid}/goal` accepts exactly
+`{round,stage,kind:"bonus"|"item",id,seq}`, or `{cancel:true}`. An authenticated request
+needs a fresh playing frame, a supported entity still present and the current round
+and geometry. It accepts no world coordinates, controller buttons or RAM addresses.
+The publisher's existing background POST carries the intent back in its reply; only
+the engine thread gives it to the current bot. There is no network call on the input
+tick and no second input owner. Intents expire after five minutes and reset at round
+changes. RE5 supports collection commands; older title adapters remain viewable.
+
+Mandatory prompts, recovery, healing, mine departure and nearby exposed threats keep
+priority. Collection uses the existing floor/hazard/traversal planner. A blocked goal
+stays visible with its reason. Actor removal alone is `observed_removed`, not proof
+of collection. Time pickups additionally need nearby disappearance and a native clock
+gain without a concurrent kill. The durable route recorder retains its own stricter
+pickup correlation and remains authoritative for round bonus totals.
+
+A stationary route approach now releases movement and replans at the first measured
+stall. It saves a bounded nearby native-boundary snapshot, floor, goal and reason to
+the navigation learner, trace, and round review. Repeated failures on a directed link
+increase its retry delay from 8 to at most 120 seconds; successful observed crossings
+weaken the learned failure cost. These are native navigation boundaries and failed
+approaches. Solid walls, shipping-container collision and semantic doors/windows
+still require their own verified decoders.
+
+The reviewer also retains equipped-item intervals and their observed score, kill and
+HP deltas. Counter changes during an interval are observations, not weapon kill
+attribution; gaps over two seconds are excluded. The sidebar exposes weapon sections,
+operator goals, obstruction evidence and the source-attributed guide profile.

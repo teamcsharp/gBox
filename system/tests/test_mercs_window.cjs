@@ -72,6 +72,14 @@ test('allowlist permits measured viewer reads but refuses input, launch, foreign
     assert.throws(()=>create.request({path:p},new Set()),/Unsupported/);
 });
 
+test('map collection transport allows observed entity intents and cancellation, never coordinates or input',()=>{
+  const p='/api/autoplay/tactical/'+sid+'/goal',body={round:route,stage:'BLUS30491.nav1.abcd',kind:'bonus',id:123,seq:9};
+  assert.deepEqual(create.request({path:p,body},new Set()),{path:p,method:'POST',body});
+  assert.deepEqual(create.request({path:p,body:{cancel:true}},new Set()).body,{cancel:true});
+  for(const patch of [{pos:[0,0,0]},{round:'other'},{id:true},{kind:'enemy'},{seq:NaN}])
+    assert.throws(()=>create.request({path:p,body:{...body,...patch}},new Set()),/Invalid map/);
+});
+
 test('replacement follows only authoritative same-game links to a listed live session',async()=>{
   const next='new-session',middle='middle-session',calls=[];
   const live={session_id:next,game_id:'RE5',state:'running'};

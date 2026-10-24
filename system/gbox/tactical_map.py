@@ -16,6 +16,7 @@ import json
 import re
 import threading
 import time
+import uuid
 from collections import OrderedDict
 
 from fastapi import Depends, HTTPException, Request
@@ -36,6 +37,7 @@ class Store:
         self.frames: dict[str, dict] = {}          # sid -> {"frame", "seq", "at"}
         self.stages: OrderedDict[str, dict] = OrderedDict()
         self.seq = 0
+        self.goals: dict[str, dict] = {}
         self.lock = threading.Lock()
 
     def put_frame(self, sid: str, frame: dict) -> dict:
@@ -52,7 +54,49 @@ class Store:
             self.frames[sid] = {"frame": frame, "seq": self.seq, "at": now}
             for k in [k for k, v in self.frames.items() if now - v["at"] > TTL_S]:
                 self.frames.pop(k, None)
-            return {"ok": True, "seq": self.seq, "need_stage": bool(key) and key not in self.stages}
+                self.goals.pop(k, None)
+            reply = {"ok": True, "seq": self.seq, "need_stage": bool(key) and key not in self.stages}
+            goal = self.goals.get(sid)
+            if goal and (goal['round'] != frame.get('goal_round') or goal['stage'] != key or now > goal['expires']):
+                self.goals.pop(sid, None)
+                goal = None
+            if goal:
+                reply['operator_goal'] = dict(goal)
+            return reply
+
+    def command(self, sid: str, body: dict) -> dict:
+        """A live, observed entity only. The game worker remains the sole input owner."""
+        if not isinstance(body, dict):
+            raise ValueError('Invalid map command')
+        with self.lock:
+            row = self.frames.get(sid)
+            if not row or self.clock() - row['at'] >= LIVE_S:
+                raise ValueError('Waiting for fresh gameplay before accepting a map goal')
+            frame = row['frame']
+            if frame.get('screen') != 'playing' or not frame.get('player') or not frame.get('goal_round'):
+                raise ValueError('This session is not ready for map commands')
+            if body == {'cancel': True}:
+                goal = self.goals.get(sid)
+                if goal:
+                    goal = self.goals[sid] = dict(goal, id=uuid.uuid4().hex, state='cancelled')
+                    return dict(goal)
+                return {'state': 'cancelled', 'label': 'Map goal'}
+            if set(body) != {'round', 'stage', 'kind', 'id', 'seq'} or body['round'] != frame.get('goal_round') \
+                    or body['stage'] != frame.get('stage') or type(body['seq']) is not int or not 0 < body['seq'] <= row['seq']:
+                raise ValueError('The map round changed; choose the item again')
+            kind, entity_id = body['kind'], body['id']
+            if kind not in ('bonus', 'item') or kind not in frame.get('goal_capabilities', []) or type(entity_id) is not int:
+                raise ValueError('This entity does not support collection commands')
+            entities = frame.get('bonuses' if kind == 'bonus' else 'items', [])
+            entity = next((e for e in entities if e.get('id') == entity_id and not e.get('taken')), None)
+            if not entity:
+                raise ValueError('This item is no longer present in the live game')
+            label = entity.get('name') or ('Combo bonus' if entity.get('kind') == 'combo' else 'Time bonus')
+            goal = {'id': uuid.uuid4().hex, 'round': body['round'], 'stage': body['stage'],
+                    'kind': kind, 'entity_id': entity_id, 'pos': entity['pos'], 'label': str(label)[:80],
+                    'state': 'queued', 'expires': self.clock()+300.}
+            self.goals[sid] = goal
+            return dict(goal)
 
     def get_frame(self, sid: str, after: int | None = None) -> dict:
         now = self.clock()
@@ -123,5 +167,12 @@ def install(app, auth) -> Store:
     @app.get("/api/autoplay/tactical/{sid}")
     async def tactical_frame_get(sid: str, after: int | None = None, actor=Depends(auth)):
         return store.get_frame(sid, after)
+
+    @app.post("/api/autoplay/tactical/{sid}/goal")
+    async def tactical_goal(sid: str, request: Request, actor=Depends(auth)):
+        try:
+            return store.command(sid, await body_of(request, 2048))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
 
     return store

@@ -96,6 +96,43 @@ class NavMesh:
         return n > 0 and abs(ny) / n < STEEP_NY
 
     # --- where ---
+    def boundary_context(self, pos, *, radius=600., limit=12):
+        """Nearby native floor edges; solid collision is a separate decoder.
+
+        Inspect at most 256 local triangles. Action links remain crossings; only
+        edges without a shared-floor continuation are labelled mesh boundaries.
+        """
+        node = self.find(pos, floor_only=True, height_slack=60.)
+        if node is None:
+            return {'floor': None, 'edges': [], 'source': 'native_navmesh'}
+        gx, gz = int(math.floor(pos[0]/CELL)), int(math.floor(pos[2]/CELL))
+        span = min(4, int(math.ceil(radius/CELL)))
+        nearby = set()
+        for x in range(gx-span, gx+span+1):
+            for z in range(gz-span, gz+span+1):
+                nearby.update(self.grid.get((x,z), ()))
+        edges = []
+        for i in sorted(nearby, key=lambda n: math.dist(pos, self.centre[n]))[:256]:
+            if self.steep[i] or abs(self.centre[i][1]-pos[1]) > 100.:
+                continue
+            tri = self.tris[i]
+            for edge in range(3):
+                a,b = self.points[tri[edge]],self.points[tri[(edge+1)%3]]
+                continuations = [(v,e) for v,e,_ in self.links[i] if e%3 == edge]
+                shared = any(0<=v<len(self.tris) and not self.steep[v]
+                             and {tuple(a),tuple(b)} <= {tuple(self.points[n]) for n in self.tris[v]}
+                             for v,_ in continuations)
+                if shared:
+                    continue
+                mid = tuple((u+v)/2 for u,v in zip(a,b))
+                distance = math.dist(pos,mid)
+                if distance <= radius:
+                    edges.append((distance, {'a':list(a),'b':list(b),
+                        'kind':'action_link' if continuations else 'mesh_boundary'}))
+        edges.sort(key=lambda pair: pair[0])
+        return {'floor':node, 'edges':[e for _,e in edges[:limit]], 'source':'native_navmesh',
+                'collision_class':'unknown; stationary motion is not proof of a physical wall'}
+
     def member(self, pos) -> int | None:
         """An unambiguous containing floor, with stricter membership than the route endpoint lookup.
 
@@ -594,6 +631,17 @@ class Learning:
             if not isinstance(key, str) or len(key) > 100 or not isinstance(stage, dict):
                 continue
             clean = {"visits": {}, "crossings": {}, "routes": {}}
+            if isinstance(stage.get('obstructions'),list):
+                clean['obstructions'] = []
+                for event in stage['obstructions'][-64:]:
+                    try:
+                        if not isinstance(event,dict) or len(json.dumps(event,allow_nan=False))>6000 \
+                                or len(event.get('pos',[]))!=3 or not all(type(v) in (int,float) and math.isfinite(v) for v in event['pos']) \
+                                or event.get('source')!='native_navmesh' or len(event.get('edges',[]))>12:
+                            continue
+                        clean['obstructions'].append(event)
+                    except (ValueError,TypeError):
+                        continue
             if isinstance(stage.get("mine_sites"), dict):
                 clean["mine_sites"] = {
                     node: {name:self._count(row.get(name)) for name in self.MINE_COUNTERS}
@@ -782,6 +830,20 @@ class Learning:
             return
         stage = self._stage(mesh)
         self._increment(stage.setdefault("stalls", {}), f"{a}:{b}", self.MAX_CROSSINGS)
+
+    def obstruction(self, mesh, pos, goal, reason):
+        if mesh is None or not callable(getattr(mesh,'boundary_context',None)):
+            return None
+        event = mesh.boundary_context(pos)
+        event.update(pos=list(pos), goal=list(goal), reason=str(reason)[:160], at=time.time())
+        stage = self._stage(mesh)
+        stage['obstructions'] = (stage.get('obstructions',[])+[event])[-64:]
+        return event
+
+    def retry_delay(self, mesh, link):
+        count = self.stages.get(getattr(mesh,'learning_sig',None),{}).get('stalls',{}).get(
+            ':'.join(map(str,link)) if link else '',0)
+        return min(120.,8.*2**min(4,max(0,count-1)))
 
     @staticmethod
     def _damage_id(value):

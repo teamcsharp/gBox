@@ -26,7 +26,7 @@
     const api=(path,body,method)=>bridge.api(path,body,method);
     const message=value=>{$('status').textContent=value||'';};
     function mapFor(sid){map?.stop();map=null;tactical?.detach?.();$('map').replaceChildren();
-      $('map-note').hidden=false;$('map-note').textContent=sid?'Waiting for measured game state. No controller input is sent.':'Choose a session to watch its measured map. Gameplay continues in its own window.';
+      $('map-note').hidden=false;$('map-note').textContent=sid?'Hover to hold the map; wheel to zoom; drag to pan. Click a bonus or recovery item to request collection.':'Choose a session to watch its measured map. Gameplay continues in its own window.';
       if(!sid||!tactical)return;
       $('map').innerHTML=tactical.html(sid);map=tactical.mount(doc,{sid,api});
     }

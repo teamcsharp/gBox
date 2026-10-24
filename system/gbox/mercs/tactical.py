@@ -334,6 +334,11 @@ class Tracker:
                 self._forget_round()                        # another stage: its hourglasses are new
         out: dict = {"v": FORMAT, "t": round(now, 3), "title": self.title, "stage": self.stage_key,
                      "units": self.units, "screen": str(screen or ("playing" if p else "loading"))[:24]}
+        if (plan or {}).get('goal_round'):
+            out['goal_round'] = str(plan['goal_round'])[:32]
+            out['goal_capabilities'] = [k for k in plan.get('goal_capabilities', []) if k in ('bonus', 'item')]
+            if isinstance(plan.get('operator_goal'), dict):
+                out['operator_goal'] = dict(plan['operator_goal'])
         clock = {k: v for k, v in (("left", _n(snap.get("timer"), 2)), ("start", _n(snap.get("timer_start"), 1)),
                                    ("combo", _n(snap.get("combo"))), ("combo_left", _n(snap.get("combo_timer"), 2)),
                                    ("score", _n(snap.get("score"))), ("kills", _n(snap.get("kills"))))
@@ -360,6 +365,15 @@ class Tracker:
                                            ("state", None if state is None else str(state)[:16]),
                                            ("aim", True if state == "aim" or p.get("action") == 2 else None))
                          if v is not None}
+        out['items'] = [{'id': r['ptr'], 'pos': _xyz(r['pos']), 'name': str(r.get('name', 'Recovery item'))[:60],
+                         'item_id': r['id']} for r in (snap.get('health_items') or [])[:512]
+                        if r.get('evidence') and _xyz(r.get('pos')) is not None]
+        hand = [r for r in snap.get('inventory', []) if r.get('hand')]
+        if len(hand) == 1:
+            w = hand[0]
+            out['weapon'] = {k:v for k,v in {'owner':_id(p.get('ptr')), 'item_id':w.get('id'),
+                'item':w.get('item'), 'slot':w.get('slot'), 'rounds':w.get('rounds'), 'capacity':w.get('cap')}.items()
+                if v is not None}
         enemies: dict = {}
         awareness = {row.get("id"): row for row in (plan or {}).get("enemy_awareness", ())[:512]
                      if isinstance(row, dict) and row.get("visibility") in ("clear", "blocked", "unknown")}
@@ -465,14 +479,19 @@ class Publisher:
         self._backoff_until = float("-inf")
         self._thread = None
         self.threaded = threaded
+        self._goal_reply = None
 
     # --- the engine's side (cheap) ---
     def __call__(self, snap, bot=None, screen=None):
+        with self._cv:
+            pending, self._goal_reply = self._goal_reply, None
+        if pending and pending[0] is bot and callable(getattr(bot, 'receive_map_goal', None)):
+            bot.receive_map_goal(pending[1])   # engine thread only; no HTTP, no second input owner
         now = self.clock()
         if self._closed or now - self._last < self.min_dt * 0.95:     # (a tick's jitter never halves the rate)
             return False
         self._last = now
-        self._offer((snap, take_plan(bot), screen, now))
+        self._offer((snap, take_plan(bot), screen, now, bot))
         return True
 
     def idle(self, screen: str | None = None):
@@ -481,13 +500,13 @@ class Publisher:
         if self._closed or now - self._last < IDLE_S:
             return False
         self._last = now
-        self._offer(({}, {}, screen or "menu", now))
+        self._offer(({}, {}, screen or "menu", now, None))
         return True
 
     def close(self, screen: str = "stopped", wait: float = 2.0):
         if self._closed:
             return
-        self._offer(({}, {}, screen, self.clock()))
+        self._offer(({}, {}, screen, self.clock(), None))
         with self._cv:
             self._closed = True
             self._cv.notify_all()
@@ -523,7 +542,7 @@ class Publisher:
                 return
 
     def _send(self, item):
-        snap, plan, screen, now = item
+        snap, plan, screen, now, bot = item
         try:
             f = self.tracker.frame(snap, plan, screen, now=now)
         except Exception as e:                              # noqa: BLE001 - a frame that can't be built is skipped
@@ -533,6 +552,9 @@ class Publisher:
             return
         try:
             reply = self.sink.frame(f) or {}
+            if isinstance(reply.get('operator_goal'), dict) and bot is not None:
+                with self._cv:
+                    self._goal_reply = (bot, dict(reply['operator_goal']))
             self.stats["sent"] += 1
             key = f.get("stage")
             if reply.get("need_stage") and key in self.tracker.stages:
