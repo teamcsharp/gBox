@@ -105,3 +105,17 @@ def test_nonquick_carried_spray_uses_owned_inventory_then_existing_consumption_c
     snap['inventory'] = [gun]
     assert bot._heal(player,snap,11.1)=={'tap':'dleft'}
     assert bot.stats['heals']==bot.stats['heal_items_used']==1
+
+
+def test_recovery_item_in_hand_outside_a_heal_switches_back_to_a_gun(tmp_path,monkeypatch):
+    # Live 2026-10-24: the infinite spray's restore left the First Aid Spray in hand; "laserless gun: turning; hold
+    # fire" at a Majini in front of him until he died.
+    snap,_ = state()
+    snap['inventory'] = [{'slot':1,'id':0x304,'item':4,'type':3,'rounds':1,'grid':1,'hand':True},
+                         {'slot':0,'id':0x101,'item':0,'type':0,'rounds':12,'grid':0,'hand':False}]
+    bot = R.Bot(learn_dir=tmp_path,clock=lambda:10.)
+    monkeypatch.setattr(M,'ground_mines',lambda _: {})
+    calls = []
+    monkeypatch.setattr(bot,'_heal_return_weapon',lambda inv,st,now: calls.append(inv) or {'tap':'dright'})
+    assert bot.tick(snap)=={'tap':'dright'}
+    assert calls and bot.stats['weapon_policy'].startswith('recovery item in hand')
