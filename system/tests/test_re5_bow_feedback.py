@@ -148,3 +148,15 @@ def test_near_majini_keeps_the_longbow_shooting_instead_of_repositioning(tmp_pat
         triggers+='r1' in tick(combat,state,now)['hold']
     assert not combat.needs_firing_position and combat.stats.get('bow_ineffective_bursts',0)==0
     assert triggers>=10
+
+
+def test_near_majini_keeps_the_rotten_eggs_flying_instead_of_repositioning(tmp_path):
+    # operator 2026-10-24: "They need to be bombarding enemies with rotten eggs when rotten egg mode is active"
+    memory,state=scene(0x36)
+    state['enemies'][0]['pos']=(0.,0.,600.)
+    supported_laserless(state)
+    state['camera']['at']=(0.,110.,600.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    tick(combat,state,1.)
+    throws=sum('r1' in tick(combat,state,1.+i*.1)['hold'] for i in range(1,60))
+    assert not combat.needs_firing_position and throws>=10

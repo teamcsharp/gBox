@@ -1051,8 +1051,10 @@ class Combat:
         progress = self.laserless_progress
         if progress is None or progress["key"] != key:
             self.laserless_progress = {"key":key,"best":error,"improved":now,"started":now}
-        elif wid==0x0F and math.dist(p["pos"],tgt["pos"]) < BOW_STAND_R:
-            progress.update(improved=now,started=now)    # a near Majini: keep shooting him, never walk off
+        elif wid in (0x0F,0x36) and math.dist(p["pos"],tgt["pos"]) < BOW_STAND_R:
+            # a near Majini: keep shooting / bombarding him with rotten eggs, never walk off (operator 2026-10-24:
+            # "They need to be bombarding enemies with rotten eggs when rotten egg mode is active")
+            progress.update(improved=now,started=now)
         elif wid==0x0F and now-max(progress['started'],self.bow_target_damage.get(tgt.get('ptr'),-math.inf)) >= BOW_BURST_S:
             self.laserless_progress = None
             self.bow_down_at = None
