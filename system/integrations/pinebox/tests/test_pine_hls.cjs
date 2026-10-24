@@ -34,6 +34,19 @@ function fixture(native = false) {
 }
 const flush = ()=>new Promise(resolve=>setImmediate(resolve));
 
+test('LAN media bypasses the station loop while public HTTPS stays on the isolated same-origin door',()=>{
+  const page=new URL('http://10.89.1.246:8096/radio');
+  assert.equal(player.mediaUrl('/api/gbox/hls?k=program&t=listener',page),
+    'http://10.89.1.246:18098/api/gbox/hls?k=program&t=listener');
+  assert.equal(player.mediaUrl('/gbox-hls/hls-1.7.3.min.js',page),
+    'http://10.89.1.246:18098/gbox-hls/hls-1.7.3.min.js');
+  assert.equal(player.mediaUrl('',page),'');
+  for(const value of ['/api/dj/state','https://other.example/api/gbox/hls','/api/gbox/hls-other'])
+    assert.equal(player.mediaUrl(value,page),value);
+  assert.equal(player.mediaUrl('/api/gbox/hls?k=program',new URL('https://lilspark.tail1fec29.ts.net/radio')),
+    '/api/gbox/hls?k=program');
+});
+
 test('compressed live main video uses a bounded buffer without periodic healthy reconnects', async()=>{
   const f=fixture();
   f.p.source('/api/gbox/hls?k=pc-spark1&t=listener'); await flush();
@@ -60,6 +73,8 @@ test('startup and rebuffer wait for decoded cushion without replacing the decode
   end=8;e.events.buffered();assert.equal(f.video.plays,0);
   end=9;e.events.buffered();assert.equal(f.video.plays,1);
   f.video.onplaying();end=2;f.video.onwaiting();
+  f.video.onwaiting();e.events.error(null,{details:'bufferStalledError',fatal:false});
+  assert.equal(f.p.state().stalls,1,'one interrupted playback episode counts once across native and HLS events');
   f.video.onplaying();assert.equal(f.p.state().waitingForBuffer,true,'a stale playing event cannot clear a paused buffer gate');
   const paused=f.video.pauses;f.video.oncanplay();e.events.buffered();
   assert.equal(f.video.plays,1);assert.ok(paused>0);assert.equal(f.p.state().waitingForBuffer,true);

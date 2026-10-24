@@ -190,7 +190,9 @@ def test_assets_are_pinned_and_route_does_not_serve_arbitrary_files():
 def test_installer_is_idempotent_backs_up_original_and_never_changes_station_settings(tmp_path):
     target = tmp_path / "pine"
     (target / "frontend").mkdir(parents=True)
-    original = "_PUBLIC_GET = set()\ngboxstream.install(app, globals())  # original\n"
+    original = ('import os\n_PUBLIC_GET = set()\ngboxstream.install(app, globals())  # original\n'
+                'async def _startup_public_door() -> None:\n'
+                '    config = uvicorn.Config(PublicListenerGate(app), host="0.0.0.0", port=PUBLIC_PORT)\n')
     (target / "app.py").write_text(original)
     (target / "gboxstream.py").write_text("# original stream\n")
     (target / "frontend/gbox-tune.js").write_text("old-js")
@@ -198,10 +200,18 @@ def test_installer_is_idempotent_backs_up_original_and_never_changes_station_set
     (target / "data").mkdir()
     config = target / "data/gbox-stream.json"
     config.write_text('{"on":false,"fps":12}')
+    compose=tmp_path/'compose.yaml';compose.write_bytes(b'services:\n  spark-agent:\n    environment:\n      SECRET: unchanged\n')
+    original_compose=compose.read_bytes()
     receipt = installer.install(target, package=ROOT)
     assert (Path(receipt["backup"]) / "app.py").read_text() == original
     assert (target / "app.py").read_text().count(installer.MARK) == 1
     assert config.read_text() == '{"on":false,"fps":12}'
+    assert compose.read_bytes()==original_compose and receipt['gateway_config_applied'] is False
+    assert 'host="0.0.0.0"' in (target/'app.py').read_text()
+    assert 'PINE_GBOX_PUBLIC_BACKEND_HOST' not in (target/'app.py').read_text()
+    for name in ('media_gateway.py','install_gateway.py'):
+        assert (target/name).read_bytes()==(ROOT/name).read_bytes()
+    assert 'opt-in hash-guarded' in receipt['gateway_activation']
     assert 'container restart' in receipt['activation']
     assert installer.install(target, package=ROOT)["changed"] == []
     (target / 'frontend/pine-hls.js').write_text('old helper')

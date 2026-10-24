@@ -25,8 +25,7 @@ TITLES = {
             'characters': 18, 'stages': 8, 'modes': ['mercenaries', 'reunion']},
     're6': {'name': 'Resident Evil 6', 'map_id': 'BH6', 'platform': 'xbox360',
             'game_ids': ('0871eee3b68cdea3',), 'playable': False,
-            'reason': 'RE6 has no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader. '
-                      'The requested PS3 share contains no RE6 entry in the 2026-10-23 inventory.'},
+            'reason': 'RE6 has no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
 }
 
 

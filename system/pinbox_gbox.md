@@ -54,6 +54,14 @@ do not invent a new session ID from a title or reuse an ended worker's ID.
 /api/gbox/hls?k=pc-jaybuilt
 ```
 
+Gameplay media runs in the independent `gbox-pine-media.service` user service. The public HTTPS listener still
+uses port `8097`; this gateway serves HLS directly from gBox and forwards other listener requests to Pine's
+existing tune-in-only door on loopback `127.0.0.1:18097`. It never imports Pine's station application or runs DJs.
+The private studio remains on `8096`. Its player sends only HLS and player assets to the same host on `18098`,
+with CORS restricted to that host's studio origin. This keeps station computation and large JSON responses
+from blocking video admission. Both media listeners validate current token revocation and stage permissions
+from bounded local state files; they do not call the station API to authorize each segment.
+
 The listener page supplies its current Pine tune-in token through the existing relay contract. The bridge validates
 that token and the permitted stage channels on every playlist and segment request. It rewrites only known gBox
 media objects and shares the upstream encoder/cache between listeners.
@@ -119,6 +127,8 @@ advancing video.
 Pine exposes `GBoxTune.state()` and its `gameplay` state, including attachments, stalls, buffer ahead and recent
 errors. Healthy metadata polls must not increase decoder attachments. A rollout should be checked with sustained
 decoded frames and non-silent emulator audio on the actual LAN/Tailscale listener path, including a game restart.
+Inspect `systemctl --user status gbox-pine-media.service` separately from the Pine container. If HLS requests
+still reach private port `8096`, the listener has an older player and should reload its static assets.
 
 Each managed desktop runs its own loopback authority on `127.0.0.1:18765` for installed games, mods and autobots.
 The desktop pairs an outbound bridge with the configured central service; Pine still connects only to Spark.

@@ -8,11 +8,23 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   var VERSION = '1.7.3', loading = null;
+  function mediaUrl(value, page) {
+    if (!value) return value;
+    page = page || globalThis.location;
+    try {
+      var url = new URL(value, page.href);
+      if (page.protocol === 'http:' && page.port === '8096' && url.origin === page.origin &&
+          (url.pathname === '/api/gbox/hls' || url.pathname.indexOf('/gbox-hls/') === 0)) {
+        url.port = '18098'; return url.href;
+      }
+    } catch (_) {}
+    return value;
+  }
   function loadHls() {
     if (globalThis.Hls && globalThis.Hls.version === VERSION) return Promise.resolve(globalThis.Hls);
     if (!loading) loading = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = '/gbox-hls/hls-1.7.3.min.js';
+      script.src = mediaUrl('/gbox-hls/hls-1.7.3.min.js');
       script.onload = function () {
         if (globalThis.Hls && globalThis.Hls.version === VERSION) resolve(globalThis.Hls);
         else { loading = null; reject(new Error('Gameplay player version mismatch')); }
@@ -53,7 +65,7 @@
     var source = '', engine = null, generation = 0, timer = null, attempt = 0, audio = false, level = 0.5;
     var forceJs = false, transport = '', phase = 'stopped', errors = [], lastTime = -1, lastCapture = -Infinity;
     var lastMediaRecovery = -Infinity, hold = options.holdFrame || canvasHold(video), now = options.now || Date.now;
-    var attachments = 0, stalls = 0;
+    var attachments = 0, stalls = 0, hasPlayed = false, stallActive = false;
     var waitingForBuffer = true, startBufferSeconds = 7.5;
     var schedule = options.setTimeout || setTimeout, cancel = options.clearTimeout || clearTimeout;
     video.autoplay = false; video.preload = 'auto'; video.playsInline = true; video.muted = true; video.volume = level;
@@ -68,8 +80,11 @@
       } } catch (_) {}
       return 0;
     }
+    function markStall() {
+      if (hasPlayed && !stallActive) { stalls++; stallActive = true; }
+    }
     function noteError(kind, details, fatal) {
-      if (details === 'bufferStalledError') stalls++;
+      if (details === 'bufferStalledError') markStall();
       errors.push({at:now(), type:String(kind || 'unknown').slice(0,80), details:String(details || '').slice(0,160),
         fatal:!!fatal, transport:transport, time:Number(video.currentTime)||0});
       if (errors.length > 12) errors.shift();
@@ -99,6 +114,7 @@
     }
     function playing() {
       if (!source || video.error || video.readyState < 2 || video.paused===true) return;
+      hasPlayed = true; stallActive = false;
       waitingForBuffer=false;
       if (timer !== null) cancel(timer);
       timer = null; attempt = 0; phase = 'playing'; hold.hide();
@@ -109,6 +125,7 @@
     video.oncanplay = function () { if (source && !video.error) play(); };
     video.onwaiting = function () {
       if (!source) return;
+      markStall();
       if(transport==='hls.js'&&!video.srcObject){waitingForBuffer=true;video.pause();}
       hold.capture(); hold.show(); phase = 'buffering'; report('Gameplay buffering…');
     };
@@ -187,9 +204,10 @@
     }
     return {
       source:function (url) {
-        url = String(url || '');
+        url = mediaUrl(String(url || ''));
         if (url === source) return;
         source = url; generation++; attempt = 0; attachments = 0; stalls = 0;
+        hasPlayed = false; stallActive = false;
         lastCapture = -Infinity; hold.reset();
         if (source) attach(generation); else { phase = 'stopped'; cleanup(); }
       },
@@ -212,5 +230,5 @@
           phase:phase, transport:transport, holding:hold.held(), errors:errors.slice()}; }
     };
   }
-  return {VERSION:VERSION, create:create, loadHls:loadHls};
+  return {VERSION:VERSION, create:create, loadHls:loadHls, mediaUrl:mediaUrl};
 });

@@ -23,6 +23,25 @@ credential or upstream URI is forwarded in a playlist or error. A 32 MiB / 64
 object cache coalesces shared segment requests, with at most four upstream
 downloads. Blocking HTTP runs outside Pine's event loop.
 
+The live deployment uses `media_gateway.py` in a separate OS process. Pine's
+large station-state builders and background JSON work can block its main event
+loop, including the original public listener; a thread-backed relay route alone
+cannot avoid that admission delay. The independent gateway serves public HLS
+on `8097` and private studio media on `18098`. Other public requests stream to
+the original tune-in-only door, moved to loopback `18097`. Studio UI stays on
+`8096`; its player rewrites only its own HLS/assets to `18098`. Current listener
+revocation, epoch, preview signatures and stage permissions are checked locally
+on every media request. No per-segment auth call returns to the station app.
+
+`install_gateway.py` previews a narrow patch to Pine's public-door bind host and
+the `spark-agent` compose environment. Applying requires both original SHA256
+hashes, creates backups, and never restarts services. Run the small gateway with
+the existing Pine key and read policy, explicit host `SPARK_AGENT_DATA_DIR`,
+`GBOX_URL=http://127.0.0.1:8765`, and the existing `data/gbox_token`. Keep these
+values in a protected service environment file. On Spark the persistent user
+unit is `gbox-pine-media.service`. Activate the compose change once, start this
+unit, and reload listener assets; no station selection or on-air setting changes.
+
 The pinned official Hls.js 1.7.3 runtime, its license notices and full Apache
 license are checked in under `frontend/vendor`; hashes and official download
 URLs are in `vendor-manifest.json`. The pinned MSE player is preferred so its
@@ -57,3 +76,4 @@ Run tests using `python -m pytest tests/test_pine_hls.py` and
 `node --test tests/test_pine_hls.cjs` from this directory. Live acceptance must
 also verify real non-silent emulator audio and playback on the actual external
 listener path; passing unit tests alone does not prove either.
+Gateway checks are `python -m pytest tests/test_media_gateway.py tests/test_install_gateway.py`.

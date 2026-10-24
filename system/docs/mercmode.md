@@ -36,7 +36,7 @@ the session over; it is no longer rotated by the scheduler.
 | RE4 GameCube G4BE08 / Dolphin | Five character and four stage cursor targets; timer-zero/native room or actual player death boundary | Final score/rank reader is absent; random selections have simulated cursor coverage and still need new live traversal acceptance |
 | RE5 PS3 BLUS30491 app 01.01 / RPCS3 | Existing original/Reunion roster and eight-stage coverage; terminal score settling or actual player death boundary | Full all-character/all-stage traversal and unmodified maximum-rank runs remain unproven |
 | RE6 Xbox 360 / Xenia | Unavailable | Existing module has no combat driver, measured menu cursor, clock, score, enemy map, or terminal-round reader |
-| RE6 PS3 | Unavailable | No verified driver. Read-only inventory of `\\10.89.1.125\QuickSwap2\Emulation\PS3` on 2026-10-23 contained no RE6 entry |
+| RE6 PS3 / RPCS3 | Unavailable | Archive now present on the requested share: native `PARAM.SFO` identifies `BLUS30855`, app 01.00. It contains an extracted-disc folder layout inside `.7z`, requiring staging before RPCS3 can boot; Mercenaries combat/menu/round readers remain unverified |
 
 A verified RE6 save-unlock writer does not make its gameplay driver ready.
 MercMode preserves existing modifier settings and uses the existing title-specific

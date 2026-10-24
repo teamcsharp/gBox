@@ -9,6 +9,7 @@ import time
 
 HOOK = "gboxstream.install(app, globals())"
 MARK = "import gbox_hls  # [gbox-hls] shared H.264/AAC gameplay channel"
+SERVER_FILES = ('gbox_hls.py','media_gateway.py','install_gateway.py')
 
 
 def patched_app(text):
@@ -38,7 +39,10 @@ def install(target, *, package=None):
         raw = (package / entry["path"]).read_bytes()
         if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
             raise ValueError("vendor checksum mismatch: " + entry["path"])
-    sources = [package / "gbox_hls.py", *(package / "frontend").rglob("*")]
+    for name in SERVER_FILES:
+        if not (package/name).is_file():
+            raise ValueError('reviewed Pine integration module is absent: '+name)
+    sources = [*(package/name for name in SERVER_FILES), *(package / "frontend").rglob("*")]
     sources = [p for p in sources if p.is_file()]
     planned = {str(p.relative_to(package)): p.read_bytes() for p in sources}
     planned["app.py"] = new_app.encode()
@@ -61,7 +65,12 @@ def install(target, *, package=None):
     return {"changed": receipts, "backup": str(backup) if changed else None,
             "activation": ("Pine container restart required; not performed" if server_changed else
                            "Reload listener page; static files are served immediately" if changed else
-                           "No changes; no activation required"), "station_mode_changed": False}
+                           "No changes; no activation required"), "station_mode_changed": False,
+            "gateway_config_applied": False,
+            "gateway_activation": ("Gateway source installed; opt-in hash-guarded app/compose patch and explicit "
+                                   "gateway service activation remain required; not performed"
+                                   if any(name in changed for name in ('media_gateway.py','install_gateway.py')) else
+                                   "Gateway source unchanged; no gateway activation performed")}
 
 
 if __name__ == "__main__":
