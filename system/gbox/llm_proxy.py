@@ -411,6 +411,7 @@ ANTHROPIC_VERSION = '2023-06-01'
 CACHE = {'type': 'ephemeral'}
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 THINKING = ('thinking', 'redacted_thinking')
+THINKING_SWITCH_HOSTS = ('api.deepseek.com', 'api.kimi.com')   # OpenAI-format upstreams with a thinking:{type} switch
 STOP_REASONS = {'tool_use': 'tool_calls', 'max_tokens': 'length', 'model_context_window_exceeded': 'length',
                 'refusal': 'content_filter'}
 REPLAY_LIMIT = 4096
@@ -896,8 +897,8 @@ class LocalLLM:
                        'top_p', 'stop', 'response_format', 'presence_penalty', 'frequency_penalty') if k in body}
             payload.update(model=model, messages=capped, max_tokens=max_out)
             if s.enable_thinking is not None:
-                if 'api.deepseek.com' in (s.upstream or ''):
-                    # DeepSeek's own switch; its V4 models think by default, and a thinking turn must have its
+                if any(host in (s.upstream or '') for host in THINKING_SWITCH_HOSTS):
+                    # DeepSeek's / Kimi's own switch; their models think by default, and a thinking turn must have its
                     # reasoning_content replayed, which Hermes does not send (2026-10-24: every multi-turn run failed)
                     payload['thinking'] = {'type': 'enabled' if s.enable_thinking else 'disabled'}
                 else:

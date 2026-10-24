@@ -198,7 +198,8 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
 # every round's own loadout (operator 2026-10-22: "autoplaying mercenary levels with random weapons"): a fresh random gun
 # from the game's weapon table at each Select Player, with its firepower scaled so a weak pick still kills; the
 # PACKAGE's fixed handcannon + weapon_mod are the fallback and are skipped when this runs
-ROUND_OP = ("random_loadout", {"character": "leon", "damage": "99.9", "fire_x": 20, "on": True})   # 20x fire rate
+ROUND_OP = ("random_loadout", {"character": "all", "damage": "99.9", "fire_x": 20, "on": True,    # 20x fire rate, every character
+                               "weapon": "handcannon"})   # operator 2026-10-24: "give Leon a rapid fire handcannon"
 LOADOUT_OPS = ("merc_loadout", "weapon_mod")
 
 
