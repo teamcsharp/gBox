@@ -90,6 +90,7 @@ FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this fa
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
 ROUTE_LEN_S = 3.0                      # the bonuses' route lengths are worked out again this often
+BONUS_SKIP_MAX_S = 240.0               # a bonus the route keeps failing on is left twice as long each time, up to this
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
 BONUS_HUNT = True                      # go for them (taken with the "□ Time bonus" prompt at the hourglass:
@@ -921,6 +922,7 @@ class Bot:
         self.dead_tap = 0.0
         self.bonus_fired: dict = {}            # hourglass -> seconds fired at it
         self.bonus_skip: dict = {}             # hourglass -> left alone until
+        self.bonus_fails: dict = {}            # hourglass -> route failures this round (doubles its skip)
         self.bonus_seen: set = set()
         self.last_timer = None
         self.route, self.route_for, self.route_at, self.route_since = None, None, 0.0, 0.0
@@ -1103,6 +1105,7 @@ class Bot:
                 self.route_failures.clear()
                 self.nav_last_good = self.nav_recovery = None
                 self.bonus_skip.clear()
+                self.bonus_fails.clear()
                 self.route, self.route_for, self.route_len = None, None, None
                 self.climb_at = self.take_at = None
                 self.climb_pos = self.climb_tick = None
@@ -2011,7 +2014,7 @@ class Bot:
             if self.take_at is None or self.take_at[0] != tgt["ptr"]:
                 self.take_at = (tgt["ptr"], now)
             elif now - self.take_at[1] > BONUS_GIVE_UP_S:   # tapped a while, still here: leave it, try later
-                self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                self._skip_bonus(tgt["ptr"], now)
                 self.take_at = None
                 return {"hold": set()}
             if now - self.last_punch < BONUS_PUNCH_S:       # let the last tap land (the engine spaces a tap itself)
@@ -2051,7 +2054,7 @@ class Bot:
             self.route_stall = None
         if now - self.route_since > ROUTE_STALE_S:
             self._nav_finish("timed_out")
-            self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+            self._skip_bonus(tgt["ptr"], now)
             self.stats["routes_given_up"] = self.stats.get("routes_given_up", 0) + 1
             self.route_for = None
             return {"hold": set()}
@@ -2068,7 +2071,7 @@ class Bot:
         if not self.route:
             if mesh is not None:                           # an explicit no-route result must never mean run through it
                 self._nav_finish("unreachable")
-                self.bonus_skip[tgt["ptr"]] = now + BONUS_SKIP_S
+                self._skip_bonus(tgt["ptr"], now)
                 self.stats["route"] = "unreachable on current mesh"
                 return {"hold": set()}
             self.stats["route"] = "waiting for stage navigation; no blind straight-line pursuit"
@@ -2322,6 +2325,14 @@ class Bot:
             if self.traversal_started is None:
                 self.traversal_started = now
 
+
+    def _skip_bonus(self, ptr, now):
+        """Leave a bonus whose route failed (unreachable, timed out, blocked): BONUS_SKIP_S the first time, doubled for
+        each further failure of the same bonus this round (a time bonus on a bus roof was walked back to again and
+        again, the bot shooting at the wall between visits), up to BONUS_SKIP_MAX_S."""
+        n = self.bonus_fails[ptr] = self.bonus_fails.get(ptr, 0) + 1
+        self.bonus_skip[ptr] = now + min(BONUS_SKIP_S * 2 ** (n - 1), BONUS_SKIP_MAX_S)
+        self.stats["bonus_route_failures"] = sum(self.bonus_fails.values())
 
     def _nav_finish(self, outcome):
         if getattr(self, "_route_learn", True):          # a pursuit's route outcome is not the stage's route record

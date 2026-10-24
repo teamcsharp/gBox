@@ -1293,6 +1293,19 @@ def test_repeated_stationary_route_stalls_record_blocked_and_leave_the_target(tm
     assert not stage["crossings"] and not bot.avoid            # failure does not invent a permanently blocked edge
 
 
+def test_a_bonus_the_route_keeps_failing_on_is_left_longer_each_time(tmp_path):
+    bot = R.Bot(learn_dir=tmp_path)
+    bot._skip_bonus(1, 100.)
+    assert bot.bonus_skip[1] == 100. + R.BONUS_SKIP_S
+    bot._skip_bonus(1, 200.)
+    assert bot.bonus_skip[1] == 200. + 2 * R.BONUS_SKIP_S
+    for _ in range(10):
+        bot._skip_bonus(1, 300.)
+    assert bot.bonus_skip[1] == 300. + R.BONUS_SKIP_MAX_S
+    bot._skip_bonus(2, 300.)                                   # another bonus starts from the base skip
+    assert bot.bonus_skip[2] == 300. + R.BONUS_SKIP_S and bot.stats["bonus_route_failures"] == 13
+
+
 def test_combat_gap_does_not_combine_two_independent_route_stalls():
     mesh, bot = corner_mesh(), R.Bot()
     p = {"pos": (20., 0., 50.), "rot": math.pi / 2, "action": 0}
