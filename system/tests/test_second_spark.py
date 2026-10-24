@@ -175,7 +175,7 @@ def test_the_proxy_budget_follows_the_lane_in_the_queue_header():
     assert not meta_for('inbox')['budget_final'], 'an inbox run at 8 of 12 calls continues'
 
 
-@pytest.mark.parametrize('upstream', ['https://api.deepseek.com/v1', 'https://api.kimi.com/coding/v1'])
+@pytest.mark.parametrize('upstream', ['https://api.deepseek.com/v1', 'https://api.kimi.com/coding/v1', 'https://api.z.ai/api/coding/paas/v4'])
 def test_deepseek_upstream_gets_its_own_thinking_switch(tmp_path, upstream):
     """DeepSeek ignores vLLM's chat_template_kwargs; V4 models then think and demand replayed reasoning_content."""
     seen = []
