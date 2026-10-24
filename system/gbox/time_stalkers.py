@@ -102,6 +102,40 @@ def sh4_absolute_refs(data: bytes, base: int = LINK_BASE) -> dict[str, int]:
     return {f"{k:08x}": c for k, c in sorted(refs.items())}
 
 
+def sh4_pointer_refs(data: bytes, file_off: int, base: int = LINK_BASE) -> list[int]:
+    """File offsets of every 32-bit slot in the image that holds the absolute address of ``file_off``.
+
+    ``sh4_movl_xrefs`` only finds direct ``mov.l @(disp,pc),Rn`` literal-pool loads, and MAIN.BIN
+    reaches its loader format strings that way not at all: the strings sit in a table and are
+    reached through a pointer table. The table slots are therefore the next hop, and the table
+    around them carries the character-id -> OBJ mapping that the MAN/OBJ loaders walk.
+    """
+    target = (base + file_off) & 0xFFFFFFFF
+    pat = struct.pack("<I", target)
+    out = []
+    i = data.find(pat)
+    while i >= 0:
+        out.append(i)
+        i = data.find(pat, i + 1)
+    return out
+
+
+def sh4_pointer_table(data: bytes, slot_off: int, count: int = 16) -> list[int]:
+    """The u32 entries of the pointer table that holds ``slot_off`` (absolute addresses, 0 = unused).
+
+    ``count`` entries are read from the 4-byte-aligned slot at or before ``slot_off``. Values are
+    raw absolute addresses, so a file-relative target is ``value - LINK_BASE``.
+    """
+    start = slot_off - (slot_off % 4)
+    out = []
+    for k in range(count):
+        off = start + 4 * k
+        if off + 4 > len(data):
+            break
+        out.append(struct.unpack_from("<I", data, off)[0])
+    return out
+
+
 def ip_meta(ip: bytes) -> dict:
     """The Dreamcast IP.BIN header fields that name the exact build."""
     txt = lambda a, b: ip[a:b].decode("latin-1").strip()

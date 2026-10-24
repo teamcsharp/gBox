@@ -250,3 +250,15 @@ def test_sh4_movl_displacement_is_unsigned_and_forward(disp):
     struct.pack_into("<I", data, target, 0x8C011000)
     assert ts.sh4_movl_xrefs(bytes(data), target) == [0]
     assert ts.sh4_movl_xrefs(bytes(data[:-1]), target) == []
+
+
+def test_sh4_pointer_refs_finds_table_slots():
+    # the loader strings are reached through a pointer table, not a direct literal-pool load
+    target = ts.LINK_BASE + 0x100
+    data = bytearray(0x200)
+    struct.pack_into("<I", data, 0x40, target)                 # table slot -> string at 0x100
+    struct.pack_into("<I", data, 0x44, ts.LINK_BASE + 0x120)   # neighbouring slot
+    struct.pack_into("<I", data, 0x100, 0xDEADBEEF)             # the string body itself
+    assert ts.sh4_pointer_refs(bytes(data), 0x100) == [0x40]
+    assert ts.sh4_pointer_refs(bytes(data), 0x140) == []
+    assert ts.sh4_pointer_table(bytes(data), 0x40, count=3) == [target, ts.LINK_BASE + 0x120, 0]
