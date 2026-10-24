@@ -129,6 +129,28 @@ def test_no_operator_handover_or_plain_stop_becomes_rotation_lineage():
         assert M.rotation_predecessor(store,w,10001) is None
 
 
+def test_rotation_survives_only_registered_same_host_worker_restart_alias():
+    store,w,saver,calls,now,tick,run,job=playing()
+    saver.round_boundary(boundary(run,now[0]),job,now[0]);tick(1)
+    old=store.get('session',run['session_id']);store.put('session',run['session_id'],old|{'state':'ended'})
+    w['id']='freshworker'
+    assert M.rotation_predecessor(store,w,now[0]) is None
+    store.put('worker_alias','w1',{'to':w['id'],'name':'different-pc'})
+    assert M.rotation_predecessor(store,w,now[0]) is None
+    store.put('worker_alias','w1',{'to':w['id'],'name':w['name']})
+    prior=M.rotation_predecessor(store,w,now[0])
+    assert prior['source_worker_id']=='w1' and prior['worker_id']==w['id']
+    launch={'id':'fresh-launch','tool':'launch_game','state':'succeeded','worker_id':w['id'],
+        'require_worker':w['id'],'input':{'game':{'game_id':RE4}}}
+    store.put('job',launch['id'],launch)
+    newrun={'worker':w['name'],'worker_id':w['id'],'job':launch['id'],'game_id':RE4,
+        'mercmode':{'title':'re4'},'mercmode_predecessor':prior}
+    live={'session_id':w['id']+'-'+launch['id'],'game_id':RE4,'state':'running'}
+    assert M.link_rotation(store,newrun,live,now[0])
+    receipt=store.get('session',run['session_id'])['mercmode_rotation']
+    assert receipt['source_worker_id']=='w1' and receipt['worker_id']==w['id']
+
+
 def test_hosts_are_independent_and_unknown_config_is_rejected():
     store=Store();M.configure(store,'lilspark',{'enabled':True,'titles':['re5']})
     assert M.settings(store,'i9-NUC')['enabled'] is False

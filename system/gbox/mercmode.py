@@ -103,9 +103,21 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
     return run
 
 
+def _same_host_worker(store, source, worker):
+    if not isinstance(source,str) or not source or not worker.get('id') or not worker.get('name'):return False
+    seen=set()
+    for _ in range(8):
+        if source==worker.get('id'):return True
+        if not source or source in seen:return False
+        seen.add(source);alias=store.get('worker_alias',source) or {}
+        if alias.get('name')!=worker.get('name'):return False
+        source=alias.get('to')
+    return False
+
+
 def rotation_predecessor(store, worker, now):
     from .screensaver import LOG
-    rows=[r for r in store.all(LOG) if r.get('worker_id')==worker.get('id')
+    rows=[r for r in store.all(LOG) if _same_host_worker(store,r.get('worker_id'),worker)
           and r.get('why')=='verified native round boundary: next MercMode title'
           and r.get('mercmode_rotate_requested') is True and 0<=now-r.get('ended',0)<=900
           and isinstance(r.get('mercmode_last_round'),dict)]
@@ -113,7 +125,7 @@ def rotation_predecessor(store, worker, now):
     row=max(rows,key=lambda r:r['ended']);receipt=row['mercmode_last_round']
     if not re.fullmatch('[a-f0-9]{32}',str(receipt.get('round_id',''))):return None
     return {'session_id':row['session_id'],'game_id':row['game_id'],'round_id':receipt['round_id'],
-            'ended':row['ended'],'worker_id':row['worker_id']}
+            'ended':row['ended'],'worker_id':worker['id'],'source_worker_id':row['worker_id']}
 
 
 def link_rotation(store, run, successor, now):
@@ -131,13 +143,18 @@ def link_rotation(store, run, successor, now):
     if _launch_session(store,run.get('job'),[successor],worker_id=run.get('worker_id'),game_id=run.get('game_id')) is None:
         return False
     sid=successor.get('session_id','');old=store.get('session',prior.get('session_id')) or {}
+    source_worker=prior.get('source_worker_id',prior['worker_id'])
+    if not _same_host_worker(store,source_worker,{'id':run['worker_id'],'name':run['worker']}) \
+            or not str(prior.get('session_id','')).startswith(source_worker+'-'):
+        return False
     if old.get('state')!='ended' or old.get('game_id')!=prior.get('game_id') or old.get('replaced_by') \
             or successor.get('state')!='running' or successor.get('game_id')!=run.get('game_id') \
             or not sid.startswith(run['worker_id']+'-'):
         return False
     # The caller has already resolved the exact launch job with _launch_session.
     receipt={'v':1,'source':'native_terminal_reader','round_id':prior['round_id'],
-             'worker_id':run['worker_id'],'from_game':old['game_id'],'to_game':successor['game_id'],
+             'worker_id':run['worker_id'],'source_worker_id':source_worker,
+             'from_game':old['game_id'],'to_game':successor['game_id'],
              'successor_session_id':sid,'at':now}
     store.put('session',prior['session_id'],old|{'replaced_by':sid,'mercmode_rotation':receipt})
     return True

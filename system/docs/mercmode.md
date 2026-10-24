@@ -10,6 +10,8 @@ autoplay job; it issues no second controller or launch. Human and co-op sessions
 After a native terminal round, the scheduler links the ended session to its exact accepted
 successor launch. Gameplay PiP and the independent Mercenaries map viewer follow that chain
 across titles. A different running game without this lineage is never selected automatically.
+After a service restart, this chain may resume only through the control plane's registered
+worker aliases for that same named PC and the original recent native terminal receipt.
 
 The panel now includes an edition-by-edition coverage inventory from
 `gbox/mercs/research_profiles.py`: RE3 Mad Jackal, RE4 classic/VR/remake,

@@ -5,7 +5,8 @@
     const r=from?.mercmode_rotation;
     return r?.v===1&&r.source==='native_terminal_reader'&&/^[a-f0-9]{32}$/.test(r.round_id||'')
       &&typeof r.worker_id==='string'&&r.worker_id.length>0&&typeof from?.session_id==='string'&&typeof to?.session_id==='string'
-      &&from.session_id.startsWith(r.worker_id+'-')&&to.session_id.startsWith(r.worker_id+'-')
+      &&typeof (r.source_worker_id??r.worker_id)==='string'&&(r.source_worker_id??r.worker_id).length>0
+      &&from.session_id.startsWith((r.source_worker_id??r.worker_id)+'-')&&to.session_id.startsWith(r.worker_id+'-')
       &&r.from_game===from.game_id&&r.to_game===to.game_id&&r.successor_session_id===to.session_id;
   }
   async function replacement(sid,choices,read,current=()=>true,expectedGame=null){

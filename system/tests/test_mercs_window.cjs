@@ -103,6 +103,9 @@ test('MercMode follows a different title only with its native terminal rotation 
     assert.equal(await check({...receipt,...patch}),null);
   assert.equal(await check(undefined),null);
   assert.equal(viewer.rotation({},null),false);
+  const restarted={...live,session_id:'new-worker-session'};
+  const resumed={...from,mercmode_rotation:{...receipt,source_worker_id:'worker',worker_id:'new-worker',successor_session_id:restarted.session_id}};
+  assert.equal(viewer.rotation(resumed,restarted),true);
 });
 
 test('replacement refuses cycles, wrong game, unknown lineage and arbitrary same-game adoption',async()=>{
