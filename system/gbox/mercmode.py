@@ -22,7 +22,10 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
 # one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
 WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, worker_id, state: prelaunch|parked, at}}
 NEXT = 'mercmode_next'          # host -> the pick made ahead of the round's end (prelaunch), honoured at the switch
-PRELAUNCH_S = 30.0              # seconds left on the round clock when the next title starts loading in the background
+PRELAUNCH_S = 3600.0            # seconds left on the round clock when the next title starts loading in the background:
+                                # any - it loads while the title's last round plays (operator 2026-10-24: "precaching of
+                                # the next rom during the playing of the current rom"; 30 s left a five-minute RE4 boot)
+EXTRA_ROUNDS_MAX = 3            # rounds the playing title adds while the next one is still loading, then a cold switch
 WARM_MAX = 2                    # keep_warm upper bound (three titles at most: the playing one plus two waiting)
 WARM_FEATURE = 'mercmode_warm_launch'   # worker feature: launch_game keep_sessions/warm and session_op pause warm
 WARM_MIN_FREE_BYTES = 8 * 1024**3       # memory guard: an extra emulator needs this much free RAM on the host ...
