@@ -46,6 +46,83 @@ def settings(store, host):
     return normalize(store.get(SETTING, host) or {})
 
 
+def adopt_current(store, worker, session, telemetry, *, now=None):
+    """Explicit operator adoption of this exact already-running solo bot.
+
+    No controller input, stop or launch. A human session, stale telemetry or a
+    foreign job cannot become a scheduler-owned run through this operation.
+    """
+    from .screensaver import STATE
+    now=time.time() if now is None else now
+    sid=session.get('session_id','');wid=worker.get('id');cfg=settings(store,worker.get('name'))
+    if not cfg['enabled'] or not worker.get('online') or worker.get('federation') \
+            or session.get('state')!='running' or not wid or not sid.startswith(wid+'-'):
+        raise ValueError('An enabled native host and its exact running session are required')
+    stats=telemetry.get('stats') or {};age=telemetry.get('age_s')
+    if telemetry.get('running') is not True or type(age) not in (int,float) or not 0<=age<=8 \
+            or stats.get('source_session_id')!=sid or stats.get('team_role')!='solo_p1' \
+            or stats.get('screen')!='playing':
+        raise ValueError('Fresh exact-session solo autobot gameplay is required')
+    jid=stats.get('source_autoplay_job_id');job=store.get('job',jid) or {}
+    if job.get('tool')!='autoplay' or job.get('state') not in ('running','assigned','succeeded') \
+            or job.get('worker_id')!=wid or job.get('require_worker')!=wid \
+            or (job.get('input') or {}).get('session_id')!=sid or (job.get('input') or {}).get('op')!='start':
+        raise ValueError('The active bot does not match its accepted native worker job')
+    title=next((t for t,r in TITLES.items() if session.get('game_id') in r['game_ids'] and r['playable']),None)
+    if title not in cfg['titles']:
+        raise ValueError('This verified title is not selected for MercMode')
+    old=store.get(STATE,worker['name'])
+    if old:
+        if old.get('session_id')==sid and old.get('mercmode'):return old
+        raise ValueError('The host already has a different scheduler-owned run')
+    run={'worker':worker['name'],'worker_id':wid,'session_id':sid,'game_id':session['game_id'],
+         'title':session.get('title') or TITLES[title]['name'],'phase':'playing','started':now,
+         'playing_since':now,'autoplay_job':jid,'adopted_existing_solo':True,
+         'mercmode':{'title':title,'map_id':TITLES[title]['map_id'],'rounds_per_title':cfg['rounds_per_title']}}
+    store.put(STATE,worker['name'],run)
+    return run
+
+
+def rotation_predecessor(store, worker, now):
+    from .screensaver import LOG
+    rows=[r for r in store.all(LOG) if r.get('worker_id')==worker.get('id')
+          and r.get('why')=='verified native round boundary: next MercMode title'
+          and r.get('mercmode_rotate_requested') is True and 0<=now-r.get('ended',0)<=900
+          and isinstance(r.get('mercmode_last_round'),dict)]
+    if not rows:return None
+    row=max(rows,key=lambda r:r['ended']);receipt=row['mercmode_last_round']
+    if not re.fullmatch('[a-f0-9]{32}',str(receipt.get('round_id',''))):return None
+    return {'session_id':row['session_id'],'game_id':row['game_id'],'round_id':receipt['round_id'],
+            'ended':row['ended'],'worker_id':row['worker_id']}
+
+
+def link_rotation(store, run, successor, now):
+    """Only the scheduler's accepted launch may extend a watched MercMode chain."""
+    prior=run.get('mercmode_predecessor')
+    if not isinstance(prior,dict) or not run.get('mercmode') or run.get('worker_id')!=prior.get('worker_id') \
+            or not 0<=now-prior.get('ended',0)<=900:
+        return False
+    from .screensaver import _launch_session
+    job=store.get('job',run.get('job')) or {}
+    if job.get('tool')!='launch_game' or job.get('state')!='succeeded' \
+            or job.get('worker_id')!=run.get('worker_id') or job.get('require_worker')!=run.get('worker_id') \
+            or ((job.get('input') or {}).get('game') or {}).get('game_id')!=run.get('game_id'):
+        return False
+    if _launch_session(store,run.get('job'),[successor],worker_id=run.get('worker_id'),game_id=run.get('game_id')) is None:
+        return False
+    sid=successor.get('session_id','');old=store.get('session',prior.get('session_id')) or {}
+    if old.get('state')!='ended' or old.get('game_id')!=prior.get('game_id') or old.get('replaced_by') \
+            or successor.get('state')!='running' or successor.get('game_id')!=run.get('game_id') \
+            or not sid.startswith(run['worker_id']+'-'):
+        return False
+    # The caller has already resolved the exact launch job with _launch_session.
+    receipt={'v':1,'source':'native_terminal_reader','round_id':prior['round_id'],
+             'worker_id':run['worker_id'],'from_game':old['game_id'],'to_game':successor['game_id'],
+             'successor_session_id':sid,'at':now}
+    store.put('session',prior['session_id'],old|{'replaced_by':sid,'mercmode_rotation':receipt})
+    return True
+
+
 def configure(store, host, patch):
     if not isinstance(host, str) or not 1 <= len(host) <= 120:
         raise ValueError('An exact worker name is required')

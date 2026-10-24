@@ -11,6 +11,17 @@ test('opening the panel only reads status',async()=>{
  const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
  await panel.ready;assert.deepEqual(calls,[['/api/mercmode',undefined]]);panel.dispose();assert.equal(listeners.size,0);
 });
+test('operator can adopt the exact displayed solo bot without submitting a new launch',async()=>{
+ const calls=[],listeners=new Map(),host={dataset:{host:'lilspark'}},sid='worker-current';
+ const button={dataset:{adopt:sid},closest:()=>host,hasAttribute:key=>key==='data-adopt'};
+ const root={innerHTML:'',addEventListener:(name,fn)=>listeners.set(name,fn),removeEventListener:name=>listeners.delete(name)};
+ const data={hosts:[{name:'lilspark',id:'worker',online:true,settings:{enabled:true},adoptable_solo_session:sid,titles:[]}]};
+ const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return data;}});
+ await panel.ready;assert.match(root.innerHTML,/Use current solo bot/);
+ await listeners.get('click')({target:{closest:()=>button}});
+ assert.deepEqual(calls,[['/api/mercmode',undefined],['/api/mercmode/adopt',{host:'lilspark',session_id:sid}],['/api/mercmode',undefined]]);
+ panel.dispose();
+});
 test('a paired PC distinguishes its observed settings from pending central requests',()=>{
  const html=M.render({hosts:[{name:'paired',id:'w1',online:true,scheduler_owner:'local',
    settings:{enabled:false,titles:['re5']},desired_settings:{enabled:true},command:{job:'j',state:'queued'},titles:[]}]});

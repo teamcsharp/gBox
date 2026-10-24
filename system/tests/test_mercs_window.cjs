@@ -91,6 +91,20 @@ test('replacement follows only authoritative same-game links to a listed live se
   assert.deepEqual(calls,['/api/sessions?include_ended=true&limit=60']);
 });
 
+test('MercMode follows a different title only with its native terminal rotation receipt',async()=>{
+  const from={session_id:'worker-old',game_id:'RE5',state:'ended',replaced_by:'worker-new'};
+  const live={session_id:'worker-new',game_id:'RE4',state:'running'};
+  const receipt={v:1,source:'native_terminal_reader',round_id:'a'.repeat(32),worker_id:'worker',
+    from_game:'RE5',to_game:'RE4',successor_session_id:live.session_id};
+  const check=r=>viewer.replacement(from.session_id,[live],async()=>[{...from,mercmode_rotation:r}],()=>true,'RE5');
+  assert.equal(await check(receipt),live);
+  for(const patch of [{round_id:'invalid'},{worker_id:'foreign'},{source:'telemetry'},
+      {to_game:'RE6'},{from_game:'RE6'},{successor_session_id:'other'}])
+    assert.equal(await check({...receipt,...patch}),null);
+  assert.equal(await check(undefined),null);
+  assert.equal(viewer.rotation({},null),false);
+});
+
 test('replacement refuses cycles, wrong game, unknown lineage and arbitrary same-game adoption',async()=>{
   const live={session_id:'new-session',game_id:'RE5',state:'running'},old={session_id:sid,game_id:'RE5',state:'ended'};
   const check=record=>viewer.replacement(sid,[live],async()=>[record]);

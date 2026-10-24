@@ -55,6 +55,80 @@ def boundary(run,now,**witness):
                        'tally_ready':True,'timer':0,'game_routine':3,'room':0x400,**witness}}
 
 
+def adoptable():
+    store,w,saver,calls,now,tick=rig()
+    M.configure(store,w['name'],{'enabled':True})
+    sid='w1-current'
+    session={'session_id':sid,'game_id':RE5,'state':'running'}
+    job={'id':'active','tool':'autoplay','state':'succeeded','worker_id':w['id'],
+         'require_worker':w['id'],'input':{'op':'start','session_id':sid}}
+    store.put('job',job['id'],job)
+    telemetry={'running':True,'age_s':1,'stats':{'source_session_id':sid,
+        'source_autoplay_job_id':job['id'],'team_role':'solo_p1','screen':'playing'}}
+    return store,w,session,telemetry,now
+
+
+def test_adoption_keeps_exact_current_solo_job_without_launch_or_input():
+    store,w,session,telemetry,now=adoptable()
+    run=M.adopt_current(store,w,session,telemetry,now=now[0])
+    assert run['session_id']==session['session_id'] and run['autoplay_job']=='active'
+    assert run['adopted_existing_solo'] and run['mercmode']['title']=='re5'
+    assert M.adopt_current(store,w,session,telemetry,now=now[0]+1)==run
+    assert len(store.all('job'))==1
+
+
+@pytest.mark.parametrize('change',[{'running':False},{'age_s':9},{'age_s':float('nan')},
+    {'stats':{'team_role':'observe_human'}},{'stats':{'source_session_id':'other'}},
+    {'stats':{'source_autoplay_job_id':'foreign'}},{'stats':{'screen':'dead'}}])
+def test_adoption_refuses_stale_human_or_foreign_runtime(change):
+    store,w,session,telemetry,now=adoptable()
+    if 'stats' in change:change={'stats':telemetry['stats']|change['stats']}
+    with pytest.raises(ValueError):M.adopt_current(store,w,session,telemetry|change,now=now[0])
+    assert not store.get(S.STATE,w['name'])
+
+
+@pytest.mark.parametrize('target,patch',[('worker',{'federation':{'authority':'other'}}),
+    ('worker',{'online':False}),('session',{'session_id':'other-current'}),
+    ('session',{'state':'ended'}),('job',{'worker_id':'other'}),('job',{'state':'failed'})])
+def test_adoption_requires_native_host_and_accepted_job(target,patch):
+    store,w,session,telemetry,now=adoptable()
+    if target=='worker':w.update(patch)
+    elif target=='session':session.update(patch)
+    else:store.put('job','active',store.get('job','active')|patch)
+    with pytest.raises(ValueError):M.adopt_current(store,w,session,telemetry,now=now[0])
+
+
+def test_only_verified_terminal_and_exact_successor_launch_link_title_rotation():
+    store,w,saver,calls,now,tick,run,job=playing()
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested']
+    tick(1)
+    old=store.get('session',run['session_id'])
+    store.put('session',run['session_id'],old|{'state':'ended'})
+    tick(1)
+    launch=calls[-1];newrun=store.get(S.STATE,w['name'])
+    live={'session_id':w['id']+'-'+launch['id'],'game_id':newrun['game_id'],'state':'running'}
+    assert newrun['mercmode_predecessor']['round_id']=='a'*32
+    assert not M.link_rotation(store,newrun,live,now[0]),'queued launch cannot create lineage'
+    store.put('session',live['session_id'],live)
+    tick(1)                            # registration may precede launch completion
+    assert store.get('session',run['session_id']).get('replaced_by') is None
+    store.put('job',launch['id'],launch|{'state':'succeeded','worker_id':w['id']})
+    assert not M.link_rotation(store,newrun,live|{'session_id':'other-'+launch['id']},now[0])
+    tick(1)                            # a later starting-phase tick links the accepted launch
+    linked=store.get('session',run['session_id'])
+    assert linked['replaced_by']==live['session_id']
+    assert linked['mercmode_rotation']['to_game']!=linked['game_id']
+    assert not M.link_rotation(store,newrun,live,now[0]),'never replace an existing successor'
+
+
+def test_no_operator_handover_or_plain_stop_becomes_rotation_lineage():
+    store,w,*_=rig()
+    for why in ('handed to the operator','screensaver turned off','the game ended'):
+        store.put(S.LOG,'old',{'worker_id':w['id'],'why':why,'ended':10000,
+            'mercmode_rotate_requested':True,'mercmode_last_round':{'round_id':'a'*32}})
+        assert M.rotation_predecessor(store,w,10001) is None
+
+
 def test_hosts_are_independent_and_unknown_config_is_rejected():
     store=Store();M.configure(store,'lilspark',{'enabled':True,'titles':['re5']})
     assert M.settings(store,'i9-NUC')['enabled'] is False

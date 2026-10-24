@@ -368,7 +368,8 @@ class Screensaver:
         label = build and (build.get("display_name") or build.get("label") or build["name"])
         self.store.put(STATE, w["name"], {"worker": w["name"], "worker_id": w["id"], "phase": "launching", "job": jid,
                                           "game_id": g["game_id"], "title": g["title"], "started": now,
-                                          **({'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
+                                          **({'mercmode_predecessor':mercmode.rotation_predecessor(self.store,w,now),
+                                              'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
                                                'rounds_per_title': merc_cfg['rounds_per_title']}} if merc_pick else {}),
                                           **({"mod": build["name"], "build": label} if build else {})})
         return f"launching {g['title']}" + (f" ({label})" if build else "")
@@ -386,6 +387,9 @@ class Screensaver:
                                    worker_id=run['worker_id'], game_id=run['game_id'])
             if not sess:
                 return f"launching {run['title']}"
+            if run.get('mercmode'):
+                from . import mercmode
+                mercmode.link_rotation(self.store,run,sess,now)
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
             jumped = _jumped(sess)                       # booted into gameplay: autoplay starts in this tick
             run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
@@ -398,6 +402,12 @@ class Screensaver:
         live = any(s.get("session_id") == sid for s in running)
         if not live:
             return self._finish(w, run, now, run.get("yield") or "the game ended")
+        if run.get('mercmode_predecessor'):
+            # A native session can register just before its launch job completes.
+            # Retry the receipt link after that exact job is accepted as succeeded.
+            from . import mercmode
+            sess=next(s for s in running if s.get('session_id')==sid)
+            mercmode.link_rotation(self.store,run,sess,now)
         if run.get("handover"):                         # the operator came back: theirs now, it plays on until Stop
             self.store.put("slabel", sid, {"session_id": sid, "owner": "you", "ts": now,
                                            "label": f"{run['title']}: autoplay, handed over by the screensaver"})
@@ -566,7 +576,13 @@ class Screensaver:
             job=self.store.get('job',command.get('job')) if command.get('job') else None
             actual=observed.get('settings') or (dict(mercmode.DEFAULT) if _local_scheduler(w)
                 else mercmode.settings(self.store,w['name']))
+            candidate=next((s['session_id'] for s in self.store.running_sessions()
+                if s.get('session_id','').startswith(w['id']+'-')
+                and (t:=telemetry_get(s['session_id'])).get('running') is True
+                and (t.get('stats') or {}).get('team_role')=='solo_p1'
+                and (t.get('stats') or {}).get('screen')=='playing'),None) if not w.get('federation') else None
             hosts.append({'name':w['name'],'id':w['id'],'online':bool(w.get('online')),
+                'current_run':self.store.get(STATE,w['name']),'adoptable_solo_session':candidate,
                 'settings':actual,
                 'settings_source':'local_scheduler_observation' if observed else
                     'unobserved_local_scheduler' if _local_scheduler(w) else 'this_control_plane',
@@ -609,6 +625,11 @@ class MercModeSettings(BaseModel):
     enabled: bool | None = None
     titles: list[str] | None = None
     rounds_per_title: int | None = None
+
+
+class MercModeAdopt(BaseModel):
+    host: str
+    session_id: str
 
 
 class MercModeBoundary(BaseModel):
@@ -729,6 +750,18 @@ def install(app, store, config, auth, submit, workers, archive):
     @app.get('/api/mercmode')
     def mercmode_status(actor=Depends(auth)):
         return saver.status()['mercmode']
+
+    @app.post('/api/mercmode/adopt')
+    def mercmode_adopt(body: MercModeAdopt, actor=Depends(auth)):
+        from . import mercmode
+        with saver.lock:
+            worker=next((w for w in saver.workers() if w.get('name')==body.host),None)
+            session=store.get('session',body.session_id)
+            if not worker or not session:raise HTTPException(404,'Exact host/session unavailable')
+            try:run=mercmode.adopt_current(store,worker,session,telemetry_get(body.session_id))
+            except ValueError as exc:raise HTTPException(409,str(exc)) from None
+        store.audit(actor,'mercmode.adopt',body.session_id,{'host':body.host,'autoplay_job':run['autoplay_job']})
+        return {'adopted':True,'session_id':body.session_id,'host':body.host,'run':run}
 
     @app.post('/api/mercmode')
     def mercmode_settings(body: MercModeSettings, actor=Depends(auth)):

@@ -1,6 +1,13 @@
 (function(root){
   'use strict';
   const SID=/^[A-Za-z0-9_-]{1,96}$/;
+  function rotation(from,to){
+    const r=from?.mercmode_rotation;
+    return r?.v===1&&r.source==='native_terminal_reader'&&/^[a-f0-9]{32}$/.test(r.round_id||'')
+      &&typeof r.worker_id==='string'&&r.worker_id.length>0&&typeof from?.session_id==='string'&&typeof to?.session_id==='string'
+      &&from.session_id.startsWith(r.worker_id+'-')&&to.session_id.startsWith(r.worker_id+'-')
+      &&r.from_game===from.game_id&&r.to_game===to.game_id&&r.successor_session_id===to.session_id;
+  }
   async function replacement(sid,choices,read,current=()=>true,expectedGame=null){
     const valid=value=>typeof value==='string'&&SID.test(value),seen=new Set();
     if(!valid(sid)||!current())return null;
@@ -16,7 +23,9 @@
       if(game===null)game=row.game_id;
       if(row.game_id!==game||!valid(row.replaced_by)||seen.has(row.replaced_by))return null;
       const live=choices.find(item=>item.session_id===row.replaced_by&&item.state==='running'&&!item.stopping);
-      if(live)return live.game_id===game?live:null;
+      if(live)return live.game_id===game||rotation(row,live)?live:null;
+      const next=byId.get(row.replaced_by);
+      if(next&&next.game_id!==game){if(!rotation(row,next))return null;game=next.game_id;}
       sid=row.replaced_by;
     }
     return null;
@@ -62,5 +71,5 @@
     const timer=setTimer(()=>sessions(),5000);
     return {ready,sessions,adopt,dispose(){dead=true;revision++;clearTimer(timer);unsubscribe?.();map?.stop();tactical?.detach?.();review?.dispose();}};
   }
-  const api={mount,replacement};if(typeof module==='object'&&module.exports)module.exports=api;else{root.GBoxMercsWindow=api;const control=mount(root.document,root.mercsWindow);root.addEventListener('pagehide',()=>control.dispose(),{once:true});}
+  const api={mount,replacement,rotation};if(typeof module==='object'&&module.exports)module.exports=api;else{root.GBoxMercsWindow=api;const control=mount(root.document,root.mercsWindow);root.addEventListener('pagehide',()=>control.dispose(),{once:true});}
 })(typeof window!=='undefined'?window:globalThis);

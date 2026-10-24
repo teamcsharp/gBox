@@ -1,5 +1,12 @@
 # MercMode
 
+For an already playing solo autobot, enable the host and choose **Use current solo bot**.
+The authenticated adoption endpoint checks fresh gameplay telemetry and the exact accepted
+autoplay job; it issues no second controller or launch. Human and co-op sessions cannot be adopted.
+After a native terminal round, the scheduler links the ended session to its exact accepted
+successor launch. Gameplay PiP and the independent Mercenaries map viewer follow that chain
+across titles. A different running game without this lineage is never selected automatically.
+
 The panel now includes an edition-by-edition coverage inventory from
 `gbox/mercs/research_profiles.py`: RE3 Mad Jackal, RE4 classic/VR/remake,
 RE5 original/Reunion/United/No Mercy, RE6 original/No Mercy, Mercenaries 3D,
