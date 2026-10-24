@@ -128,7 +128,16 @@
       + `</select></label><p class="re5-mod-sub">${ESC(selectedGun
         ? `${selectedGun.weapon}: ${selectedGun.equipped ? "equipped" : selectedGun.available ? "saved; waiting for gunplay" : "saved; waiting for this gun to be available"}. Kept for this session and restored after mines or egg mode.`
         : selectCap.available ? "Choose a gun or randomize. The choice stays with this session and returns after mines or egg mode."
-          : selectCap.reason || "Persistent gun selection is unavailable on this worker.")}</p></fieldset>`;
+          : selectCap.reason || "Persistent gun selection is unavailable on this worker.")}</p>`
+      + (() => {                                    // any weapon in the game as the main gun (or the only one), next round
+        const all = Array.isArray(state.status?.all_weapons) ? state.status.all_weapons : [];
+        const ov = state.status?.weapon_override;
+        return `<label>Any weapon (replaces the main gun)<select data-re5-any-weapon aria-label="Any weapon">`
+          + `<option value="auto" ${!ov ? "selected" : ""}>The game's loadout</option>`
+          + all.map(w => `<option value="${w.item}" ${ov?.item === w.item ? "selected" : ""}>${ESC(w.weapon)}</option>`).join("")
+          + `</select></label><label><input type="checkbox" data-re5-any-only ${ov?.only ? "checked" : ""}> Only weapon (every gun slot, e.g. bow-only rounds)</label>`
+          + `<p class="re5-mod-sub">${ESC(ov ? `${ov.weapon}${ov.only ? " as the only weapon" : " as the main gun"} from the next round.` : "Pick any RE5 weapon; it is given to every character from the next round.")}</p>`;
+      })() + `</fieldset>`;
     const mine = state.status?.mine_settings, mineCap = capability(state.status, "mines");
     const eggOn = state.status?.rotten_egg_only === true;
     const eggCap = capability(state.status, "rotten_egg_only");
@@ -297,6 +306,19 @@
         if (!state.pending && !state.weaponPending) state.stale = true;
       } finally { state.busy = false; paint(); }
     }
+    async function setAnyWeapon(item, only) {
+      if (state.busy || state.stale || disposed) return;
+      state.busy = true; state.error = false; state.message = "Writing the next round's loadout…"; paint();
+      try {
+        await preflight();
+        const result = await job("weapon_override", item === null ? { on: false } : { weapon: item, only });
+        if (result.verified !== true) throw new Error(result.reason || result.note || "The game did not verify the loadout.");
+        await read();
+        state.message = item === null ? "The game's loadout from the next round."
+          : `${result.weapon_override?.weapon || "Weapon"}${only ? " as the only weapon" : " as the main gun"} from the next round.`;
+      } catch (error) { state.error = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
     async function setMines(interval, enabled, only) {
       if (state.busy || state.pending || state.stale || disposed || !capability(state.status, "mines").available) return;
       interval = Number(interval);
@@ -399,7 +421,7 @@
       } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMultiplier, setMines, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    return { refresh, change, setMultiplier, setMines, setAnyWeapon, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -417,6 +439,12 @@
     const ctl = create({ ...options, teamControls: true, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
+      if (event.target.matches?.("[data-re5-any-weapon], [data-re5-any-only]")) {
+        const root_ = event.target.closest("fieldset") || document;
+        const pick = root_.querySelector("[data-re5-any-weapon]")?.value, only = !!root_.querySelector("[data-re5-any-only]")?.checked;
+        if (pick) ctl.setAnyWeapon(pick === "auto" ? null : Number(pick), only);
+        return;
+      }
       if (event.target.matches?.("[data-re5-weapon]")) {
         if (!event.target.disabled && event.target.value !== "") ctl.change("select_weapon", event.target.value === "auto" ? null : Number(event.target.value));
         return;

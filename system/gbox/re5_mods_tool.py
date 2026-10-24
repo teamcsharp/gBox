@@ -284,6 +284,10 @@ class RE5:
             st['capabilities']['select_weapon']=re5_controls.capability(self.orig)
             st['available_weapons']=re5_controls.available(self.orig)
             st['preferred_weapon']=re5_controls.preference_status(self.orig)
+            from .mercs.titles import re5_weapons
+            st['all_weapons']=[{'item':k,'weapon':w.name,'family':w.family} for k,w in sorted(re5_weapons.WEAPONS.items())]
+            st['weapon_override']=self.orig.get('weapon_override')
+            st['capabilities']['weapon_override']={'available':True,'reason':'Loadout template; takes effect next round.'}
             st["capabilities"]["mines"] = {"available": True, "reason": "Mine cadence; loadout takes effect next round."}
             st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
             st['capabilities']['rotten_egg_only']={'available':True,
@@ -958,6 +962,9 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
     if not on:
         return {"loadout": "the game's", "verified": g.wr(TEMPLATE, bytes(_with_spray(g, bytearray(t0))))}
+    override = g.orig.get("weapon_override")
+    if override:                                             # the operator's chosen weapon beats a random draw
+        return weapon_override(g, override["item"], override.get("only", False))
     pool = [int(str(w), 0) if isinstance(w, str) and str(w).startswith("0x") else w for w in (weapons or [])]
     pool = [w for w in pool if w in POWERFUL or w in REPLACE_WITH_MAGNUM] or list(POWERFUL)
     rng = random.Random(seed)
@@ -978,6 +985,38 @@ def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     named = {b: [POWERFUL[w] for w in ws] for b, ws in picks.items()}
     return {"loadout": "random powerful campaign weapons", "verified": ok, "blocks": len(picks),
             "barry": named.get(24), "chris_heavy_metal": named.get(18), "picks": named,
+            "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def weapon_override(g: RE5, weapon=None, only: bool = False) -> dict:
+    """Any RE5 weapon as every character's main gun (only=True: every gun slot, e.g. longbow-only rounds), written into
+    the Mercenaries loadout templates the game copies into the inventory at the next round start; weapon=None restores
+    the game's loadout (operator 2026-10-24: "Allow me choose any weapon from the game in general and replace the main
+    weapon equipped with it" / "rounds where everyone is using a bow as the only weapon and they are rapid firing it").
+    Kept across rounds: loadout() honours it instead of drawing random guns."""
+    from .mercs.titles import re5_weapons
+    verify_main_presets(g)
+    t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
+    if weapon in (None, "", "auto"):
+        g.orig.pop("weapon_override", None)
+        return {"weapon_override": None, "verified": g.wr(TEMPLATE, bytes(_with_spray(g, bytearray(t0)))),
+                "note": "the game's loadout from the next round start"}
+    item = int(str(weapon), 0) if isinstance(weapon, str) else int(weapon)
+    item &= 0xFF
+    w = re5_weapons.WEAPONS.get(item)
+    if w is None:
+        raise ValueError(f"unknown RE5 weapon {item:#x}")
+    t = bytearray(t0)
+    changed = 0
+    for off, idw, _, _, in_hand, _ in template_records(t0):
+        if idw >> 8 != 1 or idw in KNIFE_IDS or not (only or in_hand):
+            continue
+        struct.pack_into(">I", t, off, 0x100 | item)
+        struct.pack_into(">I", t, off + 7 * 4, 0)          # upgrade levels reset: none indexes past the new table
+        changed += 1
+    ok = g.wr(TEMPLATE, bytes(_with_spray(g, t)))
+    g.orig["weapon_override"] = {"item": item, "weapon": w.name, "only": bool(only)}
+    return {"weapon_override": g.orig["weapon_override"], "records": changed, "verified": ok,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
 
 
@@ -1251,6 +1290,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
     elif op == "loadout":
         res.update(loadout(g, extra.get("weapons"), extra.get("seed"), on))
+    elif op == "weapon_override":
+        res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
     elif op == "replace_rockets":
         res.update(replace_rockets(g, extra.get("seed")))
     elif op == "replace_long_guns":
@@ -1301,6 +1342,7 @@ class RE5ModsIn(BaseModel):
     character: str = "Chris (Heavy Metal)"
     stage: int = 0
     weapon: int | None = None      # existing loaded quick-slot gun; selection is retained for this session
+    only: bool = False             # weapon_override: the chosen weapon in every gun slot (e.g. longbow-only rounds)
 
 
 class RE5ModsOut(BaseModel):
@@ -1320,4 +1362,4 @@ def re5_mods(inp: RE5ModsIn, ctx):
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
     return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
-                           mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon)}
+                           mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon,only=inp.only)}
