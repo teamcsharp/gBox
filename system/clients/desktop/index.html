@@ -1252,6 +1252,7 @@ window.taskVizCreate = canvas => {
 <script src="compact-game.js"></script>
 <script src="pip-media.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
+<script src="../web/viz/re4-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -4108,15 +4109,16 @@ async function pipModifiers(m, opening) {
     if (!sid) { m.querySelector('[data-pip-modifiers]').textContent = 'Select a running game to adjust modifiers.'; return; }
     let session = await sessionById(sid);
     if (m.opening !== opening) return;
-    if (!GBoxRE5Modifiers.panelEligible(session)) {
+    if (!pipPanel(session)) {
       const history = await gbox.api('/api/sessions?limit=200');
       if (!history.ok) throw new Error(history.error || 'Session history unavailable');
       session = GBoxRE5Modifiers.replacementSession(sid, history.data, session, GBoxSessionContinuity.resolve);
     }
     if (m.opening !== opening) return;
-    if (!GBoxRE5Modifiers.panelEligible(session)) { m.querySelector('[data-pip-modifiers]').textContent = ''; return; }
-    m.querySelector('[data-pip-modifiers]').innerHTML = GBoxRE5Modifiers.sectionHTML();
-    m.modifiers = GBoxRE5Modifiers.mount(m.querySelector('.re5-modifiers'), { session,
+    const panel = pipPanel(session);
+    if (!panel) { m.querySelector('[data-pip-modifiers]').textContent = ''; return; }
+    m.querySelector('[data-pip-modifiers]').innerHTML = panel.module.sectionHTML();
+    m.modifiers = panel.module.mount(m.querySelector(panel.selector), { session,
       api: async (path, body, method) => {
         const result = await gbox.api(path, body, method);
         if (!result.ok) throw new Error(result.error || 'Modifier request failed');
@@ -4125,6 +4127,12 @@ async function pipModifiers(m, opening) {
   } catch (error) {
     if (m.opening === opening) m.querySelector('[data-pip-modifiers]').textContent = error.message;
   }
+}
+// the mod panel this session gets: RE5 / RE6 (re5-modifiers.js) or RE4 GameCube on Dolphin (re4-modifiers.js)
+function pipPanel(session) {
+  if (GBoxRE5Modifiers.panelEligible(session)) return { module: GBoxRE5Modifiers, selector: '.re5-modifiers' };
+  if (globalThis.GBoxRE4Modifiers?.eligible(session)) return { module: GBoxRE4Modifiers, selector: '.re4-modifiers' };
+  return null;
 }
 function pipMenu(x, y) {
   let m = $("#pipmenu");
