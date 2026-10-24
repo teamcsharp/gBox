@@ -555,3 +555,105 @@ def test_a_demo_plays_without_the_operators_card_when_it_is_held_or_none_is_sele
     operator = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
     with pytest.raises(RuntimeError, match='another session'):                              # unchanged, still refused
         S.checkout('w1-job5', SimpleNamespace(name='retroarch'), game, operator)
+
+
+def test_restart_relaunch_takes_the_card_over_from_the_session_it_replaces(tmp_path):
+    """#2824: session_reset relaunches with keep_session while the old copy still runs; the card must move, not 409."""
+    client, store, cfg = setup(tmp_path)
+    card = create(client); url = '/api/memory-cards/' + card['id']
+    store.put('job', 'oldjob', {'state': 'running'})
+    store.put('session', 'w1-oldjob', {'state': 'running', 'worker_id': 'w1'})
+    assert client.post(url + '/lease', json=owner(suffix='oldjob')).status_code == 200
+    assert client.post(url + '/lease', json=owner(suffix='newjob')).status_code == 409                       # plain: refused
+    assert client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-other'}).status_code == 409
+    assert client.post(url + '/lease', json=owner('w2', 'newjob') | {'takeover_from': 'w1-oldjob'}).status_code == 409
+    moved = client.post(url + '/lease', json=owner(suffix='newjob') | {'takeover_from': 'w1-oldjob'})
+    assert moved.status_code == 200
+    assert moved.json()['lease']['owner'] == 'w1-newjob'                                                    # the card really moved
+    late = owner(suffix='oldjob') | {'base_revision': 1, 'data_b64': base64.b64encode(client.get(url + '/data').content).decode()}
+    assert client.post(url + '/sync', json=late).status_code == 409                                         # old copy no longer owns it
+
+
+def _restart_fixture(tmp_path, monkeypatch, sync_errors):
+    from gbox import memory_card_sessions as S
+    raw = N.blank('dreamcast'); cid = 'e' * 32
+    card = {'id': cid, 'name': 'c', 'revision': 2, 'sha256': hashlib.sha256(raw).hexdigest(), 'capacity': N.describe(raw, 'dreamcast')}
+    calls = []
+    def respond(ctx, path, body=None, raw_=False, raw=False):
+        calls.append((path, body))
+        if path.startswith('/api/memory-cards?'):
+            return {'selection': {'A1': cid}, 'cards': [card]}
+        if path.endswith('/lease'):
+            return card
+        if '/data?' in path:
+            return N.blank('dreamcast')
+        raise AssertionError(path)
+    monkeypatch.setattr(S, 'api', respond)
+    synced = []
+    monkeypatch.setattr(S, 'sync', lambda context, ctx, slot=None, final=False: calls.append(('sync', context['session_id'])) or synced.append(1) or sync_errors)
+    monkeypatch.setitem(S._contexts, 'w1-old', {'game_id': 'pso-dc', 'session_id': 'w1-old', 'slots': {}})
+    ctx = SimpleNamespace(server='http://spark', worker='w1', config=SimpleNamespace(data_dir=tmp_path))
+    return S, ctx, calls, synced
+
+
+def _leases(calls):
+    return [b for p, b in calls if isinstance(p, str) and p.endswith('/lease')]
+
+
+def test_checkout_syncs_the_old_copy_first_then_sends_takeover_only_for_the_same_game(tmp_path, monkeypatch):
+    S, ctx, calls, synced = _restart_fixture(tmp_path, monkeypatch, [])
+    ad = SimpleNamespace(name='retroarch')
+    S.checkout('w1-new', ad, {'platform': 'dreamcast', 'game_id': 'pso-dc'}, ctx, keep='w1-old')
+    order = [c[0] if c[0] == 'sync' else 'lease' for c in calls if c[0] == 'sync' or c[0].endswith('/lease')]
+    assert order == ['sync', 'lease']
+    assert _leases(calls)[0]['takeover_from'] == 'w1-old'
+    # a different game, an unknown session, or no keep: plain lease, no sync
+    for keep, game_id in (('w1-old', 'other'), ('w1-gone', 'pso-dc'), ('', 'pso-dc')):
+        calls.clear(); synced.clear()
+        try:
+            S.checkout('w1-new2', ad, {'platform': 'dreamcast', 'game_id': game_id}, ctx, keep=keep)
+        except Exception:
+            pass
+        assert not synced
+        assert all('takeover_from' not in b for b in _leases(calls))
+
+
+def test_checkout_refuses_takeover_when_the_old_copys_save_cannot_be_synced(tmp_path, monkeypatch):
+    S, ctx, calls, synced = _restart_fixture(tmp_path, monkeypatch, ['Network interrupted'])
+    with pytest.raises(RuntimeError, match='local save is kept'):
+        S.checkout('w1-new', SimpleNamespace(name='retroarch'), {'platform': 'dreamcast', 'game_id': 'pso-dc'}, ctx, keep='w1-old')
+    assert not _leases(calls)                      # the card was never leased away from the old copy
+
+
+def test_launch_game_passes_keep_session_to_checkout(tmp_path, monkeypatch):
+    """Drive the real tools._launch_game with a fake adapter; the keep value must reach checkout()."""
+    from gbox import tools, adapters, memory_card_sessions as S
+    from gbox.config import Config, Library
+    from gbox.models import CatalogEntry
+    from gbox.registry import Ctx
+
+    class FakeAd(adapters.Adapter):
+        name = 'fake'; supported = {'launch_game', 'stop_game'}
+        def __init__(self, config): self.config = config
+        def launch_game(self, rom): return {'pid': None}
+        def stop_game(self): return {}
+
+    cfg = Config(data_dir=tmp_path / 'd', cache_dir=tmp_path / 'c')
+    share = tmp_path / 'share'; share.mkdir()
+    (share / 'g.iso').write_bytes(b'GRSE69' + bytes(64))
+    cfg.libraries.append(Library(id='lib', kind='files', paths={'windows': str(share), 'linux': str(share)}))
+    monkeypatch.setattr(adapters, 'for_game', lambda *a, **k: FakeAd(cfg))
+    monkeypatch.setattr(tools, 'SESSIONS', {})
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    seen = []
+    monkeypatch.setattr(tools, '_close_previous_games', lambda ctx, keep='': [])
+    monkeypatch.setattr(S, 'recover_pending', lambda ctx: None)
+    monkeypatch.setattr(S, 'checkout', lambda sid, ad, game, ctx, operator_cards=False, keep='': seen.append((sid, keep)))
+    game = CatalogEntry(game_id='g', title='G', platform='gamecube', source_paths=['g.iso'], library='lib',
+                        rel_path='g.iso', hashes={}, size=70, format='iso', runtimes={}, profile_id='g')
+    try:
+        for keep in ('w1-old', ''):
+            tools._launch_game(tools.LaunchIn(game=game, keep_session=keep), Ctx(cfg, job_id='j' + (keep or 'x'), worker='w1'))
+    finally:
+        tools.SESSIONS.clear()
+    assert seen == [('w1-jw1-old', 'w1-old'), ('w1-jx', '')]

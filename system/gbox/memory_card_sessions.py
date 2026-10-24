@@ -56,7 +56,7 @@ def row_for(context,slot,card,path):
             'path':str(path),'capacity':card['capacity'],'sync_state':'synced','last_synced':time.time()}
 
 
-def owner(sid,ctx):return {'owner':sid,'worker_id':ctx.worker}
+def owner(sid,ctx,takeover=''):return {'owner':sid,'worker_id':ctx.worker}|({'takeover_from':takeover} if takeover else {})
 
 
 def import_file(sid,ad,game,ctx,slot,path):
@@ -72,7 +72,7 @@ def import_file(sid,ad,game,ctx,slot,path):
     return card
 
 
-def checkout(sid,ad,game,ctx,operator_cards=False):
+def checkout(sid,ad,game,ctx,operator_cards=False,keep=''):
     """Before launch, lease selected cloud revisions and stage exact local copies.
 
     Cloud cards are an enhancement, not a precondition: when the control plane is
@@ -91,7 +91,7 @@ def checkout(sid,ad,game,ctx,operator_cards=False):
     demo=bool(getattr(ctx,'agent_use',False))
     if demo and not operator_cards:return None
     try:
-        return _checkout(sid,ad,game,ctx,selected_only=demo)
+        return _checkout(sid,ad,game,ctx,selected_only=demo,keep=keep)
     except httpx.HTTPError as error:
         ad.memory_card_unavailable=f'{type(error).__name__}: {error}'
         print(f'gBox: cloud memory cards unavailable at launch ({ad.memory_card_unavailable}); playing from local cards', flush=True)
@@ -103,7 +103,7 @@ def checkout(sid,ad,game,ctx,operator_cards=False):
         return None
 
 
-def _checkout(sid,ad,game,ctx,selected_only=False):
+def _checkout(sid,ad,game,ctx,selected_only=False,keep=''):
     platform=game['platform'];listing=api(ctx,f'/api/memory-cards?platform={platform}&game_id={game["game_id"]}')
     selected=dict(listing['selection']);cards={r['id']:r for r in listing['cards']}
     warnings=[]
@@ -121,9 +121,14 @@ def _checkout(sid,ad,game,ctx,selected_only=False):
     context={'platform':platform,'work_dir':str(ctx.config.data_dir/'memory-cards'/'sessions'/sid),'slots':{},'session_id':sid,'worker_id':ctx.worker,'game_id':game['game_id'],'pending':{},'warnings':warnings}
     folder=Path(context['work_dir']);folder.mkdir(parents=True,exist_ok=True)
     acquired=[]
+    old=_contexts.get(keep) if keep and keep!=sid else None
+    if old and old.get('game_id')==game['game_id']:      # restart relaunch: bank the live copy's save, then take its card over
+        errors=sync(old,ctx)
+        if errors:raise RuntimeError('The running copy\'s memory card could not be saved to the cloud, so its card was not taken over (its local save is kept): '+errors[0][:200])
+    else:keep=''
     try:
         for slot,cid in selected.items():
-            card=api(ctx,f'/api/memory-cards/{cid}/lease',owner(sid,ctx))
+            card=api(ctx,f'/api/memory-cards/{cid}/lease',owner(sid,ctx,keep))
             acquired.append(cid)
             data=api(ctx,f'/api/memory-cards/{cid}/data?revision={card["revision"]}',raw=True)
             if hashlib.sha256(data).hexdigest()!=card['sha256'] or not native.describe(data,platform)['formatted']:raise RuntimeError('Cloud card download failed its native hash/format check')
