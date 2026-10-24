@@ -285,7 +285,8 @@ def host_preparation(store, worker):
     return saved | receipt | {'state':'checked','source':'accepted_worker_prepare_job','job':jid}
 
 
-def inventory(store, worker, cfg=None):
+def inventory(store, worker, cfg=None, sessions=None):
+    """sessions: store.all('session') when the caller already read it (one read for every host, not one per game)."""
     cfg = cfg or settings(store, worker['name'])
     rows = []
     for key in TITLES:
@@ -305,10 +306,11 @@ def inventory(store, worker, cfg=None):
         selected_game=games[0] if games else None
         if backend_ready:
             prepared=host_preparation(store,worker)
+            known=sessions if sessions is not None else store.all('session')
             for game in games:
                 gid=game['game_id']
                 # a restart gives the same PC a new worker id: the registered aliases keep its launch history
-                prior=next((s for s in store.all('session') if s.get('game_id')==gid
+                prior=next((s for s in known if s.get('game_id')==gid
                     and s.get('state') in ('running','ended')
                     and _same_host_worker(store,s.get('session_id','').split('-')[0],worker)),None)
                 candidate={'verified':False,'reason':'ROM access has not been verified on this PC'}

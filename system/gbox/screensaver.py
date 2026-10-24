@@ -144,6 +144,17 @@ def _jid(job) -> str:
     return getattr(job, "id", None) or (job.get("id") or job.get("job_id") if isinstance(job, dict) else "") or ""
 
 
+def _current_workers(workers) -> list:
+    """One registration per PC name: the online one, else the last registered (a restart leaves the old ids behind)."""
+    best: dict = {}
+    for w in workers:
+        name = w.get('name')
+        if name not in best or (w.get('online') and not best[name].get('online')) or \
+                (bool(w.get('online')) == bool(best[name].get('online')) and (w.get('last_seen') or 0) >= (best[name].get('last_seen') or 0)):
+            best[name] = w
+    return list(best.values())
+
+
 def _local_scheduler(worker):
     return (worker.get('federation') or {}).get('scheduler_owner')=='local'
 
@@ -607,15 +618,26 @@ class Screensaver:
         out = {"settings": cfg, "running": self.store.all(STATE), "log": log,
                "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]],
                "pcs": self.pcs(cfg)}
+        out['mercmode']=self.mercmode_status()
+        if self.builder is not None:
+            out["roulette"] = self.builder.status()
+        return out
+
+    def mercmode_status(self) -> dict:
+        """GET /api/mercmode: one row per PC (its current registration, not every stale id a restart left behind) and one
+        read of the session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
+        from . import mercmode
+        sessions = self.store.all('session')
+        running = self.store.running_sessions()
         hosts=[]
-        for w in self.workers():
+        for w in _current_workers(self.workers()):
             observed=mercmode.observation(self.store,w)
             command=self.store.get(mercmode.COMMAND,w['name']) or {}
             if command.get('worker_id')!=w['id']:command={}
             job=self.store.get('job',command.get('job')) if command.get('job') else None
             actual=observed.get('settings') or (dict(mercmode.DEFAULT) if _local_scheduler(w)
                 else mercmode.settings(self.store,w['name']))
-            candidate=next((s['session_id'] for s in self.store.running_sessions()
+            candidate=next((s['session_id'] for s in running
                 if s.get('session_id','').startswith(w['id']+'-')
                 and (t:=telemetry_get(s['session_id'])).get('running') is True
                 and (t.get('stats') or {}).get('team_role')=='solo_p1'
@@ -628,7 +650,7 @@ class Screensaver:
                 'observed_at':observed.get('at'),'desired_settings':mercmode.settings(self.store,w['name']),
                 'command':command | ({'state':job.get('state'),'error':str(job.get('error') or '')[:240]} if job else {}),
                 'scheduler_owner':'local' if _local_scheduler(w) else 'this_control_plane',
-                'titles':mercmode.inventory(self.store,w),'preparation':mercmode.host_preparation(self.store,w),
+                'titles':mercmode.inventory(self.store,w,sessions=sessions),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {})})
         from .mercs.research_profiles import coverage, VERSION
         for h in hosts:
@@ -640,10 +662,7 @@ class Screensaver:
             queue_catalog = mercmode.catalog()
         except Exception:                                   # noqa: BLE001 - a title module missing: no picks for it
             queue_catalog = {}
-        out['mercmode']={'hosts':hosts,'experience_coverage':coverage(),'research_version':VERSION,'catalog':queue_catalog}
-        if self.builder is not None:
-            out["roulette"] = self.builder.status()
-        return out
+        return {'hosts':hosts,'experience_coverage':coverage(),'research_version':VERSION,'catalog':queue_catalog}
 
 
 # request bodies (module level: with postponed annotations FastAPI can't see classes defined inside install())
@@ -803,7 +822,7 @@ def install(app, store, config, auth, submit, workers, archive):
 
     @app.get('/api/mercmode')
     def mercmode_status(actor=Depends(auth)):
-        return saver.status()['mercmode']
+        return saver.mercmode_status()
 
     @app.post('/api/mercmode/adopt')
     def mercmode_adopt(body: MercModeAdopt, actor=Depends(auth)):
@@ -840,7 +859,7 @@ def install(app, store, config, auth, submit, workers, archive):
                     origin={'via':'MercMode local scheduler settings','worker':body.host})
                 store.put(mercmode.COMMAND,body.host,{'job':_jid(job),'settings':desired,'at':time.time(),
                     'worker_id':worker['id'],'state':'queued'})
-        return saver.status()['mercmode']
+        return saver.mercmode_status()
 
     @app.post('/api/mercmode/prepare')
     def mercmode_prepare(body: MercModePrepare,actor=Depends(auth)):
