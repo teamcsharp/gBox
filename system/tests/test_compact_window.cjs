@@ -35,12 +35,19 @@ test('compact mode resizes the same live window and restores all prior desktop s
   assert.deepEqual(events.map(event=>event.on),[true,false]);
 });
 
-test('repeated activation updates aspect or size without overwriting the original restore point', async () => {
+test('source changes retain window bounds; explicit width changes preserve the chosen window ratio', async () => {
   const {win,ctl,chrome} = fixture(), original = win.getBounds();
   await ctl.update({on:true}); assert.equal(win.aspect,4/3);
   win.bounds.x = 400; win.bounds.y = 300;
   await ctl.update({on:true}); assert.equal(win.bounds.x,400);
-  await ctl.update({on:true,aspect:2,width:800}); assert.equal(win.bounds.height,400);
+  const bounds=win.getBounds();
+  for(const aspect of [16/9,4/3,2,16/9]){
+    await ctl.update({on:true,aspect});
+    assert.deepEqual(win.getBounds(),bounds,'title/frame aspect must never resize or move PiP');
+    assert.equal(win.aspect,4/3,'native resize constraint belongs to the window');
+    assert.equal(ctl.state().aspect,aspect,'the picture can still letterbox correctly');
+  }
+  await ctl.update({on:true,aspect:2,width:800}); assert.equal(win.bounds.height,600);
   await ctl.restore(); assert.deepEqual(win.bounds,original); assert.deepEqual(chrome,[true,false]);
   assert.equal(win.top,false);
 });
@@ -53,9 +60,17 @@ test('a new main process restores both full-window origin and the moved compact 
   const saved = first.ctl.handoff();
   assert.deepEqual(saved.window.bounds,origin); assert.equal(saved.window.maximized,true);
   const next = fixture(); next.win.setBounds(saved.window.bounds); next.win.maximized = saved.window.maximized;
-  next.ctl.seedBounds(saved.compactBounds); await next.ctl.update({on:true,aspect:16/9});
+  next.ctl.seedBounds(saved.compactBounds); await next.ctl.update({on:true,aspect:4/3});
   assert.deepEqual(next.win.getBounds(),saved.compactBounds);
   await next.ctl.restore(); assert.deepEqual(next.win.getBounds(),origin); assert.equal(next.win.maximized,true);
+});
+
+test('client restart opens at retained PiP size and keeps its separate full-window restore point',async()=>{
+  const {win,ctl}=fixture(),full=win.getBounds(),bounds={x:200,y:90,width:1058,height:595};
+  win.setBounds(bounds);ctl.seedBounds(bounds,{bounds:full,maximized:false,fullscreen:false,top:false});
+  await ctl.update({on:true,aspect:4/3});assert.deepEqual(win.getBounds(),bounds);
+  await ctl.update({on:true,aspect:16/9});assert.deepEqual(win.getBounds(),bounds);
+  await ctl.restore();assert.deepEqual(win.getBounds(),full);
 });
 
 test('a failed native caption change rolls back bounds, fullscreen and controls without entering compact mode', async () => {

@@ -94,7 +94,7 @@ function embedding({remote=false,ok=true,ended=false}={}) {
   const compact={on:true,sid:'picked',local:!remote,aspect:16/9};
   const emb={sid:'picked',pid:123,closed:new Set()};
   const node={classList:{contains:()=>false},hidden:true};
-  const ctx=vm.createContext({LIVE_SESSIONS:{peek:()=>({ok,data:sessions})},S:{workerName:'PC'},EMB:emb,COMPACT:compact,
+  const ctx=vm.createContext({nativeSessionLease:null,LIVE_SESSIONS:{peek:()=>({ok,data:sessions})},S:{workerName:'PC'},EMB:emb,COMPACT:compact,
     $:()=>node,document:{querySelector:selector=>selector==='section.on'?{id:'play'}:null},
     GPU_GAME:{pid:null},gpuGameDispose:async()=>{},pipHandle(){},gbox:{embedSync:async value=>seen.syncs.push(value)},
     compactRestore:async()=>{seen.restores++;compact.on=false;},VIEW:{mode:'compact'},FLOW:{on:false},EYE:{on:false},

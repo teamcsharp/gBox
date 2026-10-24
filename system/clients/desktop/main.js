@@ -1313,7 +1313,7 @@ app.whenReady().then(() => {
   if (startupView) {
     savedClientState = startupView.state; savedClientOrigin = clientViews.origin(settings().apiUrl);
     pendingMini = startupView.mini ? { ...startupView.mini, origin: savedClientOrigin } : null;
-    compactWindow.seedBounds(startupView.compactBounds);
+    compactWindow.seedBounds(startupView.compactBounds, startupView.state?.compact ? startupView.window : null);
   }
   if (startupHandoff.value) {
     handoffView = handoffMatches ? startupHandoff.value.state : null;
@@ -1368,15 +1368,17 @@ app.whenReady().then(() => {
   }
   // </display-media-handler>
   session.defaultSession.setDisplayMediaRequestHandler(displayMediaHandler(() => rec, () => win, desktopCapturer));
+  const initialWindow = clientViews.startupWindow(startupView);
   win = new BrowserWindow({
     width: 1500, height: 950, title: "gBox", backgroundColor: "#16161a", autoHideMenuBar: true,
+    ...(initialWindow ? initialWindow.bounds : {}),
     icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     titleBarStyle: "hidden",                                         // custom title bar (capture + eyedropper icons)
     titleBarOverlay: { color: "#111114", symbolColor: "#e8e8ee", height: 36 },
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, webviewTag: true, backgroundThrottling: false },
   });
   if (startupView) {
-    const before = startupView.window;
+    const before = initialWindow;
     win.setBounds(before.bounds); win.setAlwaysOnTop(before.top);
     if (before.maximized) win.maximize();
     if (before.fullscreen) win.setFullScreen(true);

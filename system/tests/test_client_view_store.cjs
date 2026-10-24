@@ -12,6 +12,13 @@ function disk(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gbox-view-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true })); return dir;
 }
+test('PiP startup uses its exact outer bounds without restoring the full window first',()=>{
+ const saved=value(),original=structuredClone(saved);
+ assert.deepEqual(V.startupWindow(saved),{bounds:saved.compactBounds,top:true,maximized:false,fullscreen:false});
+ assert.deepEqual(saved,original);
+ assert.deepEqual(V.startupWindow({...saved,state:{compact:false}}),saved.window);
+ assert.equal(V.startupWindow(null),null);
+});
 test('ordinary reopen days later restores exact streams and PiP origin without a handoff token', async t => {
   const dir = disk(t); V.create(dir, { now: () => 1000 }).save('http://server:8765', value());
   const reopened = V.create(dir, { now: () => 86400000 }).load('http://server:8765');

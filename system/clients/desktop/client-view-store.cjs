@@ -5,6 +5,10 @@ const handoff = require('./client-handoff.cjs');
 const { origin } = require('./client-refresh.js');
 function matches(value, server) { const key = origin(server); return !!key && origin(value?.state?.origin) === key; }
 function mini(value, server) { const key = origin(server); return key && origin(value?.origin) === key ? value : null; }
+function startupWindow(value) {
+  return value?.state?.compact && value.compactBounds
+    ? {bounds:value.compactBounds,top:true,maximized:false,fullscreen:false} : value?.window || null;
+}
 function view(value, at) {
   const { startWorker, ...saved } = handoff.view(value, at);
   return saved;
@@ -41,4 +45,4 @@ function create(directory, { now = Date.now, io = fs } = {}) {
   }
   return { load, save };
 }
-module.exports = { create, origin, matches, mini, view };
+module.exports = { create, origin, matches, mini, view, startupWindow };

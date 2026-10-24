@@ -16,7 +16,7 @@ function fitBounds(bounds, aspect, work, width) {
 }
 
 function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emit = () => {} }) {
-  let saved = null, aspect = DEFAULT_ASPECT, queue = Promise.resolve(), compactBounds = null;
+  let saved = null, aspect = DEFAULT_ASPECT, queue = Promise.resolve(), compactBounds = null, restoreSeed = null;
   const state = () => ({ on: !!saved, aspect });
   const window = () => { const w = getWin(); if (!w || w.isDestroyed()) throw Error('The gBox window is unavailable.'); return w; };
   const publish = () => { const value = state(); emit(value); return value; };
@@ -48,14 +48,18 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
     const w = window();
     if (saved) {
       const nextAspect = validAspect(request.aspect) ? +request.aspect : aspect;
-      if (nextAspect !== aspect || Number.isFinite(+request.width)) {
-        aspect = nextAspect; w.setAspectRatio(aspect);
-        w.setBounds(fitBounds(w.getBounds(), aspect, workArea(w), request.width));
+      // Source aspect describes the picture, not the operator's window. A
+      // MercMode title switch must only change letterboxing inside these bounds.
+      aspect = nextAspect;
+      if (Number.isFinite(+request.width)) {
+        const bounds = w.getBounds(), windowAspect = bounds.width / bounds.height;
+        w.setAspectRatio(windowAspect);
+        w.setBounds(fitBounds(bounds, windowAspect, workArea(w), request.width));
       }
       return publish();
     }
     const before = { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(),
-      top: w.isAlwaysOnTop(), minimum: w.getMinimumSize(), maximum: w.getMaximumSize() };
+      top: w.isAlwaysOnTop(), ...restoreSeed, minimum: w.getMinimumSize(), maximum: w.getMaximumSize() };
     try {
       if (before.fullscreen) w.setFullScreen(false);
       if (before.maximized) w.unmaximize();
@@ -63,15 +67,17 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       if (!result?.ok) throw Error(result?.error || 'Could not hide the gBox window controls.');
       aspect = validAspect(request.aspect) ? +request.aspect : validAspect(result.aspect) ? +result.aspect : DEFAULT_ASPECT;
       w.setMinimumSize(160, 90); w.setMaximumSize(0, 0);
-      w.setAlwaysOnTop(true); w.setAspectRatio(aspect);
+      const windowAspect = compactBounds?.width > 0 && compactBounds?.height > 0
+        ? compactBounds.width / compactBounds.height : aspect;
+      w.setAlwaysOnTop(true); w.setAspectRatio(windowAspect);
       // Electron exposes overlay styling, rather than a runtime visibility API.
       // The native helper removes caption controls; transparent overlay styling
       // also avoids a flash while Chromium processes that style change.
       w.setTitleBarOverlay?.({ color: '#00000000', symbolColor: '#00000000', height: 0 });
       const work = workArea(w), width = Number.isFinite(+request.width) ? +request.width : compactBounds?.width || 480;
       const candidate = compactBounds || { x: work.x + work.width - width - 24, y: work.y + work.height - width / aspect - 24, width };
-      w.setBounds(fitBounds(candidate, aspect, work, width));
-      saved = before;
+      w.setBounds(fitBounds(candidate, windowAspect, work, width));
+      saved = before; restoreSeed = null;
       return publish();
     } catch (error) {
       // Roll back the same live window; this never touches the emulator process.
@@ -91,7 +97,7 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       return { window: saved || { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(), top: w.isAlwaysOnTop() },
         compactBounds: saved ? w.getBounds() : compactBounds };
     },
-    seedBounds: value => { compactBounds = value || null; }
+    seedBounds: (value, restore) => { compactBounds = value || null; restoreSeed = restore || null; }
   };
 }
 
