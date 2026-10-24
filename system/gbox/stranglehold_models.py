@@ -690,16 +690,32 @@ def roster() -> list[dict]:
             for stem, slug, name, role in ROSTER]
 
 
+def cooked_root_from_rom(rom) -> Path | None:
+    """CookedPS3 for a catalog source path: a flat StrangleholdGame/CookedPS3 beside / above it, a PS3_GAME/USRDIR
+    layout inside it, or (the catalog points at the .7z) the already-extracted '<archive stem>/PS3_GAME/USRDIR' folder
+    next to the archive."""
+    rom = Path(rom)
+    tail = Path("StrangleholdGame") / "CookedPS3"
+    for up in [rom.parent] + list(rom.parents)[:3]:
+        for pre in (Path("."), Path("PS3_GAME") / "USRDIR", Path("USRDIR")):
+            cand = up / pre / tail
+            if cand.is_dir():
+                return cand
+    for sib in (rom.parent / rom.stem, rom.parent / rom.name):
+        cand = sib / "PS3_GAME" / "USRDIR" / tail
+        if cand.is_dir():
+            return cand
+    return None
+
+
 def cooked_root(ctx=None, game: dict | None = None) -> Path:
     """StrangleholdGame/CookedPS3 from the catalog entry's EBOOT.BIN, else the known QuickSwap mount points."""
     if ctx is not None and game is not None:
         try:
             from . import characters as C
-            rom = C._rom(ctx, game)
-            for up in [rom.parent] + list(rom.parents)[:3]:
-                cand = up / "StrangleholdGame" / "CookedPS3"
-                if cand.is_dir():
-                    return cand
+            found = cooked_root_from_rom(C._rom(ctx, game))
+            if found is not None:
+                return found
         except (OSError, ValueError):
             pass
     root = SI.find_root()
