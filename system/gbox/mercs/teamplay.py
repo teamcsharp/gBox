@@ -141,9 +141,15 @@ class TeamStore:
         config = self.get(session_id)
         evidence = runtime_evidence(session_id, adapter, now=now)
         is_re5 = game_id == RE5 and getattr(adapter, 'name', None) == 'rpcs3'
-        verified_p2 = is_re5 and evidence.get('p2_verified') is True \
-            and evidence.get('controller2_verified') is True \
-            and {p.get('slot') for p in evidence.get('active_players', [])} == {1, 2}
+        players = evidence.get('active_players', [])
+        actors = [p.get('actor') for p in players]
+        verified_p2 = is_re5 and all(evidence.get(key) is True for key in
+            ('p2_verified', 'p2_actor_verified', 'controller2_verified', 'camera2_verified', 'prompt2_verified')) \
+            and len(players) == 2 and {p.get('slot') for p in players} == {1, 2} \
+            and all(type(actor) is int and actor > 0 for actor in actors) and len(set(actors)) == 2 \
+            and all(p.get('id') == f"p{p['slot']}"
+                and isinstance(p.get('provenance'), dict)
+                and p['provenance'].get('native_actor_verified') is True for p in players)
         reason = ('RE6 local Player 2 control and actor ownership are not verified in this runtime.' if game_id == RE6
                   else evidence.get('reason') or 'Waiting for verified local Player 2 actor and a separate controller input path.')
         role, player, phase = config['role'], 1, 'active'

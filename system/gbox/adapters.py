@@ -4084,6 +4084,7 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         self._maybe_focus_game_window()
         args=[];pressed=set()
         for key,down in rows:
+            key=C.XKEYS.get(key,key)  # Qt config names and X11 keysyms differ for punctuation.
             if not down and key in pressed:args += ['sleep','.06']
             if down:pressed.add(key)
             args += ['keydown' if down else 'keyup',key]

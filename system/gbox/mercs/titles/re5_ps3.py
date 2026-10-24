@@ -148,6 +148,34 @@ def u32(m, a) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
 
 
+def player_index(m):
+    """Zero-based memory-view scope; an invalid scope never selects Player 1."""
+    index = getattr(m, "mercs_player_index", 0)
+    return index if type(index) is int and index in (0, 1) else None
+
+
+def modifications_allowed(m):
+    """Solo modifier helpers have no authority over another player's actor."""
+    return player_index(m) == 0 and not getattr(m, 'mercs_no_modifications', False)
+
+
+def player_pointer(m) -> int:
+    """Resolve the scoped actor without treating an adjacent pointer as Player 2.
+
+    Existing solo readers retain their original chain. A second-player view
+    requires the native manager, slot, actor-index and lifetime checks shared
+    with the read-only participant recorder. This does not authorize controls.
+    """
+    index = player_index(m)
+    if index is None:
+        return 0
+    if index == 0:
+        manager = u32(m, S_PLAYER)
+        return u32(m, manager + 0x28) if ptr_ok(manager) else 0
+    from .re5_coop import participants
+    return next((row['actor'] for row in participants(m) if row['slot'] == 2), 0)
+
+
 def wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
 
@@ -236,6 +264,8 @@ _LASER: dict = {}                      # id(memory) -> (the uLaserSight unit, me
 
 def laser(m) -> dict | None:
     """The laser sight's ray from RAM: {"from": the muzzle, "at": the dot}, None without the unit."""
+    if player_index(m) != 0:
+        return None                         # the first Fx laser has no verified second-player ownership
     hit = _LASER.get(id(m))
     u = hit[0] if hit and hit[1] is m else 0
     if not (ptr_ok(u) and u32(m, u) == LASER_VT):
@@ -260,8 +290,9 @@ def snapshot(m) -> dict:
     """The round from RAM: the player, the enemies, the Mercenaries counters (None where a pointer is not there)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None, "kills": None,
                   "combo": None, "combo_timer": None}
-    sp = u32(m, S_PLAYER)
-    p = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+    index = player_index(m)
+    snap['control_player'] = index+1 if index is not None else None
+    p = player_pointer(m)
     if ptr_ok(p):
         pos = struct.unpack(">3f", m.rd(p + P_POS, 12))
         rot = struct.unpack(">4f", m.rd(p + P_ROT, 16))
@@ -293,7 +324,9 @@ def snapshot(m) -> dict:
                 pos = struct.unpack(">3f", m.rd(e + E_POS, 12))
                 hp, hp_max = struct.unpack(">hh", m.rd(e + E_HP, 4))
                 snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
-    cm = u32(m, S_CAMERA)
+    # +104 identifies a camera MODE, not a player slot. Never reuse P1's
+    # camera for a P2 view while the per-player camera decoder is unverified.
+    cm = u32(m, S_CAMERA) if player_index(m) == 0 else 0
     cc = u32(m, cm + CAM_CTRL) if ptr_ok(cm) else 0
     if ptr_ok(cc):
         snap["camera"] = {"eye": struct.unpack(">3f", m.rd(cc + CAM_EYE, 12)),
@@ -321,8 +354,16 @@ def snapshot(m) -> dict:
                     combo=struct.unpack(">i", m.rd(gs + GS_COMBO, 4))[0],
                     combo_timer=round(struct.unpack(">f", m.rd(gs + GS_COMBO_T, 4))[0], 2),
                     score=struct.unpack(">i", m.rd(gs + GS_SCORE, 4))[0])
-        snap.update(mercenaries_mode={2: "mercenaries", 5: "reunion"}.get(u32(m, gs + 0x58)),
-                    stage_index=u32(m, gs + 0x348), character_index=u32(m, gs + 0x364))
+        mode = u32(m, gs + 0x58)
+        snap.update(mercenaries_mode={2: "mercenaries", 5: "reunion"}.get(mode),
+                    stage_index=u32(m, gs + 0x348),
+                    character_index=u32(m, gs + 0x364) if index == 0 else None)
+        if mode in (2, 5) and u32(m, gs + 0x340) == 2:
+            snap['scoring_players'] = 2     # native split-screen predicate FUN009C0B34
+    if player_index(m) != index or index == 1 and player_pointer(m) != p:
+        snap.update(player=None, inventory=[], laser=None, prompt=None,
+                    stage_prompt=False, prompt_target=None, recovery_active=False)
+        snap.pop('camera', None)
     return snap
 
 
@@ -696,6 +737,8 @@ def recovery_active(m, player=None) -> bool:
     The recovery callback reads HP1, the positive countdown and this owned button independently of display flags.
     Read failures propagate so a health writer cannot interpret an unreadable state as permission to refill.
     """
+    if player_index(m) != 0:
+        return False                        # the solo self-recovery callback is not co-op revival
     sp = u32(m, S_PLAYER)
     if not ptr_ok(sp) or sp % 4 or sp > 0x40000000 - 0x2C:
         return False
@@ -727,18 +770,23 @@ def prompt_chord(token, prefix):
 
 
 def selected_prompt(m, *, include_item_pickups=False):
-    """The first player's active displayed input request, verified against BLUS30491's immutable mask table.
+    """The scoped player's displayed input request, verified against the immutable mask table.
 
     sActionButton+0x34 is an array count, not HUD flags. Its two selected display units carry the actual input.
     The manager's player mask routes enemy-owned grab buttons too; button ownership is not a visibility test.
+    FUN000B8BE0 selects player-local blocks with stride 0x2E8; +2C remains global.
     """
     try:
-        sp, ab = u32(m, S_PLAYER), u32(m, S_ACTION)
-        pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
-        if not (ptr_ok(pl) and ptr_ok(ab)) or not m.rd(ab + AB_ENABLED, 1)[0] \
-                or not m.rd(ab + AB_PLAYER_ENABLED, 1)[0] or u32(m, ab + AB_PLAYER_INDEX) != 0:
+        index = player_index(m)
+        if index is None:
             return None
-        if u32(m, ab + AB_INPUT_MODE) != 0 or u32(m, ab + AB_ALTERNATE_CONTROLLER) != 0xFFFFFFFF:
+        shift = index * 0x2E8
+        sp, ab = u32(m, S_PLAYER), u32(m, S_ACTION)
+        pl = player_pointer(m)
+        if not (ptr_ok(pl) and ptr_ok(ab)) or not m.rd(ab + AB_ENABLED, 1)[0] \
+                or not m.rd(ab + shift + AB_PLAYER_ENABLED, 1)[0] or u32(m, ab + shift + AB_PLAYER_INDEX) != index:
+            return None
+        if u32(m, ab + shift + AB_INPUT_MODE) != 0 or u32(m, ab + shift + AB_ALTERNATE_CONTROLLER) != 0xFFFFFFFF:
             return None                                # fixed physical keys: exclude remapped / Move controller input
         if struct.unpack(">h", m.rd(pl + P_HP, 2))[0] <= 0:
             return None                                # terminal corpse; real solo DYING retains exactly 1 HP
@@ -748,19 +796,19 @@ def selected_prompt(m, *, include_item_pickups=False):
             return None
         requests = []
         for offset in QTE_UNITS:
-            unit = ab + offset
+            unit = ab + shift + offset
             raw = m.rd(unit, 0x1C)
             btn, mode, _, mask = struct.unpack_from(">4I", raw, 0x0C)
             if not raw[4] or not raw[5] or not ptr_ok(btn):
                 continue
             button = m.rd(btn, 0x74)
-            kind, button_mode, priority, index, label = struct.unpack_from(">5I", button, 0x14)
+            kind, button_mode, priority, key_index, label = struct.unpack_from(">5I", button, 0x14)
             players = struct.unpack_from(">I", button, 0x30)[0]
             if struct.unpack_from(">I", button)[0] != QTE_BUTTON_VT \
                     or struct.unpack_from(">I", button, 0x70)[0] & 1 \
-                    or not button[0x0A] or button[0x0C] or not players & 1 or mode != button_mode \
-                    or (mode not in QTE_MODES and mode not in QTE_STICK_MODES) or not 0 < index < len(QTE_MASKS) \
-                    or mask != QTE_MASKS[index] or label > 0xFF \
+                    or not button[0x0A] or button[0x0C] or not players & (1 << index) or mode != button_mode \
+                    or (mode not in QTE_MODES and mode not in QTE_STICK_MODES) or not 0 < key_index < len(QTE_MASKS) \
+                    or mask != QTE_MASKS[key_index] or label > 0xFF \
                     or (label in (LOOSE_ITEM_PICKUP, PLACE_LABEL) and not include_item_pickups):
                 continue
             chord = ()
@@ -777,7 +825,7 @@ def selected_prompt(m, *, include_item_pickups=False):
                 continue
             hp = struct.unpack(">h", m.rd(pl + P_HP, 2))[0]
             countdown = struct.unpack(">f", m.rd(pl + P_DYING_TIMER, 4))[0]
-            if QTE_MODES.get(mode) == "mash" and chord == ("circle",) and hp == 1 \
+            if index == 0 and QTE_MODES.get(mode) == "mash" and chord == ("circle",) and hp == 1 \
                     and math.isfinite(countdown) and countdown > 0 \
                     and u32(m, pl + P_RECOVER_BUTTON) == btn:
                 token = "mash"                         # the game's explicit SOLO_DYING_RECOVER button
@@ -788,7 +836,8 @@ def selected_prompt(m, *, include_item_pickups=False):
                                                 "label": label,
                                                 "owner": struct.unpack_from(">I", button, BTN_OWNER)[0],
                                                 "target": struct.unpack_from(">I", button, BTN_TARGET)[0]}))
-        if u32(m, S_ACTION) != ab or u32(m, sp + 0x28) != pl:
+        if u32(m, S_ACTION) != ab or u32(m, S_PLAYER) != sp \
+                or player_index(m) != index or player_pointer(m) != pl:
             return None
         return min(requests, key=lambda row: (row[2]["token"] != "mash", *row[:2]))[2] if requests else None
     except (ValueError, OSError, struct.error, IndexError):
@@ -813,11 +862,11 @@ def egg_square_blocked(m, request=None):
     None means RAM could not establish a stable equipment identity.
     """
     try:
-        sp=u32(m,S_PLAYER);pl=u32(m,sp+0x28) if ptr_ok(sp) else 0
+        sp=u32(m,S_PLAYER);pl=player_pointer(m)
         if not ptr_ok(pl):return None
         rows=inventory(m,pl)
         hand=tuple((row['slot'],row['id']) for row in rows if row.get('hand'))
-        if u32(m,S_PLAYER)!=sp or u32(m,sp+0x28)!=pl \
+        if u32(m,S_PLAYER)!=sp or player_pointer(m)!=pl \
                 or hand!=tuple((row['slot'],row['id']) for row in inventory(m,pl) if row.get('hand')):
             return None
         if not any(item==0x136 for slot,item in hand):return False
@@ -838,8 +887,7 @@ def prompt(m) -> str | None:
         if 'square' in request['token'] and egg_square_blocked(m,request) is not False:
             return None
         return None if mine_pickup(m, request) else request["token"]
-    sp = u32(m, S_PLAYER)
-    pl = u32(m, sp + 0x28) if ptr_ok(sp) else 0
+    pl = player_pointer(m)
     if not ptr_ok(pl):
         return None
     if m.rd(pl + P_ACTION, 1)[0] == P_GRABBED:
@@ -1087,7 +1135,7 @@ class Bot:
         if self._control_state is not None:
             from . import re5_controls
             re5_controls.publish(self._control_state, id(self), {}, False)
-        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
+        if getattr(self.m, "adapter", None) is not None and modifications_allowed(self.m):
             from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             maintain_fire_animation(self.m.adapter, enabled=False)
             maintain_item_animation(self.m.adapter, enabled=False)
@@ -1123,7 +1171,7 @@ class Bot:
         if self.healing is not None and (priority_prompt or snap.get("recovery_active")
                                          or (p or {}).get("action") == P_GRABBED):
             self.healing["at"] = now           # observed mandatory interruptions pause only the bounded healing window
-        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
+        if getattr(self.m, "adapter", None) is not None and modifications_allowed(self.m):
             from ...re5_mods_tool import ORIG
             from . import re5_controls
             self._control_state = ORIG.setdefault(id(self.m.adapter), {})
@@ -1131,7 +1179,7 @@ class Bot:
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
-        if getattr(self.m, "adapter", None) is not None and not getattr(self.m, 'mercs_no_modifications', False):
+        if getattr(self.m, "adapter", None) is not None and modifications_allowed(self.m):
             from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             firing = maintain_fire_animation(self.m.adapter, snap, enabled=(where == "playing"
                 and not self.stats["resuscitating"] and not snap.get("prompt") and not snap.get("stage_prompt")))
@@ -1146,7 +1194,7 @@ class Bot:
                 self.stats[item+'_animation_reason']=result.get('reason',item_rates.get('error',''))
                 self.stats[item+'_animation_writes']=self.stats.get(item+'_animation_writes',0)+result.get('writes',0)
         if where == "playing" and p and not self.stats["resuscitating"] and getattr(self.m, "adapter", None) is not None \
-                and not getattr(self.m, 'mercs_no_modifications', False):
+                and modifications_allowed(self.m):
             from ...re5_mods_tool import maintain_health
             health = maintain_health(self.m.adapter, snap)
             self.stats["unlimited_health_enabled"] = health.get("unlimited_health", False)
@@ -1317,8 +1365,13 @@ class Bot:
         for key, initial in self._round_baseline.items():
             observed[key] = max(0, self.stats.get(key, 0) - initial)
         if self.combat is not None:
-            observed.update(round_shots=self.combat.round_counts["shots"], round_hits=self.combat.round_counts["hits"])
+            observed.update(round_shots=self.combat.round_counts["shots"],
+                            round_hits=None if getattr(self.combat, 'damage_unattributed', False)
+                            else self.combat.round_counts["hits"])
         self.stats["round_evaluation"] = re5_strategy.evaluate_round(observed)
+        if snap.get('control_player') == 2 or snap.get('scoring_players') == 2:
+            self.stats['round_evaluation']['score_scope'] = 'team'
+            self.stats['round_evaluation']['damage_attribution'] = 'unattributed_multiple_players'
 
     def _observe_result(self, snap):
         """Retain terminal RAM totals while the results tally finishes; no UI rank is inferred."""
@@ -1339,6 +1392,15 @@ class Bot:
         combo = snap.get("combo")
         if type(combo) is int and 0 <= combo <= 0x7FFFFFFF:
             self.stats["max_combo"] = max(self.stats.get("max_combo", 0), combo)
+        if snap.get('control_player') == 2 or snap.get('scoring_players') == 2:
+            # Shared DUO totals do not use solo rank thresholds, and the global
+            # menu roster cannot identify the controlled teammate's costume.
+            for key in ('rank', 'completed_score_rank', 'completed_score_rank_source'):
+                self.stats.pop(key, None)
+            self.stats.update(scoring_scope='team', score_scope='team', kills_scope='team', combo_scope='team',
+                              character='unknown', character_cursor_verified=False,
+                              character_source='native_per_player_roster_unverified')
+            return
         rank = rank_of(self.stats.get("score"))
         if rank:
             self.stats["rank"] = rank
@@ -1390,8 +1452,19 @@ class Bot:
             self.meter.observe(self.clock(), p["pos"], p["rot"])
             self.stats.update({"motion_" + k: v for k, v in self.meter.summary().items()})
         try:
+            if self.m is not None and player_index(self.m) != 0:
+                # A human may plant at the same time. Nearby new mine actors
+                # currently carry no verified planter identity, so P2 must not
+                # run the solo placement/credit controller or inherit P1 mods.
+                self._control_state = None
+                self.mines = None
+                self.stats['mine_status'] = 'Player 2 automatic placement awaits native planter ownership'
+                if player_index(self.m) != 1 or not p or player_pointer(self.m) != p.get('ptr'):
+                    return {'hold': set()}
+                self.nav_dynamic_mines = snap.get('ground_mines') or {}
+                return self._leave_deployed_mines(self._idle_breakout(snap, self._tick(snap)))
             from . import re5_mines
-            if not hasattr(self, "mines"):
+            if getattr(self, "mines", None) is None:
                 self.mines = re5_mines.Controller(self.m, self.stats, self._switch_weapon)
             if own_screen(snap) == "playing":
                 self.observe_round(snap,"playing",self.clock())
@@ -1478,7 +1551,9 @@ class Bot:
             self.stats['egg_status']='Square deferred until an existing gun is confirmed; rotten eggs are thrown only'
             if blocked is True and hasattr(self,'inventory_egg'):
                 try:
-                    sp=u32(self.m,S_PLAYER);pl=u32(self.m,sp+0x28)
+                    pl=player_pointer(self.m)
+                    if not ptr_ok(pl):
+                        return {'hold':set(act.get('hold',()))-{'square'}}
                     player=dict(snap.get('player') or {})
                     player.update(ptr=pl,pos=struct.unpack('>3f',self.m.rd(pl+P_POS,12)),
                         hp=struct.unpack('>h',self.m.rd(pl+P_HP,2))[0],
@@ -3182,13 +3257,20 @@ class RE5PS3(Driver):
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
-        if ROSTER.round is None and snap.get("player"):
-            ROSTER.started()
         out = {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-               "kills": snap.get("kills"), "mercenaries_phase": snap.get("mercenaries_phase"), **ROSTER.observe(snap)}
+               "kills": snap.get("kills"), "mercenaries_phase": snap.get("mercenaries_phase")}
         index = snap.get("stage_index")
         if isinstance(index, int) and 0 <= index < len(STAGE_NAMES):
             out.update(stage_index=index, stage=STAGE_NAMES[index])
+        if snap.get('control_player') == 2 or snap.get('scoring_players') == 2:
+            out.update(scoring_scope='team', score_scope='team', kills_scope='team', combo_scope='team',
+                       rank=None, completed_score_rank=None, completed_score_rank_source=None,
+                       character='unknown', character_cursor_verified=False,
+                       character_source='native_per_player_roster_unverified')
+            return out
+        if ROSTER.round is None and snap.get("player"):
+            ROSTER.started()
+        out.update(ROSTER.observe(snap))
         rank = rank_of(snap.get("score"))
         if rank:
             out["rank"] = rank

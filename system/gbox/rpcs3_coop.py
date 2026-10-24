@@ -17,6 +17,7 @@ KEYPAD = dict(zip(
      'dup','ddown','dleft','dright','lup','ldown','lleft','lright','rup','rdown','rleft','rright'),
     (*('F'+str(i) for i in range(13,25)), *'0123456789', '[', ']')))
 VK = {**{'F'+str(i):0x70+i-1 for i in range(13,25)}, '[':0xDB, ']':0xDD}
+XKEYS = {'[':'bracketleft',']':'bracketright'}
 CONFIG_NAME = 'gbox-local-partner'
 
 

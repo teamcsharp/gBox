@@ -417,6 +417,8 @@ class Combat:
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
         self.last_timer = None
         self.finishers_seen = 0
+        self.damage_unattributed = False
+        self._unattributed_hp = {}
         self.infinite = False                 # the rounds don't count (the no-ammo flag): shots from the fire command
         self._fire_cmd_seen = 0
         self._cmd_shot_at = -1e9
@@ -434,21 +436,32 @@ class Combat:
         self.stats["accuracy"] = 0.0
 
     # --- RAM ---
-    def _action(self):
+    def _action(self, pl=None):
         try:
-            pl = self._player_ptr()
+            from . import re5_ps3 as R
+            scoped = self._player_ptr()
+            pl = scoped if pl is None else pl
+            if not pl or pl != scoped:
+                return None
             ap = u32(self.m, pl + P_ACTION_OBJ) if pl else 0
             if not ptr_ok(ap):
                 return None
+            index = R.player_index(self.m)
+            if index != 0 and u32(self.m, ap + 0x18) != pl:
+                return None
             vt = u32(self.m, ap)
             fr = struct.unpack(">f", self.m.rd(ap + ACT_FRAMES, 4))[0]
+            if not math.isfinite(fr) or self._player_ptr() != pl \
+                    or u32(self.m, pl + P_ACTION_OBJ) != ap \
+                    or (index != 0 and u32(self.m, ap + 0x18) != pl):
+                return None
             return vt, fr
         except (ValueError, OSError, struct.error):
             return None
 
     def _player_ptr(self) -> int:
-        sp = u32(self.m, S_PLAYER)
-        pl = u32(self.m, sp + 0x28) if ptr_ok(sp) else 0
+        from . import re5_ps3 as R
+        pl = R.player_pointer(self.m)
         return pl if ptr_ok(pl) else 0
 
     def _in_hand(self, snap, pl):
@@ -475,10 +488,10 @@ class Combat:
         the rounds stand while the fire command keeps coming) is noticed after INFINITE_AFTER such frames."""
         was_rounds, self.rounds_seen = getattr(self, "rounds_seen", None), rounds
         if rounds is not None and was_rounds is not None and 0 < was_rounds - rounds <= 3:
-            self.act_seen = self._action()
+            self.act_seen = self._action(pl)
             self._fire_cmd_seen = 0
             return True
-        a = self._action()
+        a = self._action(pl)
         was, self.act_seen = self.act_seen, a
         if a is not None and was is not None and a[0] in (FIRE_VT, READY_VT, RELOAD_VT):
             return a[0] == FIRE_VT and (was[0] != FIRE_VT or a[1] < was[1] - 0.5)
@@ -498,6 +511,50 @@ class Combat:
             return False
         return True
 
+    def _update_attribution(self, snap, index):
+        """Shared enemy HP/counters cannot establish which local player hit it."""
+        other_player = index != 0 or any(row.get('slot') == 2 and row.get('native_actor_verified') is True
+            for row in snap.get('players') or () if isinstance(row, dict))
+        try:
+            manager = u32(self.m, S_PLAYER)
+            other_player = other_player or (ptr_ok(manager) and ptr_ok(u32(self.m, manager + 0x2C)))
+        except (OSError, ValueError, struct.error):
+            other_player = True  # missing participant evidence cannot prove solo attribution
+        if other_player and not self.damage_unattributed:
+            self.damage_unattributed = True
+            self._unattributed_hp = {}
+            # Discard unresolved solo correlation when a second player appears.
+            self.shots.hp.clear()
+            self.stunned.clear()
+        self.stats['combat_damage_attribution'] = ('unattributed_multiple_players' if self.damage_unattributed
+                                                   else 'solo_temporal_correlation')
+        self.stats['combat_player_index'] = index
+
+    def _observe_impacts(self, enemies, now):
+        if not self.damage_unattributed:
+            return self.shots.update(enemies, now)
+        previous, current, losses, deaths = self._unattributed_hp, {}, 0., 0
+        for enemy in enemies:
+            key = enemy.get('ptr', enemy.get('slot'))
+            hp = enemy.get('hp')
+            if not isinstance(hp, (int, float)) or isinstance(hp, bool) or not math.isfinite(hp):
+                continue
+            current[key] = hp
+            if key in previous and hp < previous[key]:
+                losses += previous[key] - hp
+                deaths += int(previous[key] > 0 and hp <= 0)
+        self._unattributed_hp = current
+        self.stats['enemy_hp_loss_unattributed'] = self.stats.get('enemy_hp_loss_unattributed', 0) + losses
+        self.stats['enemy_deaths_unattributed'] = self.stats.get('enemy_deaths_unattributed', 0) + deaths
+        while self.shots.pending and now - self.shots.pending[0] > self.shots.HIT_S:
+            at = self.shots.pending.pop(0)
+            pending = getattr(self, '_pending_where', [])
+            record = pending.pop(0) if pending else (at, None, None, None, None)
+            self.stats['shot_impacts_unattributed'] = self.stats.get('shot_impacts_unattributed', 0) + 1
+            self._log_shot(record[0], 'impact unattributed: multiple players can damage enemies',
+                           record[1], record[3], record[4], record[2])
+        return []
+
     def observe(self, snap, now, *, active=True):
         """Account for a snapshot even while a prompt or the walker owns the pad. Same snapshot: once only."""
         if self._observed_snap is snap:
@@ -506,7 +563,16 @@ class Combat:
         if active:
             self.start_round(now)
         p = snap.get("player") or {}
-        pl = p.get("ptr") or self._player_ptr()
+        from . import re5_ps3 as R
+        index = R.player_index(self.m)
+        scoped = self._player_ptr()
+        if index is None or (index != 0 and (not scoped or p.get('ptr') != scoped)):
+            self.suspend_observation(now)
+            self.stats['combat'] = 'scoped player identity unavailable; no Player 1 fallback'
+            self._observed_snap, self._observation = snap, (0, None, None, False)
+            return self._observation
+        pl = p.get("ptr") or scoped
+        self._update_attribution(snap, index)
         wid, rounds = self._in_hand(snap, pl)
         if active:
             self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
@@ -514,7 +580,7 @@ class Combat:
         shot = active and self._shot(pl, rounds, p.get("action") == AIMING, now)
         if shot:
             self._on_shot(now)
-        self.shots.update(snap.get("enemies") or [], now)
+        self._observe_impacts(snap.get("enemies") or [], now)
         self._score(now)
         if active:
             self._count_kills(snap)
@@ -527,11 +593,14 @@ class Combat:
         self.last_timer = None
         self.act_seen = self.rounds_seen = self.last_dot = None
         self._observed_snap = self._observation = None
-        self.shots.update([], now)
+        self._observe_impacts([], now)
         self._score(now)
 
     def _ray(self, snap, now):
         if "laser" not in snap:
+            from . import re5_ps3 as R
+            if R.player_index(self.m) != 0:
+                return None  # the global first-laser scan has no verified P2 owner
             return self.laser.read(now)
         sl = snap.get("laser")
         if not sl or not sl.get("from") or not sl.get("at") or not any(sl["from"]):
@@ -680,6 +749,8 @@ class Combat:
             # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
             self._observed_snap = None
         pl, wid, rounds, shot = self.observe(snap, now)
+        if not pl:
+            return {'hold':set()}
         if snap.get('rotten_egg_only') and wid!=0x36:
             self.stats['combat']='eggs only: awaiting native egg equip; gun trigger withheld'
             return {'hold':set()}
@@ -1003,8 +1074,9 @@ class Combat:
             reach = "short" if d_dot < d_him - 60 else ("past" if d_dot > d_him + 60 else "beside")
         self._pending_where = getattr(self, "_pending_where", [])
         self._pending_where.append((now, where, ptr, reach, round(d_him) if foot is not None and lz is not None else None))
-        w = self.tun.weapon(self.character, self.wid or 0)
-        w["shots"] += 1
+        if not self.damage_unattributed:
+            w = self.tun.weapon(self.character, self.wid or 0)
+            w["shots"] += 1
 
     def _score(self, now):
         st = self.shots.stats
@@ -1043,10 +1115,10 @@ class Combat:
             self.stats[key] = self.stats.get(key, 0) + 1
             self._log_shot(t, cls, where, reach, dist, ptr)
         self.stats["shots"], self.stats["hits"], self.stats["misses"] = st["shots"], hits, misses
-        self.stats["accuracy"] = st["accuracy"]
+        self.stats["accuracy"] = None if self.damage_unattributed else st["accuracy"]
         self.stats.update(round_shots=self.round_counts["shots"], round_hits=self.round_counts["hits"],
                           round_accuracy=(round(self.round_counts["hits"] / self.round_counts["shots"], 3)
-                                          if self.round_counts["shots"] else None))
+                                          if self.round_counts["shots"] and not self.damage_unattributed else None))
 
     def _log_shot(self, t, cls, where, reach, dist, ptr):
         """Every shot into the title's run-lessons log (operator: "why did he miss" -> its class)."""
@@ -1064,20 +1136,24 @@ class Combat:
         if type(k) is int:
             last = getattr(self, "_kills_last", None)
             if last is not None and 0 < k - last < 20:
-                self.stats["kills_seen_by_combat"] = self.stats.get("kills_seen_by_combat", 0) + k - last
+                key = 'team_kills_seen_by_combat' if self.damage_unattributed else 'kills_seen_by_combat'
+                self.stats[key] = self.stats.get(key, 0) + k - last
             self._kills_last = k
         self._headshot_metrics()
 
     def _headshot_metrics(self):
         shots, kills = self.stats.get("shots") or 0, self.stats.get("kills_seen_by_combat") or 0
-        self.stats["headshot_pct"] = (round(100.0 * (self.stats.get("headshots") or 0) / shots, 1) if shots else None)
-        self.stats["shots_per_kill"] = round(shots / kills, 2) if kills else None
+        self.stats["headshot_pct"] = (round(100.0 * (self.stats.get("headshots") or 0) / shots, 1)
+                                      if shots and not self.damage_unattributed else None)
+        self.stats["shots_per_kill"] = round(shots / kills, 2) if kills and not self.damage_unattributed else None
 
     def start_round(self, now):
         """Called on an observed playing transition, never inferred from a clock bonus."""
         if self.round_t0 is not None:
             return
         self.round_t0 = now
+        self.damage_unattributed = False
+        self._unattributed_hp = {}
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
         self.last_timer = None
         self.bow_down_at, self.bow_up_at = None, -1e9
@@ -1096,7 +1172,7 @@ class Combat:
         if self.round_t0 is None:
             return
         # A pending shot must be resolved before the next spawn can change enemy health or reuse its slots.
-        self.shots.update([], now + HIT_S + 1)
+        self._observe_impacts([], now + HIT_S + 1)
         self._score(now)
         self._round_over()
         self.round_t0 = None
@@ -1120,6 +1196,16 @@ class Combat:
 
     def _round_over(self):
         rc = self.round_counts
+        if self.damage_unattributed:
+            # Preserve measured shots/team time without turning shared HP changes
+            # into personal accuracy or adapting the P2 weapon's aim settings.
+            if self.lessons:
+                try:
+                    self.lessons({'kind':'combat_round','character':self.character,'weapon':self.wid,**rc,
+                                  'hit_rate':None,'damage_attribution':'unattributed_multiple_players'})
+                except Exception:
+                    pass
+            return
         w = self.tun.weapon(self.character, self.wid or 0)
         w["rounds"] += 1
         w["finishers"] += rc["finishers"]

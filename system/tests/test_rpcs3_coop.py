@@ -120,8 +120,10 @@ def test_linux_p2_keys_are_independent_and_do_not_rewrite_port_to_one(tmp_path,m
     monkeypatch.setattr(ad,'_xdo',lambda *args:calls.append(args))
     assert ad.send_input_player([{'key':'cross'},{'key':'cross','down':False},{'key':'lup'}])['player']==2
     assert calls==[('keydown','F13','sleep','.06','keyup','F13','keydown','4')]
+    assert ad.send_input_player([{'key':'rleft'},{'key':'rright'}])['sent']==2
+    assert calls[-1]==('keydown','bracketleft','keydown','bracketright')
     with pytest.raises(Unsupported):ad.send_input_player([{'key':'cross','player':1}])
-    assert len(calls)==1
+    assert len(calls)==2
 
 
 def test_linux_optin_preserves_existing_player_one_controller(tmp_path):

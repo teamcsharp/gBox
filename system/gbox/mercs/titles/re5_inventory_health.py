@@ -29,6 +29,7 @@ def _pointer(value):
 
 def read_state(memory, player):
     """Read exact-build native menu state and owner; unknown layouts disable input."""
+    from . import re5_ps3 as R
     try:
         if not _pointer(player) or any(memory.rd(address,len(data))!=data for address,data in SIGNATURES.items()):
             return None
@@ -36,7 +37,8 @@ def read_state(memory, player):
         if grid!=tuple(n for row in GRID_NEIGHBORS for n in row):
             return None
         manager=struct.unpack('>I',memory.rd(PLAYER_ROOT,4))[0]
-        if not _pointer(manager) or struct.unpack('>I',memory.rd(manager+0x28,4))[0]!=player:
+        index=R.player_index(memory)
+        if index is None or not _pointer(manager) or R.player_pointer(memory)!=player:
             return None
         pointer=struct.unpack('>I',memory.rd(player+PLAYER_INVENTORY_UI,4))[0]
         if not _pointer(pointer):
@@ -47,11 +49,12 @@ def read_state(memory, player):
         if len(raw)!=0x80 or not 0<=cursor<9 or owner not in (0,1) or raw[0x68] not in (0,1) \
                 or not all(math.isfinite(v) for v in (fade,delay)):
             return None
-        if struct.unpack('>I',memory.rd(manager+0x28,4))[0]!=player \
+        if R.player_index(memory)!=index or R.player_pointer(memory)!=player \
                 or struct.unpack('>I',memory.rd(PLAYER_ROOT,4))[0]!=manager:
             return None
         return {'pointer':pointer,'player':player,'state':raw[4],'cursor':cursor,'owner':owner,
-                'open':raw[0x68]==1,'fade':fade,'input_delay':delay,'context_open':bool(raw[0x7c])}
+                'open':raw[0x68]==1,'fade':fade,'input_delay':delay,'context_open':bool(raw[0x7c]),
+                'player_index':index}
     except (AttributeError,ValueError,TypeError,IndexError,OSError,struct.error):
         return None
 
@@ -83,6 +86,13 @@ class Controller:
 
     def tick(self, memory, snap, item, now):
         """Return pad action/None. After success, ordinary Bot._heal sees the item in hand."""
+        from . import re5_ps3 as R
+        # The menu's owner word has only been verified for the solo/P1 cursor.
+        # Do not infer that owner=1 authorizes P2, even when its actor is known.
+        if R.player_index(memory)!=0:
+            self.reset()
+            self.stats[self.prefix+'_status']='scoped inventory input ownership unverified; Player 2 unsupported'
+            return None
         player=snap.get('player') or {}
         if not math.isfinite(now) or player.get('hp',0)<=1 or snap.get('recovery_active') or snap.get('prompt'):
             self.reset()

@@ -128,8 +128,8 @@ def pickup_request(memory, request, rows):
         manager = R.u32(memory, R.S_PLAYER)
         if not R.ptr_ok(manager):
             return None
-        player = R.u32(memory, manager + 0x28)
-        if not R.ptr_ok(player) or request.get('owner') != player:
+        index, player = R.player_index(memory), R.player_pointer(memory)
+        if index is None or not R.ptr_ok(player) or request.get('owner') != player:
             return None
         current = R.selected_prompt(memory, include_item_pickups=True)
         if not current or tuple(current.get(key) for key in keys) != signature:
@@ -148,7 +148,8 @@ def pickup_request(memory, request, rows):
             return None
         current = R.selected_prompt(memory, include_item_pickups=True)
         if not current or tuple(current.get(key) for key in keys) != signature \
-                or R.u32(memory, R.S_PLAYER) != manager or R.u32(memory, manager + 0x28) != player:
+                or R.u32(memory, R.S_PLAYER) != manager or R.player_index(memory) != index \
+                or R.player_pointer(memory) != player:
             return None
         return fresh[0]
     except (ValueError, OSError, TypeError, KeyError, IndexError, struct.error):

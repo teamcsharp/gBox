@@ -2432,12 +2432,16 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     d.owns_keyboard = bool(inp.owns_keyboard)
     d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
+    native_team_required = False
     if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
         from .mercs.teamplay import TeamStore
         team_intent = TeamStore(ad.config.data_dir).get(inp.session_id)
         d.mercs_team_role = team_intent['role']
-        if g.get('game_id') == '0871eee3b68cdea3' and team_intent['role'] != 'solo_p1':
-            raise Unsupported('RE6 Player 2 actor, camera and independent input ownership are not verified; no Player 1 fallback.')
+        native_team_required = team_intent['role'] != 'solo_p1' or team_intent['training_profile'] != 'assisted'
+        if g.get('game_id') == '0871eee3b68cdea3' and native_team_required:
+            raise Unsupported('RE6 native player ownership and original gameplay rules are not verified for this role/profile; autoplay remains stopped.')
+        if native_team_required and (inp.mode not in ('auto', 'playbook') or inp.mission):
+            raise Unsupported('This Mercenaries role/profile requires the native session controller; select automatic play.')
     if inp.screensaver:
         _front(ad)                                             # idle PC: the game in front (Dolphin input needs it)
     elif d.demo:
@@ -2447,7 +2451,11 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     if inp.mode in ("auto", "playbook") and not inp.mission:  # a game-specific bot for where the game is right now
         pb = _playbook(ad, g)
         if pb is not None:
+            if native_team_required and getattr(pb, '__name__', None) != 'gbox.mercs_bot':
+                raise Unsupported('This role/profile requires the native Mercenaries session controller; another playbook cannot take Player 1.')
             return {"result": _start_playbook(pb, inp, d, ad, since, ctx, g, game_id) | ({"hacks": hacks} if hacks else {})}
+        if native_team_required:
+            raise Unsupported('The native Mercenaries session controller is unavailable for this role/profile; autoplay remains stopped.')
         if inp.mode == "playbook":
             raise ValueError(f"no playbook plays {g.get('title')} where it is now (have: {', '.join(PLAYBOOKS)})")
     from . import jumpstate

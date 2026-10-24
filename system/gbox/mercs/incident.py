@@ -72,11 +72,15 @@ def ram_witness(memory, title, snap):
     try:
         player = snap['player']['ptr']
         owner = R.u32(memory, R.S_PLAYER)
-        if not R.ptr_ok(owner) or R.u32(memory, owner+0x28) != player or not R.ptr_ok(player):
+        index = R.player_index(memory)
+        if index is None or not R.ptr_ok(owner) or R.player_pointer(memory) != player or not R.ptr_ok(player):
             raise ValueError('player identity changed before RAM witness')
+        out.update(player=player, player_index=index, player_scope_source='native scoped sPlayer actor')
         spans = [('player', player, 0x3000)]
         action = R.u32(memory, player+C.P_ACTION_OBJ)
         if R.ptr_ok(action):
+            if index != 0 and R.u32(memory, action+0x18) != player:
+                raise ValueError('scoped player does not own action RAM witness')
             spans.append(('action', action, 0x40))
         enemies = sorted(snap.get('enemies', ()), key=lambda e: math.dist(e['pos'], snap['player']['pos']))
         spans += [('enemy', e['ptr'], 0x1500) for e in enemies[:4] if R.ptr_ok(e.get('ptr', 0))]
@@ -96,8 +100,12 @@ def ram_witness(memory, title, snap):
             out['spans'].append({'kind': kind, 'address': hex(address), 'size': size, 'at': stamp,
                                  'sha256': hashlib.sha256(data).hexdigest(),
                                  'data_b64': base64.b64encode(zlib.compress(data, 1)).decode('ascii')})
-        if R.u32(memory, R.S_PLAYER) != owner or R.u32(memory, owner+0x28) != player:
+        if R.u32(memory, R.S_PLAYER) != owner or R.player_index(memory) != index \
+                or R.player_pointer(memory) != player:
             raise ValueError('player identity changed during RAM witness')
+        if index != 0 and R.ptr_ok(action) and (R.u32(memory, player+C.P_ACTION_OBJ) != action \
+                or R.u32(memory, action+0x18) != player):
+            raise ValueError('scoped action identity changed during RAM witness')
     except Exception as exc:
         out.update(state='partial' if out['spans'] else 'failed', error=str(exc)[:240])
     out['finished_at'] = time.time()

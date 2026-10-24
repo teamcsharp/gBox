@@ -41,10 +41,15 @@ def test_p2_needs_actor_separate_controller_exact_adapter_session_and_fresh_proo
     store = T.TeamStore(tmp_path)
     ad = SimpleNamespace(name='rpcs3')
     store.configure('worker-session', {'role': 'teammate_p2'}, game_id=T.RE5)
-    proof = {'p2_verified': True, 'controller2_verified': True,
-             'active_players': [{'slot': 1, 'control': 'human'}, {'slot': 2, 'control': 'bot', 'actor': 123}]}
+    proof = {'p2_verified': True, 'p2_actor_verified': True, 'controller2_verified': True,
+             'camera2_verified': True, 'prompt2_verified': True,
+             'active_players': [{'id': f'p{slot}', 'slot': slot, 'actor': 100+slot,
+                                'provenance': {'native_actor_verified': True}} for slot in (1, 2)]}
     for change in ({'controller2_verified': False}, {'p2_verified': False}, {'active_players': [{'slot': 1}]},
-                   {'active_players': [{'slot': 2}]}):
+                   {'active_players': [{'slot': 2}]}, {'camera2_verified': False}, {'prompt2_verified': False},
+                   {'p2_actor_verified': False}, {'active_players': [proof['active_players'][0]]*2},
+                   {'active_players': [dict(p, actor=123) for p in proof['active_players']]},
+                   {'active_players': [dict(p, provenance={}) for p in proof['active_players']]}):
         T.publish_runtime('worker-session', ad, {**proof, **change}, now=10)
         assert store.status('worker-session', game_id=T.RE5, adapter=ad, now=11)['control_player'] is None
     T.publish_runtime('worker-session', ad, proof, now=10)

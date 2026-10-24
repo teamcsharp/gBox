@@ -92,8 +92,10 @@ def hook_bytes(m, title, snap):
     try:
         ptr = (snap.get("player") or {}).get("ptr")
         sp = R.u32(m, R.S_PLAYER)
-        if not R.ptr_ok(sp) or R.u32(m, sp + 0x28) != ptr or not R.ptr_ok(ptr):
+        index = R.player_index(m)
+        if index is None or not R.ptr_ok(sp) or R.player_pointer(m) != ptr or not R.ptr_ok(ptr):
             raise ValueError("current player changed before raw capture")
+        out.update(player=ptr, player_index=index, player_scope_source='native scoped sPlayer actor')
         spans = [("player_vtable", ptr, 4), ("position_rotation", ptr + R.P_POS, 32),
                  ("action_byte", ptr + R.P_ACTION, 1), ("hp_max", ptr + R.P_HP, 4),
                  ("pitch", ptr + R.P_PITCH, 4), ("action_pointer", ptr + C.P_ACTION_OBJ, 4),
@@ -109,10 +111,15 @@ def hook_bytes(m, title, snap):
             action = m.rd(ap, 0x24)
             if len(action) != 0x24:
                 raise ValueError("short read of current_action")
+            if index != 0 and struct.unpack_from('>I', action, 0x18)[0] != ptr:
+                raise ValueError("scoped player does not own current_action")
             out["fields"].append({"name": "current_action", "address": hex(ap), "size": 0x24,
                                   "hex": action.hex()})
-        if R.u32(m, R.S_PLAYER) != sp or R.u32(m, sp + 0x28) != ptr:
+        if R.u32(m, R.S_PLAYER) != sp or R.player_index(m) != index or R.player_pointer(m) != ptr:
             raise ValueError("current player changed during raw capture")
+        if index != 0 and R.ptr_ok(ap) and (R.u32(m, ptr + C.P_ACTION_OBJ) != ap \
+                or R.u32(m, ap + 0x18) != ptr):
+            raise ValueError("scoped action identity changed during raw capture")
         out["read_hp"], out["read_hp_max"] = struct.unpack(">hh", bytes.fromhex(
             next(x["hex"] for x in out["fields"] if x["name"] == "hp_max")))
         out["matches_snapshot_hp"] = out["read_hp"] == snap["player"]["hp"]

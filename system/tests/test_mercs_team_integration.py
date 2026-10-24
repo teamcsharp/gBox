@@ -40,7 +40,8 @@ def fixture_runtime(tmp_path, monkeypatch, role='solo_p1', *, p2=True):
           participant({'ptr':0x30310000,'pos':[1,0,0],'hp':100},2,'unknown',source='native_p2')]
     class Native:
         def readiness(self, memory):
-            return {'p2_verified':p2,'controller2_verified':p2,'human_observer_verified':True,
+            return {'p2_verified':p2,'p2_actor_verified':p2,'controller2_verified':p2,
+                    'camera2_verified':p2,'prompt2_verified':p2,'human_observer_verified':True,
                     'active_players':deepcopy(rows)}
         def participants(self, memory, snap):
             return deepcopy(rows)
@@ -170,3 +171,57 @@ def test_outer_play_waits_for_human_menus_and_never_recovers_or_presses_p1(tmp_p
 def test_outer_play_unverified_teammate_never_starts_solo_brain_in_human_round(tmp_path,monkeypatch):
     f,calls,stats=outer_play(tmp_path,monkeypatch,'teammate_p2','playing')
     assert not calls and not f.sent and stats['team_phase']=='waiting_p2'
+
+
+def autoplay_context(tmp_path, monkeypatch, game_id, patch):
+    from gbox import autoplay as AP
+    adapter = SimpleNamespace(name='rpcs3', config=SimpleNamespace(data_dir=tmp_path))
+    T.TeamStore(tmp_path).configure(SID, patch, game_id=game_id)
+    monkeypatch.setattr(tools, 'SESSIONS', {SID: (adapter, {'game_id': game_id})})
+    monkeypatch.setattr(tools, 'AUTOPLAY', {})
+    monkeypatch.setattr(tools, '_session_game_id', lambda *_: game_id)
+    monkeypatch.setattr(AP, 'Driver', lambda *_args, **_kw: SimpleNamespace())
+    monkeypatch.setattr(tools, '_front', lambda *_: pytest.fail('Rejected roles may not focus the game'))
+    monkeypatch.setattr(tools, '_demo_front', lambda *_: pytest.fail('Rejected roles may not focus the game'))
+    return SimpleNamespace(server='http://localhost', headers={'authorization': 'Bearer fixture'})
+
+
+@pytest.mark.parametrize('patch', [{'role': 'teammate_p2'}, {'role': 'observe_human'},
+                                  {'training_profile': 'unmodified_evaluation'}])
+def test_re6_role_and_evaluation_requests_stop_before_any_generic_fallback(tmp_path, monkeypatch, patch):
+    ctx = autoplay_context(tmp_path, monkeypatch, T.RE6, patch)
+    monkeypatch.setattr(tools, '_autoplay_hacks', lambda *_: pytest.fail('No modifier writes permitted'))
+    monkeypatch.setattr(tools, '_playbook', lambda *_: pytest.fail('No unsupported native fallback'))
+    with pytest.raises(tools.Unsupported, match='RE6 native player ownership'):
+        tools.autoplay(tools.AutoplayIn(session_id=SID, op='start', mode='auto'), ctx)
+    assert not tools.AUTOPLAY
+
+
+@pytest.mark.parametrize('mode,mission', [('vision', None), ('mission', None), ('replay', None),
+                                       ('learned', None), ('auto', 'foreign-mission')])
+def test_re5_human_roles_cannot_be_started_through_an_unscoped_input_path(tmp_path, monkeypatch, mode, mission):
+    ctx = autoplay_context(tmp_path, monkeypatch, T.RE5, {'role': 'teammate_p2'})
+    monkeypatch.setattr(tools, '_autoplay_hacks', lambda *_: pytest.fail('No modifier writes permitted'))
+    with pytest.raises(tools.Unsupported, match='native session controller'):
+        tools.autoplay(tools.AutoplayIn(session_id=SID, op='start', mode=mode, mission=mission or ''), ctx)
+    assert not tools.AUTOPLAY
+
+
+def test_re5_missing_native_playbook_cannot_fall_through_to_p1_vision(tmp_path, monkeypatch):
+    ctx = autoplay_context(tmp_path, monkeypatch, T.RE5, {'role': 'observe_human'})
+    monkeypatch.setattr(tools, '_autoplay_hacks', lambda *_: [])
+    monkeypatch.setattr(tools, '_playbook', lambda *_: None)
+    monkeypatch.setattr(tools, '_start_imitation', lambda *_: pytest.fail('No button replay fallback'))
+    with pytest.raises(tools.Unsupported, match='native Mercenaries session controller is unavailable'):
+        tools.autoplay(tools.AutoplayIn(session_id=SID, op='start', mode='auto'), ctx)
+    assert not tools.AUTOPLAY
+
+
+def test_re5_human_role_rejects_a_different_playbook_before_it_can_send_p1_input(tmp_path, monkeypatch):
+    ctx = autoplay_context(tmp_path, monkeypatch, T.RE5, {'role': 'teammate_p2'})
+    monkeypatch.setattr(tools, '_autoplay_hacks', lambda *_: [])
+    monkeypatch.setattr(tools, '_playbook', lambda *_: SimpleNamespace(__name__='gbox.other_bot'))
+    monkeypatch.setattr(tools, '_start_playbook', lambda *_: pytest.fail('No other bot may own P1'))
+    with pytest.raises(tools.Unsupported, match='another playbook cannot take Player 1'):
+        tools.autoplay(tools.AutoplayIn(session_id=SID, op='start', mode='auto'), ctx)
+    assert not tools.AUTOPLAY
