@@ -704,6 +704,10 @@ class Screensaver:
                     'game_id': run.get('game_id')}, running):
             return self._stop(w, run, now, why)
         sid = run['session_id']
+        # its bot stops first: left running on the paused game it saw "nothing moved in RAM", reported a freeze, and the
+        # worker's freeze recovery relaunched the parked game cold (2026-10-24: "why is it loading the same game again?")
+        self.submit(JobRequest(tool='autoplay', input={'session_id': sid, 'op': 'stop'}, agent_use=True,
+                               require_worker=w['id']), actor=ACTOR, origin={'via': 'MercMode park', 'session_id': sid})
         pause = self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'pause', 'args': {'warm': True}},
                                        agent_use=True, require_worker=w['id']), actor=ACTOR,
                             origin={'via': 'MercMode keep warm', 'session_id': sid})
