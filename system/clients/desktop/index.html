@@ -197,6 +197,14 @@
   #rbside pre { white-space:pre-wrap; margin:4px 0 0; font-size:11px; color:var(--fg); }
   #rbcon { position:absolute; left:12px; right:12px; bottom:10px; height:130px; margin:0; overflow:auto; background:#000a; border-radius:8px; padding:8px 10px;
     font-size:11px; color:#cfd6e6; white-space:pre-wrap; backdrop-filter:blur(4px); }
+  /* reconnect flow (F5 / connection button): gBox's 3D visual behind a live flowchart of each recovery step */
+  #reconnect { display:none; position:fixed; inset:0; z-index:300; background:#05060af0; }
+  #reconnect.on { display:block; } #reconnect iframe { position:absolute; inset:0; width:100%; height:100%; border:0; pointer-events:none; opacity:.8; }
+  #reconnect .rc-head { position:absolute; top:18px; left:22px; right:22px; display:flex; gap:12px; align-items:baseline; text-shadow:0 1px 4px #000; font-size:15px; }
+  #reconnect .rc-flow { position:absolute; top:70px; left:22px; right:22px; display:flex; flex-wrap:wrap; gap:26px 34px; align-items:flex-start; }
+  #reconnect .rc-detail { display:block; max-width:190px; margin-top:6px; font-size:11px; color:#cfd6e6; white-space:normal; }
+  #reconnect .rc-actions { position:absolute; left:22px; bottom:22px; display:flex; gap:10px; }
+  #reconnect .rc-error { position:absolute; left:22px; right:22px; bottom:70px; color:#ffb4b4; font-size:13px; }
   #chatinput { display:flex; align-items:center; flex:0 1 32vw; min-width:180px; border:1px solid var(--line); border-radius:18px; background:var(--bg); padding:0 3px; }
   #chatinput:focus-within { border-color:var(--acc); }
   #chatbar #chatinput input { border:0; background:transparent; padding-left:5px; }
@@ -1250,6 +1258,7 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<script src="reconnect-flow.js"></script>
 <script src="pip-media.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/re4-modifiers.js"></script>
@@ -2553,11 +2562,15 @@ $('#connection-switch').onclick=async()=>{
   Object.assign(menu.style,{position:'fixed',top:'40px',left:'90px',zIndex:10000,background:'#1f2028',
     border:'1px solid #454651',padding:'14px',borderRadius:'8px',maxWidth:'390px',boxShadow:'0 8px 35px #0009'});
   menu.innerHTML='<b>Choose a library</b><p style="margin:8px 0">Games and tasks remain with the connection that started them.</p>';
+  const again=document.createElement('button');again.type='button';again.className='act';again.style.cssText='display:block;margin:8px 0;font-weight:600';
+  again.textContent='⟳ Reconnect to the Spark and watch MercMode';
+  again.onclick=()=>{menu.remove();try{sessionStorage.removeItem('gbox.connection.manual');}catch{}reconnectRun({quiet:false});};
+  menu.append(again);
   for(const [mode,label] of [['local','This PC — local games, mods and autoplay'],['remote','Remote library and streams']]){
     const button=document.createElement('button');button.type='button';button.style.display='block';button.style.margin='8px 0';
     button.textContent=label+(state[mode]?.ready?' · connected':' · reconnecting');button.disabled=mode===state.mode;
     button.onclick=async()=>{connectionSwitchBusy=true;button.disabled=true;
-      try{await gbox.selectConnection(mode);location.reload();}
+      try{try{sessionStorage.setItem('gbox.connection.manual',mode);}catch{}await gbox.selectConnection(mode);location.reload();}
       catch(error){toast(error.message);connectionSwitchBusy=false;menu.remove();}};
     menu.append(button);
   }
@@ -4639,8 +4652,60 @@ async function recoverStreams() {
 async function recoverAndRefresh() {
   toast('F5: reconnecting the stream…');
   try { await recoverStreams(); } catch {}
+  // F5 also runs the whole reconnect flow: the Spark, its library, the MercMode game, a live picture, the PiP
+  if (!COMPACT.on || !reconnectFlow.state().done) return reconnectRun({ quiet: false });
   return clientRefresh.refresh().catch(error => toast(error.message));
 }
+// ---- reconnect flow: whatever it takes to get the Spark's MercMode game on screen (clients/desktop/reconnect-flow.js) ----
+function reconnectOverlay() {
+  let el = $('#reconnect');
+  if (el) return el;
+  el = document.createElement('div'); el.id = 'reconnect'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Reconnecting gBox');
+  el.innerHTML = '<iframe tabindex="-1" aria-hidden="true"></iframe><div class="rc-head"><b>Reconnecting gBox</b><span class="mut" data-rc-status>starting…</span></div>' +
+    '<div class="rc-flow" data-rc-flow></div><div class="rc-error" data-rc-error role="alert"></div>' +
+    '<div class="rc-actions"><button class="act" data-rc-retry>Try again</button><button class="act" data-rc-local>Use This PC\'s library</button><button class="act" data-rc-close>Close</button></div>';
+  document.body.append(el);
+  el.querySelector('[data-rc-retry]').onclick = () => reconnectRun({ quiet: false });
+  el.querySelector('[data-rc-close]').onclick = () => el.classList.remove('on');
+  el.querySelector('[data-rc-local]').onclick = async () => { try { sessionStorage.setItem('gbox.connection.manual', 'local'); await gbox.selectConnection('local'); location.reload(); } catch (e) { toast(e.message); } };
+  return el;
+}
+function reconnectRender(state) {
+  const el = reconnectOverlay();
+  el.querySelector('[data-rc-flow]').innerHTML = state.steps.map(s => `<div class="rbn ${s.status === 'ok' ? 'ok' : s.status === 'run' ? 'run' : s.status === 'err' ? 'err' : ''}">` +
+    `${esc(s.label)}<small>${esc(s.sub)}</small><span class="rc-detail">${esc(s.detail || '')}</span></div>`).join('');
+  const running = state.steps.find(s => s.status === 'run');
+  el.querySelector('[data-rc-status]').textContent = state.done ? 'Connected' : running ? running.detail || running.label : state.error ? 'Needs attention' : '';
+  el.querySelector('[data-rc-error]').textContent = state.error || '';
+}
+const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
+  status: () => gbox.connectionStatus(),
+  restartSpark: () => gbox.sparkAction('restart'),
+  select: mode => gbox.selectConnection(mode),
+  reload: async () => { location.reload(); await new Promise(() => {}); },
+  remember: (k, v) => { try { sessionStorage.setItem(k, v); } catch {} },
+  forget: k => { try { sessionStorage.removeItem(k); } catch {} },
+  api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'request failed'); return r.data; },
+  pickHost: data => GBoxReconnectFlow.pickHost(data, S?.workerName),
+  pipSession: () => COMPACT.on ? (globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || COMPACT.sid) : null,
+  pipEnter: sid => compactController.enter({ sid }),
+  pipRestore: () => compactRestore(),
+  show: on => { const el = reconnectOverlay(); el.classList.toggle('on', !!on);
+    const frame = el.querySelector('iframe'); if (on && S?.apiUrl && !frame.src) frame.src = new URL('/viz/overlay.html?mode=random', S.apiUrl).href; },
+} });
+function reconnectRun(options) { return reconnectFlow.run(options).catch(error => toast(error.message)); }
+// On launch: back to the Spark and its MercMode game unless the operator chose This PC in this window
+// (operator 2026-10-24: "when I open gbox 90% of the time, it is to connect and watch an autobot mercmode play").
+setTimeout(() => {
+  let manual = null, resume = null;
+  try { manual = sessionStorage.getItem('gbox.connection.manual'); resume = sessionStorage.getItem(GBoxReconnectFlow.RESUME_KEY); } catch {}
+  if (resume || (manual !== 'local' && !EMB.sid && !COMPACT.on)) reconnectRun({ quiet: !resume });
+}, 4000);
+// Spark lost while watching: show the flow, which waits for it (and restarts the Spark service if it stays down)
+setInterval(async () => {
+  const st = await gbox.connectionStatus?.().catch(() => null);
+  if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false });
+}, 15000);
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === 'autoplay' && COMPACT.on && compactMedia) return compactMedia.toggleAutobot();
   if (k === "client-refresh" || k === "reset") return recoverAndRefresh();      // old main processes still name F5 "reset"
