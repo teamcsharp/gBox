@@ -19,23 +19,24 @@ def fire(memory, combat, state, now):
 
 def test_bow_gate_shrinks_with_range_and_rejects_old_five_degree_miss(tmp_path):
     assert all(a>b for a,b in zip(C.bow_tolerance(500),C.bow_tolerance(2000)))
-    assert math.degrees(C.bow_tolerance(2000)[0])<.6
+    assert math.degrees(C.bow_tolerance(2000)[0])==pytest.approx(1.5)   # the floor: a far Majini still gets arrows
     memory,state=scene()
     state['camera']['at']=(math.tan(math.radians(5))*1000,110.,1000.)
     combat=C.Combat(memory,{},learn_dir=tmp_path)
     assert 'r1' not in tick(combat,state,1.)['hold']
-    assert combat.stats['bow_aim_tolerance_deg'][0]<2.
+    assert combat.stats['bow_aim_tolerance_deg'][0]<2.5
     assert combat.stats['shots']==0
 
 
-def test_bow_small_far_error_is_corrected_inside_old_gun_deadzone(tmp_path):
+def test_bow_small_far_error_fires_while_still_correcting_inside_old_gun_deadzone(tmp_path):
+    # operator 2026-10-24: "have Sheva rapid firing these arrows" - release on the body, keep tracking meanwhile
     memory,state=scene()
     state['enemies'][0]['pos']=(0.,0.,1990.)
     supported_laserless(state)
     state['camera']['at']=(math.tan(math.radians(.58))*1990,110.,1990.)
     combat=C.Combat(memory,{},learn_dir=tmp_path)
     action=tick(combat,state,1.)
-    assert 'r1' not in action['hold'] and {'rleft','rright'} & action['hold']
+    assert 'r1' in action['hold'] and {'rleft','rright'} & action['hold']
     assert combat._yaw(math.radians(.58))==set()  # ordinary gun policy unchanged
 
 
@@ -130,3 +131,20 @@ def test_bow_reacquisition_gives_driver_real_supported_route_ticks(tmp_path):
     action=bot._tick(dict(state))
     assert 'lup' in action['hold'] and not ({'l1','r1'} & action['hold'])
     assert bot._following_route and bot.stats['phase']=='pursue'
+
+
+def test_near_majini_keeps_the_longbow_shooting_instead_of_repositioning(tmp_path):
+    # "She is sitting there not even fighting back": no damage measured for 3 s used to end the burst and walk off
+    memory,state=scene()
+    state['enemies'][0]['pos']=(0.,0.,600.)
+    supported_laserless(state)
+    state['camera']['at']=(0.,110.,600.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    tick(combat,state,1.)
+    triggers=0
+    for i in range(1,60):
+        now=1.+i*.1
+        memory.put(ACT,'>I',C.READY_VT if i%2 else C.FIRE_VT)
+        triggers+='r1' in tick(combat,state,now)['hold']
+    assert not combat.needs_firing_position and combat.stats.get('bow_ineffective_bursts',0)==0
+    assert triggers>=10
