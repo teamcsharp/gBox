@@ -6,6 +6,7 @@ inference, so a checkpoint remains usable when the next run moves to another mac
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import itertools
 import json
 import os
 import re
@@ -235,12 +236,15 @@ def snapshot():
 def assignments(nodes, items, reserved):
     """Free per-node agent slots, bounded by the global run limit. Unknown legacy claims still consume capacity."""
     active = [i for i in items.values() if i.get('job_id') in reserved]
-    slots = []
+    prime, others = [], []
     for node in sorted(nodes, key=lambda n: not n.get('primary')):
         if not node.get('enabled') or not node.get('capable'):
             continue
         used = sum(i.get('inference_node') == node['name'] for i in active)
-        slots.extend([node] * max(0, node['capacity'] - used))
+        (prime.extend if node.get('primary') else others.append)([node] * max(0, node['capacity'] - used))
+    # the other nodes' free slots take turns: cut at the global limit, a list of one node's slots then the next's gave
+    # every slot to the first one (2026-10-24: spark2's free slots filled the cap; DeepSeek ran 3 of its 16)
+    slots = prime + [n for turn in itertools.zip_longest(*others) for n in turn if n is not None]
     limit = min(pool_limit(),
                 sum(n['capacity'] for n in nodes if n.get('enabled') and n.get('capable')))
     return slots[:max(0, limit - len(reserved))], limit
