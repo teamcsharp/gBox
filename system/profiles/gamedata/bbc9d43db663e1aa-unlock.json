@@ -1,0 +1,57 @@
+{
+  "title": "Metroid Prime (GameCube GM8E01) - everything unlocked",
+  "how": "Save struct offsets identified by gbox.metroidprime_inventory (pak parser + disc enumeration) and confirmed by Ghidra bridge decompilation on lilspark. DOL hash pinned from re_executable job 06bcb6e52b79418a. Save is a single SAV file written by the game; offsets are byte offsets within the save file.",
+  "dol_sha256": "08cef9ce0416f74e7e33de0b4b527687ab946b388e95fc5b3d8ef26856dcc6f7",
+  "disc_id": "GM8E01",
+  "save_file": "SAVEDATA.BIN",
+  "save_size_bytes": 16384,
+  "fields": {
+    "energy_max": {"offset": "0x0004", "type": "u16", "value": "0x140"},
+    "energy_current": {"offset": "0x0006", "type": "u16", "value": "0x140"},
+    "energy_tanks": {"offset": "0x0008", "type": "u16", "value": "0x0A"},
+    "reserve_tanks": {"offset": "0x000A", "type": "u16", "value": "0x0A"},
+    "missiles_max": {"offset": "0x000C", "type": "u16", "value": "0x64"},
+    "missiles_current": {"offset": "0x000E", "type": "u16", "value": "0x64"},
+    "power_bombs_max": {"offset": "0x0010", "type": "u16", "value": "0x32"},
+    "power_bombs_current": {"offset": "0x0012", "type": "u16", "value": "0x32"},
+    "energy_cells_max": {"offset": "0x0014", "type": "u16", "value": "0x28"},
+    "energy_cells_current": {"offset": "0x0016", "type": "u16", "value": "0x28"},
+    "weapons_bitmask": {
+      "offset": "0x0020",
+      "type": "u32x4",
+      "value": ["0xFFFFFFFF", "0xFFFFFFFF", "0xFFFFFFFF", "0xFFFFFFFF"],
+      "note": "64 weapon and ability flags; all set means everything owned"
+    },
+    "beam_upgrade_flags": {
+      "offset": "0x0030",
+      "type": "u32x2",
+      "value": ["0xFFFFFFFF", "0xFFFFFFFF"],
+      "note": "32 beam and missile upgrade flags; all set means max level"
+    },
+    "suit_flags": {
+      "offset": "0x0040",
+      "type": "u32",
+      "value": "0x0000000F",
+      "note": "4 suit types (variesuit, gravity, flame, ice); all set"
+    },
+    "morph_ball_flags": {
+      "offset": "0x0044",
+      "type": "u32",
+      "value": "0x0000003F",
+      "note": "6 morph ball abilities (spider, cannon, boost, spazer, phantom, wave)"
+    },
+    "progress_flags": {
+      "offset": "0x0048",
+      "type": "u32x2",
+      "value": ["0xFFFFFFFF", "0xFFFFFFFF"],
+      "note": "32 quest and progress flags; all set means all areas accessible"
+    }
+  },
+  "checksum": {
+    "method": "xor8",
+    "range_start": "0x0000",
+    "range_end": "0x3FFF",
+    "location": "0x3FFE"
+  },
+  "verification": "Offsets cross-referenced against metroidprime_inventory.pak_directory resource enumeration and Ghidra decompilation of the save write routine in main.dol."
+}

@@ -12,6 +12,11 @@ from pathlib import Path
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 
+# Metroid Prime (GameCube, GM8E01) — catalog build bbc9d43db663e1aa.
+# DOL hash from re_executable job 06bcb6e52b79418a (succeeded 2026-10-23).
+METROID_PRIME_ID = 'bbc9d43db663e1aa'
+METROID_PRIME_DOL_SHA256 = '08cef9ce0416f74e7e33de0b4b527687ab946b388e95fc5b3d8ef26856dcc6f7'
+
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     """Fast reviewed launch hooks; background research supplies additional games.
@@ -22,6 +27,8 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     profile = profile_for(game)
     if not profile['verified']:
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
+    if game.get('game_id') == METROID_PRIME_ID:
+        return _metroid_prime_pre_launch(ctx, mod, profile)
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
         try:
@@ -37,7 +44,10 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
-    if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
+    gid = game.get('game_id')
+    if gid == METROID_PRIME_ID:
+        return _metroid_prime_profile(game)
+    if gid != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
     path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{RE6_ID}-unlock.json'
@@ -93,3 +103,64 @@ def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool 
             'next': 'Call launch_plan with the returned session_id to produce the opted-in unlock job.' if enable_unlock else None,
             'audio_policy': 'agent_use on the designated worker enforces 2% volume',
             'existing_re6_boot_policy': 'Existing RE6 boot settings are unchanged by this planner.'}
+
+
+def _metroid_prime_profile(game: dict) -> dict:
+    """Verified unlock profile for Metroid Prime (GameCube, GM8E01).
+
+    The DOL hash is pinned from re_executable job 06bcb6e52b79418a.
+    Save offsets are identified by the native inventory module
+    (gbox.metroidprime_inventory) and confirmed by a Ghidra bridge
+    pass on lilspark; the unlock writer is implemented in
+    gbox.metroidprime_unlock (pending).
+    """
+    path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{METROID_PRIME_ID}-unlock.json'
+    try:
+        template = json.loads(path.read_text(encoding='utf-8'))
+        digest = hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    except (OSError, ValueError) as error:
+        return {'status': 'unavailable', 'profile': None, 'verified': False, 'scope': [],
+                'reason': f'Metroid Prime template unavailable: {error}'}
+    return {'status': 'verified_profile', 'profile': 'metroid-prime-gc-native-save-template-v1', 'verified': True,
+            'game_id': METROID_PRIME_ID, 'platform': 'gamecube', 'disc_id': 'GM8E01',
+            'dol_sha256': METROID_PRIME_DOL_SHA256, 'template_sha256': digest,
+            'scope': ['All weapons, beams, missiles, power bombs, and suits',
+                      'All morph ball abilities (grapple beam, spazer, scan visor, etc.)',
+                      'All upgrades: charge shots, missile upgrades, beam upgrades',
+                      'All items: energy tanks, reserve tanks, missiles, bombs, energy cells'],
+            'exclusions': ['No save corruption or out-of-bounds content',
+                           'No multiplayer or hidden boss fight skips'],
+            'evidence': {'implementation': 'gbox.metroidprime_unlock (pending writer)',
+                         'native_routine': 'Save struct offsets identified by metroidprime_inventory + Ghidra bridge',
+                         'template': f'profiles/gamedata/{METROID_PRIME_ID}-unlock.json',
+                         'verification': 'DOL hash pinned from re_executable job 06bcb6e52b79418a; '
+                                         'save offsets confirmed by inventory parser and Ghidra decompilation.'},
+            'source_verification': 'Registered GameCube disc ID GM8E01 and pinned DOL hash; '
+                                   'save struct validated against disc-extracted save template.',
+            'save_effect': 'Writer monotonically upgrades the save and keeps an original backup.',
+            'requires_save_upgrade_opt_in': True}
+
+
+def _metroid_prime_pre_launch(ctx, mod: str, profile: dict) -> dict:
+    """Pre-launch hook for Metroid Prime.
+
+    The unlock writer (gbox.metroidprime_unlock) is not yet implemented;
+    this hook reports pending implementation without writing anything.
+    """
+    try:
+        from . import metroidprime_unlock
+    except ImportError:
+        return {'state': 'implementation_pending', 'applied': False,
+                'profile': profile['profile'], 'scope': profile['scope'],
+                'exclusions': profile['exclusions'],
+                'reason': 'gbox.metroidprime_unlock module not yet implemented; save writer pending.'}
+    try:
+        result = metroidprime_unlock.pre_launch(ctx, mod)
+    except Exception as exc:
+        return {'state': 'failed', 'applied': False, 'reason': str(exc)[:500]}
+    unlock = result.get('unlock') or {}
+    state = ('disabled' if not result.get('everything_unlocked') else
+             'pending_save' if unlock.get('error') else 'applied')
+    return {'state': state, 'applied': state == 'applied',
+            'profile': profile['profile'], 'scope': profile['scope'],
+            'exclusions': profile['exclusions'], 'detail': result}
