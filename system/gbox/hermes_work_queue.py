@@ -802,7 +802,8 @@ def tick(*, now=None):
         dispatched = []
         lane_reserved = reserved if local else reserved - _pinned_local_reservations(
             jobs, reserved, config, local_settings)
-        free = max(0, min(limit - len(lane_reserved), global_limit - len(reserved)))
+        away = hermes_pool.elsewhere(pool_state['nodes'], data['items'], reserved) if pooled else 0
+        free = max(0, min(limit - len(lane_reserved) + away, global_limit - len(reserved)))
         slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * free
         slots = slots[:free]
         by_id = {r['id']: r for r in requests}
