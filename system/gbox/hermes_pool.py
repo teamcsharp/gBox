@@ -246,10 +246,18 @@ def assignments(nodes, items, reserved):
     return slots[:max(0, limit - len(reserved))], limit
 
 
+def strict(s):
+    """The node's settings with no fallback to another node. Hermes 0.22 dropped `cron create --base-url`, so the
+    strict endpoint is pinned as its own provider ("<provider>-strict") instead of a per-job base URL."""
+    return s.model_copy(update={'provider': s.provider + '-strict',
+                                'proxy_url': s.proxy_url.replace('/nodes/', '/strict-nodes/')})
+
+
 def register_providers():
     from . import hermes_task_mode as M
     for s in node_settings().values():
         L.register_provider(M._home() / 'config.yaml', s)
+        L.register_provider(M._home() / 'config.yaml', strict(s))
 
 
 def routes(app, config, auth, gate):

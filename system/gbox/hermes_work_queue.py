@@ -674,7 +674,8 @@ def _pinned_local_reservations(jobs, reserved, config, settings):
     Unknown, unpinned or conflicting routes still consume cloud capacity.
     """
     from . import hermes_pool
-    configured = [settings, *hermes_pool.node_settings(settings).values()]
+    nodes = list(hermes_pool.node_settings(settings).values())
+    configured = [settings, *nodes, *map(hermes_pool.strict, nodes)]
     known = {(s.provider, s.model, s.proxy_url.rstrip('/')) for s in configured}
     providers = {}
     for entry in config.get('custom_providers') or []:
@@ -835,9 +836,10 @@ def tick(*, now=None):
                            'and missing evidence on the request, then finish this bounded inventory.')
             run_settings = hermes_pool.node_settings()[node['name']] if node else local_settings
             run_route = hermes_local.route(run_settings) if node else dict(primary)
+            if node and item.get('required_inference_node') is not None:
+                run_settings = hermes_pool.strict(run_settings)
+                hermes_local.register_provider(mode._home() / 'config.yaml', run_settings)
             pin = ['--model', run_settings.model, '--provider', run_settings.provider] if node else []
-            if item.get('required_inference_node') is not None:
-                pin += ['--base-url', run_settings.proxy_url.replace('/nodes/', '/strict-nodes/')]
             if local:
                 prompt = hermes_local.local_prompt(prompt, run_settings, lane=item['lane'])
                 if node:
