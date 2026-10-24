@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld("gbox", {
   clientView: () => ipcRenderer.invoke('client:view'),
   clientViewSave: (state, origin) => ipcRenderer.invoke('client:view-save', state, origin),
   clientVersion: () => ipcRenderer.invoke('client:version'),
+  streamPoster: rect => ipcRenderer.invoke('stream:poster', rect),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),
   embedKill: () => ipcRenderer.invoke("embed:kill"),

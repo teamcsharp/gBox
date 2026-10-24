@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const w = require('../clients/web/viz/stream-watchdog.js');
 
-function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), preloadOk = true, pixels = true, mini = false } = {}) {
+function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), preloadOk = true, pixels = true, mini = false, captureFrame } = {}) {
   let t = 0, nextTimer = 0; const timers = new Map(); const logs = [], preloaded = [], changes = [];
   const setTimer = (fn, ms) => { const id = ++nextTimer; timers.set(id, [t + ms, fn]); return id; };
   const clearTimer = id => timers.delete(id);
@@ -26,7 +26,7 @@ function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), prel
     readPicture: im => pixels && im?.naturalWidth ? im.picture : null,
     preload: (url, opts) => { preloaded.push(url); return state.preload ? state.preload(url, opts) : preloadOk
       ? Promise.resolve({ url, image: { naturalWidth: 640, picture: state.picture } }) : Promise.reject(new Error('x')); },
-    fetchHealth: mini ? null : (src, opts) => state.health(src, opts) });
+    fetchHealth: mini ? null : (src, opts) => state.health(src, opts),...(captureFrame?{captureFrame}:{} ) });
   const flush = () => new Promise(r => setImmediate(r));
   return { dog, doc, img, run, logs, preloaded, body, state, flush, changes, timers, now: () => t };
 }
@@ -52,6 +52,36 @@ test('an errored stream retains the last good frame and shows recovery then conn
 test('a failed poster refresh never replaces the held picture', async () => {
   const h = harness({ preloadOk: false }), el = h.img('/api/sessions/w-s/mjpeg?token=x'); h.doc.imgs.push(el);
   el.style.backgroundImage = 'url("held")'; h.dog.sweep(); await h.flush(); assert.equal(el.style.backgroundImage, 'url("held")');
+});
+
+test('reconnect holds the currently displayed picture and ignores an older still request finishing later',async()=>{
+  let finishCapture,finishOldPoster;
+  const h=harness({captureFrame:()=>new Promise(r=>{finishCapture=r;})}),el=h.img('/api/sessions/w-s/mjpeg');
+  h.doc.imgs.push(el);h.state.preload=()=>new Promise(r=>{finishOldPoster=r;});
+  h.dog.seed(el);await h.flush();
+  h.dog.reconnect(el,'test interruption');h.run(1000);await h.flush();
+  assert.equal(el.a.src,'/api/sessions/w-s/mjpeg','hold the existing image until capture completes');
+  finishCapture('data:image/jpeg;base64,CURRENT');await h.flush();
+  assert.match(el.a.src,/reconnect=1$/);assert.equal(el.style.backgroundImage,'url("data:image/jpeg;base64,CURRENT")');
+  finishOldPoster({image:{naturalWidth:640,picture:'old'}});await h.flush();
+  assert.equal(el.style.backgroundImage,'url("data:image/jpeg;base64,CURRENT")','a delayed earlier still cannot move playback backward');
+});
+
+test('a recovered connection or a changed session cancels a delayed reconnect capture',async()=>{
+  for(const changedSession of [false,true]){
+    let finish;const h=harness({captureFrame:()=>new Promise(r=>{finish=r;})}),el=h.img('/api/sessions/w-s/mjpeg');
+    h.dog.reconnect(el,'test interruption');h.run(1000);await h.flush();
+    if(changedSession)el.a.src='/api/sessions/w-new/mjpeg';
+    else{el.picture='live again';await h.dog.checkHealth(el);}
+    const src=el.a.src;finish('data:image/jpeg;base64,OLD');await h.flush();
+    assert.equal(el.a.src,src);assert.equal(el.style.backgroundImage,undefined);
+  }
+});
+
+test('unavailable compositor capture is bounded and cannot stop connection recovery',async()=>{
+  const h=harness({captureFrame:()=>new Promise(()=>{})}),el=h.img('/api/sessions/w-s/mjpeg');
+  h.dog.reconnect(el,'test interruption');h.run(1000);await h.flush();h.run(6000);await h.flush();
+  assert.match(el.a.src,/reconnect=1$/);assert.equal(h.dog.state(el).pending,false);
 });
 
 test('a followed game keeps its poster during replacement and connects the new stream',async()=>{

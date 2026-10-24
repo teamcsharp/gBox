@@ -22,6 +22,7 @@ const os = require("os");
 const path = require("path");
 const clientHandoff = require('./client-handoff.cjs');
 const clientViews = require('./client-view-store.cjs');
+const streamPoster = require('./stream-poster.cjs');
 const createMercsWindows = require('./mercs-window.cjs');
 let mercsWindows=null;
 const recordingExport = require('./recording-export.cjs');
@@ -971,6 +972,7 @@ ipcMain.handle('client:version', async event => {
   return { ...await clientVersions?.read(), activation: clientActivation };
 });
 ipcMain.handle('client:handoff', event => { assertClientSender(event); return handoffView; });
+ipcMain.handle('stream:poster', (event, rect) => streamPoster.capture(win, event, rect, compactWindow.state().on));
 ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); handoffView = null; return true; });
 function saveClientView(state = savedClientState, server = savedClientOrigin) {
   if (!state || state.v !== 1 || !win || win.isDestroyed()) return false;

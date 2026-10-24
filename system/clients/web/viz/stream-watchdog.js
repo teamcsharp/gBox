@@ -56,6 +56,18 @@
       } catch { return null; } // cross-origin mini player: bounded connection renewal instead
     };
   }
+  function picturePoster(doc) {
+    return image => {
+      if (!image?.naturalWidth) return null;
+      try {
+        const canvas = doc.createElement('canvas');
+        canvas.width = Math.min(960,image.naturalWidth);
+        canvas.height = Math.round(canvas.width*image.naturalHeight/image.naturalWidth);
+        canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+        return canvas.toDataURL('image/jpeg',.85);
+      } catch { return null; }
+    };
+  }
   // Used by browser input forwarding: releases are always allowed, new presses wait for the viewed stream.
   function inputAllowed(el, sid) {
     if (!isStream(el) || sessionOf(el.getAttribute('src')) !== sid) return true;
@@ -65,12 +77,13 @@
     interval = 4000, blankAfter = 8000, maxDelay = 10000, stallAfter = 3000, reattachAfterStall = 20000,
     requestTimeout = 5000, renewAfter = 60000, posterEvery = 15000, carryFor = 5000, log = () => {},
     env = typeof window !== 'undefined' ? window : null, preload = defaultPreload(env),
-    fetchHealth = defaultHealth(env), readPicture = pictureReader(doc) } = {}) {
+    fetchHealth = defaultHealth(env), readPicture = pictureReader(doc),
+    captureFrame = env?.GBOX_STREAM_CAPTURE_FRAME || picturePoster(doc) } = {}) {
     const state = new WeakMap(), tracked = new Set();
     let carry = null, stopped = false, started = false, loop, observer;
     const keyOf = el => isStream(el) ? healthUrl(el.getAttribute('src')) : '';
     const current = (el, s) => !stopped && el.isConnected && state.get(el) === s && keyOf(el) === s.key;
-    function cancelRetry(s) { clearTimer(s.retryTimer); s.pending = false; }
+    function cancelRetry(s) { clearTimer(s.retryTimer); s.pending = false; s.retryGeneration = (s.retryGeneration || 0) + 1; }
     function cancel(s) {
       if (!s) return;
       cancelRetry(s); for (const task of [...s.tasks]) task.cancel();
@@ -82,7 +95,7 @@
         cancel(s);
         s = { key, attempt: 0, since: now(), pending: false, trouble: null, stale: false, posterAt: -Infinity,
           poster: null, ended: false, badge: null, checking: false, healthAt: -Infinity, probing: false, tasks: new Set(),
-          hash: null, renderAt: now(), status: null, alt: el.getAttribute('alt') };
+          hash: null, renderAt: now(), status: null, posterVersion:0, alt: el.getAttribute('alt') };
         state.set(el, s); tracked.add(el);
         status(el, 'connecting');
       }
@@ -124,7 +137,7 @@
       }
     }
     function setPoster(el, url) {
-      const s = info(el); s.poster = url;
+      const s = info(el); s.poster = url; s.posterVersion++;
       if (el.style) Object.assign(el.style, { backgroundImage: `url("${url}")`, backgroundSize: 'contain',
         backgroundPosition: 'center', backgroundRepeat: 'no-repeat' });
     }
@@ -144,24 +157,33 @@
       const s = info(el);
       if (s.pending || s.ended || !current(el, s)) return false;
       s.pending = true; trouble(el, reason);
+      const generation = s.retryGeneration;
       const delay = Math.min(maxDelay, 1000 * 2 ** Math.min(s.attempt, 4));
       s.retryTimer = setTimer(() => {
-        s.pending = false;
         if (!current(el, s) || s.ended) return;
-        s.attempt += 1; s.since = now();
-        log(`game stream reconnect #${s.attempt} (${reason})`);
-        el.setAttribute('src', reconnectUrl(el.getAttribute('src'), s.attempt));
+        const replace = poster => {
+          if (!current(el,s) || s.ended || !s.pending || s.retryGeneration !== generation) return;
+          if (typeof poster === 'string' && /^data:image\/(jpeg|png);base64,/.test(poster)) setPoster(el,poster);
+          s.pending = false; s.attempt += 1; s.since = now();
+          log(`game stream reconnect #${s.attempt} (${reason})`);
+          el.setAttribute('src', reconnectUrl(el.getAttribute('src'), s.attempt));
+        };
+        try {
+          const held = captureFrame(el);
+          if (held?.then) bounded(s,() => held).then(replace,() => replace(null));
+          else replace(held);
+        } catch { replace(null); }
       }, delay);
       return true;
     }
     async function refreshPoster(el, compare = false) {
       const s = info(el); if (s.probing || s.ended) return;
       s.probing = true; s.posterAt = now();
-      const url = frameUrl(el.getAttribute('src'), s.posterAt), oldHash = s.hash;
+      const url = frameUrl(el.getAttribute('src'), s.posterAt), oldHash = s.hash, posterVersion=s.posterVersion;
       try {
         const frame = await bounded(s, opts => preload(url, opts));
         if (!current(el, s) || s.ended) return;
-        setPoster(el, url);
+        if (s.posterVersion === posterVersion) setPoster(el, url);
         if (compare && !s.stale) {
           const latest = readPicture(frame?.image), shown = readPicture(el);
           if (latest !== null && shown !== null && latest === shown) { s.hash = shown; s.renderAt = now(); calm(el); }

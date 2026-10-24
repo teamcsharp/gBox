@@ -1259,6 +1259,10 @@ window.taskVizCreate = canvas => {
 <script src="client-refresh.js"></script>
 <script>
 // file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
+window.GBOX_STREAM_CAPTURE_FRAME = el => {
+  const r = el.getBoundingClientRect();
+  return gbox.streamPoster({x:r.left,y:r.top,width:r.width,height:r.height});
+};
 window.GBOX_STREAM_FETCH_HEALTH = async src => {
   const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
   if (!sid) throw Error('Unknown stream session');
