@@ -40,6 +40,84 @@ def target_from_nj(nj: ninja.NJ, roles: dict[str, int], head_nodes: set[int] | N
             "height": float(np.ptp(pts[:, 1])), "roles": roles}
 
 
+def target_from_ge(body_data: bytes, nodes: list, filename: str,
+                   roles: dict[str, int] | None = None,
+                   head_nodes: set[int] | None = None) -> dict:
+    """Build a target spec for GoldenEye Z-files (F3D_OLD opcodes 0x04/0x18).
+
+    Parses the node tree and extracts vertex positions from render nodes,
+    then builds the same spec dict as target_from_nj() for compatibility.
+
+    Args:
+        body_data: Raw inflated Z-file bytes
+        nodes: List of parsed nodes from parse_nodes()
+        filename: Name of the body file (for logging)
+        roles: Optional role->node mapping (defaults to first 8 nodes)
+        head_nodes: Optional set of node indices to treat as head nodes
+
+    Returns:
+        Target spec dict with T, W, parent, ground, head_h, joints, height, roles
+    """
+    head_nodes = head_nodes or set()
+    roles = roles or {}
+
+    # Collect all vertex positions from render nodes (op 0x04/0x18)
+    all_verts = []
+    bone_positions = []
+
+    for i, node in enumerate(nodes):
+        if node.op not in (0x04, 0x18):
+            continue
+
+        # Get vertex positions from triangles
+        if node.triangles:
+            for tri in node.triangles:
+                for c in tri:
+                    if len(c) >= 3 and c[2]:
+                        all_verts.append(c[2]["pos"])
+
+        # Collect bone positions from node transforms (if available)
+        transform = node.record.get("transform")
+        if transform is not None:
+            bone_positions.append(np.array(transform[:3, 3], float))
+
+    # If no triangles found, use bone positions as fallback
+    if not all_verts and bone_positions:
+        all_verts = bone_positions
+
+    # Fallback: use node positions if everything else failed
+    if not all_verts:
+        all_verts = [np.array([0.0, 0.0, 0.0])]
+
+    pts = np.array(all_verts, float)
+
+    # Compute head height from upper portion of points
+    if head_nodes:
+        head_pts = [v for i, v in enumerate(pts) if i in head_nodes]
+        heads = np.array(head_pts) if head_pts else pts
+    else:
+        # Use top 20% of points by Y coordinate as head
+        heads = pts[pts[:, 1] > np.percentile(pts[:, 1], 80)] if len(pts) > 0 else pts
+
+    # Build W matrices (identity if not available - will be replaced by bind pose)
+    joints = len(nodes) if nodes else 1
+    W = [np.eye(4, dtype=float) for _ in range(joints)]
+    T = np.array([w[:3, 3] for w in W])
+
+    parent = [-1 if i == 0 else (i - 1) for i in range(joints)]
+
+    return {
+        "T": T,
+        "W": W,
+        "parent": parent,
+        "ground": float(pts[:, 1].min()) if len(pts) > 0 else 0.0,
+        "head_h": float(np.ptp(heads[:, 1])) if len(heads) > 0 else 0.0,
+        "joints": joints,
+        "height": float(np.ptp(pts[:, 1])) if len(pts) > 0 else 0.0,
+        "roles": roles
+    }
+
+
 def _dedupe_textures(prims: list[dict]) -> None:
     seen = {}
     for p in prims:
