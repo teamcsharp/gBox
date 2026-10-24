@@ -411,7 +411,7 @@ ANTHROPIC_VERSION = '2023-06-01'
 CACHE = {'type': 'ephemeral'}
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 THINKING = ('thinking', 'redacted_thinking')
-THINKING_SWITCH_HOSTS = ('api.deepseek.com', 'api.kimi.com')   # OpenAI-format upstreams with a thinking:{type} switch
+THINKING_SWITCH_HOSTS = ('api.deepseek.com', 'api.kimi.com', 'api.z.ai')   # OpenAI-format upstreams with a thinking:{type} switch
 STOP_REASONS = {'tool_use': 'tool_calls', 'max_tokens': 'length', 'model_context_window_exceeded': 'length',
                 'refusal': 'content_filter'}
 REPLAY_LIMIT = 4096
