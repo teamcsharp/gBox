@@ -10,7 +10,7 @@ import struct
 
 import pytest
 
-from gbox.formats import xci
+from gbox.formats import hfs0, xci
 
 
 def _pad(b: bytes, n: int) -> bytes:
@@ -41,22 +41,22 @@ def build_headerless_xci() -> bytes:
 
 
 def build_hfs0_image(files: dict[str, bytes]) -> bytes:
-    """Synthetic plaintext HFS0 at offset 0 for read_hfs0 round-trip."""
-    entries = bytearray()
-    names = bytearray()
-    blob = bytearray()
-    name_off = 0
-    hash_off = 0
+    """Synthetic plaintext HFS0 at offset 0 matching the shared 0x40-byte entry layout."""
+    import hashlib
+    entries = b""
+    names = b""
+    no = 0
+    off = 0
     for name, payload in files.items():
         nb = name.encode("utf-8")
-        entries += struct.pack("<IIIIII", name_off, len(nb), hash_off, len(payload), 0, 0)
-        names += nb
-        name_off += len(nb)
-        blob += payload
-        hash_off += len(payload)
+        # 0x40-byte entry: u64 offset, u64 size, u32 name_off, u32 hashed_size, u64 reserved, 32B sha256
+        entries += struct.pack("<QQIIQ", off, len(payload), no, len(payload), 0)
+        entries += hashlib.sha256(payload).digest()
+        names += nb + b"\x00"
+        no += len(nb) + 1
+        off += len(payload)
     header = xci.HFS0_MAGIC + struct.pack("<III", len(files), len(names), 0)
-    table = header + entries + names + bytes((-((len(header) + len(entries) + len(names))) % 16))
-    return bytes(table + blob)
+    return bytes(header + entries + names + b"".join(files.values()))
 
 
 def make_read_at(image: bytes):
@@ -102,10 +102,9 @@ def test_head_too_short_is_unknown():
 def test_hfs0_round_trip():
     files = {"main": b"HELLO", "icon": b"\x00\x01\x02\x03", "a.txt": b"abc"}
     img = build_hfs0_image(files)
-    table = xci.read_hfs0(make_read_at(img), 0)
-    assert table.file_count == 3
-    assert table.string_table_size == sum(len(k) for k in files)
-    names = {e.name: e.size for e in table.entries}
+    entries = xci.read_hfs0(make_read_at(img), 0)
+    assert len(entries) == 3
+    names = {e.name: e.size for e in entries}
     assert names == {k: len(v) for k, v in files.items()}
 
 
@@ -116,7 +115,8 @@ def test_hfs0_no_magic_raises():
 
 
 def test_hfs0_implausible_count_raises():
-    hdr = xci.HFS0_MAGIC + struct.pack("<III", 0, 0, 0)
+    # count beyond MAX_ENTRIES trips the shared reader's geometry guard
+    hdr = xci.HFS0_MAGIC + struct.pack("<III", hfs0.MAX_ENTRIES + 1, 0, 0)
     with pytest.raises(ValueError):
         xci.read_hfs0(make_read_at(hdr + bytes(64)), 0)
 
