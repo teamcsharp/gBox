@@ -3789,6 +3789,18 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             for k, v in kv.items():
                 text = yaml_set(text, section, k, v)
         cfg.write_text(text, encoding="utf-8")
+        # BLUS30491 on the Spark/GB10 rendered Mercenaries' world black while
+        # its HUD and native gameplay continued. Keep framebuffer writeback
+        # scoped to this title; RPCS3 selects this file by the game's serial.
+        re5_cfg = d / "custom_configs" / "config_BLUS30491.yml"
+        re5_cfg.parent.mkdir(parents=True, exist_ok=True)
+        re5_text = re5_cfg.read_text(encoding="utf-8") if re5_cfg.exists() else text
+        # A custom config must receive the same managed audio/input/boot fixes
+        # as the global one while retaining other operator graphics choices.
+        for section, kv in RPCS3_LINUX_SETTINGS.items():
+            for k, v in kv.items():
+                re5_text = yaml_set(re5_text, section, k, v)
+        re5_cfg.write_text(yaml_set(re5_text, "Video", "Write Color Buffers", "true"), encoding="utf-8")
         gui = d / "GuiConfigs" / "CurrentSettings.ini"
         gui.parent.mkdir(parents=True, exist_ok=True)
         ini = gui.read_text(encoding="utf-8") if gui.exists() else ""

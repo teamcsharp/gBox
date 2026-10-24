@@ -116,6 +116,27 @@ def test_rpcs3_faudio_uses_real_sdl_pulse_driver_and_preserves_explicit_override
     assert provision.rpcs3_linux_env(cfg(tmp_path))['SDL_AUDIO_DRIVER'] == 'pipewire'
 
 
+def test_re5_framebuffer_writeback_is_title_scoped_and_retains_custom_graphics(tmp_path):
+    ad = adapters.RPCS3LinuxAdapter(cfg(tmp_path))
+    custom = ad.home / 'custom_configs'
+    custom.mkdir(parents=True)
+    re5 = custom / 'config_BLUS30491.yml'
+    re5.write_text('Video:\n  Write Color Buffers: false\n  Anisotropic Filter Override: 16\n'
+                   'Audio:\n  Renderer: Cubeb\n')
+    other = custom / 'config_BLUS30855.yml'
+    other.write_text('Video:\n  Write Color Buffers: false\n')
+    ad.write_settings()
+    text = re5.read_text()
+    assert '  Write Color Buffers: true' in text
+    assert '  Anisotropic Filter Override: 16' in text
+    assert '  Renderer: FAudio' in text and '  Renderer: Cubeb' not in text
+    assert '  Accurate RSX reservation access: true' in text
+    assert 'Write Color Buffers: true' not in (ad.home / 'config.yml').read_text()
+    assert other.read_text() == 'Video:\n  Write Color Buffers: false\n'
+    ad.write_settings()
+    assert re5.read_text() == text
+
+
 def test_ini_set_keeps_rpcs3s_own_lines():
     rpcs3 = ("[Meta]\nattachCommandLine=false\n\n[main_window]\ninfoBoxEnabledWelcome=true\n"
              "lastExplorePathPUP=/home/x\n\n[Shortcuts]\ngame_window_restart=F4\n")
