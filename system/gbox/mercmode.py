@@ -42,6 +42,11 @@ TITLES = {
                'game_ids': ('0ed22ae742e1b56b',), 'playable': False, 'modes': ['mercenaries'],
                'reason': 'The 3DS round RAM map (HP, timer, menu cursor, mission index) has no measured offsets; '
                          'the pinned .code findings are static, not runtime addresses, so there is no verified combat driver yet.'},
+    're3': {'name': 'Resident Evil 3: Nemesis', 'map_id': 'SLUS-00923', 'platform': 'psx',
+            'game_ids': (), 'playable': False,
+            'modes': ['mercenaries'],
+            'reason': 'RE3 Operation Mad Jackal has no reviewed PSX RAM map, combat driver, menu cursor, '
+                      'timer or terminal-round reader yet (see mercs/titles/re3_psx.py).'},
 }
 
 
@@ -58,7 +63,7 @@ def normalize(patch, current=None):
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
-        raise ValueError('Choose distinct titles from re4, re5 and re6')
+        raise ValueError('Choose distinct titles from re4, re5, re6 and re3')
     out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
     if len(out['queue']) > QUEUE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
