@@ -137,6 +137,8 @@ def listing(path: str | Path, *, head: int = 64, max_files: int = 4000, exe_limi
         L = Listing(str(p), "gdrom", files)
     elif suf == ".chd":
         return _chd_listing(p, head, max_files, exe_limit, deep, deep_bytes)
+    elif suf in (".cso", ".ciso"):
+        return _cso_listing(p, head, max_files, exe_limit, deep, deep_bytes)
     elif suf == ".gcz":
         from ..gcz import GCZ
         z = GCZ(str(p))
@@ -222,6 +224,41 @@ def _chd_listing(path, head, max_files, exe_limit, deep, deep_bytes):
         return _populate(Listing(str(path), 'iso9660', files), read, head, max_files, deep, deep_bytes)
     finally:
         disc.close()
+
+
+def _cso_listing(path, head, max_files, exe_limit, deep, deep_bytes):
+    """CISO/CSO compressed disc image (PSP and PS2 collections ship .cso): the ISO9660 filesystem is read
+    through the decompressing reader (gbox.cso.CSO) without writing the plain image to disk.
+
+    gbox.cso parses the 24-byte CISO header and the block table and inflates the blocks; this wires that
+    reader into the generic disc listing, so a .cso reaches the fingerprinter and the inventory stage
+    instead of failing with "not a disc image, ROM, archive or folder gBox can list" (#2507).
+    """
+    from ..cso import CSO, CSOError
+    try:
+        img = CSO(path)
+    except CSOError as e:
+        raise ValueError(f"{Path(path).name}: {e}") from e
+    try:
+        img.seek(16 * 2048)
+        pvd = img.read(2048)
+        if pvd[1:6] != b"CD001":
+            raise ValueError(f"{Path(path).name}: not an ISO9660 image (no CD001 volume descriptor at sector 16)")
+        lba, size = iso9660.pvd_root(pvd)
+        table = iso9660.files(iso9660.file_reader(img), lba, size, max_depth=16, max_dir_size=1 << 22)
+        files = [{"path": k, "size": v[1]} for k, v in table.items()]
+
+        def read(name, n):
+            lba, s = table[name]
+            img.seek(lba * 2048)
+            return img.read(min(s, exe_limit if n is None else n))
+
+        notes = [f"CISO compressed image: {img.info['blocks']} blocks of {img.info['block']} bytes, "
+                 f"{img.size} bytes uncompressed"]
+        L = Listing(str(path), "iso9660", files, notes=notes)
+        return _populate(L, read, head, max_files, deep, deep_bytes)
+    finally:
+        img.close()
 
 
 def _dol(read, off: int) -> bytes:
