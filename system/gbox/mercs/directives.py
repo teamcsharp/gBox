@@ -29,7 +29,7 @@ PATTERNS = (
     ('mine', r'\b(drop|plant|lay|place) (a |the )?mine\b|\bmine (and|then) (flee|run)\b'),
     ('missing', r'\b(you are |you\'re |keep |keeps )?(missing|miss(es)? (him|them|every|mostly))\b|\b(aim|shooting) (is )?(off|wrong|left|right)\b'),
     ('next_area', r'\b(next|another) (area|time bonus|bonus|hourglass|room|objective|checkpoint)\b|\bgo (to )?(the )?next\b|\bmove on\b'),
-    ('score', r'\b(score|combo)\b.*\b(up|increase|more|build|higher)\b|\b(increase|raise|build|get) (the |your )?(score|combo)\b'),
+    ('score', r'\b(score|combo)\b.*\b(up|increas\w*|more|build|higher)\b|\b(increas\w*|raise|build|get) (the |your )?(score|combo)\b'),
     ('hunt', r'\b(go after|hunt|seek|find|chase) (the |those |these )?(enemies|enemy|foes|zombies|majini|ganados|them)\b'),
     ('explore', r'\b(explore|navigate (more|the level|the map)|map (the )?(level|world)|see more of the level)\b'),
     ('fight', r'^\W*(fight( them| these| him)?|attack|shoot( them| him)?|stop standing( there)?|engage)\W*$'

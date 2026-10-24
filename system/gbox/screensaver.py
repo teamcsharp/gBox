@@ -695,6 +695,10 @@ class MercModeBoundary(BaseModel):
     witness: dict
 
 
+class DirectiveIn(BaseModel):
+    command: str
+
+
 class MercModePreparation(BaseModel):
     worker_id: str
     result: dict
@@ -885,9 +889,6 @@ def install(app, store, config, auth, submit, workers, archive):
     @app.get("/api/autoplay/telemetry/{sid}")
     def autoplay_telemetry_get(sid: str, actor=Depends(auth)):
         return telemetry_get(sid)
-
-    class DirectiveIn(BaseModel):
-        command: str
 
     @app.get("/api/sessions/{sid}/directive")
     def directive_get(sid: str, actor=Depends(auth)):

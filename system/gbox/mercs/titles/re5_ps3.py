@@ -1846,7 +1846,10 @@ class Bot:
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
+        order = self._operator_command(p, snap, live, now)          # the operator's instant command (chat dropdown / words)
         operator = self.map_goals.resolve(snap, now)
+        if operator is not None and order in ("fight", "hunt", "score"):
+            operator = None                                          # the Majini first: no collection detour right now
         if operator is not None:
             if close_foes:
                 self.map_goals.defer('Dispatching a nearby exposed threat before collection')
@@ -1923,6 +1926,10 @@ class Bot:
                 else f"time bonus first ({decision.reason})"
             if not allowed:
                 tgt = None
+        if order in ("fight", "hunt", "score") and live:
+            tgt = None                                               # ahead of the time bonuses; not back to the stand
+            self.at_stand = False
+            self.stats["directive_status"] = "fighting: Majini first, bonuses after"
         if close_foes and not checkpoint_lease:
             tgt = None
             self.stats["phase"] = "clear_nearby"
@@ -3285,6 +3292,49 @@ class Bot:
             return 0.0
         k = (n + 1) // 2
         return min(k * DETOUR_STEP, DETOUR_MAX) * (1 if n % 2 else -1)
+
+    def _operator_command(self, p, snap, live, now):
+        """The operator's instant commands (gbox.mercs.directives). One-shots act on the tick they arrive; the standing modes
+        (fight / hunt / score) are returned for _tick to apply. A command never presses a key itself: the normal combat,
+        navigation, heal and prompt logic still decides every press. None: no command applies."""
+        from ..directives import Reader
+        if getattr(self, "commands", None) is None:
+            self.commands = Reader()
+        cmd, fresh = self.commands.current(self.stats, time.time())
+        if cmd is None:
+            return None
+        self.stats["directive_active"] = cmd
+        if fresh:
+            self.stats["directive_status"] = "acting: " + cmd
+        target = self.plan_target or {}
+        if cmd in ("next_area", "repetitive", "explore") and fresh:
+            if target.get("kind") in ("time", "combo", "bonus", "waypoint", "stand") and target.get("id") is not None:
+                self.bonus_skip[target["id"]] = now + (30.0 if cmd == "next_area" else 20.0)
+            elif target.get("id") is not None and self.combat is not None:
+                self.combat.blocked_until[target["id"]] = now + 15.0     # this enemy / spot: not for a while
+            self.route, self.route_len, self.route_at = None, None, -math.inf
+            self.stuck_since = None
+            self.stats["directive_status"] = {"next_area": "skipped this goal: heading for the next one",
+                "repetitive": "dropped the repeated action and its route; planning a new one",
+                "explore": "route reset; planning through the rest of the level"}[cmd]
+            return None
+        if cmd == "mine" and fresh:
+            cadence = getattr(getattr(self, "mines", None), "cadence", None)
+            if cadence is not None and cadence.enabled:
+                cadence.last, cadence.position = now - cadence.interval - 1.0, None     # due now; the escape follows it
+                self.stats["directive_status"] = "mine due now: planting at the next safe moment, then leaving"
+            else:
+                self.stats["directive_status"] = "mine placement is switched off (the mines setting)"
+            return None
+        if cmd == "missing" and fresh:
+            if self.combat is not None and hasattr(self.combat, "widen_aim"):
+                self.stats["directive_status"] = self.combat.widen_aim(now)
+            else:
+                self.stats["directive_status"] = "aim learning reset: the next shots re-measure this weapon"
+                for key in ("aim_bias_deg", "aim_offset_deg"):
+                    self.stats.pop(key, None)
+            return None
+        return cmd if cmd in ("fight", "hunt", "score") else None
 
     def _walk(self, p, want: float, now: float, *, precise=False, run=True) -> set:
         """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck

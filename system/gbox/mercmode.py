@@ -307,9 +307,10 @@ def inventory(store, worker, cfg=None):
             prepared=host_preparation(store,worker)
             for game in games:
                 gid=game['game_id']
+                # a restart gives the same PC a new worker id: the registered aliases keep its launch history
                 prior=next((s for s in store.all('session') if s.get('game_id')==gid
-                    and s.get('session_id','').startswith(worker.get('id','')+'-')
-                    and s.get('state') in ('running','ended')),None)
+                    and s.get('state') in ('running','ended')
+                    and _same_host_worker(store,s.get('session_id','').split('-')[0],worker)),None)
                 candidate={'verified':False,'reason':'ROM access has not been verified on this PC'}
                 probe=(prepared.get('games') or {}).get(gid) or {}
                 if prior:

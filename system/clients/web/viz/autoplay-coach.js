@@ -33,13 +33,28 @@
       typeof x.clientId === "string" && /^[A-Za-z0-9_-]{8,96}$/.test(x.clientId) && Number.isFinite(x.at) && now >= x.at && now - x.at <= RETRY_AGE).slice(-50); }
     catch { return []; }
   }
+  // Instant commands (operator 2026-10-24): the bot acts on these within a second (gbox/mercs/directives.py has the same ids).
+  const COMMANDS = [
+    ["fight", "Fight them!", "Stop standing there and fight the foes"],
+    ["next_area", "Go to the next area", "Leave this goal for the next time bonus / area"],
+    ["explore", "Navigate more of the level", "Reset the route and explore"],
+    ["hunt", "Go after the enemies", "Seek, find and dispatch them"],
+    ["score", "Go for score increases", "Build the combo"],
+    ["repetitive", "You are doing a repetitive action", "Stop it and go forward"],
+    ["mine", "Drop a mine and flee", "Plant a mine, then leave"],
+    ["missing", "You are missing", "Adjust the aim for this weapon"],
+  ];
   const HOLD_MS = 4000;                         // the settled full status stays this long before it folds
   // the status gives way before the box: it shrinks first (ellipsis, full text in its tooltip)
   const CSS = `#session-head .coach{display:inline-flex;align-items:center;gap:6px;flex:1 1 240px;min-width:min(100%,200px);max-width:640px}
     #session-head .coach>input,#session-head .coach>.micwrap{flex:1 1 auto;min-width:min(100%,140px);width:auto}
     #session-head .coach .coach-st{flex:0 4 auto;min-width:0;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     #session-head .coach .coach-st:empty{display:none}
-    #session-head .coach .coach-st[data-state=error]{color:var(--bad)}`;
+    #session-head .coach .coach-st[data-state=error]{color:var(--bad)}
+    .coach .coach-cmds{flex:0 0 auto;width:24px;height:23px;padding:0;border:1px solid #666;border-radius:3px;background:#18181d;color:#fff;cursor:pointer;-webkit-app-region:no-drag}
+    .coach-menu{position:fixed;z-index:200;min-width:260px;background:#1d1d22;border:1px solid #555;border-radius:8px;padding:4px;box-shadow:0 8px 24px #0009;-webkit-app-region:no-drag}
+    .coach-menu button{display:block;width:100%;text-align:left;background:none;border:0;color:#e8e8ee;padding:6px 10px;border-radius:5px;cursor:pointer;font-size:13px}
+    .coach-menu button:hover,.coach-menu button:focus-visible{background:#ffffff1a}.coach-menu small{display:block;color:#aaa;font-size:11px}`;
 
   function statusText(note, captures) {
     return [`Note #${note ?? "?"} sent`, ...KINDS.map(k => `${LABEL[k]} ${MARK[(captures && captures[k] || {}).state] || MARK.pending}`)]
@@ -223,6 +238,8 @@
 
   function html(sid) {
     return `<span class="coach" data-coach data-sid="${ESC(sid)}">` +
+      `<button type="button" class="coach-cmds" data-coach-cmds aria-haspopup="menu" aria-expanded="false" ` +
+      `aria-label="Instant commands for the bot" title="Instant commands: the bot does it at once">▾</button>` +
       `<input type="text" class="coach-in" maxlength="2000" autocomplete="off" placeholder="${ESC(PLACEHOLDER)}" ` +
       `aria-label="Coach the autoplay (Enter sends the note)" title="Tell the autoplay what to do better. Each note goes to this ` +
       `game's coaching ticket with a frame, a save state (gBox's own slot, never yours) and the game's RAM.">` +
@@ -247,6 +264,34 @@
       if (onState) onState(v);
     };
     const ctl = create({ sid, api, render, ...opts });
+    const cmdButton = box.querySelector("[data-coach-cmds]");
+    let menu = null;
+    const closeMenu = () => { if (menu) { menu.remove(); menu = null; cmdButton?.setAttribute("aria-expanded", "false"); } };
+    async function command(id) {
+      closeMenu();
+      const label = (COMMANDS.find(c => c[0] === id) || [])[1] || id;
+      render({ state: "sending", text: `${label}…` });
+      try {
+        const out = await api(`/api/sessions/${encodeURIComponent(sid)}/directive`, { command: id });
+        render({ state: "done", text: `${label} · sent`, title: out?.directive?.label || "" });
+      } catch (error) { render({ state: "error", text: error.message || "Command not sent", title: error.message || "" }); }
+    }
+    if (cmdButton) {
+      cmdButton.addEventListener("click", e => {
+        e.preventDefault(); e.stopPropagation();
+        if (menu) { closeMenu(); return; }
+        const doc = box.ownerDocument, r = cmdButton.getBoundingClientRect();
+        menu = doc.createElement("div"); menu.className = "coach-menu"; menu.setAttribute("role", "menu");
+        menu.innerHTML = COMMANDS.map(([id, label, hint]) =>
+          `<button type="button" role="menuitem" data-cmd="${ESC(id)}">${ESC(label)}<small>${ESC(hint)}</small></button>`).join("");
+        Object.assign(menu.style, { left: Math.max(4, r.left) + "px", top: r.bottom + 4 + "px" });
+        menu.addEventListener("click", ev => { const b = ev.target.closest("[data-cmd]"); if (b) { ev.stopPropagation(); command(b.dataset.cmd); } });
+        menu.addEventListener("keydown", ev => { ev.stopPropagation(); if (ev.key === "Escape") { closeMenu(); cmdButton.focus(); } });
+        doc.body.append(menu); cmdButton.setAttribute("aria-expanded", "true"); menu.querySelector("button")?.focus();
+        const away = ev => { if (menu && !menu.contains(ev.target) && ev.target !== cmdButton) { closeMenu(); doc.removeEventListener("mousedown", away, true); } };
+        doc.addEventListener("mousedown", away, true);
+      });
+    }
     if (drafts.has(sid)) input.value = drafts.get(sid);
     input.addEventListener("input", () => { if (input.value) drafts.set(sid, input.value); else drafts.delete(sid); });
     input.addEventListener("keydown", e => {
@@ -262,10 +307,10 @@
     });
     for (const ev of ["keyup", "keypress"]) input.addEventListener(ev, e => e.stopPropagation());
     ctl.resume();
-    return { send: ctl.send, dispose: ctl.dispose, input, status };
+    return { send: ctl.send, dispose() { closeMenu(); ctl.dispose(); }, input, status, command };
   }
 
-  const api = { html, mount, create, statusText, compactText, detailText, settled, PLACEHOLDER, HOLD_MS,
+  const api = { html, mount, create, COMMANDS, statusText, compactText, detailText, settled, PLACEHOLDER, HOLD_MS,
                 _drafts: drafts, _recent: recent };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxAutoplayCoach = api;
