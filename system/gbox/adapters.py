@@ -2331,6 +2331,52 @@ D-Pad/Left = `F`
 D-Pad/Right = `H`
 """
 
+    paused: bool = False
+
+    def _tree(self) -> list[int]:
+        """Dolphin's process and every descendant (the flatpak wrapper's bwrap and dolphin-emu under it)."""
+        pids, todo = [], [self.proc.pid] if self.proc and self.proc.poll() is None else []
+        while todo:
+            pid = todo.pop()
+            pids.append(pid)
+            for task in Path(f"/proc/{pid}/task").glob("*/children"):
+                try:
+                    todo += [int(c) for c in task.read_text().split()]
+                except (OSError, ValueError):
+                    pass
+        return pids
+
+    def _signal_tree(self, sig) -> int:
+        n = 0
+        for pid in self._tree():
+            try:
+                os.kill(pid, sig)
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    def pause(self) -> dict:
+        """The GDB stub when it is attached; otherwise (Linux, normal play) the whole process tree stops (SIGSTOP):
+        emulation and audio freeze where they are and SIGCONT carries on - the MercMode warm pool parks RE4 this way
+        (2026-10-24: without the stub every RE4 turn was a cold five-minute launch)."""
+        if self.dbg or HOST_OS == "windows":
+            return super().pause()
+        import signal
+        n = self._signal_tree(signal.SIGSTOP)
+        if not n:
+            raise Unsupported(f"{self.name}: no running process to pause")
+        self.paused = True
+        return {"state": "PAUSED", "via": "SIGSTOP", "processes": n}
+
+    def resume(self) -> dict:
+        if self.dbg or HOST_OS == "windows":
+            return super().resume()
+        import signal
+        n = self._signal_tree(signal.SIGCONT)
+        self.paused = False
+        return {"state": "PLAYING", "via": "SIGCONT", "processes": n}
+
     # ---- Gecko codes run by Dolphin itself (incl. C2 ASM hooks gBox's memory-write engine can't do) ----
     @staticmethod
     def _disc_id(rom: str) -> str | None:

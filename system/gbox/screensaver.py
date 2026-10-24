@@ -885,6 +885,19 @@ class Screensaver:
             elif head and worker and any(r['playable'] and r['title'] == head['title']
                                          for r in mercmode.inventory(self.store, worker, cfg)):
                 rotate = True                    # the DJ's next round is another game: switch after this round
+            if rotate and worker and self._warm_capable(worker, cfg):
+                # the next title still loading in the background: this one plays another round meanwhile instead of a
+                # loading screen (operator 2026-10-24: "they could play a 2nd round of mercenaries and continue gaming
+                # while the game loads. i want the autobot playing the entire time"); swapped at a later boundary
+                nxt = (ahead or {}).get('title') or (run.get('mercmode_prelaunch') or {}).get('title')
+                row = self._warm(worker, self.store.running_sessions(), now).get(nxt) if nxt else None
+                job = self.store.get('job', (row or {}).get('job')) or {}
+                loading = row is not None and row.get('state') == 'prelaunch' and (
+                    not row.get('session_id') or job.get('state') != 'succeeded')
+                extra = run.get('mercmode_extra_rounds', 0)
+                if loading and extra < mercmode.EXTRA_ROUNDS_MAX:
+                    rotate = False
+                    run = run | {'mercmode_extra_rounds': extra + 1}
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
