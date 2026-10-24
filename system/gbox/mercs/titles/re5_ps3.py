@@ -3034,9 +3034,19 @@ class Bot:
                         and all(mesh.floor_segment(a,b) for a,b in zip([p['pos']]+candidate,candidate)):
                     route,checkpoint_exit = candidate,True
                     break
+        for distance in (450., 300.):                       # a shorter measured way off the bomb before none at all
+            if route:
+                break
+            route = mesh.retreat(p["pos"], escape["pos"], distance, blocked_links=self.blocked_links,
+                                 link_penalties=self.nav_learning.link_penalties(mesh))
         if not route:
-            self.stats["mine_retreat_status"] = "blocked: no measured escape; gunplay/checkpoints resume, planting deferred"
-            return None
+            # never stand on his own bomb (operator 2026-10-24: "Why does Wesker place a mine and just stand on it? He
+            # should place a mine and then run away from it"): straight away from it, the walk's own wall handling on
+            self.stats["mine_retreat_status"] = "no measured escape: walking straight away from the planted bomb"
+            self.stats["mine_retreats_unmeasured"] = self.stats.get("mine_retreats_unmeasured", 0) + 1
+            self.aiming_since = None
+            away = heading(p["pos"][0] - escape["pos"][0], p["pos"][2] - escape["pos"][2])
+            return {"hold": self._walk(p, away, now)}
         escape['checkpoint_exit'] = checkpoint_exit
         target = {"ptr": "mine_escape:" + str(escape["actor"]), "pos": route[-1]}
         self.plan_target = {"kind": "waypoint", "id": target["ptr"], "pos": target["pos"]}
