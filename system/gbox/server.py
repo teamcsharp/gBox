@@ -3730,6 +3730,8 @@ def create_app(config: Config) -> FastAPI:
         names = built_mods.display_names(store)       # a session of a renamed build: mod_title (Mini window title)
         favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
         running = store.running_sessions()
+        # #2870: a "running" row whose PC has gone offline can't be connected to (it showed a blank view). Say so.
+        pcs = {w["id"]: bool(w.get("online")) for w in workers()} if running else {}
         if not include_ended:
             rows = sorted(running, key=lambda s: s.get("started") or 0, reverse=True)
         elif limit > 0:
@@ -3759,6 +3761,10 @@ def create_app(config: Config) -> FastAPI:
                     row["mod_title"] = named
                 if f"{s_.get('game_id')}/{build}" in favs:
                     row["mod_favorite"] = True
+            if s_.get("state") == "running":
+                wid = s_.get("worker_id") or str(s_["session_id"]).split("-")[0]
+                if wid in pcs and not pcs[wid]:
+                    row["worker_online"] = False     # its PC is offline: the Sessions view never follows it
             if s_.get("state") == "running" and _stopping(s_["session_id"]):
                 row["stopping"] = True              # Stop was pressed; the worker is killing the emulator (#1504)
             # Hermes / observers keep heavy work off the operator's game; the Sessions view leaves an ended demo or agent
