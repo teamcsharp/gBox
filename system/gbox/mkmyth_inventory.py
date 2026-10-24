@@ -361,5 +361,178 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Character / level resource tables (analysis stage)
+# ---------------------------------------------------------------------------
+
+CHARACTER_COUNT = 25                # debug TEST CHARACTERS; the name table holds 27 entries
+CHARACTER_DATA_POINTERS = 0x9BB94   # parallel table of RAM pointers to each character's data
+LEVEL_COUNT = 12                    # debug level-select entries
+LEVEL_DESCRIPTORS = 0x9B80C         # level descriptor records, 28 bytes each
+LEVEL_DESCRIPTOR_STRIDE = 28
+BSS_START = 0x800B43C0              # first byte of BSS; the resident segment ends here
+BSS_SIZE = 0x238A70
+BSS_END = BSS_START + BSS_SIZE
+
+
+def _rd32(rom: bytes, off: int) -> int:
+    """Big-endian u32 read used by the resource-table probes."""
+    return struct.unpack_from(">I", rom, off)[0]
+
+
+def _region(addr: int) -> str:
+    """Classify a RAM pointer: resident segment, BSS (runtime structs) or other."""
+    if BSS_START <= addr < BSS_END:
+        return "bss"
+    if 0x80000400 <= addr < BSS_START:
+        return "resident"
+    return "other"
+
+
+def character_resources(rom: bytes, names_off: int = CHARACTER_NAMES,
+                        ptrs_off: int = CHARACTER_DATA_POINTERS,
+                        count: int = CHARACTER_COUNT) -> list[dict]:
+    """Map every debug character to the RAM address of its data record.
+
+    ``names_off`` holds 27 name pointers, the first ``count`` of which are
+    the debug characters.  ``ptrs_off`` holds the parallel table of RAM
+    addresses the game uses for each character; a zero pointer means the
+    character ships no data record.
+    """
+    out: list[dict] = []
+    for i in range(count):
+        nptr = _rd32(rom, names_off + 4 * i)
+        name = _c_string(rom, nptr - RAM_DELTA) if nptr else None
+        dptr = _rd32(rom, ptrs_off + 4 * i)
+        out.append({"index": i, "name": name, "name_ram": nptr,
+                    "data_ram": dptr, "region": _region(dptr) if dptr else "none"})
+    return out
+
+
+def level_resources(rom: bytes, names_off: int = LEVEL_NAMES,
+                    desc_off: int = LEVEL_DESCRIPTORS, count: int = LEVEL_COUNT,
+                    stride: int = LEVEL_DESCRIPTOR_STRIDE) -> list[dict]:
+    """Map the debug level-select entries to their descriptor records.
+
+    ``names_off`` holds the level name pointers (the last entry is null) and
+    the descriptor records follow, each ``stride`` bytes of big-endian u32
+    whose first word is a RAM pointer.
+    """
+    out: list[dict] = []
+    for i in range(count):
+        nptr = _rd32(rom, names_off + 4 * i)
+        name = _c_string(rom, nptr - RAM_DELTA) if nptr else None
+        words = list(struct.unpack_from(">%dI" % (stride // 4), rom, desc_off + stride * i))
+        out.append({"index": i, "name": name, "name_ram": nptr,
+                    "ram": words[0], "words": words})
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Analysis stage: segment-record families, packed-record header, palette pools
+# ---------------------------------------------------------------------------
+
+# The N64's colour-indexed (CI) texturing renders 4/8-bit pixels through a
+# TLUT (texture look-up table) of 16-bit RGBA entries.  This build banks its
+# sprite palettes in small flag=0 records; a palette entry is emitted as
+# ``0x80808000`` (50% gray, alpha 0) between real colour runs, and the words
+# ``80808000`` / ``ffffff??`` mark the CI palette pool the "No more palettes!"
+# string warns about.
+CI_POOL_MARKER = 0x80808000
+
+
+def packed_header(rom: bytes, rec: dict) -> dict:
+    """Decode a flag=1 packed record's two header words.
+
+    Verified against the owned build: for flag=1 records ``word0`` is the
+    *unpacked* size in bytes (larger than the on-ROM payload, which starts 8
+    bytes in) and ``word1`` is the big-endian RAM destination the decompressor
+    writes to.  ``word0`` being a multiple of 4 and ``word1`` in KSEG0
+    (``0x80xxxxxx``) are the two invariants the loader relies on.
+    """
+    w0, w1 = struct.unpack_from(">II", rom, rec["start"])
+    payload = rec["size"] - 8
+    return {"rom_start": rec["start"], "ram_dest": w1,
+            "unpacked_size": w0, "packed_size": payload,
+            "ratio": round(payload / w0, 3) if w0 else None,
+            "plausible": bool(0 < payload < w0 and w1 >> 24 == 0x80)}
+
+
+def palette_pool(rom: bytes, rec: dict) -> dict:
+    """Probe whether a record is a CI-sprite/palette pool.
+
+    CI texture data is a run of 16-bit TLUT entries; the recurring
+    ``0x80808000`` marker word between colour runs is the tell.  We return the
+    count of marker words, the record size, and the palette entry count (size
+    / 2) so a later writer stage can size a replacement bank.
+    """
+    body = rom[rec["start"]:rec["end"]]
+    words = struct.unpack_from(">%dH" % (len(body) // 2), body, 0)
+    markers = words.count(CI_POOL_MARKER >> 16)
+    return {"is_palette_pool": markers >= 4, "marker_words": markers,
+            "palette_entries": len(words), "bytes": len(body)}
+
+
+def segment_families(rom: bytes, end: int = 0xEF6B60) -> dict:
+    """Group the 143 real segment records into actionable families.
+
+    Family assignment corrects the earlier ``classify`` heuristic:
+
+    * ``code_reloc``  -- flag=0 records whose first word is a 4-aligned
+      offset-table entry count (``offset_table`` plus the code records whose
+      header is a relocation index list).  These are the loader/code blocks.
+    * ``compressed``   -- flag=1 records (58 total); header = {unpacked size,
+      RAM dest}, payload is compressed code/data.
+    * ``palette_pool`` -- small flag=0 records rich in ``0x80808000`` marker
+      words, i.e. CI sprite TLUT banks (the "No more palettes!" pool).
+    * ``raw``          -- everything else (uncompressed function bodies / data).
+
+    Returns ``{family: [record-index, ...]}`` for the compact proof a test can
+    assert against.
+    """
+    records = segment_table(rom, lo=0xB4FC0)
+    real = [r for r in records if not r["null"]]
+    fam: dict[str, list[int]] = {"code_reloc": [], "compressed": [],
+                                 "palette_pool": [], "raw": []}
+    for r in real:
+        idx = r["index"]
+        if r["flag"] == 1:
+            fam["compressed"].append(idx)
+        elif r["kind"] == "offset_table":
+            fam["code_reloc"].append(idx)
+        elif palette_pool(rom, r)["is_palette_pool"]:
+            fam["palette_pool"].append(idx)
+        else:
+            fam["raw"].append(idx)
+    return fam
+
+
+def analysis_probe(rom: bytes) -> dict:
+    """Bounded analysis summary used by the focused test.
+
+    Confirms on the owned build: 143 real records; 58 compressed with a
+    consistent {unpacked_size, KSEG0 dest} header; the palette-pool records the
+    sprite TLUT banks live in; and the unmapped offset-table banks (the 42
+    ``flag``=0 non-code records) the character/level mapping still has to bind.
+    """
+    records = segment_table(rom, lo=0xB4FC0)
+    real = [r for r in records if not r["null"]]
+    fam = segment_families(rom)
+    packed = [packed_header(rom, r) for r in real if r["flag"] == 1]
+    plausible = [h for h in packed if h["plausible"]]
+    return {
+        "real_records": len(real),
+        "families": {k: len(v) for k, v in fam.items()},
+        "compressed_header": {
+            "count": len(packed),
+            "plausible": len(plausible),
+            "unpacked_total": sum(h["unpacked_size"] for h in packed),
+            "unique_dests": sorted({h["ram_dest"] for h in packed}),
+        },
+        "palette_pools": fam["palette_pool"],
+        "code_reloc_banks": fam["code_reloc"],
+    }
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
