@@ -34,16 +34,25 @@ def report_watch(store, viewer: str, sid: str | None, *, now=None):
               (time.time() if now is None else now) + WATCH_TTL_S})
 
 
-def watched_sessions(store, wid: str, *, now=None) -> list[dict]:
+def kept_by(job: dict | None) -> set:
+    """Sessions a launch keeps running (game_link host, the MercMode warm pool's parked / playing titles)."""
+    inp = (job or {}).get("input") or {}
+    return ({inp.get("keep_session") or ""} | set(inp.get("keep_sessions") or [])) - {""}
+
+
+def watched_sessions(store, wid: str, *, now=None, keep=()) -> list[dict]:
+    """Watched running sessions on this worker that a launch would close; `keep` (kept_by) are left out: a launch
+    that keeps them up does not take the operator's view away (2026-10-24: every MercMode preload was rejected
+    while the operator watched the playing title)."""
     import time
     now = time.time() if now is None else now
-    ids = {r.get("session_id") for r in store.all("session_watch") if r.get("until", 0) > now}
+    ids = {r.get("session_id") for r in store.all("session_watch") if r.get("until", 0) > now} - set(keep)
     return [s for sid in ids if sid and worker_of(sid) == wid
             and (s := store.get("session", sid)) and s.get("state") == "running"]
 
 
-def watching_reason(store, wid: str) -> str | None:
-    watched = watched_sessions(store, wid)
+def watching_reason(store, wid: str, keep=()) -> str | None:
+    watched = watched_sessions(store, wid, keep=keep)
     if watched:
         titles = ", ".join(s.get("title") or s["session_id"] for s in watched)
         return f"Watching {titles} in a connected stream or PiP. Close that view before loading another game on this PC."
