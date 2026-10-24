@@ -1,9 +1,0 @@
-﻿[
-    "docs/evidence/re5-mercenaries-curriculum.json",
-    "docs/re5-learning-status.md",
-    "gbox/adapters.py",
-    "gbox/mercs_bot.py",
-    "tests/test_mercs_boot_ram_retry.py",
-    "tests/test_rpcs3_guest_reservation.py",
-    "tests/test_rpcs3_linux.py"
-]

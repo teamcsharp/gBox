@@ -13,3 +13,9 @@ dist/
 
 # per-machine settings written by the setup wizard (gBox.sh)
 system/gbox.local-*.toml
+
+# Local investigation captures, deployment staging, and generated test data.
+/.work/
+
+# PowerShell's machine-local module cache when running tools in this workspace.
+/Microsoft/Windows/PowerShell/
