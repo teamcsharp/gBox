@@ -1235,6 +1235,24 @@ class Bot:
                 marked.append(k)
         return marked
 
+    def trace_start(self, round_id: str) -> None:
+        """This round's route map (gbox.mercs.round_map): finishes the last one first."""
+        from .mercs.round_map import RoundTrace
+        self.trace_finish()
+        room = f"r{self.room:03x}" if self.room is not None else "room"
+        out = self.learn_dir.parent / "round_maps" / room if self.learn_dir else None
+        self.trace = RoundTrace(out, "G4BE08", room, round_id, CELL)
+
+    def trace_finish(self) -> None:
+        trace, self.trace = getattr(self, "trace", None), None
+        if trace is None:
+            return
+        lm = self.learned
+        summary = trace.finish(lm.walked if lm else (), lm.blocked if lm else ())
+        if summary:
+            self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
+            self.stats["last_round_verdict"] = summary.get("verdict")
+
     def _stuck_event(self, p, now, goal_xz, cells: list, action: str, replanned) -> None:
         """Why he stopped, in words for the watch panel (stats stuck_reason) and as a record (stuck_log, the last
         STUCK_LOG_MAX; save() appends them to r<room>-stuck.jsonl): where he stood, his heading, the cell(s) learned as
@@ -1248,6 +1266,8 @@ class Bot:
               "stuck_n": self.stuck_n}
         self.stuck_log.append(ev)
         del self.stuck_log[:-STUCK_LOG_MAX]
+        if getattr(self, "trace", None) is not None:
+            self.trace.event(now, "stuck", px, pz, action=action)
         self._stuck_pending.append(ev)
         self.stats["stuck_events"] += 1
         what = f"wall learned at cell {cells[0]}" if cells else "blocked, no learned map"
@@ -1619,6 +1639,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 continue
             if was_in:
                 left_at = now                          # a round just ended: its results come up first
+                bot.trace_finish()                     # its route map (round_maps/r<room>/)
             if rerun is None and (left_at is None or now - left_at > MENU_AFTER):
                 # the screen from RAM and the one press towards the next round (gbox.re4_menus), never a blind one:
                 # up + A had walked from the Result screen to the main title's START, a story game with the hooks in
@@ -1633,6 +1654,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         if not was_in:
             boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats["rounds"] += 1
+            bot.trace_start(boundary_id)
             bot.stats["screen"] = "playing"            # the menus' last screen no longer shows on the watch panel
             bot.save()                                 # what the last round taught
             was_in = True
@@ -1642,6 +1664,9 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             bot.stats['rounds']+=1
         if room_on and s.get('player') and s.get('hp',0)>0:
             playing_observed=True
+            if getattr(bot, "trace", None) is not None:
+                px_, py_, pz_ = s['player']['pos']
+                bot.trace.add(now, px_, pz_, py_)
             if ad is not None and armed_round != bot.stats['rounds']:
                 arm_round(ad, bot.stats)
                 armed_round = bot.stats['rounds']
@@ -1690,6 +1715,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         sleep(tick_s)
     hold(set())
     if recorder is not None:recorder.finish(clock(),'interrupted',bot.stats)
+    bot.trace_finish()                                 # a stopped / frozen round still leaves its route map
     bot.save()
     return bot.stats
 
