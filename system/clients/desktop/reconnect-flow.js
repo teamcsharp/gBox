@@ -50,7 +50,9 @@
     async function mercmode() {
       set('mercmode', 'run', 'Looking for the MercMode game…');
       const pick = data => io.pickHost(data);
-      let data = await io.api('/api/mercmode');
+      // a busy control plane can be slow to answer: keep asking for a minute before calling it a failure
+      let data = await waitFor(() => io.api('/api/mercmode'), 60000, 2000);
+      if (!data) throw Object.assign(Error('The Spark did not answer the MercMode status for a minute.'), { step: 'mercmode' });
       let host = pick(data);
       if (!host) throw Object.assign(Error('No gBox PC is registered for MercMode.'), { step: 'mercmode' });
       if (!host.settings?.enabled) {

@@ -72,3 +72,10 @@ test('the shown PC prefers this PC playing, then any PC playing, then the Spark'
   assert.equal(F.pickHost({ hosts: [{ name: 'lilspark', online: true }] }, 'x').name, 'lilspark');
   assert.equal(F.pickHost({ hosts: [] }, 'x'), null);
 });
+
+test('a MercMode status that times out is asked again instead of failing the flow', async () => {
+  const r = rig(); let fails = 2; const api = r.io.api;
+  r.io.api = async (path, body) => { if (path === '/api/mercmode' && !body && fails-- > 0) throw Error('The operation was aborted due to timeout'); return api(path, body); };
+  const out = await r.ctl.run();
+  assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1');
+});

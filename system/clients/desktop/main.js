@@ -286,7 +286,7 @@ async function apiRaw(p, body, method) {               // method: PATCH / PUT / 
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
     signal: AbortSignal.timeout(coachTransport.timeoutMs(p, method) || (p === "/api/tasks" || p.startsWith("/api/tasks?") ? 35000
-      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") ? 20000 : 8000)),
+      : p.startsWith("/api/asset-groups") || p.startsWith("/api/assets?") || p.startsWith("/api/mercmode") ? 20000 : 8000)),
   });
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
