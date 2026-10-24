@@ -146,3 +146,14 @@ def test_the_same_ladder_three_times_is_left_alone_and_its_bonus_skipped(tmp_pat
     assert bot._stage_loop(foot,18.)                                         # third use: banned
     assert bot.bonus_skip[0x304029c0] > 18. and bot.stats['stage_loops_broken'] == 1
     assert bot._stage_loop(top,30.) and not bot._stage_loop({'pos':(2000.,0.,0.)},31.)
+
+
+def test_a_majini_in_front_on_a_walkway_within_engage_counts_as_in_view():
+    # operator 2026-10-24: long-distance rocket Majini on a walkway were never taken on
+    p = {'pos':(0.,0.,0.),'rot':0.}
+    from gbox.mercs.titles.re5_ps3 import heading
+    ahead = R.heading(0.,2600.)
+    p['rot'] = ahead
+    assert R.Bot._in_view(p, {'pos':(0.,450.,2600.)})                  # 26 m, up on a walkway, straight ahead
+    assert not R.Bot._in_view(p, {'pos':(0.,0.,-2600.)})               # behind him
+    assert not R.Bot._in_view(p, {'pos':(0.,0.,4000.)})                # beyond ENGAGE
