@@ -1247,6 +1247,10 @@ class Bot:
         trace, self.trace = getattr(self, "trace", None), None
         if trace is None:
             return
+        if trace.room == "room" and self.room is not None:          # the stage was read after the round began
+            trace.room = f"r{self.room:03x}"
+            if trace.out_dir is not None:
+                trace.out_dir = trace.out_dir.parent / trace.room
         lm = self.learned
         summary = trace.finish(lm.walked if lm else (), lm.blocked if lm else ())
         if summary:
