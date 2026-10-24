@@ -2293,6 +2293,9 @@ class Bot:
         elif now - started >= SWITCH_ACK_S:
             count = self.switch_failures[wanted] = self.switch_failures.get(wanted, 0) + 1
             cooldown = min(60.0, SWITCH_FAIL_S * 2 ** min(count - 1, 3))
+            if current is not None and current.get("type") == 3:
+                cooldown = SWITCH_EVERY_S * 2   # a recovery item in hand is no weapon: retry soon (live 2026-10-24: a
+                                                # 60 s wait on one grid kept the First Aid Spray in hand through a fight)
             self.switch_blocked[wanted] = now + cooldown
             self.stats["weapon_switch_failures"] = self.stats.get("weapon_switch_failures", 0) + 1
             self.stats["weapon_switch_status"] = f"unconfirmed; grid {wanted[1]} waits {cooldown:g}s"
@@ -2590,8 +2593,13 @@ class Bot:
         guns = [s for s in inv if s.get("type") == 1 and s.get("rounds", 0) > 0 and re5_weapons.quick_key(s)
                 and (re5_weapons.WEAPONS.get(s.get("item")) is not None)
                 and re5_weapons.WEAPONS[s["item"]].family in re5_weapons.DIRECT]
-        gun = self._preferred_gun({'inventory':inv}) \
-            or next((s for s in guns if re5_weapons.inventory_key(s) == state["return"]), None) or next(iter(guns), None)
+        # a gun whose switch did not take waits its cooldown; any other loaded gun is tried meanwhile
+        open_ = [s for s in guns if self.switch_blocked.get(re5_weapons.inventory_key(s), 0) <= now]
+        preferred = self._preferred_gun({'inventory':inv})
+        if preferred is not None and self.switch_blocked.get(re5_weapons.inventory_key(preferred), 0) > now and open_:
+            preferred = None
+        gun = preferred \
+            or next((s for s in open_ if re5_weapons.inventory_key(s) == state["return"]), None) or next(iter(open_), None)
         if gun is not None and not gun.get("hand"):
             return self._switch_weapon(gun, now, "resume after healing")
         return None

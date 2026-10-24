@@ -119,3 +119,18 @@ def test_recovery_item_in_hand_outside_a_heal_switches_back_to_a_gun(tmp_path,mo
     monkeypatch.setattr(bot,'_heal_return_weapon',lambda inv,st,now: calls.append(inv) or {'tap':'dright'})
     assert bot.tick(snap)=={'tap':'dright'}
     assert calls and bot.stats['weapon_policy'].startswith('recovery item in hand')
+
+
+def test_back_to_a_gun_tries_another_loaded_gun_while_the_first_switch_waits(tmp_path,monkeypatch):
+    # live 2026-10-24: "grid 3 waits 60s" with the First Aid Spray in hand; the other guns were never tried
+    from gbox.mercs.titles import re5_weapons as W
+    guns = [g for g in W.WEAPONS if W.WEAPONS[g].family in W.DIRECT][:2]
+    inv = [{'slot':1,'id':0x304,'item':4,'type':3,'rounds':1,'grid':1,'hand':True},
+           {'slot':2,'id':0x100|guns[0],'item':guns[0],'type':1,'rounds':12,'grid':3,'hand':False},
+           {'slot':3,'id':0x100|guns[1],'item':guns[1],'type':1,'rounds':12,'grid':5,'hand':False}]
+    bot = R.Bot(learn_dir=tmp_path,clock=lambda:10.)
+    monkeypatch.setattr(bot,'_preferred_gun',lambda snap: None)
+    bot.switch_blocked[W.inventory_key(inv[1])] = 70.
+    picked = []
+    monkeypatch.setattr(bot,'_switch_weapon',lambda gun,now,why: picked.append(gun['grid']) or {'tap':'x'})
+    assert bot._heal_return_weapon(inv,{'return':None},10.)=={'tap':'x'} and picked==[5]
