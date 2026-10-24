@@ -1,3 +1,0 @@
-Checkpoint: Draft PR #553 merged, workspace up to date.
-Status: All RE6 unlock tests pass (19/19). Template verified, ISO cached.
-Next: Live acceptance testing pending on JAYBUILTFINALE worker.
