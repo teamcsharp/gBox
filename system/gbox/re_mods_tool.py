@@ -882,13 +882,16 @@ def random_pool(g) -> list[tuple[int, int | None]]:
 
 
 def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, ammo: int = 200, on: bool = True,
-                   damage=None, fire_x=None, equip_now: bool = False) -> dict:
+                   damage=None, fire_x=None, equip_now: bool = False, weapon: str = "") -> dict:
     """The per-round randomizer (like re5 random_cheats / loadout): `guns` random distinct guns from the weapon table
     with their ammo, written as this character's Merc loadout records (the first is equipped); seed repeats a draw.
     damage (a firepower multiplier) is applied to every drawn gun's class so a weak pick still kills."""
     import random
     rng = random.Random(seed)
     pool = random_pool(g)
+    if weapon:                          # a fixed gun instead of a draw (operator 2026-10-24: "give Leon a rapid fire handcannon")
+        wanted = str(weapon).lower().replace(" ", "")
+        pool = [p for p in pool if R.item_name(p[0]).lower().replace(" ", "") == wanted] or pool
     if not pool:
         raise RuntimeError("no givable weapons in the weapon table")
     picks = rng.sample(pool, min(max(1, int(guns)), len(pool)))
