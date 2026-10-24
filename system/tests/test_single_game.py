@@ -223,3 +223,58 @@ def test_native_save_state_uploads_artifact_for_resume(monkeypatch, tmp_path):
     assert snapshots[0]['artifact'] == hashlib.sha256(b'state-bytes').hexdigest()
     assert uploaded and uploaded[0][0] == 'game.sav'
     assert uploaded[0][1]['session'] == 'old'
+
+
+class _Emu(SimpleNamespace):
+    """A fake emulator with real pause/resume methods (gbox.tools looks them up on the type)."""
+    def pause(self, **kw):
+        self.events.append(('pause', self.sid, kw))
+        if getattr(self, 'fail', False):
+            raise RuntimeError('debugger not attached')
+        self.paused = True
+
+    def resume(self, **kw):
+        self.events.append(('resume', self.sid, kw))
+        self.paused = False
+
+    def stop_game(self):
+        self.events.append(('stop', self.sid, self.paused))
+
+
+def test_warm_pool_games_stay_up_or_close_without_a_save(monkeypatch, tmp_path):
+    """MercMode warm pool: keep_sessions stay up; a paused warm game is resumed (SIGCONT) and closed without a save."""
+    events = []
+    emu = {sid: _Emu(sid=sid, events=events, checkpoint_state='path', proc=None, paused=sid != 'old')
+           for sid in ('cur', 'parked', 'warm', 'old')}
+    emu['warm'].gbox_warm = True
+    sessions = {sid: (ad, {'game_id': sid}) for sid, ad in emu.items()}
+    monkeypatch.setattr(tools, 'SESSIONS', sessions)
+    monkeypatch.setattr(tools, 'state_transfer', lambda inp, ctx: events.append(('save', inp.session_id)) or {'result': {'artifact': inp.session_id}})
+    monkeypatch.setattr(tools, 'track_emulator', lambda *a, **k: None)
+    ctx = SimpleNamespace(server=None, config=SimpleNamespace(runtime=tmp_path), progress=lambda *a: None)
+    snapshots = tools._close_previous_games(ctx, keep=['', 'cur', 'parked'])
+    assert set(sessions) == {'cur', 'parked'}
+    assert ('save', 'warm') not in events and ('save', 'old') in events
+    assert events.index(('resume', 'warm', {})) < events.index(('stop', 'warm', False))   # running again before the kill
+    assert {'session_id': 'warm', 'game_id': 'warm', 'artifact': None, 'warm': True} in snapshots
+    assert not [e for e in events if e[1] in ('cur', 'parked')]
+
+
+def test_warm_launch_is_paused_once_running_or_reported_unpaused():
+    events = []
+    ok = _Emu(sid='a', events=events, paused=False)
+    assert tools._park_warm(ok) == {'paused': True} and ok.gbox_warm is True and ok.paused
+    broken = _Emu(sid='b', events=events, paused=False, fail=True)
+    out = tools._park_warm(broken)
+    assert out['paused'] is False and 'debugger' in out['reason'] and not getattr(broken, 'gbox_warm', False)
+    assert tools._park_warm(SimpleNamespace(name='steam'))['paused'] is False
+
+
+def test_session_op_warm_pause_and_resume_mark_the_game(monkeypatch):
+    events = []
+    ad = _Emu(sid='s', events=events, paused=False)
+    monkeypatch.setattr(tools, 'SESSIONS', {'w1-s': (ad, {'game_id': 'g'})})
+    out = tools.session_op(tools.SessionIn(session_id='w1-s', op='pause', args={'warm': True}), SimpleNamespace())
+    assert events[-1] == ('pause', 's', {}) and ad.gbox_warm is True and out['result']['warm'] is True
+    tools.session_op(tools.SessionIn(session_id='w1-s', op='resume', args={'warm': False}), SimpleNamespace())
+    assert events[-1] == ('resume', 's', {}) and ad.gbox_warm is False

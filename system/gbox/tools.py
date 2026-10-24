@@ -353,6 +353,10 @@ class LaunchIn(BaseModel):
     examine: bool | None = None            # RenderDoc inside the emulator for Examine 3D (None = config examine_ready, off by default)
     rewind: bool | None = None             # Select+L2 checkpoint rewind where the emulator has no native one (None = gbox.toml [rewind])
     keep_session: str = ""                 # game_link: launch alongside the named live session instead of closing games first
+    keep_sessions: list[str] = []          # MercMode warm pool: these live sessions stay up too (agent-owned, checked by
+                                           # the control plane before it asks); every other game still closes first
+    warm: bool = False                     # MercMode warm pool: once running, the game is paused (no emulation, no audio)
+                                           # and waits off-screen for its turn; a later session_op resume swaps it in
     capture_backend: str = ""              # Examine 3D capture session (#971): "auto" | "vulkan" | "glcore"; agent-owned,
                                            # its own config files, RenderDoc inside, no rewind/recording, window off-screen
     capture_for: str = ""                  # the operator session this capture session captures (scene_relay)
@@ -461,13 +465,46 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
     return {"artifact": artifact, **saved}
 
 
-def _close_previous_games(ctx, keep: str = ""):
-    """One emulator per worker, except the session named by `keep` stays up (game_link host + guest on one worker).
-    Preserve every current game before stopping any of them."""
-    previous = [(sid, ad, game) for sid, (ad, game) in SESSIONS.items() if sid != keep]
+def _wake_for_close(ad):
+    """A paused emulator (a MercMode warm game, SIGSTOP / suspended threads) is resumed before it is saved or killed:
+    a stopped process never answers a save and holds a polite exit until it runs again."""
+    if getattr(ad, 'paused', False) is True or getattr(ad, 'paused_tids', None):
+        try:
+            ad.resume()
+        except Exception:                                    # noqa: BLE001 - the kill below still ends it
+            pass
+
+
+def _park_warm(ad) -> dict:
+    """A MercMode warm launch (launch_game warm=true) is paused as soon as it runs: no emulation and no audio until the
+    control plane resumes it at the round boundary. {"paused": False, "reason"} when the emulator cannot pause; the
+    control plane then closes it and launches that title the normal way when its turn comes."""
+    pause = getattr(type(ad), 'pause', None)
+    if not callable(pause):
+        return {'paused': False, 'reason': f"{getattr(ad, 'name', 'this emulator')} has no pause"}
+    try:
+        ad.pause()
+    except Exception as exc:                                 # noqa: BLE001 - reported; the game itself is up
+        return {'paused': False, 'reason': f'{type(exc).__name__}: {exc}'[:240]}
+    ad.gbox_warm = True                                      # closed without a save; SIGCONT before any kill
+    return {'paused': True}
+
+
+def _close_previous_games(ctx, keep=""):
+    """One emulator per worker, except the sessions named by `keep` stay up (game_link host + guest on one worker; the
+    MercMode warm pool: a str or a collection of session ids). Preserve every current game before stopping any of them;
+    a warm game (paused at its menus, never played) closes without a save."""
+    kept = {keep} if isinstance(keep, str) else set(keep or ())
+    kept.discard("")
+    previous = [(sid, ad, game) for sid, (ad, game) in SESSIONS.items() if sid not in kept]
     checkpoints = []
     for sid, ad, game in previous:
         proc = getattr(ad, 'proc', None)
+        if not (proc and proc.poll() is not None):
+            _wake_for_close(ad)
+            if getattr(ad, 'gbox_warm', False):
+                checkpoints.append({'session_id': sid, 'game_id': game.get('game_id'), 'artifact': None, 'warm': True})
+                continue
         if proc and proc.poll() is not None:
             from . import memory_card_sessions
             memory_card_sessions.finish(sid,ad,ctx)
@@ -576,6 +613,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     ad, _ = SESSIONS[sid]
     t0 = time.monotonic()
     timings, saved, moment = {}, None, None
+    if getattr(ad, 'gbox_warm', False):
+        _wake_for_close(ad)                          # a paused MercMode warm game: SIGCONT before the kill and teardown
     if args.get('moment'):
         # last played (gbox/last_played.py): the moment the operator stopped at, uploaded with this result so "Reload with
         # your last moment" can bring it back. Best effort within moment_cap_s; past it the game is closed regardless.
@@ -775,11 +814,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     ctx.progress(5, f"Runtime: {ad.name}" + (f" · core {g.core}" if g.core else ""))
     lap("runtime_s")
     if g.launch.get("kind") == "steam":
-        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
         detail = ad.launch_game(g.launch["appid"], (g.source_paths or [None])[0])
     elif isinstance(ad, adapters.RocketLauncherAdapter):
-        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
     else:
@@ -871,7 +910,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             diag['native_startup']=startup
             if startup.get('applied'):ctx.progress(71,'Mario 64: native title startup; automatic empty-save Options disabled')
         diag["stage"] = "close the previous game"
-        checkpoints = _close_previous_games(ctx, keep=inp.keep_session)
+        checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
         from . import memory_card_sessions
         memory_card_sessions.recover_pending(ctx)
@@ -997,6 +1036,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         except Exception as e:                                 # noqa: BLE001 - never block the launch
             detail["ghost_runs"] = {"state": "unsupported", "reason": f"ghost-run recorder setup failed: {e}"}
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
+    if inp.warm:
+        detail["warm"] = _park_warm(ad)
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
     caps = rewind.capabilities(sid, ad.get_capabilities())
@@ -1612,6 +1653,13 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
+    if inp.op in ("pause", "resume") and "warm" in (inp.args or {}):
+        # MercMode warm pool: args.warm=true parks the game paused between its turns (closed later without a save);
+        # resume clears it, so the game is an ordinary live session again once it is swapped in.
+        res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "warm"})
+        ad.gbox_warm = inp.op == "pause" and inp.args.get("warm") is True
+        return {"result": (res if isinstance(res, dict) else {"value": str(res)[:200]}) | {"warm": ad.gbox_warm},
+                "session_id": inp.session_id, "ended": False}
     if inp.op == "fast_forward":
         return {"result": rewind.set_fast_forward(inp.session_id, ad, inp.args.get("on"),
                                                 recover=inp.args.get("on") is False),
