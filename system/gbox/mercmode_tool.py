@@ -12,6 +12,7 @@ class MercModeIn(BaseModel):
     enabled: StrictBool | None=None
     titles: list[Literal['re4','re5','re6']] | None=None
     rounds_per_title: int | None=None
+    presentation_priority: StrictBool | None=None
 
 
 class MercModeOut(BaseModel):

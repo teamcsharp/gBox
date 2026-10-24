@@ -22,6 +22,17 @@ test('operator can adopt the exact displayed solo bot without submitting a new l
  assert.deepEqual(calls,[['/api/mercmode',undefined],['/api/mercmode/adopt',{host:'lilspark',session_id:sid}],['/api/mercmode',undefined]]);
  panel.dispose();
 });
+test('continuous presentation saves an explicit host setting',async()=>{
+ const calls=[],listeners=new Map(),host={dataset:{host:'lilspark'},
+  querySelectorAll:()=>[{dataset:{title:'re4'}},{dataset:{title:'re5'}}],
+  querySelector:key=>key==='[data-rounds]'?{value:'1'}:{checked:true}};
+ const button={closest:()=>host,hasAttribute:key=>key==='data-save'};
+ const root={innerHTML:'',addEventListener:(n,fn)=>listeners.set(n,fn),removeEventListener:n=>listeners.delete(n)};
+ const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
+ await panel.ready;await listeners.get('click')({target:{closest:()=>button}});
+ assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1}]);
+ panel.dispose();
+});
 test('a paired PC distinguishes its observed settings from pending central requests',()=>{
  const html=M.render({hosts:[{name:'paired',id:'w1',online:true,scheduler_owner:'local',
    settings:{enabled:false,titles:['re5']},desired_settings:{enabled:true},command:{job:'j',state:'queued'},titles:[]}]});

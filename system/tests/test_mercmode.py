@@ -133,8 +133,35 @@ def test_hosts_are_independent_and_unknown_config_is_rejected():
     store=Store();M.configure(store,'lilspark',{'enabled':True,'titles':['re5']})
     assert M.settings(store,'i9-NUC')['enabled'] is False
     assert M.settings(store,'lilspark')['titles']==['re5']
-    for patch in ({'titles':['re6','re6']},{'rounds_per_title':True},{'enabled':1},{'modifiers':True}):
+    for patch in ({'titles':['re6','re6']},{'rounds_per_title':True},{'enabled':1},{'modifiers':True},{'presentation_priority':1}):
         with pytest.raises(ValueError):M.configure(store,'lilspark',patch)
+
+
+@pytest.mark.parametrize('priority,memory,expected',[(False,40,204),(True,40,200),(True,90,204)])
+def test_real_claim_presentation_keeps_gpu_budget_for_other_jobs_and_memory_guard(cfg,priority,memory,expected):
+    import time
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app=create_app(cfg);store=app.state.store;now=time.time()
+    w=worker(now,name='lilspark',os='linux')
+    w['resources'].update(cpu_percent=96,memory_percent=memory,gpus=[{'name':'GPU','utilization_percent':99}])
+    store.put('worker',w['id'],w|{'last_seen':now,'tools':['launch_game']})
+    M.configure(store,w['name'],{'enabled':True,'presentation_priority':priority})
+    job={'id':'owned-launch','tool':'launch_game','state':'queued','actor':S.ACTOR,'require_os':None,
+         'require_worker':w['id'],'agent_use':True,'low_priority':True,'created':now,
+         'input':{'game':{'game_id':RE4,'launch':{'mercmode':{'random_characters':True,'random_stages':True}}}}}
+    store.put('job',job['id'],job)
+    store.put(S.STATE,w['name'],{'worker_id':w['id'],'phase':'launching','job':job['id'],
+        'game_id':RE4,'mercmode':{'title':'re4'}})
+    client=TestClient(app,headers={'Authorization':'Bearer '+cfg.token()})
+    # A copied hint without the exact scheduler job cannot obtain foreground admission.
+    foreign=job|{'id':'unrelated','created':now-1}
+    store.put('job',foreign['id'],foreign)
+    response=client.post('/api/workers/'+w['id']+'/claim',json={'idle_seconds':0,'active_jobs':0})
+    assert response.status_code==expected,response.text
+    if expected==200:assert response.json()['id']==job['id']
+    assert store.get('job',foreign['id'])['state']=='queued'
+    if memory==90:assert 'memory headroom' in store.get('job',job['id'])['admission_wait']['reason']
 
 
 def test_only_verified_titles_are_playable_and_preparation_does_not_claim_rpc_states():
@@ -543,7 +570,7 @@ def test_central_settings_delegate_once_and_manual_prepare_tracks_exact_job(cfg)
     jobs=[job for job in store.all('job') if job['tool']=='mercmode']
     assert len(jobs)==1 and jobs[0]['require_worker']==w['id']
     assert jobs[0]['input']=={'op':'configure','host':w['name'],'enabled':True,
-        'titles':['re5'],'rounds_per_title':1}
+        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False}
     assert store.get(M.COMMAND,w['name'])['job']==jobs[0]['id']
     response=client.post('/api/mercmode/prepare',json={'worker_id':w['id']})
     assert response.status_code==200,response.text

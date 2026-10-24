@@ -15,7 +15,8 @@ HISTORY = 'mercmode_history'
 PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
-DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1}
+DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
+           'presentation_priority': False}
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
             'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'playable': True,
@@ -33,7 +34,7 @@ def normalize(patch, current=None):
     if not isinstance(patch, dict) or set(patch)-DEFAULT.keys():
         raise ValueError('Unknown MercMode setting')
     out = {**DEFAULT, **(current or {}), **patch}
-    if type(out['enabled']) is not bool or type(out['rounds_per_title']) is not int \
+    if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
@@ -44,6 +45,25 @@ def normalize(patch, current=None):
 
 def settings(store, host):
     return normalize(store.get(SETTING, host) or {})
+
+
+def presentation_launch(store, worker, job):
+    """Only an explicitly selected host's exact scheduler launch has priority.
+
+    Client-supplied launch hints and unrelated automation grant no exception.
+    Human-session/watch checks, fresh telemetry and memory limits still apply.
+    """
+    if job.get('tool')!='launch_game':return False
+    from .screensaver import STATE,ACTOR
+    cfg=settings(store,worker['name']);run=store.get(STATE,worker['name']) or {}
+    title=(run.get('mercmode') or {}).get('title');spec=TITLES.get(title) or {}
+    game=(job.get('input') or {}).get('game') or {}
+    return bool(cfg['enabled'] and cfg['presentation_priority'] and title in cfg['titles']
+        and spec.get('playable') and job.get('tool')=='launch_game' and job.get('actor')==ACTOR
+        and job.get('id')==run.get('job') and run.get('phase')=='launching'
+        and run.get('worker_id')==worker.get('id')==job.get('require_worker')
+        and game.get('game_id')==run.get('game_id') and run.get('game_id') in spec.get('game_ids',())
+        and ((game.get('launch') or {}).get('mercmode') or {})=={'random_characters':True,'random_stages':True})
 
 
 def adopt_current(store, worker, session, telemetry, *, now=None):

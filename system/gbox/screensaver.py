@@ -210,6 +210,11 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
         return "busy with jobs"
     if any(s.get("session_id", "").startswith(worker["id"] + "-") for s in running):
         return "a game is already running there"
+    from . import mercmode
+    merc_cfg=mercmode.settings(store,worker['name'])
+    if merc_cfg['enabled'] and merc_cfg['presentation_priority']:
+        return background.admission_reason(worker,background.excluded(store),101,now=now,
+                                           allow_active=True,require_gpu=False)
     if worker.get("os") == "windows" and (worker.get("idle_seconds") or 0) < cfg["idle_minutes"] * 60:
         return f"waiting for {cfg['idle_minutes']} minutes without operator input"
     return background.guarded_reason(store, worker, now=now, require_gpu=False)
@@ -625,6 +630,7 @@ class MercModeSettings(BaseModel):
     enabled: bool | None = None
     titles: list[str] | None = None
     rounds_per_title: int | None = None
+    presentation_priority: bool | None = None
 
 
 class MercModeAdopt(BaseModel):

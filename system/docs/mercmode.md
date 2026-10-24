@@ -1,6 +1,10 @@
 # MercMode
 
 For an already playing solo autobot, enable the host and choose **Use current solo bot**.
+For a dedicated stream, select **Continuous presentation**. This admits only the exact
+scheduler-owned MercMode launch despite busy CPU/GPU measurements. Other background jobs
+retain their budgets; human-game protection, current resource telemetry and the memory
+headroom limits remain enforced. It defaults off for ordinary idle screensaver use.
 The authenticated adoption endpoint checks fresh gameplay telemetry and the exact accepted
 autoplay job; it issues no second controller or launch. Human and co-op sessions cannot be adopted.
 After a native terminal round, the scheduler links the ended session to its exact accepted

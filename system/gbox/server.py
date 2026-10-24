@@ -2523,7 +2523,13 @@ def create_app(config: Config) -> FastAPI:
                         store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':sprite_wait}})
                         continue
                     if background_testing.requires_admission(j):
-                        if (j.get('origin') or {}).get('inspection_run'):
+                        from . import mercmode
+                        if mercmode.presentation_launch(store,w,j):
+                            # The operator's continuous presentation is foreground work.
+                            # Keep exact-session/watch fences and memory/telemetry limits.
+                            reason=background_testing.admission_reason(w,background_testing.excluded(store),101,
+                                allow_active=True,require_gpu=False)
+                        elif (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason
                             reason = claim_reason(store, w, j)
                         else:
