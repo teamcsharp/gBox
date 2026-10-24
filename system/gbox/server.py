@@ -3797,6 +3797,8 @@ def create_app(config: Config) -> FastAPI:
             from .background_testing import agent_owned
             row["agent_owned"] = agent_owned(store.get("slabel", s_["session_id"]),
                                              store.get("job", s_["session_id"].split("-", 1)[-1]))
+            if (store.get("slabel", s_["session_id"]) or {}).get("warm"):
+                row["warm"] = True                   # a MercMode game parked / preloading, paused: the view moves to the live one
             from .screensaver import bot_demo
             if bot_demo(store, s_["session_id"]):
                 row["bot_demo"] = True               # launched with autoplay on: the Sessions header says "Bot demo"

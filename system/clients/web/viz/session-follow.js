@@ -23,7 +23,7 @@
   // the running game to show instead of `except`: the broadcast program's, else the newest with a picture, else the
   // newest. judge(s, workers, now) (session-live.js) says whether a running game has a picture now.
   function pick(ss, program, { except = null, workers = null, now = Date.now() / 1000, judge = null } = {}) {
-    const live = (Array.isArray(ss) ? ss : []).filter(s => s && s.state === "running" && !s.stopping && s.worker_online !== false && s.session_id !== except);   // not one on an offline PC (#2870)
+    const live = (Array.isArray(ss) ? ss : []).filter(s => s && s.state === "running" && !s.stopping && !s.warm && s.worker_online !== false && s.session_id !== except);   // not one on an offline PC (#2870)
     if (!live.length) return null;
     const prog = program && program.session_id && live.find(s => s.session_id === program.session_id);
     if (prog) return { session: prog, via: "broadcast" };
@@ -42,6 +42,9 @@
   // leave `shown` (null: the view shows no session) for a running game now? -> { follow, why, wait_s? }
   function decide(shown, { program = null, pinned = null, now = Date.now() / 1000 } = {}) {
     if (!shown) return { follow: true, why: "nothing selected" };
+    // a MercMode game parked / preloading in the background is paused: follow the one playing (operator 2026-10-24:
+    // "why is the game always idle?" - the view stayed on parked RE4's death screen while RE5 played)
+    if (shown.state === "running" && shown.warm) return { follow: true, why: "parked" };
     if (shown.state === "running") return { follow: false, why: "playing" };
     if (pinned && pinned === shown.session_id) return { follow: false, why: "pinned" };
     if (program && program.mode === "session" && program.target === shown.session_id) return { follow: false, why: "pinned" };
