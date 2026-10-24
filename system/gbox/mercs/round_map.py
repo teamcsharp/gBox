@@ -20,22 +20,70 @@ from pathlib import Path
 SAMPLE_S = 0.25           # one position sample this often
 MAX_KEEP = 60             # rounds kept per folder
 HOT_SHARE = 0.25          # a cell holding this share of the round is a hotspot worth naming
+STILL_R, STILL_S = 120.0, 3.0   # within this radius for this long: standing still (operator 2026-10-24: "why does the bot
+                                # stand still ... read this round information and be able to see the code that was being
+                                # executed for these areas so that we can make corrections to the logic")
+MINE_R = 250.0            # a ground mine this near a standstill: he stood on / by a bomb
+STATE_KEYS = ("phase", "fire_gate", "weapon_policy", "mine_status", "mine_retreat_status", "combat", "weapon",
+              "bonus_target", "route", "stuck_reason")
 
 
 class RoundTrace:
-    def __init__(self, out_dir: Path | None, title: str, room: str, round_id: str, cell: float):
+    def __init__(self, out_dir: Path | None, title: str, room: str, round_id: str, cell: float, code: dict | None = None):
         self.out_dir, self.title, self.room, self.round_id, self.cell = out_dir, title, room, round_id, float(cell)
+        self.code = code or {}                  # phase -> "file:line function" that runs it (the caller's own map)
         self.samples: list[tuple] = []          # (t, x, z, y)
+        self.states: list[dict] = []            # the bot's decision state at each sample (STATE_KEYS)
+        self.mines: list[list] = []             # ground mine positions [x, z] at each sample
         self.events: list[dict] = []            # stuck / kill / death markers
         self.started = None
         self.last = -math.inf
 
-    def add(self, now: float, x: float, z: float, y: float = 0.0) -> None:
+    def add(self, now: float, x: float, z: float, y: float = 0.0, state: dict | None = None, mines=()) -> None:
         if now - self.last < SAMPLE_S:
             return
         self.last = now
         self.started = self.started if self.started is not None else now
         self.samples.append((round(now, 2), round(x, 1), round(z, 1), round(y, 1)))
+        self.states.append({k: str(state[k])[:120] for k in STATE_KEYS if state and state.get(k) not in (None, "")})
+        self.mines.append([[round(m[0]), round(m[-1])] for m in mines][:16])
+
+    def standstills(self) -> list[dict]:
+        """Every stretch of STILL_S or more inside STILL_R: when, where, how long, what the bot was doing (its
+        dominant phase / fire gate / mine status, with the code that runs that phase) and whether a mine was there."""
+        out, i, n = [], 0, len(self.samples)
+        while i < n:
+            j = i
+            while j + 1 < n and math.hypot(self.samples[j + 1][1] - self.samples[i][1],
+                                           self.samples[j + 1][2] - self.samples[i][2]) <= STILL_R:
+                j += 1
+            secs = self.samples[j][0] - self.samples[i][0]
+            if secs >= STILL_S:
+                cx = sum(p[1] for p in self.samples[i:j + 1]) / (j - i + 1)
+                cz = sum(p[2] for p in self.samples[i:j + 1]) / (j - i + 1)
+                states = self.states[i:j + 1]
+
+                def top(key):
+                    counts = {}
+                    for st in states:
+                        if st.get(key):
+                            counts[st[key]] = counts.get(st[key], 0) + 1
+                    return max(counts, key=counts.get) if counts else None
+                near = [m for row in self.mines[i:j + 1] for m in row if math.hypot(m[0] - cx, m[1] - cz) <= MINE_R]
+                phase = top("phase")
+                out.append({"from_s": round(self.samples[i][0] - (self.started or 0), 1), "seconds": round(secs, 1),
+                            "at": [round(cx), round(cz)], "phase": phase, "fire_gate": top("fire_gate"),
+                            "mine_status": top("mine_status"), "mine_retreat_status": top("mine_retreat_status"),
+                            "combat": top("combat"), "on_mine": bool(near), "code": self.code.get(phase)})
+            i = j + 1
+        return out
+
+    def time_by_phase(self) -> dict:
+        out: dict[str, float] = {}
+        for k, (a, b) in enumerate(zip(self.samples, self.samples[1:])):
+            ph = (self.states[k] if k < len(self.states) else {}).get("phase") or "?"
+            out[ph] = round(out.get(ph, 0.0) + min(b[0] - a[0], 2.0), 1)
+        return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
     def event(self, now: float, kind: str, x: float, z: float, **info) -> None:
         self.events.append({"t": round(now, 2), "kind": kind, "x": round(x, 1), "z": round(z, 1), **info})
@@ -63,10 +111,19 @@ class RoundTrace:
         if top and top["share"] >= HOT_SHARE:
             verdict = (f"{top['share']:.0%} of the round in one {self.cell:g}-unit cell {tuple(top['cell'])}"
                        + (" - a learned wall" if top["wall"] else " - against a learned wall" if top["touches_wall"] else ""))
+        still = self.standstills()
+        still_s = round(sum(x["seconds"] for x in still), 1)
+        worst = max(still, key=lambda x: (x["on_mine"], x["seconds"])) if still else None
+        if worst and (worst["on_mine"] or still_s >= 0.2 * total):   # standing on his own bomb outranks a hotspot
+            verdict = (f"stood still {still_s:g} s ({still_s / total:.0%}) in {len(still)} stretch(es); worst "
+                       f"{worst['seconds']:g} s in phase {worst['phase']}" + (" ON A MINE" if worst["on_mine"] else "")
+                       + (f" ({worst['code']})" if worst.get("code") else "") + (f"; {verdict}" if verdict else ""))
         return {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
                 "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
                 "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
-                "stuck_events": sum(e["kind"] == "stuck" for e in self.events)}
+                "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
+                "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
+                "code": self.code}
 
     def finish(self, walked=(), blocked=()) -> dict | None:
         """Write the round's JSON + SVG (when it has an out_dir and enough samples); the summary either way."""
@@ -78,7 +135,8 @@ class RoundTrace:
         try:
             self.out_dir.mkdir(parents=True, exist_ok=True)
             stem = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.started or time.time())) + "-" + self.round_id[:8]
-            (self.out_dir / f"{stem}.json").write_text(json.dumps(s | {"route": self.samples, "events": self.events}))
+            (self.out_dir / f"{stem}.json").write_text(json.dumps(s | {"route": self.samples, "states": self.states,
+                                                                          "events": self.events}))
             (self.out_dir / f"{stem}.svg").write_text(svg(self, s, walked, blocked))
             s["files"] = [str(self.out_dir / f"{stem}.json"), str(self.out_dir / f"{stem}.svg")]
             for old in sorted(self.out_dir.glob("*.json"))[:-MAX_KEEP]:
@@ -117,6 +175,12 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
     if pts:
         out.append(f'<circle cx="{X(pts[0][1]):.1f}" cy="{Z(pts[0][2]):.1f}" r="6" fill="#3ddc84"/>')
         out.append(f'<circle cx="{X(pts[-1][1]):.1f}" cy="{Z(pts[-1][2]):.1f}" r="6" fill="#ffffff"/>')
+    for st in s.get("standstills") or ():
+        x, z = X(st["at"][0]), Z(st["at"][1])
+        col = "#ff4d4d" if st["on_mine"] else "#ffd166"
+        tag = _esc(f'{st["seconds"]:g}s {st["phase"] or "?"}' + (" on mine" if st["on_mine"] else ""))
+        out.append(f'<circle cx="{x:.1f}" cy="{z:.1f}" r="{8 + min(st["seconds"], 30):.1f}" fill="none" stroke="{col}" stroke-width="2"/>')
+        out.append(f'<text x="{x + 10:.1f}" y="{z - 10:.1f}" fill="{col}" font-size="11">{tag}</text>')
     for e in trace.events:
         if e["kind"] == "stuck":
             x, z = X(e["x"]), Z(e["z"])
@@ -124,12 +188,28 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
     label = (f'{s["title"]} {s["room"]} round {s["round_id"][:8]} - {s["seconds"]:g} s, {s["distance"]} units, '
              f'{s["cells_visited"]} cells, {s["stuck_events"]} stuck' + (f' - {s["verdict"]}' if s["verdict"] else ""))
     out.append(f'<text x="8" y="{H + 22:.0f}" fill="#e6e6e6">{_esc(label)}</text>')
-    out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck</text>')
+    out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck, yellow ring standing still (red: on a mine)</text>')
     return "".join(out) + "</svg>"
 
 
 def _esc(t: str) -> str:
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def code_map(phases: dict, *classes) -> dict:
+    """{phase: "path:line Class.method"} for {phase: "Class.method"} over the given classes (inspect)."""
+    import inspect
+    by_name = {c.__name__: c for c in classes}
+    out = {}
+    for phase, ref in phases.items():
+        cls_name, _, meth = ref.partition(".")
+        fn = getattr(by_name.get(cls_name), meth, None)
+        try:
+            path = Path(inspect.getsourcefile(fn)).name
+            out[phase] = f"{path}:{inspect.getsourcelines(fn)[1]} {ref}"
+        except (TypeError, OSError):
+            out[phase] = ref
+    return out
 
 
 def latest(folder: Path) -> dict | None:

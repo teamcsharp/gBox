@@ -1670,7 +1670,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             playing_observed=True
             if getattr(bot, "trace", None) is not None:
                 px_, py_, pz_ = s['player']['pos']
-                bot.trace.add(now, px_, pz_, py_)
+                bot.trace.add(now, px_, pz_, py_, bot.stats)
             if ad is not None and armed_round != bot.stats['rounds']:
                 arm_round(ad, bot.stats)
                 armed_round = bot.stats['rounds']
