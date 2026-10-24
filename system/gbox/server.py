@@ -2468,7 +2468,11 @@ def create_app(config: Config) -> FastAPI:
         from .screensaver import ACTOR as SCREENSAVER
         if j.get("tool") != "launch_game" or j.get("actor") != SCREENSAVER:
             return False
-        if not any(s.get("session_id", "").startswith(wid + "-") for s in store.running_sessions()):
+        # sessions the launch itself keeps up (the MercMode warm pool's parked titles) are not "another game": 2026-10-24
+        # every cold RE4 launch beside a parked RE5 was dropped here and retried each minute, the loading bar restarting
+        kept = set((j.get("input") or {}).get("keep_sessions") or []) | {(j.get("input") or {}).get("keep_session") or ""}
+        if not any(s.get("session_id", "").startswith(wid + "-") and s.get("session_id") not in kept
+                   for s in store.running_sessions()):
             return False
         store.put("job", j["id"], j | {"state": JobState.FAILED, "finished": time.time(),
                                         "error": "skipped: another game started on this PC before the demo"})
