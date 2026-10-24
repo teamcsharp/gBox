@@ -971,13 +971,6 @@ class Combat:
             return {"hold": set()}
         foot = tgt["pos"]
         facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
-        if abs(facing) > SWING_TURN:
-            self.bow_down_at = None
-            if self._laserless_stalled(p,tgt,wid,abs(facing),shot,now):
-                return {"hold":set()}
-            self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
-                              combat=label+": lower weapon and turn toward target")
-            return {"hold": self._face(p, foot)}
         aim = (foot[0], foot[1] + CHEST_H, foot[2])
         cam = snap.get("camera") or {}
         camera_direction = None
@@ -1005,11 +998,21 @@ class Combat:
             pitch = math.atan2(aim[1]-origin[1], max(math.hypot(aim[0]-origin[0], aim[2]-origin[2]),1.))-pitch_now
             self.stats["aim_feedback"] = label+" body/pitch estimate; no projectile ray"
         self.laserless_feedback_since = None
-        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
-            return {"hold":set()}
         distance = math.dist(origin,aim)
         yaw_tol,pitch_tol = bow_tolerance(distance) if wid==0x0F else (BOW_YAW,BOW_PITCH)
         aligned = abs(yaw) <= yaw_tol and abs(pitch) <= pitch_tol
+        # An on-target aim (camera ray already on his chest) supersedes the whole-body swing: if the aim line is
+        # already on him, fire now instead of lowering the gun to turn the body. Only a genuinely off-axis aim for a
+        # far-off heading turns first. Never swing mid-grab (action 4).
+        if abs(facing) > SWING_TURN and not aligned and p.get("action") != 4:
+            self.bow_down_at = None
+            if self._laserless_stalled(p,tgt,wid,abs(facing),shot,now):
+                return {"hold":set()}
+            self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
+                              combat=label+": lower weapon and turn toward target")
+            return {"hold": self._face(p, foot)}
+        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
+            return {"hold":set()}
         if wid==0x0F:
             self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
                 'player_pos':list(p['pos']),'target_pos':list(foot),'origin':list(origin),
