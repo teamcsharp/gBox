@@ -40,7 +40,13 @@ TITLES = {
             'characters': 18, 'stages': 8, 'modes': ['mercenaries', 'reunion']},
     're6': {'name': 'Resident Evil 6', 'map_id': 'BH6', 'platform': 'xbox360',
             'game_ids': ('0871eee3b68cdea3',), 'playable': False,
-            'reason': 'RE6 has no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
+            'backends': {
+                'xbox360': {'game_id': '0871eee3b68cdea3', 'adapter': 'xenia', 'verified': False},
+                'ps3': {'game_id': '6fc93ff62e4eb868', 'title_id': 'BLUS30855', 'app_ver': '01.00',
+                        'adapter': 'rpcs3', 'verified': True,
+                        'eboot_sha256': 'ddd022477e679cb1125dc327b0e43c5aeb4d8fa84352a7c8ae98ec74271d41ed'},
+            },
+            'reason': 'RE6 PS3 (BLUS30855) has a verified native RPCS3 launch but no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
     'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': 'CTR-ABRE', 'platform': '3ds',
                'game_ids': ('0ed22ae742e1b56b',), 'playable': False, 'modes': ['mercenaries'],
                'reason': 'The 3DS round RAM map (HP, timer, menu cursor, mission index) has no measured offsets; '
