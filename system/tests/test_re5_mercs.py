@@ -1840,3 +1840,28 @@ def test_a_distant_majini_beyond_a_wall_is_walked_to_along_the_navmesh_not_strai
     off = {"ptr": 8, "slot": 8, "pos": (5000.0, 0.0, 5000.0), "hp": 100}
     assert bot._pursue(p, off, mesh, False, 20.0) == {"hold": set()}
     assert bot.stats["route"] == "unreachable on current mesh"
+
+
+def test_breaks_for_time_when_clock_reaches_break_at_s(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    bot = R.Bot(clock=lambda: 100.0)
+    bot.tick(R.snapshot(with_bonuses(world(timer=119.0), [])))
+    away = world(player_pos=(0.0, 0.0, 900.0), yaw=math.pi, timer=100.0)
+    bot.tick(R.snapshot(with_bonuses(away, [])))
+    assert bot.stood and bot.stats["phase"] == "stand"
+    late = [(0.0, 13.0, 2000.0)]                                    # a bonus 20 m off appears after the stand began
+    act = bot.tick(R.snapshot(with_bonuses(world(timer=58.0, combo=0), late)))    # clock at 58 s: break for it
+    assert bot.stats["phase"] == "break_for_time" and {"lup", "cross"} <= act["hold"]
+    plan = bot.plan()
+    assert plan["phase"] == "break_for_time" and plan["target"]["kind"] == "time" and plan["stand"]["r"] == R.STAND_R
+
+
+def test_holds_the_stand_while_the_clock_is_comfortable(monkeypatch):
+    monkeypatch.setattr(R, "HOURGLASS_VT", HOURGLASS_VT)
+    bot = R.Bot(clock=lambda: 100.0)
+    bot.tick(R.snapshot(with_bonuses(world(timer=119.0), [])))
+    bot.tick(R.snapshot(with_bonuses(world(player_pos=(0.0, 0.0, 900.0), yaw=math.pi, timer=100.0), [])))
+    assert bot.stood
+    bot.tick(R.snapshot(with_bonuses(world(timer=100.0, combo=0), [(0.0, 13.0, 2000.0)])))
+    assert bot.stats["phase"] != "break_for_time" and bot.stats["bonus_target"] is None
+    assert "clock 100" in bot.stats["bonus_held"]
