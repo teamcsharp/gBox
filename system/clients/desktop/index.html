@@ -4198,7 +4198,8 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""], ["-"],
+                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
+                 ["fixgame", "⟳ Report & fix (relaunch this game)"], ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
@@ -4312,7 +4313,36 @@ function gameSettings(anchor) {
   setTimeout(() => wv?.executeJavaScript(`(() => { const e = document.getElementById(${JSON.stringify(anchor)}); if (e) { e.scrollIntoView({behavior:"smooth", block:"center"});
     e.animate([{outline:"2px solid #7c96ff"},{outline:"2px solid transparent"}], {duration:1600}); } })()`).catch(() => {}), 900);
 }
+// Report & fix (operator 2026-10-24): a crashed or stuck game (an emulator error dialog, a frozen picture) is reported
+// with its moment, then relaunched: a MercMode game is closed so MercMode launches it again cleanly; any other game is
+// restarted in place (same game and build). The reconnect flow then shows the new game in the PiP.
+async function fixGame() {
+  const sid=globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src')||'')||(COMPACT.on?COMPACT.sid:EMB.sid);
+  if(!sid)throw Error('No game is selected.');
+  const api=async(path,body,method)=>{const r=await gbox.api(path,body,method);if(!r.ok)throw Error(r.error||'request failed');return r.data;};
+  toast('Reporting this game and relaunching it…');
+  await api(`/api/sessions/${encodeURIComponent(sid)}/coach`,{text:'Report & fix pressed: the game is broken or stuck (crash dialog, frozen or black picture). Relaunching it.'}).catch(()=>null);
+  const merc=await api('/api/mercmode',undefined,'GET').catch(()=>null);
+  const host=merc&&GBoxMercMode.hostFor(merc,sid,null);
+  if(host?.current_run?.session_id===sid&&host.settings?.enabled){
+    await api('/api/jobs',{tool:'session_op',agent_use:false,require_worker:sid.split('-')[0],input:{session_id:sid,op:'stop_game',args:{}}});
+    toast('Closed the broken game: MercMode launches the next one now.');
+    // follow MercMode's next game into the PiP once it is up (up to 6 minutes: an RPCS3 boot can take a while)
+    for(let i=0;i<72;i++){
+      await new Promise(r=>setTimeout(r,5000));
+      const now=await api('/api/mercmode',undefined,'GET').catch(()=>null);
+      const run=(now?.hosts||[]).find(h=>h.name===host.name)?.current_run;
+      if(run?.session_id&&run.session_id!==sid&&['starting','playing'].includes(run.phase))return reconnectRun({quiet:false});
+    }
+    return;
+  }else{
+    await api(`/api/sessions/${encodeURIComponent(sid)}/reset`,{mode:'restart'});
+    toast('Restarting this game on the same PC…');
+  }
+  setTimeout(()=>reconnectRun({quiet:false}),4000);
+}
 async function gameAction(a) {
+  if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
   if(a==='mercmode-stay'){
     try{
       const sid=globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src')||'')||(COMPACT.on?COMPACT.sid:EMB.sid);

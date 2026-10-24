@@ -190,7 +190,7 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
 # every round's own loadout (operator 2026-10-22: "autoplaying mercenary levels with random weapons"): a fresh random gun
 # from the game's weapon table at each Select Player, with its firepower scaled so a weak pick still kills; the
 # PACKAGE's fixed handcannon + weapon_mod are the fallback and are skipped when this runs
-ROUND_OP = ("random_loadout", {"character": "leon", "damage": "99.9", "on": True})
+ROUND_OP = ("random_loadout", {"character": "leon", "damage": "99.9", "fire_x": 20, "on": True})   # 20x fire rate
 LOADOUT_OPS = ("merc_loadout", "weapon_mod")
 
 
@@ -1324,11 +1324,11 @@ def setup(ad) -> list[str]:
     return apply_package(ad, None if in_round else EARLY_OPS)
 
 
-def apply_round(ad) -> list[str]:
+def apply_round(ad, equip_now: bool = False) -> list[str]:
     """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in."""
     from . import re_mods_tool as RM
     try:
-        r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1])
+        r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1], **({"equip_now": True} if equip_now else {}))
         return [] if r.get("verified") else [f"{ROUND_OP[0]}: not verified ({r.get('picked')})"]
     except Exception as e:                           # noqa: BLE001 - a failed draw keeps the last loadout
         return [f"{ROUND_OP[0]}: {e}"]
@@ -1359,6 +1359,25 @@ def first_aid(ad, s: dict, stats: dict, now: float | None = None, round_id=None)
     except Exception as e:                           # noqa: BLE001 - the loop goes on without the spray
         stats["first_aid_status"] = f"first aid unavailable: {type(e).__name__}"
         return {"auto_first_aid": False, "active": False, "verified": False}
+
+
+def arm_round(ad, stats: dict) -> None:
+    """Every round is armed, whichever way it started (2026-10-24: MercMode launches booted past Select Player, where
+    the package and the random gun are applied, so nine rounds ran with no mods and not one shot fired). The package
+    goes in once per run if Select Player never applied it; the round's random gun (x20 fire rate) is equipped now
+    unless Select Player drew one for this round."""
+    if not str(stats.get('hooks') or '').startswith('applied'):
+        failed = apply_package(ad, skip=EARLY_OPS + LOADOUT_OPS)
+        stats['hooks'] = 'applied in round' + (f' ({len(failed)} failed)' if failed else '')
+        if failed:
+            stats['hooks_failed'] = '; '.join(failed)[:300]
+    if stats.get('rounds_hooked_seen') != stats.get('rounds_hooked'):
+        stats['rounds_hooked_seen'] = stats.get('rounds_hooked')         # Select Player drew this round's gun
+        return
+    failed = apply_round(ad, equip_now=True)
+    stats['round_armed_in_round'] = stats.get('round_armed_in_round', 0) + 1
+    if failed:
+        stats['round_hooks_failed'] = '; '.join(failed)[:300]
 
 
 def _room_on(m) -> bool:
@@ -1451,6 +1470,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     import uuid
     boundary_id=uuid.uuid4().hex
     boundary_sent=False
+    armed_round=None
     playing_observed=started_in
     recorder=None
     record_dir=record_dir or getattr(getattr(ad,'config',None),'data_dir',None)
@@ -1546,6 +1566,9 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             bot.stats['rounds']+=1
         if room_on and s.get('player') and s.get('hp',0)>0:
             playing_observed=True
+            if ad is not None and armed_round != bot.stats['rounds']:
+                arm_round(ad, bot.stats)
+                armed_round = bot.stats['rounds']
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
         if ad is not None:                             # the infinite First Aid Spray: hp -> full when low (auto_first_aid)
