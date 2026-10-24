@@ -1111,6 +1111,7 @@ window.taskVizCreate = canvas => {
     <section id="control"><div class="pane">
       <p id="connection-note" role="status">Starting this PC's local gBox. Remote discovery runs in the background.</p>
       <button id="mercmode-open" type="button">Mercenaries screensaver</button><div id="mercmode-panel" hidden></div>
+      <button id="mercs-reviewer-open" type="button">Mercenaries run reviewer ↗</button>
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
         <div id="rbflow"></div><aside id="rbside" class="mut">Click a step to see its output.</aside><pre id="rbcon"></pre></div>
@@ -2546,6 +2547,14 @@ $('#connection-switch').onclick=async()=>{
   const close=document.createElement('button');close.textContent='Close';close.onclick=()=>menu.remove();menu.append(close);
   document.body.append(menu);
 };
+async function openMercsWindow(mode='reviewer'){
+  const stream=COMPACT.on?$('#compact-stream'):null,src=stream?.getAttribute('src')||stream?.src;
+  let sid=COMPACT.on?COMPACT.sid||EMB.sid:EMB.sid;
+  if(src){const current=new URL(src);if(current.origin!==new URL(S.apiUrl).origin)throw Error('The displayed stream belongs to a different server.');
+    sid=window.gboxStreamWatchdog?.sessionOf(src)||sid;}
+  return gbox.mercsOpen({origin:S.apiUrl,sid:EMB.authority&&EMB.authority!==S.apiUrl?null:sid||null,mode});
+}
+$('#mercs-reviewer-open').onclick=()=>openMercsWindow('reviewer').catch(error=>toast(error.message));
 $('#mercmode-open').onclick=async()=>{
   const host=$('#mercmode-panel');
   if(mercModePanel){mercModePanel.dispose();mercModePanel=null;host.hidden=true;return;}
@@ -4129,6 +4138,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
+                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
@@ -4215,6 +4225,7 @@ function gameSettings(anchor) {
 }
 async function gameAction(a) {
   try {
+    if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
     if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag

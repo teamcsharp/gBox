@@ -187,3 +187,17 @@ def test_live_off_immediately_clears_native_egg_telemetry_and_pending_status(tmp
     bot._egg_action(state['player'],state,10.1)
     assert not bot.stats['egg_native_equipped'] and not state['rotten_egg_native_equipped']
     assert not cfg['native_equipped'] and bot.stats['egg_status']=='returning to existing gun'
+
+
+def test_egg_mode_returns_to_new_preferred_gun_instead_of_cached_original(tmp_path):
+    memory,state=scene(0x36)
+    original={'slot':3,'id':0x112,'item':0x12,'type':1,'rounds':10,'cap':10,'grid':3,'hand':False}
+    preferred={'slot':8,'id':0x11B,'item':0x1B,'type':1,'rounds':5,'cap':5,'grid':5,'hand':False}
+    state['inventory'] += [original,preferred]
+    bot=R.Bot(memory,learn_dir=tmp_path)
+    bot._control_state={'rotten_eggs':{'on':False},'preferred_weapon':{'item':0x1B,'weapon':'S&W M500',
+                        'target':W.inventory_key(preferred)}}
+    bot.egg_requested=True;bot.egg_return_weapon=W.inventory_key(original)
+    state['player']['action']=0
+    assert bot._egg_action(state['player'],state,10.)=={'hold':set()}
+    assert bot._egg_action(state['player'],state,11.1)=={'tap':'dright'}

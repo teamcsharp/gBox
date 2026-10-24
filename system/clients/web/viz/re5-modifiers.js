@@ -48,7 +48,7 @@
   }
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
-    const known = op === "random_weapon" || DEFINITIONS.some(row => row.op === op);
+    const known = op === "random_weapon" || op === "select_weapon" || DEFINITIONS.some(row => row.op === op);
     return { available: cap?.available === true,
       reason: cap?.reason || (!cap && known ? "Worker update pending; this control is unavailable." : "") };
   }
@@ -113,6 +113,21 @@
       + `<small>${ESC(capability(state.status, row.op).reason || "Unavailable: no verified live control")}</small></span>`
       + `<span>Unavailable</span></div>`).join("");
     const random = capability(state.status, "random_weapon"), weapon = state.status?.in_hand?.weapon;
+    const selectedGun = state.status?.preferred_weapon, selectCap = capability(state.status, "select_weapon");
+    const guns = [...new Map((Array.isArray(state.status?.available_weapons) ? state.status.available_weapons : [])
+      .filter(gun => Number.isInteger(gun.item) && gun.item >= 0 && gun.item <= 255)
+      .map(gun => [gun.item, gun])).values()];
+    const gunDisabled = state.busy || state.pending || state.weaponPending || state.stale || !selectCap.available;
+    const weaponControls = `<fieldset class="re5-mine-controls" ${gunDisabled ? "disabled" : ""}><legend>Preferred gun</legend>`
+      + `<label>Available weapon<select data-re5-weapon aria-label="Preferred available weapon">`
+      + `<option value="auto" ${!selectedGun ? "selected" : ""}>Auto: choose for the encounter</option>`
+      + (selectedGun && !guns.some(gun => gun.item === selectedGun.item)
+        ? `<option value="${ESC(selectedGun.item)}" selected disabled>${ESC(selectedGun.weapon)} — unavailable in this loadout</option>` : "")
+      + guns.map(gun => `<option value="${gun.item}" ${selectedGun?.item === gun.item ? "selected" : ""}>${ESC(gun.weapon)} (${ESC(gun.rounds)} loaded)</option>`).join("")
+      + `</select></label><p class="re5-mod-sub">${ESC(selectedGun
+        ? `${selectedGun.weapon}: ${selectedGun.equipped ? "equipped" : selectedGun.available ? "saved; waiting for gunplay" : "saved; waiting for this gun to be available"}. Kept for this session and restored after mines or egg mode.`
+        : selectCap.available ? "Choose a gun or randomize. The choice stays with this session and returns after mines or egg mode."
+          : selectCap.reason || "Persistent gun selection is unavailable on this worker.")}</p></fieldset>`;
     const mine = state.status?.mine_settings, mineCap = capability(state.status, "mines");
     const eggOn = state.status?.rotten_egg_only === true;
     const eggCap = capability(state.status, "rotten_egg_only");
@@ -135,16 +150,24 @@
     const catalog = state.status?.mercs_catalog, next = state.status?.mercs_rotation?.next;
     const modes = catalog?.rosters || {}, stages = catalog?.stages || [];
     const mode = next?.mode || "reunion";
+    const selectionRequest = state.status?.mercs_rotation?.selection_request;
+    const requested = selectionRequest?.selection;
+    const selectedLabel = requested ? `${requested.mode === "mercenaries" ? "The Mercenaries" : "Mercenaries Reunion"} / ${requested.character} / ${stages[requested.stage] || requested.stage}` : "";
+    const queueStatus = requested && selectionRequest.state === "queued"
+      ? `Queued: ${selectedLabel}. The current round continues; waiting for this exact round to start.`
+      : requested && selectionRequest.state === "started" && selectionRequest.confirmation === "native_round_start"
+        ? `Started and confirmed in game: ${selectedLabel}. Random rotation resumes afterward.` : "";
     const rotationControls = catalog ? `<fieldset ${state.busy || state.stale ? "disabled" : ""}><legend>Next Mercenaries round</legend>`
       + `<p class="re5-mod-sub">Random rotation covers both modes, every costume and all eight stages. `
       + `${state.status?.mercs_rotation?.combinations_played || 0}/${state.status?.mercs_rotation?.combinations_total || 144} combinations played.</p>`
       + `<select data-re5-merc-mode aria-label="Mercenaries mode">${Object.keys(modes).map(m => `<option value="${ESC(m)}" ${mode === m ? "selected" : ""}>${m === "reunion" ? "Mercenaries Reunion" : "The Mercenaries"}</option>`).join("")}</select>`
       + `<select data-re5-merc-character aria-label="Character and costume">${(modes[mode] || []).map(c => `<option ${c === next?.character ? "selected" : ""}>${ESC(c)}</option>`).join("")}</select>`
       + `<select data-re5-merc-stage aria-label="Mercenaries stage">${stages.map((s,i) => `<option value="${i}" ${i === next?.stage ? "selected" : ""}>${ESC(s)}</option>`).join("")}</select>`
-      + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button></fieldset>` : "";
+      + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button>`
+      + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + teamControls + controls + rotationControls + eggControls + mineControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + rotationControls + eggControls + mineControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -234,16 +257,22 @@
     async function change(op, wanted) {
       if (state.busy || state.pending || state.weaponPending || state.stale || disposed) return;
       const def = DEFINITIONS.find(row => row.op === op);
-      const random = op === "random_weapon";
+      const random = op === "random_weapon", selecting = op === "select_weapon", weaponChange = random || selecting;
       const cap = capability(state.status, op);
-      if ((!def && !random) || !cap.available || (!random && (typeof wanted !== "boolean" || value(state.status, def) === null))) return;
-      state.busy = true; state.error = false; state.message = random ? "Selecting an available weapon…" : "Applying change…"; paint();
+      if ((!def && !weaponChange) || !cap.available || (!weaponChange && (typeof wanted !== "boolean" || value(state.status, def) === null))) return;
+      if (selecting && wanted !== null && (!Number.isInteger(wanted) || !state.status.available_weapons?.some(gun => gun.item === wanted))) return;
+      state.busy = true; state.error = false; state.message = weaponChange ? "Selecting an available weapon…" : "Applying change…"; paint();
       try {
         await preflight();
-        const extra = random ? {} : { on: wanted, ...(def.multiplier && wanted ? { multiplier: def.multiplier } : {}) };
+        const extra = selecting ? wanted === null ? { on: false } : { weapon: wanted } : random ? {} : { on: wanted, ...(def.multiplier && wanted ? { multiplier: def.multiplier } : {}) };
         const result = await job(op, extra);
         let confirmed = result.verified === true;
-        if (random && result.queued === true) {
+        if (weaponChange && result.preference_saved === true && result.deferred === true) {
+          await read();
+          state.message = `Preferred gun saved: ${state.status.preferred_weapon?.weapon || result.request?.weapon || "selected gun"}. It will equip when gunplay resumes.`;
+          return;
+        }
+        if (weaponChange && result.queued === true) {
           const id = result.request?.id, deadline = now() + 45000;
           if (!id) throw new Error("Server queued no identifiable weapon request.");
           state.weaponPending = id;
@@ -258,8 +287,9 @@
           } while (true);
         } else await read();                           // only the game's fresh status changes a switch
         if (!confirmed) throw new Error(result.reason || result.note || "The game did not verify this change.");
-        if (!random && value(state.status, def) !== wanted) throw new Error("The game did not confirm the requested setting.");
-        state.message = random ? `Equipped ${state.status.in_hand?.weapon || "the selected available weapon"}.`
+        if (!weaponChange && value(state.status, def) !== wanted) throw new Error("The game did not confirm the requested setting.");
+        state.message = selecting && wanted === null ? "Automatic gun selection enabled. Saved gun preference cleared."
+          : weaponChange ? `Equipped ${state.status.in_hand?.weapon || "the selected available weapon"}.`
           : `${def.label} ${wanted ? "enabled" : "disabled"}.`;
       } catch (error) {
         state.error = true; state.message = error.message;
@@ -323,8 +353,18 @@
       try {
         await preflight();
         const result = await job("mercs_select", { mode, character, stage: Number(stage) });
-        if (result.verified !== true) throw new Error("The next selection was not verified.");
-        await read(); state.message = "Next round selected. Random rotation resumes afterward.";
+        if (result.verified !== true) throw new Error("The next selection was not saved.");
+        await read();
+        const rotation = state.status?.mercs_rotation;
+        const matches = selected => selected?.mode === mode && selected?.character === character && selected?.stage === Number(stage);
+        const request = rotation?.selection_request;
+        const sameRequest = result.request_id && request?.id === result.request_id && matches(request.selection);
+        const started = sameRequest && request.state === "started" && request.confirmation === "native_round_start";
+        const queued = matches(rotation?.next) && (!result.request_id || sameRequest && request.state === "queued");
+        if (!queued && !started)
+          throw new Error("Fresh readback did not confirm the requested next round.");
+        state.message = started ? "The requested round has started and was confirmed in game. Random rotation resumes afterward."
+          : "Queued for the next round. The current round continues; waiting for confirmation in game.";
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
@@ -376,6 +416,10 @@
     const ctl = create({ ...options, teamControls: true, render: state => { host.innerHTML = html(state); } });
     host.innerHTML = html(ctl.state());
     host.onchange = event => {
+      if (event.target.matches?.("[data-re5-weapon]")) {
+        if (!event.target.disabled && event.target.value !== "") ctl.change("select_weapon", event.target.value === "auto" ? null : Number(event.target.value));
+        return;
+      }
       if (event.target.matches?.("[data-re5-eggs-on], [data-re5-egg-rate]")) {
         ctl.setEggs(host.querySelector("[data-re5-eggs-on]").checked, host.querySelector("[data-re5-egg-rate]").value);
         return;

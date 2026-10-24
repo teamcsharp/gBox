@@ -62,7 +62,7 @@ def test_random_request_uses_single_owner_and_only_confirms_actual_equipment():
     snap["inventory"][1]["hand"] = True
     assert C.consume(state, 7, snap, switch, 21, monotonic=12) is None
     assert state["random_weapon_request"]["state"] == "confirmed"
-    assert len(calls) == 1 and C.pinned(state, snap, 22) and not C.pinned(state, snap, 37)
+    assert len(calls) == 1 and C.pinned(state, snap, 22) and C.pinned(state, snap, 10000)
 
 
 @pytest.mark.parametrize("change", ["owner", "player", "inventory", "timeout"])
@@ -128,3 +128,73 @@ def test_equipped_sniper_or_rocket_is_swapped_to_a_loaded_magnum_first():
     assert out == {"tap": "dleft"} and calls == [0x1B]
     snap["inventory"][3]["hand"], snap["inventory"][0]["hand"] = False, True
     assert C.leave_long_gun(snap, lambda *a: pytest.fail("not a long gun"), 2.0) is None
+
+
+def test_selected_gun_persists_after_confirmation_and_follows_real_inventory_identity():
+    state,snap={},world();C.publish(state,7,snap,True,now=10)
+    assert C.request(state,now=10,weapon=0x1B)['preference_saved']
+    snap['inventory'][0]['hand']=False;snap['inventory'][1]['hand']=True
+    C.consume(state,7,snap,lambda *a:pytest.fail('already equipped'),20,monotonic=11)
+    assert C.pinned(state,snap,10000)
+    # The mine constructor can move the gun's grid/storage record. A stale
+    # quick key must not equip the different item now occupying that position.
+    snap['inventory'][1].update(slot=15,grid=1,hand=False)
+    snap['inventory'][0].update(slot=9,grid=5,hand=True)
+    C.publish(state,7,snap,True,now=100)
+    calls=[]
+    action=C.consume(state,7,snap,lambda item,*a:calls.append(item) or {'tap':'dup'},10000,monotonic=100)
+    assert action=={'tap':'dup'} and calls[0]['item']==0x1B and calls[0]['slot']==15
+    assert state['preferred_weapon']['item']==0x1B
+
+
+def test_unavailable_preference_remains_saved_without_switching_to_original_loadout():
+    state,snap={},world();C.publish(state,7,snap,True,now=10)
+    C.request(state,now=10,weapon=0x1B)
+    snap['inventory']=[snap['inventory'][0]]
+    C.publish(state,7,snap,True,now=11)
+    C.consume(state,7,snap,lambda *a:pytest.fail('unavailable gun must not equip another item'),20,monotonic=11)
+    status=C.preference_status(state,now=11)
+    assert status['item']==0x1B and not status['available'] and not status['equipped']
+
+
+def test_deferred_choice_waits_for_gunplay_then_equips_under_new_current_controller():
+    state,snap={},world();C.publish(state,7,snap,True,now=10)
+    result=C.request(state,now=10,weapon=0x1B,deferred=True)
+    assert result['deferred'] and result['request']['state']=='deferred'
+    snap['player']['ptr']=321;C.publish(state,8,snap,True,now=100)
+    actions=[]
+    C.consume(state,8,snap,lambda item,*a:actions.append(item['item']) or {'tap':'dright'},1000,monotonic=100)
+    assert actions==[0x1B] and state['random_weapon_request']['state']=='pending'
+    assert state['random_weapon_request']['player']==321
+
+
+def test_auto_clears_only_weapon_choice_and_stale_requests():
+    state,snap={'operator_overrides':{'unlimited_health':{'on':False}}},world()
+    C.publish(state,7,snap,True,now=10);C.request(state,now=10,weapon=0x1B,deferred=True)
+    assert C.clear_preference(state)['automatic']
+    assert 'preferred_weapon' not in state and state['random_weapon_request']['state']=='rejected'
+    assert state['operator_overrides']=={'unlimited_health':{'on':False}}
+
+
+def test_another_adapter_session_cannot_inherit_an_old_gun_preference():
+    first,second=FakeRE5(),FakeRE5();state={}
+    C.bind_adapter(state,first);C.publish(state,7,world(),True,now=10);C.request(state,now=10,weapon=0x1B)
+    C.bind_adapter(state,first);assert state['preferred_weapon']['item']==0x1B
+    C.bind_adapter(state,second)
+    assert 'preferred_weapon' not in state and 'random_weapon_request' not in state
+
+
+def test_tool_selection_status_and_auto_never_change_health(monkeypatch):
+    from gbox.mercs.titles import re5_mines
+    monkeypatch.setattr(re5_mines,'settings',lambda:dict(re5_mines.DEFAULT))
+    memory=FakeRE5();state=M.RE5(memory).orig
+    C.publish(state,7,world(),True)
+    before=M.run(memory,'status')['status']['unlimited_health']
+    selected=M.run(memory,'select_weapon',weapon=0x1B,operator=True)
+    assert selected['preference_saved'] and selected['status']['preferred_weapon']['item']==0x1B
+    assert selected['status']['capabilities']['select_weapon']['available']
+    assert all(row['item'] not in (0x0D,0x20) for row in selected['status']['available_weapons'])
+    assert not M.run(memory,'select_weapon',weapon=0x0D)['queued']
+    automatic=M.run(memory,'select_weapon',on=False)
+    assert automatic['verified'] and automatic['status']['preferred_weapon'] is None
+    assert automatic['status']['unlimited_health']==before

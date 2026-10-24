@@ -23,6 +23,82 @@ def test_coverage_visits_every_combination_and_persists_only_started_rounds(tmp_
     assert sum(c.counts.values()) == 9
 
 
+def test_operator_selection_survives_reload_and_unrelated_native_round_starts(tmp_path):
+    path = tmp_path / 'coverage.json'
+    rosters = {'mercenaries': ('Sheva (Tribal)',), 'reunion': ('Excella',)}
+    selected = {'mode': 'mercenaries', 'character': 'Sheva (Tribal)', 'stage': 0}
+    c = Coverage(path, rosters, range(8), random.Random(7))
+    assert c.request(**selected) == selected
+    request_id = c.status()['selection_request']['id']
+    assert c.counts == {}  # queue acceptance is not gameplay evidence
+    assert c.request(**selected) == selected
+    assert c.status()['selection_request']['id'] == request_id
+    for observed in (('reunion', 'Excella', 6), ('mercenaries', 'Sheva (Tribal)', 1)):
+        c = Coverage(path, rosters, range(8))
+        assert c.choose() == selected
+        assert c.started(*observed)
+        assert c.choose() == selected
+        request = c.status()['selection_request']
+        assert request['state'] == 'queued' and request['id'] == request_id
+        assert 'confirmed_at' not in request
+    c = Coverage(path, rosters, range(8))
+    assert c.started(**selected)
+    request = c.status()['selection_request']
+    assert request['state'] == 'started' and request['id'] == request_id
+    assert request['confirmation'] == 'native_round_start'
+    assert Coverage(path, rosters, range(8)).status()['selection_request'] == request
+    assert c.choose() != selected  # balanced automatic rotation resumes only after exact acknowledgment
+
+
+def test_new_operator_selection_replaces_old_request_and_failed_save_cannot_ack(tmp_path, monkeypatch):
+    c = Coverage(tmp_path/'coverage.json', {'original': ('a', 'b')}, range(2))
+    c.request('original', 'a', 0)
+    old = c.status()['selection_request']
+    c.request('original', 'b', 1)
+    new = c.status()['selection_request']
+    assert new['id'] != old['id']
+    assert c.started('original', 'a', 0)
+    assert c.choose() == new['selection']
+    new = c.status()['selection_request']
+    monkeypatch.setattr(c, 'save', lambda: (_ for _ in ()).throw(OSError('disk unavailable')))
+    with pytest.raises(OSError, match='disk unavailable'):
+        c.request('original', 'a', 1)
+    assert c.status()['selection_request'] == new
+    assert c.choose() == new['selection']
+
+
+@pytest.mark.parametrize('selection', [
+    {'mode': 'missing', 'character': 'a', 'stage': 0},
+    {'mode': 'original', 'character': 'a', 'stage': True},
+    {'mode': ['original'], 'character': 'a', 'stage': 0},
+])
+def test_invalid_persisted_queue_cannot_redirect_native_menu(tmp_path, selection):
+    path = tmp_path/'coverage.json'
+    path.write_text(json.dumps({'selection_request': {'id': 'a'*32, 'state': 'queued', 'selection': selection}}))
+    c = Coverage(path, {'original': ('a',)}, range(2))
+    assert c.status()['selection_request'] is None
+    assert c.choose()['mode'] == 'original'
+
+
+def test_re5_selection_operation_saves_queue_without_modifying_live_inventory(tmp_path, monkeypatch):
+    from gbox import re5_mods_tool as mods
+    from gbox.mercs.titles import re5_ps3 as driver
+    from test_re5_mods import FakeRE5
+    rotation = Coverage(tmp_path/'coverage.json', driver.MODE_ROSTERS, range(8))
+    monkeypatch.setattr(driver, '_COVERAGE', rotation)
+    memory = FakeRE5()
+    try:
+        result = mods.run(memory, 'mercs_select', operator=True,
+                          mode='mercenaries', character='Sheva (Tribal)', stage=0)
+        assert result['verified'] and result['queued'] and result['native_start_verified'] is False
+        assert result['request_id'] == rotation.status()['selection_request']['id']
+        assert result['status']['mercs_rotation']['selection_request']['state'] == 'queued'
+        assert result['selection'] == Coverage(rotation.path, driver.MODE_ROSTERS, range(8)).choose()
+        assert memory.writes == []  # no restart, input, health, inventory or modifier writes
+    finally:
+        mods.ORIG.pop(id(memory), None)
+
+
 def test_round_guide_and_vector_recall_do_not_turn_deaths_into_s_ranks(tmp_path):
     n = Notebook(tmp_path, "RE5")
     n.finish("mesh-a", "original", "Jill", "died", {"score": 120000, "kills": 60, "rank": "SS"}, round_id="a")

@@ -604,8 +604,13 @@ class StagePick:
         self.plan = None                       # the presses still to make on this visit; None: not on STAGE SELECT
         self.last = self.target = None
 
-    def key(self, scr: dict) -> str:
-        if scr.get("cursor") is not None and scr.get("target") is not None:
+    def key(self, scr: dict) -> str | None:
+        if scr.get("target") is not None:
+            # A requested stage must never fall through to a different random
+            # stage merely because its native cursor is temporarily unreadable.
+            if type(scr.get("cursor")) is not int or not 0 <= scr["cursor"] <= self.MAX_MOVES \
+                    or type(scr["target"]) is not int or not 0 <= scr["target"] <= self.MAX_MOVES:
+                return None
             self.target = scr["target"]
             return "cross" if scr["cursor"] == self.target else "dright" if scr["cursor"] < self.target else "dleft"
         if self.plan is None:
@@ -1175,6 +1180,7 @@ class Bot:
             from ...re5_mods_tool import ORIG
             from . import re5_controls
             self._control_state = ORIG.setdefault(id(self.m.adapter), {})
+            re5_controls.bind_adapter(self._control_state,self.m.adapter)
             re5_controls.publish(self._control_state, id(self), snap, where == "playing" and bool(p))
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
@@ -1466,6 +1472,7 @@ class Bot:
             from . import re5_mines
             if getattr(self, "mines", None) is None:
                 self.mines = re5_mines.Controller(self.m, self.stats, self._switch_weapon)
+            self.mines.preferred_gun=self._preferred_gun
             if own_screen(snap) == "playing":
                 self.observe_round(snap,"playing",self.clock())
                 if not self.round_input_ready:
@@ -1509,7 +1516,7 @@ class Bot:
                 if not placement_safe and not mandatory and self.mines.pending is None and self.mines.escape is None:
                     hand = equipped(snap)
                     if hand is not None and hand.get("id")==0x10A:
-                        gun = next((w for w in snap.get("inventory",()) if re5_weapons.quick_key(w)
+                        gun = self._preferred_gun(snap) or next((w for w in snap.get("inventory",()) if re5_weapons.quick_key(w)
                                     and w.get("type")==1 and w.get("item") in re5_weapons.WEAPONS
                                     and re5_weapons.WEAPONS[w["item"]].family in re5_weapons.DIRECT),None)
                         if gun is not None:
@@ -1650,15 +1657,17 @@ class Bot:
         egg_action=self._egg_action(p,snap,now)
         if egg_action is not None:
             return egg_action
-        if self._control_state is not None and not snap.get('rotten_egg_only'):
+        if self._control_state is not None and not snap.get('rotten_egg_only') \
+                and not (getattr(getattr(self,'mines',None),'cadence',None)
+                         and self.mines.cadence.enabled and self.mines.cadence.only):
             from . import re5_controls
-            requested = re5_controls.leave_long_gun(snap, self._switch_weapon, now)
-            if requested:
-                return requested
             requested = re5_controls.consume(self._control_state, id(self), snap, self._switch_weapon, now,
                                              input_allowed=not close_foes)
             if requested:
                 return requested
+            if re5_controls.preferred(self._control_state,snap) is None:
+                requested = re5_controls.leave_long_gun(snap, self._switch_weapon, now)
+                if requested:return requested
         t = snap.get("timer")
         # Majini and the like: alive, more than 1 health (crows are "enemies" with 1), not far above or below
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
@@ -2131,6 +2140,10 @@ class Bot:
             self.stats["weapon_switch_status"] = f"unconfirmed; grid {wanted[1]} waits {cooldown:g}s"
             self.switch_pending = None
 
+    def _preferred_gun(self,snap):
+        from . import re5_controls
+        return re5_controls.preferred(getattr(self,'_control_state',None) or {},snap)
+
     def _switch_weapon(self, item, now, why):
         key, identity = re5_weapons.quick_key(item), re5_weapons.inventory_key(item)
         if not key or self.switch_pending is not None or now - self.switch_at <= SWITCH_EVERY_S \
@@ -2410,7 +2423,8 @@ class Bot:
         guns = [s for s in inv if s.get("type") == 1 and s.get("rounds", 0) > 0 and re5_weapons.quick_key(s)
                 and (re5_weapons.WEAPONS.get(s.get("item")) is not None)
                 and re5_weapons.WEAPONS[s["item"]].family in re5_weapons.DIRECT]
-        gun = next((s for s in guns if re5_weapons.inventory_key(s) == state["return"]), None) or next(iter(guns), None)
+        gun = self._preferred_gun({'inventory':inv}) \
+            or next((s for s in guns if re5_weapons.inventory_key(s) == state["return"]), None) or next(iter(guns), None)
         if gun is not None and not gun.get("hand"):
             return self._switch_weapon(gun, now, "resume after healing")
         return None
@@ -2445,7 +2459,8 @@ class Bot:
                 return None
             choices=[v for v in inv if v.get('id') in self.inventory_egg.allowed_ids
                      and v.get('id')!=E.EGG_ID and v.get('rounds',0)>0]
-            target=next((v for v in choices if re5_weapons.inventory_key(v)==self.egg_return_weapon),None) \
+            target=self._preferred_gun(snap) \
+                or next((v for v in choices if re5_weapons.inventory_key(v)==self.egg_return_weapon),None) \
                 or next(iter(choices),None)
             cfg['status']='safe Square interaction; existing gun required' if at_bonus or for_square else 'returning to existing gun'
             self.stats['egg_status']=cfg['status']

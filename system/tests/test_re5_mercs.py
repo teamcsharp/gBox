@@ -362,6 +362,16 @@ def test_it_presses_only_on_the_reunion_screens():
     assert R.wandered({"where": "menu"}) is None
 
 
+def test_requested_stage_waits_for_native_cursor_instead_of_starting_a_random_stage():
+    picker = R.StagePick()
+    assert picker.key({'where': 'select_stage', 'target': 0, 'cursor': None}) is None
+    assert picker.plan is None
+    assert picker.key({'where': 'select_stage', 'target': 0, 'cursor': 7}) == 'dleft'
+    assert picker.key({'where': 'select_stage', 'target': 0, 'cursor': 0}) == 'cross'
+    for cursor in (-1, 8, True, '0'):
+        assert picker.key({'where': 'select_stage', 'target': 0, 'cursor': cursor}) is None
+
+
 def test_a_grab_is_answered_with_a_wiggle():
     held = world(action=R.P_GRABBED, enemies=[((0.0, 0.0, 60.0), 800, 800)])
     assert R.prompt(held) == "wiggle"

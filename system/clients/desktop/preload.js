@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("gbox", {
   miniOpen: (sid, title) => ipcRenderer.invoke("mini:open", sid, title),
   miniAspect: (w, h) => ipcRenderer.invoke("mini:aspect", w, h),
   miniRestore: () => ipcRenderer.invoke("mini:restore"),
+  mercsOpen: options => ipcRenderer.invoke('mercs-window:open',options),
   onMiniClosed: fn => ipcRenderer.on("mini:closed", () => fn()),
   onMiniContext: fn => ipcRenderer.on('mini:context', (_e, point) => fn(point)),
   recStart: (ext, rect) => ipcRenderer.invoke("rec:start", ext, rect),

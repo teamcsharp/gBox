@@ -152,6 +152,8 @@ class Controller:
         self.restore = None
         self.prepare_at = None
         self.restore_after = 0.
+        self.home_weapon = None
+        self.preferred_gun = None
         self.detonating = set()
         self.escape = None
         self.events = []
@@ -204,6 +206,7 @@ class Controller:
             self.event('scope_reset', now, reason=reason, old_player=self.scope_player,
                        new_player=player, abandoned_escape=self.escape is not None)
         self.pending = self.restore = self.escape = self.prepare_at = None
+        self.home_weapon = None
         self.retry_at = self.equip_until = self.restore_after = 0.
         self.detonating.clear()
         self.owned.clear()
@@ -215,6 +218,16 @@ class Controller:
     def event(self, kind, now, **fields):
         self.events.append({'kind': kind, 'at': now, **fields})
         del self.events[:-128]
+
+    def return_gun(self,snap):
+        selected=self.preferred_gun(snap) if callable(self.preferred_gun) else None
+        if selected is not None:return selected
+        guns=[w for w in snap.get('inventory') or () if W.quick_key(w) and w.get('type')==1
+              and (w.get('rounds',0)>0 or w.get('cap',0)>0) and w.get('item') in W.WEAPONS
+              and W.WEAPONS[w['item']].family in W.DIRECT]
+        return next((w for w in guns if W.inventory_key(w)==self.restore),None) \
+            or next((w for w in guns if W.inventory_key(w)==self.home_weapon),None) \
+            or next((w for w in guns if w.get('hand')),None) or next(iter(guns),None)
 
     def clear_escape(self, now, position):
         """Completion requires measured separation, never a movement button alone."""
@@ -280,14 +293,22 @@ class Controller:
         self.detonating = exploding
         self.stats['mine_ground_count'] = len(ground)
         self.stats['mine_armed_count'] = sum(row['arming_s'] <= 0 and not row['detonating'] for row in ground.values())
+        was_only=self.cadence.only
         if now-self.config_at >= 2:
             cfg = settings(); self.cadence.configure(cfg["interval_s"], cfg["only"], cfg["enabled"])
             self.config_at = now
         self.stats.update(mine_interval_s=self.cadence.interval, mines_only=self.cadence.only,
                           mines_enabled=self.cadence.enabled)
+        held=next((w for w in snap.get('inventory') or () if w.get('hand')),None)
+        if held and held.get('item') in W.WEAPONS and W.WEAPONS[held['item']].family in W.DIRECT:
+            self.home_weapon=W.inventory_key(held)
         if not self.cadence.enabled:
             self.pending = None
             self.restore = None
+            if held and held.get('id')==0x10A and scope.get('hp',0)>0 and scope.get('action') in (0,1) \
+                    and not any(snap.get(k) for k in ('recovery_active','prompt','stage_prompt')):
+                gun=self.return_gun(snap)
+                if gun is not None:return self.switch(gun,now,'mine mode disabled; resume chosen gun')
             return None
         p = snap.get("player")
         busy = not p or snap.get("recovery_active") or snap.get("prompt") or snap.get("stage_prompt") \
@@ -295,9 +316,11 @@ class Controller:
         if busy:
             self.prepare_at = None
             return None
+        if was_only and not self.cadence.only and self.pending is None and held and held.get('id')==0x10A:
+            gun=self.return_gun(snap)
+            if gun is not None:self.restore,self.restore_after=W.inventory_key(gun),now
         if self.restore is not None:
-            gun = next((w for w in snap.get("inventory", ())
-                        if W.inventory_key(w) == self.restore), None)
+            gun = self.return_gun(snap)
             if gun is None or gun.get("hand"):
                 self.restore = None
             else:
@@ -344,8 +367,7 @@ class Controller:
                     if g.u32(addr) == mine["rounds"]:
                         self.stats["mine_refill_verified"] = g.wr(addr,struct.pack(">I",5))
                 self.pending = None
-                gun = next((w for w in snap.get("inventory",()) if W.quick_key(w) and w.get("type")==1
-                            and w.get("item") in W.WEAPONS and W.WEAPONS[w["item"]].family in W.DIRECT), None)
+                gun = self.return_gun(snap)
                 if gun and not self.cadence.only:
                     self.restore = W.inventory_key(gun)
                     self.restore_after = now + 1.2

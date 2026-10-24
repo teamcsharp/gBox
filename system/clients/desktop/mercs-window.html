@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'">
+<title>gBox · Mercenaries</title><link rel="stylesheet" href="../web/viz/mercs-reviewer.css"><link rel="stylesheet" href="mercs-window.css"></head>
+<body><header><div><strong>Mercenaries</strong><small id="authority"></small></div><nav aria-label="Mercenaries views"><button id="live-tab">Live map</button><button id="review-tab">Run reviewer</button></nav><label class="pin"><input type="checkbox" id="top">Always on top</label></header>
+<section id="live-view"><div class="live-tools"><label>Game session <select id="sessions"><option value="">Choose a live session</option></select></label><button id="refresh">Refresh sessions</button><span id="status" role="status"></span></div><p id="map-note">Choose a session to watch its measured map. Gameplay continues in its own window.</p><div id="map"></div></section>
+<section id="review-view" hidden><div id="reviewer"></div></section>
+<script src="../web/viz/tactical-map.js"></script><script src="../web/viz/mercs-reviewer.js"></script><script src="mercs-window.js"></script></body></html>

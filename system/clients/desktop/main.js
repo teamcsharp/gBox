@@ -22,6 +22,8 @@ const os = require("os");
 const path = require("path");
 const clientHandoff = require('./client-handoff.cjs');
 const clientViews = require('./client-view-store.cjs');
+const createMercsWindows = require('./mercs-window.cjs');
+let mercsWindows=null;
 const recordingExport = require('./recording-export.cjs');
 const desktopAuthority = require('./desktop-authority.cjs');
 let connection = null, localControlProcess = null, localControlInfo = null, localControlStarting = null, localControlChannel=null;
@@ -754,6 +756,7 @@ ipcMain.handle("export:pdf", async (_e, html, name) => {
 // Esc / F11 / Alt+Enter always leave full screen, wherever the keyboard focus is (the library/stream view is a <webview>,
 // whose keys never reach the page that owns the window); F11 / Alt+Enter also enter it.
 app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, input) => {
+  if (mercsWindows?.owns(wc)) return; // Map/reviewer keys never become gameplay shortcuts.
   if (!win) return;
   if (input.code === "Backquote" && !input.control && !input.alt) {      // hold ~ = push-to-talk (released = send)
     if (!(input.type === "keyDown" && input.isAutoRepeat)) win.webContents.send("ptt", input.type === "keyDown");
@@ -1283,6 +1286,7 @@ ipcMain.handle("decant:show", (_e, file) => shell.showItemInFolder(file));
 function appMenu() {                                  // the menu bar is hidden (custom title bar) but its accelerators work
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: "File", submenu: [
+      { label: "Mercenaries run reviewer", accelerator: "CmdOrCtrl+Shift+M", click: () => mercsWindows?.open({origin:settings().apiUrl,mode:'reviewer'}).catch(error=>logPush('mercs-window',error.message)) },
       { label: "Decant…", accelerator: "CmdOrCtrl+Shift+D", click: () => send("menu", "decant") },
       { type: "separator" }, { role: "quit" } ] },
     { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
@@ -1320,6 +1324,17 @@ app.whenReady().then(() => {
   // this PC; discovering Spark again never switches a live/local game.
   const restoredRemote=!!startupView?.mini||!!startupView?.state?.compact||!!startupView?.state?.guest?.pip;
   initConnection(restoredRemote?'remote':configuredSettings().controlMode);
+  mercsWindows=createMercsWindows({BrowserWindow,ipcMain,userData:app.getPath('userData'),screen,
+    getToken:server=>connection?connection.token(server):token(),
+    getOpeningScope:(event,options={})=>{
+      const main=win&&!win.isDestroyed()&&event.sender===win.webContents;
+      const small=mini&&!mini.isDestroyed()&&event.sender===mini.webContents;
+      const owner=main?win:small?mini:null;
+      if(!owner||(event.senderFrame&&event.senderFrame!==owner.webContents.mainFrame))throw Error('Only the gBox app can open its Mercenaries viewer.');
+      const expected=small?miniSession?.origin:clientViews.origin(settings().apiUrl);
+      if(options.origin&&clientViews.origin(options.origin)!==expected)throw Error('The selected stream belongs to a different server.');
+      return {origin:expected,sid:options.sid||null,mode:options.mode};
+    }});
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));

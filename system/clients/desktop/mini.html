@@ -99,6 +99,16 @@
   async function openModifiers(event) {
     event.preventDefault(); closeModifiers();
     const opening = modifierOpening = {};
+    modifierMenu = document.createElement('div'); modifierMenu.id = 'pip-modifiers';
+    modifierMenu.style.cssText = 'position:fixed;z-index:10;background:#1d1d22;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto';
+    for(const [mode,label] of [['map','Mercenaries live map ↗'],['reviewer','Mercenaries run reviewer ↗']]){
+      const button=document.createElement('button');button.textContent=label;button.type='button';button.style.display='block';
+      button.onclick=()=>{const current=gboxStreamWatchdog.sessionOf(v.src);gbox.mercsOpen({origin:new URL(v.src).origin,sid:current,mode}).catch(error=>console.warn('Mercenaries viewer:',error.message));closeModifiers();};
+      modifierMenu.append(button);
+    }
+    document.body.append(modifierMenu);
+    modifierMenu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - modifierMenu.offsetWidth - 8)) + 'px';
+    modifierMenu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - modifierMenu.offsetHeight - 8)) + 'px';
     try {
       const sid = gboxStreamWatchdog.sessionOf(v.src);
       const result = await gbox.api('/api/sessions?include_ended=false');
@@ -111,9 +121,7 @@
         session = GBoxRE5Modifiers.replacementSession(sid, history.data, session, GBoxSessionContinuity.resolve);
       }
       if (modifierOpening !== opening || !GBoxRE5Modifiers.panelEligible(session)) return;
-      modifierMenu = document.createElement('div'); modifierMenu.id = 'pip-modifiers';
-      modifierMenu.style.cssText = 'position:fixed;z-index:10;background:#1d1d22;color:#eee;border:1px solid #555;border-radius:8px;padding:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow:auto';
-      modifierMenu.innerHTML = GBoxRE5Modifiers.sectionHTML(); document.body.append(modifierMenu);
+      const controls=document.createElement('div');controls.innerHTML=GBoxRE5Modifiers.sectionHTML();modifierMenu.append(controls);
       modifierMenu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - modifierMenu.offsetWidth - 8)) + 'px';
       modifierMenu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - modifierMenu.offsetHeight - 8)) + 'px';
       modifierControl = GBoxRE5Modifiers.mount(modifierMenu.querySelector('.re5-modifiers'), { session,

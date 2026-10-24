@@ -264,6 +264,29 @@ class GatewayTests(unittest.TestCase):
         stream.HUB.gw.held.update(at=time.time(),ok=False)
         self.assertEqual(stream.HUB.gw.snapshot()['feeds'],[])
 
+    def test_first_manifest_resolves_the_real_feed_after_a_short_async_cache_refresh(self):
+        class ColdGateway:
+            def __init__(self,*_):
+                self.clock=time.time;self.refreshing=False;self.held={'at':0,'ok':False}
+            def snapshot(self):
+                if not self.refreshing and not self.held['ok']:
+                    self.refreshing=True
+                    def refresh():
+                        time.sleep(.025)
+                        self.held={'at':time.time(),'ok':True,'feeds':[{'session_id':'native-source'}]}
+                        self.refreshing=False
+                    threading.Thread(target=refresh,daemon=True).start()
+                return dict(self.held)
+        class Hub:
+            def __init__(self,_path,gw,**_):self.gw=gw
+        native=SimpleNamespace(Gateway=ColdGateway,Hub=Hub,TokenFile=lambda _:lambda:'view',
+            PREVIEW_KEY='gbox-preview',KEY_RE=re.compile('.*'),clamp_settings=lambda raw:raw)
+        native.TokenFile=lambda _:SimpleNamespace(kind=lambda:'broadcast')
+        stream=M.make_stream(self.cfg,native)
+        before=time.monotonic();snapshot=stream.HUB.gw.snapshot()
+        self.assertEqual(snapshot['feeds'],[{'session_id':'native-source'}])
+        self.assertLess(time.monotonic()-before,.5)
+
     def test_slow_public_backend_does_not_hold_hls_or_its_cache_pool(self):
         entered=threading.Event()
         async def backend(_request):

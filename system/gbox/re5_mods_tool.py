@@ -154,6 +154,8 @@ class RE5:
             raise Unsupported(f"re5_mods: {GAME} only; the weapon tables are not where that build keeps them "
                               f"({sig[0]:08X} {sig[1]:08X} / {usig:08X})")
         self.orig = ORIG.setdefault(id(ad), {})
+        from .mercs.titles import re5_controls
+        re5_controls.bind_adapter(self.orig,ad)
 
     def rd(self, a: int, n: int) -> bytes:
         return bytes(self.ad.read_memory(a, n))
@@ -258,6 +260,9 @@ class RE5:
             st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
                                   for op in OPERATOR_SETTINGS}
             st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
+            st['capabilities']['select_weapon']=re5_controls.capability(self.orig)
+            st['available_weapons']=re5_controls.available(self.orig)
+            st['preferred_weapon']=re5_controls.preference_status(self.orig)
             st["capabilities"]["mines"] = {"available": True, "reason": "Mine cadence; loadout takes effect next round."}
             st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
             st['capabilities']['rotten_egg_only']={'available':True,
@@ -928,7 +933,8 @@ def revert_all(g: RE5) -> dict:
     from .mercs.titles import re5_controls
     with re5_controls.LOCK:
         o.pop("weapon_pin", None)
-        if (o.get("random_weapon_request") or {}).get("state") == "pending":
+        o.pop('preferred_weapon',None)
+        if (o.get("random_weapon_request") or {}).get("state") in ('pending','deferred'):
             o["random_weapon_request"].update(state="rejected", reason="Cancelled by revert all.")
     o["fire_animation_on"] = False
     if o.get("fire_animation_helper") is not None:
@@ -987,10 +993,15 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
             res.update(re5_mines.templates(g))
     elif op == "mercs_select":
         from .mercs.titles import re5_ps3 as R
-        selected = R.coverage().request(extra.get("mode", "reunion"), extra.get("character", R.CHARACTERS[0]),
+        rotation = R.coverage()
+        with rotation.lock:
+            selected = rotation.request(extra.get("mode", "reunion"), extra.get("character", R.CHARACTERS[0]),
                                         extra.get("stage", 0))
-        res.update(verified=True, selection=selected, effective_next_round=True,
-                   note="Verified menu selection at the next round boundary; current round continues.")
+            request = rotation.status()["selection_request"]
+        res.update(verified=True, queued=True, selection=selected, request_id=request["id"],
+                   native_start_verified=False, effective_next_round=True,
+                   note="Selection saved for the next native menu boundary; current round continues. "
+                        "Awaiting the exact mode, character and stage to begin.")
     elif op == 'rotten_egg_only':
         from .mercs.titles import re5_eggs
         res.update(re5_eggs.configure(g,on,multiplier))
@@ -1015,9 +1026,18 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(replace_rockets(g, extra.get("seed")))
     elif op == "replace_long_guns":
         res.update(replace_long_guns(g, extra.get("seed")))
-    elif op == "random_weapon":
+    elif op in ("random_weapon",'select_weapon'):
         from .mercs.titles import re5_controls
-        res.update(re5_controls.request(g.orig))
+        from .mercs.titles import re5_mines
+        mine_cfg=re5_mines.settings()
+        deferred=bool(g.orig.get('rotten_eggs',{}).get('on') or mine_cfg['enabled'] and mine_cfg['only'])
+        if op=='select_weapon' and not on:
+            res.update(re5_controls.clear_preference(g.orig))
+        elif op=='select_weapon' and type(extra.get('weapon')) is not int:
+            raise ValueError('select_weapon requires an available native weapon ID')
+        else:
+            res.update(re5_controls.request(g.orig,weapon=extra.get('weapon') if op=='select_weapon' else None,
+                                           deferred=deferred))
     elif op == "random_cheats":
         res.update(random_cheats(g, extra.get("seed")))
     elif op == "kill_time":
@@ -1051,6 +1071,7 @@ class RE5ModsIn(BaseModel):
     mode: str = "reunion"
     character: str = "Chris (Heavy Metal)"
     stage: int = 0
+    weapon: int | None = None      # existing loaded quick-slot gun; selection is retained for this session
 
 
 class RE5ModsOut(BaseModel):
@@ -1070,4 +1091,4 @@ def re5_mods(inp: RE5ModsIn, ctx):
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
     return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
-                           mode=inp.mode, character=inp.character, stage=inp.stage)}
+                           mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon)}

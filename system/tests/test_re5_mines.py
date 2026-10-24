@@ -4,6 +4,7 @@ import pytest
 
 from gbox import re5_mods_tool as T
 from gbox.mercs.titles import re5_mines as M
+from gbox.mercs.titles import re5_weapons as W
 from test_re5_mods import FakeRE5, fresh_originals  # noqa: F401
 read_ground = M.ground_mines
 
@@ -175,6 +176,50 @@ def test_consumed_mine_restores_a_gun_before_resuming_combat(monkeypatch, observ
     assert c.tick(snap,5.3)=={'tap':'dleft'} and switched==[0x102]
     mine['hand']=False;gun['hand']=True
     assert c.tick(snap,5.5) is None and c.restore is None
+
+
+def test_mine_restore_uses_latest_operator_choice_not_first_gun_or_cached_slot(monkeypatch,observed_ground):
+    from gbox.mercs.titles import re5_controls as C
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=2))
+    calls=[];c=M.Controller(SimpleNamespace(),{},lambda item,*a:calls.append(item) or {'tap':W.quick_key(item)})
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    original={'id':0x102,'item':2,'type':1,'slot':0,'grid':3,'rounds':10,'hand':False}
+    selected={'id':0x11b,'item':0x1B,'type':1,'slot':8,'grid':5,'rounds':5,'hand':False}
+    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[original,mine,selected]}
+    state={};C.publish(state,7,snap,True,now=0);C.request(state,now=0,weapon=0x1B)
+    c.preferred_gun=lambda fresh:C.preferred(state,fresh)
+    c.tick(snap,0);c.tick(snap,3);mine['rounds']=4;deployed(observed_ground)
+    c.tick(snap,4)
+    assert c.restore==W.inventory_key(selected)
+    # A newer selection supersedes the restore cached during placement.
+    C.publish(state,7,snap,True,now=4);C.request(state,now=4,weapon=2)
+    assert c.tick(snap,5.3)=={'tap':'dleft'} and calls[-1]['item']==2
+    assert c.restore==W.inventory_key(selected)  # cached identity was not mistaken for current preference
+
+
+def test_mines_without_override_return_to_actual_last_gun_not_first_inventory_gun(monkeypatch):
+    monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=60))
+    c=M.Controller(SimpleNamespace(),{},lambda *a:None)
+    first={'id':0x102,'item':2,'type':1,'slot':0,'grid':3,'rounds':10,'hand':False}
+    held={'id':0x11b,'item':0x1B,'type':1,'slot':8,'grid':5,'rounds':5,'hand':True}
+    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[first,held]}
+    c.tick(snap,0);held['hand']=False
+    assert c.return_gun(snap) is held
+
+
+@pytest.mark.parametrize('enabled',[False,True])
+def test_leaving_mines_only_resumes_preferred_gun_before_another_plant(monkeypatch,enabled):
+    config=dict(M.DEFAULT,interval_s=2,only=True)
+    monkeypatch.setattr(M,'settings',lambda:dict(config))
+    selected={'id':0x11b,'item':0x1B,'type':1,'slot':8,'grid':5,'rounds':5,'hand':False}
+    mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
+    c=M.Controller(SimpleNamespace(),{},lambda item,*a:{'tap':W.quick_key(item)})
+    c.preferred_gun=lambda snap:selected
+    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine,selected]}
+    c.tick(dict(snap,prompt='mash'),0)  # Only-mode selection was active, but a mandatory prompt prevented a plant.
+    config.update(enabled=enabled,only=False)
+    assert c.tick(snap,3)=={'tap':'dright'}
+    assert c.stats.get('mine_attempts',0)==0
 
 
 def test_verified_mine_requires_measured_escape_before_more_placement(monkeypatch, observed_ground):

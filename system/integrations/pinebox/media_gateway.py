@@ -195,8 +195,19 @@ def make_stream(cfg, stream_module=None):
     class FreshGateway(stream_module.Gateway):
         def snapshot(self):
             value = super().snapshot()
-            age = self.clock() - float(value.get("at") or 0)
-            if not value.get("ok") or not math.isfinite(age) or not 0 <= age <= 15:
+            def fresh(row):
+                try:age = self.clock() - float(row.get("at") or 0)
+                except (TypeError, ValueError):return False
+                return bool(row.get("ok")) and math.isfinite(age) and 0 <= age <= 15
+            # The native cache refreshes asynchronously. The first media read
+            # after an idle period must not mistake that short refresh for an
+            # unknown feed and return a fatal manifest404. This executes in the
+            # sync media worker, independently of the station application.
+            deadline = time.monotonic() + .5
+            while not fresh(value) and getattr(self, "refreshing", False) and time.monotonic() < deadline:
+                time.sleep(.01)
+                value = super().snapshot()
+            if not fresh(value):
                 return {"at": 0, "ok": False, "program": {}, "feeds": [], "pcs": []}
             return value
 

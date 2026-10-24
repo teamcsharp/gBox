@@ -91,9 +91,52 @@ test('next Mercenaries selection retains actual mode costume and stage', async (
   await r.control.selectMercs('mercenaries', 'Jill (Battle Suit)', 7);
   assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'mercs_select',
     mode: 'mercenaries', character: 'Jill (Battle Suit)', stage: 7 });
+  assert.match(r.control.state().message, /Queued.*current round continues/);
   r.sessions = [];
   await r.control.selectMercs('reunion', 'Barry', 0);
   assert.equal(r.commands().length, 1);
+});
+
+test('queued exact Mercenaries selection stays visibly pending until native start acknowledgment', async () => {
+  const r=rig();r.status.capabilities.mercs_select={available:true};
+  r.status.mercs_catalog={rosters:{mercenaries:['Sheva (Tribal)'],reunion:['Excella']},stages:['Public Assembly']};
+  const selection={mode:'mercenaries',character:'Sheva (Tribal)',stage:0};
+  r.command=async()=>{
+    r.status.mercs_rotation={next:selection,selection_request:{id:'request',state:'queued',selection}};
+    return {verified:true,queued:true,native_start_verified:false,request_id:'request'};
+  };
+  await r.control.refresh();await r.control.selectMercs(selection.mode,selection.character,selection.stage);
+  assert.match(M.html(r.control.state()),/Queued: The Mercenaries \/ Sheva \(Tribal\) \/ Public Assembly/);
+  assert.doesNotMatch(M.html(r.control.state()),/Started and confirmed in game/);
+  r.status.mercs_rotation.selection_request.state='started';
+  r.status.mercs_rotation.selection_request.confirmation='native_round_start';
+  r.status.mercs_rotation.next={mode:'reunion',character:'Excella',stage:0};
+  await r.control.refresh();
+  assert.match(M.html(r.control.state()),/Started and confirmed in game: The Mercenaries \/ Sheva \(Tribal\) \/ Public Assembly/);
+});
+
+test('next selection cannot claim queue success when fresh readback has another costume',async()=>{
+  const r=rig();r.status.capabilities.mercs_select={available:true};
+  r.command=async()=>{r.status.mercs_rotation={next:{mode:'reunion',character:'Excella',stage:0}};return {verified:true};};
+  await r.control.refresh();await r.control.selectMercs('mercenaries','Sheva (Tribal)',0);
+  assert.equal(r.control.state().error,true);
+  assert.match(r.control.state().message,/Fresh readback did not confirm/);
+});
+
+test('an exact native start between queue completion and readback is acknowledged by request ID',async()=>{
+  const r=rig();r.status.capabilities.mercs_select={available:true};
+  const selection={mode:'mercenaries',character:'Sheva (Tribal)',stage:0};
+  r.command=async()=>{
+    r.status.mercs_rotation={next:{mode:'reunion',character:'Excella',stage:6},
+      selection_request:{id:'request',state:'started',selection,confirmation:'native_round_start'}};
+    return {verified:true,queued:true,request_id:'request'};
+  };
+  await r.control.refresh();await r.control.selectMercs(selection.mode,selection.character,selection.stage);
+  assert.equal(r.control.state().error,false);
+  assert.match(r.control.state().message,/requested round has started.*confirmed in game/);
+  r.command=async()=>({verified:true,queued:true,request_id:'different-request'});
+  await r.control.selectMercs(selection.mode,selection.character,selection.stage);
+  assert.equal(r.control.state().error,true);
 });
 
 test('only the exact running RE5 RPCS3 session gets controls', () => {
@@ -206,6 +249,53 @@ test('random weapon waits for the matching confirmed request, never queue accept
   assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'random_weapon' });
   assert.equal(r.control.state().message, 'Equipped L. Hawk.');
   assert.equal(r.control.state().weaponPending, null);
+});
+
+test('explicit available gun selection is scoped and waits for native confirmation',async()=>{
+  const r=rig();r.status.capabilities.select_weapon={available:true};
+  r.status.available_weapons=[{item:27,weapon:'S&W M500',rounds:5}];
+  await r.control.refresh();let reads=0;
+  r.command=async input=>{
+    assert.equal(input.weapon,27);
+    r.status.preferred_weapon={item:27,weapon:'S&W M500',available:true,equipped:false,persistent:true};
+    r.status.random_weapon_request={id:'selected-gun',state:'pending'};
+    return {queued:true,verified:false,preference_saved:true,request:r.status.random_weapon_request};
+  };
+  r.onStatus=()=>{if(++reads===2){r.status.random_weapon_request.state='confirmed';
+    r.status.preferred_weapon.equipped=true;r.status.in_hand.weapon='S&W M500';}};
+  await r.control.change('select_weapon',27);
+  assert.deepEqual(r.commands()[0].body.input,{session_id:'worker-launch',op:'select_weapon',weapon:27});
+  assert.equal(reads,2);assert.equal(r.control.state().message,'Equipped S&W M500.');
+  assert.match(M.html(r.control.state()),/Kept for this session and restored after mines or egg mode/);
+  assert.equal(r.control.state().status.unlimited_health,false);
+});
+
+test('deferred preference is saved honestly until gunplay resumes and unavailable choice stays visible',async()=>{
+  const r=rig();r.status.capabilities.select_weapon={available:true};
+  r.status.available_weapons=[{item:27,weapon:'S&W M500',rounds:5}];await r.control.refresh();
+  r.command=async()=>{
+    r.status.preferred_weapon={item:27,weapon:'S&W M500',available:true,equipped:false,persistent:true};
+    r.status.random_weapon_request={id:'deferred',state:'deferred',weapon:'S&W M500'};
+    return {queued:true,verified:false,preference_saved:true,deferred:true,request:r.status.random_weapon_request};
+  };
+  await r.control.change('select_weapon',27);
+  assert.match(r.control.state().message,/Preferred gun saved.*gunplay resumes/);
+  assert.doesNotMatch(r.control.state().message,/Equipped/);
+  assert.equal(r.control.state().weaponPending,null);
+  r.status.available_weapons=[];r.status.preferred_weapon.available=false;await r.control.refresh();
+  assert.match(M.html(r.control.state()),/S&#38;W M500 — unavailable in this loadout/);
+});
+
+test('Auto clears the preference without changing any modifier or inventing an equip',async()=>{
+  const r=rig();r.status.capabilities.select_weapon={available:true};
+  r.status.available_weapons=[{item:27,weapon:'S&W M500',rounds:5}];
+  r.status.preferred_weapon={item:27,weapon:'S&W M500',available:true,equipped:true};await r.control.refresh();
+  r.command=async()=>{r.status.preferred_weapon=null;return {verified:true,automatic:true,preference_saved:true};};
+  await r.control.change('select_weapon',null);
+  assert.deepEqual(r.commands()[0].body.input,{session_id:'worker-launch',op:'select_weapon',on:false});
+  assert.match(r.control.state().message,/Automatic gun selection enabled/);
+  assert.equal(r.commands().length,1);assert.equal(r.control.state().status.unlimited_health,false);
+  await r.control.change('select_weapon',999);assert.equal(r.commands().length,1);
 });
 
 test('random weapon rejects a failed selection and times out without claiming success', async () => {
@@ -543,25 +633,36 @@ test('desktop PiP refreshes its anchor and binds only a verified historical repl
 
 function miniPipRig(readSessions = async () => ({ ok: true, data: [{ ...SESSION, session_id: 'other-launch' }, SESSION] })) {
   const source = fs.readFileSync(path.join(__dirname, '../clients/desktop/mini.html'), 'utf8');
-  const listeners = {}, mounts = [], menus = [], calls = [];
+  const listeners = {}, mounts = [], menus = [], calls = [], viewerCalls = [];
   let stops = 0, restored = 0;
   const host = {}, context = vm.createContext({
     v: { src: 'http://spark:8765/api/sessions/worker-launch/mjpeg?token=test' }, innerWidth: 1280, innerHeight: 720,
     addEventListener: (name, fn, options) => { listeners[name] = { fn, options }; },
     gboxStreamWatchdog: { sessionOf: src => /\/api\/sessions\/([^/]+)\/mjpeg/.exec(src)?.[1] },
     document: { body: { append: menu => menus.push(menu) }, createElement: () => ({ style: {}, offsetWidth: 300,
-      offsetHeight: 400, querySelector: () => host, remove() { this.removed = true; } }) },
+      offsetHeight: 400, children:[], append(...children){this.children.push(...children);}, querySelector: () => host, remove() { this.removed = true; } }) },
     GBoxSessionContinuity: CONTINUITY,
     GBoxRE5Modifiers: { eligible: M.eligible, panelEligible: M.panelEligible, replacementSession: M.replacementSession, sectionHTML: M.sectionHTML,
       mount: (target, options) => { mounts.push({ target, options }); return { stop: () => { stops++; } }; } },
     gbox: { api: async (...args) => { calls.push(args); return args[0].startsWith('/api/sessions')
-      ? readSessions(args[0]) : { ok: true, data: { confirmed: true } }; }, miniRestore: () => { restored++; } },
+      ? readSessions(args[0]) : { ok: true, data: { confirmed: true } }; }, miniRestore: () => { restored++; },
+      mercsOpen:async options=>{viewerCalls.push(options);return {opened:true};} }, URL,
     console: { warn() {} },
   });
   vm.runInContext(source.slice(source.indexOf('let modifierMenu ='), source.indexOf('// file:// cannot fetch health')), context);
   const event = { clientX: 1200, clientY: 700, preventDefault() {}, stopPropagation() {} };
-  return { context, listeners, mounts, menus, calls, event, source, stops: () => stops, restored: () => restored };
+  return { context, listeners, mounts, menus, calls, viewerCalls, event, source, stops: () => stops, restored: () => restored };
 }
+
+test('detached PiP opens its map or reviewer separately even with no eligible mod panel',async()=>{
+  for(const [index,mode] of [[0,'map'],[1,'reviewer']]){
+    const r=miniPipRig(async()=>({ok:true,data:[]}));await r.listeners.contextmenu.fn(r.event);
+    assert.equal(r.mounts.length,0);r.menus[0].children[index].onclick();
+    assert.equal(r.viewerCalls.length,1);assert.equal(r.viewerCalls[0].origin,'http://spark:8765');
+    assert.equal(r.viewerCalls[0].sid,'worker-launch');assert.equal(r.viewerCalls[0].mode,mode);
+    assert.equal(r.restored(),0,'opening the reviewer never restores or closes gameplay');
+  }
+});
 
 test('detached PiP right-click binds the displayed session and uses the authenticated modifier API', async () => {
   const r = miniPipRig(); await r.listeners.contextmenu.fn(r.event);
