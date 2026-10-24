@@ -35,7 +35,7 @@ def rig():
 
 def playing():
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     tick();gid=calls[0]['input']['game']['game_id']
     sid='w1-'+calls[0]['id']
     store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running'})
@@ -57,7 +57,7 @@ def boundary(run,now,**witness):
 
 def adoptable():
     store,w,saver,calls,now,tick=rig()
-    M.configure(store,w['name'],{'enabled':True})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     sid='w1-current'
     session={'session_id':sid,'game_id':RE5,'state':'running'}
     job={'id':'active','tool':'autoplay','state':'succeeded','worker_id':w['id'],
@@ -262,7 +262,7 @@ def test_turning_mercmode_off_keeps_same_bot_and_game_even_if_screensaver_is_off
     assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
     tick(1)
     assert len(calls)==2
-    M.configure(store,w['name'],{'enabled':True})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     store.put('setting',S.SETTING,S.settings(store)|{'enabled':True})
     tick(1)
     body=boundary(run,now[0])|{'round_id':'b'*32}
@@ -428,7 +428,7 @@ def test_new_host_needs_its_own_rom_access_not_another_hosts_tools(tmp_path):
 def test_unknown_host_access_queues_only_one_readonly_prepare_job_before_any_game():
     store,w,saver,calls,now,tick=rig()
     w.update(id='new-host',tools=['launch_game','autoplay','mercmode'])
-    M.configure(store,w['name'],{'enabled':True})
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     assert 'checking ROM access' in tick()[w['name']]
     assert calls[0]['tool']=='mercmode' and calls[0]['input']=={'op':'prepare'}
     tick(1)
@@ -450,7 +450,7 @@ def delegated_launch(store, launch, *, local='local-launch'):
 
 
 def test_accepted_relay_keeps_native_sid_through_play_and_native_boundary_rotation():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     tick();session=delegated_launch(store,calls[0])
     assert session['session_id']!='w1-'+calls[0]['id']
     tick(1);tick(S.START_GRACE)
@@ -473,7 +473,7 @@ def test_accepted_relay_keeps_native_sid_through_play_and_native_boundary_rotati
     ('federation_local_job','w1-local-launch',{'authority':'other'}),
 ])
 def test_unaccepted_or_mismatched_relay_never_adopts_same_game(kind,key,patch):
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     tick();session=delegated_launch(store,calls[0])
     store.put(kind,key,store.get(kind,key)|patch)
     tick(1);tick(S.START_GRACE)
@@ -497,7 +497,7 @@ def test_explicit_bot_demo_pending_and_badge_use_only_exact_accepted_relay():
 
 
 def test_federation_never_bypasses_mapping_when_local_and_central_ids_coincide():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     tick();session=delegated_launch(store,calls[0],local=calls[0]['id'])
     store.delete('federation_local_job',session['session_id'])
     tick(1);tick(S.START_GRACE)
@@ -593,7 +593,7 @@ def test_nonfinite_stale_oversized_or_mutating_preparation_receipts_are_ignored(
 
 
 def test_paired_local_scheduler_alone_starts_new_games_and_explicit_demos():
-    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True})
+    store,w,saver,calls,now,tick=rig();M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     w['federation']={'authority':'authority','scheduler_owner':'local'}
     assert 'local control plane' in tick()[w['name']] and not calls
     launch={'id':'central','tool':'launch_game','require_worker':w['id'],'input':{'game':{'game_id':RE5}}}
@@ -616,7 +616,7 @@ def test_pairing_does_not_take_over_or_abandon_an_existing_central_owned_run():
 def test_only_exact_paired_observations_set_actual_status_not_pending_desired():
     store,w,saver,calls,now,tick=rig()
     w['federation']={'authority':'authority','scheduler_owner':'local'}
-    desired=M.configure(store,w['name'],{'enabled':True})
+    desired=M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     actual=M.normalize({'enabled':False})
     store.put(M.OBSERVED,w['name'],{'authority':'authority','worker_id':w['id'],'at':now[0],
         'settings':actual,'history':{},'preparation':{}})
@@ -646,7 +646,7 @@ def test_central_settings_delegate_once_and_manual_prepare_tracks_exact_job(cfg)
     jobs=[job for job in store.all('job') if job['tool']=='mercmode']
     assert len(jobs)==1 and jobs[0]['require_worker']==w['id']
     assert jobs[0]['input']=={'op':'configure','host':w['name'],'enabled':True,
-        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[]}
+        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[],'keep_warm':False}
     assert store.get(M.COMMAND,w['name'])['job']==jobs[0]['id']
     response=client.post('/api/mercmode/prepare',json={'worker_id':w['id']})
     assert response.status_code==200,response.text
@@ -729,3 +729,67 @@ def test_re4_menu_layer_honours_a_requested_round_once_then_returns_to_random():
         sel.screen(None)
     assert 'ad1' not in R.REQUESTS
     with pytest.raises(ValueError):R.request('ad1','Leon',9)
+
+
+
+def warm_playing():
+    store,w,saver,calls,now,tick=rig()
+    M.configure(store,w['name'],{'enabled':True})                          # keep_warm is the default
+    tick();gid=calls[0]['input']['game']['game_id']
+    sid='w1-'+calls[0]['id']
+    store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running'})
+    tick(1);tick(S.START_GRACE)
+    run=store.get(S.STATE,w['name'])
+    job=store.get('job',run['autoplay_job'])|{'state':'succeeded'}
+    store.put('job',job['id'],job)
+    S.telemetry_put(sid,{'running':True,'stats':{'screen':'playing','timer':200}},now=now[0])
+    return store,w,saver,calls,now,tick,run,job
+
+
+def test_keep_warm_pauses_the_finished_title_and_preloads_the_next_one_at_thirty_seconds():
+    store,w,saver,calls,now,tick,run,job=warm_playing()
+    before=len(calls)
+    tick(1); assert len(calls)==before                                       # 200 s left: nothing to preload
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{'screen':'playing','timer':25}},now=now[0])
+    tick(1)
+    pre=calls[-1]
+    assert pre['tool']=='launch_game' and pre['input']['game']['game_id']!=run['game_id']   # the other title, now
+    nxt=store.get(M.NEXT,w['name'])['title']
+    assert M.warm_pool(store,w['name'])[nxt]['state']=='prelaunch'
+    tick(1); assert calls[-1] is pre                                         # preloaded once
+    # the preloaded game comes up while the round finishes
+    psid='w1-'+pre['id'];store.put('session',psid,{'session_id':psid,'game_id':pre['input']['game']['game_id'],'state':'running'})
+    store.put('job',pre['id'],pre|{'state':'succeeded','output':{'session_id':psid}})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+    tick(1)
+    parked=calls[-1]
+    assert parked['tool']=='session_op' and parked['input']=={'session_id':run['session_id'],'op':'pause','args':{}}
+    assert not any(c['tool']=='session_op' and c['input']['op']=='stop_game' for c in calls)   # never closed
+    assert M.warm_pool(store,w['name'])[run['mercmode']['title']]['state']=='parked'
+    assert S.worker_reason(store,w,S.settings(store)|{'enabled':True,'workers':[w['name']]},store.running_sessions(),now[0])         != 'a game is already running there'                                # warm games never block the switch
+    tick(1)
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and cur['phase'] in ('starting','playing')   # straight into the preloaded game
+    assert not any(c['tool']=='launch_game' for c in calls[calls.index(parked):])
+
+
+def test_a_parked_title_is_resumed_on_its_next_turn_without_a_relaunch():
+    store,w,saver,calls,now,tick,run,job=warm_playing()
+    title=run['mercmode']['title']; other='re5' if title=='re4' else 're4'
+    osid='w1-other';store.put('session',osid,{'session_id':osid,'game_id':M.TITLES[other]['game_ids'][0],'state':'running'})
+    M.keep_warm(store,w['name'],other,{'session_id':osid,'game_id':M.TITLES[other]['game_ids'][0],'state':'parked','at':now[0]})
+    store.put(M.NEXT,w['name'],{'title':other,'selection':None,'at':now[0]})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+    tick(1);tick(1)
+    resumes=[c for c in calls if c['tool']=='session_op' and c['input']['op']=='resume']
+    assert resumes and resumes[-1]['input']['session_id']==osid
+    assert store.get(S.STATE,w['name'])['session_id']==osid
+    assert not any(c['tool']=='launch_game' for c in calls[1:])
+    assert M.warm_pool(store,w['name']).get(title,{}).get('state')=='parked' and other not in M.warm_pool(store,w['name'])
+
+
+def test_ended_warm_sessions_leave_the_pool():
+    store=Store()
+    M.keep_warm(store,'pc','re4',{'session_id':'w1-a','state':'parked'})
+    M.keep_warm(store,'pc','re5',{'session_id':None,'job':'j','state':'prelaunch'})
+    assert set(M.warm_pool(store,'pc',running=[])) == {'re5'}

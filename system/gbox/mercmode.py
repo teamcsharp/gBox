@@ -16,7 +16,10 @@ PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': []}
+           'presentation_priority': False, 'queue': [], 'keep_warm': True}
+WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, state: prelaunch|parked, at}}
+NEXT = 'mercmode_next'          # host -> the pick made ahead of the round's end (prelaunch), honoured at the switch
+PRELAUNCH_S = 30.0              # seconds left on the round clock when the next title starts loading in the background
 QUEUE_MAX = 20
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
@@ -35,6 +38,8 @@ def normalize(patch, current=None):
     if not isinstance(patch, dict) or set(patch)-DEFAULT.keys():
         raise ValueError('Unknown MercMode setting')
     out = {**DEFAULT, **(current or {}), **patch}
+    if type(out.get('keep_warm')) is not bool:
+        raise ValueError('MercMode keep_warm must be true or false')
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
@@ -89,6 +94,36 @@ def resolve_selection(entry, rng):
     stage = entry['stage'] if entry.get('stage') is not None else rng.randrange(len(known['stages']))
     return {'title': entry['title'], 'mode': mode, 'character': character, 'stage': stage,
             'stage_name': known['stages'][stage]}
+
+
+def warm_pool(store, host, running=None, worker_id=None):
+    """This host's kept-warm MercMode games (operator 2026-10-24: "the emulators should be kept in memory if they are going
+    to keep being used ... I feel like this shader dialog wouldn't even have to show"). With `running`, entries whose
+    session ended are dropped (a prelaunch whose launch is still pending stays)."""
+    pool = dict(store.get(WARM, host) or {})
+    if running is None:
+        return pool
+    alive = {s.get('session_id') for s in running}
+    kept = {t: row for t, row in pool.items()
+            if row.get('session_id') in alive or (row.get('state') == 'prelaunch' and not row.get('session_id'))}
+    if kept != pool:
+        store.put(WARM, host, kept)
+    return kept
+
+
+def warm_sessions(store, host):
+    return {row.get('session_id') for row in (store.get(WARM, host) or {}).values() if row.get('session_id')}
+
+
+def keep_warm(store, host, title, row):
+    store.put(WARM, host, warm_pool(store, host) | {title: row})
+
+
+def take_warm(store, host, title):
+    pool = warm_pool(store, host)
+    row = pool.pop(title, None)
+    store.put(WARM, host, pool)
+    return row
 
 
 def pop_queue(store, host):
@@ -345,6 +380,12 @@ def preparation(platform):
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
+    ahead = store.get(NEXT, worker['name'])
+    if ahead:                                    # picked (and preloaded) before the round ended: keep that promise
+        store.delete(NEXT, worker['name'])
+        row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
+        if row:
+            return row | ({'selection': ahead['selection']} if ahead.get('selection') else {})
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title

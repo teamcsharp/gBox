@@ -219,9 +219,10 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
         return "offline"
     if worker.get("active_jobs"):
         return "busy with jobs"
-    if any(s.get("session_id", "").startswith(worker["id"] + "-") for s in running):
-        return "a game is already running there"
     from . import mercmode
+    warm = mercmode.warm_sessions(store, worker['name'])
+    if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm for s in running):
+        return "a game is already running there"
     merc_cfg=mercmode.settings(store,worker['name'])
     if merc_cfg['enabled'] and merc_cfg['presentation_priority']:
         return background.admission_reason(worker,background.excluded(store),101,now=now,
@@ -350,6 +351,10 @@ class Screensaver:
             return 'scheduled by this PC\'s local control plane'
         merc_cfg = mercmode.settings(self.store, w['name'])
         merc_pick = mercmode.choose(self.store, w, self.rng, merc_cfg) if merc_cfg['enabled'] else None
+        if merc_pick and merc_cfg.get('keep_warm'):
+            resumed = self._resume_warm(w, merc_pick, merc_cfg, now)
+            if resumed:
+                return resumed
         g = ({'game_id': merc_pick['game_id'], 'title': merc_pick['name']} if merc_pick else None) \
             if merc_cfg['enabled'] else choose(self.games(cfg), self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
@@ -453,7 +458,13 @@ class Screensaver:
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
             if run.get('mercmode_rotate_requested'):
+                if mercmode.settings(self.store, w['name']).get('keep_warm'):
+                    return self._park(w, run, now, 'verified native round boundary: next MercMode title')
                 return self._stop(w,run,now,'verified native round boundary: next MercMode title')
+            if phase == 'playing':
+                ahead = self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
+                if ahead:
+                    return ahead
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
             from . import imitate
             knobs = imitate.choose_knobs(self.history(run["game_id"]), self.rng)
@@ -477,6 +488,90 @@ class Screensaver:
             if row.get("game_id") == game_id and isinstance(res.get("score"), (int, float)):
                 out.append({"knobs": res.get("knobs") or row.get("knobs") or {}, "score": res["score"]})
         return out
+
+    def _resume_warm(self, w, pick, merc_cfg, now):
+        """Switch to a title kept warm (paused after its last round) or preloaded at the previous round's last
+        PRELAUNCH_S seconds: no boot, no shader/PPU build, no second copy of the emulator."""
+        from .server import JobRequest
+        from . import mercmode
+        running = self.store.running_sessions()
+        row = mercmode.warm_pool(self.store, w['name'], running).get(pick['title'])
+        if not row:
+            return None
+        sid = row.get('session_id')
+        if not sid and row.get('job'):                 # preloaded but its launch has not reported a session yet
+            sess = _launch_session(self.store, row['job'], running, worker_id=w['id'], game_id=row.get('game_id'))
+            sid = sess and sess['session_id']
+        mercmode.take_warm(self.store, w['name'], pick['title'])
+        base = {'worker': w['name'], 'worker_id': w['id'], 'game_id': row.get('game_id') or pick['game_id'],
+                'title': pick['name'], 'started': now, 'mercmode_predecessor': None,
+                'mercmode': {'title': pick['title'], 'map_id': pick['map_id'], 'rounds_per_title': merc_cfg['rounds_per_title'],
+                             **({'selection': pick['selection']} if pick.get('selection') else {})}}
+        if not sid:                                    # still loading: the normal launch path waits for it
+            self.store.put(STATE, w['name'], base | {'phase': 'launching', 'job': row.get('job'), 'prelaunched': True})
+            return f"switching to {pick['name']} (still loading in the background)"
+        if row.get('state') == 'parked':
+            self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'resume', 'args': {}},
+                                   agent_use=True, require_worker=w['id']), actor=ACTOR,
+                        origin={'via': 'MercMode warm switch', 'session_id': sid})
+        if pick.get('selection'):
+            spec = mercmode.selection_job(pick['title'], sid, pick['selection'])
+            if spec:
+                self.submit(JobRequest(tool=spec[0], input=spec[1], agent_use=True, require_worker=w['id']),
+                            actor=ACTOR, origin={'via': 'MercMode queue', 'session_id': sid})
+        self.store.put(STATE, w['name'], base | {'phase': 'starting', 'session_id': sid, 'job': row.get('job'),
+                                                 'up': now - START_GRACE, 'resumed_warm': row.get('state')})
+        return f"switching to {pick['name']} (kept warm: no reload)"
+
+    def _park(self, w, run, now, why):
+        """End this title's turn without closing it: its emulator is paused and kept for its next turn."""
+        from .server import JobRequest
+        from . import mercmode
+        self.submit(JobRequest(tool='session_op', input={'session_id': run['session_id'], 'op': 'pause', 'args': {}},
+                               agent_use=True, require_worker=run['worker_id']), actor=ACTOR,
+                    origin={'via': 'MercMode keep warm', 'session_id': run['session_id']})
+        mercmode.keep_warm(self.store, w['name'], run['mercmode']['title'],
+                           {'session_id': run['session_id'], 'game_id': run['game_id'], 'job': run.get('job'),
+                            'state': 'parked', 'at': now})
+        return self._finish(w, run, now, why + ' (kept warm)')
+
+    def _prelaunch(self, w, run, cfg_merc, now):
+        """In the round's last PRELAUNCH_S seconds, load the title that plays next in the background (or note that it
+        is already warm), so the switch at the round's end is immediate."""
+        from .server import JobRequest
+        from . import mercmode
+        if run.get('mercmode_prelaunch') or run.get('mercmode_pinned') or not cfg_merc['enabled'] or not cfg_merc.get('keep_warm'):
+            return None
+        if (run.get('mercmode_rounds') or 0) + 1 < cfg_merc['rounds_per_title'] and not cfg_merc.get('queue'):
+            return None
+        stats = (telemetry_get(run['session_id']).get('stats') or {})
+        timer = stats.get('timer')
+        if stats.get('screen') != 'playing' or type(timer) not in (int, float) or not 0 < timer <= mercmode.PRELAUNCH_S:
+            return None
+        history = self.store.get(mercmode.HISTORY, w['name']) or {}
+        self.store.put(mercmode.HISTORY, w['name'], history | {'last_game_id': run['game_id']})   # never "next" = this one
+        pick = mercmode.choose(self.store, w, self.rng, cfg_merc)
+        self.store.put(mercmode.HISTORY, w['name'], history)
+        if not pick or pick['title'] == run['mercmode']['title']:
+            self.store.put(STATE, w['name'], run | {'mercmode_prelaunch': {'title': None, 'at': now}})
+            return None
+        if pick.get('selection'):
+            mercmode.pop_queue(self.store, w['name'])
+        self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'), 'at': now})
+        pool = mercmode.warm_pool(self.store, w['name'], self.store.running_sessions())
+        if pick['title'] not in pool:
+            game = self.store.catalog_get(pick['game_id'])
+            if game:
+                game = game | {'launch': dict(game.get('launch') or {}) | {
+                    'mercmode': {'random_characters': True, 'random_stages': True,
+                                 **({'selection': pick['selection']} if pick.get('selection') else {})}}}
+                job = self.submit(JobRequest(tool='launch_game', input={'game': game, 'jump': True, 'memory_cards': 'operator'},
+                                             agent_use=True, low_priority=True, require_worker=w['id']), actor=ACTOR,
+                                  origin={'via': 'MercMode preload', 'game_id': pick['game_id']})
+                mercmode.keep_warm(self.store, w['name'], pick['title'],
+                                   {'session_id': None, 'game_id': pick['game_id'], 'job': _jid(job), 'state': 'prelaunch', 'at': now})
+        self.store.put(STATE, w['name'], run | {'mercmode_prelaunch': {'title': pick['title'], 'at': now}})
+        return f"preloading {pick['name']} for the next round"
 
     def _stop(self, w, run, now, why):
         from .server import JobRequest

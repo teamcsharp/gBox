@@ -14,6 +14,7 @@ class MercModeIn(BaseModel):
     rounds_per_title: int | None=None
     presentation_priority: StrictBool | None=None
     queue: list[dict] | None=None         # the DJ queue (gbox.mercmode.queue_entry validates each round)
+    keep_warm: StrictBool | None=None     # keep each title's emulator paused between its turns; preload the next one
 
 
 class MercModeOut(BaseModel):
