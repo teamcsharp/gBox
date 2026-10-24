@@ -173,3 +173,18 @@ def test_the_proxy_budget_follows_the_lane_in_the_queue_header():
         return asyncio.run(proxy.prepare(dict(BODY, messages=messages)))[2]
     assert meta_for('favorite')['budget_final'], 'a favorite run at 8 of 8 calls ends'
     assert not meta_for('inbox')['budget_final'], 'an inbox run at 8 of 12 calls continues'
+
+
+def test_deepseek_upstream_gets_its_own_thinking_switch(tmp_path):
+    """DeepSeek ignores vLLM's chat_template_kwargs; V4 models then think and demand replayed reasoning_content."""
+    seen = []
+    D = S.model_copy(update={'upstream': 'https://api.deepseek.com/v1', 'model': 'deepseek-v4-pro', 'host_name': 'deepseek'})
+
+    def handle(req):
+        seen.append(json.loads(req.content))
+        return httpx.Response(200, json={'model': D.model,
+            'choices': [{'message': {'role': 'assistant', 'content': 'ok'}, 'finish_reason': 'stop'}],
+            'usage': {'prompt_tokens': 3, 'completion_tokens': 1, 'total_tokens': 4}})
+    proxy = P.LocalLLM(lambda: D, gate=lambda: None, log_path=tmp_path/'calls.jsonl', transport=httpx.MockTransport(handle))
+    asyncio.run(proxy.complete(dict(BODY)))
+    assert seen[0]['thinking'] == {'type': 'disabled'} and 'chat_template_kwargs' not in seen[0]
