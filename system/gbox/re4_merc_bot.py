@@ -144,6 +144,10 @@ BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his 
 HEAD_LO, HEAD_AIM_H = 1300.0, 1520.0             # operator 2026-10-22: "never shooting at the ground ... aiming at heads": a shot
                                                  # leaves only with the aim inside the head band (HEAD_LO .. BODY_HI above
                                                  # his feet, never below the gun), and the stick settles on HEAD_AIM_H
+LOW_BODY = (0.0, 700.0, 300.0)                   # a hurt Ganado (knocked down, fallen; staggering: his legs): lo, hi, aim
+SMALL_BODY = (0.0, 450.0, 150.0)                 # a small animal (a chicken), health SMALL_HP or less: just off the ground
+SMALL_HP = 20                                    # (operator 2026-10-24: Leon missed "people he knocked down, people who
+                                                 # fell down, chickens" - every shot went at head height over them)
 BODY_HALF_W = 180.0                              # ... and to either side of his middle
 PITCH_RATE = 1.0                                 # radians a second the stick moves the aim pitch (learned as he plays;
                                                  # the routine ramps the stick over 7 frames: ~2.4 a second held)
@@ -329,6 +333,20 @@ def heading(dx: float, dz: float) -> float:
 
 def wrap(a: float) -> float:
     return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+BODY_BAND = (HEAD_LO, BODY_HI, HEAD_AIM_H)        # a standing Ganado: the head band (lo, hi, aim) above his feet
+
+
+def body_band(tgt: dict) -> tuple:
+    """Where shots land on this target, above its feet: a standing Ganado's head band; LOW_BODY for one that is hurt
+    (knocked down, fallen - r_no_0 2; a staggering one is still hit in the legs); SMALL_BODY for a small animal."""
+    if 0 < (tgt.get("hp_max") or 0) <= SMALL_HP:
+        return SMALL_BODY
+    r = tgt.get("r") or ()
+    if r and r[0] == threats_ram.R_HURT:
+        return LOW_BODY
+    return BODY_BAND
 
 
 def fire_tol(dist: float) -> float:
@@ -626,12 +644,22 @@ class Bot:
             self.aim = {"slot": None, "since": now, "combo": s["combo"]}
             return {"hold": set()}
         dist = math.hypot(tx - px, tz - pz)
+        band = body_band(tgt)
+        if band is not BODY_BAND:
+            self.stats["low_target_shots"] = self.stats.get("low_target_shots", 0) + (self.r_since is None)
         down = math.atan2(tgt["pos"][1] + HEAD_H - (p["pos"][1] + GUN_H), max(dist, 1.0))
+        if band is not BODY_BAND and not tgt.get("thrown"):
+            # one on the ground at Leon's feet is below the lowest aim: a step back brings him into it
+            reach = (p["pos"][1] + GUN_H - (tgt["pos"][1] + band[1])) / math.tan(PITCH_MAX)
+            if dist < reach and abs(err) < QUICK_TURN_ERR:
+                self.stats["low_target_backsteps"] = self.stats.get("low_target_backsteps", 0) + 1
+                self.r_since = None
+                return {"hold": {"down"}}
         if not tgt.get("thrown"):                                      # (a weapon in the air: shoot it from here)
             if p["pos"][1] - tgt["pos"][1] > HIGH_GROUND or down < STEEP_DOWN:   # up on a roof: get down to them
                 self.r_since = None
                 return self._go(p, (tx, tz), now)
-            if not self._sight(p, (tx, tgt["pos"][1] + HEAD_H, tz)):     # a wall between: navigate, never fire
+            if not self._sight(p, (tx, tgt["pos"][1] + max(band[2], 300.0), tz)):   # a wall between: navigate, never fire
                 self.r_since = None
                 return self._go(p, (tx, tz), now)
             if dist > SHOOT_RANGE:                                     # in view but too far: close in
@@ -649,7 +677,7 @@ class Bot:
         if tgt.get("thrown"):                                           # a weapon in the air: at its own height
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
-            height, level = self._aim_body(p, tgt["pos"][1], dist, now)
+            height, level = self._aim_body(p, tgt["pos"][1], dist, now, band)
         if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
             return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
@@ -851,7 +879,8 @@ class Bot:
 
         def cost(t):                                           # near, and little to turn: a radian ~ TURN_COST units
             return t.dist + TURN_COST * abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
-        near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R), key=cost)
+        small = lambda t: 0 < (t.enemy.get("hp_max") or 0) <= SMALL_HP           # a chicken: after every Ganado
+        near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R), key=lambda t: (small(t), cost(t)))
         near += sorted((t for t in live if t.kind == "down" and t.dist < THREAT_R), key=cost)   # knocked down: last
         if near:
             return self._fight(p, self._as_target(near[0]), now, s)
@@ -896,23 +925,25 @@ class Bot:
             return r[2] in AIM_READY_R2
         return self.r_since is not None and now - self.r_since >= PITCH_AFTER
 
-    def _aim_body(self, p, target_y: float, dist: float, now: float) -> tuple[set, bool]:
+    def _aim_body(self, p, target_y: float, dist: float, now: float, band=None) -> tuple[set, bool]:
         """A Ganado's head: the aim must sit between HEAD_LO and BODY_HI above his feet to fire (never at the ground or
         his legs: a level aim at the gun's own height already is that band on flat ground); outside it the stick
-        brings the aim to HEAD_AIM_H and holds it there, steady."""
+        brings the aim to HEAD_AIM_H and holds it there, steady. band: (lo, hi, aim) above his feet for a target that is
+        not standing head-high (body_band: on the ground, a chicken)."""
+        band_lo, band_hi, band_aim = band or BODY_BAND
         cur = p.get("pitch")
         if cur is None or self.r_since is None or not self._pose_up(p, now):
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
             return set(), False
         gun = p["pos"][1] + GUN_H
         off = PITCH_STEPS[self.pitch_i]                      # learned from misses at raised / lowered targets
-        lo = math.atan2(target_y + HEAD_LO - gun, max(dist, 1.0)) + off
-        hi = math.atan2(target_y + BODY_HI - gun, max(dist, 1.0)) + off
+        lo = math.atan2(target_y + band_lo - gun, max(dist, 1.0)) + off
+        hi = math.atan2(target_y + band_hi - gun, max(dist, 1.0)) + off
         margin = min(0.02, (hi - lo) * 0.2)
         if lo + margin <= cur <= hi - margin:
             self.pitch_key, self.pitch_seen, self.pitch_push = None, (now, cur, None), None
             return set(), True
-        return self._aim_height(p, target_y + HEAD_AIM_H, dist, now)
+        return self._aim_height(p, target_y + band_aim, dist, now)
 
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the

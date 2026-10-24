@@ -1020,3 +1020,21 @@ def test_spawn_multiplier_behaviour_writes_factor_and_restores(monkeypatch):
     assert g.m.rd(g.V.SPAWN_VARS, 1)[0] == 0
     assert g.m.rd(g.V.SPAWN_DUP_SITE, 4) == g.V.SPAWN_DUP_ORIG
     assert RM.spawn_multiplier(g, 99, True)["factor"] == 8      # backend bound unchanged (UI clamps to 4)
+
+
+def test_downed_ganados_and_chickens_are_aimed_low_not_at_head_height():
+    # operator 2026-10-24: Leon missed "people he knocked down, people who fell down, chickens"
+    assert B.body_band({"r": (0, 0, 0, 0), "hp_max": 1000}) is B.BODY_BAND
+    assert B.body_band({"r": (2, 1, 0, 0), "hp_max": 1000}) == B.LOW_BODY            # hurt: knocked down / fallen
+    assert B.body_band({"r": (1, 0, 0, 0), "hp_max": 5}) == B.SMALL_BODY             # a chicken
+    assert B.LOW_BODY[1] < B.HEAD_LO and B.SMALL_BODY[1] < B.HEAD_LO
+
+
+def test_a_downed_ganado_at_his_feet_gets_a_step_back_into_the_aim():
+    now = [0.0]
+    m = world([((0, 0, 600), True)])                                         # 6 m ahead, on the ground
+    act_state(m, 1, (2, 1, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, n=3)
+    assert any(a.get("hold") == {"down"} for a in acts) and bot.stats["low_target_backsteps"] >= 1
