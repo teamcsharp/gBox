@@ -68,6 +68,12 @@ def part_strips(data: bytes, rec: dict) -> list[dict]:
     return strips
 
 
+def strip_vertex_count(data: bytes, rec: dict, k: int) -> int:
+    """Vertex count of strip k of a mesh record (header only)."""
+    strips = part_strips(data, rec)
+    return len(strips[k]["positions"])
+
+
 def strip_triangles(nv: int, parity: int) -> list[tuple[int, int, int]]:
     """Strip-local triangles ordered counter-clockwise about the vertex normals."""
     return [(i, i + 1, i + 2) if (i + parity) % 2 else (i, i + 2, i + 1) for i in range(nv - 2)]
@@ -226,6 +232,50 @@ def rest_joints(nodes: list[dict], parents: list[int | None]) -> list[tuple[floa
         base = out[p] if p is not None else (0.0, 0.0, 0.0)
         out.append(tuple(base[i] + n["offset"][i] for i in range(3)))
     return out
+
+
+def part_vertex_counts(geo: bytes) -> list[int]:
+    """Vertex count per GEO mesh record (record i = body part i, see part_record)."""
+    return [sum(len(s["positions"]) for s in part_strips(geo, rec)) for rec in geo_records(geo)]
+
+
+def part_record(geo: bytes, nodes: list[dict]) -> list[int | None]:
+    """GEO record index that draws each node. Identity: body part p is mesh record p (Kung Lao's 17 nodes use
+    records 0-16 and the a/e/g costume copies follow); None for joint-only nodes (negative part)."""
+    n = len(geo_records(geo))
+    return [nd["part"] if 0 <= nd["part"] < n else None for nd in nodes]
+
+
+def rig_obj(geo: bytes, nodes: list[dict], parents: list[int | None], name: str,
+            img_name: str = "img.png") -> str:
+    """All mesh parts of the node table, each translated to its rest joint, as one OBJ (y-up)."""
+    import io
+    recs = geo_records(geo)
+    parts = {i: part_mesh(geo, rec) for i, rec in enumerate(recs)
+             if not (rec["flags"] & SPRITE) and "offset" in rec}
+    obj = io.StringIO()
+    obj.write(f"# {name}: {len(nodes)} nodes, {len(parts)} mesh parts (gbox.mkgold_geo)\n")
+    obj.write(f"mtllib {name}.mtl\n")
+    base = 0
+    for idx, n, j in zip(part_record(geo, nodes), nodes, rest_joints(nodes, parents)):
+        if idx is None or idx not in parts:
+            continue
+        m = parts[idx]
+        if not m["positions"]:
+            continue
+        obj.write(f'o {name}{idx}\nusemtl {name}\n')
+        for (x, y, z) in m["positions"]:
+            obj.write(f"v {x + j[0]:.6f} {-y - j[1]:.6f} {-z - j[2]:.6f}\n")
+        for s, t in m["st"]:
+            obj.write(f"vt {t:.6f} {1.0 - s:.6f}\n")
+        for x, y, z in m["normals"]:
+            obj.write(f"vn {x:.6f} {-y:.6f} {-z:.6f}\n")
+        for a, b, c in m["faces"]:
+            obj.write(f"f {base + a + 1}/{base + a + 1}/{base + a + 1} "
+                      f"{base + b + 1}/{base + b + 1}/{base + b + 1} "
+                      f"{base + c + 1}/{base + c + 1}/{base + c + 1}\n")
+        base += len(m["positions"])
+    return obj.getvalue()
 
 
 def character_table(exe: bytes, key: int = KEY, tables: dict | None = None) -> dict:
