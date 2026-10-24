@@ -247,7 +247,17 @@ def assignments(nodes, items, reserved):
     slots = prime + [n for turn in itertools.zip_longest(*others) for n in turn if n is not None]
     limit = min(pool_limit(),
                 sum(n['capacity'] for n in nodes if n.get('enabled') and n.get('capable')))
-    return slots[:max(0, limit - len(reserved))], limit
+    return slots[:max(0, limit - len(reserved) + elsewhere(nodes, items, reserved))], limit
+
+
+def elsewhere(nodes, items, reserved) -> int:
+    """Running jobs pinned to a node that is out of the pool right now (switched off, or its health check failing under
+    load): they run on that node's capacity, not on the nodes still taking work (2026-10-24: spark2's 32 jobs, its
+    check timing out, counted against DeepSeek's 16 and nothing was dispatched). Unknown claims still count."""
+    live = {n['name'] for n in nodes if n.get('enabled') and n.get('capable')}
+    known = {n['name'] for n in nodes}
+    return sum(1 for i in items.values() if i.get('job_id') in reserved
+               and i.get('inference_node') in known and i['inference_node'] not in live)
 
 
 def strict(s):

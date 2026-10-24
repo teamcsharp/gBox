@@ -366,3 +366,15 @@ def test_the_global_cap_is_shared_between_non_primary_nodes(pool, monkeypatch):
     names = [n['name'] for n in slots]
     assert limit == 48 and len(names) == 13
     assert names.count('deepseek') >= 6 and names.count('sparkDeux') >= 6
+
+
+def test_jobs_on_a_node_out_of_the_pool_do_not_use_up_the_others(pool, monkeypatch):
+    # 2026-10-24: spark2's health check timed out under load; its 32 jobs counted against DeepSeek's 16
+    monkeypatch.setattr(P, 'pool_limit', lambda: 64)
+    nodes = [{'name': 'sparkDeux', 'primary': False, 'enabled': True, 'capable': False, 'capacity': 32},
+             {'name': 'deepseek', 'primary': False, 'enabled': True, 'capable': True, 'capacity': 16}]
+    items = {str(n): {'job_id': str(n), 'inference_node': 'sparkDeux'} for n in range(32)}
+    items |= {f'd{n}': {'job_id': f'd{n}', 'inference_node': 'deepseek'} for n in range(3)}
+    reserved = {i['job_id'] for i in items.values()} | {'legacy'}
+    slots, limit = P.assignments(nodes, items, reserved)
+    assert limit == 16 and [n['name'] for n in slots] == ['deepseek'] * 12     # 16 - 3 running - 1 unknown claim
