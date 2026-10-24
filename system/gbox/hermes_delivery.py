@@ -15,6 +15,73 @@ ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', '
 PR_FIELDS = 'url,number,state,headRefName,headRefOid,baseRefName,isCrossRepository'
 
 
+SIDE_FOLDER_ROOTS = ('gbox-hermes-tasks', 'gbox-hermes-repo')
+SIDE_ROOT = 'gBox_alt'
+
+
+def _side_root_exists(path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _workspace_path(path) -> Path:
+    """Resolve a recorded workspace path to where that folder lives now.
+
+    The side folders moved from ~/gbox-hermes-tasks and ~/gbox-hermes-repo into ~/gBox_alt, so a
+    record written before the move still points at the old location. The moved side root wins
+    over the legacy one, and it wins for sub-paths too: a record naming the workdir
+    <side>/<id>/system must resolve to ~/gBox_alt/<side>/<id>/system even when that sub-folder
+    has not been created yet, because the whole side folder moved as a unit. The legacy root is
+    used only while the moved root is absent, and the moved root is the fallback when neither
+    side root exists, so a record never keeps pointing at a folder the move abandoned.
+    """
+    p = Path(path)
+    parts = p.parts
+    for base in SIDE_FOLDER_ROOTS:
+        if base not in parts:
+            continue
+        index = parts.index(base)
+        root = Path(*parts[:index]) or Path('/')
+        tail = Path(*parts[index + 1:])
+        if index and parts[index - 1] == SIDE_ROOT:
+            # Already inside the moved side root: it is where the folder lives now.
+            if _side_root_exists(p):
+                return p
+            legacy = root.parent / base / tail
+            return legacy if _side_root_exists(legacy) else p
+        moved = root / SIDE_ROOT / base / tail
+        legacy = root / base / tail
+        if _side_root_exists(moved):
+            return moved
+        if _side_root_exists(legacy):
+            return legacy
+        if _side_root_exists(root / SIDE_ROOT / base):
+            # The side folder moved as a unit; the tail may simply not exist yet.
+            return moved
+        if _side_root_exists(root / base):
+            return legacy
+        return moved
+    try:
+        from .side_dirs import moved
+        m = moved(p)
+        if m:
+            return Path(m)
+    except Exception:
+        pass
+    return p
+
+
+def _normalise_workspace(record):
+    """Rewrite the recorded workspace paths onto the current side-folder locations."""
+    for key in ('path', 'workdir', 'repo', 'root', 'workspace'):
+        value = record.get(key)
+        if isinstance(value, str) and value:
+            record[key] = str(_workspace_path(value))
+    return record
+
+
 def state_dir() -> Path:
     return Path(os.environ.get('GBOX_HERMES_DISPATCH_STATE') or
                 Path(__file__).resolve().parents[1] / 'gbox-data/hermes-dispatch')
@@ -129,8 +196,8 @@ def prepare(request_id: str, number: int) -> dict:
         install_pre_push(repo, sys.executable, Path(__file__).resolve().parents[1])   # every task worktree pushes through it
     with locked(request_id):
         if record.exists():
-            workspace = json.loads(record.read_text())
-            if (Path(workspace['path']) / '.git').exists():
+            workspace = _normalise_workspace(json.loads(record.read_text()))
+            if (_workspace_path(workspace['path']) / '.git').exists():
                 return workspace | {'reused': True, 'shared_sources': _shared_sources(workspace)}
             raise RuntimeError('The recorded task workspace is missing; preserve its history before retrying')
         _run(['git', 'fetch', 'origin', 'main'], repo)
@@ -155,8 +222,8 @@ def _shared_sources(workspace):
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
     record = _record_path(request_id)
     with locked(request_id):
-        workspace = json.loads(record.read_text())
-        root = Path(workspace['path']).resolve()
+        workspace = _normalise_workspace(json.loads(record.read_text()))
+        root = _workspace_path(workspace['path']).resolve()
         if not files or len(files) > 40:
             raise ValueError('Specify 1 to 40 changed source files')
         for name in files:

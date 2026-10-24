@@ -175,6 +175,23 @@ class GoldenEyeROM:
                 return e
         raise KeyError(name)
 
+    @property
+    def root_offsets(self) -> dict[str, int]:
+        """Cache of body name -> root_offset from body_table()."""
+        if not hasattr(self, "_root_offsets"):
+            self._root_offsets = {}
+            for body in self.body_table():
+                hdr = self.model_header(body.header_vram)
+                self._root_offsets[body.filename] = hdr.root_node
+        return self._root_offsets
+
+    @property
+    def file_offsets(self) -> dict[str, int]:
+        """Cache of file name -> rom_offset from file_table()."""
+        if not hasattr(self, "_file_offsets"):
+            self._file_offsets = {e.name: e.rom_offset for e in self.file_table()}
+        return self._file_offsets
+
     def read_file(self, name: str) -> bytes:
         e = self.file_by_name(name)
         data, used = rarezip_inflate(self.rom, e.rom_offset, e.rom_size)
