@@ -152,7 +152,8 @@
     }
     for (const hazard of plan.hazards || []) {
       const [x, y] = project(v, hazard.pos[0], hazard.pos[2]);
-      out.push({ kind: "hazard", x, y, tip: hazard.reason || "Blocked approach" });
+      const q=project(v,hazard.pos[0]+(hazard.radius||0),hazard.pos[2]);
+      out.push({ kind: "hazard", x, y, radius:hazard.radius?Math.hypot(q[0]-x,q[1]-y):0,tip: hazard.reason || "Blocked approach" });
     }
     const py = p ? p.pos[1] : null, lv = q => (py == null ? "same" : levelOf(q[1] - py, units));
     const away = q => (p ? metres(flat(p.pos, q), units) : "");
@@ -306,6 +307,7 @@
       } else if (m.kind === "hazard") {
         ctx.strokeStyle = "#ff554d"; ctx.lineWidth = 2; ctx.setLineDash([]);
         ctx.beginPath(); ctx.arc(m.x, m.y, 6, 0, Math.PI * 2); ctx.stroke();
+        if(m.radius){ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(m.x,m.y,Math.max(6,m.radius),0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);}
       } else if (m.kind === "trail") {
         ctx.strokeStyle = "#42bfd9"; ctx.lineWidth = 1.5; ctx.setLineDash([]);
         ctx.beginPath(); m.pts.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.stroke();

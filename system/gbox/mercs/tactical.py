@@ -238,6 +238,11 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
                for row in (raw.get("hazards") or ())[-64:] if isinstance(row, dict)
                and (p := _xyz(row.get("pos") or ())) is not None]
     if hazards:
+        for clean,row in zip(hazards,[row for row in (raw.get('hazards') or ())[-64:]
+                                     if isinstance(row,dict) and _xyz(row.get('pos') or ()) is not None]):
+            radius=_n(row.get('radius'))
+            if radius is not None and 0<radius<=500:
+                clean.update(radius=radius,wall_object_verified=False)
         out["hazards"] = hazards
     st = raw.get("stand")
     if isinstance(st, dict) and _xyz(st.get("pos") or ()) is not None:

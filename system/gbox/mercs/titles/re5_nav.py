@@ -192,7 +192,7 @@ class NavMesh:
         return height is None or abs(height - pos[1]) >= STEP_DY
 
 
-    def floor_segment(self, start, goal) -> bool:
+    def floor_segment(self, start, goal, *, blocked_links=()) -> bool:
         """Whether a centre-line segment stays on linked, non-steep floors in the recorded direction.
 
         This proves mesh support, not clearance from dynamic objects or the character's collision radius. In
@@ -252,6 +252,8 @@ class NavMesh:
             if intervals[u][1] >= 1.0 - eps:
                 return True
             for v, edge, _ in self.links[u]:
+                if (u,v) in blocked_links:
+                    continue
                 if v not in intervals or not 0 <= edge < 3:
                     continue
                 # Only an actual shared edge authorizes ordinary floor travel. Off-mesh action links keep
@@ -831,14 +833,43 @@ class Learning:
         stage = self._stage(mesh)
         self._increment(stage.setdefault("stalls", {}), f"{a}:{b}", self.MAX_CROSSINGS)
 
-    def obstruction(self, mesh, pos, goal, reason):
+    def obstruction(self, mesh, pos, goal, reason, *, approach=None, native_ray=None):
         if mesh is None or not callable(getattr(mesh,'boundary_context',None)):
             return None
         event = mesh.boundary_context(pos)
         event.update(pos=list(pos), goal=list(goal), reason=str(reason)[:160], at=time.time())
+        if approach is not None:
+            dx,dz = approach[0]-pos[0],approach[2]-pos[2]
+            length = math.hypot(dx,dz)
+            if length >= 20.:
+                event['blocked_approach'] = {'pos':[pos[0]+100.*dx/length,pos[1],pos[2]+100.*dz/length],
+                    'radius':80., 'evidence':'commanded_movement_without_progress', 'wall_object_verified':False}
+        if isinstance(native_ray,dict) and all(isinstance(native_ray.get(k),(tuple,list)) and len(native_ray[k])==3
+                and all(type(v) in (int,float) and math.isfinite(v) for v in native_ray[k]) for k in ('from','at')):
+            event['native_ray'] = {k:list(native_ray[k]) for k in ('from','at')}
+            event['native_ray'].update(source='uLaserSight RAM decoder',freshness='unverified context only',wall_object_verified=False)
         stage = self._stage(mesh)
         stage['obstructions'] = (stage.get('obstructions',[])+[event])[-64:]
         return event
+
+    def approach_obstacles(self, mesh, *, now=None):
+        """Short-lived hypotheses for this exact geometry; not permanent solid walls."""
+        stage = self.stages.get(getattr(mesh,'learning_sig',None),{})
+        at = time.time() if now is None else now
+        grouped = {}
+        for event in stage.get('obstructions',[])[-64:]:
+            row = event.get('blocked_approach') or {};p=row.get('pos');when=event.get('at')
+            if row.get('evidence')!='commanded_movement_without_progress' or not isinstance(p,list) or len(p)!=3 \
+                    or any(type(v) not in (int,float) or not math.isfinite(v) for v in p) \
+                    or type(when) not in (int,float) or not math.isfinite(when) or not 0<=at-when<=300.:
+                continue
+            key = tuple(round(v/80.) for v in p)
+            prior = grouped.get(key)
+            grouped[key] = {'pos':p,'radius':80.,'at':max(when,(prior or {}).get('at',when)),
+                'observations':1+(prior or {}).get('observations',0),
+                'reason':'Observed blocked approach; physical wall object unverified',
+                'wall_object_verified':False}
+        return [row for row in grouped.values() if at-row['at'] <= min(300.,16.*2**min(4,row['observations']-1))][-24:]
 
     def retry_delay(self, mesh, link):
         count = self.stages.get(getattr(mesh,'learning_sig',None),{}).get('stalls',{}).get(

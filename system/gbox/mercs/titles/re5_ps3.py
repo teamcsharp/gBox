@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from ..driver import Driver
+from .. import obstacle_map
 from . import re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
@@ -1332,12 +1333,14 @@ class Bot:
         mesh = snap.get("nav")
         if mesh is not None and mesh.find(p["pos"], floor_only=True, height_slack=60.) is not None:
             self.nav_last_good = tuple(p["pos"])
+        self._wall_mesh=mesh
         geometry = mesh.learning_sig if mesh is not None else None
         if geometry != self.nav_geometry:
             if self.nav_geometry is not None:
                 self.map_goals.reset()
             self.bonus_commitment.reset()
             self.nav_trail, self.nav_hazards = [], []
+            self._wall_motion=self._blocked_detour=None
             self.blocked_links.clear()
             self.blocked_until.clear()
             self.blocked_goal_retries.clear()
@@ -1438,10 +1441,14 @@ class Bot:
                          default=(None, None))
             if ptr is not None:
                 nb = {"id": ptr, "kind": "time", "dist": round(d), "eta_s": round(d / RUN_SPEED, 1)}
+        recovery = getattr(self,'_blocked_detour',None)
+        if recovery and self.clock() < recovery['until']:
+            walking = recovery['route']
+        observed = self.nav_learning.approach_obstacles(getattr(self,'_wall_mesh',None))
         return {"phase": self.stats.get("phase"), "target": self.plan_target,
                 "goal_round": self.map_goals.round, "goal_capabilities": ['bonus', 'item'],
                 "operator_goal": self.map_goals.public(),
-                "trail": list(self.nav_trail), "hazards": list(self.nav_hazards),
+                "trail": list(self.nav_trail), "hazards": (list(self.nav_hazards)+observed)[-64:],
                 "enemy_awareness": getattr(self.combat, "awareness", []),
                 "route": [tuple(w) for w in walking] if walking else None,
                 "stand": {"pos": self.spawn, "r": STAND_R} if self.spawn else None,
@@ -1457,6 +1464,7 @@ class Bot:
         if not p or snap.get("prompt") or snap.get("stage_prompt") or (p.get("hp") or 1) <= 0:
             self._idle = self._idle_walk = None
             return act
+        act = self._avoid_observed_blockage(snap,act,now)
         pos = tuple(p["pos"])
         activity = (self.stats.get("damage_events", 0), self.stats.get("kills_seen", 0), self.at_stand)
         self._idle_walk = None
@@ -1468,6 +1476,89 @@ class Bot:
             self.route_at, self.route_len = -math.inf, None
             self.stats["idle_route_replans"] = self.stats.get("idle_route_replans", 0) + 1
             self.stats["route"] = "stationary: discarding stale route; awaiting supported movement"
+        return act
+
+    def _avoid_observed_blockage(self,snap,act,now):
+        """Remember failed movement across goal changes; probe only supported local floor."""
+        p,mesh = snap.get('player'),snap.get('nav')
+        if not p or mesh is None or not callable(getattr(mesh,'floor_segment',None)) \
+                or p.get('action') not in (0,1) or snap.get('recovery_active'):
+            self._wall_motion = self._blocked_detour = None
+            return act
+        self._wall_mesh = mesh
+        pos = tuple(p['pos']);keys=set(act.get('hold',()))
+        owner = (getattr(mesh,'learning_sig',None),p.get('ptr'))
+        motion = getattr(self,'_wall_motion',None)
+        if not motion or motion['owner']!=owner or not 0<=now-motion['at']<=.5 \
+                or math.dist(pos,motion['origin'])>=STUCK_MOVE or now-motion['walking_at']>2.:
+            motion={'owner':owner,'at':now,'origin':pos,'effort':0.,'forward':False,'walking_at':now}
+        elif motion['forward']:
+            motion['effort'] += now-motion['at']
+        toward = (pos[0]+200.*math.sin(p['rot']),pos[1],pos[2]+200.*math.cos(p['rot']))
+        target = self.route[0] if self.route and not isinstance(self.route[0],re5_nav.Traversal) \
+            else (self.plan_target or {}).get('pos') or toward
+        if abs(target[1]-pos[1])>60.:target=toward
+        eligible = 'lup' in keys and not keys.intersection({'l1','r1','l2'}) and not act.get('tap')
+        if eligible and motion['effort']>=1.4:
+            context=self.nav_learning.obstruction(mesh,pos,target,'stationary commanded movement across decisions',
+                approach=toward,native_ray=snap.get('laser'))
+            if context:
+                self.stats['nav_obstruction_context']=context
+                self.stats['nav_boundary_traces']=self.stats.get('nav_boundary_traces',0)+1
+                self.stats['observed_blocked_approaches']=self.stats.get('observed_blocked_approaches',0)+1
+                self.nav_learning.save()
+            self.route=self.route_for=self.route_len=None
+            self.route_at=-math.inf
+            self._blocked_detour=None;motion['effort']=0.
+            act={'hold':set()};eligible=False
+        blocks=self.nav_learning.approach_obstacles(mesh)
+        recovery=getattr(self,'_blocked_detour',None)
+        goal=(self.plan_target or {}).get('kind'),(self.plan_target or {}).get('id')
+        if recovery and (recovery['owner']!=owner or recovery['goal']!=goal or now>=recovery['until']):
+            recovery=self._blocked_detour=None
+        maneuver_allowed=not keys.intersection({'l1','r1','l2'}) and not act.get('tap')
+        if (eligible or recovery and maneuver_allowed) and (recovery or not obstacle_map.clear_segment(pos,toward,blocks)):
+            hazards=[(row['pos'],600.) for row in self.nav_dynamic_mines.values()]
+            supported=lambda a,b:mesh.floor_segment(a,b,blocked_links=self.blocked_links)
+            safe=lambda a,b:mesh.hazard_segment_clear(a,b,hazards,departing=True)
+            if recovery is None:
+                def project(point):
+                    node=mesh.find(point,floor_only=True,height_slack=60.)
+                    if node is None:return None
+                    height=mesh._height(node,point[0],point[2])
+                    return (point[0],height,point[2]) if height is not None else None
+                route=obstacle_map.detour(pos,tuple(target),blocks,project=project,supported=supported,hazard_clear=safe)
+                if route:
+                    recovery=self._blocked_detour={'owner':owner,'goal':goal,'until':now+8.,'route':route}
+                    self.stats['local_obstacle_detours']=self.stats.get('local_obstacle_detours',0)+1
+            if recovery:
+                while recovery['route'] and math.dist(pos,recovery['route'][0])<20.:
+                    recovery['route'].pop(0)
+                if recovery['route']:
+                    waypoint=recovery['route'][0]
+                    if supported(pos,waypoint) and safe(pos,waypoint) and obstacle_map.clear_segment(pos,waypoint,blocks):
+                        error=wrap(heading(waypoint[0]-pos[0],waypoint[2]-pos[2])-p['rot'])
+                        detour_keys=self._turn(error,aiming=False)
+                        if abs(error)<=TURN_TOL:detour_keys|={'lup'}
+                        act={'hold':detour_keys}
+                        self.stats['phase']='obstacle_detour'
+                        self.stats['route']='following supported local floor around an observed blocked approach'
+                    else:
+                        self._blocked_detour=None;act={'hold':set()}
+                else:self._blocked_detour=None
+            else:
+                act={'hold':set()}
+                self.stats['route']='observed approach blocked; no supported local detour, movement released'
+                deferred = self.route_for
+                if deferred is None and (self.plan_target or {}).get('kind') in ('time','combo'):
+                    deferred=self.plan_target.get('id')
+                if deferred is not None:self.bonus_skip[deferred]=now+16.
+                self.route=self.route_for=self.route_len=None
+                self.route_at=-math.inf
+                self.map_goals.defer('Observed approach is blocked; waiting for a supported alternative')
+        motion['at'],motion['forward']=now,'lup' in act.get('hold',())
+        if motion['forward']:motion['walking_at']=now
+        self._wall_motion=motion
         return act
 
     def tick(self, snap: dict) -> dict:
@@ -3118,7 +3209,9 @@ class Bot:
         link = getattr(self.route[0], "link", None) if self.route else None
         mesh = getattr(self, '_route_mesh', None)
         self.nav_learning.blocked(mesh, link)
-        context = self.nav_learning.obstruction(mesh, getattr(self,'_route_pos',tgt['pos']),tgt['pos'],reason)
+        approach = self.route[0] if self.route and not isinstance(self.route[0],re5_nav.Traversal) \
+            and ('stationary' in reason or 'six seconds' in reason) else None
+        context = self.nav_learning.obstruction(mesh, getattr(self,'_route_pos',tgt['pos']),tgt['pos'],reason,approach=approach)
         if context:
             self.stats['nav_obstruction_context'] = context
             self.stats['nav_boundary_traces'] = self.stats.get('nav_boundary_traces',0)+1
