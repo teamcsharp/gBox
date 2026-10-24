@@ -417,12 +417,25 @@ class Screensaver:
             self.store.put("slabel", sid, {"session_id": sid, "owner": "you", "ts": now,
                                            "label": f"{run['title']}: autoplay, handed over by the screensaver"})
             return self._finish(w, run, now, f"handed to the operator ({run['handover']}): plays on until Stop")
-        if run.get("yield") or not cfg["enabled"] or not opted_in(self.store, w, cfg):
-            return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
             from . import mercmode
-            if not mercmode.settings(self.store,w['name'])['enabled']:
-                return self._stop(w,run,now,'MercMode turned off')
+            pinned = not mercmode.settings(self.store,w['name'])['enabled']
+            if pinned != bool(run.get('mercmode_pinned')):
+                run = run | {'mercmode_pinned':pinned,'mercmode_rotate_requested':False,'mercmode_resume_job':False}
+                self.store.put(STATE,w['name'],run)
+            if pinned:
+                # A boundary can already have told the native bot to exit. Wait
+                # for its stopped receipt before restarting it in this same game.
+                live_bot = telemetry_get(sid,now)
+                if (live_bot.get('running') is False and live_bot.get('age_s',999)<=10
+                        and (live_bot.get('stats') or {}).get('mercmode_rotate_requested')
+                        and not run.get('mercmode_resume_job')):
+                    phase = 'starting'
+                    run = run | {'phase':phase,'up':now-START_GRACE,'mercmode_resume_job':True}
+                    self.store.put(STATE,w['name'],run)
+        if run.get("yield") or (not run.get('mercmode_pinned') and (not cfg["enabled"] or not opted_in(self.store, w, cfg))):
+            return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
+        if run.get('mercmode'):
             if run.get('mercmode_rotate_requested'):
                 return self._stop(w,run,now,'verified native round boundary: next MercMode title')
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
@@ -531,7 +544,7 @@ class Screensaver:
             cfg = mercmode.settings(self.store,run['worker'])
             alternatives = [r for r in mercmode.inventory(self.store,worker,cfg) if r['playable']
                             and r['title'] in cfg['titles'] and r['game_id']!=run['game_id']] if worker else []
-            rotate = bool(alternatives and count>=cfg['rounds_per_title'])
+            rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and count>=cfg['rounds_per_title'])
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,

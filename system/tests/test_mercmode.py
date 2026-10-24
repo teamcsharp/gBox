@@ -230,6 +230,40 @@ def test_one_ready_title_keeps_warm_session_and_native_character_cycle():
     assert len(calls)==2
 
 
+def test_turning_mercmode_off_keeps_same_bot_and_game_even_if_screensaver_is_off():
+    store,w,saver,calls,now,tick,run,job=playing()
+    store.put('setting',S.SETTING,S.settings(store)|{'enabled':False})
+    M.configure(store,w['name'],{'enabled':False})
+    tick(1);tick(4000)
+    kept=store.get(S.STATE,w['name'])
+    assert kept['session_id']==run['session_id'] and kept['autoplay_job']==job['id']
+    assert kept['mercmode_pinned'] and len(calls)==2
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
+    tick(1)
+    assert len(calls)==2
+    M.configure(store,w['name'],{'enabled':True})
+    store.put('setting',S.SETTING,S.settings(store)|{'enabled':True})
+    tick(1)
+    body=boundary(run,now[0])|{'round_id':'b'*32}
+    assert saver.round_boundary(body,job,now[0])['rotate_requested'] is True
+    tick(1)
+    assert calls[-1]['input']['op']=='stop_game'
+
+
+def test_disabling_after_native_rotation_receipt_resumes_same_game_once_when_bot_stops():
+    store,w,saver,calls,now,tick,run,job=playing()
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested']
+    M.configure(store,w['name'],{'enabled':False})
+    tick(1)
+    assert len(calls)==2
+    S.telemetry_put(run['session_id'],{'running':False,'stats':{'mercmode_rotate_requested':True}},now=now[0])
+    tick(1);tick(1)
+    assert len(calls)==3
+    assert calls[-1]['tool']=='autoplay' and calls[-1]['input']['session_id']==run['session_id']
+    assert not any(c['tool']=='session_op' for c in calls)
+
+
 @pytest.mark.parametrize('change',[
     {'role':'observe_human'}, {'role':'teammate_p2'}, {'map_id':'BH6'},
     {'source':'telemetry'}, {'round_id':'invented'}, {'at':1},

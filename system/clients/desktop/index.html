@@ -4142,7 +4142,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
-                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["-"],
+                 ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode-stay", "Stay in this game (autobot) · turn MercMode off"], ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
@@ -4228,6 +4228,14 @@ function gameSettings(anchor) {
     e.animate([{outline:"2px solid #7c96ff"},{outline:"2px solid transparent"}], {duration:1600}); } })()`).catch(() => {}), 900);
 }
 async function gameAction(a) {
+  if(a==='mercmode-stay'){
+    try{
+      const sid=globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src')||'')||(COMPACT.on?COMPACT.sid:EMB.sid);
+      if(EMB.authority&&EMB.authority!==S.apiUrl)throw Error('Reconnect to this game’s service before changing MercMode.');
+      await GBoxMercMode.stay(async(path,body)=>{const r=await gbox.api(path,body);if(!r.ok)throw Error(r.error||'MercMode request failed');return r.data;},sid);
+      toast('MercMode rotation off. Autobot continues in this game.');
+    }catch(error){toast(error.message);}return;
+  }
   try {
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game

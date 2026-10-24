@@ -55,6 +55,7 @@
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
+<script src="../web/viz/mercmode.js"></script>
 <script src="pip-media.js"></script>
 <script>
   const q = new URLSearchParams(location.search), v = document.getElementById("v");
@@ -106,6 +107,17 @@
       button.onclick=()=>{const current=gboxStreamWatchdog.sessionOf(v.src);gbox.mercsOpen({origin:new URL(v.src).origin,sid:current,mode}).catch(error=>console.warn('Mercenaries viewer:',error.message));closeModifiers();};
       modifierMenu.append(button);
     }
+    const stay=document.createElement('button');stay.type='button';stay.style.display='block';stay.textContent='Stay in this game (autobot) · turn MercMode off';
+    stay.onclick=async()=>{
+      stay.disabled=true;
+      try{
+        const settings=await gbox.settings();
+        if(new URL(settings.apiUrl).origin!==new URL(v.src).origin)throw Error('Reconnect to this game’s service before changing MercMode.');
+        await GBoxMercMode.stay(async(path,body)=>{const r=await gbox.api(path,body);if(!r.ok)throw Error(r.error||'MercMode request failed');return r.data;},gboxStreamWatchdog.sessionOf(v.src));
+        stay.textContent='Rotation off · autobot stays in this game';
+      }catch(error){stay.textContent=error.message;stay.disabled=false;}
+    };
+    modifierMenu.append(stay);
     document.body.append(modifierMenu);
     modifierMenu.style.left = Math.max(8, Math.min(event.clientX, innerWidth - modifierMenu.offsetWidth - 8)) + 'px';
     modifierMenu.style.top = Math.max(8, Math.min(event.clientY, innerHeight - modifierMenu.offsetHeight - 8)) + 'px';

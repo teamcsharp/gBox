@@ -1,5 +1,12 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const M=require('../clients/web/viz/mercmode.js');
+test('stay targets only the exact displayed MercMode session',async()=>{
+ const calls=[],api=async(path,body)=>{calls.push([path,body]);return {hosts:[{name:'lilspark',current_run:{session_id:'w-current',mercmode:{title:'re5'}}}]};};
+ assert.equal(await M.stay(api,'w-current'),'lilspark');
+ assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:false}]);
+ await assert.rejects(M.stay(api,'w-old'),/no longer/);
+ assert.equal(calls.filter(c=>c[1]).length,1);
+});
 test('each host owns its settings and unavailable RE6 gives its reason',()=>{
  const html=M.render({hosts:[{name:'lilspark',id:'w1',online:true,settings:{enabled:true,titles:['re4','re5','re6'],rounds_per_title:1},titles:[{title:'re6',name:'Resident Evil 6',playable:false,reason:'No verified combat driver <pending>'}]}]});
  assert.match(html,/data-host="lilspark"/);assert.match(html,/No verified combat driver &lt;pending&gt;/);
