@@ -646,7 +646,9 @@ def test_central_settings_delegate_once_and_manual_prepare_tracks_exact_job(cfg)
     jobs=[job for job in store.all('job') if job['tool']=='mercmode']
     assert len(jobs)==1 and jobs[0]['require_worker']==w['id']
     assert jobs[0]['input']=={'op':'configure','host':w['name'],'enabled':True,
-        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[],'keep_warm':1}   # the default
+        'titles':['re5'],'rounds_per_title':1,'presentation_priority':False,'queue':[]}
+    # no keep_warm for a worker without the warm feature: an older mercmode tool forbids unknown fields
+    assert store.get(M.COMMAND,w['name'])['settings']['keep_warm']==1                     # the default, still desired
     assert store.get(M.COMMAND,w['name'])['job']==jobs[0]['id']
     response=client.post('/api/mercmode/prepare',json={'worker_id':w['id']})
     assert response.status_code==200,response.text
@@ -995,3 +997,17 @@ def test_ended_warm_sessions_leave_the_pool():
     M.keep_warm(store,'pc','re4',{'session_id':'w1-a','state':'parked'})
     M.keep_warm(store,'pc','re5',{'session_id':None,'job':'j','state':'prelaunch'})
     assert set(M.warm_pool(store,'pc',running=[])) == {'re5'}
+
+
+def test_configure_relay_carries_keep_warm_only_to_a_warm_capable_worker(cfg):
+    import time
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app=create_app(cfg);store=app.state.store
+    w=worker(time.time(),name='WarmOwner',os='linux')
+    store.put('worker',w['id'],w|{'last_seen':time.time(),'tools':['mercmode','launch_game','autoplay'],
+        'features':[M.WARM_FEATURE],'federation':{'authority':'authority','scheduler_owner':'local'}})
+    client=TestClient(app,headers={'Authorization':'Bearer '+cfg.token()})
+    assert client.post('/api/mercmode',json={'host':w['name'],'enabled':True,'keep_warm':2}).status_code==200
+    job=next(job for job in store.all('job') if job['tool']=='mercmode')
+    assert job['input']['keep_warm']==2
