@@ -82,6 +82,8 @@ import struct
 import time
 from pathlib import Path
 
+import numpy as np
+
 try:
     from . import re4_ram_prompts                 # the game's own action-button state: prompts from RAM, vision after
 except ImportError:                              # a tree without it: vision only
@@ -161,6 +163,9 @@ BLOCKED_MISSES, BLOCKED_SKIP_S = 3, 5.0          # misses in a row at one Ganado
 BLOCKED_R = 2500.0                               # ... when he is this close and on Leon's level (a level shot)
 PITCH_STEPS = (0.0, -0.05, 0.05, -0.1, 0.1, -0.15, 0.15)   # aim-height offsets tried in turn after misses (radians)
 CELL = 400.0                                     # the learned map's grid (world units)
+RAY_FAN_N = 5                                    # lookahead rays cast ahead every tick (request #3299)
+RAY_FAN_SPREAD = math.pi / 3                     # the fan's total spread (radians, 60 deg)
+RAY_FAN_LEN = 2000.0                             # each ray's reach ahead (world units)
 EXPLORE_R = 2400.0                               # "navigate more of the level": the distance of each exploring leg
 WALLS_PER_SAVE, STUCK_LOG_MAX = 5, 200           # save the learned map after this many new walls; stuck events kept
 DETOUR_S = 1.0                                   # a learned detour round a wall is planned again this often at most
@@ -506,7 +511,8 @@ class Bot:
                       "attacks_seen": 0, "attacks_prevented": 0, "attacks_avoided": 0, "attacks_landed": 0,
                       "thrown_seen": 0, "thrown_shot": 0, "quick_turns": 0,
                       "stuck_events": 0, "stuck_reason": "", "wall_detours": 0,   # the obstruction database at work
-                      "learned_map": None, "learned_floor_cells": 0}
+                      "learned_map": None, "learned_floor_cells": 0,
+                      "rays_cast": 0, "ray_hits": 0}
 
     # -- the round's time bonuses --
     def _round(self, room):
@@ -580,6 +586,38 @@ class Bot:
             return bool(self.nav.sight(self.st, gun, list(target_xyz)))
         except Exception:                             # noqa: BLE001
             return True
+
+    # -- lookahead raycast fan (request #3299) --
+    def _raycast_fan(self, p, now) -> None:
+        """Cast a fan of lookahead rays ahead of Leon every tick and mark hits into the learned map.
+
+        Uses the disc's collision walls via gbox.re4_collision.raycast (a Python reimplementation
+        of the native BVH line-test documented in that module).  Each hit marks a wall cell into
+        LearnedMap so the bot steers before contact, not after a stuck.  Stats report rays_cast
+        and ray_hits per round.
+        """
+        if self.st is None or self.learned is None:
+            return
+        try:
+            from . import re4_collision as rc
+            walls = self.st.get("_walls")
+            if walls is None:
+                w = np.asarray(self.st["walls"], np.float64).reshape(-1, 7)
+                self.st["_walls"] = w
+                walls = w
+            origin = [p["pos"][0], p["pos"][1] + GUN_H, p["pos"][2]]
+            heading = p.get("aim_rot", p["rot"])
+            hits = rc.fan(walls, origin, heading, n=RAY_FAN_N, spread=RAY_FAN_SPREAD,
+                          length=RAY_FAN_LEN, height=0.0, see_through=True)
+            self.stats["rays_cast"] += len(hits)
+            for h in hits:
+                if h.blocked and h.point is not None:
+                    self.stats["ray_hits"] += 1
+                    # Mark the hit cell as a wall in the learned map (obstruction database)
+                    self.learned.block(h.point[0], h.point[2])
+                    self._new_walls += 1
+        except Exception:                             # noqa: BLE001
+            pass
 
     def save(self):
         """Keep what this round taught (the caller calls it between rounds and at the end; _go every WALLS_PER_SAVE
@@ -1225,6 +1263,7 @@ class Bot:
         if not p:
             return {"hold": set()}
         self._round(s["room"])
+        self._raycast_fan(p, now)
         if s["timer"] != self.last_timer:
             if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX and self.bonus:   # a time bonus (not the next round's clock)
                 px, _, pz = p["pos"]
