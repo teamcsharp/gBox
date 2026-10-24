@@ -352,3 +352,17 @@ def test_queue_report_handoff_retries_and_deduplicates_without_closing_task(pool
     assert item['final_report'].startswith('Partial inventory') and item['report_error'] == 'TimeoutError'
     Q._preserve_report(item, run)
     assert item['report_posted_run'] == run['id'] and len(attempts) == 1
+
+
+def test_the_global_cap_is_shared_between_non_primary_nodes(pool, monkeypatch):
+    monkeypatch.setattr(P, 'pool_limit', lambda: 64)
+    # 2026-10-24: 13 free under the cap went to spark2's 15 free slots; DeepSeek ran 3 of its 16
+    nodes = [{'name': 'sparkDeux', 'primary': False, 'enabled': True, 'capable': True, 'capacity': 32},
+             {'name': 'deepseek', 'primary': False, 'enabled': True, 'capable': True, 'capacity': 16}]
+    items = {str(n): {'job_id': str(n), 'inference_node': 'sparkDeux'} for n in range(17)}
+    items |= {f'd{n}': {'job_id': f'd{n}', 'inference_node': 'deepseek'} for n in range(3)}
+    reserved = set(i['job_id'] for i in items.values()) | {f'legacy{n}' for n in range(15)}
+    slots, limit = P.assignments(nodes, items, reserved)
+    names = [n['name'] for n in slots]
+    assert limit == 48 and len(names) == 13
+    assert names.count('deepseek') >= 6 and names.count('sparkDeux') >= 6
