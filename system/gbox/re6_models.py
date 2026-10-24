@@ -598,7 +598,7 @@ def solid_tex(rgb, size: int = 128) -> bytes:
 
 
 def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume: str | None = None,
-               slug: str = "swap", preview: Path | None = None) -> dict:
+               slug: str = "swap", preview: Path | None = None, scale: dict | None = None) -> dict:
     """A collection character (glTF + body roles) as an RE6 player: returns {"files": {disc path: bytes}, ...}.
     Body .mod = the retargeted model (rigid, on the character's own skeleton, so every animation drives it);
     head / hands = hidden; the body material's colour / normal / mask textures -> new gbox textures (every damage
@@ -621,7 +621,7 @@ def build_swap(base: Path, model: Path, roles: dict, char: str = "leon", costume
                            "r_hand", "l_thigh", "l_shin", "l_foot", "r_thigh", "r_shin", "r_foot") if r not in roles_t]
     if missing:
         raise ValueError(f"{char} {costume}: skeleton lacks {missing}")
-    prims = retarget(rig, _Tmpl(body), roles_t, height_range=(150.0, 195.0))
+    prims = retarget(rig, _Tmpl(body), roles_t, height_range=(150.0, 195.0), scale=scale)
     # big-headed characters (Mario, chibi models): the head is fitted on the head bone and rises far above a human
     # head (the camera then sits inside it). Shrink the head bone's vertices toward the bone until the top is at
     # ~1.85 m; joints stay where they are.
@@ -843,7 +843,8 @@ def write_enemy(m: Mod, prims: list[dict]) -> bytes:
     return m.serialize()
 
 
-def build_enemy_swap(base: Path, family: str, model: Path, roles: dict, slug: str = "swap") -> dict:
+def build_enemy_swap(base: Path, family: str, model: Path, roles: dict, slug: str = "swap",
+                     scale: dict | None = None) -> dict:
     """A collection character as every model of an enemy family: {"files": {disc path: arc bytes}, ...}."""
     from . import characters as C
     from .re4gc_enemies import retarget
@@ -857,7 +858,7 @@ def build_enemy_swap(base: Path, family: str, model: Path, roles: dict, slug: st
         a = re6.Arc(files[rel]) if rel in files else _arc(base, stem)
         m = Mod(a.get(a.find(name, "mod")))
         rt = role_indices(m)
-        prims = retarget(rig, _Tmpl(m), rt, height_range=(150.0, 195.0))
+        prims = retarget(rig, _Tmpl(m), rt, height_range=(150.0, 195.0), scale=scale)
         Wb, hb = m.world(), rt["head"]
         hp = Wb[hb][3, :3]
         top = max(float(np.asarray(p["pos"])[:, 1].max()) for p in prims)

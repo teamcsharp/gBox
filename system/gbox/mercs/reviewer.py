@@ -55,6 +55,8 @@ def _point(value):
 
 
 def _load_mesh(raw, geometry):
+    if raw.get('geometry_available') is False:
+        raise ValueError('This run records native coordinates; collision geometry is unavailable')
     from .titles.re5_nav import NavMesh
     links = [[] for _ in raw["triangles"]]
     for u, v, edge, cost in raw["links"]:
@@ -237,7 +239,9 @@ class Reviewer:
                     (row["id"],stride,count[0]["last"])) if count else []
                 tracks = {}
                 for sample in chosen:
-                    for player in recorded_players((decode(sample["payload"], {}) or {}).get("frame") or {}):
+                    frame=(decode(sample['payload'],{}) or {}).get('frame') or {}
+                    scale=10. if frame.get('units_per_m')==1000 else 1.
+                    for player in recorded_players(frame):
                         if not _point(player.get("pos")):
                             continue
                         track = tracks.setdefault(player["id"], {"id":player["id"],"control":player["control"],"slot":player.get("slot"),"path":[]})
@@ -245,7 +249,7 @@ class Reviewer:
                         point = {"at":sample["at"],"seq":sample["seq"],"pos":player["pos"],"actor":player.get("actor",player.get("ptr")),"control":player["control"]}
                         if previous is not None:
                             dt = point["at"]-previous["at"]
-                            point["break"] = not (0<dt<=2.*stride and math.dist(point["pos"],previous["pos"])<=800.*dt+30.
+                            point["break"] = not (0<dt<=2.*stride and math.dist(point["pos"],previous["pos"])<=(800.*dt+30.)*scale
                                 and point["actor"]==previous["actor"] and point["control"]==previous["control"])
                         track["path"].append(point)
                         if track["control"] != player["control"]:

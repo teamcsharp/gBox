@@ -210,7 +210,10 @@ def test_engine_observes_restart_even_while_prompts_own_the_pad(monkeypatch):
     assert stats.get("clock_jumps", 0) == 0
 
 
-def test_play_round_runs_the_driver_until_the_round_ends():
+def test_play_round_runs_the_driver_until_the_round_ends(monkeypatch):
+    from gbox import mercmode
+    boundaries=[]
+    monkeypatch.setattr(mercmode,'publish_boundary',lambda *args:boundaries.append(args))
     mem = world(action=2, enemies=[((0.0, 0.0, 1000.0), 800, 800)])
     sent, n = [], [0]
 
@@ -224,6 +227,8 @@ def test_play_round_runs_the_driver_until_the_round_ends():
                             sleep=lambda s: None, clock=lambda: n[0] * 0.5, tick_s=0.0)
     assert why == "round" and stats["timer"] == 0.0 and stats["score"] == 900
     assert {"key": "l1", "down": True} in sent        # pad names, pressed as a diff
+    assert stats['round_evidence_closed'] is True
+    assert boundaries==[]                            # a driver name cannot supply a verified title identity
 
 
 def test_result_tally_refreshes_after_time_expires_and_preserves_totals_during_teardown(monkeypatch, tmp_path):

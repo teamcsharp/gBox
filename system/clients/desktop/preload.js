@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("gbox", {
   settings: () => ipcRenderer.invoke("settings:get"),
+  connectionStatus: () => ipcRenderer.invoke('connection:status'),
+  selectConnection: mode => ipcRenderer.invoke('connection:select',mode),
+  onConnection: fn => ipcRenderer.on('connection:changed',(_e,state)=>fn(state)),
   backgroundPowerStatus: () => ipcRenderer.invoke('background:power'),
   saveSettings: s => ipcRenderer.invoke("settings:save", s),
   token: () => ipcRenderer.invoke("token"),
@@ -29,6 +32,7 @@ contextBridge.exposeInMainWorld("gbox", {
   consoleTail: n => ipcRenderer.invoke("console:tail", n),
   clipboardFiles: () => ipcRenderer.invoke("report:clipboard-files"),
   embedSync: st => ipcRenderer.invoke("embed:sync", st),
+  embedProbe: pid => ipcRenderer.invoke('embed:probe',pid),
   embedRelease: () => ipcRenderer.invoke("embed:release"),
   stt: buf => ipcRenderer.invoke("stt", buf),
   tts: (text, voice) => ipcRenderer.invoke("tts", text, voice),

@@ -148,6 +148,18 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     baseline = {k: stats.get(k, 0) for k in delta_fields}
     round_closed = False
     last_round_marker = None
+    native_playing_seen = False
+    terminal_witness = None
+    solo_native_round = True
+    source_sink=getattr(tactical,'sink',None)
+    source_headers=getattr(getattr(source_sink,'client',None),'headers',{}) or {}
+    provenance={key:value for key,value in {
+        'source_session_id':getattr(source_sink,'sid',None),
+        'source_autoplay_job_id':source_headers.get('x-gbox-parent-job')}.items()
+        if isinstance(value,str) and 0<len(value)<=160}
+    for key in ('source_session_id','source_autoplay_job_id'):
+        stats.pop(key,None)
+    stats.update(provenance)
     try:
         from . import lessons as lesson_store
         from .notebook import Notebook
@@ -161,7 +173,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     if prof.get("map_id") == "BLUS30491":
         from .route_trace import Recorder
         from . import lessons as lesson_store
-        trace = Recorder(log, atlas_root=lesson_store.ROOT.parent / "navigation", title=prof["map_id"], round_id=round_id)
+        trace = Recorder(log, atlas_root=lesson_store.ROOT.parent / "navigation", title=prof["map_id"], round_id=round_id,
+                         provenance=provenance)
 
     def finish_evidence(at, reason, final_stats):
         nonlocal trace, round_closed
@@ -204,13 +217,27 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             except Exception as exc:
                 stats["round_notebook_error"] = str(exc)[:200]
         stats["round_evidence_closed"] = True
+        if not observe_only and solo_native_round and native_playing_seen and terminal_witness is not None \
+                and isinstance(prof.get('map_id'),str) and bool(prof['map_id']) \
+                and reason in ('completed','died') and (session_runtime is None or
+                    session_runtime.config.get('role') == 'solo_p1'):
+            from ..mercmode import publish_boundary
+            publish_boundary(getattr(tactical,'sink',None), {
+                'round_id':round_id, 'at':at, 'map_id':prof['map_id'], 'role':'solo_p1',
+                'source':'native_terminal_reader', 'mode':str(stats.get('mercenaries_mode') or 'mercenaries'),
+                'stage':str(remembered[0]) if remembered else None,
+                'character':stats.get('character'), 'witness':terminal_witness},stats)
 
     def start_evidence(before):
         nonlocal trace, remembered, round_id, baseline, round_closed, outcome, last_stats, assistance
+        nonlocal native_playing_seen, terminal_witness
+        nonlocal solo_native_round
         round_id = uuid.uuid4().hex
         remembered = None
         baseline = {key:before.get(key,0) for key in delta_fields}
         round_closed, outcome, last_stats = False, "interrupted", {}
+        native_playing_seen, terminal_witness = False, None
+        solo_native_round = True
         assistance = RoundAssistance()
         for key in ("result_rank","result_rank_observed","rank_verified","completed_score_rank",
                     "completed_score_rank_source","finished_naturally"):
@@ -219,7 +246,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         if prof.get("map_id") == "BLUS30491":
             from .route_trace import Recorder
             from . import lessons as lesson_store
-            trace = Recorder(log,atlas_root=lesson_store.ROOT.parent/"navigation",title=prof["map_id"],round_id=round_id)
+            trace = Recorder(log,atlas_root=lesson_store.ROOT.parent/"navigation",title=prof["map_id"],round_id=round_id,
+                             provenance=provenance)
 
     stats.update(round_evidence_id=round_id,round_evidence_closed=False)
 
@@ -235,6 +263,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             before_observation = dict(stats)
             snap = drv.snapshot(m)
             where = drv.screen(m, snap)
+            if snap.get('scoring_players') == 2:
+                solo_native_round = False
             if session_runtime is not None:
                 session_runtime.poll(m, drv, snap)
             stats["screen"] = where
@@ -263,6 +293,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     start_evidence(before_observation)
                 if marker is not None:
                     last_round_marker = marker
+                if snap.get('player'):
+                    native_playing_seen = True
             assistance.observe(snap.get('assistance'))
             round_fields(stats, assistance)
             if damage is not None:
@@ -289,7 +321,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                         sleep(.1)
                         continue
                     stats["result_tally_status"] = "terminal evidence closed"
+                    terminal_witness = {'screen':'results','playing_observed':native_playing_seen,
+                        'player_verified':native_playing_seen,'tally_ready':callable(result_ready),
+                        'timer':last_stats.get('timer'),'kills':last_stats.get('kills')}
                     finish_evidence(now,outcome,last_stats)
+                    if stats.get('mercmode_rotate_requested'):
+                        return 'mercmode_boundary'
                 hold(set())
                 if where == "loading" or not snap.get("player"):
                     lost_since = lost_since or now
@@ -314,7 +351,13 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             last_stats = dict(stats)
             if where == "dead":
                 hold(set())
+                hp=(snap.get('player') or {}).get('hp') if isinstance(snap.get('player'),dict) else None
+                hp=snap.get('hp') if hp is None else hp
+                terminal_witness = {'screen':'dead','playing_observed':native_playing_seen,
+                    'player_verified':bool(snap.get('player')),'hp':hp}
                 finish_evidence(now,outcome,last_stats)
+                if stats.get('mercmode_rotate_requested'):
+                    return 'mercmode_boundary'
             if notebook is not None and remembered is None and where == "playing":
                 mesh = snap.get("nav")
                 stage = getattr(mesh, "learning_sig", None) or str(getattr(snap.get("stage"), "key", "unknown"))

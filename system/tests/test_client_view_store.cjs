@@ -151,13 +151,22 @@ test('delayed mini reopen refuses an API switch after token lookup without creat
   const job = ctx.openMini('old-session', 'Game', undefined, 'http://old');
   server = 'http://new'; finish('fixture-token'); await assert.rejects(job, /different server/);
 });
-test('cold view startup uses presentation separately from unchanged worker and cleanup authority', () => {
+test('cold view startup preserves presentation without sweeping legacy or unrelated processes', () => {
   const source = fs.readFileSync(require.resolve('../clients/desktop/main.js'), 'utf8');
   const start = source.slice(source.indexOf('startupHandoff = clientHandoff.consume'), source.indexOf('  appMenu();', source.indexOf('startupHandoff = clientHandoff.consume')));
   assert.match(start, /const startupView = handoffMatches \? startupHandoff.value : \(!startupHandoff.requested && clientViewStore.load/);
   assert.match(start, /const handoffMatches = clientViews.matches\(startupHandoff.value, settings\(\).apiUrl\)/);
   assert.doesNotMatch(start, /startupHandoff\s*=\s*clientViewStore|startWorker\(/);
-  assert.match(source, /if \(startupHandoff.requested\) \{[\s\S]*?startupHandoff.value\?\.startWorker[\s\S]*?\} else cleanupSessions\(false\)/);
+  const launch = source.slice(source.indexOf('if (startupHandoff.requested) {'),
+    source.indexOf('startAudioVolumeHelper();', source.indexOf('if (startupHandoff.requested) {')));
+  assert.match(launch, /startupHandoff.value\?\.startWorker/);
+  assert.match(launch, /settings\(\).autoStartWorker/);
+  assert.doesNotMatch(launch, /cleanupSessions|taskkill|Stop-Process|Get-CimInstance|execFile/);
+  assert.doesNotMatch(source, /CLEANUP_PS|cleanupSessions\(|Stop-Process/);
+  const shutdown = source.slice(source.indexOf('function shutdownSessions()'), source.indexOf('app.on("window-all-closed"'));
+  assert.match(shutdown, /String\(worker.pid\)/);
+  assert.match(shutdown, /String\(localControlProcess.pid\)/);
+  assert.doesNotMatch(shutdown, /Get-CimInstance|Where-Object|runtime\\/);
 });
 test('cold renderer reopen waits for guest readiness and restores both roles before native compact', async () => {
   const html = fs.readFileSync(require.resolve('../clients/desktop/index.html'), 'utf8');

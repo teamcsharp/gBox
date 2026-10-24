@@ -3980,6 +3980,9 @@ def create_app(config: Config) -> FastAPI:
         # operator, never to an agent or a bridge pressing buttons in the same session
         events = [e | {"src": padstate._source(actor, e)} if isinstance(e, dict) and "rpc" not in e and "src" not in e else e
                   for e in ev.events]
+        if (store.get('session',sid) or {}).get('federation'):
+            expires=time.time()+1.5
+            events=[e|{'_federation_expires_at':expires} if isinstance(e,dict) and 'rpc' not in e else e for e in events]
         with lv["cond"]:
             lv["input"].extend(events)
             padstate.record(sid, ev.events, actor)                 # controller glyph: who pressed what
@@ -4806,7 +4809,7 @@ def create_app(config: Config) -> FastAPI:
             except (ValueError,TypeError) as error:raise HTTPException(422,str(error))
             store.audit(actor,'session.pso_face',sid,req.args['input'])
         rid, lv = new_id(), _live(sid)
-        item = {"rpc": rid, "op": req.op, "args": req.args}
+        item = {"rpc": rid, "op": req.op, "args": req.args, "expires_at": time.time()+10.}
         with lv["cond"]:
             if req.op in ('pso_controls','memory_cards','pso_face'):
                 pso_rpc_pending[rid] = sid
@@ -4839,7 +4842,7 @@ def create_app(config: Config) -> FastAPI:
         without the live channel answers through the job queue instead, and an unanswered request is withdrawn so a
         late worker never applies it."""
         rid, lv = new_id(), _live(sid)
-        item = {"rpc": rid, "op": op, "args": args or {}}
+        item = {"rpc": rid, "op": op, "args": args or {}, "expires_at": time.time()+wait}
         with lv["cond"]:
             lv["input"].append(item)
             lv["cond"].notify_all()
@@ -6158,6 +6161,26 @@ def create_app(config: Config) -> FastAPI:
     title_assets.routes(app, store, config, auth, workers,
         lambda body, actor: submit(JobRequest(**body), actor, origin={'via': 'title_assets',
             'game_id': body['input']['game_id'], 'source_worker': body.get('require_worker')}).model_dump(mode='json'))
+
+    # Local desktops remain the only native executor. This module owns only
+    # scoped mirrors, durable command delivery and the existing live channels.
+    from . import federation
+    def federation_watch(wid):
+        ids={s['session_id'] for s in operator_guard.watched_sessions(store,wid)}
+        hub=getattr(app.state,'broadcast',None)
+        if hub is not None:
+            with hub.lock:
+                ids.update(f.row['session_id'] for f in hub.feeds.values() if f.row and f.users()
+                           and f.row.get('pc_id')==wid)
+        if desktop_watch.get(wid,0)>time.time():
+            ids.update(s['session_id'] for s in store.running_sessions() if s['session_id'].startswith(wid+'-'))
+        return sorted(ids)
+    federation.routes(app,store,config,auth,
+        claim=lambda wid,request:claim(wid,request,actor='federation'),
+        accept_result=lambda wid,payload,actor:result(wid,JobResult.model_validate(payload),actor=actor),
+        watch=federation_watch,
+        take_input=lambda sid,wait:take_input(sid,wait,actor='federation'),
+        rpc_result=lambda sid,rid,body:session_rpc_result(sid,rid,body,actor='federation'))
 
     return app
 

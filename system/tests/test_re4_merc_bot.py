@@ -61,6 +61,14 @@ def test_snapshot_reads_leon_the_live_ganados_and_the_merc_state():
     assert B.in_mercenaries(s) and not B.in_mercenaries(B.snapshot(world([], room=0x120)))
 
 
+def test_snapshot_player_health_is_not_overwritten_by_last_enemy():
+    m=world([((1000,0,0),True)])
+    m.put(PG+B.G_HP,'>h',73)
+    m.put(EM+STRIDE+B.EM_HP,'>hh',0,1500)
+    snap=B.snapshot(m)
+    assert snap['hp']==73 and snap['enemies'][0]['hp']==0
+
+
 def facing(m, rot):
     m.put(PL + 0xA4, ">f", rot)
 

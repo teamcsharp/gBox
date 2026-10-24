@@ -178,6 +178,15 @@ def captured(pid):
     return {"ok": True}
 
 
+def status(pid):
+    """Only the already attached native surface proves liveness, never an API outage."""
+    if state.get('pid') != pid:
+        return {'ok': False, 'error': 'The requested PID is not the attached game'}
+    window = state.get('hwnd')
+    return {'ok': True, 'pid': pid, 'alive': bool(window and u32.IsWindow(window)),
+            'mode': state.get('mode')}
+
+
 def capture(pid: int, parent: int, w=1280, h=960, warm=False):
     """Keep the GPU window off the desktop; Chromium presents its live captured surface.
 
@@ -652,6 +661,7 @@ for line in sys.stdin:
             r = (capture(int(m["pid"]), int(m["parent"]), m.get("w", 1280), m.get("h", 960), m.get("warm", False)) if op == "capture"
                  else captured(int(m["pid"])) if op == "captured"
                  else attach(int(m["pid"]), int(m["parent"])) if op == "attach" else move(m["x"], m["y"], m["w"], m["h"], m.get("holes")) if op == "move"
+                 else status(int(m.get('pid') or 0)) if op == 'status'
                  else watch(int(m.get("app") or 0)) if op == "watch"
                  else appchrome(int(m.get('app') or 0), int(m.get('pid') or 0), bool(m.get('on')), m.get('bits')) if op == 'appchrome'
                  else hide() if op == "hide" else focus() if op == "focus" else kill() if op == "kill" else unfocus() if op == "unfocus" else detach() if op == "detach" else {"ok": False, "error": f"unknown op {op}"})

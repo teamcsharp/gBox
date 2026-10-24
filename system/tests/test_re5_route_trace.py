@@ -33,6 +33,18 @@ def _pickup_trace(tmp_path, samples, bonus_pos=(110., 0., 100.), actor=123):
     return artifact, routes
 
 
+def test_closed_native_trace_preserves_only_explicit_source_session_provenance(tmp_path):
+    mesh=NavMesh([(0.,0.,0.),(1000.,0.,0.),(0.,0.,1000.)],[(0,1,2)],[[]])
+    origin={'source_session_id':'owned-worker-owned-session','source_autoplay_job_id':'owned-autoplay'}
+    recorder=Recorder(lambda *a,**k:None,atlas_root=tmp_path,round_id='f'*32,provenance=origin)
+    snap={'player':{'pos':[100.,0.,100.],'hp':1000},'nav':mesh,'timer':100,'kills':0,'bonuses':[]}
+    recorder.observe(snap,None,{},100.,[],"before_decision")
+    status=recorder.finish(101.,'completed',{},wait_s=5.)
+    artifact=json.loads(Path(status['navigation_atlas_round']).read_text())
+    assert artifact['metadata']['source_session_id']==origin['source_session_id']
+    assert artifact['metadata']['source_autoplay_job_id']==origin['source_autoplay_job_id']
+
+
 @pytest.mark.parametrize("window", HOURGLASS_TRACE["windows"], ids=lambda w: hex(w["actor"]))
 def test_recorded_hourglass_destruction_delay_creates_one_measured_checkpoint(tmp_path, window):
     # Actual RAM samples: the bonus clock is credited 1.64–2.52 seconds before

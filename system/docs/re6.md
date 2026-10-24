@@ -5,6 +5,28 @@ side in gbox/re6.py, item names/icons in gbox/re6_items.py, API in gbox/re6_api.
 on 2026-10-07 (offline / solo only, everything revertible: `re6 op=revert_all`). Status 2026-10-07; "verified" =
 checked in the running game with frames (kept in `gbox-data/verify/re6/`).
 
+## Character replacement backend (2026-10-23)
+
+`re6 op=capabilities` reports the existing writer's scope without inspecting a session or starting its watcher.
+It builds **Xbox 360 mod folders for Xenia on Windows**, then relaunches RE6 with the mod. The native PC and PS3
+editions have no compatible writer here. There is no realtime body replacement or verified active-character
+detection; a right-click target must supply an explicit supported native character before any build/relaunch.
+
+`characters op=use character=sonic game_id=0871eee3b68cdea3 target=chris launch=false` builds Sonic in Chris's
+costumes. An omitted target defaults to Leon and the response names that target; explicit targets are preserved
+through the Windows worker handoff. Supported skeleton families are `leon`, `helena`, `chris`, `piers`, `jake`,
+`sherry`, and `ada` (Carla uses an Ada costume). Agent has no registered model-writer target. Use
+`re6 op=build_mod character=sonic target=chris costume=Europe` to build only one costume. Loading a built mod
+requires a relaunch and choosing its native character in game.
+
+The saved player retarget profile, role overrides and `rig.scale` now reach the real native writer and preview.
+Profile/scale changes receive distinct mod names so a cached earlier fit is not reused. Enemy-family and combined
+builds also forward their fit profiles. Geometry binds rigidly to RE6's skeleton and uses RE6 animations; donor
+animations are not converted. Mario as Leon has existing Mercenaries gameplay evidence. Owned Sonic and DOA
+donors can enter this build pipeline when their roles are mapped; a successful build alone does not verify how
+each donor/target pair looks or animates in game. The new tests use synthetic glTF/MOD/ARC assets to verify fit
+changes in encoded native geometry and explicit target propagation, without launching an emulator.
+
 ## Boot profile "RE6: Everything unlocked" (default for every RE6 launch through gBox)
 
 Two saved switches (`GET/POST /api/re6/settings`, both **on** by default; tool ops `everything_unlocked on=` /
@@ -47,7 +69,8 @@ a collection character can replace one of them with a swap mod (`characters op=u
 | `infinite_health on=` / `infinite_ammo on=` | Life held at LifeMax / every gun and stack full (20 Hz) | verified (earlier) |
 | `auto_qte on=` | every QTE prompt succeeds; ON by default at every boot | verified (earlier, grab counter) |
 | `settings` | the saved switches: auto_qte, infinite_health, infinite_ammo, everything_unlocked, boot_to_title | |
-| `build_mod`, `replace_enemies`, `characters op=use` | swap mods (Leon -> collection character, enemy families) | verified (earlier) |
+| `capabilities` | exact character writer targets, required relaunch, unsupported realtime/PC/PS3 replacement | static metadata; no session required |
+| `build_mod`, `replace_enemies`, `characters op=use` | native character/enemy swap mods; explicit player target supported | Mario as Leon verified earlier; other donor/target combinations require gameplay checks |
 | `revert_all` | loadout table back, holds/QTE/auto off, everything_unlocked + boot_to_title off, save restored (RE6 closed), gBox's RE6 mod folders deleted | |
 
 Stable JSON for UI helpers (the universal inventory helper calls these through `re_inventory`): every op returns

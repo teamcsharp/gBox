@@ -275,16 +275,55 @@ def step(scr: dict) -> str | None:
     if where == "extra_menu":
         return "a" if cur == 0 else DPAD["up"]              # GAME START, never EXIT
     if where == "select_player":
-        if cur == LEON:
+        target = LEON if target is None else target
+        if type(cur) is not int or type(target) is not int or not 0 <= cur < 5 or not 0 <= target < 5:
+            return None
+        if cur == target:
             return "a"
-        return DPAD["left"] if cur in (1, 2) else DPAD["right"]    # wraps: HUNK / Wesker -> right to Leon
+        return DPAD['right'] if (target-cur)%5<=2 else DPAD['left']
     if where == "select_stage":
-        if cur == VILLAGE:
+        target = VILLAGE if target is None else target
+        if type(cur) is not int or type(target) is not int or not 0 <= cur < 4 or not 0 <= target < 4:
+            return None
+        if cur == target:
             return "a"
-        return DPAD["up"] if cur in (2, 3) else DPAD["left"]
+        return DPAD['down' if target&2 else 'up'] if (cur^target)&2 \
+            else DPAD['right' if target&1 else 'left']
     if where in ("results", "dead"):
         return "a"                                          # Results: next; "You Are Dead": Continue Yes
     return None
+
+
+class RandomSelections:
+    """Per-run cursor targets. No shared globals or blind press counting."""
+    BOOT_KEY = 'start'
+    wandered = staticmethod(wandered)
+    step = staticmethod(step)
+
+    def __init__(self,rng=None):
+        import random
+        self.rng=rng or random.Random()
+        self.player=self.stage=None
+        self.previous_player=self.previous_stage=None
+        self.where=None
+
+    def screen(self,m,merc=None):
+        out=screen(m,merc=merc)
+        where=out.get('where')
+        if where=='select_player':
+            if self.player is None:
+                self.player=self.rng.choice([i for i in range(5) if i!=self.previous_player])
+            out['target']=self.player
+        elif where=='select_stage':
+            if self.stage is None:
+                self.stage=self.rng.choice([i for i in range(4) if i!=self.previous_stage])
+            out['target']=self.stage
+        elif where in ('playing','results','dead'):
+            if self.player is not None:self.previous_player=self.player
+            if self.stage is not None:self.previous_stage=self.stage
+            self.player=self.stage=None
+        self.where=where
+        return out
 
 
 def Navigator(send, sleep=time.sleep, clock=time.time, stats: dict | None = None):

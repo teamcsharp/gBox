@@ -24,6 +24,15 @@ test('human and bot playback keep separate identities and legacy traces stay unk
   assert.deepEqual(R.playerOf(R.playbackFrame(pair,100.5),'p1').pos,[100,0,100]);
 });
 
+test('RE4 native units interpolate safely without inventing collision geometry',()=>{
+  const pair=[0,1].map(i=>({at:100+i*.5,frame:{units_per_m:1000,player:{actor:123,control:'bot',pos:[i*1000,0,0]},enemies:[]}}));
+  assert.deepEqual(R.playbackFrame(pair,100.25).player.pos,[500,0,0]);
+  pair[1].frame.units_per_m=100;
+  assert.deepEqual(R.playbackFrame(pair,100.25).player.pos,[0,0,0]);
+  assert.equal(R.measuredGeometry({geometry:{geometry_available:false,points:[]}}),false);
+  assert.equal(R.measuredGeometry({geometry:{points:[[0,0,0]]}}),true);
+});
+
 test('assisted and missing sample contexts cannot be presented as unmodified',()=>{
   const normal={frame:{assistance:{classification:'unmodified',verified:true}}};
   const assisted={frame:{assistance:{classification:'mod_assisted',verified:true}}};

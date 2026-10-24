@@ -26,7 +26,7 @@ BONUS_ABSENCE_S = .25            # one transient missing actor sample is not a c
 
 
 class Recorder:
-    def __init__(self, log, *, atlas_root=None, title="BLUS30491", round_id=None):
+    def __init__(self, log, *, atlas_root=None, title="BLUS30491", round_id=None, provenance=None):
         self.log = log
         self.round = round_id or uuid.uuid4().hex
         self.tracker = tactical.Tracker(title)
@@ -42,6 +42,8 @@ class Recorder:
         self.bonus_removals = {}
         self.bonus_missing = set()
         self.mine_event_seen = {}
+        self.provenance = {key:value for key,value in (provenance or {}).items()
+            if key in ('source_session_id','source_autoplay_job_id') and isinstance(value,str) and 0<len(value)<=160}
 
     def _bonus_acquisitions(self, snap, frame, key, now):
         """Correlate clock credit and actor removal through the hourglass's destruction animation.
@@ -163,6 +165,7 @@ class Recorder:
             atlas_round = self.round + ":" + key
             metadata = {"mode": stats.get("mercenaries_mode"), "character": stats.get("character"),
                         "stage_name": stats.get("stage_name"), "game_stage": stats.get("stage")}
+            metadata.update(self.provenance)
             metadata['participants'] = [{k:v for k,v in player.items() if k != 'pos'}
                                         for player in frame.get('players', ())]
             metadata['assistance'] = dict(frame.get('assistance') or {'classification':'unknown','verified':False,'effects':[]})

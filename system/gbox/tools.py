@@ -607,8 +607,16 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
         else:
             saved = {'skipped': True, 'reason': f'{type(err).__name__}: {err}' if err else f'the save took longer than {cap:g} s'}
         timings['save_s'] = round(time.monotonic() - t0, 3)
+    # Only a registered local desktop authority can fence its exact relayed
+    # automatic stop after a real operator handover. Other hosts are a no-op.
+    from .desktop_bridge import check_stop as desktop_stop_check
+    desktop_stop_check(ctx,sid)
     sr = rewind.detach(sid)
     t = time.monotonic()
+    try:desktop_stop_check(ctx,sid)  # Recheck after checkpoint work, at the mutation.
+    except Exception:
+        rewind.reattach(sid,sr,lambda:sid in SESSIONS)
+        raise
     res = ad.stop_game()
     timings['kill_s'] = round(time.monotonic() - t, 3)
     proc = getattr(ad, 'proc', None)
@@ -2791,6 +2799,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             _release_all(sid)
             failed = pb.setup(ad)
             kw = {}
+            boundary_sink = None
             if "stats" in inspect.signature(pb.play).parameters:
                 kw["stats"] = run["live"] = {}                 # the playbook fills it as it plays (watch panel)
             if "upload" in inspect.signature(pb.play).parameters and ctx is not None:
@@ -2824,10 +2833,20 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                 kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
             if 'session_id' in inspect.signature(pb.play).parameters:
                 kw['session_id'] = sid
+            if 'source_job_id' in inspect.signature(pb.play).parameters and ctx is not None:
+                kw['source_job_id'] = getattr(ctx,'job_id',None)
             if "tactical" in inspect.signature(pb.play).parameters and ctx is not None:
                 from .mercs import tactical as T               # the tactical map beside the stream (docs/tactical_map.md)
                 kw["tactical"] = T.HttpSink(ctx.server, _ap_headers(ctx), sid)
-            stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
+            if 'round_boundary' in inspect.signature(pb.play).parameters and ctx is not None:
+                from .mercs.tactical import HttpSink
+                from .mercmode import publish_boundary
+                boundary_sink=HttpSink(ctx.server,_ap_headers(ctx),sid)
+                kw['round_boundary']=lambda body,stats:publish_boundary(boundary_sink,body,stats)
+            try:
+                stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
+            finally:
+                if boundary_sink is not None:boundary_sink.close()
             if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
                 run["bad_end"] = "hung"
             if run.get("prompt_watcher") is not None:
@@ -5161,6 +5180,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "re5_tool",   # re5_tool: Resident Evil 5 Gold (PS3 in RPCS3): unlock all (save edit)
                               "re5_mods_tool",   # re5_mods: RE5 Gold (PS3) live mods: turn speed, fire rate, infinite ammo, damage
                               "mercs_team_tool", # exact-session player assignment, human demonstrations and training intent
+                              "mercmode_tool",  # host-scoped sequential native-round Mercenaries screensaver
                               "oot_live",   # oot_live: OoT actors at a picture point, statues kept in rooms (gbox.oot_swap)
                               "twin_snakes_live",   # twin_snakes_live: Twin Snakes GC loaded cast + live body writes
                               "re_inventory",   # re_inventory: any Resident Evil's live inventory (give/remove/set/loadout)

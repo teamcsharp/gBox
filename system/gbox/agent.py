@@ -1950,7 +1950,8 @@ class Agent:
                     break
             messages[-2]["content"] = f"the operator answered: {answer}"
             tail = " Go ahead with this." if answer.endswith((".", "!", "?")) else ". Go ahead with this."
-            messages[-1]["content"] = f"My answer{(' to the question \"' + q + '\"') if q else ''}: {answer}{tail}"
+            question_prefix = ' to the question "' + q + '"' if q else ''
+            messages[-1]["content"] = f"My answer{question_prefix}: {answer}{tail}"
             continued = True
         if live_goal:
             self.live_target = bind_target(context, self.api.get('/api/sessions').json())

@@ -1008,6 +1008,7 @@ window.taskVizCreate = canvas => {
 <body>
 <div id="titlebar">
   <img src="../../assets/brand/gbox-logo.svg" alt=""><span class="ttl">gBox</span><button id="tb-file" title="File">File ▾</button>
+  <button id="connection-switch" type="button" title="Choose this PC or the remote library; games keep their own connection">This PC</button>
   <div class="tools">
     <button id="tb-capture" title="Capture the app, sketch on it and file a report to the inbox">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>Capture</button>
@@ -1108,6 +1109,8 @@ window.taskVizCreate = canvas => {
       <button id="playretry" class="act" hidden>Retry connection</button></div></section>
     <section id="mods"><div class="pane" style="max-width:1600px"><div id="modsgallery"></div></div></section>
     <section id="control"><div class="pane">
+      <p id="connection-note" role="status">Starting this PC's local gBox. Remote discovery runs in the background.</p>
+      <button id="mercmode-open" type="button">Mercenaries screensaver</button><div id="mercmode-panel" hidden></div>
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
         <div id="rbflow"></div><aside id="rbside" class="mut">Click a step to see its output.</aside><pre id="rbcon"></pre></div>
@@ -1203,6 +1206,7 @@ window.taskVizCreate = canvas => {
 <script src="request-tokens.js"></script>
 <script src="inbox-groups.js"></script>
 <script src="live-poll.js"></script>
+<script src="session-lease.js"></script>
 <script src="last-closed.js"></script>
 <script src="dock.js"></script>
 <script src="report-graph.js"></script>
@@ -1247,6 +1251,7 @@ window.taskVizCreate = canvas => {
 <script src="compact-game.js"></script>
 <script src="pip-media.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
+<script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
@@ -1356,9 +1361,9 @@ const clientVersionAtLoad = gbox.clientVersion?.().catch(() => null);
 var SBX = { api: "", tok: "" };                              // API base + token for <img> links (filled after settings load)
 // Shared control-plane reads (#712). /api/sessions lists every session ever played (~950 KB, 0.25-1.3 s); the running
 // ones are a few KB. Timers share one request and a short-lived answer instead of each downloading the whole history.
-const LIVE_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions?include_ended=false"), { ttl: 1000 });
-const ALL_SESSIONS = GBoxLivePoll.cachedRead(() => gbox.api("/api/sessions"), { ttl: 30000 });
-const WORKERS = GBoxLivePoll.cachedRead(() => gbox.api("/api/workers"), { ttl: 4000 });
+const LIVE_SESSIONS = (typeof GBoxSessionLease!=='undefined'?GBoxSessionLease:GBoxLivePoll).cachedRead(() => gbox.api("/api/sessions?include_ended=false"), { ttl: 1000,authority:()=>S?.apiUrl });
+const ALL_SESSIONS = (typeof GBoxSessionLease!=='undefined'?GBoxSessionLease:GBoxLivePoll).cachedRead(() => gbox.api("/api/sessions"), { ttl: 30000,authority:()=>S?.apiUrl });
+const WORKERS = (typeof GBoxSessionLease!=='undefined'?GBoxSessionLease:GBoxLivePoll).cachedRead(() => gbox.api("/api/workers"), { ttl: 4000,authority:()=>S?.apiUrl });
 const liveSessions = maxAge => LIVE_SESSIONS.get(maxAge);
 // a session's window title: the game, plus the operator's name for the build it runs (Mods card ✎ / Builds rename)
 const sessionTitle = s => s ? (s.mod_title ? `${s.title || s.game_id || "game"} · ${s.mod_title}` : (s.title || "")) : "";
@@ -1446,7 +1451,7 @@ document.querySelectorAll("[data-a]").forEach(b => b.onclick = async () => runTa
 $("#win-setup").onclick = async () => runTask(await gbox.winSetup(), "windows node: install/update");
 $("#win-start").onclick = async () => { current = "win-worker"; const r = await gbox.winWorker("start"); if (r.error) con.textContent += r.error + "\n"; refresh(); };
 $("#win-stop").onclick = async () => { await gbox.winWorker("stop"); refresh(); };
-$("#scan").onclick = async () => { const r = await gbox.api("/api/jobs", { tool: "scan_library", input: {}, require_os: "linux" }); con.textContent += r.ok ? `scan job ${r.data.id} queued\n` : r.error + "\n"; };
+$("#scan").onclick = async () => { const r = await gbox.api("/api/jobs", { tool: "scan_library", input: {}, require_os: S.controlMode==='local'?'windows':'linux' }); con.textContent += r.ok ? `scan job ${r.data.id} queued\n` : r.error + "\n"; };
 $("#openweb").onclick = () => gbox.openExternal(S.apiUrl);
 $("#brand").onclick = async () => {
   document.querySelector('aside button[data-s="control"]').click();
@@ -2498,20 +2503,58 @@ $("#tk-local").onclick = async e => {
 const kv = (el, rows) => el.innerHTML = rows.map(([k, v]) => `<span>${esc(k)}</span><span>${v}</span>`).join("");
 const dot = (id, cls) => $(id).className = "dot " + cls;
 async function refresh() {
-  const st = await gbox.sparkStatus();
+  const [st,w,ws,fc] = await Promise.all([gbox.sparkStatus(),gbox.winWorker('status'),WORKERS.get(),gbox.api('/api/catalog/facets')]);
   dot("#d-api", st.api ? "ok" : "bad"); dot("#d-svc", st.service === "active" ? "ok" : st.ssh ? "warn" : "bad");
   kv($("#spark-kv"), [["ssh", st.ssh ? "connected" : `<span style="color:var(--bad)">${esc(st.error || "unreachable")}</span>`],
     ["service", esc(st.service || "–")], ["API", st.api ? `up · ${esc(S.apiUrl)}` : "down"], ["NAS mount", esc(st.mount || "–")],
     ["uptime", esc(st.uptime || "–")], ["free disk", esc(st.free || "–")], ["GPU util/temp", esc(st.gpu || "–")]]);
-  const w = await gbox.winWorker("status");
   dot("#d-win", w.running ? "ok" : "warn");
   kv($("#win-kv"), [["worker", w.running ? "running" : "stopped"], ["name", esc(S.workerName)], ["code", esc(S.repoShare)]]);
-  const ws = await WORKERS.get(), fc = await gbox.api("/api/catalog/facets");
   const games = fc.ok ? Object.values(fc.data.platforms).reduce((a, b) => a + b, 0) : 0;
   kv($("#cl-kv"), [["workers", ws.ok ? ws.data.map(x => `${x.online ? "●" : "○"} ${esc(x.name)} (${x.os}, ${x.tools.length} tools)`).join("<br>") || "none" : esc(ws.error)],
     ["games", games.toLocaleString()], ["platforms", fc.ok ? Object.keys(fc.data.platforms).length : "–"]]);
   if (st.api && !playLoaded) loadPlay();
 }
+
+let connectionSwitchBusy=false,mercModePanel=null;
+function connectionLabel(state){
+  if(!state)return;
+  $('#connection-switch').textContent=state.mode==='local'?'This PC':'Remote';
+  const selected=state[state.mode];
+  $('#connection-note').textContent=(state.mode==='local'?'This PC: ':'Remote: ')
+    +(selected?.ready?'connected. ':selected?.reason||'Reconnecting. ')
+    +(state.remote?.ready?'Remote library available.':'Remote library reconnects in the background.')
+    +(state.local?.worker?.reason?' '+state.local.worker.reason:'');
+  if(S&&S.apiUrl===state.apiUrl&&selected?.ready&&!playLoaded&&!connectionSwitchBusy)loadPlay();
+}
+gbox.onConnection?.(connectionLabel);
+$('#connection-switch').onclick=async()=>{
+  if(connectionSwitchBusy)return;
+  const state=await gbox.connectionStatus?.();if(!state)return;
+  const menu=document.createElement('div');menu.setAttribute('role','dialog');
+  Object.assign(menu.style,{position:'fixed',top:'40px',left:'90px',zIndex:10000,background:'#1f2028',
+    border:'1px solid #454651',padding:'14px',borderRadius:'8px',maxWidth:'390px',boxShadow:'0 8px 35px #0009'});
+  menu.innerHTML='<b>Choose a library</b><p style="margin:8px 0">Games and tasks remain with the connection that started them.</p>';
+  for(const [mode,label] of [['local','This PC — local games, mods and autoplay'],['remote','Remote library and streams']]){
+    const button=document.createElement('button');button.type='button';button.style.display='block';button.style.margin='8px 0';
+    button.textContent=label+(state[mode]?.ready?' · connected':' · reconnecting');button.disabled=mode===state.mode;
+    button.onclick=async()=>{connectionSwitchBusy=true;button.disabled=true;
+      try{await gbox.selectConnection(mode);location.reload();}
+      catch(error){toast(error.message);connectionSwitchBusy=false;menu.remove();}};
+    menu.append(button);
+  }
+  const close=document.createElement('button');close.textContent='Close';close.onclick=()=>menu.remove();menu.append(close);
+  document.body.append(menu);
+};
+$('#mercmode-open').onclick=async()=>{
+  const host=$('#mercmode-panel');
+  if(mercModePanel){mercModePanel.dispose();mercModePanel=null;host.hidden=true;return;}
+  if(!window.GBoxMercMode){toast('Mercenaries screensaver controls are updating.');return;}
+  host.hidden=false;
+  mercModePanel=GBoxMercMode.mount({root:host,api:async(path,body)=>{
+    const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;}});
+  await mercModePanel.ready;
+};
 
 // Authenticate before the first navigation. Worker/status callbacks share one pending load.
 let playLoadPromise = null;
@@ -2521,10 +2564,11 @@ function loadPlay() {
   playLoadPromise = Promise.resolve().then(async () => {
     const panel = $("#playhost"), message = $("#playmessage"), retry = $("#playretry");
     const status = (text, failed = false) => { panel.hidden = false; message.textContent = text; retry.hidden = !failed; };
-    status("Connecting to the Spark…");
+    status(S.controlMode==='local'?"Connecting to this PC's gBox…":"Connecting to the remote library…");
     retry.onclick = () => { playLoaded = false; loadPlay(); };
     const tok = await gbox.token();
-    if (!tok) { status("No API token: add it in Settings, or restore the Spark share/SSH connection.", true); return; }
+    if (!tok) { status(S.controlMode==='local'?"This PC's local service is starting. It will reconnect automatically."
+      :"Remote credentials are unavailable. This PC's library is available from the connection button.", true); return; }
     const url = new URL(S.apiUrl);
     url.searchParams.set("embedded", "1");
     url.hash = new URLSearchParams({ token: tok, worker: S.workerName }).toString();
@@ -2542,6 +2586,7 @@ function loadPlay() {
     };
     const failed = text => {
       if (!wv.isConnected) return;
+      playLoaded=false;
       generation++; clearTimeout(timeout); wv.dataset.ready = "false"; status(text, true);
       readyReject(Error(text));
     };
@@ -2572,7 +2617,7 @@ function loadPlay() {
     loading(); wv.src = url.href; $("#play").prepend(wv); playLoaded = true;
   }).catch(() => {
     $("#playhost").hidden = false;
-    $("#playmessage").textContent = "Could not connect to gBox. Check Settings and retry.";
+    $("#playmessage").textContent = "gBox is reconnecting. This PC's library is available from the connection button.";
     $("#playretry").hidden = false;
   }).finally(() => { playLoadPromise = null; });
   return playLoadPromise;
@@ -2585,7 +2630,7 @@ const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API 
   ["workerName", "This PC's worker name (unique per PC)"]];
 async function loadSettings() {
   S = await gbox.settings();
-  $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(S[k])}"></label>`).join("") +
+  $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k==='apiUrl'?S.configuredApiUrl||S[k]:S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
     `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 refresh client · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
@@ -3553,6 +3598,8 @@ function popups() {                                          // floating things 
   });
 }
 const EMB = { closed: new Set(),  sid: null, pid: null, last: "" };
+const nativeSessionLease=typeof GBoxSessionLease!=='undefined'
+  ?GBoxSessionLease.create({probe:pid=>gbox.embedProbe(pid)}):null;
 // The operator is watching a game: an embedded game window here, or a session shown full-size in the web shell (a Spark
 // stream). background-display.js keeps the idle screensaver away while this is true.
 window.GBoxWatching = async () => {
@@ -3586,14 +3633,18 @@ async function embedTick() {
   try {
     // Never wait on the network here (#1081): this loop cuts pop-ups out of the docked game window, so a 0.25-1.3 s
     // session download per tick left menus hidden behind the game. The live list refreshes in the background.
-    const r = LIVE_SESSIONS.peek() || await liveSessions();
+    const r = LIVE_SESSIONS.peek() || {ok:false};
     if (r.ok) $("#tb-mini").hidden = $("#tb-pad").hidden = !r.data.some(s => s.state === "running");
-    const mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
+    let mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id) && (!COMPACT.on || s.session_id === COMPACT.sid)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
-    if (!r.ok) return;                                       // API blip (Spark restarting): leave the game exactly as it is
+    const lease=nativeSessionLease?await nativeSessionLease.resolve(S.apiUrl,
+      r.ok&&LIVE_SESSIONS.age()<3000?r:{ok:false},
+      {worker:S.workerName,closed:EMB.closed,only:COMPACT.on&&COMPACT.local?COMPACT.sid:null}):null;
+    if(nativeSessionLease)mine=lease?.session;
+    if(!r.ok&&!mine)return;
     // Remote PiP keeps its picture while the game restarts. Its continuity poll
     // reconnects only this game's replacement, without changing window bounds.
-    if (COMPACT.on && COMPACT.local && !r.data.some(s => s.session_id === COMPACT.sid && s.state === "running")) await compactRestore();
+    if (COMPACT.on && COMPACT.local && !mine&&r.ok) await compactRestore();
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -3611,9 +3662,12 @@ async function embedTick() {
       if (pref === "full") setTimeout(() => viewAction("full", true), 600); else if (VIEW.mode === "full") viewAction("main", true);
     }
     EMB.sid = mine.session_id; EMB.pid = mine.detail.pid;
+    EMB.authority=lease?.authority||S.apiUrl;
+    EMB.connectionRetained=!!lease?.retained;
     EMB.adapter = mine.adapter || ""; EMB.caps = mine.capabilities || {};       // #2518: what this emulator can do drives the menu
-    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen()
-      || (document.querySelector("section.on")?.id === "play" && !$("#playhost").hidden);      // full-window overlays: the game steps aside
+    // The guest can reload while an already owned native game keeps running.
+    // Its loading page must never cover or hide that game's surviving surface.
+    const overlay = $("#report").classList.contains("on") || $("#task-evidence").classList.contains("on") || !!$("#issue-modal") || !!document.querySelector('dialog[open]') || FLOW.on || !!$("#reportgraph.on") || GBoxReportStory.isFullOpen();
     const onPlay = document.querySelector("section.on")?.id === "play";
     let rect = null, pipNow = false;
     const wv = document.querySelector("#wv");
@@ -3621,7 +3675,7 @@ async function embedTick() {
       rect = GBoxCompactGame.fit(innerWidth, innerHeight, COMPACT.aspect);
     } else if (onPlay && VIEW.mode === "full") {
       rect = { x: 0, y: 36, w: innerWidth, h: innerHeight - 36 };
-    } else if (onPlay && wv) {
+    } else if (onPlay && wv?.dataset.ready==='true') {
       const slot = VIEW.mode === "pip" ? null : await wv.executeJavaScript(`(() => { const e = document.getElementById("nativeslot"); if (!e) return null;
         const r = e.getBoundingClientRect(); return r.width > 20 ? { x: r.left, y: r.top, w: r.width, h: r.height, sid: e.dataset.sid, viewport: {w: innerWidth, h: innerHeight} } : null; })()`).catch(() => null);
       const o = wv.getBoundingClientRect();
@@ -3630,7 +3684,7 @@ async function embedTick() {
       } else {                                                 // elsewhere in the app: movable picture-in-picture
         rect = pipRect(); pipNow = true;
       }
-    }
+    } else if(onPlay){rect=pipRect();pipNow=true;}
     if (rect) rect = GBoxEmbedGeometry.intersect(rect, { x: 0, y: 0, w: innerWidth, h: innerHeight });
     if (rect && !COMPACT.on && !pipNow && $("#live").classList.contains("on") && !$("#live").closest("#dock"))        // docked in the sidebar (#262) it is already out of the way
       rect = GBoxEmbedGeometry.intersect(rect, { x:0, y:0, w:Math.max(0, $("#live").getBoundingClientRect().left - 4), h:innerHeight });
@@ -3641,7 +3695,7 @@ async function embedTick() {
     if (await gpuGamePresent(mine, rect, pipNow, hidden, wv, onPlay)) return;
     if (GPU_GAME.pid) await gpuGameDispose(wv);
     // panels over the game (chat, menus, inspector...) are cut out of the native game window, so the game keeps playing around them
-    const webMenus = rect && wv && onPlay && !COMPACT.on ? await wv.executeJavaScript(`(() => { ${EMB_GUEST_WATCH} return [...document.querySelectorAll(${JSON.stringify(EMB_GUEST_MENUS)})]
+    const webMenus = rect && wv?.dataset.ready==='true' && onPlay && !COMPACT.on ? await wv.executeJavaScript(`(() => { ${EMB_GUEST_WATCH} return [...document.querySelectorAll(${JSON.stringify(EMB_GUEST_MENUS)})]
       .filter(el => { const s = getComputedStyle(el); return s.display !== "none" && s.visibility !== "hidden" &&
         +s.opacity !== 0 && s.pointerEvents !== "none"; })
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
@@ -4118,6 +4172,8 @@ async function gameClose() {                                  // ✕ on the game
 // ---------------- game menu actions (right click on the game, the PiP bar or its ⋮ button) ----------------
 const GM = { menu: false, auto: false, slot: 0 };
 async function gameJob(tool, input, wait = true) {
+  if(input?.session_id===EMB.sid&&EMB.authority&&EMB.authority!==S.apiUrl)
+    throw Error('This game belongs to a different connection. Its window was preserved; no command was sent.');
   const sid = input.session_id || EMB.sid || (await chatContext().catch(() => ({}))).session_id;
   if (!sid) throw new Error("no game running");
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
@@ -7232,7 +7288,7 @@ async function ringAttach() {
 }
 // ---------------- end replay ring pop-up ----------------
 
-loadSettings().then(() => { restoreClientView().catch(error => toast(error.message)); refresh(); refreshInbox(); });
+loadSettings().then(() => { gbox.connectionStatus?.().then(connectionLabel);restoreClientView().catch(error => toast(error.message)); refresh(); refreshInbox(); });
 // Spark status runs ssh + 3 requests: every 15 s while Control is open or the play view still has to connect, else every minute
 let refreshAt = Date.now();
 setInterval(() => {

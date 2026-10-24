@@ -299,8 +299,8 @@ def snapshot(m) -> dict:
             if (not (struct.unpack_from(">I", d, o)[0] & 0x601) or d[o + 0x398] == 0xFF
                     or d[o + threats_ram.EM_ID] == threats_ram.THROWN_ID):
                 continue
-            hp, hp_max = struct.unpack_from(">hh", d, o + EM_HP)
-            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": hp, "hp_max": hp_max,
+            enemy_hp, enemy_hp_max = struct.unpack_from(">hh", d, o + EM_HP)
+            enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": enemy_hp, "hp_max": enemy_hp_max,
                             **threats_ram.em_fields(d, o)})
         thrown = threats_ram.thrown(d, n, stride)
     return {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
@@ -1139,12 +1139,20 @@ class _Menus:
         if hooks is None and ad is not None:         # the default: the package, and a random loadout at every Select Player
             hooks = lambda: apply_package(ad, skip=EARLY_OPS + LOADOUT_OPS)          # noqa: E731
             rounds = lambda: apply_round(ad)                                         # noqa: E731
-        self.boot = Boot(re4_menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
+        random_selections=((game or {}).get('launch') or {}).get('mercmode')
+        selected = re4_menus.RandomSelections() if re4_menus is not None and random_selections else re4_menus
+        self.boot = Boot(selected, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
                          jump_at="select_player", round_hooks=rounds) if re4_menus is not None else None
 
     def tick(self, s: dict, now: float) -> str | None:
         """One look at the screen; returns why the run must end (stats["hung"] is set), else None."""
-        return self.boot.tick(now, merc=s) if self.boot is not None else None
+        if self.boot is None:return None
+        scr=self.boot.menus.screen(self.boot.m,merc=s)
+        if scr.get('where')=='select_player' and scr.get('cursor')==scr.get('target') \
+                and type(scr.get('cursor')) is int and 0<=scr['cursor']<len(re4_menus.PLAYERS):
+            self.boot.stats['character']=re4_menus.PLAYERS[scr['cursor']]
+            self.boot.stats['character_source']='native_menu_cursor'
+        return self.boot.tick(now, scr=scr)
 
 
 def learn_dir_for(ad) -> Path:
@@ -1155,7 +1163,7 @@ def learn_dir_for(ad) -> Path:
 
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
          clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None, game=None,
-         hooks=None) -> dict:
+         hooks=None, round_boundary=None, record_dir=None, session_id=None, source_job_id=None) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
     the watch panel shows it): backoffs, prompts, max_combo, combo, timer, rounds, menu_presses, screen.
 
@@ -1189,6 +1197,17 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     if ram_prompt is None and re4_ram_prompts is not None:
         ram_prompt = re4_ram_prompts.source(m, bot.stats)
     unknown = re4_ram_prompts.Unknown if re4_ram_prompts is not None else LookupError
+    import uuid
+    boundary_id=uuid.uuid4().hex
+    boundary_sent=False
+    playing_observed=started_in
+    recorder=None
+    record_dir=record_dir or getattr(getattr(ad,'config',None),'data_dir',None)
+    if record_dir is not None:
+        from .mercs.legacy_trace import LegacyRecorder
+        provenance={key:value for key,value in {'source_session_id':session_id,
+            'source_autoplay_job_id':source_job_id}.items() if isinstance(value,str) and 0<len(value)<=160}
+        recorder=LegacyRecorder(record_dir,bot.stats,getattr(ad,'config',None),provenance=provenance)
 
     def ask():
         """The button the game asks for: RAM (the game's own action state), else vision."""
@@ -1214,6 +1233,22 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         s = snapshot(m)
         now = clock()
         room_on = _room_on(m)                         # a stage still loading shows the last round's clock
+        if (round_boundary is not None or recorder is not None) and playing_observed and not boundary_sent and re4_menus is not None \
+                and (s.get('timer')==0 or isinstance(s.get('hp'),(int,float)) and s['hp']<=0):
+            terminal=re4_menus.screen(m,merc=s)
+            if terminal.get('where') in ('results','dead') and s.get('player'):
+                hold(set())
+                witness={'screen':terminal['where'],'playing_observed':True,'player_verified':True,
+                    'tally_ready':terminal['where']=='results','timer':s.get('timer'),'hp':s.get('hp'),
+                    'game_routine':terminal.get('game_routine'),'room':s.get('room')}
+                if recorder is not None:recorder.finish(now,'completed' if terminal['where']=='results' else 'died',bot.stats)
+                boundary_sent=True
+                if round_boundary is not None:
+                    round_boundary({'round_id':boundary_id,'at':now,'map_id':'G4BE08',
+                        'role':'solo_p1','source':'native_terminal_reader','mode':'mercenaries',
+                        'stage':str(s.get('room')),'character':bot.stats.get('character'),'witness':witness},bot.stats)
+                if bot.stats.get('mercmode_rotate_requested'):
+                    break
         if not in_mercenaries(s) or s["timer"] <= 0 or not room_on:   # results (clock at 0), the title, menus, a load
             hold(set())
             out_since = out_since or now
@@ -1249,12 +1284,21 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             sleep(0.25)
             continue
         if not was_in:
+            boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats["rounds"] += 1
             bot.stats["screen"] = "playing"            # the menus' last screen no longer shows on the watch panel
             bot.save()                                 # what the last round taught
             was_in = True
+        elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0:
+            # A retry can recreate the player without a sampled menu gap.
+            boundary_id,boundary_sent=uuid.uuid4().hex,False
+            bot.stats['rounds']+=1
+        if room_on and s.get('player') and s.get('hp',0)>0:
+            playing_observed=True
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
+        if recorder is not None and s.get('hp',0)>0:
+            recorder.observe(s,bot,held,now,boundary_id,bot.stats.get('character','Unknown'))
         resting = now < prompt_rest
         button = ask() if not resting or ram_prompt else None
         mash = button == "wiggle"                      # SHAKE OFF (a grab): every pass, resting or not
@@ -1293,6 +1337,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         hold(act["hold"])
         sleep(tick_s)
     hold(set())
+    if recorder is not None:recorder.finish(clock(),'interrupted',bot.stats)
     bot.save()
     return bot.stats
 

@@ -73,7 +73,54 @@ def autoplay_on_launch(store, job_id: str, game_id: str, actor: str = "operator"
 def bot_demo(store, sid: str) -> dict | None:
     """The bot-demo record of a session (session ids are <worker>-<launch job>), or None."""
     jid = (sid or "").split("-", 1)[-1] if "-" in (sid or "") else ""
-    return store.get(BOT_DEMO, jid) if jid else None
+    own = store.get(BOT_DEMO, jid) if jid else None
+    if own:
+        return own
+    sess = store.get('session', sid) or {}
+    central = sess.get('central_launch_job_id')
+    record = store.get(BOT_DEMO, central) if central else None
+    # Federation preserves the native local SID. A central marker belongs to it
+    # only after the accepted launch and both job mappings agree exactly.
+    if record and _launch_session(store, central, [sess], game_id=record.get('game_id')):
+        return record | {'job': jid, 'central_launch_job_id': central}
+    return None
+
+
+def _launch_session(store, jid, sessions, *, worker_id=None, game_id=None):
+    """Resolve this launch only, including an accepted central-to-local relay."""
+    if not isinstance(jid, str) or not jid:
+        return None
+    job = store.get('job', jid) or {}
+    owner = worker_id or job.get('worker_id') or job.get('require_worker')
+    expected_game = game_id or (job.get('input', {}).get('game') or {}).get('game_id')
+    for sess in sessions:
+        sid = sess.get('session_id', '')
+        wid, _, local = sid.partition('-')
+        if not local or (owner and wid != owner) or (expected_game and sess.get('game_id') != expected_game):
+            continue
+        if any(job.get(key) and job[key] != wid for key in ('worker_id', 'require_worker')):
+            continue
+        if local == jid and not sess.get('federation'):
+            return sess                          # original native launch identity
+        out = job.get('output') or {}
+        detail = out.get('detail') or {}
+        command = store.get('federation_command', jid) or {}
+        inverse = store.get('federation_local_job', sid) or {}
+        authority = (sess.get('federation') or {}).get('authority')
+        gid = (job.get('input', {}).get('game') or {}).get('game_id')
+        if (job.get('state') == 'succeeded' and job.get('tool') == 'launch_game'
+                and job.get('worker_id') == wid
+                and out.get('session_id') == sid and gid and gid == sess.get('game_id')
+                and (detail.get('_game') or {}).get('game_id') == gid
+                and out.get('adapter') == sess.get('adapter')
+                and detail.get('pid') == (sess.get('detail') or {}).get('pid')
+                and sess.get('central_launch_job_id') == jid and sess.get('local_launch_job_id') == local
+                and authority and command.get('authority') == authority and command.get('worker_id') == wid
+                and command.get('local_job_id') == local and command.get('local_state') == 'succeeded'
+                and (command.get('ack') or {}).get('accepted') is True
+                and inverse == {'authority': authority, 'central_job_id': jid, 'local_job_id': local}):
+            return sess
+    return None
 
 
 def carry_bot_demo(store, old_sid: str, new_sid: str) -> bool:
@@ -95,6 +142,10 @@ def _jumped(sess: dict) -> bool:
 def _jid(job) -> str:
     """The id of a submitted job (the server's submit returns a Job model; tests pass dicts)."""
     return getattr(job, "id", None) or (job.get("id") or job.get("job_id") if isinstance(job, dict) else "") or ""
+
+
+def _local_scheduler(worker):
+    return (worker.get('federation') or {}).get('scheduler_owner')=='local'
 
 
 def settings(store) -> dict:
@@ -214,13 +265,20 @@ class Screensaver:
             running = self.store.running_sessions()
             out["launches"] = self._pending(running, now)
             for w in self.workers():
+                host_cfg = self._worker_settings(w, cfg)
                 run = self.store.get(STATE, w["name"])
                 if run:
-                    out[w["name"]] = self._advance(w, run, cfg, running, now)
-                elif cfg["enabled"]:
-                    reason = worker_reason(self.store, w, cfg, running, now)
-                    out[w["name"]] = reason or self._start(w, cfg, now)
+                    out[w["name"]] = self._advance(w, run, host_cfg, running, now)
+                elif host_cfg["enabled"]:
+                    reason = ('scheduled by this PC\'s local control plane' if _local_scheduler(w)
+                              else worker_reason(self.store, w, host_cfg, running, now))
+                    out[w["name"]] = reason or self._start(w, host_cfg, now)
         return out
+
+    def _worker_settings(self, worker, cfg):
+        from . import mercmode
+        return cfg | {"enabled": True, "workers": [worker['name']]} \
+            if mercmode.settings(self.store, worker['name'])['enabled'] else cfg
 
     def _pending(self, running, now) -> list[str]:
         """Launches marked autoplay (bot demos on any PC, the Spark button): autoplay starts START_GRACE s after the
@@ -229,15 +287,18 @@ class Screensaver:
         launched the demo (its callbacks then count as automation, which never touches the operator's games)."""
         from .server import JobRequest
         done = []
+        local_workers={w['id'] for w in self.workers() if _local_scheduler(w)}
         for p in self.store.all(PENDING):
             jid = p.get("job", "")
             job = self.store.get("job", jid) or {}
-            sess = next((s for s in running if s.get("session_id", "").endswith("-" + jid)), None)
+            sess = _launch_session(self.store, jid, running, game_id=p.get('game_id'))
             if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - p.get("at", now) > PENDING_TTL:
                 self.store.delete(PENDING, jid)
                 continue
             if not sess:
                 continue
+            if sess['session_id'].split('-',1)[0] in local_workers:
+                continue                           # the explicit launch marker is relayed to its sole local scheduler
             if "up" not in p:
                 if not _jumped(sess):
                     self.store.put(PENDING, jid, p | {"up": now})
@@ -268,17 +329,37 @@ class Screensaver:
 
     def _start(self, w, cfg, now):
         from .server import JobRequest
-        g = choose(self.games(cfg), self._recent(), now, self.rng, cfg["games"])
+        from . import mercmode
+        if _local_scheduler(w):
+            return 'scheduled by this PC\'s local control plane'
+        merc_cfg = mercmode.settings(self.store, w['name'])
+        merc_pick = mercmode.choose(self.store, w, self.rng, merc_cfg) if merc_cfg['enabled'] else None
+        g = ({'game_id': merc_pick['game_id'], 'title': merc_pick['name']} if merc_pick else None) \
+            if merc_cfg['enabled'] else choose(self.games(cfg), self._recent(), now, self.rng, cfg["games"])
         game = g and self.store.catalog_get(g["game_id"])
         if not game:
+            if merc_cfg['enabled']:
+                prepared=self.store.get(mercmode.PREPARATION,w['name']) or {}
+                if ('mercmode' in w.get('tools',[]) and now-prepared.get('requested_at',-1e9)>=300
+                        and any(r.get('backend_playable') for r in mercmode.inventory(self.store,w,merc_cfg))):
+                    job=self.submit(JobRequest(tool='mercmode',input={'op':'prepare'},agent_use=True,
+                        low_priority=True,require_worker=w['id']),actor=ACTOR,
+                        origin={'via':'MercMode host readiness','worker':w['name']})
+                    self.store.put(mercmode.PREPARATION,w['name'],prepared|{'requested_at':now,
+                        'job':_jid(job),'state':'checking'})
+                    return 'MercMode: checking ROM access and cached assets on this PC'
+                return 'MercMode: no ready title ('+'; '.join(r['reason'] for r in mercmode.inventory(self.store,w,merc_cfg))+')'
             return "no recorded game to play (play a game for a while first)"
         build = None
-        if cfg.get("roulette") and self.builds:
+        if not merc_cfg['enabled'] and cfg.get("roulette") and self.builds:
             from . import roulette
             build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
+        if merc_pick:
+            game = game | {'launch':dict(game.get('launch') or {}) | {
+                'mercmode': {'random_characters': True, 'random_stages': True}}}
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
                                      require_worker=w["id"]), actor=ACTOR,
@@ -287,6 +368,8 @@ class Screensaver:
         label = build and (build.get("display_name") or build.get("label") or build["name"])
         self.store.put(STATE, w["name"], {"worker": w["name"], "worker_id": w["id"], "phase": "launching", "job": jid,
                                           "game_id": g["game_id"], "title": g["title"], "started": now,
+                                          **({'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
+                                               'rounds_per_title': merc_cfg['rounds_per_title']}} if merc_pick else {}),
                                           **({"mod": build["name"], "build": label} if build else {})})
         return f"launching {g['title']}" + (f" ({label})" if build else "")
 
@@ -297,9 +380,10 @@ class Screensaver:
             job = self.store.get("job", run.get("job")) or {}
             if job.get("state") in ("failed", "rejected", "invalid", "cancelled") or now - run["started"] > LAUNCH_TIMEOUT:
                 return self._finish(w, run, now, f"launch {job.get('state') or 'timed out'}: {str(job.get('error') or '')[:200]}")
-            # its own launch's session only (sessions are named <worker>-<launch job>): never adopt someone else's
-            # session of the same game on that PC
-            sess = next((s for s in running if s.get("session_id") == f"{run['worker_id']}-{run.get('job')}"), None)
+            # An accepted relay keeps its local launch ID; never adopt another
+            # same-game session merely because it is running on the chosen PC.
+            sess = _launch_session(self.store, run.get('job'), running,
+                                   worker_id=run['worker_id'], game_id=run['game_id'])
             if not sess:
                 return f"launching {run['title']}"
             self.store.put("slabel", sess["session_id"], {"owner": "agent", "task": f"autoplay screensaver: {run['title']}"})
@@ -320,6 +404,12 @@ class Screensaver:
             return self._finish(w, run, now, f"handed to the operator ({run['handover']}): plays on until Stop")
         if run.get("yield") or not cfg["enabled"] or not opted_in(self.store, w, cfg):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
+        if run.get('mercmode'):
+            from . import mercmode
+            if not mercmode.settings(self.store,w['name'])['enabled']:
+                return self._stop(w,run,now,'MercMode turned off')
+            if run.get('mercmode_rotate_requested'):
+                return self._stop(w,run,now,'verified native round boundary: next MercMode title')
         if phase == "starting" and now - run.get("up", now) >= START_GRACE:
             from . import imitate
             knobs = imitate.choose_knobs(self.history(run["game_id"]), self.rng)
@@ -331,7 +421,7 @@ class Screensaver:
             run |= {"phase": "playing", "autoplay_job": _jid(job), "playing_since": now}
             self.store.put(STATE, w["name"], run)
             return f"playing {run['title']}"
-        if phase == "playing" and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:
+        if phase == "playing" and not run.get('mercmode') and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:
             return self._stop(w, run, now, f"{cfg['session_minutes']} minutes: next game")
         return f"{phase} {run['title']}"
 
@@ -368,9 +458,27 @@ class Screensaver:
         """The operator is back at this PC (mouse / pad): the game is handed to them and keeps playing - never closed."""
         with self.lock:
             run = self._by_session(sid)
-            if not run:
+            session=self.store.get('session',sid) or {}
+            if not run and session.get('state')!='running':
                 return False
-            self.store.put(STATE, run["worker"], run | {"handover": reason})
+            cancelled=False
+            for job in self.store.all('job'):
+                inp=job.get('input') or {}
+                if (job.get('state')=='queued' and job.get('tool')=='session_op' and job.get('actor')==ACTOR
+                        and job.get('require_worker')==sid.split('-',1)[0]
+                        and inp.get('session_id')==sid and inp.get('op')=='stop_game'):
+                    self.store.put('job',job['id'],job|{'state':'cancelled','finished':time.time(),
+                        'error':'The operator took control before this automatic stop was dispatched'})
+                    cancelled=True
+            if run:
+                self.store.put(STATE, run["worker"], run | {"handover": reason})
+            elif cancelled:
+                # The minute/round rotation can remove STATE before the native
+                # handover arrives. Its queued stop still must not close a human game.
+                self.store.put('slabel',sid,{'session_id':sid,'owner':'you','ts':time.time(),
+                    'label':f"{session.get('title') or session.get('game_id') or 'Game'}: handed over by the screensaver"})
+            elif (self.store.get('slabel',sid) or {}).get('owner')!='you':
+                return False
         self.tick()
         return True
 
@@ -388,6 +496,33 @@ class Screensaver:
             self.store.put(STATE, run["worker"], run | upd)
             return True
 
+    def round_boundary(self, body, parent_job, now=None):
+        from . import mercmode
+        now = time.time() if now is None else now
+        with self.lock:
+            run = self._by_session(body.get('session_id'))
+            if not run or not run.get('mercmode') or run.get('handover'):
+                return {'saved': False, 'rotate_requested': False}
+            live=telemetry_get(run['session_id'],now)
+            if not live.get('running') or live.get('age_s',999)>10 \
+                    or not any(s.get('session_id')==run['session_id'] for s in self.store.running_sessions()):
+                raise ValueError('The owned autoplay runtime and game must still be live')
+            receipt = mercmode.accept_boundary(self.store,run,body,parent_job=parent_job,now=now)
+            if receipt is None:
+                return {'saved': True, 'duplicate': True, 'rotate_requested': bool(run.get('mercmode_rotate_requested'))}
+            ids = (run.get('mercmode_round_ids',[])+[receipt['round_id']])[-256:]
+            count = run.get('mercmode_rounds',0)+1
+            worker = next((w for w in self.workers() if w.get('id')==run['worker_id']),None)
+            cfg = mercmode.settings(self.store,run['worker'])
+            alternatives = [r for r in mercmode.inventory(self.store,worker,cfg) if r['playable']
+                            and r['title'] in cfg['titles'] and r['game_id']!=run['game_id']] if worker else []
+            rotate = bool(alternatives and count>=cfg['rounds_per_title'])
+            self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
+                'last_round':receipt,'at':now})
+            self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,
+                'mercmode_rounds':count,'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
+            return {'saved': True, 'rotate_requested': rotate}
+
     def pcs(self, cfg: dict, now: float | None = None) -> list[dict]:
         """Each PC, and why the screensaver would not start a game there now (reason None: it may at its next tick).
         starts_in_s: a Windows PC's idle time still to go before it may (the Sessions view's "nothing is playing")."""
@@ -395,14 +530,17 @@ class Screensaver:
         running = self.store.running_sessions()
         out = []
         for w in self.workers():
+            host_cfg = self._worker_settings(w,cfg)
             run = self.store.get(STATE, w.get("name"))
             if run:
                 reason = f"playing {run.get('title') or run.get('game_id') or 'a demo'}"
-            elif not cfg["enabled"]:
+            elif not host_cfg["enabled"]:
                 reason = "the autoplay screensaver is off"
+            elif _local_scheduler(w):
+                reason = 'scheduled by this PC\'s local control plane'
             else:
                 try:
-                    reason = worker_reason(self.store, w, cfg, running, now)
+                    reason = worker_reason(self.store, w, host_cfg, running, now)
                 except Exception as e:                       # noqa: BLE001 - one PC's check never hides the others
                     reason = f"unknown ({type(e).__name__})"
             idle = w.get("idle_seconds")
@@ -413,12 +551,31 @@ class Screensaver:
         return out
 
     def status(self) -> dict:
+        from . import mercmode
         cfg = settings(self.store)
         log = sorted(self.store.all(LOG), key=lambda r: -(r.get("started") or 0))[:30]
         games = self.games(cfg)
         out = {"settings": cfg, "running": self.store.all(STATE), "log": log,
                "games": [{k: g[k] for k in ("game_id", "title", "pads")} for g in games[:40]],
                "pcs": self.pcs(cfg)}
+        hosts=[]
+        for w in self.workers():
+            observed=mercmode.observation(self.store,w)
+            command=self.store.get(mercmode.COMMAND,w['name']) or {}
+            if command.get('worker_id')!=w['id']:command={}
+            job=self.store.get('job',command.get('job')) if command.get('job') else None
+            actual=observed.get('settings') or (dict(mercmode.DEFAULT) if _local_scheduler(w)
+                else mercmode.settings(self.store,w['name']))
+            hosts.append({'name':w['name'],'id':w['id'],'online':bool(w.get('online')),
+                'settings':actual,
+                'settings_source':'local_scheduler_observation' if observed else
+                    'unobserved_local_scheduler' if _local_scheduler(w) else 'this_control_plane',
+                'observed_at':observed.get('at'),'desired_settings':mercmode.settings(self.store,w['name']),
+                'command':command | ({'state':job.get('state'),'error':str(job.get('error') or '')[:240]} if job else {}),
+                'scheduler_owner':'local' if _local_scheduler(w) else 'this_control_plane',
+                'titles':mercmode.inventory(self.store,w),'preparation':mercmode.host_preparation(self.store,w),
+                'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {})})
+        out['mercmode']={'hosts':hosts}
         if self.builder is not None:
             out["roulette"] = self.builder.status()
         return out
@@ -444,6 +601,35 @@ class Yield(BaseModel):
 class Report(BaseModel):
     session_id: str
     result: dict
+
+
+class MercModeSettings(BaseModel):
+    host: str
+    enabled: bool | None = None
+    titles: list[str] | None = None
+    rounds_per_title: int | None = None
+
+
+class MercModeBoundary(BaseModel):
+    session_id: str
+    round_id: str
+    at: float
+    map_id: str
+    role: str
+    source: str
+    mode: str | None = None
+    stage: str | int | None = None
+    character: str | None = None
+    witness: dict
+
+
+class MercModePreparation(BaseModel):
+    worker_id: str
+    result: dict
+
+
+class MercModePrepare(BaseModel):
+    worker_id: str
 
 
 class Telemetry(BaseModel):
@@ -477,7 +663,7 @@ def telemetry_get(sid: str, now: float | None = None) -> dict:
 
 
 def install(app, store, config, auth, submit, workers, archive):
-    from fastapi import Depends, HTTPException
+    from fastapi import Depends, HTTPException, Header
 
     def builds_for(gid: str) -> list[dict]:
         cur = getattr(app.state, "built_mods_current", None)
@@ -530,14 +716,76 @@ def install(app, store, config, auth, submit, workers, archive):
         return saver.status()
 
     @app.post("/api/autoplay-screensaver/yield")
-    def screensaver_yield(body: Yield, actor=Depends(auth)):
+    def screensaver_yield(body: Yield, parent_job: str=Header(default='',alias='x-gbox-parent-job'),actor=Depends(auth)):
         return {"yielded": saver.yield_to_operator(body.session_id, body.reason[:80])}
 
     @app.post("/api/autoplay-screensaver/result")
-    def screensaver_result(body: Report, actor=Depends(auth)):
+    def screensaver_result(body: Report, parent_job: str=Header(default='',alias='x-gbox-parent-job'),actor=Depends(auth)):
         if len(str(body.result)) > 8000:
             raise HTTPException(413, "result too large")
         return {"saved": saver.report(body.session_id, body.result)}
+
+    @app.get('/api/mercmode')
+    def mercmode_status(actor=Depends(auth)):
+        return saver.status()['mercmode']
+
+    @app.post('/api/mercmode')
+    def mercmode_settings(body: MercModeSettings, actor=Depends(auth)):
+        from . import mercmode
+        worker=next((w for w in workers() if w.get('name')==body.host),None)
+        if worker is None:
+            raise HTTPException(422,'Choose an exact registered worker name')
+        try:
+            patch=body.model_dump(exclude_none=True,exclude={'host'})
+            desired=mercmode.configure(store,body.host,patch)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
+        store.audit(actor,'mercmode.settings',body.host,patch)
+        if _local_scheduler(worker):
+            previous=store.get(mercmode.COMMAND,body.host) or {}
+            old_job=store.get('job',previous.get('job')) if previous.get('job') else None
+            if not (previous.get('settings')==desired and previous.get('worker_id')==worker['id'] and old_job
+                    and old_job.get('require_worker')==worker['id'] and old_job.get('tool')=='mercmode'
+                    and old_job.get('state') not in ('failed','invalid','cancelled','rejected')):
+                job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':body.host,**desired},
+                    require_worker=worker['id']),actor=actor,
+                    origin={'via':'MercMode local scheduler settings','worker':body.host})
+                store.put(mercmode.COMMAND,body.host,{'job':_jid(job),'settings':desired,'at':time.time(),
+                    'worker_id':worker['id'],'state':'queued'})
+        return saver.status()['mercmode']
+
+    @app.post('/api/mercmode/prepare')
+    def mercmode_prepare(body: MercModePrepare,actor=Depends(auth)):
+        from . import mercmode
+        worker=next((w for w in workers() if w.get('id')==body.worker_id),None)
+        if worker is None:
+            raise HTTPException(422,'Choose an exact registered worker')
+        job=submit(JobRequest(tool='mercmode',input={'op':'prepare'},require_worker=worker['id']),
+            actor=actor,origin={'via':'MercMode host readiness','worker':worker['name']})
+        old=store.get(mercmode.PREPARATION,worker['name']) or {}
+        store.put(mercmode.PREPARATION,worker['name'],old|{'requested_at':time.time(),'job':_jid(job),'state':'checking'})
+        return {'queued':True,'job_id':_jid(job),'worker_id':worker['id']}
+
+    @app.post('/api/autoplay-screensaver/round-boundary')
+    def mercmode_round(body: MercModeBoundary, parent_job: str=Header(default='',alias='x-gbox-parent-job'),
+                      actor=Depends(auth)):
+        try:encoded=json.dumps(body.model_dump(),allow_nan=False)
+        except ValueError:raise HTTPException(422,'finite native round values required') from None
+        if len(encoded)>8000:
+            raise HTTPException(413,'round boundary too large')
+        try:
+            return saver.round_boundary(body.model_dump(),store.get('job',parent_job) or {})
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
+
+    @app.post('/api/mercmode/preparation')
+    def mercmode_preparation(body: MercModePreparation,actor=Depends(auth)):
+        from . import mercmode
+        worker=next((w for w in workers() if w.get('id')==body.worker_id),None)
+        if worker is None or not mercmode.valid_preparation(body.result):
+            raise HTTPException(422,'An exact host and bounded read-only preparation receipt are required')
+        store.put(mercmode.PREPARATION,worker['name'],body.result)
+        return {'saved':True,'host':worker['name'],'preparation':body.result}
 
     @app.post("/api/autoplay/telemetry/{sid}")
     def autoplay_telemetry_put(sid: str, body: Telemetry, actor=Depends(auth)):

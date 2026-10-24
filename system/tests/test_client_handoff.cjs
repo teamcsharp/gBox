@@ -94,6 +94,16 @@ test('idle process exclusion requires exact protocol PID, app-owned lineage and 
   f.rows[0].ParentProcessId=888;assert.deepEqual(verify(),[]);
 });
 
+test('local authority handoff requires its own exact module and proven launcher lineage',()=>{
+  const f=workerInspection();const allowed=[f.launcher.toLowerCase(),f.base.toLowerCase()];
+  const verify=()=>[...f.context.ownedWorkerPids(f.rows,99,42,12,allowed,'local-control')];
+  assert.deepEqual(verify(),[],'a remote worker cannot impersonate the local authority');
+  for(const row of f.rows)row.CommandLine=row.CommandLine.replace('-m gbox --config','-m gbox.desktop_local --config');
+  assert.deepEqual(verify(),[42,99]);
+  assert.deepEqual([...f.context.ownedWorkerPids(f.rows,99,42,12,allowed)],[], 'local authority cannot be excused as the remote worker');
+  f.rows[1].ParentProcessId=777;assert.deepEqual(verify(),[]);
+});
+
 test('actual idle preflight excludes only verified launcher and peer, while unknown games and workers still block',async()=>{
   const f=workerInspection();
   assert.equal(await f.context.inspectClientIdle(),null);
@@ -176,8 +186,18 @@ test('handoff shutdown and startup skip broad cleanup, game snapshots and Spark 
   const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
   const branch=main.slice(main.indexOf('if (clientRefreshExit)'),main.indexOf('try { embedder && embedder.stdin.write',main.indexOf('if (clientRefreshExit)')));
   assert.match(branch,/return;/);assert.doesNotMatch(branch,/cleanupSessions|taskkill|keepMoments|ssh\(/);
-  const startup=main.slice(main.indexOf('if (startupHandoff.requested) {'),main.indexOf('} else cleanupSessions',main.indexOf('if (startupHandoff.requested) {')));
+  const startup=main.slice(main.indexOf('if (startupHandoff.requested) {'),main.indexOf('startAudioVolumeHelper();',main.indexOf('if (startupHandoff.requested) {')));
   assert.match(startup,/startWorker\(\)/);assert.doesNotMatch(startup.replace(/\/\/[^\n]*/g,''),/cleanupSessions|bootstrap|ssh\(/);
+});
+
+test('cold startup and shutdown never sweep another installation or legacy active worker',()=>{
+  const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
+  assert.doesNotMatch(main,/CLEANUP_PS|cleanupSessions\(|Stop-Process/);
+  const startup=main.slice(main.indexOf('if (startupHandoff.requested) {'),main.indexOf('let sessionsShutDown'));
+  assert.doesNotMatch(startup,/taskkill|execFileSync/);
+  const shutdown=main.slice(main.indexOf('function shutdownSessions()'),main.indexOf('app.on("window-all-closed"'));
+  assert.match(shutdown,/String\(worker.pid\)/);assert.match(shutdown,/String\(localControlProcess.pid\)/);
+  assert.doesNotMatch(shutdown,/Get-CimInstance|runtime\\|Where-Object/);
 });
 
 test('actual F5 IPC relaunches exactly once only after idle exit, otherwise refreshes views and reports pending',async()=>{

@@ -24,12 +24,15 @@ ops (live ones need session_id of a running RE6 session):
   settings                    the saved RE6 switches (auto_qte, infinite_*, everything_unlocked, boot_to_title)
   revert_all                  undo every live change, stop auto / freezes, delete gBox's RE6 mod folders
   catalog                     the item list (names from the disc)
+  capabilities                character writer support and limits (no session needed)
   build_mod character=<library name> [target=leon costume=]   character swap mod (no launch)
   mods                        RE6 mods built on this node
 """
 from __future__ import annotations
 
 import json
+import copy
+import hashlib
 import re
 import shutil
 import struct
@@ -156,51 +159,115 @@ def fetch_model(ctx, meta: dict) -> Path:
     return m
 
 
-def build_character(ctx, meta: dict, target: str = "leon", costume: str = "", progress=None) -> dict:
-    """Library character -> RE6 swap mod re6_<slug>[_<target>]: every costume of `target` (or one) becomes it."""
+def character_capabilities() -> dict:
+    """Static writer capabilities, without starting a watcher or inspecting a running game."""
+    from . import re6_models as M
+    return {"game_id": re6.GAME_ID, "platform": "xbox360", "backend": "xenia", "host_os": "windows",
+            "character_replacement": {"build_mod": True, "relaunch": True, "requires_relaunch": True,
+                                      "realtime": False, "active_target_detection": False,
+                                      "animation_retarget": False, "binding": "rigid geometry on the native skeleton",
+                                      "targets": [{"id": k, "name": v["name"], "costumes": list(v["costumes"])}
+                                                  for k, v in M.CHARACTERS.items()]},
+            "unsupported_platforms": ["pc", "ps3"],
+            "limitations": ["Requires an extracted Xbox 360 disc and a donor with body roles.",
+                            "The selected native character must be chosen in game after launching the mod.",
+                            "No writer for the native PC or PS3 edition; no realtime body replacement.",
+                            "A successful build does not verify its appearance or animations in gameplay."]}
+
+
+def _character_choice(target: str = "leon", costume: str = "") -> tuple[str, list[str]]:
+    from . import re6_models as M
+    target = str(target or "leon").strip().casefold()
+    if target not in M.CHARACTERS:
+        raise ValueError(f"target must be one of {sorted(M.CHARACTERS)}; no active character is inferred")
+    available = M.CHARACTERS[target]["costumes"]
+    if costume:
+        match = next((c for c in available if c.casefold() == costume.strip().casefold()), None)
+        if match is None:
+            raise ValueError(f"costume for {target} must be one of {available}")
+        return target, [match]
+    return target, list(available)
+
+
+def _player_meta(meta: dict, scale: dict | None = None) -> dict:
+    from . import retarget_profile as RP
+    meta = RP.apply_to_meta(meta, re6.GAME_ID, "player")
+    if scale:
+        meta = copy.deepcopy(meta)
+        rig = meta.setdefault("rig", {})
+        rig["scale"] = dict(rig.get("scale") or {}) | scale
+    return meta
+
+
+def _fit_key(meta: dict) -> str:
+    """Profile and legacy scale changes must not reuse a mod built with a different fit."""
+    from . import retarget_profile as RP
+    scale = dict((meta.get("rig") or {}).get("scale") or {})
+    profile = scale.pop("profile", None)
+    changed = {"profile": RP.digest(profile), "saved_profile": meta.get("retarget_profile_digest", ""), "scale": scale}
+    if not any(changed.values()):
+        return ""
+    return hashlib.sha256(json.dumps(changed, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _character_mod_name(meta: dict, target: str, costume: str = "") -> str:
+    name = f"re6_{meta['slug']}" + ("" if target == "leon" else f"_{target}")
+    if costume:
+        name += f"_{costume}"
+    fit = _fit_key(meta)
+    return name + (f"_fit{fit}" if fit else "")
+
+
+def build_character(ctx, meta: dict, target: str = "leon", costume: str = "", progress=None,
+                    scale: dict | None = None) -> dict:
+    """Build replacement geometry for an explicit native target; loading the mod requires a relaunch."""
     from . import characters as C, re6_models as M
+    target, costumes = _character_choice(target, costume)
+    meta = _player_meta(meta, scale)
     progress = progress or (lambda *a: None)
     roles = (meta.get("rig") or {}).get("roles")
     if not roles:
         raise ValueError(f"{meta['name']} has no body roles (rig.roles) in the collection: can't fit it to an RE6 skeleton")
-    if target not in M.CHARACTERS:
-        raise ValueError(f"target must be one of {sorted(M.CHARACTERS)}")
+    scale = (meta.get("rig") or {}).get("scale")
     progress(5, "RE6 disc copy for mods")
     b = base(ctx.config, progress)
     model = fetch_model(ctx, meta)
-    costumes = [costume] if costume else M.CHARACTERS[target]["costumes"]
     files, report = {}, []
     for k, cos in enumerate(costumes):
         progress(55 + 30 * k / len(costumes), f"Fitting {meta['name']} to {M.CHARACTERS[target]['name']} ({cos})")
-        r = M.build_swap(b, model, roles, target, cos, meta["slug"])
+        r = M.build_swap(b, model, roles, target, cos, meta["slug"], scale=scale)
         files.update(r.pop("files"))                     # costumes never share arcs
         report.append(r)
-    name = f"re6_{meta['slug']}" + ("" if target == "leon" else f"_{target}")
+    name = _character_mod_name(meta, target, costumes[0] if costume else "")
     progress(88, f"Writing mod {name}")
-    res = build_mod_folder(ctx.config, name, files, {"character": meta["slug"], "target": target, "costumes": costumes})
+    res = build_mod_folder(ctx.config, name, files, {"character": meta["slug"], "target": target, "costumes": costumes,
+                                                   "fit_key": _fit_key(meta)})
     work = Path(ctx.config.cache) / "characters_build" / meta["slug"]
     work.mkdir(parents=True, exist_ok=True)
     prev = None
     try:                                                   # read the written model back and render it (checked picture)
-        r0 = M.build_swap(b, model, roles, target, costumes[0], meta["slug"], work / "re6_preview.gltf")
+        r0 = M.build_swap(b, model, roles, target, costumes[0], meta["slug"], work / "re6_preview.gltf", scale=scale)
         C.render_preview(Path(r0["preview_gltf"]), work / "re6_preview.png")
         prev = str(work / "re6_preview.png")
         ctx.artifact("re6_preview.png", (work / "re6_preview.png").read_bytes(), "image/png", character=meta["slug"])
     except Exception as e:                                 # noqa: BLE001 - the preview is a check, not the product
         prev = f"preview failed: {e}"
-    return res | {"target": target, "costumes": costumes, "triangles": report[0]["triangles"],
+    return res | {"target": target, "costumes": costumes, "requires_relaunch": True, "realtime": False,
+                  "fit_key": _fit_key(meta), "triangles": report[0]["triangles"],
                   "hidden": report[0]["hidden_parts"], "notes": sorted({n for r in report for n in r["notes"]}), "preview": prev}
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
-    """characters op=use for RE6: build re6_<slug> (replaces Leon in every costume: story + Mercenaries) if missing,
-    record it in the character's targets, launch it on the requesting session's node (or this one)."""
-    from . import characters as C
+    """Build/relaunch a replacement for an explicit target (default Leon); never infer the active player."""
+    from . import characters as C, re6_models as M
     gid = game["game_id"]
     if getattr(inp, "slot", "player") != "player":            # slot=enemies | enemy:<family>
         return use_enemies(ctx, meta, game, inp)
-    target = "leon"
-    name = f"re6_{meta['slug']}"
+    target, costumes = _character_choice(getattr(inp, "target", ""))
+    meta = _player_meta(meta, getattr(inp, "scale", None))
+    name = _character_mod_name(meta, target)
+    target_name = M.CHARACTERS[target]["name"]
+    replaces = f"{target_name} (all {len(costumes)} costumes); choose {target} in game"
     sess = C._session(ctx, inp.session_id) if inp.session_id else None
     node = sess["session_id"].split("-")[0] if sess else C.HOST_OS
     built = None
@@ -210,19 +277,21 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
             if not w:
                 return {"status": "failed", "error": "no Windows node online to build the RE6 mod on"}
             j = C._job(ctx, "characters", {"op": "use", "character": meta["slug"], "game_id": gid, "rebuild": inp.rebuild,
-                                           "launch": inp.launch, "session_id": inp.session_id}, w, 3600)
+                                           "launch": inp.launch, "session_id": inp.session_id, "target": target,
+                                           "scale": getattr(inp, "scale", {})}, w, 3600)
             return (j.get("output") or {}).get("result") or {"status": j.get("state"), "error": j.get("error")}
-        built = build_character(ctx, meta, target, "", ctx.progress)
+        built = build_character(ctx, meta, target, "", ctx.progress, scale=getattr(inp, "scale", None))
         C._api(ctx, "POST", f"/api/characters/{meta['slug']}/targets",
                json={"game_id": gid, "slot": "player", "mod": name, "nodes": [C.HOST_OS],
-                     "notes": "replaces Leon (every costume, story + Mercenaries); head/hands hidden; revert: launch "
-                              "without the mod or re6 op=revert_all"})
-    res = {"mod": name, "build": built, "replaces": "Leon (all 5 costumes); pick Leon in Mercenaries"}
+                     "notes": f"replaces {target_name} (every costume); head/hands hidden; requires relaunch; "
+                              "revert: launch without the mod or re6 op=revert_all"})
+    res = {"mod": name, "build": built, "target": target, "costumes": costumes, "replaces": replaces,
+           "requires_relaunch": True, "realtime": False}
     if not inp.launch:
         return res | {"status": "built" if built else "ready"}
     if sess and sess.get("game_id") == gid and sess.get("mod") == name:
         return res | {"status": "already running", "message": f"Resident Evil 6 is already running with {meta['name']} "
-                      f"(mod {name}). In Mercenaries pick Leon."}
+                      f"(mod {name}). Choose {target_name} in game."}
     ctx.progress(92, f"Launching Resident Evil 6 with {meta['name']} (mod {name})")
     lj = C._api(ctx, "POST", "/api/jobs", json={"tool": "@launch", "input": {"game_id": gid, "mod": name, "node": node}})
     for _ in range(600):
@@ -233,8 +302,8 @@ def use(ctx, meta: dict, game: dict, inp) -> dict:
     ok = j.get("state") == "succeeded"
     return res | {"status": ("built+launched" if built else "launched") if ok else f"launch {j.get('state')}",
                   "launch": {"job": lj.get("id"), "session_id": (j.get("output") or {}).get("session_id"), "error": j.get("error")},
-                  "message": (f"Resident Evil 6 is starting with {meta['name']} in Leon's place (mod {name}). Choose Leon "
-                              "in Mercenaries (or any Leon chapter). Revert: launch RE6 without the mod, or re6 op=revert_all."
+                  "message": (f"Resident Evil 6 is starting with {meta['name']} replacing {target_name} (mod {name}). "
+                              f"Choose {target} in game. Revert: launch RE6 without the mod, or re6 op=revert_all."
                               if ok else f"mod {name} ready, launch failed: {j.get('error')}")}
 
 
@@ -1121,7 +1190,7 @@ def on_launch(sid: str, ctx):
 class Re6In(BaseModel):
     op: str = "status"          # status | inventory | give | give_now | live_inventory | remove_item | set_slot | set_loadout
                                 # (= loadout_set) | auto | unlock_all (= unlock) | everything_unlocked | boot_to_title |
-                                # revert_all | catalog | build_mod | mods | infinite_ammo | infinite_health | auto_qte | settings
+                                # revert_all | catalog | capabilities | build_mod | mods | infinite_ammo | infinite_health | auto_qte | settings
     session_id: str = ""
     slot: int = -1              # remove_item / set_slot: inventory slot number (0-6 guns, 7-12 selectors, 15-23 case)
     item: str = ""              # give: name ('elephant killer', 'hand cannon') or id
@@ -1133,6 +1202,7 @@ class Re6In(BaseModel):
     now: bool = True            # set_loadout: write the table now (also when auto)
     target: str = "leon"        # build_mod: the RE6 character to replace
     costume: str = ""           # build_mod: one costume (default: all of them)
+    scale: dict = {}            # build_mod: optional fit overrides, including a retarget profile
     enemies: dict = {}          # replace_enemies: {family: collection character} (families: op=enemy_families)
     random: bool = False        # replace_enemies: every family gets a different collection character
     player: str = ""            # replace_enemies: also play as this collection character (Leon's slot)
@@ -1167,8 +1237,10 @@ def re6_tool(inp: Re6In, ctx):
     """Resident Evil 6 (Xbox 360 in Xenia): Mercenaries loadouts (any item incl. story-only weapons), unlocks,
     character swap mods, revert. Offline only (refuses if the game could be online)."""
     cfg = ctx.config
-    ensure_watcher(ctx)
     op = inp.op
+    if op == "capabilities":
+        return {"result": character_capabilities()}
+    ensure_watcher(ctx)
     if op == "catalog":
         names = _names(cfg)
         return {"result": {"items": [{"id": k, "name": v} for k, v in sorted(names.items()) if k < 440]}}
@@ -1198,7 +1270,7 @@ def re6_tool(inp: Re6In, ctx):
         meta = C.best_match(chars, inp.character) or C.find(chars, inp.character)
         if not meta:
             raise ValueError(f"{inp.character!r} isn't in the collection")
-        return {"result": build_character(ctx, meta, inp.target, inp.costume, ctx.progress)}
+        return {"result": build_character(ctx, meta, inp.target, inp.costume, ctx.progress, scale=inp.scale)}
     if op == "loadout_set":
         op = "set_loadout"
     if op == "weapon_classes":
@@ -1461,22 +1533,25 @@ def random_mix(ctx, families: list[str], seed: int | None = None) -> dict[str, s
 
 def build_combined(ctx, enemies: dict[str, str], player: str = "", progress=None) -> dict:
     """One mod folder: optional player swap (Leon, every costume) + enemy families -> collection characters."""
-    from . import re6_models as M
+    from . import re6_models as M, retarget_profile as RP
     progress = progress or (lambda *a: None)
     b = base(ctx.config, progress)
     files, report = {}, {"enemies": [], "player": None}
     if player:
-        pm = _meta(ctx, player)
+        pm = _player_meta(_meta(ctx, player))
         model = fetch_model(ctx, pm)
         for k, cos in enumerate(M.CHARACTERS["leon"]["costumes"]):
             progress(20 + 10 * k / 5, f"Leon ({cos}) -> {pm['name']}")
-            r = M.build_swap(b, model, pm["rig"]["roles"], "leon", cos, pm["slug"])
+            r = M.build_swap(b, model, pm["rig"]["roles"], "leon", cos, pm["slug"], scale=pm["rig"].get("scale"))
             files.update(r.pop("files"))
         report["player"] = pm["slug"]
     for n, (fam, who) in enumerate(enemies.items()):
         em = _meta(ctx, who)
+        profiles = RP.stored(em, re6.GAME_ID)
+        slot = f"enemy:{fam}" if f"enemy:{fam}" in profiles or fam in profiles else "enemies"
+        em = RP.apply_to_meta(em, re6.GAME_ID, slot)
         progress(35 + 40 * n / max(1, len(enemies)), f"{M.ENEMIES[fam][0]} -> {em['name']}")
-        r = M.build_enemy_swap(b, fam, fetch_model(ctx, em), em["rig"]["roles"], em["slug"])
+        r = M.build_enemy_swap(b, fam, fetch_model(ctx, em), em["rig"]["roles"], em["slug"], scale=em["rig"].get("scale"))
         # a family built earlier in this mod may share arcs: merge entry by entry
         for rel, data in r.pop("files").items():
             if rel in files:

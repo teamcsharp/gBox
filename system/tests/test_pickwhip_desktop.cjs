@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html
 const mainJs = fs.readFileSync(path.join(__dirname, '../clients/desktop/main.js'), 'utf8');
 const slice = (src, a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i + 1); assert.ok(i >= 0 && j > i, `slice ${a}`); return src.slice(i, j); };
 
-function desktop({ rclick = true, pause = true, eyeOn = false, model = 'gemma4:e4b' } = {}) {
+function desktop({ rclick = true, pause = true, eyeOn = false, model = 'gemma4:e4b', compact = false, view = 'main' } = {}) {
   const seen = { acquire: [], release: [], menus: [], pip: [], reports: [], jobs: [] };
   const stub = {
     settings: () => ({ rclick, pause, cloud: false, name: true }),
@@ -20,6 +20,7 @@ function desktop({ rclick = true, pause = true, eyeOn = false, model = 'gemma4:e
     runTool: async () => ({ ok: true, result: {}, job: {} }),
   };
   const ctx = { GBoxPickWhip: stub, EMB: { sid: 'w1-s1', game: '0123456789abcdef', title: 'AUF', rect: { x: 100, y: 50, w: 800, h: 600 } },
+    COMPACT: { on: compact }, VIEW: { mode: view },
     EYE: { on: eyeOn, preview: eyeOn ? { picked: { class: 'bot' } } : null }, CH: { models: { models: [{ name: 'gemma4:e4b', capabilities: ['tools', 'vision'] }] } },
     S: { apiUrl: 'http://spark', workerName: 'PC' }, document: {}, window: {}, navigator: { clipboard: { writeText: async () => {} } },
     $: sel => sel === '#chatmodel' ? { value: model } : null, toast() {}, fitMenu() {}, dragAnywhere() {}, embedSoon() {}, blenderCopiedMsg() {},
@@ -54,6 +55,16 @@ test('right-click outside the game, or with the character menu off, opens the ga
   d = desktop({ rclick: false });
   d.pw.pwRightClick(500, 350); await settle();
   assert.equal(d.seen.menus.length, 0); assert.equal(d.seen.pip.length, 1);
+});
+
+test('compact and picture-in-picture right-clicks open the game menu without pausing for a character pick', async () => {
+  for (const options of [{ compact: true }, { view: 'pip' }]) {
+    const d = desktop(options);
+    d.pw.pwRightClick(500, 350); await settle();
+    assert.deepEqual(d.seen.pip, [[500, 350]]);
+    assert.deepEqual(d.seen.acquire, []);
+    assert.equal(d.seen.menus.length, 0);
+  }
 });
 
 test('inside the eyedropper the frozen preview is reused and the eyedropper keeps the hold', async () => {

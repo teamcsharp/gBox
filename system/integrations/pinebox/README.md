@@ -4,7 +4,9 @@ This extension upgrades Pine's selected gBox gameplay from remote 1 fps JPEGs
 to the existing shared H.264/AAC broadcast encoder. It does not create an extra
 encode. The current gBox broadcast settings provide the canvas, bitrate and
 frame rate (normally 30 fps); an emulator running below 30 fps still repeats
-source frames. Normal HLS adds approximately 2–5 seconds of playback latency.
+source frames. The player waits for 7.5 seconds of contiguous playable media and targets eight
+segments behind live, with buffered synchronization and a bounded 24-second
+maximum buffer. This allows a larger jitter cushion than the previous two-segment target.
 
 Gameplay has its own **Gameplay volume** slider. It changes only the gameplay
 video element. DJ, station video and SFX levels are untouched. Browsers begin
@@ -32,6 +34,10 @@ the recovery status and cancels a pending retry. A canvas holds a decoded
 frame through reattachment, refreshed at most once a second at up to 960×540;
 selecting another feed clears that held picture. A bounded error history and
 the actual transport are available through the player's `state()` method.
+It also exposes stall/attachment counts and buffer ahead. Thumbnail/metadata
+changes and temporary station-status failures preserve the current decoder;
+an explicit station off command still stops it. The centralized connection
+contract is [pinbox_gbox.md](../../pinbox_gbox.md).
 
 Install with Python inside the Pine runtime (or a host with FastAPI/httpx):
 

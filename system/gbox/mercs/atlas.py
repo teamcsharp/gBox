@@ -123,6 +123,18 @@ class NavigationAtlas:
         self.active[round_id]["checkpoint_continuous"] = True
         self.db.commit()
 
+    def observed_stage(self,key,*,units_per_m,metadata=None):
+        """A coordinate trace has no implied collision geometry or action links."""
+        if not isinstance(key,str) or not 1<=len(key)<=200 or units_per_m not in (100,1000):
+            raise ValueError('An exact room identity and verified native units are required')
+        geometry={'points':[],'triangles':[],'links':[],'boundaries':[],'action_links':[],
+            'evidence':'native_coordinate_trace_only','geometry_available':False,
+            'units_per_m':units_per_m,'boundary_meaning':'unknown: no mesh or wall map supplied'}
+        self.db.execute('INSERT OR IGNORE INTO stages(key,title,geometry,metadata) VALUES(?,?,?,?)',
+                        (key,self.title,_json(geometry),_json(metadata or {})))
+        self.db.commit()
+        return key
+
     @staticmethod
     def landmark_key(kind, pos):
         return str(kind)[:40] + ":" + ":".join(str(round(v)) for v in pos)
@@ -280,19 +292,21 @@ class NavigationAtlas:
 
     @staticmethod
     def review(samples, events, metrics):
+        units=metrics.get('units_per_m',100)
+        scale=units/100. if units in (100,1000) else 1.
         positions = [(s["at"], _position((s.get("frame", {}).get("player") or {}).get("pos")), s) for s in samples]
         positions = [(t,p,s) for t,p,s in positions if p is not None]
         distance = stationary = 0.
         targets, reversals, recent = [], 0, []
         for (t,p,s),(nt,np,ns) in zip(positions, positions[1:]):
             dt, moved = nt-t, math.dist(p,np)
-            if not 0 < dt <= 2. or moved > 800.*dt+30.:
+            if not 0 < dt <= 2. or moved > (800.*dt+30.)*scale:
                 recent = []
                 continue
             distance += moved
-            if moved < 12. and any(k in ns.get("inputs", ()) for k in ("lup", "ldown", "lleft", "lright")):
+            if moved < 12.*scale and any(k in ns.get("inputs", ()) for k in ("lup", "ldown", "lleft", "lright","up","down","left","right")):
                 stationary += dt
-            cell = (round(np[0]/100.), round(np[1]/80.), round(np[2]/100.))
+            cell = (round(np[0]/(100.*scale)), round(np[1]/(80.*scale)), round(np[2]/(100.*scale)))
             if not recent or recent[-1] != cell:
                 recent.append(cell)
                 if len(recent) >= 4 and recent[-4] == recent[-2] and recent[-3] == recent[-1]:
@@ -324,7 +338,8 @@ class NavigationAtlas:
                        "kills_attributed": None, "damage_attributed": None}
         if mine_review["placements_verified"] > mine_review["retreats_completed"]:
             actions.append("Check measured separation after every planted mine; deployment does not prove the escape completed.")
-        return {"distance": round(distance,2), "commanded_stationary_s": round(stationary,2),
+        return {"distance": round(distance,2), 'distance_m':round(distance/(100.*scale),3),
+                'units_per_m':100.*scale, "commanded_stationary_s": round(stationary,2),
                 "oscillations": reversals, "target_changes": max(0,len(targets)-1),
                 "time_bonuses_acquired": len(set(checkpoints)), "checkpoint_order": checkpoints,
                 "mines": mine_review,
@@ -340,6 +355,7 @@ class NavigationAtlas:
 def render_map(geometry, samples, events, landmarks=()):
     """Standalone evidence map, retaining altitude and event details in tooltips."""
     points = geometry.get("points", [])
+    scale=geometry.get('units_per_m',100)/100. if geometry.get('units_per_m',100) in (100,1000) else 1.
     positions = [_position((s.get("frame", {}).get("player") or {}).get("pos")) for s in samples]
     positions = [p for p in positions if p is not None]
     all_points = points + positions or [(0.,0.,0.),(100.,0.,100.)]
@@ -357,7 +373,7 @@ def render_map(geometry, samples, events, landmarks=()):
             previous = None
             continue
         if previous is not None and 0 < sample["at"]-previous[0] <= 2. \
-                and math.dist(p,previous[1]) <= 800.*(sample["at"]-previous[0])+30.:
+                and math.dist(p,previous[1]) <= (800.*(sample["at"]-previous[0])+30.)*scale:
             q = previous[1]
             escaping = (sample.get("frame",{}).get("plan") or {}).get("phase") == "leave_proximity_bomb"
             color = "#edaa61" if escaping else "#42d9f3"

@@ -532,6 +532,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 if damage_outbox is not None:
                     options["damage"] = damage_reports.Observer(damage_outbox.emit, damage_run, prof["map_id"], stats)
                 out = E.play_round(prof, m, send, stopped, stats, lessons, **options)
+                if out == 'mercmode_boundary':
+                    break                                   # native tally complete; scheduler owns sequential stop/launch
                 if out == "evidence_backpressure":
                     stats["stopped_reason"] = "damage evidence could not be retained; pending events were not evicted"
                     break

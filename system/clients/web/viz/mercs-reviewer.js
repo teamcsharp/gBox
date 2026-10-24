@@ -4,6 +4,7 @@
   const BASE='/api/mercs/reviewer', colors=['#50d9e8','#b19bff','#f3cb70','#82d89d','#eb9ece'];
   const finite=v=>typeof v==='number'&&Number.isFinite(v), xyz=p=>Array.isArray(p)&&p.length===3&&p.every(finite);
   const clock=t=>{t=Math.max(0,Number(t)||0);return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;};
+  const measuredGeometry=data=>!!data?.geometry&&data.geometry.geometry_available!==false;
   function playersOf(frame){return Array.isArray(frame?.players)?frame.players.filter(p=>p&&typeof p.id==='string').map(p=>({...p,control:['human','bot'].includes(p.control)?p.control:'unknown'})):frame?.player?[{...frame.player,id:'legacy',control:'unknown'}]:[];}
   function playerOf(frame,id){return playersOf(frame).find(p=>p.id===id);}
   function assistanceLabel(value){return value?.verified===true&&value.classification==='unmodified'?'Unmodified':value?.classification==='mod_assisted'?'Mod-assisted':'Modification status unknown';}
@@ -11,14 +12,15 @@
   function sampleIndex(samples,at){let lo=0,hi=samples.length;while(lo<hi){const mid=(lo+hi)>>>1;if(samples[mid].at<=at)lo=mid+1;else hi=mid;}return Math.max(0,lo-1);}
   function playbackFrame(samples,at){
     if(!samples.length)return null;const i=sampleIndex(samples,at),a=samples[i],b=samples[i+1],frame=a.frame||{};
-    if(!b||b.at-a.at<=0||b.at-a.at>2)return frame;
+    if(!b||b.at-a.at<=0||b.at-a.at>2||(frame.units_per_m||100)!==(b.frame.units_per_m||100))return frame;
+    const nativeScale=frame.units_per_m===1000?10:1;
     const f=Math.max(0,Math.min(1,(at-a.at)/(b.at-a.at))),lerp=(p,q)=>p.map((v,k)=>v+(q[k]-v)*f);
-    const interpolate=(p,n)=>n&&xyz(p?.pos)&&xyz(n.pos)&&p.actor===n.actor&&p.control===n.control&&Math.hypot(...p.pos.map((v,k)=>v-n.pos[k]))<=800*(b.at-a.at)+30?{...p,pos:lerp(p.pos,n.pos)}:p;
+    const interpolate=(p,n)=>n&&xyz(p?.pos)&&xyz(n.pos)&&p.actor===n.actor&&p.control===n.control&&Math.hypot(...p.pos.map((v,k)=>v-n.pos[k]))<=(800*(b.at-a.at)+30)*nativeScale?{...p,pos:lerp(p.pos,n.pos)}:p;
     const next=new Map((b.frame.enemies||[]).map(e=>[String(e.id),e]));
     const nextPlayers=new Map(playersOf(b.frame).map(p=>[p.id,p]));
     return {...frame,player:frame.player?interpolate(frame.player,b.frame.player):undefined,
       ...(Array.isArray(frame.players)?{players:playersOf(frame).map(p=>interpolate(p,nextPlayers.get(p.id)))}:{}),enemies:(frame.enemies||[]).map(e=>{
-      const n=next.get(String(e.id));return n&&xyz(e.pos)&&xyz(n.pos)&&Math.hypot(...e.pos.map((v,k)=>v-n.pos[k]))<=800*(b.at-a.at)+30?{...e,pos:lerp(e.pos,n.pos)}:e;})};
+      const n=next.get(String(e.id));return n&&xyz(e.pos)&&xyz(n.pos)&&Math.hypot(...e.pos.map((v,k)=>v-n.pos[k]))<=(800*(b.at-a.at)+30)*nativeScale?{...e,pos:lerp(e.pos,n.pos)}:e;})};
   }
   function sameGeometry(runs,selected){return runs.filter(r=>r.title===selected?.title&&r.geometry===selected?.geometry);}
   function appendSamples(old,incoming){const ids=new Set(old.map(s=>s.seq));return old.concat(incoming.filter(s=>!ids.has(s.seq))).sort((a,b)=>a.seq-b.seq);}
@@ -171,8 +173,9 @@
       text(selection,chosen.length?`${player.value.toUpperCase()} · ${clock(chosen[0].at-start())} → ${clock(chosen.at(-1).at-start())} · ${chosen.length} samples`:'No recorded selection');
       const context=rangeAssistance(chosen);text(assist,'Selection: '+assistanceLabel(context));assist.dataset.classification=context.classification;
       text(teachingNote,human?'The selected recorded positions will be checked against this exact mode and geometry. The bot keeps its own goals, threat checks and live traversal prompts.':'Select a recorded human player to teach a route. Older traces with unknown controller ownership remain available for review.');
-      teach.disabled=teachBusy||!human||!current?.mode||!data?.geometry;markStart.disabled=markEnd.disabled=!samples.length;
-      save.disabled=saveBusy||drawn.length<2||!data?.geometry;draw.disabled=!data?.geometry;renderChart();renderSide();
+      if(data?.geometry?.geometry_available===false)text(mapNote,`${current?.stage||''} - native coordinate paths only; walls and collision geometry unknown. ${data.geometry.units_per_m||'?'} native units/metre.`);
+      teach.disabled=teachBusy||!human||!current?.mode||!measuredGeometry(data);markStart.disabled=markEnd.disabled=!samples.length;
+      save.disabled=saveBusy||drawn.length<2||!measuredGeometry(data);draw.disabled=!measuredGeometry(data);renderChart();renderSide();
     }
     function renderChart(){const {w,h}=size(chart),c=chart.getContext('2d');c.clearRect(0,0,w,h);if(samples.length<2)return;const duration=Math.max(.001,end()-start());
       if(fromMark!=null||toMark!=null){const selected=selectedSamples();if(selected.length){c.fillStyle='#50d9e820';c.fillRect((selected[0].at-start())/duration*w,0,(selected.at(-1).at-selected[0].at)/duration*w,h);}}
@@ -266,6 +269,6 @@
     refresh(true);raf=root.requestAnimationFrame(animate);poll=root.setInterval(()=>liveTick(),2000);feed=root.setInterval(()=>liveFeed(),500);
     return {dispose(){dead=true;revision++;root.clearInterval(poll);root.clearInterval(feed);root.cancelAnimationFrame(raf);resize?.disconnect();dialog.remove();host.replaceChildren();},refresh,inspect};
   }
-  const exported={mount,sampleIndex,playbackFrame,sameGeometry,appendSamples,geometryPoints,transform,clock,playersOf,playerOf,assistanceLabel,rangeAssistance};
+  const exported={mount,sampleIndex,playbackFrame,sameGeometry,appendSamples,geometryPoints,transform,clock,playersOf,playerOf,assistanceLabel,rangeAssistance,measuredGeometry};
   if(typeof module==='object'&&module.exports)module.exports=exported;else root.GBoxMercsReviewer=exported;
 })(typeof window!=='undefined'?window:globalThis);

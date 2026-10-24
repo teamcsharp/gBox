@@ -11,32 +11,23 @@ ipcMain.handle('operation-console:frame',(_e,state)=>{operationOutput.update(sta
 // The shell and its guest are one dark app, including native controls and first paint.
 nativeTheme.themeSource = "dark";
 
-// gBox owns everything under a \gBox\runtime\ folder (RetroArch, "gBox Dolphin", Xenia, PCSX2...) plus its worker and window embedder:
-// close all of them when the app closes, and sweep leftovers (a crash, a killed app) when it opens. Nothing else is touched.
+// This desktop owns its actual spawned child trees and embed helper. A process
+// name or runtime folder alone never authorizes terminating a different owner.
 // Standalone (a decanted install, gbox/decant.py): GBOX_STANDALONE_HOME = the install folder. The app then runs this PC's own
 // control plane + worker (serve --worker), keeps its profile in the install folder, and only ever sweeps that install's processes.
 const STANDALONE = process.env.GBOX_STANDALONE_HOME ? require("path").resolve(process.env.GBOX_STANDALONE_HOME) : null;
 const psq = s => "'" + String(s).replace(/'/g, "''") + "'";
-const CLEANUP_PS = STANDALONE ? `$me=$PID; $root=${psq(STANDALONE + "\\")}; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $me -and (
-  ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($root + 'runtime\\', [StringComparison]::OrdinalIgnoreCase)) -or
-  ($_.CommandLine -and $_.CommandLine.IndexOf($root.TrimEnd('\\'), [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
-   ($_.CommandLine -match '-m gbox .*\\bworker\\b' -or $_.CommandLine -match 'winembed\\.py')) ) } |
-  ForEach-Object { "$($_.ProcessId) $($_.Name)"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`
-  : `$me=$PID; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $me -and (
-  ($_.ExecutablePath -and $_.ExecutablePath -like '*\\gBox\\runtime\\*') -or
-  ($_.CommandLine -match '-m gbox .*\\bworker\\b' -or $_.CommandLine -match 'winembed\\.py') ) } |
-  ForEach-Object { "$($_.ProcessId) $($_.Name)"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
-function cleanupSessions(sync) {
-  const args = ["-NoProfile", "-NonInteractive", "-Command", CLEANUP_PS];
-  if (sync) { try { return execFileSync("powershell.exe", args, { windowsHide: true, timeout: 15000 }).toString(); } catch (e) { return String(e); } }
-  return new Promise(r => execFile("powershell.exe", args, { windowsHide: true, timeout: 15000 }, (_e, out) => r(String(out || ""))));
-}
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const clientHandoff = require('./client-handoff.cjs');
 const clientViews = require('./client-view-store.cjs');
 const recordingExport = require('./recording-export.cjs');
+const desktopAuthority = require('./desktop-authority.cjs');
+let connection = null, localControlProcess = null, localControlInfo = null, localControlStarting = null, localControlChannel=null;
+let localControlError = '', remoteManagement = { ssh:false }, remoteManagementPending = null;
+let catalogSyncPending=null,catalogSyncAt=0,catalogSyncOffset=0;
+let bridgePairPending=null,bridgePairKey=null;
 
 app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
                                   : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
@@ -57,6 +48,7 @@ const DEFAULTS = {
   token: "",                                          // optional: paste once if neither share nor SSH is reachable
   workerName: os.hostname(),
   autoStartWorker: true,
+  controlMode: 'local',                                // this PC remains usable without the remote control plane
   volume: 30,
 };
 // Managed LAN desktops share exports; each desktop profile can override this folder.
@@ -68,16 +60,18 @@ let settingsCache = null, settingsStamp = null;
 const settings = () => {
   let stamp = "none";
   try { const st = fs.statSync(SETTINGS); stamp = `${st.mtimeMs}:${st.size}`; } catch {}
-  if (settingsCache && stamp === settingsStamp) return { ...settingsCache };
-  settingsCache = readSettings(); settingsStamp = stamp;
-  return { ...settingsCache };
+  if (!settingsCache || stamp !== settingsStamp) { settingsCache = readSettings(); settingsStamp = stamp; }
+  const raw = { ...settingsCache };
+  return connection ? { ...raw, configuredApiUrl:raw.apiUrl, apiUrl:connection.snapshot().apiUrl,
+                        controlMode:connection.snapshot().mode } : raw;
 };
+const configuredSettings = () => { settings(); return { ...settingsCache }; };
 const readSettings = () => {
   const s = { ...DEFAULTS, ...(fs.existsSync(SETTINGS) ? JSON.parse(fs.readFileSync(SETTINGS, "utf8")) : {}) };
   // layout migration: everything moved under <root>/system (root = gBox.exe + system/)
   if (/[\\/]gBox$/i.test(s.repoShare || "")) s.repoShare += "\\system";
   if ((s.repoRemote || "").replace(/\/$/, "") === "~/gBox") s.repoRemote = "~/gBox/system";
-  if (!fs.existsSync(path.join(s.repoLocal || "", "gbox.toml"))) s.repoLocal = DEFAULTS.repoLocal;
+  if (/^[\\/]{2}/.test(s.repoLocal || '') || !fs.existsSync(path.join(s.repoLocal || "", "gbox.toml"))) s.repoLocal = DEFAULTS.repoLocal;
   return s;
 };
 // The gBox UI is served over plain HTTP on the LAN; Chromium only exposes the microphone (dictation, Talk)
@@ -153,15 +147,117 @@ function ssh(cmd, timeout = 20000) {
 }
 
 let cachedToken = null;
-async function token() {
-  // Pairing order: pasted token -> Spark share file -> SSH. Cached for the session.
-  const s = settings();
-  if (s.token) return s.token;
-  if (cachedToken) return cachedToken;
-  try { cachedToken = fs.readFileSync(path.join(s.repoShare, "gbox-data", "api_token"), "utf8").trim(); return cachedToken; } catch {}
-  const r = await ssh(`cat ${s.repoRemote}/gbox-data/api_token`, 8000);
-  if (r.ok && r.out.trim()) cachedToken = r.out.trim();
+const remoteTokenReader=desktopAuthority.tokenReader({read:async()=>{
+  const s=configuredSettings();
+  if(s.token)return s.token;
+  if(cachedToken)return cachedToken;
+  try { cachedToken=(await fs.promises.readFile(path.join(s.repoShare,'gbox-data','api_token'),'utf8')).trim(); }
+  catch { if(s.sshHost&&s.repoRemote){const r=await ssh(`cat ${s.repoRemote}/gbox-data/api_token`,6000);if(r.ok)cachedToken=r.out.trim();} }
   return cachedToken;
+}});
+const localTokenReader=desktopAuthority.tokenReader({cooldownMs:1500,read:async()=>{
+  const file=localControlInfo?.token_file;
+  if(!file||/^[\\/]{2}/.test(file))return null;
+  return fs.promises.readFile(file,'utf8');
+}});
+async function token() {
+  return connection ? connection.token() : remoteTokenReader.get();
+}
+async function startLocalControl() {
+  if(STANDALONE)return {running:!!worker};
+  if(localControlProcess)return {running:true};
+  if(localControlStarting)return localControlStarting;
+  localControlStarting=Promise.resolve().then(()=>{
+    const s=configuredSettings(),py=venvPython();
+    if(!fs.existsSync(py))throw Error('Install this PC\'s Windows node to enable its local library.');
+    const controlSecret=clientHandoff.nonce();
+    const env={...process.env,PYTHONPATH:s.repoLocal,PYTHONUNBUFFERED:'1',GBOX_CLIENT_CONTROL:controlSecret};delete env.GBOX_TOKEN;
+    const child=spawn(py,['-P','-m','gbox.desktop_local','--config',path.join(s.repoLocal,'gbox.toml'),
+      '--port','18765','--name',s.workerName,...(!s.autoStartWorker?['--no-worker']:[])],
+      {env,cwd:s.repoLocal,windowsHide:true});
+    localControlProcess=child;let buffer='';localControlError='';
+    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid)});
+    localControlChannel=channel;
+    child.stdout.on('data',chunk=>{buffer+=String(channel.feed(chunk));let split;
+      while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
+        let value;try{value=JSON.parse(line);}catch{}
+        if(value?.event==='desktop-local-config'&&value.authority==='http://127.0.0.1:18765'
+          &&/^[a-f0-9]{64}$/.test(value.installation)&&typeof value.token_file==='string'){
+          localControlInfo=value;localTokenReader.reset();connection?.check();
+        }else send('task','local-control',line+'\n');
+      }
+      if(buffer.length>65536)buffer=buffer.slice(-4096);
+    });
+    child.stderr.on('data',chunk=>send('task','local-control',String(chunk)));
+    child.on('error',error=>{localControlError=error.message;});
+    child.on('close',code=>{if(localControlProcess===child){localControlProcess=null;localControlInfo=null;localControlChannel=null;
+      localControlError=localControlError||`Local gBox exited (${code}).`;localTokenReader.reset();}
+      if(!quitting&&!clientRefreshExit&&!clientHandoffBusy)setTimeout(()=>startLocalControl().catch(error=>{localControlError=error.message;}),5000).unref();
+    });
+    return {running:true};
+  }).catch(error=>{localControlError=error.message;return {running:false,error:error.message};})
+    .finally(()=>{localControlStarting=null;});
+  return localControlStarting;
+}
+function initConnection(mode) {
+  const raw=configuredSettings();
+  connection=desktopAuthority.create({localUrl:STANDALONE?raw.apiUrl:'http://127.0.0.1:18765',remoteUrl:raw.apiUrl,
+    mode:STANDALONE?'local':mode||raw.controlMode,
+    readLocalToken:()=>STANDALONE?fs.promises.readFile(path.join(raw.repoLocal,'gbox-data','api_token'),'utf8'):localTokenReader.get(),
+    readRemoteToken:()=>remoteTokenReader.get(),
+    canSwitch:()=>!embedded&&!embedSyncPending&&!mini&&!compactWindow.state().on,
+    probe:async(url,kind)=>{
+      if(kind==='local'&&!STANDALONE&&!localControlInfo)return {ok:false,reason:localControlError||'This PC\'s gBox is starting.'};
+      const route=kind==='local'&&!STANDALONE?'/api/desktop-local':'/api/health';
+      const response=await fetch(url+route,{signal:AbortSignal.timeout(1200)});
+      if(!response.ok)throw Error('Connection unavailable');
+      const result=await response.json();
+      if(kind==='local'&&!STANDALONE&&(result.kind!=='gbox.desktop-local/1'||result.installation!==localControlInfo?.installation))
+        throw Error('Another service owns the local port; it was not adopted.');
+      return {ok:!!result.ok,...(kind==='local'?{worker:result.worker}:{}),reason:''};
+    },
+    onChange:state=>{send('connection:changed',state);syncLocalCatalog().catch(()=>{});syncLocalBridge().catch(()=>{});}
+  });
+  connection.start();
+}
+async function syncLocalBridge(){
+  if(STANDALONE||bridgePairPending||!connection||!localControlInfo)return;
+  const state=connection.snapshot(),key=localControlInfo.installation+':'+localControlProcess?.pid+':'+state.remoteUrl;
+  if(!state.local.ready||!state.remote.ready||bridgePairKey===key)return;
+  bridgePairPending=(async()=>{
+    const [remoteToken,localToken]=await Promise.all([connection.token(state.remoteUrl),connection.token(state.localUrl)]);
+    if(!remoteToken||!localToken)return;
+    const reply=await fetch(state.localUrl+'/api/desktop-local/bridge',{method:'POST',
+      headers:{authorization:'Bearer '+localToken,'content-type':'application/json'},
+      body:JSON.stringify({remote_url:state.remoteUrl,token:remoteToken}),signal:AbortSignal.timeout(4000)});
+    if(reply.ok)bridgePairKey=key;
+  })().finally(()=>{bridgePairPending=null;});
+  return bridgePairPending;
+}
+async function syncLocalCatalog(){
+  if(STANDALONE||catalogSyncPending||!connection)return;
+  const state=connection.snapshot();
+  if(!state.local.ready||!state.remote.ready||Date.now()-catalogSyncAt<60000)return;
+  catalogSyncAt=Date.now();
+  catalogSyncPending=(async()=>{
+    const [remoteToken,localToken]=await Promise.all([connection.token(state.remoteUrl),connection.token(state.localUrl)]);
+    if(!remoteToken||!localToken)return;
+    for(let page=0;page<10;page++){
+      if(quitting)return;
+      const response=await fetch(state.remoteUrl+'/api/catalog?limit=500&offset='+catalogSyncOffset
+        +'&local='+encodeURIComponent(configuredSettings().workerName),
+        {headers:{authorization:'Bearer '+remoteToken},signal:AbortSignal.timeout(4000)});
+      if(!response.ok)return;
+      const data=await response.json();if(!Array.isArray(data.items))return;
+      const imported=await fetch(state.localUrl+'/api/desktop-local/catalog',{method:'POST',
+        headers:{authorization:'Bearer '+localToken,'content-type':'application/json'},
+        body:JSON.stringify({items:data.items}),signal:AbortSignal.timeout(4000)});
+      if(!imported.ok)return;
+      catalogSyncOffset+=data.items.length;
+      if(!data.items.length||catalogSyncOffset>=data.total){catalogSyncOffset=0;break;}
+    }
+  })().finally(()=>{catalogSyncPending=null;});
+  return catalogSyncPending;
 }
 
 // GET answers the control plane tags (ETag): re-asking costs a 304, not a download and a parse (#712: /api/requests ~8 MB)
@@ -174,10 +270,15 @@ async function api(p, body, method) {
   });
 }
 async function apiRaw(p, body, method) {               // method: PATCH / PUT / DELETE when asked, else POST with a body
-  const t = await token();
+  const authority=settings().apiUrl;
+  if(connection&&!connection.ready(authority))throw Error(connection.snapshot().mode==='local'
+    ? 'This PC\'s gBox is starting or reconnecting. Your game was not changed.'
+    : 'Remote gBox is offline. This PC\'s local library remains available.');
+  const t = connection?await connection.token(authority):await token();
+  if(!t)throw Error('Waiting for this connection\'s API credential. No request was sent.');
   method = /^(GET|POST|PUT|PATCH|DELETE)$/.test(String(method || "").toUpperCase()) ? String(method).toUpperCase() : (body ? "POST" : "GET");
-  const known = method === "GET" && !body && ETAGS.get(p);
-  const r = await fetch(settings().apiUrl + p, {
+  const cacheKey=authority+p,known = method === "GET" && !body && ETAGS.get(cacheKey);
+  const r = await fetch(authority + p, {
     method, body: body && method !== "GET" ? JSON.stringify(body) : undefined,
     headers: { authorization: `Bearer ${t}`, "content-type": "application/json", ...(known ? { "if-none-match": known.etag } : {}) },
     // long polls get 35 s; asset listings 20 s (the control plane may still be indexing a slow HDD); the rest 8 s
@@ -187,7 +288,7 @@ async function apiRaw(p, body, method) {               // method: PATCH / PUT / 
   if (r.status === 304 && known) return known.data;
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   const data = await r.json(), etag = method === "GET" && r.headers.get("etag");
-  if (etag) ETAGS.set(p, { etag, data }); else ETAGS.delete(p);
+  if (etag) ETAGS.set(cacheKey, { etag, data }); else ETAGS.delete(cacheKey);
   return data;
 }
 
@@ -246,17 +347,24 @@ app.on("will-quit", () => { hotkeys.release(); try { globalShortcut.unregisterAl
 // ---------------- IPC ----------------
 ipcMain.handle("settings:get", () => settings());
 function saveSettings(s) {
-  const next = { ...settings(), ...s };
+  const next = { ...configuredSettings(), ...s };
+  delete next.configuredApiUrl;
   if (Object.hasOwn(s, 'recording')) next.recording = recordingExport.preferences(s.recording);
   fs.mkdirSync(path.dirname(SETTINGS), { recursive: true });
   fs.writeFileSync(SETTINGS, JSON.stringify(next, null, 1)); settingsStamp = null; cachedToken = null;
+  remoteTokenReader.reset();
   return settings();
 }
 ipcMain.handle("settings:save", (_e, s) => saveSettings(s));
 ipcMain.handle('rec:preferences', () => recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording }));
 ipcMain.handle('rec:preferences-save', (_e, p) => saveSettings({ recording: recordingExport.preferences(p) }).recording);
 ipcMain.handle("token", () => token());
-ipcMain.handle("settings:reset-token", () => { cachedToken = null; return true; });
+ipcMain.handle("settings:reset-token", () => { cachedToken = null;remoteTokenReader.reset();return true; });
+ipcMain.handle('connection:status',()=>connection?.snapshot()||null);
+ipcMain.handle('connection:select',(_e,mode)=>{
+  const state=connection.select(mode);saveSettings({controlMode:mode});ETAGS.clear();
+  return state;
+});
 // Pick whip pause hold (gbox/pickwhip.py): the renderer pauses the game through POST /api/pickwhip/{sid}/hold. Main
 // remembers every hold it forwarded, so a crashed or closed window resumes the game at once instead of waiting for the
 // server's lease watchdog (which still covers main itself dying).
@@ -274,23 +382,30 @@ function pickHoldReleaseAll(why) {
   }
   PICK_HOLDS.clear();
 }
-ipcMain.handle("api", async (_e, p, body, method) => { try { pickHoldTrack(p, body); return { ok: true, data: await api(p, body, method) }; } catch (e) { return { ok: false, error: e.message }; } });
+ipcMain.handle("api", async (_e, p, body, method) => { const authority=settings().apiUrl;
+  try { pickHoldTrack(p, body); return { ok: true, authority, data: await api(p, body, method) }; }
+  catch (e) { return { ok: false, authority, error: e.message }; } });
 // a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
 ipcMain.handle("api:tagged", async (_e, p, have) => {
   try {
-    const data = await api(p), etag = ETAGS.get(p)?.etag || null;
+    const authority=settings().apiUrl,data = await api(p), etag = ETAGS.get(authority+p)?.etag || null;
     return etag && etag === have ? { ok: true, etag, unchanged: true } : { ok: true, etag, data };
   } catch (e) { return { ok: false, error: e.message }; }
 });
 
 ipcMain.handle("spark:status", async () => {
-  const s = settings();
-  const r = await ssh("systemctl is-active gbox.service; mountpoint -q /mnt/gbox/hyperspin && echo mounted || echo unmounted; " +
-                      "uptime -p; df -h --output=avail ~ | tail -1; nvidia-smi --query-gpu=utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null | head -1");
-  let health = null;
-  try { health = await (await fetch(s.apiUrl + "/api/health", { signal: AbortSignal.timeout(3000) })).json(); } catch {}
-  const [service, mount, uptime, free, gpu] = (r.out || "").trim().split("\n");
-  return { ssh: r.ok || !!r.out, service, mount, uptime, free: free?.trim(), gpu, api: !!health, error: r.ok ? null : r.err };
+  const s = configuredSettings();
+  // SSH management is optional background information, never a dependency for
+  // a local library, token, API request or renderer startup.
+  if(s.sshHost&&!remoteManagementPending&&Date.now()-(remoteManagement.checkedAt||0)>30000){
+    remoteManagementPending=ssh("systemctl is-active gbox.service; uptime -p",6000).then(r=>{
+      const [service,uptime]=(r.out||'').trim().split('\n');
+      remoteManagement={ssh:r.ok||!!r.out,service,uptime,checkedAt:Date.now(),error:r.ok?null:'Remote SSH unavailable'};
+    }).finally(()=>{remoteManagementPending=null;});
+  }
+  const state=connection?.snapshot();
+  return {...remoteManagement,api:state?!!state[state.mode].ready:false,
+    local:state?.local,remote:state?.remote,mode:state?.mode};
 });
 
 ipcMain.handle("spark:action", async (_e, action) => {
@@ -353,6 +468,19 @@ async function startWorker(options = {}) {
 }
 async function startWorkerInner(options) {
   const s = settings();
+  if(!STANDALONE){
+    const started=await startLocalControl();
+    if(!started.running)return started;
+    const own=connection?.snapshot();
+    if(!own?.local.ready)return {running:false,starting:true,error:'This PC\'s local service is starting; no remote connection is required.'};
+    const localToken=await connection.token(own.localUrl);
+    if(!localToken)return {running:false,starting:true,error:'Waiting for this PC\'s local service credential.'};
+    const response=await fetch(own.localUrl+'/api/desktop-local/worker',{method:'POST',
+      headers:{authorization:'Bearer '+localToken,'content-type':'application/json'},body:'{}',signal:AbortSignal.timeout(4000)});
+    if(!response.ok)throw Error('This PC\'s worker could not be started ('+response.status+').');
+    const state=await response.json();
+    return {...state,started:state.state==='starting'||state.running};
+  }
   const controlSecret = clientHandoff.nonce();
   if (worker) return { running: true };
   if (!fs.existsSync(venvPython())) return { running: false, error: "Windows node not installed yet — run 'Install / update Windows node'" };
@@ -388,6 +516,7 @@ async function startWorkerInner(options) {
 // Reconnect only a stopped worker. A stale heartbeat never authorizes killing
 // the existing worker or any native children it owns.
 async function restartWorker() {
+  if(!STANDALONE)return startWorker();
   if (worker) {
     return { running: true, started: false, error: "This PC's worker is still running. Reconnect is held; no worker or game was stopped." };
   }
@@ -398,6 +527,14 @@ async function restartWorker() {
 }
 ipcMain.handle("win:worker", (_e, op) => {
   if (op === "start") return startWorker();
+  if(!STANDALONE){
+    if(op==='stop')return {running:!!connection.snapshot().local.worker?.running,
+      error:'Local service ownership is preserved. Stop individual games from Sessions.'};
+    if(op==='restart')return startWorker();
+    const local=connection.snapshot().local;
+    return {...(local.worker||{}),running:!!local.worker?.running,serviceRunning:!!localControlProcess,
+      lastExit:localControlError?{reason:localControlError}:null};
+  }
   if (op === "stop" && worker) { workerStopRequested = true; execFile("taskkill", ["/T", "/F", "/PID", String(worker.pid)]); return { running: false }; }
   if (op === "restart") return restartWorker();
   return { running: !!worker, lastExit: workerLastExit };
@@ -646,11 +783,12 @@ ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : s
 
 // ---------------- native game windows embedded in the app (Windows) ----------------
 let embedder = null, embedQ = [], embedBuf = "";
-function embedCmd(cmd) {
+function embedCmd(cmd, deadlineMs=3000) {
   if (process.platform !== "win32") return Promise.resolve({ ok: false });
   if (!embedder) {
     embedder = spawn(venvPython(), ["-u", path.join(__dirname, "winembed.py")], { windowsHide: true });
-    embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); const m = JSON.parse(l);
+    embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); let m;
+      try{m=JSON.parse(l);}catch{logPush('embed','Ignored malformed helper output');continue;}
       if (m.event === "whip") { pickWhip(m); continue; }
       if (m.event === "foreground") { hotkeys.setFront(!!m.front); continue; }   // gBox gained / lost the foreground
       if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); continue; }
@@ -662,7 +800,17 @@ function embedCmd(cmd) {
         compactWindow.restore().catch(error => logPush('compact', error.message));
       } });
   }
-  return new Promise(res => { embedQ.push(res); embedder.stdin.write(JSON.stringify(cmd) + "\n"); });
+  if(embedQ.length>=64)return Promise.resolve({ok:false,error:'Game-window helper is busy; the current dock was preserved'});
+  return new Promise(res => {
+    let timer,settled=false;
+    const finish=value=>{clearTimeout(timer);if(!settled){settled=true;res(value);}};
+    embedQ.push(finish);
+    timer=setTimeout(()=>finish({ok:false,error:'Game-window helper timed out; the current dock was preserved'}),deadlineMs);
+    // Keep a timed-out reply's FIFO slot until it arrives; do not let it be
+    // mistaken for the next command or detach a different game's surface.
+    try{embedder.stdin.write(JSON.stringify(cmd)+'\n');}
+    catch(error){const at=embedQ.indexOf(finish);if(at>=0)embedQ.splice(at,1);finish({ok:false,error:error.message});}
+  });
 }
 let compactChromeBits = null, compactRecoveryPending = false;
 let clientReloading = false;
@@ -700,7 +848,7 @@ function workerExecutablePaths() {
   } catch {}
   return allowed;
 }
-function ownedWorkerPids(rows, peerPid, launcherPid, appPid, allowed) {
+function ownedWorkerPids(rows, peerPid, launcherPid, appPid, allowed, kind='worker') {
   if (![peerPid, launcherPid, appPid].every(v => Number.isSafeInteger(v) && v > 0)) return [];
   const launcher = rows.find(row => row.ProcessId === launcherPid), peer = rows.find(row => row.ProcessId === peerPid);
   const launcherExe = canonicalWorkerExe(launcher?.ExecutablePath), peerExe = canonicalWorkerExe(peer?.ExecutablePath);
@@ -708,7 +856,7 @@ function ownedWorkerPids(rows, peerPid, launcherPid, appPid, allowed) {
   const command = args(launcher);
   if (!launcher || !peer || launcher.ParentProcessId !== appPid || !launcherExe || !peerExe ||
       launcherExe !== allowed[0] || !allowed.includes(peerExe) || !command ||
-      !/(?:^|\s)-m\s+gbox\s+.*\bworker\b/.test(command) || args(peer) !== command) return [];
+      !(kind==='local-control'?/(?:^|\s)-m\s+gbox\.desktop_local(?:\s|$)/:/(?:^|\s)-m\s+gbox\s+.*\bworker\b/).test(command) || args(peer) !== command) return [];
   if (peerPid !== launcherPid && (peer.ParentProcessId !== launcherPid || peerExe === launcherExe)) return [];
   return peerPid === launcherPid ? [launcherPid] : [launcherPid, peerPid];
 }
@@ -721,20 +869,23 @@ function readWorkerProcesses(script) {
     }));
 }
 async function verifyWorkerPeer(owner, pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || worker !== owner || owner.exitCode !== null) return false;
+  const localOwner=typeof localControlProcess!=='undefined'&&localControlProcess===owner;
+  if (!Number.isSafeInteger(pid) || pid <= 0 || (worker !== owner&&!localOwner) || owner.exitCode !== null) return false;
   if (process.platform !== 'win32') return pid === owner.pid;
   const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process -Filter 'ProcessId=${owner.pid} OR ProcessId=${pid}' |
     Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine); ConvertTo-Json -InputObject $items -Compress`;
   try {
     const rows = await readWorkerProcesses(script);
-    return worker === owner && owner.exitCode === null &&
-      ownedWorkerPids(rows,pid,owner.pid,process.pid,workerExecutablePaths()).includes(pid);
+    const local=typeof localControlProcess!=='undefined'&&localControlProcess===owner;
+    return (worker === owner||local) && owner.exitCode === null &&
+      ownedWorkerPids(rows,pid,owner.pid,process.pid,workerExecutablePaths(),local?'local-control':'worker').includes(pid);
   } catch { return false; }
 }
 async function inspectClientIdle() {
   if (STANDALONE) return 'This desktop also hosts its control plane; a client-only restart is unavailable.';
   if (startupHandoff?.error) return startupHandoff.error;
   if (workerStarting) return 'The local worker is still starting.';
+  if(typeof localControlStarting!=='undefined'&&localControlStarting)return 'The local service is still starting.';
   if (procs.size || rec || recFitBusy) return 'This desktop still has an active task or recording.';
   if (embedded || embedSyncPending) return 'A native game or pending game-window operation still belongs to this desktop.';
   const local = settings();
@@ -748,15 +899,21 @@ async function inspectClientIdle() {
   if (disk.reason) return disk.reason;
   const workerPid = worker?.pid || 0;
   const peerPid = workerControl?.pid?.() || 0;
+  const localPid=typeof localControlProcess!=='undefined'?localControlProcess?.pid||0:0;
+  const localPeer=typeof localControlChannel!=='undefined'?localControlChannel?.pid?.()||0:0;
   if (workerPid && !peerPid) return 'The local worker has not confirmed a verified desktop control channel.';
+  if(localPid&&!localPeer)return 'The local service has not confirmed a verified idle control channel.';
   const script = `$ErrorActionPreference='Stop'; $items=@(Get-CimInstance Win32_Process | Where-Object {
     $_.ProcessId -ne ${process.pid} -and (
     ($_.ExecutablePath -and ($_.ExecutablePath -like '*\\gBox\\runtime\\*' -or $_.ExecutablePath.StartsWith(${psq(disk.runtime + path.sep)}, [StringComparison]::OrdinalIgnoreCase))) -or
-    ($_.CommandLine -and $_.CommandLine -match '-m gbox .*\\bworker\\b')) } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,Name);
+    ($_.CommandLine -and ($_.CommandLine -match '-m gbox .*\\bworker\\b' -or $_.CommandLine -match '-m gbox\\.desktop_local\\b'))) } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine,Name);
     ConvertTo-Json -InputObject $items -Compress`;
   const found = await readWorkerProcesses(script);
   const owned = workerPid ? ownedWorkerPids(found,peerPid,workerPid,process.pid,workerExecutablePaths()) : [];
+  const localOwned=localPid?ownedWorkerPids(found,localPeer,localPid,process.pid,workerExecutablePaths(),'local-control'):[];
+  owned.push(...localOwned);
   if (workerPid && !owned.includes(peerPid)) return 'The local worker process ownership could not be verified.';
+  if(localPid&&!localOwned.includes(localPeer))return 'The local service process ownership could not be verified.';
   if (found.some(row => !owned.includes(row.ProcessId))) return 'Another local game or worker is still running.';
   // Recheck after the asynchronous process inventory. New work is gated while this runs.
   if (procs.size || rec || recFitBusy || embedded || embedSyncPending || workerStarting) return 'Local activity changed during the desktop refresh check.';
@@ -772,13 +929,18 @@ ipcMain.handle('client:reload', async (event, state) => {
   try {
     const version = await clientVersions?.read();
     if (version?.restart) {
-      const hadWorker = !!worker;
+      const hadWorker = !!worker||(typeof localControlProcess!=='undefined'&&!!localControlProcess);
       if (!state || state.v !== 1) clientActivation = { state: 'pending', reason: 'The saved stream view is unavailable; refreshed views only.' };
       else clientActivation = await clientHandoff.perform({
         lock: value => { clientHandoffBusy = value; workerStopRequested = value; },
         inspect: inspectClientIdle,
         stopWorker: async () => {
-          if (!worker) return false;
+          let localStopped=false;
+          if(typeof localControlProcess!=='undefined'&&localControlProcess){
+            if(!localControlChannel)throw Error('The local service has no verified idle shutdown channel.');
+            await localControlChannel.stop();localStopped=true;
+          }
+          if (!worker) return localStopped;
           if (!workerControl) throw Error('The running local worker does not support safe desktop refresh yet.');
           await workerControl.stop(); return true;
         },
@@ -971,6 +1133,8 @@ ipcMain.handle("viz:overlay", (_e, st) => {
 });
 ipcMain.handle("embed:kill", async () => { const r = embedded ? await embedCmd({ op: "kill" }) : { ok: false }; embedded = null; return r; });
 ipcMain.handle("embed:focus", () => embedded ? embedCmd({ op: "focus" }) : { ok: false });
+ipcMain.handle('embed:probe',(_e,pid)=>Number.isSafeInteger(pid)&&pid>0&&pid===embedded
+  ?embedCmd({op:'status',pid},1200):{ok:false,error:'No matching attached game'});
 ipcMain.handle("app:focus", async () => { if (embedded) await embedCmd({ op: "unfocus" }); if (win) { win.focus(); win.webContents.focus(); } return { ok: true }; });
 ipcMain.handle("embed:release", async () => { embedded = null; return embedCmd({ op: "detach" }); });
 
@@ -1152,6 +1316,10 @@ app.whenReady().then(() => {
       ? 'Updated desktop code is active; saved streams are reconnecting.'
       : 'Updated desktop code is active; the unbound or different-server saved view was not restored.' };
   } else if (startupHandoff.requested) clientActivation = { state: 'pending', pid: process.pid, reason: startupHandoff.error };
+  // A saved remote PiP retains its exact authority. Ordinary desktop boots use
+  // this PC; discovering Spark again never switches a live/local game.
+  const restoredRemote=!!startupView?.mini||!!startupView?.state?.compact||!!startupView?.state?.guest?.pip;
+  initConnection(restoredRemote?'remote':configuredSettings().controlMode);
   appMenu();
   session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(["media", "audioCapture", "clipboard-read", "clipboard-sanitized-write"].includes(perm)));
   session.defaultSession.setPermissionCheckHandler((_wc, perm) => ["media", "audioCapture"].includes(perm));
@@ -1242,15 +1410,19 @@ app.whenReady().then(() => {
   if (startupHandoff.requested) {
     // The old parent already waited for an idle worker to exit. Never sweep
     // other processes or bootstrap Spark while restoring a desktop handoff.
+    if(!STANDALONE)startLocalControl();
     if (startupHandoff.value?.startWorker) startWorker();
-  } else cleanupSessions(false).then(out => {                        // leftovers from a previous run, before this run's worker starts
-    if (out.trim()) send("task", "win-worker", "closed leftover gBox processes:\n" + out);
+  } else {
+    // Preserve a previous worker's native game. The local service waits for its
+    // proven owner instead of sweeping processes across installations.
+    if(!STANDALONE)startLocalControl();
     if (settings().autoStartWorker) startWorker();
-  });
+  }
   startAudioVolumeHelper();
 });
 let sessionsShutDown = false;
 function shutdownSessions() {
+  connection?.stop();
   backgroundPower?.dispose();
   pickHoldReleaseAll("gBox quitting");
   if (sessionsShutDown) return;
@@ -1263,13 +1435,15 @@ function shutdownSessions() {
   if (clientRefreshExit) {
     // Only idle, parent-owned helpers remain. No game/job cleanup or Spark action.
     embedder?.kill();
+    if(typeof localControlProcess!=='undefined')localControlProcess?.kill();
     return;
   }
   try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
   for (const p of procs.values()) p.kill();
   workerStopRequested = true;
   if (worker) { try { execFileSync("taskkill", ["/T", "/F", "/PID", String(worker.pid)], { windowsHide: true, timeout: 8000 }); } catch {} }
-  cleanupSessions(true);                                       // every game this PC was running for gBox closes with it
+  if(localControlProcess?.pid){try{execFileSync('taskkill',['/T','/F','/PID',String(localControlProcess.pid)],{windowsHide:true,timeout:8000});}catch{}}
+  embedder?.kill();                                            // this app's own helper only
 }
 app.on("window-all-closed", () => {
   shutdownSessions();
