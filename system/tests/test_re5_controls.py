@@ -106,7 +106,7 @@ def test_threat_defers_input_but_does_not_hide_an_equipment_confirmation():
 @pytest.mark.parametrize("wid", [0x105, 0x11C, 0x120, 0x10D])
 def test_rocket_and_every_sniper_template_is_replaced_with_a_magnum(wid):
     memory = with_template(FakeRE5())
-    offset = 24 * M.TEMPLATE_BLOCK + 6 * M.TEMPLATE_REC
+    offset = 24 * M.TEMPLATE_BLOCK  # native preset row 0 is a complete, existing gun record
     memory.u32(M.TEMPLATE + offset, wid)
     result = M.run(memory, "replace_long_guns", seed=1)
     assert result["verified"] and result["effective_next_round"]

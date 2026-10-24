@@ -99,13 +99,15 @@
       {"pr":929,"head":"5deb3b43a72410d2702d7d3f5bb8bcc382b99c79","decision":"Conflicting RE6 driver branch; retain useful source for existing3025 task, no runtime acceptance"}
     ]
   },
-  "kill_bonus_s": 3,
+  "kill_bonus_s": 10,
   "mines": {
     "default_interval_s": 60, "slider_range_s": [2, 300], "only_mode": true,
     "leave_deployed_mines": true, "return_to_gunplay": true,
     "no_pickup_vtables": ["0x015B44B8 uIt050A pickup item", "0x0162E5F8 uWp0a weapon", "0x01629DB0 uWpMine base"],
     "input_guard": "Captured mine recovery is kind 2, Square, label 1, player-owned, with a small item handle (36/39) rather than an actor pointer. Reject this Pick up action before the prompt presser and at final Square dispatch. Also reject mine actor targets and loose-item labels 0x3B/0x64. L1 label 0x64 is Place and belongs only to the scheduled mine controller.",
-    "original_constructor_banks": ["0x0172C688", "0x0172DB28"],
+    "original_constructor_banks": ["0x0172C790", "0x0172DC30"],
+    "main_constructor_bank": "0x01730150",
+    "preset_verification": "2026-10-23 native constructor audit: descriptor table 0x0175483C contains pointer/count pairs; each preset has twelve 0x2C-byte records. Previous bases were 0x108 bytes early and crossed character boundaries. All fifty patched presets now require exact descriptor pointers/count12 before writes; pristine dry-runs preserve items and insert a mine for all eighteen playable Mercenaries characters.",
     "placement_input": "Type D: L1 alone until consumption or at most 1.2 seconds. Release, verify the new ground actor, allow the animation to settle, then equip a gun.",
     "confirmation": "A new nearby uWp0a ground actor with +0x1CF9=1 is mandatory. Supply evidence is either actual consumption or the exact-build verified mine definition NOAMMO=1 while retaining the game-created stack. Button presses alone never count. Infinite flag prevents exhausting a five-charge stack between observations at rapid fire settings.",
     "ghidra_update": "0x008B6EF4: placed +0x1CF9; arming countdown float +0x1DB4; detonating +0x1DE5; proximity collider +0x1DE8",

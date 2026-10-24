@@ -1,0 +1,1357 @@
+﻿{
+    "build":  "BLUS30491 retained 01.01 ELF",
+    "read_only_game":  true,
+    "elf_sha256":  "d901458f13beeb3d5bb0523eaac9c60102863a67f69b20905d8fa0c74e8be293",
+    "descriptor_table":  "0x0175483c",
+    "record_words":  11,
+    "records_per_preset":  12,
+    "provenance":  "Read-only native descriptor and inventory-record data; no executable instructions. Native selector 00921EC8 uses descriptor10 for original Chris; constructor00A47ADC copies all12 records.",
+    "descriptor_records":  [
+                               {
+                                   "index":  0,
+                                   "address":  "0x175483c",
+                                   "pointer":  "0x172c370",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  1,
+                                   "address":  "0x1754844",
+                                   "pointer":  "0x172c580",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  2,
+                                   "address":  "0x175484c",
+                                   "pointer":  "0x172b500",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  3,
+                                   "address":  "0x1754854",
+                                   "pointer":  "0x172b920",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  4,
+                                   "address":  "0x175485c",
+                                   "pointer":  "0x17336f0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  5,
+                                   "address":  "0x1754864",
+                                   "pointer":  "0x1733900",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  6,
+                                   "address":  "0x175486c",
+                                   "pointer":  "0x1733b10",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  7,
+                                   "address":  "0x1754874",
+                                   "pointer":  "0x1733d20",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  8,
+                                   "address":  "0x175487c",
+                                   "pointer":  "0x172b500",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  9,
+                                   "address":  "0x1754884",
+                                   "pointer":  "0x172b500",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  10,
+                                   "address":  "0x175488c",
+                                   "pointer":  "0x172c790",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  11,
+                                   "address":  "0x1754894",
+                                   "pointer":  "0x172c9a0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  12,
+                                   "address":  "0x175489c",
+                                   "pointer":  "0x172cbb0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  13,
+                                   "address":  "0x17548a4",
+                                   "pointer":  "0x172cdc0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  14,
+                                   "address":  "0x17548ac",
+                                   "pointer":  "0x172cfd0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  15,
+                                   "address":  "0x17548b4",
+                                   "pointer":  "0x172d1e0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  16,
+                                   "address":  "0x17548bc",
+                                   "pointer":  "0x172d3f0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  17,
+                                   "address":  "0x17548c4",
+                                   "pointer":  "0x172d600",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  18,
+                                   "address":  "0x17548cc",
+                                   "pointer":  "0x172d810",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  19,
+                                   "address":  "0x17548d4",
+                                   "pointer":  "0x172da20",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  20,
+                                   "address":  "0x17548dc",
+                                   "pointer":  "0x172dc30",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  21,
+                                   "address":  "0x17548e4",
+                                   "pointer":  "0x172de40",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  22,
+                                   "address":  "0x17548ec",
+                                   "pointer":  "0x172e050",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  23,
+                                   "address":  "0x17548f4",
+                                   "pointer":  "0x172e260",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  24,
+                                   "address":  "0x17548fc",
+                                   "pointer":  "0x172e470",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  25,
+                                   "address":  "0x1754904",
+                                   "pointer":  "0x172e680",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  26,
+                                   "address":  "0x175490c",
+                                   "pointer":  "0x172e890",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  27,
+                                   "address":  "0x1754914",
+                                   "pointer":  "0x172eaa0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  28,
+                                   "address":  "0x175491c",
+                                   "pointer":  "0x172ecb0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  29,
+                                   "address":  "0x1754924",
+                                   "pointer":  "0x172eec0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  30,
+                                   "address":  "0x175492c",
+                                   "pointer":  "0x172f0d0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  31,
+                                   "address":  "0x1754934",
+                                   "pointer":  "0x172f2e0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  32,
+                                   "address":  "0x175493c",
+                                   "pointer":  "0x172f4f0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  33,
+                                   "address":  "0x1754944",
+                                   "pointer":  "0x172f700",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  34,
+                                   "address":  "0x175494c",
+                                   "pointer":  "0x172f910",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  35,
+                                   "address":  "0x1754954",
+                                   "pointer":  "0x172fb20",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  36,
+                                   "address":  "0x175495c",
+                                   "pointer":  "0x172fd30",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  37,
+                                   "address":  "0x1754964",
+                                   "pointer":  "0x172ff40",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  38,
+                                   "address":  "0x175496c",
+                                   "pointer":  "0x1730150",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  39,
+                                   "address":  "0x1754974",
+                                   "pointer":  "0x1730360",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  40,
+                                   "address":  "0x175497c",
+                                   "pointer":  "0x1730570",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  41,
+                                   "address":  "0x1754984",
+                                   "pointer":  "0x1730780",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  42,
+                                   "address":  "0x175498c",
+                                   "pointer":  "0x1730990",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  43,
+                                   "address":  "0x1754994",
+                                   "pointer":  "0x1730ba0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  44,
+                                   "address":  "0x175499c",
+                                   "pointer":  "0x1730db0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  45,
+                                   "address":  "0x17549a4",
+                                   "pointer":  "0x1730fc0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  46,
+                                   "address":  "0x17549ac",
+                                   "pointer":  "0x17311d0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  47,
+                                   "address":  "0x17549b4",
+                                   "pointer":  "0x17313e0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  48,
+                                   "address":  "0x17549bc",
+                                   "pointer":  "0x17315f0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  49,
+                                   "address":  "0x17549c4",
+                                   "pointer":  "0x1731800",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  50,
+                                   "address":  "0x17549cc",
+                                   "pointer":  "0x1731a10",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  51,
+                                   "address":  "0x17549d4",
+                                   "pointer":  "0x1731c20",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  52,
+                                   "address":  "0x17549dc",
+                                   "pointer":  "0x1731e30",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  53,
+                                   "address":  "0x17549e4",
+                                   "pointer":  "0x1732040",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  54,
+                                   "address":  "0x17549ec",
+                                   "pointer":  "0x1732250",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  55,
+                                   "address":  "0x17549f4",
+                                   "pointer":  "0x1732460",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  56,
+                                   "address":  "0x17549fc",
+                                   "pointer":  "0x1732670",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  57,
+                                   "address":  "0x1754a04",
+                                   "pointer":  "0x1732880",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  58,
+                                   "address":  "0x1754a0c",
+                                   "pointer":  "0x1732a90",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  59,
+                                   "address":  "0x1754a14",
+                                   "pointer":  "0x1732ca0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  60,
+                                   "address":  "0x1754a1c",
+                                   "pointer":  "0x1732eb0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  61,
+                                   "address":  "0x1754a24",
+                                   "pointer":  "0x17330c0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  62,
+                                   "address":  "0x1754a2c",
+                                   "pointer":  "0x17332d0",
+                                   "count":  12
+                               },
+                               {
+                                   "index":  63,
+                                   "address":  "0x1754a34",
+                                   "pointer":  "0x17334e0",
+                                   "count":  12
+                               }
+                           ],
+    "blocks":  {
+                   "0x172c580":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            270,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 },
+                   "0x172c790":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            258,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            1,
+                                                                            83886090,
+                                                                            131072,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            260,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            0,
+                                                                            100664075,
+                                                                            65536,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            262,
+                                                                            5,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            513,
+                                                                            50,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            515,
+                                                                            30,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            772,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            257,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 },
+                   "0x172c9a0":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            269,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            273,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            0,
+                                                                            134217733,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            278,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            1,
+                                                                            134217733,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            513,
+                                                                            30,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            515,
+                                                                            10,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            269,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            257,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 },
+                   "0x172dc30":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            258,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            1,
+                                                                            83886090,
+                                                                            131072,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            260,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            0,
+                                                                            100664075,
+                                                                            65536,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            262,
+                                                                            5,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            513,
+                                                                            50,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            515,
+                                                                            30,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            772,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            257,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 },
+                   "0x1730150":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            272,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            1,
+                                                                            117440519,
+                                                                            256,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            262,
+                                                                            3,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            266,
+                                                                            3,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            513,
+                                                                            50,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            291,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 },
+                   "0x1733d20":  {
+                                     "retained_inventory_records":  [
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            258,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            1,
+                                                                            1,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            2,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            275,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            3,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            513,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            5,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            6,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            773,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            7,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            8,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            270,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            9,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            0,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            10,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ],
+                                                                        [
+                                                                            256,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            4294967295,
+                                                                            11,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0,
+                                                                            0
+                                                                        ]
+                                                                    ]
+                                 }
+               }
+}

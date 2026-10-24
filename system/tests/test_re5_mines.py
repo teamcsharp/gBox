@@ -22,15 +22,17 @@ def deployed(ground):
 def template_game():
     m = FakeRE5()
     for b in range(T.TEMPLATE_BLOCKS):
-        for i,grid in enumerate((0,2,4,9,10,11,3,1,5,7,6,8)):
-            item = 0x124 if grid==9 else 0x112 if grid==3 else 0x304 if grid==7 else 0
+        for i,grid in enumerate((3,1,5,0,2,7,4,6,8,9,10,11)):
+            item = T.TEMPLATE_SIGNATURE[1] if grid==9 else 0x100 if grid==11 else 0x112 if grid==3 else 0x304 if grid==7 else 0
             m.put(T.TEMPLATE+b*T.TEMPLATE_BLOCK+i*T.TEMPLATE_REC,
                   struct.pack(">11I",item,0xffffffff,0xffffffff,0xffffffff,0xffffffff,grid,int(grid==3),0,0,0,0))
     raw=m.read_memory(T.TEMPLATE,10*T.TEMPLATE_BLOCK)
     for address in M.ORIGINAL_BANKS:
         m.put(address,raw)
-        m.u32(address+3*T.TEMPLATE_REC,M.ORIGINAL_KNIVES[address])
-        m.u32(address+5*T.TEMPLATE_REC,0x100)
+        m.u32(address+9*T.TEMPLATE_REC,M.ORIGINAL_KNIVES[address])
+        m.u32(address+11*T.TEMPLATE_REC,0x100)
+        for index in range(10):m.put(M.ORIGINAL_DESCRIPTORS[address]+8*index,struct.pack('>2I',address+index*T.TEMPLATE_BLOCK,12))
+    for index,address in enumerate(T.TEMPLATE_DESCRIPTORS):m.put(address,struct.pack('>2I',T.TEMPLATE+index*T.TEMPLATE_BLOCK,12))
     return m
 
 
@@ -85,7 +87,7 @@ def test_loadout_with_no_grid_seven_uses_an_empty_constructor_record():
     m=template_game();g=T.RE5(m)
     for b in range(T.TEMPLATE_BLOCKS):
         # Four live costumes omit an empty grid-seven record.
-        address=T.TEMPLATE+b*T.TEMPLATE_BLOCK+9*T.TEMPLATE_REC
+        address=T.TEMPLATE+b*T.TEMPLATE_BLOCK+5*T.TEMPLATE_REC
         m.put(address,struct.pack('>11I',0,0xffffffff,0xffffffff,0xffffffff,0xffffffff,4,0,0,0,0,0))
     result=M.templates(g)
     assert result['mine_loadout_blocks']==50

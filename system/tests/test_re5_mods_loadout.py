@@ -14,23 +14,25 @@ def with_template(m):
     def rec(off, idw, count, pos, hand, levels):
         m.put(T.TEMPLATE + off, struct.pack(">11I", idw, count & 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, pos, hand,
                                             levels, 0, 0, 0))
-    rec(0x84, 0x124, -1, 8, 0, 0)                                    # block 0's knife: the signature
+    rec(T.TEMPLATE_SIGNATURE[0],T.TEMPLATE_SIGNATURE[1],-1,9,0,0)
+    for index,address in enumerate(T.TEMPLATE_DESCRIPTORS):m.put(address,struct.pack('>2I',T.TEMPLATE+index*T.TEMPLATE_BLOCK,12))
     b = 24 * T.TEMPLATE_BLOCK
-    rec(b + 5 * 0x2C, 0x100, -1, 11, 0, 0)
-    rec(b + 6 * 0x2C, 0x112, -1, 3, 1, 0)
-    rec(b + 7 * 0x2C, 0x10B, -1, 5, 0, 0x06000306)
-    rec(b + 8 * 0x2C, 0x120, -1, 1, 0, 0x09000307)
-    rec(b + 9 * 0x2C, 0x201, 50, 0, 0, 0)
-    rec(b + 10 * 0x2C, 0x209, 6, 2, 0, 0)
-    rec(25 * T.TEMPLATE_BLOCK, 0x114, -1, 9, 0, 0)
+    rec(b + 11 * 0x2C, 0x100, -1, 11, 0, 0)
+    rec(b, 0x112, -1, 3, 1, 0)
+    rec(b + 0x2C, 0x10B, -1, 5, 0, 0x06000306)
+    rec(b + 2 * 0x2C, 0x120, -1, 1, 0, 0x09000307)
+    rec(b + 3 * 0x2C, 0x201, 50, 0, 0, 0)
+    rec(b + 4 * 0x2C, 0x209, 6, 2, 0, 0)
+    rec(b + 9 * 0x2C, 0x114, -1, 9, 0, 0)
     b = 18 * T.TEMPLATE_BLOCK
-    rec(b + 6 * 0x2C, 0x115, -1, 3, 1, 0)
-    rec(b + 7 * 0x2C, 0x122, -1, 5, 0, 0)
-    rec(b + 3 * 0x2C, 0x101, -1, 9, 0, 0)
-    from gbox.mercs.titles.re5_mines import ORIGINAL_BANKS, ORIGINAL_KNIVES
+    rec(b, 0x115, -1, 3, 1, 0)
+    rec(b + 0x2C, 0x122, -1, 5, 0, 0)
+    rec(b + 9 * 0x2C, 0x101, -1, 9, 0, 0)
+    from gbox.mercs.titles.re5_mines import ORIGINAL_BANKS, ORIGINAL_KNIVES,ORIGINAL_DESCRIPTORS
     for address in ORIGINAL_BANKS:
-        m.u32(address+3*T.TEMPLATE_REC,ORIGINAL_KNIVES[address])
-        m.u32(address+5*T.TEMPLATE_REC,0x100)
+        m.u32(address+9*T.TEMPLATE_REC,ORIGINAL_KNIVES[address])
+        m.u32(address+11*T.TEMPLATE_REC,0x100)
+        for index in range(10):m.put(ORIGINAL_DESCRIPTORS[address]+8*index,struct.pack('>2I',address+index*T.TEMPLATE_BLOCK,12))
     return m
 
 
@@ -42,8 +44,8 @@ def test_loadout_rewrites_every_characters_guns_with_powerful_ones_and_restores(
     t = m.read_memory(T.TEMPLATE, T.TEMPLATE_BLOCKS * T.TEMPLATE_BLOCK)
     recs = {off: (idw, lv) for off, idw, _, _, _, lv in T.template_records(t)}
     b = 24 * T.TEMPLATE_BLOCK
-    assert recs[b + 6 * 0x2C][0] in T.POWERFUL and recs[b + 7 * 0x2C][1] == 0 and recs[b + 8 * 0x2C][1] == 0  # levels reset
-    assert recs[25 * T.TEMPLATE_BLOCK] == (0x114, 0) and recs[b + 5 * 0x2C] == (0x100, 0) and recs[b + 9 * 0x2C] == (0x201, 0)
+    assert recs[b][0] in T.POWERFUL and recs[b + 0x2C][1] == 0 and recs[b + 2 * 0x2C][1] == 0
+    assert recs[b+9*T.TEMPLATE_REC] == (0x114, 0) and recs[b+11*T.TEMPLATE_REC] == (0x100, 0) and recs[b+3*T.TEMPLATE_REC] == (0x201, 0)
     assert T.run(m, "loadout", seed=7)["barry"] == r["barry"]                                    # seed = the same draw
     assert T.run(m, "loadout", weapons=["0x11b"])["barry"] == ["S&W M500"] * 3                   # a chosen set
     r = T.run(m, "loadout", on=False)
@@ -75,7 +77,7 @@ def test_requested_rockets_become_random_magnums_in_generated_loadouts():
 
 def test_existing_rocket_templates_are_replaced_without_touching_equipped_objects_or_other_records():
     m = with_template(FakeRE5())
-    off = 24 * T.TEMPLATE_BLOCK + 6 * T.TEMPLATE_REC
+    off = 24 * T.TEMPLATE_BLOCK
     m.u32(T.TEMPLATE + off, 0x10D)
     before = m.read_memory(T.TEMPLATE, T.TEMPLATE_BLOCKS * T.TEMPLATE_BLOCK)
     equipped = m.read_memory(0x303F89E0 + T.INV_OFS, T.INV_SLOTS * T.SLOT)

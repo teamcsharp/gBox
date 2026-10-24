@@ -175,11 +175,8 @@ def carried(memory,player,inventory):
 def templates(g):
     from ... import re5_mods_tool as M
     from . import re5_mines
-    if g.u32(M.TEMPLATE+M.TEMPLATE_SIGNATURE[0])!=M.TEMPLATE_SIGNATURE[1]:raise ValueError('egg template signature differs')
-    for address in re5_mines.ORIGINAL_BANKS:
-        if g.u32(address+3*M.TEMPLATE_REC)!=re5_mines.ORIGINAL_KNIVES[address] \
-                or g.u32(address+5*M.TEMPLATE_REC)!=0x100:
-            raise ValueError('original egg loadout bank signature differs')
+    M.verify_main_presets(g)
+    re5_mines.verify_original_presets(g)
     owned=state(g).setdefault('template_records',{});count=0;verified=True
     for address,blocks in ((M.TEMPLATE,M.TEMPLATE_BLOCKS),*((a,10) for a in re5_mines.ORIGINAL_BANKS)):
         for block in range(blocks):

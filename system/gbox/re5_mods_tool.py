@@ -87,8 +87,12 @@ _HEALTH_LOCK = threading.RLock()
 # (Barry = 24, Chris Heavy Metal = 18); a record is [item id 0xTTII, count (-1 = the weapon's own), -1, -1, -1, grid
 # position, in hand, packed upgrade levels, flags, 0, 0]; the round start copies them into the inventory and builds
 # the weapons, so a changed id here is a weapon the game itself makes.
-TEMPLATE, TEMPLATE_BLOCK, TEMPLATE_BLOCKS, TEMPLATE_REC = 0x01730048, 0x210, 30, 0x2C   # the first record's id word
-TEMPLATE_SIGNATURE = (0x84, 0x124)                               # block 0's knife record: id 0x124
+TEMPLATE, TEMPLATE_BLOCK, TEMPLATE_BLOCKS, TEMPLATE_REC = 0x01730150, 0x210, 30, 0x2C
+TEMPLATE_SIGNATURE = (9 * TEMPLATE_REC, 0x123)
+# Native FUN_00A48BD4 copies twelve 0x2C records from each pointer/count
+# descriptor. The last four physical blocks are reordered to indices4..7;
+# the first26 are indices38..63. Never read past the verified64-entry table.
+TEMPLATE_DESCRIPTORS = tuple(0x0175496C+8*i for i in range(26)) + tuple(0x0175485C+8*i for i in range(4))
 POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "Gatling gun", 0x10D: "rocket launcher",
             0x11C: "H&K PSG-1", 0x11D: "AK-74", 0x116: "Benelli M3", 0x10C: "grenade launcher", 0x120: "Dragunov SVD",
             0x10B: "S&W M29"}
@@ -706,13 +710,24 @@ def template_records(t: bytes):
     return out
 
 
+def verify_preset_descriptors(g,base,descriptors):
+    for index,address in enumerate(descriptors):
+        if tuple(struct.unpack('>2I',g.rd(address,8))) != (base+index*TEMPLATE_BLOCK,12):
+            raise RuntimeError('native preset descriptor pointer/count differs')
+
+
+def verify_main_presets(g):
+    verify_preset_descriptors(g,TEMPLATE,TEMPLATE_DESCRIPTORS)
+    if g.u32(TEMPLATE+TEMPLATE_SIGNATURE[0])!=TEMPLATE_SIGNATURE[1]:
+        raise RuntimeError('loadout template signature differs')
+
+
 def loadout(g: RE5, weapons=None, seed=None, on: bool = True) -> dict:
     """Every character's Mercenaries loadout template: each gun (table 1, not the knives) becomes one of the powerful
     campaign weapons, drawn at random per record without repeats inside a block (seed for a repeatable draw); the
     packed upgrade levels are reset to 0 so no level indexes past the new weapon's table. on=false restores."""
     import random
-    if g.u32(TEMPLATE + TEMPLATE_SIGNATURE[0]) != TEMPLATE_SIGNATURE[1] and "template" not in g.orig:
-        raise RuntimeError("the loadout templates are not where this build keeps them; not writing")
+    verify_main_presets(g)
     t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
     if not on:
         return {"loadout": "the game's", "verified": g.wr(TEMPLATE, t0)}
@@ -755,8 +770,7 @@ def replace_long_guns(g: RE5, seed=None) -> dict:
 
 def _replace_spawn_guns(g: RE5, unwanted, seed, result_key):
     import random
-    if g.u32(TEMPLATE + TEMPLATE_SIGNATURE[0]) != TEMPLATE_SIGNATURE[1]:
-        raise RuntimeError("rocket replacement: loadout template signature differs")
+    verify_main_presets(g)
     current = g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK)
     g.keep("template", lambda: current)
     rng, replaced, ok = random.Random(seed), [], True

@@ -40,8 +40,17 @@ def configure(interval=60., only=False, enabled=True):
     return data
 
 
-ORIGINAL_BANKS = (0x0172C688, 0x0172DB28)  # original presets; pristine Jill records match her live inventory
-ORIGINAL_KNIVES = {0x0172C688: 0x10E, 0x0172DB28: 0x123}
+ORIGINAL_BANKS = (0x0172C790, 0x0172DC30)
+ORIGINAL_KNIVES = {address:0x101 for address in ORIGINAL_BANKS}
+ORIGINAL_DESCRIPTORS = {0x0172C790:0x0175488C,0x0172DC30:0x017548DC}
+
+
+def verify_original_presets(g):
+    from ... import re5_mods_tool as M
+    for address in ORIGINAL_BANKS:
+        M.verify_preset_descriptors(g,address,tuple(ORIGINAL_DESCRIPTORS[address]+8*i for i in range(10)))
+        if g.u32(address+9*M.TEMPLATE_REC)!=ORIGINAL_KNIVES[address] or g.u32(address+11*M.TEMPLATE_REC)!=0x100:
+            raise ValueError('original preset knife/EMPTY signature differs')
 
 # Exact BLUS30491 getDTI / Ghidra uWpMine::update, verified by live placement.
 MINE_VTABLES = frozenset({0x0162E5F8, 0x01629DB0})
@@ -119,11 +128,8 @@ def _bank(g, address, blocks, key):
 
 def templates(g):
     from ... import re5_mods_tool as M
-    if g.u32(M.TEMPLATE + M.TEMPLATE_SIGNATURE[0]) != M.TEMPLATE_SIGNATURE[1]:
-        raise ValueError("mine loadout: build template signature differs")
-    for address in ORIGINAL_BANKS:
-        if g.u32(address + 3*M.TEMPLATE_REC) != ORIGINAL_KNIVES[address] or g.u32(address + 5*M.TEMPLATE_REC) != 0x100:
-            raise ValueError("original Mercenaries mine bank signature differs")
+    M.verify_main_presets(g)
+    verify_original_presets(g)
     ok, changed = _bank(g, M.TEMPLATE, M.TEMPLATE_BLOCKS, "template")
     for address in ORIGINAL_BANKS:
         good, count = _bank(g, address, 10, f"mine_bank_{address:x}")
