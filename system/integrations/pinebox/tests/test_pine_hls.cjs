@@ -8,7 +8,7 @@ const player = require('../frontend/pine-hls.js');
 function fixture(native = false) {
   const engines = [], messages = [], timers = [];
   class Hls {
-    static Events = {MANIFEST_PARSED:'manifest', ERROR:'error'};
+    static Events = {MANIFEST_PARSED:'manifest', ERROR:'error', FRAG_BUFFERED:'buffered'};
     static ErrorTypes = {MEDIA_ERROR:'mediaError',NETWORK_ERROR:'networkError'};
     static isSupported() { return !native; }
     constructor(config) { this.config=config; this.events={}; engines.push(this); }
@@ -19,8 +19,9 @@ function fixture(native = false) {
     destroy() { this.destroyed=true; }
   }
   const video = {muted:false,volume:1,plays:0, pauses:0, loads:0,readyState:4,currentTime:1,
-    play() { this.plays++; return Promise.resolve(); },
-    pause() { this.pauses++; }, load() { this.loads++; },
+    buffered:{length:1,start:()=>0,end:()=>12},
+    play() { this.plays++; this.paused=false; return Promise.resolve(); },
+    pause() { this.pauses++; this.paused=true; }, load() { this.loads++; },
     removeAttribute(k) { delete this[k]; }, canPlayType() { return native ? 'maybe' : ''; }};
   const holds=[];let holding=false;
   const hold={capture(){holds.push('capture');},show(){holding=true;holds.push('show');},hide(){holding=false;holds.push('hide');},
@@ -39,16 +40,31 @@ test('compressed live main video uses a bounded buffer without periodic healthy 
   assert.equal(f.engines.length,1);
   const e=f.engines[0];
   assert.equal(e.source,'/api/gbox/hls?k=pc-spark1&t=listener');
-  assert.equal(e.config.initialLiveManifestSize,4);
+  assert.equal(e.config.initialLiveManifestSize,8);
   assert.equal(e.config.liveSyncMode,'buffered');
-  assert.equal(e.config.liveSyncDurationCount,4);
-  assert.equal(e.config.liveMaxLatencyDurationCount,12);
-  assert.equal(e.config.maxMaxBufferLength,20);
+  assert.equal(e.config.liveSyncDurationCount,8);
+  assert.equal(e.config.liveMaxLatencyDurationCount,24);
+  assert.equal(e.config.maxMaxBufferLength,24);
   assert.equal(e.config.backBufferLength,10);
   e.events.manifest();
   for(let i=0;i<20;i++) f.p.source(e.source);
   assert.equal(f.engines.length,1); assert.equal(f.timers.length,0);
   assert.equal(f.video.muted,true);
+});
+
+test('startup and rebuffer wait for decoded cushion without replacing the decoder',async()=>{
+  const f=fixture();let end=3;f.video.buffered.end=()=>end;
+  f.p.source('/hls');await flush();const e=f.engines[0];
+  e.events.manifest();f.video.oncanplay();e.events.buffered();
+  assert.equal(f.video.plays,0,'a manifest and one playable fragment are not a startup cushion');
+  end=8;e.events.buffered();assert.equal(f.video.plays,0);
+  end=9;e.events.buffered();assert.equal(f.video.plays,1);
+  f.video.onplaying();end=2;f.video.onwaiting();
+  f.video.onplaying();assert.equal(f.p.state().waitingForBuffer,true,'a stale playing event cannot clear a paused buffer gate');
+  const paused=f.video.pauses;f.video.oncanplay();e.events.buffered();
+  assert.equal(f.video.plays,1);assert.ok(paused>0);assert.equal(f.p.state().waitingForBuffer,true);
+  end=9;e.events.buffered();assert.equal(f.video.plays,2);assert.equal(f.engines.length,1);
+  assert.equal(f.timers.length,0);assert.equal(f.p.state().bufferAheadSeconds,8);
 });
 
 test('gameplay volume is independent and sound requires explicit listener interaction', async()=>{
@@ -121,7 +137,7 @@ test('a real native HLS failure falls back to pinned MSE player and preserves th
   f.timers[0].fn();await flush();
   assert.equal(f.engines.length,1);assert.equal(f.p.state().transport,'hls.js');
   assert.equal(f.p.state().holding,true,'do not expose the cleared video while the decoder restarts');
-  f.video.error=null;f.video.onplaying();
+  f.video.error=null;f.video.paused=false;f.video.onplaying();
   assert.equal(f.p.state().holding,false);assert.equal(f.p.state().phase,'playing');
   assert.equal(f.p.state().errors[0].transport,'native-hls');
 });
@@ -137,7 +153,7 @@ test('fatal media errors attempt supported recovery before full decoder destruct
   e.events.error(null,{type:'mediaError',details:'bufferAppendError',fatal:true});
   assert.equal(e.recovered,1);assert.equal(e.destroyed,undefined);assert.equal(f.timers[0].ms,5000);
   assert.equal(f.p.state().holding,true);
-  f.video.error=null;f.video.onplaying();
+  f.video.error=null;f.video.paused=false;f.video.onplaying();
   assert.equal(f.timers[0].cancelled,true);assert.equal(f.p.state().phase,'playing');
   for(let i=0;i<20;i++)e.events.error(null,{type:'networkError',details:'fragLoadError',fatal:false});
   assert.equal(f.p.state().errors.length,12);

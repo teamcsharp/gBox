@@ -54,11 +54,20 @@
     var forceJs = false, transport = '', phase = 'stopped', errors = [], lastTime = -1, lastCapture = -Infinity;
     var lastMediaRecovery = -Infinity, hold = options.holdFrame || canvasHold(video), now = options.now || Date.now;
     var attachments = 0, stalls = 0;
+    var waitingForBuffer = true, startBufferSeconds = 7.5;
     var schedule = options.setTimeout || setTimeout, cancel = options.clearTimeout || clearTimeout;
-    video.autoplay = true; video.playsInline = true; video.muted = true; video.volume = level;
+    video.autoplay = false; video.preload = 'auto'; video.playsInline = true; video.muted = true; video.volume = level;
     function report(message) { status({message:message, audio:audio && level > 0, enabled:audio, volume:level, source:source,
       phase:phase, transport:transport, holding:hold.held()}); }
     function audioMessage() { return audio ? (level ? 'Gameplay audio on' : 'Gameplay muted') : 'Click Enable gameplay audio for game sound'; }
+    function bufferAhead() {
+      var at = Number(video.currentTime) || 0;
+      try { for (var i=0; i<video.buffered.length; i++) {
+        var start=video.buffered.start(i), end=video.buffered.end(i);
+        if(start<=at+.1 && end>at) return end-Math.max(start,at);
+      } } catch (_) {}
+      return 0;
+    }
     function noteError(kind, details, fatal) {
       if (details === 'bufferStalledError') stalls++;
       errors.push({at:now(), type:String(kind || 'unknown').slice(0,80), details:String(details || '').slice(0,160),
@@ -75,6 +84,12 @@
       video.pause(); video.removeAttribute('src'); video.load();
     }
     function play() {
+      // Manifest length does not measure buffered media: the first appended
+      // fragment exhausted the cushion during Pine's measured 4-8 s pauses.
+      if (transport === 'hls.js' && !video.srcObject && waitingForBuffer && bufferAhead()<startBufferSeconds) {
+        phase='buffering'; report('Buffering gameplay\u2026'); return;
+      }
+      waitingForBuffer=false;
       var epoch = generation;
       var task = video.play();
       if (task && task.catch) task.catch(function () {
@@ -83,7 +98,8 @@
       });
     }
     function playing() {
-      if (!source || video.error || video.readyState < 2) return;
+      if (!source || video.error || video.readyState < 2 || video.paused===true) return;
+      waitingForBuffer=false;
       if (timer !== null) cancel(timer);
       timer = null; attempt = 0; phase = 'playing'; hold.hide();
       if (now()-lastCapture >= 1000) { hold.capture(); lastCapture = now(); }
@@ -93,11 +109,12 @@
     video.oncanplay = function () { if (source && !video.error) play(); };
     video.onwaiting = function () {
       if (!source) return;
+      if(transport==='hls.js'&&!video.srcObject){waitingForBuffer=true;video.pause();}
       hold.capture(); hold.show(); phase = 'buffering'; report('Gameplay buffering…');
     };
     video.ontimeupdate = function () {
       var at = Number(video.currentTime);
-      if (Number.isFinite(at) && at > lastTime + .02) { lastTime = at; playing(); }
+      if (Number.isFinite(at) && at > lastTime + .02 && video.paused!==true) { lastTime = at; playing(); }
     };
     function retry(epoch, delay) {
       if (epoch !== generation || !source || timer !== null) return;
@@ -112,7 +129,7 @@
       cleanup(preserve);
       if (!source || epoch !== generation) return;
       attachments++;
-      phase = preserve ? 'recovering' : 'loading'; lastTime = -1;
+      phase = preserve ? 'recovering' : 'loading'; lastTime = -1; waitingForBuffer=true;
       video.muted = !audio || level === 0;
       function nativeFallback() {
         if (forceJs || !video.canPlayType('application/vnd.apple.mpegurl')) return false;
@@ -137,14 +154,17 @@
         transport = 'hls.js';
         // Wait for a real startup cushion instead of chasing a two-segment
         // cold playlist. Never seek the live playhead into an unbuffered hole.
-        engine = new Hls({enableWorker:true, lowLatencyMode:false, initialLiveManifestSize:4,
-          liveSyncMode:'buffered', liveSyncDurationCount:4,
-          liveMaxLatencyDurationCount:12, maxLiveSyncPlaybackRate:1.03, backBufferLength:10,
-          maxBufferLength:12, maxMaxBufferLength:20, maxBufferSize:12 * 1024 * 1024});
+        engine = new Hls({enableWorker:true, lowLatencyMode:false, initialLiveManifestSize:8,
+          liveSyncMode:'buffered', liveSyncDurationCount:8,
+          liveMaxLatencyDurationCount:24, maxLiveSyncPlaybackRate:1.03, backBufferLength:10,
+          maxBufferLength:16, maxMaxBufferLength:24, maxBufferSize:16 * 1024 * 1024});
         var owned = engine;
         owned.on(Hls.Events.MANIFEST_PARSED, function () {
           if (epoch !== generation || owned !== engine) return;
           report(audioMessage()); play();
+        });
+        owned.on(Hls.Events.FRAG_BUFFERED, function () {
+          if(epoch===generation && owned===engine && waitingForBuffer)play();
         });
         owned.on(Hls.Events.ERROR, function (_event, data) {
           if (epoch !== generation || owned !== engine) return;
@@ -152,7 +172,7 @@
           if (!data.fatal) return;
           if (Hls.ErrorTypes && data.type === Hls.ErrorTypes.MEDIA_ERROR && video.error &&
               typeof owned.recoverMediaError === 'function' && now()-lastMediaRecovery >= 5000) {
-            lastMediaRecovery = now(); hold.capture(); hold.show();
+            lastMediaRecovery = now(); waitingForBuffer=true; hold.capture(); hold.show();
             try { owned.recoverMediaError(); retry(epoch, 5000); return; } catch (_) {}
           }
           retry(epoch);
@@ -186,11 +206,9 @@
       },
       stop:function () { source = ''; generation++; phase = 'stopped'; cleanup(); },
       state:function () {
-        var ahead = 0, at = Number(video.currentTime) || 0;
-        try { for (var i=0; i<video.buffered.length; i++)
-          if (video.buffered.start(i)<=at && video.buffered.end(i)>at) ahead=video.buffered.end(i)-at; } catch (_) {}
-        return {source:source, audio:audio, volume:level, bufferedSeconds:20, bufferAheadSeconds:ahead,
-          liveTargetSegments:4, attachments:attachments, stalls:stalls,
+        return {source:source, audio:audio, volume:level, bufferedSeconds:24, bufferAheadSeconds:bufferAhead(),
+          liveTargetSegments:8, startupBufferSeconds:startBufferSeconds, waitingForBuffer:waitingForBuffer,
+          attachments:attachments, stalls:stalls,
           phase:phase, transport:transport, holding:hold.held(), errors:errors.slice()}; }
     };
   }
