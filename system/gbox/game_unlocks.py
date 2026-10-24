@@ -13,6 +13,7 @@ RE6_ID = '0871eee3b68cdea3'
 ACV_ID = '0d09faf82c4c77d8'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
+MERC3D_ID = '0ed22ae742e1b56b'  # Resident Evil: The Mercenaries 3D (3DS)
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
@@ -30,6 +31,15 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
         from . import ge007_unlock
         return ge007_unlock.pre_launch(ctx)
     if not profile['verified']:
+        if (game.get('game_id') == MERC3D_ID and
+                str(game.get('platform') or '').lower() in ('3ds', 'n3ds')):
+            from . import merc3d_unlock
+            record = merc3d_unlock.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['reason'],
+                    'scope': record['scope'],
+                    'exclusions': record['exclusions'],
+                    'evidence': record['evidence']}
         if game.get('game_id') == DOAPP_ID and game.get('platform') == 'arcade':
             # Registration point for the DOA++ (Korea) arcade unlock work. The
             # fast Play path must never guess a write: report the live static
