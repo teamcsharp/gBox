@@ -886,6 +886,25 @@ def install(app, store, config, auth, submit, workers, archive):
     def autoplay_telemetry_get(sid: str, actor=Depends(auth)):
         return telemetry_get(sid)
 
+    class DirectiveIn(BaseModel):
+        command: str
+
+    @app.get("/api/sessions/{sid}/directive")
+    def directive_get(sid: str, actor=Depends(auth)):
+        from .mercs import directives
+        return {"directive": directives.latest(sid), "commands": {k: v["label"] for k, v in directives.COMMANDS.items()}}
+
+    @app.post("/api/sessions/{sid}/directive")
+    def directive_post(sid: str, body: DirectiveIn, actor=Depends(auth)):
+        """An instant command for the session's autobot (the chat's dropdown): the bot reads it within a second."""
+        from .mercs import directives
+        try:
+            row = directives.post(sid, body.command, source=str(actor))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        store.audit(actor, "autoplay.directive", sid, {"command": body.command})
+        return {"directive": row}
+
     stopped = threading.Event()
 
     def loop():

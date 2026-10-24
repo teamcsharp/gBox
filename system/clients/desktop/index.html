@@ -4622,9 +4622,28 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameup") return;
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
+// F5 on a frozen picture does whatever it takes (operator 2026-10-24): a fresh encoder on the PC that runs the game, new
+// picture connections, a fresh GPU video surface, then the client reload that keeps the game and PiP. Every step is bounded
+// and failures never stop the next one; the game itself is never restarted or stopped.
+async function recoverStreams() {
+  const sid = (COMPACT.on ? COMPACT.sid : null) || EMB.sid;
+  const steps = [];
+  if (sid && sid.includes('-')) steps.push(Promise.race([
+    gbox.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: sid.split('-')[0],
+      input: { session_id: sid, op: 'restart_stream', args: {} } }), new Promise(r => setTimeout(r, 4000))]).catch(() => null));
+  for (const el of document.querySelectorAll('img[data-stream-follow], #compact-stream')) try { globalThis.gboxStreamWatch?.reconnect?.(el, 'operator F5'); } catch {}
+  try { await gpuGameDispose(); } catch {}
+  EMB.last = ''; GPU_GAME.retryAt = 0; GPU_GAME.failedPid = null; GPU_GAME.blockedPid = null;
+  await Promise.allSettled(steps);
+}
+async function recoverAndRefresh() {
+  toast('F5: reconnecting the stream…');
+  try { await recoverStreams(); } catch {}
+  return clientRefresh.refresh().catch(error => toast(error.message));
+}
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === 'autoplay' && COMPACT.on && compactMedia) return compactMedia.toggleAutobot();
-  if (k === "client-refresh" || k === "reset") return clientRefresh.refresh().catch(error => toast(error.message)); // old main processes still name F5 "reset"
+  if (k === "client-refresh" || k === "reset") return recoverAndRefresh();      // old main processes still name F5 "reset"
   if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;

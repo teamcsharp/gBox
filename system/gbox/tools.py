@@ -1591,6 +1591,13 @@ def session_op(inp: SessionIn, ctx: Ctx):
             log, path = "", None
         return {"result": {"log": log, "path": str(path or ""), "emulator": getattr(ad, "name", "?")},
                 "session_id": inp.session_id, "ended": False}
+    if inp.op == "restart_stream":                                   # F5 on a frozen picture: a fresh encoder, the game untouched
+        ad, _ = SESSIONS[inp.session_id]
+        stream = getattr(ad, "stream", None)
+        if stream is None or not callable(getattr(stream, "restart_now", None)):
+            return {"result": {"restarted": False, "reason": "this session has no gBox encoder (a native window)"},
+                    "session_id": inp.session_id, "ended": False}
+        return {"result": stream.restart_now("operator F5"), "session_id": inp.session_id, "ended": False}
     if inp.op == "reset":                                            # restart the emulated console (the session stays)
         ad, _ = SESSIONS[inp.session_id]
         if not callable(getattr(type(ad), "reset", None)):
@@ -2599,6 +2606,10 @@ def _telemetry(run, ctx, title: str = "") -> None:
             time.sleep(5)
         post(False)
     threading.Thread(target=loop, daemon=True, name=f"autoplay-telemetry-{run['sid']}").start()
+    from .mercs import directives            # the chat's instant commands, read twice a second into the bot's live stats
+    threading.Thread(target=directives.poll_loop, daemon=True, name=f"autoplay-directives-{run['sid']}",
+                     args=(run["sid"], ctx.server, _ap_headers(ctx), lambda: run.get("live"),
+                           lambda: run.get("thread") is not None and run["thread"].is_alive())).start()
 
 
 def _ended(run):

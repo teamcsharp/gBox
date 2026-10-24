@@ -287,7 +287,7 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   else {
     root.gboxStreamWatchdog = api;
-    if (root.document) createStreamWatchdog({ doc: root.document, log: m => console.info(m),
-      fetchHealth: root.GBOX_STREAM_FETCH_HEALTH || (root.GBOX_STREAM_HEALTH === false ? null : undefined) }).start();
+    if (root.document) (root.gboxStreamWatch = createStreamWatchdog({ doc: root.document, log: m => console.info(m),
+      fetchHealth: root.GBOX_STREAM_FETCH_HEALTH || (root.GBOX_STREAM_HEALTH === false ? null : undefined) })).start();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
