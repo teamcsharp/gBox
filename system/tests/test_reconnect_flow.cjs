@@ -56,13 +56,20 @@ test('a silent Spark is restarted once, then the flow continues', async () => {
   assert.equal(failed.done, false); assert.match(failed.error, /not answering/); assert.equal(failed.steps[0].status, 'err');
 });
 
-test('MercMode is turned on when off, and a stale picture gets a new encoder', async () => {
-  const r = rig({ startOnEnable: true, health: { state: 'running', age_s: 40 } });
+test('no running MercMode game: the flow only reconnects, never turns MercMode on or waits', async () => {
+  const r = rig();
   r.mercmode.hosts[0].settings.enabled = false; r.mercmode.hosts[0].current_run = null;
   const out = await r.ctl.run();
-  assert.ok(r.calls.some(([p, b]) => p === '/api/mercmode' && b?.enabled === true));
+  assert.equal(out.done, true); assert.equal(r.pip, null);
+  assert.deepEqual(out.steps.map(s => s.id), ['spark', 'library']);
+  assert.ok(!r.calls.some(([p, b]) => p === '/api/mercmode' && b));
+});
+
+test('a stale picture of a running MercMode game gets a new encoder', async () => {
+  const r = rig({ health: { state: 'running', age_s: 40 } });
+  const out = await r.ctl.run();
   assert.ok(r.calls.some(([p, b]) => p === '/api/jobs' && b.input.op === 'restart_stream'));
-  assert.equal(out.done, true); assert.equal(r.pip, 'w1-new');
+  assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1');
 });
 
 test('the shown PC prefers this PC playing, then any PC playing, then the Spark', () => {
