@@ -1068,3 +1068,48 @@ def test_running_round_in_circles_turns_on_the_spot_then_drops_the_goal():
     assert bot.stats["circles_broken"] == 1 and bot.turn_first and bot.goal is not None
     lap(10.0)
     assert bot.stats["circle_goals_dropped"] == 1 and bot.goal is None and bot.items[0] is not first
+
+
+def _ad_with_memory(calls, mem):
+    # a live-adapter stand-in: the game's 32 MiB as one backing buffer; the disc id lives at Dolphin's
+    # MEM1 base (0x80000000) the way the bot reads it, and at 0x80200000 the way re_mods does
+    class Ad:
+        def read_memory(self, a, n):
+            i = a - 0x80000000
+            return b"G4BE08" if (a, n) in ((0x80000000, 6), (0x80200000, 6)) else mem[i:i + n]
+
+        def write_memory(self, a, data):
+            calls.append((a, bytes(data)))
+            mem[a - 0x80000000:a - 0x80000000 + len(data)] = bytes(data)
+
+    return Ad()
+
+
+def test_setup_applies_the_aim_turn_speed_package_item_at_the_games_own_speed():
+    # operator 2026-10-22: the package's aim_turn_speed must reach re_mods at x1 (the game's own ~30 deg/s)
+    import struct
+    import gbox.re_mods_tool as RM
+    mem = bytearray(0x2000000)
+    calls = []
+    ad = _ad_with_memory(calls, mem)
+    pg = 0x80010000                                    # a valid game-struct base, so status() stays in bounds
+    mem[RM.R.GC.P_GLOBAL - 0x80000000:RM.R.GC.P_GLOBAL - 0x80000000 + 4] = struct.pack(">I", pg)
+    for a, orig in RM.R.GC.AIM_TURN:                   # seed the aim constants the game ships with
+        mem[a - 0x80000000:a - 0x80000000 + 4] = struct.pack(">f", orig)
+    failed = B.apply_package(ad, only=("aim_turn_speed",))
+    assert failed == []
+    for a, orig in RM.R.GC.AIM_TURN:
+        data = [d for addr, d in calls if addr == a]
+        assert data, f"{a:08X}: the aim constant was never written"
+        assert struct.unpack(">f", data[0])[0] == orig * B.AIM_SPEED_X, f"{a:08X}: x{B.AIM_SPEED_X} expected"
+
+
+def test_setup_only_runs_the_unlock_bits_at_the_title():
+    # out of a Merc round setup() applies only the unlock bits - the aim constants stay the game's own
+    import struct
+    import gbox.re_mods_tool as RM
+    mem = bytearray(0x2000000)
+    calls = []
+    ad = _ad_with_memory(calls, mem)
+    B.setup(ad)
+    assert not any(a in dict(RM.RE4(ad).V.AIM_TURN) for a, _ in calls), "aim speed must not be applied at the title"
