@@ -3383,6 +3383,18 @@ class RPCS3Adapter(Adapter):
         return {"running": bool(self.proc and self.proc.poll() is None), "paused": self.paused, "guest_base": self.base and hex(self.base)}
 
     def get_frame(self) -> bytes:
+        """The RPCS3 window. Windows: in-process win_grab(pid) first (PrintWindow/ImageGrab, never blocks 30 s).
+
+        #2950: get_frame on a running RE5 session failed on both JAYBUILTFINALE and i9-NUC with `ffmpeg gdigrab
+        -i desktop` TimeoutExpired after 30 s - a stalled ffmpeg desktop grab looked like a frozen game. gdigrab
+        stays only as the fallback when the window can't be grabbed directly.
+        """
+        pid = self.proc.pid if self.proc else None
+        if HOST_OS == "windows" and pid:
+            try:
+                return win_grab(pid)
+            except Exception as e:                       # noqa: BLE001 - fall back, keep the reason
+                self.frame_fallback_reason = f"{type(e).__name__}: {e}"
         return grab_png(None)
 
     def stream_session(self) -> MjpegStream:
