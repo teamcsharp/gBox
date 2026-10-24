@@ -25,6 +25,7 @@ import json
 import math
 import struct
 import time
+import uuid
 from pathlib import Path
 
 from ..driver import Driver
@@ -126,6 +127,11 @@ BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clo
 # BLOCKED_VIEW_S, or without the dot ever reaching him for UNSIGHTED_S, is left out of sight for PURSUE_S and walked to.
 SIGHT_R = 2200.0                       # open-floor Majini within this are fought (= SHOOT_RANGE)
 IN_VIEW_CONE = math.radians(60)        # ...and any Majini within ENGAGE this close to his heading (Bot._in_view)
+# round maps: which code runs each stats["phase"] (gbox.mercs.round_map.code_map resolves file:line)
+PHASE_CODE = {"leave_proximity_bomb": "Bot._mine_retreat", "gather_time": "Bot._bonus", "break_for_time": "Bot._bonus",
+              "pursue": "Bot._pursue", "fight": "Combat.tick", "clear_nearby": "Combat.tick", "keep_combo": "Bot._tick",
+              "stand": "Bot._tick", "idle": "Bot._tick", "healing": "Bot._heal", "recover_navigation": "Bot._recover_nav",
+              "obstacle_detour": "Bot._follow", "waiting_round_start": "Bot.tick", "egg_inventory": "Bot._egg_action"}
 SIGHT_CACHE_S = 0.3                    # a floor_segment answer is kept this long per Majini
 SIGHT_BEND, SIGHT_SLACK = 1.1, 50.0    # ...or a navmesh route at most this much longer than the straight line: open
 PURSUE_NEAR = 200.0                    # this close he is fought whatever the floor says (a doorway, a corner)
@@ -1053,6 +1059,9 @@ class Bot:
         from .. import lessons as lesson_store
         nav_path = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT) / NAV_LEARNING_FILE
         self.nav_learning = re5_nav.Learning(nav_path)
+        # every round's route + decision state on a map (gbox.mercs.round_map): where he stood still, doing what, which code
+        self._trace_dir = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT).parent / "round_maps" / "BLUS30491"
+        self._trace, self._trace_key = None, None
         from ..route_guidance import Guidance
         self.operator_guidance = Guidance(lesson_store.ROOT.parent.parent,'BLUS30491')
         from ..map_goals import Goals
@@ -1259,6 +1268,7 @@ class Bot:
                 self.round_active = False
                 self.round_end = self.round_end or where
                 self._evaluate_round(snap, now, self.round_end)
+                self.trace_finish()                         # the round's map (round_maps/BLUS30491/<stage>/)
             elif self.combat is not None:
                 self.combat.suspend_observation(now)
             return
@@ -1574,7 +1584,40 @@ class Bot:
         self._wall_motion=motion
         return act
 
+    def _round_trace(self, snap) -> None:
+        """One RoundTrace per round (a new combo_log entry = a new round): samples position, decision state and ground
+        mines each tick; the finished round's map is written when the next one starts or the bot stops."""
+        from ..round_map import RoundTrace, code_map
+        key = len(self.combo_log)
+        if key != self._trace_key:
+            self.trace_finish()
+            self._trace_key = key
+            self._trace = RoundTrace(self._trace_dir / "stage", "BLUS30491", "stage", uuid.uuid4().hex, 400.0,
+                                     code=code_map(PHASE_CODE, Bot, re5_combat.Combat))
+        p = snap.get("player")
+        if self._trace is not None and p:
+            mines = [row["pos"] for row in (snap.get("ground_mines") or {}).values()
+                     if isinstance(row, dict) and row.get("pos")]
+            self._trace.add(self.clock(), p["pos"][0], p["pos"][2], p["pos"][1], self.stats, mines)
+
+    def trace_finish(self) -> None:
+        trace, self._trace = self._trace, None
+        if trace is None:
+            return
+        stage = str(self.stats.get("stage") or "stage").replace("/", "-").replace(" ", "_")
+        trace.room = stage
+        if trace.out_dir is not None:
+            trace.out_dir = trace.out_dir.parent / stage
+        summary = trace.finish()
+        if summary:
+            self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
+            self.stats["last_round_verdict"] = summary.get("verdict")
+
     def tick(self, snap: dict) -> dict:
+        try:
+            self._round_trace(snap)
+        except Exception as exc:                                  # noqa: BLE001 - the map never stops the bot
+            self.stats["round_map_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self.map_goals.defer('Waiting for mandatory action, healing, mine retreat or nearby threats to clear')
         self._following_route = False
         p = snap.get("player")

@@ -29,3 +29,29 @@ def test_the_bot_traces_a_round_into_round_maps(tmp_path):
         bot.trace.add(i * 0.3, i * 100.0, 0.0)
     bot.trace_finish()
     assert bot.stats["last_round_map"].endswith(".svg") and (tmp_path / "round_maps" / "r400").is_dir()
+
+
+def test_standing_on_a_planted_mine_is_found_with_its_phase_and_code(tmp_path):
+    # operator 2026-10-24: "trace the round information to find out that he just planted a mine and then stood on it
+    # and then also stood still for a period of time ... and be able to see the code that was being executed"
+    t = RoundTrace(tmp_path, "BLUS30491", "Village", "c" * 32, 400.0,
+                   code={"leave_proximity_bomb": "re5_ps3.py:3003 Bot._mine_retreat"})
+    now = 0.0
+    for i in range(12):
+        t.add(now, i * 250.0, 0.0, state={"phase": "gather_time"}); now += 0.3
+    for _ in range(40):                                           # 10 s on the bomb he just planted
+        t.add(now, 3000.0, 20.0, state={"phase": "leave_proximity_bomb",
+                                        "mine_retreat_status": "blocked: no measured escape"}, mines=[(3010.0, 0.0, 15.0)])
+        now += 0.25
+    s = t.finish()
+    still = s["standstills"][0]
+    assert still["phase"] == "leave_proximity_bomb" and still["on_mine"] and still["seconds"] >= 9
+    assert still["code"] == "re5_ps3.py:3003 Bot._mine_retreat" and "blocked" in still["mine_retreat_status"]
+    assert "ON A MINE" in s["verdict"] and s["time_by_phase"]["leave_proximity_bomb"] >= 9
+
+
+def test_re5_bot_writes_a_round_map_with_code_locations(tmp_path):
+    from gbox.mercs.titles import re5_ps3 as R
+    bot = R.Bot(learn_dir=tmp_path / "lessons", clock=lambda: 0.0)
+    m = __import__("gbox.mercs.round_map", fromlist=["code_map"]).code_map(R.PHASE_CODE, R.Bot, R.re5_combat.Combat)
+    assert m["leave_proximity_bomb"].startswith("re5_ps3.py:") and "Bot._mine_retreat" in m["leave_proximity_bomb"]

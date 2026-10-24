@@ -4245,6 +4245,8 @@ async function pipMercMode(m, opening, open = false) {
     slot.querySelector('[data-mm-arrow]')?.addEventListener('click', e => { e.stopPropagation(); pipMercMode(m, opening, !open); });
     slot.querySelectorAll('[data-mm-title]').forEach(box => box.addEventListener('change', () => act('title', { title: box.dataset.mmTitle, checked: box.checked })));
     slot.querySelector('[data-mm-rounds]')?.addEventListener('change', e => act('rounds', e.target.value));
+    // consecutive rounds per title, one click (operator 2026-10-24: default five, up to 10 or 20 before switching)
+    slot.querySelectorAll('[data-mm-rounds-pick]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); act('rounds', b.dataset.mmRoundsPick); }));
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
