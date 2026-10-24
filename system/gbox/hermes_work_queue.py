@@ -458,7 +458,7 @@ def choose(options, data):
 
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
-PRIORITY_PER_GAME = 3            # runs sharing one game when the operator prioritized the requests (candidates)
+PRIORITY_PER_GAME = 6            # runs sharing one game when the operator prioritized the requests (candidates; RE6 has six tickets)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 
 

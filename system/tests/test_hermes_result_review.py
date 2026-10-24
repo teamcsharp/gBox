@@ -496,7 +496,7 @@ class LateReviewTests(ReviewFixture, unittest.TestCase):
         self.assertIsNone(R.gate(self.item), 'a late review no longer blocks the next dispatch')
         self.assertEqual(R.result(self.key)['state'], 'pending', 'the review itself still runs later')
         with closing(R.connect()) as db, db:
-            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - 3600, self.key))
+            db.execute('UPDATE reviews SET created=? WHERE key=?', (time.time() - R.REVIEW_WAIT_MAX_S + 600, self.key))
         self.assertIn('Waiting', R.gate(self.item), 'a recent result still waits for its review')
 
 
