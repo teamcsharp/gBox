@@ -13,6 +13,7 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+SONIC12_GAME_ID = '48d757e779e88504'  # Sonic the Hedgehog 2 (Sonic 1 & 2 in one hack), Genesis
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -33,6 +34,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == SONIC12_GAME_ID and game.get('platform') == 'genesis':
+            # Sonic 1 & 2 in one hack (Genesis): static analysis complete,
+            # runtime verification pending. Report the evidence state.
+            from . import sonic12_unlock_research as s12ur
+            ev = s12ur.build_evidence()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': profile['reason'],
+                    'evidence': ev['unlock_summary'],
+                    'nemesis_verified': all(n.get('match') for n in ev['nemesis_streams']),
+                    'runtime_checks_pending': ev['runtime_verification_required']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -64,6 +75,19 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SONIC12_GAME_ID and game.get('platform') == 'genesis':
+        # Sonic 1 & 2 in one hack (Genesis): static analysis complete, runtime
+        # verification pending. No writer is registered — pre_launch will
+        # short-circuit on verified=False and report the evidence state.
+        from . import sonic12_unlock_research as s12ur
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': ['characters', 'hidden_characters', 'levels_sonic1',
+                          'levels_sonic2', 'special_stages', 'modes', 'items', 'extras'],
+                'reason': 'Static analysis complete (ROM identity + 4 Nemesis streams verified). '
+                          'Runtime verification pending: Sonic 1 level access, Knuckles hidden '
+                          'character check, debug mode, level select presence. '
+                          'Evidence: evidence/sonic12/unlock_research_evidence.json',
+                'evidence_sha256': s12ur.ROM_SHA256}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
