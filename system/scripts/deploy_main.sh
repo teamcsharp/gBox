@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Deploy merged main onto the Spark's canonical copy (~/gBox/system) and refresh the service when it is safe.
 #
-#   deploy_main.sh            sync what main changed; restart only if runtime code changed and the runtime is idle
-#   deploy_main.sh --no-restart
+#   deploy_main.sh --deploy   sync main after an operator request; restart only when runtime code changed and idle
+#   deploy_main.sh --deploy --no-restart
+#   deploy_main.sh           no changes (including old no-argument cron invocations)
 #
 # Why: Hermes publishes PRs from worktrees and the operator merges them, but the Spark runs from a plain copy of
 # the repository (no .git on the share), so merged work stayed undeployed until someone copied files by hand.
-# Cron runs this every 15 minutes (see install below). Everything it overwrites is backed up first under
+# Deployment is manual-only. Everything it overwrites is backed up first under
 # gbox-data/deploy-backups/<stamp>-<commit>/, text files are written CRLF like the rest of the share, and
 # the restart goes through the same idle check the bootstrap uses (gbox.hermes_activation --check-idle) with
 # Hermes dispatch paused meanwhile so the idle window actually arrives. Runtime code = gbox/, adapters/,
@@ -14,20 +15,43 @@
 # whose content (line endings ignored) matches no version of that path in main's last 200 commits was edited on the
 # share by someone else: it is kept and logged, never overwritten, until that edit reaches main. A share file equal
 # to any older main version is a stale copy and is overwritten (with the usual backup). A deferred restart is remembered in
-# gbox-data/deploy-restart-pending and retried on later rounds even when no further file changes.
+# gbox-data/deploy-restart-pending and retried on the next explicit deployment even without further file changes.
 #
-# Install (once, on the Spark):   crontab -l | { cat; echo '*/15 * * * * $HOME/bin/deploy_main.sh >> $HOME/gBox_alt/logs/gbox-deploy.log 2>&1'; } | crontab -
+# Replace any installed old copy and remove its cron entry. Do not schedule --deploy.
 set -euo pipefail
+usage() {
+  cat <<'USAGE'
+Usage: deploy_main.sh --deploy [--no-restart]
+  --deploy      Explicitly copy merged main to this host's configured deployment.
+                Runtime changes restart only after the existing idle checks pass.
+  --no-restart  Copy files but defer activation until a later explicit --deploy.
+  --help, -h    Show this help without changing files or contacting GitHub.
+Without --deploy, no fetch, file transfer, task pause or service restart occurs.
+USAGE
+}
+DEPLOY=0
+RESTART=""
+for arg in "$@"; do
+  case "$arg" in
+    --deploy) DEPLOY=1 ;;
+    --no-restart) RESTART="--no-restart" ;;
+    --help|-h) usage; exit 0 ;;
+    *) printf 'Unknown argument: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+if [ "$DEPLOY" -ne 1 ]; then
+  printf '%s\n' 'Deployment skipped: an operator must explicitly run deploy_main.sh --deploy.'
+  exit 0
+fi
 REPO_URL="https://github.com/teamcsharp/gBox.git"
 SRC="${GBOX_SRC:-$HOME/gBox_alt/gBox-src}"         # the deploy clone lives in ~/gBox_alt (out of the home root)
 [ -n "${GBOX_SRC:-}" ] || [ -d "$SRC/.git" ] || [ ! -d "$HOME/gBox-src/.git" ] || SRC="$HOME/gBox-src"   # not moved yet
 DST="${GBOX_DST:-$HOME/gBox/system}"
 STATE="$DST/gbox-data/deployed-main.txt"
 PENDING="$DST/gbox-data/deploy-restart-pending"    # runtime code was deployed but the service has not been refreshed yet
-LOCK="/tmp/gbox-deploy.lock"
+LOCK="${GBOX_DEPLOY_LOCK:-/tmp/gbox-deploy.lock}"
 MIN_RESTART_GAP=$((2 * 3600))           # seconds between service restarts caused by deploys
 IDLE_WAIT=$((45 * 60))                  # how long to wait for an idle window before giving up this round
-RESTART="${1:-}"
 
 exec 9>"$LOCK"
 flock -n 9 || { echo "$(date -u +%FT%TZ) another deploy is running"; exit 0; }
@@ -134,7 +158,7 @@ echo "$HEAD" > "$STATE"
 [ "$runtime" -eq 1 ] || { log "no runtime code changed; no restart needed"; exit 0; }
 if [ "$RESTART" = "--no-restart" ]; then
   touch "$PENDING"
-  log "runtime code changed; restart skipped (--no-restart), remembered for the next round"
+  log "runtime code changed; restart skipped (--no-restart), waiting for the next explicit --deploy"
   exit 0
 fi
 
@@ -142,7 +166,7 @@ LAST_RESTART="$(systemctl show gbox.service -p ActiveEnterTimestampMonotonic --v
 UP_NOW="$(awk '{print int($1*1000000)}' /proc/uptime)"
 if [ -n "$LAST_RESTART" ] && [ "$LAST_RESTART" -gt 0 ] && [ $(( (UP_NOW - LAST_RESTART) / 1000000 )) -lt "$MIN_RESTART_GAP" ]; then
   touch "$PENDING"
-  log "runtime code changed; last restart was under $((MIN_RESTART_GAP / 60)) min ago, trying again next round"
+  log "runtime code changed; last restart was under $((MIN_RESTART_GAP / 60)) min ago, waiting for the next explicit --deploy"
   exit 0
 fi
 
@@ -160,7 +184,7 @@ deadline=$(( $(date +%s) + IDLE_WAIT ))
 until "$PY" -m gbox.hermes_activation --check-idle "$DST" >/dev/null; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
     touch "$PENDING"
-    log "no idle window in $((IDLE_WAIT / 60)) min; restart deferred to the next round"
+    log "no idle window in $((IDLE_WAIT / 60)) min; restart deferred to the next explicit --deploy"
     exit 0
   fi
   sleep 60

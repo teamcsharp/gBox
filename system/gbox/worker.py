@@ -298,7 +298,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                 print(f"uploaded {len(sent)} mod(s) to the central collection: {sent}", flush=True)
         except Exception as e:
             print(f"mod upload skipped: {e}", flush=True)
-    threading.Thread(target=_push, daemon=True).start()
+    if config.sync_mod_builds_on_startup:
+        threading.Thread(target=_push, name="mod-build-sync", daemon=True).start()
     from . import audio_cpp                         # local speech service when audiocpp_server is on this machine (#816)
     threading.Thread(target=audio_cpp.autostart, args=(config,), name="audio_cpp-autostart", daemon=True).start()
     # Live owned PIDs were checked above. Startup never kills a surviving game,

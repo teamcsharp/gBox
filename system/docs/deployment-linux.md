@@ -3,6 +3,11 @@
 Target: DGX Spark (GB10 Grace-Blackwell, **aarch64/arm64**, DGX OS = Ubuntu 24.04-based, 128 GB unified memory).
 Status: **not yet deployed or tested on the Spark.** The steps below are the intended path.
 
+Source deployment is manual: run `scripts/deploy_main.sh --deploy` after requesting an update, or add
+`--no-restart` to copy files while deferring activation. Without `--deploy`, the script performs no fetch,
+file transfer or restart, including pending restarts. Replace installed copies of the old script and remove
+their cron entries; a repository change alone cannot disable an older installed deployment job.
+
 ## Control plane (bare metal)
 
 ```sh

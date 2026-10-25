@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -51,8 +52,10 @@ def deploy(tmp_path):
 
     def classify(rel):
         script = tmp_path / 'guard.sh'
-        script.write_bytes((_functions() + '\nclassify "$1"\nprintf "%s|%s" "$ACTION" "$GUARD_RULE"\n').encode())
-        env = os.environ | {'SRC': src.as_posix(), 'DST': dst.as_posix()}
+        script.write_bytes(('python3() { "$DEPLOY_TEST_PYTHON" "$@"; }\n' + _functions()
+                            + '\nclassify "$1"\nprintf "%s|%s" "$ACTION" "$GUARD_RULE"\n').encode())
+        env = os.environ | {'SRC': src.as_posix(), 'DST': dst.as_posix(),
+                            'DEPLOY_TEST_PYTHON': Path(sys.executable).as_posix()}
         out = subprocess.run([BASH, script.as_posix(), rel], env=env, capture_output=True, text=True, check=True)
         return out.stdout.split('|', 1)
     return classify
@@ -82,3 +85,42 @@ def test_deploy_loop_uses_the_history_rule():
     text = SCRIPT.read_text(encoding='utf-8')
     assert 'stale) changed+=' in text and 'edit) kept+=' in text
     assert '$PREV:system/$rel' not in text          # the old previous-deploy-only comparison is gone
+
+
+def _invoke_deploy(tmp_path, *args):
+    # The first git command records its arguments and aborts. Even the explicit
+    # path never contacts a remote, copies source files or restarts a service.
+    probe = tmp_path / 'git-called'
+    lock = tmp_path / 'deploy.lock'
+    script = ('git() { printf "%s\\n" "$*" >> "$DEPLOY_TEST_PROBE"; return 73; }\n'
+              'flock() { return 0; }\n' + SCRIPT.read_text(encoding='utf-8'))
+    env = os.environ | {'GBOX_SRC': (tmp_path / 'missing-src').as_posix(),
+                        'GBOX_DST': (tmp_path / 'missing-share').as_posix(),
+                        'GBOX_DEPLOY_LOCK': lock.as_posix(), 'DEPLOY_TEST_PROBE': probe.as_posix()}
+    result = subprocess.run([BASH, '-s', '--', *args], input=script, env=env,
+                            cwd=tmp_path, capture_output=True, text=True)
+    return result, probe, lock
+
+
+@pytest.mark.parametrize('args', [(), ('--no-restart',), ('--help',)])
+def test_unrequested_deployment_never_reaches_files_or_network(tmp_path, args):
+    result, probe, lock = _invoke_deploy(tmp_path, *args)
+    assert result.returncode == 0, result.stderr
+    assert '--deploy' in result.stdout
+    assert not probe.exists() and not lock.exists()
+    assert not (tmp_path / 'missing-src').exists() and not (tmp_path / 'missing-share').exists()
+
+
+def test_unknown_deployment_argument_is_rejected_without_changes(tmp_path):
+    result, probe, lock = _invoke_deploy(tmp_path, '--deploy', '--force')
+    assert result.returncode == 2
+    assert 'Unknown argument' in result.stderr
+    assert not probe.exists() and not lock.exists()
+
+
+@pytest.mark.parametrize('args', [('--deploy',), ('--deploy', '--no-restart'), ('--no-restart', '--deploy')])
+def test_explicit_deployment_reaches_the_transfer_path(tmp_path, args):
+    result, probe, lock = _invoke_deploy(tmp_path, *args)
+    assert result.returncode == 73, result.stderr
+    assert probe.read_text().startswith('clone -q ')
+    assert lock.exists()

@@ -209,7 +209,7 @@ def build_row(item: dict, meta: dict, card: dict | None, pcs: list[dict], here: 
 
 
 def local_only_row(key: str, here: list[dict], names: dict, titles: dict, favs: set | frozenset = frozenset()) -> dict:
-    """A build only a PC has (not in the Spark's collection yet: it uploads when that PC's worker starts)."""
+    """A build only a PC has; startup uploads require that worker's explicit configuration opt-in."""
     from . import special_builds as SB
     gid, name = key.split("/", 1)
     pcs = [{"name": h["node"], "os": h["os"]} for h in here if h["online"] and not h["staged"]]
@@ -1235,7 +1235,7 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             return {"key": key, "name": name, "game_id": game_id, "label": row["label"], "local_only": True,
                     "where": row["where"], "kinds": row["kinds"],
                     "note": "this build is only on " + ", ".join(h["node"] for h in here) + "; its details arrive with "
-                            "its marker when that PC's worker uploads it to the Spark collection (at worker start)"}
+                            "its marker after a transfer to the collection. Automatic startup uploads are off by default"}
         card = store.get("mod", item["card_id"]) if item.get("card_id") else None
         out = details(store, config, item, meta, card, library(config), ws)
         out["where"] = build_row(item, meta, card, [], here)["where"]

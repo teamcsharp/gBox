@@ -26,8 +26,10 @@ filters narrow the list.
 on request). Each PC's worker reports its own builds with its heartbeat (`WorkerInfo.local_builds`:
 `{game_id, name, built, staged_of?}`, newest 400, from `gbox.filemods.local_builds`: two directory levels and one stat
 per build, cached 60 s). A staging copy (`<mod>~<build>` or a folder with `.gbox-staged-of`) counts for the build it
-mirrors and is never listed on its own. A build only a PC has shows as `local only` and launches on that PC. The worker
-uploads it to the Spark the next time it starts.
+mirrors and is never listed on its own. A build only a PC has shows as `local only` and launches on that PC.
+Startup does not upload its files. `sync_mod_builds_on_startup = true` explicitly enables that worker's background
+uploads to its configured control plane; the default is `false`. Operator-triggered build downloads, exports,
+and launch staging remain available. Heartbeats report build metadata without sending the build's files.
 
 **Kinds.** A marker `kind` wins. Otherwise the kind is derived. `showcase` comes from a `showcase` record or a
 `showcase_` name. `cast swap` comes from `cast` rows, and `character swap` from donor → slot rows. `decomp / compile`
