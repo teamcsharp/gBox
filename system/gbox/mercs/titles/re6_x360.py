@@ -9,9 +9,16 @@ can prove and takes the rest from `menu_state(m)`, a hook that returns {"where",
 measured; until then out-of-round is "unknown" and the bot only presses BOOT_KEY (never A: on the title, A takes
 Campaign). The stage and character picks work blind meanwhile: StagePick / Roster count D-pad presses the Navigator
 reports (like RE5's StagePick) and take the cursor from RAM when menu_state provides it.
+
+Round play (the Driver interface): the player uPlayer's position (+0x2C0 vPosition) and yaw (+0x2D4) are read for the
+Bot's sight-gated fire and navmesh routing. Five addresses stay unknown (round timer, enemy array, time bonuses, aim
+yaw, navmesh root); the Bot degrades gracefully - no timer in snapshots, no enemies listed, no bonuses, no mesh-driven
+routing until `configure()` receives them. Firing requires proof of sight: the game's own visible flag when an enemy
+entry carries one, else open navmesh floor between player and enemy. No proof = no shot.
 """
 from __future__ import annotations
 
+import math
 import random
 import struct
 
@@ -21,6 +28,23 @@ LIFE, LIFE_MAX = 0xF20, 0xF22            # s16 each
 SAVE_MGR = 0x83CA4F98                    # save manager; save data = [it] + 0x30
 MERC_STAGE_MASK, MERC_CHAR_MASK = 0x974, 0x978
 PTR_LO, PTR_HI = 0x40000000, 0xA0000000
+
+# Round gameplay addresses (partially verified; see module note)
+S_PLAYER = SPLAYER                        # alias for the round snapshot reader
+PL_FIRST = P1                             # player 1's uPlayer offset in sPlayer
+PL_POS = 0x2C0                            # vPosition (3 f32)
+PL_YAW = 0x2D4                            # facing yaw (f32)
+PL_LIFE = LIFE                            # s16 hp
+
+# Unknown addresses (configure() receives them when measured)
+ADDR: dict = {
+    "timer": None,                        # round timer (f32 or s32)
+    "enemy_arr": None,                    # enemy array base
+    "enemy_n": None,                      # enemy count
+    "time_bonus": None,                   # time bonus array
+    "aim_yaw": None,                      # aim yaw (f32)
+    "s_ai": None,                         # navmesh root (for re5_nav.read's s_ai)
+}
 
 STAGES = ("Urban Chaos", "Steel Beast", "Mining the Depths")          # this disc's three (docs/re6.md)
 CHARACTERS = ("Leon", "Helena", "Chris", "Piers", "Jake", "Sherry", "Ada", "Carla", "Agent")   # Mercenaries list order
@@ -32,6 +56,23 @@ STEPS = {"results": "start", "dead": "a", "title": "start", "select_stage": "a",
 CURSORED = ("select_player",)
 MAX_ROW = len(CHARACTERS) - 1
 
+# Bot tuning (mirrors RE5's combat constants)
+SIGHT_R = 2500.0                         # max engagement distance (mm)
+SIGHT_BEND = 1.4                         # route may bend this much over the straight-line distance
+SIGHT_SLACK = 200.0                      # plus this absolute slack (mm)
+FLOOR_DY = 400.0                         # vertical separation that rules out a shot (mm)
+TURN_TOL = math.radians(4.0)             # dead zone before turning
+AIM_TOL = math.radians(6.0)              # must face the target at least this closely to fire
+ARRIVE_R = 250.0                         # a waypoint this close is considered reached (mm)
+
+
+def configure(**addrs) -> None:
+    """Set discovered addresses (keys of ADDR); an unknown key raises."""
+    for k, v in addrs.items():
+        if k not in ADDR:
+            raise KeyError(k)
+        ADDR[k] = v
+
 
 def ptr_ok(p: int) -> bool:
     return PTR_LO <= p < PTR_HI and p % 4 == 0
@@ -39,6 +80,32 @@ def ptr_ok(p: int) -> bool:
 
 def u32(m, a: int) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
+
+
+def _u32(m, a: int) -> int:
+    return struct.unpack(">I", m.rd(a, 4))[0]
+
+
+def _f32(m, a: int) -> float:
+    return struct.unpack(">f", m.rd(a, 4))[0]
+
+
+def _ok(p: int) -> bool:
+    return PTR_LO <= p < PTR_HI and p % 4 == 0
+
+
+def heading(dx: float, dz: float) -> float:
+    """The yaw that faces (dx, dz) in the game's world (XZ plane)."""
+    return math.atan2(dx, dz)
+
+
+def wrap(a: float) -> float:
+    """Wrap an angle to (-pi, pi]."""
+    while a > math.pi:
+        a -= 2.0 * math.pi
+    while a <= -math.pi:
+        a += 2.0 * math.pi
+    return a
 
 
 def player(m) -> dict | None:
@@ -182,3 +249,210 @@ def wandered(scr: dict) -> str | None:
     if where in ("campaign", "story", "agent_hunt", "options"):
         return f"RE6 left The Mercenaries ({where})"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Round gameplay (the Driver interface)
+# ---------------------------------------------------------------------------
+
+def snapshot(m) -> dict:
+    """The round as the Bot reads it: player pos / hp / yaw, enemies, timer, bonuses. Unknown fields are absent."""
+    out: dict = {}
+    try:
+        sp = _u32(m, S_PLAYER)
+        if not _ok(sp):
+            return {}
+        pl = _u32(m, sp + PL_FIRST)
+        if not _ok(pl):
+            return {}
+        pos = struct.unpack(">3f", m.rd(pl + PL_POS, 12))
+        hp, hp_max = struct.unpack(">hh", m.rd(pl + PL_LIFE, 4))
+        yaw = _f32(m, pl + PL_YAW)
+        out["player"] = {"pos": pos, "hp": hp, "hp_max": hp_max, "rot": yaw}
+    except Exception:                                   # noqa: BLE001 - guest memory not mapped yet
+        return {}
+    # Unknown addresses contribute nothing until configure() receives them.
+    if ADDR.get("timer") is not None:
+        try:
+            out["timer"] = _f32(m, ADDR["timer"])
+        except Exception:                               # noqa: BLE001
+            pass
+    enemies = []
+    if ADDR.get("enemy_arr") is not None and ADDR.get("enemy_n") is not None:
+        try:
+            base = _u32(m, ADDR["enemy_arr"])
+            n = _u32(m, ADDR["enemy_n"])
+            if _ok(base) and 0 < n <= 64:
+                for i in range(n):
+                    ep = _u32(m, base + 4 * i)
+                    if not _ok(ep):
+                        continue
+                    epos = struct.unpack(">3f", m.rd(ep + PL_POS, 12))
+                    ehp, _ = struct.unpack(">hh", m.rd(ep + PL_LIFE, 4))
+                    enemies.append({"pos": epos, "hp": ehp})
+        except Exception:                               # noqa: BLE001
+            pass
+    out["enemies"] = enemies
+    bonuses = []
+    if ADDR.get("time_bonus") is not None:
+        try:
+            base = _u32(m, ADDR["time_bonus"])
+            if _ok(base):
+                for i in range(8):                      # a generous cap; the real count is unknown
+                    bp = _u32(m, base + 4 * i)
+                    if not _ok(bp):
+                        continue
+                    bpos = struct.unpack(">3f", m.rd(bp + PL_POS, 12))
+                    bonuses.append({"pos": bpos})
+        except Exception:                               # noqa: BLE001
+            pass
+    out["bonuses"] = bonuses
+    return out
+
+
+def own_screen(snap: dict) -> str:
+    p = snap.get("player") if snap else None
+    if not p:
+        return "loading"
+    if p["hp"] <= 0:
+        return "dead"
+    if snap.get("timer") is not None and snap["timer"] <= 0:
+        return "results"
+    return "playing"
+
+
+def read_mesh(m, cache: dict | None = None):
+    """The navmesh through the unverified s_ai chain, or None while that address is unknown."""
+    if ADDR["s_ai"] is None:
+        return None
+    from . import re5_nav
+    return re5_nav.read(m, cache, s_ai=ADDR["s_ai"])
+
+
+def _dist(a, b) -> float:
+    return math.hypot(a[0] - b[0], a[2] - b[2])
+
+
+class Bot:
+    def __init__(self, m=None, clock=None, stats=None, mesh=None):
+        self.m, self.clock = m, clock
+        self.stats = stats if stats is not None else {}
+        for k in ("ticks", "shots", "withheld", "walked"):
+            self.stats.setdefault(k, 0)
+        self._mesh = mesh                # a fixed mesh (tests); else read from RAM on demand
+        self._cache: dict = {}
+        self._last = None                # (pos) for the heading estimate when the yaw address is unknown
+        self._rot = 0.0
+
+    def mesh(self):
+        return self._mesh if self._mesh is not None else (read_mesh(self.m, self._cache) if self.m else None)
+
+    def _facing(self, p) -> float:
+        if p.get("rot") is not None:
+            return p["rot"]
+        if self._last is not None and _dist(self._last, p["pos"]) > 5.0:
+            self._rot = heading(p["pos"][0] - self._last[0], p["pos"][2] - self._last[2])
+        self._last = p["pos"]
+        return self._rot
+
+    def sighted(self, p, e, mesh) -> bool:
+        """Proof that p can see and shoot e: the game's flag, else open mesh floor between them. No proof = False."""
+        if abs(e["pos"][1] - p["pos"][1]) > FLOOR_DY:
+            return False
+        d = _dist(p["pos"], e["pos"])
+        if d > SIGHT_R:
+            return False
+        if e.get("visible") is not None:
+            return e["visible"]
+        if mesh is None or not mesh.floor_segment(p["pos"], e["pos"]):
+            return False
+        r = mesh.route(p["pos"], e["pos"])
+        if r is None:
+            return False
+        length, cur = 0.0, p["pos"]
+        for w in r:
+            length += _dist(cur, w)
+            cur = w
+        return length <= d * SIGHT_BEND + SIGHT_SLACK
+
+    def _turn(self, err: float) -> set:
+        if abs(err) <= TURN_TOL:
+            return set()
+        return {"rleft"} if err > 0 else {"rright"}
+
+    def _walk_to(self, p, goal, mesh, rot) -> set:
+        route = mesh.route(p["pos"], goal) if mesh is not None else None
+        if not route:
+            return set()
+        wp = route[0]
+        if len(route) > 1 and _dist(p["pos"], wp) < ARRIVE_R:
+            wp = route[1]
+        err = wrap(heading(wp[0] - p["pos"][0], wp[2] - p["pos"][2]) - rot)
+        keys = self._turn(err)
+        if abs(err) < math.radians(60):
+            keys.add("lup")
+        self.stats["walked"] += 1
+        return keys
+
+    def _route_len(self, mesh, a, b):
+        r = mesh.route(a, b) if mesh is not None else None
+        if not r:
+            return None
+        n, cur = 0.0, a
+        for w in r:
+            n += _dist(cur, w)
+            cur = w
+        return n
+
+    def tick(self, snap: dict) -> dict:
+        self.stats["ticks"] += 1
+        p = snap.get("player") if snap else None
+        if not p:
+            return {"hold": set()}
+        if p["hp"] <= 0:
+            return {"tap": "a"}
+        mesh = self.mesh()
+        rot = self._facing(p)
+        foes = [e for e in snap.get("enemies", []) if e.get("hp", 1) > 0]
+        seen = sorted((e for e in foes if self.sighted(p, e, mesh)), key=lambda e: _dist(p["pos"], e["pos"]))
+        if foes and not seen:
+            self.stats["withheld"] += 1           # enemies exist, none provably in sight: no shot
+        if seen:
+            t = seen[0]
+            err = wrap(heading(t["pos"][0] - p["pos"][0], t["pos"][2] - p["pos"][2]) - rot)
+            keys = {"l2"} | self._turn(err)
+            if abs(err) <= AIM_TOL:
+                keys.add("r2")
+                self.stats["shots"] += 1
+            return {"hold": keys}
+        for pool in (snap.get("bonuses", []), foes):
+            scored = [(self._route_len(mesh, p["pos"], b["pos"]), b) for b in pool]
+            scored = [(n, b) for n, b in scored if n is not None]
+            if scored:
+                return {"hold": self._walk_to(p, min(scored, key=lambda s: s[0])[1]["pos"], mesh, rot)}
+        return {"hold": set()}
+
+    def prompt_ok(self, button, snap, now) -> bool:
+        return True
+
+    def save(self) -> None:
+        pass
+
+
+class RE6X360:
+    map_id = "0871eee3b68cdea3"
+
+    def snapshot(self, m) -> dict:
+        return snapshot(m)
+
+    def screen(self, m, snap: dict | None) -> str:
+        return own_screen(self.snapshot(m) if snap is None else snap)
+
+    def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
+        return Bot(m, clock=clock, stats=stats)
+
+    def progress(self, snap: dict) -> dict:
+        return {"timer": snap.get("timer")}
+
+
+DRIVER = RE6X360
