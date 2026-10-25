@@ -127,3 +127,39 @@ def test_duplicate_actor_paths_are_counted_once():
 def test_section_names_respect_byte_limit_and_ascii():
     assert bo2_inventory.goefile_names(b"\xffvalid\x00", limit=4) == []
     assert bo2_inventory.goefile_names(b"\xffa\x01bc\x00") == []
+
+
+# --- game_unlocks registration ---
+
+
+def test_profile_gate_is_honest_and_pinned():
+    gate = bo2_inventory.profile_gate()
+    assert gate['verified'] is False
+    assert gate['evidence']['source_sha256'] == bo2_inventory.SOURCE_SHA256
+    assert gate['evidence']['main_dol_sha256'] == bo2_inventory.DOL_SHA256
+    assert gate['evidence']['disc_id'] == "GO2E4F"
+    assert gate['evidence']['roster_actor_count'] == bo2_inventory.ROSTER_ACTOR_COUNT
+    assert len(gate['blockers']) == 3 and gate['next']
+
+
+def test_game_unlocks_registers_bo2_research_pending():
+    from gbox import game_unlocks
+    game = {'game_id': bo2_inventory.GAME_ID, 'platform': 'gamecube'}
+    profile = game_unlocks.profile_for(game)
+    assert profile['status'] == 'research_pending'
+    assert profile['profile'] == 'bo2-gc-lock-surface-v1'
+    assert profile['verified'] is False
+    assert 'characters' in profile['scope'] and 'hidden_characters' in profile['scope']
+    hook = game_unlocks.pre_launch(game, ctx=None)
+    assert hook['state'] == 'research_pending'
+    assert hook['applied'] is False
+    assert hook['evidence']['source_sha256'] == bo2_inventory.SOURCE_SHA256
+
+
+def test_game_unlocks_bo2_gate_matches_disc_facts():
+    _skip_if_no_source()
+    m = bo2_inventory.inventory(GCZ)
+    gate = bo2_inventory.profile_gate()
+    by_name = {e["name"]: e for e in m["executables"]}
+    assert gate['evidence']['main_dol_sha256'] == by_name["main.dol (boot, not in FST)"]["sha256"]
+    assert gate['evidence']['roster_actor_count'] == m["characters"]["roster"]["actor_count"]

@@ -197,6 +197,53 @@ def inventory(gcz: Path, source_sha256: str | None = None, source_path: str | No
     }
 
 
+CATEGORIES = ('characters', 'hidden_characters', 'modes', 'levels', 'stages',
+              'costumes', 'items', 'extras')
+
+# Roster facts pinned from the owned GO2E4F disc (assets/etypes/list.txt).
+ROSTER_ACTOR_COUNT = 104
+ROSTER_ETP_COUNT = 157
+DOL_SHA256 = 'f89ee2f72401916a8136a34e240dc7851e9ac48858db8eece1f8e40fde3163e9'
+CODE_BGG_SHA256 = 'd21e86d812ac0cd363a08fd89b8d9a15af8c6fb6666526d7248f413ea3c0481a'
+
+
+def profile_gate() -> dict:
+    """Honest, unverified gate for the Blood Omen 2 unlock scope.
+
+    The owned build is fully resolved, hashed and inventoried (single-player
+    action-adventure: Kain is the only player character; the .etp roster is
+    NPC/enemy types, not selectables).  No unlock writer, save-format map or
+    runtime-verified entry exists yet, so this gate never reports verified.
+    """
+    return {
+        'verified': False,
+        'reason': ('Blood Omen 2 (USA) GO2E4F: the owned GCZ, main.dol and GOE code '
+                   'containers are hashed and the disc is fully inventoried, but no '
+                   'unlockable-content writer or memory-card save map exists and no '
+                   'category entry has been runtime-verified.'),
+        'categories': list(CATEGORIES),
+        'evidence': {
+            'source_sha256': SOURCE_SHA256,
+            'disc_id': DISC_ID,
+            'main_dol_sha256': DOL_SHA256,
+            'code_bgg_sha256': CODE_BGG_SHA256,
+            'engine': 'Crystal Dynamics GOE',
+            'roster_actor_count': ROSTER_ACTOR_COUNT,
+            'roster_etp_count': ROSTER_ETP_COUNT,
+            'fst_file_count': 213,
+            'inventory_module': 'gbox.bo2_inventory',
+        },
+        'blockers': [
+            'GOE goefile chunk grammar and .rkv vault directory not reversed (Ghidra stage)',
+            'GameCube memory-card save layout for GO2E4F not mapped',
+            'No on-load unlock writer implemented; no runtime acceptance performed',
+        ],
+        'next': ('Reverse code.bgg/main.dol in Ghidra (GOE engine), map the memory-card '
+                 'save, then implement a revision-guarded on-load routine and verify '
+                 'gameplay on an authorized idle worker.'),
+    }
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Blood Omen 2 (GC, GO2E4F) owned-disc inventory manifest")
     ap.add_argument("gcz", type=Path, help="the owned .gcz (or plain .iso) disc image")

@@ -16,6 +16,7 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+BO2_ID = 'af354bb8263e7b32'  # Legacy of Kain: Blood Omen 2 (USA), platform=gamecube
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -44,6 +45,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == BO2_ID and game.get('platform') == 'gamecube':
+            # Blood Omen 2: owned build hashed and fully inventoried, but no
+            # unlock writer or save map exists. Report the pinned evidence
+            # state; never write memory or a memory-card save here.
+            from . import bo2_inventory
+            gate = bo2_inventory.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(bo2_inventory.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -98,6 +109,13 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == BO2_ID and game.get('platform') == 'gamecube':
+        from . import bo2_inventory
+        gate = bo2_inventory.profile_gate()
+        return {'status': 'research_pending', 'profile': 'bo2-gc-lock-surface-v1', 'verified': False,
+                'game_id': BO2_ID, 'scope': list(bo2_inventory.CATEGORIES),
+                'reason': gate['reason'], 'evidence': gate['evidence'],
+                'blockers': gate['blockers'], 'next': gate['next']}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
