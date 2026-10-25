@@ -238,6 +238,105 @@ def data_span(ex: Exe, root: int) -> dict:
             "referenced_bytes": sum(p["referenced_bytes"] for p in per), "per_model": per}
 
 
+def tree_ownership(ex: Exe, root: int) -> dict:
+    """Prove array exclusivity for one tree's NJS_MODEL data arrays.
+
+    For every data-array address (points, normals, meshset records, materials,
+    per-meshset index and vertuv arrays) referenced by the tree at ``root``,
+    scan all other root trees discovered by ``scan_trees`` and count how many
+    reference the same address. Returns a report with:
+
+    * ``exclusive_count`` / ``shared_count`` – how many arrays are exclusive
+      vs. aliased with other trees.
+    * ``shared`` – list of ``{addr, kind, models, trees}`` for each aliased
+      array, where ``trees`` lists the other tree root addresses (hex) that
+      also reference that address.
+    * ``exclusive`` – list of ``{addr, kind, model, bytes}`` for every
+      exclusively-referenced array.
+    * ``exclusive_ratio`` – fraction of arrays that are exclusive.
+
+    A tree whose arrays are all exclusive (ratio == 1.0) is safe for
+    in-place geometry edits: no other character's draw path can read the
+    same bytes. Trees with shared arrays are still safe for *read-only*
+    inspection but an edit to a shared array would also affect the aliasing
+    tree's rendering.
+    """
+    from .sa1_inventory import scan_trees
+    nodes = ex.tree(root)
+    if not nodes:
+        raise ValueError(f"invalid tree at {root:#x}")
+
+    # Collect the tree's data-array addresses, tagged by kind and owning model
+    arrays: dict[int, dict] = {}
+    for n in nodes:
+        if not n["model"]:
+            continue
+        model = n["model"]
+        pts, nrm, nv, msets, mats, nms, nmat = ex.u("IIiIIHH", model)
+        arrays.setdefault(pts,   {"kind": "points",    "model": model, "size": nv * 12})
+        if nrm:
+            arrays.setdefault(nrm,   {"kind": "normals",   "model": model, "size": nv * 12})
+        arrays.setdefault(msets, {"kind": "meshsets",  "model": model, "size": nms * MESHSET_SIZE})
+        if mats:
+            arrays.setdefault(mats,  {"kind": "materials", "model": model, "size": nmat * MAT_SIZE})
+        for i in range(nms):
+            tm, nmesh, mp, _a, _mn, _mc, uvs = ex.u("HHIIIII", msets + i * MESHSET_SIZE)
+            if mp:
+                arrays.setdefault(mp,  {"kind": "indices",  "model": model, "size": 0})
+            if uvs:
+                arrays.setdefault(uvs, {"kind": "vertuv",   "model": model, "size": 0})
+
+    # Scan every other root tree for the same array addresses
+    all_trees = scan_trees(ex.d, ex.key, min_nodes=1)
+    shared: dict[int, list[str]] = {}
+    for tree in all_trees:
+        tr = int(tree["addr"], 16)
+        if tr == root:
+            continue
+        nodes_t = ex.tree(tr)
+        if not nodes_t:
+            continue
+        arr_t: set[int] = set()
+        for n in nodes_t:
+            if not n["model"]:
+                continue
+            m = n["model"]
+            p2, n2, v2, ms2, ma2, nms2, nm2 = ex.u("IIiIIHH", m)
+            arr_t.add(p2)
+            if n2:  arr_t.add(n2)
+            if ma2: arr_t.add(ma2)
+            arr_t.add(ms2)
+            for i in range(nms2):
+                tm2, nm2, mp2, _a2, _mn2, _mc2, uvs2 = ex.u("HHIIIII", ms2 + i * MESHSET_SIZE)
+                if mp2:  arr_t.add(mp2)
+                if uvs2: arr_t.add(uvs2)
+        for a in arr_t & set(arrays.keys()):
+            shared.setdefault(a, []).append(tree["addr"])
+
+    exclusive, shared_list = [], []
+    for a, info in sorted(arrays.items()):
+        entry = {"addr": f"0x{a:08X}", "kind": info["kind"], "model": f"0x{info['model']:08X}",
+                 "bytes": info["size"]}
+        if a in shared:
+            entry["trees"] = sorted(shared[a])
+            shared_list.append(entry)
+        else:
+            exclusive.append(entry)
+
+    total = len(arrays)
+    return {
+        "root": f"0x{root:08X}",
+        "trees_scanned": len(all_trees),
+        "array_count": total,
+        "exclusive_count": len(exclusive),
+        "shared_count": len(shared_list),
+        "exclusive_ratio": len(exclusive) / total if total else 1.0,
+        "all_exclusive": not shared_list,
+        "shared": shared_list,
+        "exclusive": exclusive,
+    }
+
+
 # ------------------------------------------------------------------ CLI
 
 def main(argv=None) -> int:
@@ -247,18 +346,30 @@ def main(argv=None) -> int:
     ap.add_argument("gdi")
     ap.add_argument("--char", default="sonic")
     ap.add_argument("--out", help="write the span JSON here")
+    ap.add_argument("--ownership", action="store_true",
+                    help="report array exclusivity across all root trees")
     a = ap.parse_args(argv)
     from . import sa1_chars as S
     disc = __import__("gbox.gdrom", fromlist=["GDRom"]).GDRom(a.gdi)
     ex, root, src = S.locate(disc, a.char)
+    import json, hashlib
+    sha = hashlib.sha256(ex.d).hexdigest()
+    if a.ownership:
+        report = tree_ownership(ex, root)
+        report["source_sha256"] = sha
+        report["source"] = src
+        text = json.dumps(report, indent=1)
+        if a.out:
+            Path(a.out).write_text(text)
+        print(text)
+        return 0
     span = data_span(ex, root)
     nodes = ex.tree(root) or []
     # Canonical comparison and genuine no-op are different checks.
     ok = all(roundtrip(ex, n["model"])[2] for n in nodes if n["model"])
     noop = all(patch_points(ex, n['model'], model_data(ex, n['model'])['points']) == ex.d
                for n in nodes if n['model'])
-    import json, hashlib
-    span['source_sha256'] = hashlib.sha256(ex.d).hexdigest()
+    span['source_sha256'] = sha
     span['noop_all_models_byte_identical'] = noop
     span["source"] = src
     span["roundtrip_all_models_semantically_equal"] = bool(ok)
