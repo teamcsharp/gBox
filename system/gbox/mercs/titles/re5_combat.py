@@ -118,6 +118,10 @@ BOW_OUTCOME_S = 2.0                   # observation retention only; expiry is un
 BOW_TOL_MIN, BOW_TOL_MAX = math.radians(1.5), math.radians(8)   # the longbow's release window, whatever the range
 BOW_TRACK = .25                       # the aim keeps correcting inside this share of the release window
 BOW_STAND_R = 800.0                   # a Majini this near: the longbow stands and shoots, never leaves to reposition
+BOW_TURN_ENTER, BOW_TURN_EXIT = math.radians(60), math.radians(25)
+BOW_TURN_IDLE_S, BOW_TURN_MAX_S = .75, 2.0
+BOW_READY_WAIT_S = 1.0
+BOW_TARGET_SLACK = 75.0              # keep a living target through nearby distance ties (world cm)
 
 
 def bow_tolerance(distance):
@@ -439,6 +443,11 @@ class Combat:
         self._cmd_shot_at = -1e9
         self.bow_down_at = None
         self.bow_up_at = -1e9
+        self.bow_turn_key, self.bow_turning = None, False
+        self.bow_turn_started = self.bow_turn_progress_at = 0.
+        self.bow_turn_best, self.bow_turn_direction = math.inf, 0
+        self.bow_ready_key, self.bow_ready_since = None, None
+        self.bow_target_key = None
         self.laserless_feedback_since = None
         self.needs_firing_position = False
         self.laserless_progress = None
@@ -713,6 +722,31 @@ class Combat:
     def choose_target(self, snap, p, enemies, now):
         self.target_exposed = False
         enemies = [e for e in enemies if (e.get("hp") or 0) > 0]
+        bow = any(w.get('hand') and w.get('id') == 0x10F for w in snap.get('inventory') or ())
+        if not bow:
+            self.bow_target_key = None
+        def nearest(pool):
+            target = min(pool, key=lambda e: math.dist(p['pos'], e['pos']), default=None)
+            if not bow or target is None:
+                return target
+            locked = next((e for e in pool if self.bow_target_key ==
+                           (p.get('ptr'), e.get('ptr', e.get('slot')))), None)
+            reason = 'nearest supported target'
+            if locked is not None:
+                distance = math.dist(p['pos'], target['pos'])
+                locked_distance = math.dist(p['pos'], locked['pos'])
+                contact_preemption = distance < POINT_BLANK and locked_distance > max(150., 1.5*distance)
+                if not contact_preemption and locked_distance <= distance+BOW_TARGET_SLACK:
+                    target = locked
+                    reason = 'retain living bow target through a nearby distance tie'
+                elif contact_preemption:
+                    reason = 'closer contact threat takes priority'
+            key = (p.get('ptr'), target.get('ptr', target.get('slot')))
+            if self.bow_target_key is not None and self.bow_target_key != key:
+                self.stats['bow_target_changes'] = self.stats.get('bow_target_changes',0)+1
+            self.bow_target_key = key
+            self.stats.update(bow_target_id=key[1], bow_target_policy=reason)
+            return target
         ray = self.observe_awareness(snap, p, now)
         # Immediate threats outrank distant crosshair targets, bonus routes and score optimizations.
         # Unknown sight lines remain explicitly unknown; direct-fire guns fire during acquisition by operator policy.
@@ -720,7 +754,7 @@ class Combat:
                  and self.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now]
         if close:
             exposed_close = [e for e in close if ray is not None and dot_on(ray[1], e["pos"]) is not None]
-            target = min(exposed_close or close, key=lambda e: math.dist(p["pos"], e["pos"]))
+            target = nearest(exposed_close or close)
             self.target_exposed = ray is not None and dot_on(ray[1], target["pos"]) is not None
             self.stats["target_evidence"] = "nearest immediate threat; " + (
                 "laser first hit on enemy" if self.target_exposed else "acquiring clear shot")
@@ -730,7 +764,7 @@ class Combat:
             # when aiming down at a nearby enemy whose centre lies outside that estimate.
             exposed = [e for e in enemies if dot_on(ray[1], e["pos"]) is not None]
             if exposed:
-                target = min(exposed, key=lambda e: math.dist(p["pos"], e["pos"]))
+                target = nearest(exposed)
                 self.blocked_until.pop(target.get("ptr", target.get("slot")), None)
                 self.stats["target_evidence"] = "laser first hit on enemy"
                 self.target_exposed = True
@@ -742,7 +776,7 @@ class Combat:
                     self.blocked_until[e.get("ptr", e.get("slot"))] = now + BLOCKED_S
         candidates = [e for e in candidates if self.blocked_until.get(e.get("ptr", e.get("slot")), 0) <= now]
         self.stats["target_evidence"] = "front candidate; visibility unconfirmed" if candidates else "no exposed candidate"
-        return min(candidates, key=lambda e: math.dist(p["pos"], e["pos"]), default=None)
+        return nearest(candidates)
 
     def seek_target(self, snap, p, enemies, now):
         if any(self.blocked_until.get(e.get("ptr", e.get("slot")), 0) > now for e in enemies):
@@ -971,6 +1005,55 @@ class Combat:
             return {"hold": set()}
         foot = tgt["pos"]
         facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
+        if wid == 0x0F:
+            key = (p.get('ptr'), tgt.get('ptr', tgt.get('slot')))
+            if self.bow_turn_key != key:
+                self.bow_turn_key, self.bow_turning = key, False
+            if self.bow_turning:
+                # Deliberately lowering L1 leaves the ready pose. Finish that
+                # committed body turn before requesting aim again; the orbit
+                # camera is not aim feedback while the weapon is lowered.
+                if p.get('action') in (4, 5):
+                    self.bow_turning = False
+                    return {'hold': set()}
+                if abs(facing) <= BOW_TURN_EXIT or facing*self.bow_turn_direction <= 0:
+                    self.bow_turning, self.bow_ready_since = False, None
+                    self.laserless_progress = None  # a completed turn begins a fresh bounded aim/shot attempt
+                else:
+                    if self.bow_turn_best-abs(facing) >= math.radians(3):
+                        self.bow_turn_best, self.bow_turn_progress_at = abs(facing), now
+                    if now-self.bow_turn_started >= BOW_TURN_MAX_S \
+                            or now-self.bow_turn_progress_at >= BOW_TURN_IDLE_S:
+                        self.bow_turning = False
+                        self.laserless_progress = None
+                        self.needs_firing_position = True
+                        self.stats.update(bow_aim_phase='body turn stalled',
+                            combat='longbow: bounded body turn stalled; use supported route',
+                            fire_gate='longbow: body turn unconfirmed; release and reacquire')
+                        return {'hold': set()}
+                    self.stats.update(bow_aim_phase='finishing body turn',
+                        bow_body_error_deg=round(math.degrees(facing),3),
+                        combat='longbow: finish committed body turn before raising aim',
+                        fire_gate='longbow: body turn; trigger released',
+                        aim_feedback='current body heading; orbit camera withheld')
+                    return {'hold': self._face(p, foot)}
+            if self.bow_ready_key != key:
+                self.bow_ready_key, self.bow_ready_since = key, None
+            if not self._ready(p):
+                self.bow_down_at = None
+                if self.bow_ready_since is None:
+                    self.bow_ready_since = now
+                waiting = now-self.bow_ready_since < BOW_READY_WAIT_S
+                self.needs_firing_position = not waiting
+                if not waiting:
+                    self.bow_ready_since = None  # the next supported position gets a fresh bounded aim attempt
+                self.stats.update(bow_aim_phase='waiting for native aim pose' if waiting else 'native aim pose unavailable',
+                    combat='longbow: holding aim while the native pose settles' if waiting
+                        else 'longbow: native pose unavailable; reacquire supported position',
+                    fire_gate='longbow: aim pose unconfirmed; no camera correction or trigger',
+                    aim_feedback='third-person camera withheld until native aim pose')
+                return {'hold': {'l1'} if waiting else set()}
+            self.bow_ready_since = None
         aim = (foot[0], foot[1] + CHEST_H, foot[2])
         cam = snap.get("camera") or {}
         camera_direction = None
@@ -1001,10 +1084,27 @@ class Combat:
         distance = math.dist(origin,aim)
         yaw_tol,pitch_tol = bow_tolerance(distance) if wid==0x0F else (BOW_YAW,BOW_PITCH)
         aligned = abs(yaw) <= yaw_tol and abs(pitch) <= pitch_tol
+        if wid == 0x0F:
+            self.stats.update(bow_aim_tolerance_deg=[round(math.degrees(yaw_tol),3),round(math.degrees(pitch_tol),3)],
+                              bow_aim_error_deg=[round(math.degrees(yaw),3),round(math.degrees(pitch),3)],
+                              bow_body_error_deg=round(math.degrees(facing),3))
+            self.bow_turning = abs(facing) > SWING_TURN and abs(yaw) > BOW_TURN_ENTER
+            if self.bow_turning:
+                self.bow_turn_started = self.bow_turn_progress_at = now
+                self.bow_turn_best = abs(facing)
+                self.bow_turn_direction = 1 if facing > 0 else -1
+            swing = self.bow_turning
+            self.stats['bow_aim_phase'] = 'turning to target' if swing else 'tracking with aim held'
+        else:
+            swing = abs(facing) > SWING_TURN and not aligned
         # An on-target aim (camera ray already on his chest) supersedes the whole-body swing: if the aim line is
         # already on him, fire now instead of lowering the gun to turn the body. Only a genuinely off-axis aim for a
         # far-off heading turns first. Never swing mid-grab (action 4).
-        if abs(facing) > SWING_TURN and not aligned and p.get("action") != 4:
+        # For the bow, a vertical correction or small camera yaw error must never
+        # drop aim and turn by the body's heading. The shoulder aim can already
+        # face the target while the body remains off-axis. Separate enter/exit
+        # angles prevent the aim-camera transition from repeatedly toggling L1.
+        if swing and p.get("action") != 4:
             self.bow_down_at = None
             if self._laserless_stalled(p,tgt,wid,abs(facing),shot,now):
                 return {"hold":set()}
@@ -1021,8 +1121,6 @@ class Combat:
                 'yaw_tolerance_rad':yaw_tol,'pitch_tolerance_rad':pitch_tol,
                 'corridor_supported':bool(corridor),'cover':'projectile collision unverified',
                 'ballistic_calibration':'unavailable; no owned impact/flight model'}
-            self.stats.update(bow_aim_tolerance_deg=[round(math.degrees(yaw_tol),3),round(math.degrees(pitch_tol),3)],
-                              bow_aim_error_deg=[round(math.degrees(yaw),3),round(math.degrees(pitch),3)])
         if wid not in (0x0F,0x36) and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
             aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
         fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
@@ -1284,6 +1382,11 @@ class Combat:
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
         self.last_timer = None
         self.bow_down_at, self.bow_up_at = None, -1e9
+        self.bow_turn_key, self.bow_turning = None, False
+        self.bow_turn_started = self.bow_turn_progress_at = 0.
+        self.bow_turn_best, self.bow_turn_direction = math.inf, 0
+        self.bow_ready_key, self.bow_ready_since = None, None
+        self.bow_target_key = None
         self.laserless_feedback_since, self.needs_firing_position = None, False
         self.laserless_progress = None
         self.bow_pending.clear()

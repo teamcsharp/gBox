@@ -160,3 +160,167 @@ def test_near_majini_keeps_the_rotten_eggs_flying_instead_of_repositioning(tmp_p
     tick(combat,state,1.)
     throws=sum('r1' in tick(combat,state,1.+i*.1)['hold'] for i in range(1,60))
     assert not combat.needs_firing_position and throws>=10
+
+
+def test_bow_vertical_error_keeps_aim_and_never_turns_away_by_body_heading(tmp_path):
+    memory,state=scene()
+    state['player']['rot']=math.radians(50)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    actions=[]
+    for now,height in ((1.,210.),(1.1,110.),(1.2,210.),(1.3,110.)):
+        state['camera']['at']=(0.,height,1000.)
+        actions.append(tick(combat,state,now)['hold'])
+    assert all('l1' in keys and not ({'rleft','rright'} & keys) for keys in actions)
+    assert 'rdown' in actions[0] and 'r1' not in actions[0]
+    assert 'r1' in actions[1] and 'r1' in actions[3]
+    assert combat.stats['bow_body_error_deg']==-50.
+    assert combat.stats['bow_aim_error_deg']==[0.,0.]
+
+
+def test_bow_small_camera_yaw_error_ignores_opposite_body_turn_direction(tmp_path):
+    memory,state=scene()
+    state['player']['rot']=math.radians(50)
+    # Body would request right, but the actual camera aim needs a small left correction.
+    state['camera']['at']=(-math.tan(math.radians(3))*1000,110.,1000.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    keys=tick(combat,state,1.)['hold']
+    assert 'l1' in keys and 'rleft' in keys and 'rright' not in keys
+    assert 'r1' not in keys
+
+
+def test_bow_large_turn_has_hysteresis_across_camera_pose_changes(tmp_path):
+    memory,state=scene()
+    state['player']['rot']=math.radians(90)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    actions=[]
+    for i,(body,camera) in enumerate(((90,80),(70,55),(20,20),(50,50))):
+        state['player']['rot']=math.radians(body)
+        state['camera']['at']=(math.tan(math.radians(camera))*1000,110.,1000.)
+        actions.append(tick(combat,state,1.+i*.1)['hold'])
+    assert all('rright' in keys and 'l1' not in keys for keys in actions[:2])
+    assert all('l1' in keys for keys in actions[2:])
+    assert not any('r1' in keys for keys in actions)
+
+
+def test_bow_waits_for_native_aim_before_using_orbit_camera(tmp_path):
+    memory,state=scene()
+    state['player']['action']=0
+    state['camera']['at']=(1000.,500.,0.)
+    memory.put(ACT,'>I',0)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert tick(combat,state,1.)=={'hold':{'l1'}}
+    assert tick(combat,state,1.9)=={'hold':{'l1'}}
+    assert not combat.needs_firing_position
+    state['player']['action']=2
+    state['camera']['at']=(0.,110.,1000.)
+    assert {'l1','r1'}<=tick(combat,state,1.95)['hold']
+    assert combat.stats['bow_aim_phase']=='tracking with aim held'
+
+
+def test_bow_native_pose_wait_is_bounded_and_does_not_invent_shots(tmp_path):
+    memory,state=scene()
+    state['player']['action']=0
+    memory.put(ACT,'>I',0)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert tick(combat,state,1.)=={'hold':{'l1'}}
+    assert tick(combat,state,2.1)=={'hold':set()}
+    assert combat.needs_firing_position and combat.stats['shots']==0
+    combat.needs_firing_position=False  # driver has completed its supported reposition
+    assert tick(combat,state,3.2)=={'hold':{'l1'}}
+
+
+def test_bow_owned_fire_pose_keeps_tracking_through_non_aim_action_byte(tmp_path):
+    memory,state=scene()
+    state['player']['action']=6
+    memory.put(ACT,'>I',C.FIRE_VT)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert {'l1','r1'}<=tick(combat,state,1.)['hold']
+    assert combat.stats['bow_aim_phase']=='tracking with aim held'
+
+
+def test_bow_retains_live_target_when_nearby_enemies_trade_nearest_distance(tmp_path):
+    memory,state=scene()
+    first=state['enemies'][0]
+    first['pos']=(0.,0.,160.)
+    second={**first,'ptr':first['ptr']+0x1000,'slot':1,'pos':(150.,0.,80.)}
+    state['enemies']=[first,second]
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.) is first
+    second['pos']=(140.,0.,50.)  # now closer by11cm, but still on the opposite side of the aim
+    assert combat.choose_target(state,state['player'],state['enemies'],1.1) is first
+    first['pos']=(0.,0.,178.)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.2) is first
+    assert combat.stats.get('bow_target_changes',0)==0
+    first['hp']=0
+    assert combat.choose_target(state,state['player'],state['enemies'],1.3) is second
+    assert combat.stats['bow_target_changes']==1
+
+
+def test_bow_target_retention_yields_to_contact_threat_and_blocked_target(tmp_path):
+    memory,state=scene()
+    first=state['enemies'][0]
+    first['pos']=(0.,0.,200.)
+    second={**first,'ptr':first['ptr']+0x1000,'slot':1,'pos':(250.,0.,0.)}
+    state['enemies']=[first,second]
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.) is first
+    second['pos']=(90.,0.,0.)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.1) is second
+    assert 'contact threat' in combat.stats['bow_target_policy']
+    combat.blocked_until[second['ptr']]=10.
+    assert combat.choose_target(state,state['player'],state['enemies'],1.2) is first
+
+
+def test_gun_nearest_target_policy_is_unchanged_by_bow_retention(tmp_path):
+    memory,state=scene(0x12)
+    first=state['enemies'][0]
+    first['pos']=(0.,0.,160.)
+    second={**first,'ptr':first['ptr']+0x1000,'slot':1,'pos':(170.,0.,0.)}
+    state['enemies']=[first,second]
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.) is first
+    second['pos']=(150.,0.,0.)
+    assert combat.choose_target(state,state['player'],state['enemies'],1.1) is second
+
+
+def test_committed_bow_turn_finishes_after_lowering_leaves_ready_pose(tmp_path):
+    memory,state=scene()
+    state['player']['rot']=math.radians(90)
+    state['camera']['at']=(1000.,110.,0.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert tick(combat,state,1.)=={'hold':{'rright'}}
+    # The game leaves READY/FIRE after releasing L1. The orbit camera then
+    # swings independently; it cannot force another premature raise.
+    state['player']['action']=0
+    memory.put(ACT,'>I',0)
+    for now,body in ((1.1,70),(1.2,40)):
+        state['player']['rot']=math.radians(body)
+        state['camera']['at']=(-1000.,500.,0.)
+        assert tick(combat,state,now)=={'hold':{'rright'}}
+        assert combat.stats['aim_feedback']=='current body heading; orbit camera withheld'
+    state['player']['rot']=math.radians(20)
+    assert tick(combat,state,1.3)=={'hold':{'l1'}}
+    state['player']['action']=2
+    state['camera']['at']=(0.,110.,1000.)
+    assert {'l1','r1'}<=tick(combat,state,1.4)['hold']
+
+
+@pytest.mark.parametrize('change',['stalled','target','crossed'])
+def test_committed_bow_turn_is_bounded_and_cancels_when_its_goal_changes(tmp_path,change):
+    memory,state=scene()
+    state['player']['rot']=math.radians(90)
+    state['camera']['at']=(1000.,110.,0.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    assert tick(combat,state,1.)=={'hold':{'rright'}}
+    state['player']['action']=0
+    memory.put(ACT,'>I',0)
+    now=1.1
+    if change=='stalled': now=1.8
+    if change=='target': state['enemies'][0]['ptr']+=0x1000
+    if change=='crossed': state['player']['rot']=math.radians(-30)
+    action=tick(combat,state,now)
+    assert 'rright' not in action['hold'] and 'rleft' not in action['hold']
+    if change=='stalled':
+        assert action=={'hold':set()} and combat.needs_firing_position
+    else:
+        assert action=={'hold':{'l1'}}

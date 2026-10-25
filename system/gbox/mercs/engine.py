@@ -328,12 +328,16 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     if stats.get('mercmode_rotate_requested'):
                         return 'mercmode_boundary'
                 hold(set())
-                if where == "loading" or not snap.get("player"):
+                handoff = getattr(drv, "menu_handoff", None)
+                known_menu = callable(handoff) and handoff(m, snap, where) is True
+                if where == "loading" or (not snap.get("player") and not known_menu):
+                    gone_since = None
                     lost_since = lost_since or now
                     if now - lost_since > LOST_S:
                         outcome = "lost"
                         return "lost"
                 else:
+                    lost_since = None
                     gone_since = gone_since or now
                     if now - gone_since > ROUND_GONE_S:
                         if outcome != "died":

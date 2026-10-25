@@ -51,6 +51,7 @@ class Navigator:
     a moment between them. stats gets screen / cursor / menu_presses / menu_last / ram_progress (the black watch
     trusts RAM: gbox.tools._black_watch)."""
     HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S, STABLE_S = 0.3, 0.18, 1.2, 0.45, 0.5
+    CONFIRMATION_MAX_S, CONFIRMATION_MAX_PRESSES = 120.0, 64
 
     def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None, pressed=None):
         self.send, self.step, self.sleep, self.clock = send, step, sleep, clock
@@ -59,16 +60,26 @@ class Navigator:
         self.stats.setdefault("menu_presses", 0)
         self.stats.setdefault("ram_progress", 0)
         self.last_key, self.last_at, self.last_sig, self.sig_at = None, float("-inf"), None, float("-inf")
+        self.confirmation_started, self.confirmation_presses, self.confirmation_error = None, 0, None
 
     @staticmethod
     def sig(scr: dict):
-        return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"))
+        return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"),
+                scr.get("confirmation_token"))
 
     def observe(self, scr: dict, now: float | None = None) -> None:
+        now = self.clock() if now is None else now
+        if scr.get("confirmation_boundary") is True:
+            if self.confirmation_started is not None:
+                self.stats["confirmation_chain"] = "complete: native selection screen"
+            self.confirmation_started, self.confirmation_presses, self.confirmation_error = None, 0, None
+        elif scr.get("confirmation") is True and self.confirmation_started is None:
+            self.confirmation_started, self.confirmation_presses = now, 0
+            self.stats["confirmation_chain"] = "confirming known native notices"
         sig = self.sig(scr)
         if sig != self.last_sig:
             self.stats["ram_progress"] = self.stats.get("ram_progress", 0) + 1
-            self.last_sig, self.sig_at = sig, self.clock() if now is None else now
+            self.last_sig, self.sig_at = sig, now
             self.last_key = None                            # the last press took: the next one may go at once
         self.stats["screen"] = scr.get("where")
         if scr.get("cursor") is not None:
@@ -78,6 +89,11 @@ class Navigator:
         """Observe the screen, and press its step when the last press took (or RETRY_S passed). Returns the key."""
         now = self.clock()
         self.observe(scr, now)
+        if self.confirmation_started is not None and (now - self.confirmation_started >= self.CONFIRMATION_MAX_S
+                or self.confirmation_presses >= self.CONFIRMATION_MAX_PRESSES):
+            self.confirmation_error = "known confirmation chain exceeded its time/press bound"
+            self.stats["confirmation_chain"] = self.confirmation_error
+            return None
         key = self.step(scr)
         if key is None:
             return None
@@ -96,6 +112,9 @@ class Navigator:
             self.pressed(scr, key)
         self.stats["menu_presses"] = self.stats.get("menu_presses", 0) + 1
         self.stats["menu_last"] = f"{scr.get('where')}: {key}"
+        if scr.get("confirmation") is True:
+            self.confirmation_presses += 1
+            self.stats["confirmation_presses"] = self.stats.get("confirmation_presses", 0) + 1
         return key
 
 
@@ -166,7 +185,8 @@ class Boot:
             # the title's units don't name, e.g. RE5's "HDD access indicator" notice (live JAYBUILTFINALE 2026-10-22:
             # no press, hung at 30 s, relaunched into the same notice, a loop): the title's BOOT_KEY confirms them
             key = getattr(self.menus, "BOOT_KEY", None)
-            if key and now - self.lost_since >= BOOT_PRESS_S and now - self.boot_pressed >= BOOT_PRESS_S:
+            if key and self.nav.confirmation_started is None \
+                    and now - self.lost_since >= BOOT_PRESS_S and now - self.boot_pressed >= BOOT_PRESS_S:
                 self.nav.send([{"key": key, "down": True}])
                 self.nav.sleep(Navigator.HOLD_S)
                 self.nav.send([{"key": key, "down": False}])
@@ -175,6 +195,8 @@ class Boot:
         else:
             self.lost_since, self.named = None, True
         self.nav.tick(scr)
+        if self.nav.confirmation_error:
+            return self.nav.confirmation_error
         loading = scr.get("where") == "loading"
         if loading:
             if self.loading_since is None:

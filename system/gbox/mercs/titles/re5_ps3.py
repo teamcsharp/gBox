@@ -400,6 +400,7 @@ UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x24, 0x20, 0xC, 0x8
 UI_LINES = (0, 26, 27, 28)
 N_LINES = 32
 UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (clock, score, combo)
+              0x015ABB20: "uIdMerceEd00",       # Mercs results, including native stage/character unlock notices
               0x015AB6E8: "uIdGameover00",     # Continue: state byte +0x17, Yes/No u32 +0x178
               0x015ABE28: "uIdPause00",         # the in-round pause menu (there while a round runs)
               0x015ABB80: "uIdNowLoading00",    # NOW LOADING
@@ -418,6 +419,7 @@ UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (c
               0x015AD588: "uIdTitle02"}
 UI_MAX = 64
 ALERT_ID = 0x3C
+ALERT_VT = 0x015AB350
 ALERTS = {0x22: "alert_signin",                 # "... without signing in. Sign in?": circle = Continue
           0x09: "alert_ok",                     # Save successful after declining Continue: Cross = OK
           0x08: "alert_ok"}                     # "Load successful.": cross = OK (0x13: loading the save, wait)
@@ -433,6 +435,14 @@ CONTINUE_READY, CONTINUE_NO, CONTINUE_BLOCKED = 2, 1, 0x1D4
 CONTINUE_CODE = ((0x00592E5C, bytes.fromhex("7bbb00207f63db784bffe6295463063e")),
                  (0x00592F00, bytes.fromhex("809f01782f840001419e02e0")),
                  (0x00592F94, bytes.fromhex("801f01787f804800419e001c380000007f63db78913f0178901f018c")))
+# Same pinned app01.01 ELF as CONTINUE_CODE. 0x5D0954 fills +290 from newly unlocked stage/character save bits;
+# 0x5CFA58 displays them in outer state6. Inner3 at 0x5CFBEC accepts sBioPad's dynamic confirm mask.
+MERCE_END_VT, MERCE_NOTICE_STATE, MERCE_FINAL_STATE = 0x015ABB20, 6, 10
+S_BIOPAD, PAD_CONFIRM = 0x0191CF38, 0x1EA0
+MERCE_NOTICE_CODE = ((0x005CFBEC, bytes.fromhex(
+    "817e80c0812b000080091ea07f8900382c09000040820010546005ac2f800000419efefc")),
+    (0x005CFC20, bytes.fromhex("817e80b4c1bf028cc19e800c812b0000c009002cedad002aff8d6000d1bf028c")),
+    (0x005D2624, bytes.fromhex("7f63db784bffd4315463063e2f830000409eff10c1bf027c4bfffe58")))
 
 
 def ui_units(m, lines=UI_LINES) -> dict:
@@ -483,6 +493,83 @@ def continue_screen(m, ui=None) -> dict:
     return out
 
 
+def alert_screen(m, ui=None) -> dict | None:
+    """Read only the known native alert class, retaining unknown IDs without authorizing input."""
+    if m is None:
+        return None
+    try:
+        ui = ui_units(m) if ui is None else ui
+        unit = ui.get("uIdAlert00")
+        if not ptr_ok(unit):
+            return None
+        raw = m.rd(unit, ALERT_ID + 4)
+        if len(raw) != ALERT_ID + 4 or struct.unpack_from(">I", raw)[0] != ALERT_VT:
+            return None
+        alert = struct.unpack_from(">I", raw, ALERT_ID)[0]
+        if not alert:
+            return None
+        # The alert can finish or be recycled between independent RAM reads. The native state
+        # bytes are compared for stability, not assigned an unverified generic ready-state meaning.
+        if (u32(m, unit) != ALERT_VT or u32(m, unit + ALERT_ID) != alert
+                or m.rd(unit + 0x16, 2) != raw[0x16:0x18]):
+            return {"where": "alert", "cursor": None, "target": None}
+        state = raw[0x16:0x18].hex()
+        return {"where": ALERTS.get(alert, "alert"), "cursor": None, "target": None,
+                "alert_unit": unit, "alert_id": alert, "alert_state": state,
+                "confirmation": alert in (8, 9), "confirmation_token": ["alert", unit, alert, state]}
+    except (OSError, ValueError, TypeError, struct.error):
+        return None
+
+
+def result_notice_screen(m, ui=None) -> dict | None:
+    """The exact Mercs unlock-page state; a result class alone never authorizes Cross."""
+    if m is None:
+        return None
+    out = None
+    try:
+        # This reader runs only at round boundaries; result/menu units are not restricted to HUD lines.
+        ui = ui_units(m, range(N_LINES)) if ui is None else ui
+        unit = ui.get("uIdMerceEd00")
+        if not ptr_ok(unit):
+            return None
+        out = {"where": "results_wait", "cursor": None, "target": None,
+               "result_unit": unit, "result_menu_verified": False, "unlock_ready": False}
+        raw = m.rd(unit, 0x29C)
+        if len(raw) != 0x29C or struct.unpack_from(">I", raw)[0] != MERCE_END_VT:
+            return out
+        inner, outer = raw[0x16:0x18]
+        mask, index = struct.unpack_from(">II", raw, 0x290)
+        out = {"where": "results_wait", "cursor": None, "target": None,
+               "result_unit": unit, "result_outer": outer, "result_inner": inner,
+               "unlock_mask": mask, "unlock_index": index, "unlock_ready": False,
+               "result_menu_verified": False, "confirmation": False,
+               "confirmation_token": ["merce_result", unit, outer, inner, mask, index]}
+        if outer not in (MERCE_NOTICE_STATE, MERCE_FINAL_STATE) \
+                or any(m.rd(address, len(code)) != code for address, code in MERCE_NOTICE_CODE):
+            return out
+        confirm_pad = u32(m, S_BIOPAD)
+        cross_confirm = ptr_ok(confirm_pad) and u32(m, confirm_pad + PAD_CONFIRM) == 0x4000
+        check = m.rd(unit, 0x29C)
+        if (len(check) != len(raw) or check[:4] != raw[:4] or check[0x16:0x18] != raw[0x16:0x18]
+                or check[0x28C:0x299] != raw[0x28C:0x299]):
+            return out
+        out["result_menu_verified"] = True
+        if outer == MERCE_FINAL_STATE:
+            out["where"] = "results"  # retain the existing final-result Start action
+            return out
+        out.update(where="unlock_wait", confirmation=True)
+        ready = (inner == 3 and raw[0x298] == 1 and raw[0x28C:0x290] == bytes.fromhex("3dcccccd")
+                 and 0 <= index < 24 and mask & ~0x00FFFFFF == 0 and mask & (1 << index) != 0
+                 and cross_confirm and u32(m, S_BIOPAD) == confirm_pad
+                 and u32(m, confirm_pad + PAD_CONFIRM) == 0x4000)
+        if ready and (u32(m, unit) == MERCE_END_VT and m.rd(unit + 0x16, 2) == b"\x03\x06"
+                      and m.rd(unit + 0x28C, 13) == raw[0x28C:0x299]):
+            out.update(where="unlock_notice", unlock_ready=True)
+        return out
+    except (OSError, ValueError, TypeError, struct.error):
+        return out
+
+
 def screen(m, merc=None) -> dict:
     """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, read from RAM. In a round: playing / dead /
     results (the round's own fields). Out of one (no player), from the interface units: the title's dialogs
@@ -491,8 +578,15 @@ def screen(m, merc=None) -> dict:
     results (the clock at 0 and none of those up)."""
     snap = snapshot(m)
     out = {"where": own_screen(snap), "cursor": None, "target": None}
+    ui = ui_units(m, range(N_LINES))
+    alert = alert_screen(m, ui)
+    if alert is not None:
+        return alert | {"ui": sorted(ui)}
+    notice = result_notice_screen(m, ui)
+    if notice is not None:
+        return notice | {"ui": sorted(ui)}
     if out["where"] == "dead":
-        return continue_screen(m)
+        return continue_screen(m, ui)
     if snap.get("player"):
         if out["where"] == "playing" and (ROSTER.pick is not None or ROSTER.round is None):
             mode, index = snap.get("mercenaries_mode"), snap.get("character_index")
@@ -503,7 +597,6 @@ def screen(m, merc=None) -> dict:
                     coverage().started(mode, MODE_ROSTERS[mode][index], snap["stage_index"])
             out["character"] = ROSTER.started()
         return out
-    ui = ui_units(m, range(N_LINES))
     if "uIdGameover00" in ui:
         return continue_screen(m, ui)
     plan = coverage().choose() if getattr(m, "adapter", None) is not None else None
@@ -513,11 +606,8 @@ def screen(m, merc=None) -> dict:
     if plan is not None:
         out.update(next_mode=plan["mode"], mode_mismatch=mode in MODE_ROSTERS and mode != plan["mode"],
                    stage_target=STAGE_NAMES[plan["stage"]])
-    alert = u32(m, ui["uIdAlert00"] + ALERT_ID) if "uIdAlert00" in ui else 0
     where, cursor, target = "unknown", None, None
-    if alert:
-        where = ALERTS.get(alert, "alert")
-    elif "uIdStartUp22" in ui:
+    if "uIdStartUp22" in ui:
         if plan is not None and plan["mode"] == ROSTER.mode:
             ROSTER.pick = ROSTER.characters.index(plan["character"])
         where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.want()
@@ -551,7 +641,9 @@ def screen(m, merc=None) -> dict:
         where = "menu"
     elif "uIdCursor" in ui and snap.get("timer") is not None and snap["timer"] <= 0:
         where = "results"                               # (the boot's logos have no cursor units: never pressed on)
-    out.update(where=where, cursor=cursor, target=target, ui=sorted(ui))
+    out.update(where=where, cursor=cursor, target=target, ui=sorted(ui),
+               confirmation_boundary=where in ("select_player", "mercs_title", "mercs_solo",
+                                                "reunion_title", "reunion_solo", "extra_content"))
     return out
 
 
@@ -707,6 +799,8 @@ def step(scr: dict) -> str | None:
     character the cursors are on (the last ones played). On the input-ready Continue dialog, Right selects No and
     Cross is allowed only after RAM confirms No, returning through save confirmation to stage/character selection."""
     where = scr.get("where")
+    if where == "unlock_notice":
+        return "cross" if scr.get("unlock_ready") is True else None
     if where == 'dead':
         if scr.get("continue_ready") is not True or type(scr.get("cursor")) is not int:
             return None
@@ -3636,6 +3730,7 @@ class RE5PS3(Driver):
         self._timer = (None, 0.0)              # the round's clock and when it last moved
         self._wiggle_step = 0
         self._result_tally = None
+        self._menu_observation = None
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -3658,6 +3753,14 @@ class RE5PS3(Driver):
     def screen(self, m, snap: dict | None) -> str:
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
+        self._menu_observation = alert_screen(m)
+        if self._menu_observation is None and where != "playing":
+            self._menu_observation = result_notice_screen(m)
+        if self._menu_observation is not None:
+            # A successful-save dialog may remain after the dead actor has been destroyed.
+            # Its stopped countdown is modal state, not evidence of an emulator hang.
+            if "result_unit" not in self._menu_observation or where != "results" or not snap.get("player"):
+                where = self._menu_observation["where"]
         if where != "results":
             self._result_tally = None
         if where == "playing" and (snap.get("prompt") == "mash" or snap.get("recovery_active")):
@@ -3669,6 +3772,15 @@ class RE5PS3(Driver):
             elif now - self._timer[1] > HANG_S:
                 return "loading"                            # frozen: the engine calls it lost (its LOST_S later)
         return where
+
+    def menu_handoff(self, m, snap, where) -> bool:
+        """Let the engine return neutral to menu navigation only for the same verified native menu."""
+        observed = self._menu_observation
+        if observed is None or where != observed["where"]:
+            return False
+        if observed.get("result_menu_verified") is True:
+            return result_notice_screen(m) == observed
+        return observed.get("alert_id") in ALERTS and alert_screen(m) == observed
 
     def result_ready(self, snap, now):
         """Bounded neutral observation of the terminal score tally before closing evidence.

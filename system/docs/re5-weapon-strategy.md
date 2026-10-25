@@ -47,8 +47,9 @@ the longbow registry key is `0x07010F00`, with weapon vtable `0x016289F8`.
 The controller then uses the real D-pad grid or inventory menu. It never
 relabels a carried gun, replaces its owner pointer, or asserts that a saved
 request is an equipped weapon. Completion needs fresh native bow class,
-player-owner and in-hand readback. Rendered appearance and actual arrow cadence
-still require live observation. Other live weapon IDs remain unsupported.
+player-owner and in-hand readback. Active-round pickup construction still needs
+live acceptance; the recovered preset-bow playback below does not validate that
+path. Other live weapon IDs remain unsupported.
 
 The separate next-round override now covers all three verified preset banks,
 including original Mercenaries, and survives the randomizer's stock-loadout
@@ -59,8 +60,71 @@ the death animation no longer counts as selecting No.
 During the active-session investigation, the RE5 process remained alive but
 its native round and HUD clocks stopped near 88.6 seconds. The bot reported a
 lost/stalled round and stopped. No live bow source conversion was applied to
-that stalled process. Static constructor signatures and synthetic tests do not
-establish successful live equip or hyperspeed bow playback.
+that stalled process.
+
+Recovery activated revision `92e506da` on lilspark, stopped the exact frozen
+session `9675663396474c57-dbe25f7111b44938`, and started
+`35eef09e037549fe-67e6b2d18eb34bf5` (RPCS3 PID `3328814`). Native selection
+confirmed **Sheva (Tribal), original Mercenaries, The Mines (stage 1)**. The
+native clock advanced from 120 to 117.893 seconds while the player moved. The
+in-hand bow weapon at `808621280` had vtable `0x016289F8` and owner `808608688`,
+matching the current player.
+
+The bounded cadence observation collected 510 samples over 12.5128858 seconds,
+all with the native bow held, and 55 complete actor scans. It identified two
+distinct new player-owned arrows first observed within a 0.2028375-second sampling interval;
+both subsequently moved. The round clock advanced from 97.0255 to 85.4543
+seconds with the fire-timer multiplier set to 80. A later real frame showed
+Tribal Sheva in The Mines with the bow, score `007780`, a combo of 5 and
+4.14 seconds remaining. The receipt is
+`Spark:gbox-data/longbow-live-20261025/cadence-35eef09e037549fe-67e6b2d18eb34bf5-1792915851171644761.json`;
+the structured summary is [re5-live-bow.json](evidence/re5-live-bow.json).
+
+This verifies resumed native gameplay, an equipped **preset-created** bow and
+moving owned arrow projectiles. It does not establish active-round pickup
+construction, sustained shots per second, hit accuracy, an 80x projectile rate,
+or a longbow animation accelerator. The sampled projectile births must not be
+extrapolated into an exact firing rate.
+
+Automatic character and stage rotation was then observed on the normal
+time-expiry results path: the first round's Tribal Sheva / The Mines changed
+to **Chris (STARS) / Prison (stage 7)**, and the total-round counter advanced
+from 113 to 114. The second real frame showed Chris (STARS) holding the bow in
+Prison at `1:51.28`, with score 0. The next plan changed from that Chris / Prison
+selection to Sheva (Business) / Reunion / Experimental Facility (stage 4);
+that later plan is not evidence that the third round started. Death-menu
+Continue selection remains covered by native-code analysis and regression
+tests, without a live death-path rotation observation.
+
+## Bow aim and post-round handoff corrections (2026-10-25)
+
+The recovered run exposed a controller bug: a small elevation error could
+lower the bow and turn the body even while the camera was already horizontally
+aligned with the same target. Logs recorded repeated aim / right-turn / aim
+cycles on both Tribal Sheva and Chris. Native turning speed was 1x; the fault
+was the decision to leave the aiming pose, not an increased turning multiplier.
+
+The bow now keeps aim held for elevation and small horizontal corrections.
+A deliberate large turn finishes from the current body heading before aim is
+raised again, with progress and duration bounds. Camera feedback is withheld
+until the native aim or firing pose is ready. Nearby distance ties retain the
+current living target; dead or blocked targets and urgent contact threats still
+allow a switch. These changes preserve the existing arrow trigger pulses.
+They do not provide calibrated arrow impact prediction or establish a hit rate.
+
+After the second recovered round, a stable native save-success dialog remained
+while the player pointer was absent. The active-round engine classified that
+as a lost round instead of returning to the menu navigator. A verified native
+menu handoff now lets known dialogs reach the existing confirmation controls.
+Unknown UI state remains distinguishable from a completed acknowledgement.
+
+The confirmation chain also recognizes the native Mercenaries unlock page
+(`uIdMerceEd00`): exact result state, pending unlock bit and notice index, active
+page, completed fade and the game's configured Cross confirmation mask must
+agree. Each released Cross press is followed by a new observation. The chain
+ends at native character, stage or mode selection and ordinary cursor selection
+resumes. Code signatures and page-chain tests verify this path; a live S-rank
+unlock sequence has not yet been observed completing with this implementation.
 
 ## Research checked 2026-10-21
 

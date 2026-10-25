@@ -33,10 +33,104 @@
     "other_weapons": "Explicitly unsupported by this live supply operation; the separate next-round template control remains available.",
     "no_restart": "The operation does not quit, restart, end the round, relaunch the emulator or write boot templates."
   },
+  "recovery_observation": {
+    "date": "2026-10-25",
+    "deployed_revision": "92e506da",
+    "worker": "lilspark",
+    "adapter": "rpcs3",
+    "stopped_frozen_session": "9675663396474c57-dbe25f7111b44938",
+    "session_id": "35eef09e037549fe-67e6b2d18eb34bf5",
+    "process_id": 3328814,
+    "bow_source": "Native round-start preset; not the active-round live pickup conversion operation.",
+    "selection": {
+      "native_confirmed": true,
+      "character": "Sheva (Tribal)",
+      "mode": "mercenaries",
+      "stage": "The Mines",
+      "stage_index": 1,
+      "scope": "First recovered round; the following time-expiry rotation is recorded separately below."
+    },
+    "resumed_gameplay": {
+      "native_clock_start_s": 120,
+      "native_clock_end_s": 117.893,
+      "player_position_changed": true
+    },
+    "equipped_native_bow": {
+      "weapon_address": 808621280,
+      "weapon_vtable": "0x016289F8",
+      "owner_address": 808608688,
+      "owner_matches_current_player": true,
+      "in_hand": true
+    },
+    "cadence_observation": {
+      "artifact": "Spark:gbox-data/longbow-live-20261025/cadence-35eef09e037549fe-67e6b2d18eb34bf5-1792915851171644761.json",
+      "duration_s": 12.5128858,
+      "samples": 510,
+      "native_bow_held_samples": 510,
+      "complete_actor_scans": 55,
+      "new_distinct_player_owned_arrows": 2,
+      "observed_arrow_birth_interval_s": 0.2028375,
+      "both_arrows_moved": true,
+      "round_clock_start_s": 97.0255,
+      "round_clock_end_s": 85.4543,
+      "fire_timer_multiplier": 80,
+      "exact_shots_per_second": null,
+      "hit_accuracy": null,
+      "interpretation": "Native owned arrow creation and movement were observed during advancing gameplay. Sampled births do not establish a sustained or exact firing rate."
+    },
+    "later_frame_observation": {
+      "character": "Sheva (Tribal)",
+      "stage": "The Mines",
+      "bow_visible": true,
+      "score_display": "007780",
+      "combo": 5,
+      "time_remaining_s": 4.14,
+      "scope": "Observed real frame; score and combo are not a measurement of bow hit accuracy."
+    },
+    "time_expiry_rotation": {
+      "observed": true,
+      "path": "Normal round time expiry and results; not the death Continue dialog.",
+      "total_rounds_before": 113,
+      "total_rounds_after": 114,
+      "from": {
+        "character": "Sheva (Tribal)",
+        "mode": "mercenaries",
+        "stage": "The Mines",
+        "stage_index": 1,
+        "last_frame_time_display": "0:04.14",
+        "last_frame_score": 7780,
+        "last_frame_combo": 5
+      },
+      "to": {
+        "character": "Chris (STARS)",
+        "mode": "mercenaries",
+        "stage": "Prison",
+        "stage_index": 7,
+        "visually_confirmed": true,
+        "bow_visible": true,
+        "frame_time_display": "1:51.28",
+        "frame_score": 0
+      },
+      "next_plan_only": {
+        "character": "Sheva (Business)",
+        "mode": "reunion",
+        "stage": "Experimental Facility",
+        "stage_index": 4,
+        "started_verified": false
+      },
+      "character_rotation_verified": true,
+      "stage_rotation_verified": true
+    },
+    "death_continue_rotation": {
+      "live_verified": false,
+      "evidence": "Native Continue state/choice analysis and regression tests only; the observed recovery rotation used normal time expiry."
+    },
+    "live_pickup_construction_validated": false
+  },
   "limits": {
     "donor": "No spare ownerless ammo or no free inventory slot leaves the request pending; no native give-item mailbox exists in this RE5 implementation.",
-    "live_acceptance": "Static native factory path and live signatures investigated; successful active-round bow pickup/model/equip acceptance must be recorded separately. Unit tests do not establish that runtime outcome.",
-    "speed": "Existing fire-rate table/timer scaling is not measured bow shots per second. The native animation accelerator is verified for magnums, not the longbow.",
+    "live_acceptance": "Recovered gameplay verified a preset-created native bow in hand and moving owned arrows. Active-round donor conversion/pickup/model/equip acceptance remains unverified and must be recorded separately; neither the preset observation nor unit tests establishes that path.",
+    "speed": "Two distinct owned arrow births and subsequent movement were observed with the fire timer at 80, but no exact or sustained bow shots-per-second rate or hit accuracy was measured. This does not establish an 80x projectile rate. The native animation accelerator is verified for magnums, not the longbow.",
     "only_weapon": "This operation equips a native bow and preserves other carried items. It does not delete other weapons."
   }
 }
