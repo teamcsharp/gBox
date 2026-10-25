@@ -244,6 +244,34 @@ def test_no_line_of_sight_means_move_not_shoot():
     assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # behind a wall: go round to him
 
 
+def test_raycast_fan_marks_walls_and_reports_stats(tmp_path):
+    """The lookahead fan casts rays ahead every tick, marks hit cells into the learned map,
+    and reports rays_cast / ray_hits in stats (request #3299)."""
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 0.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
+    facing(m, 0.0)
+    bot._round(0x400)                          # sets up self.learned and self.room
+    # Manually set up a stage with a wall directly ahead (+z)
+    bot.st = {"walls": [[-500.0, 800.0, 500.0, 800.0, 0.0, 2000.0, 0.0]]}
+    bot._raycast_fan({"pos": [0.0, 0.0, 0.0], "rot": 0.0, "aim_rot": 0.0}, now[0])
+    assert bot.stats["rays_cast"] == B.RAY_FAN_N
+    assert bot.stats["ray_hits"] >= 1
+    # The hit cell should be marked in the learned map
+    assert len(bot.learned.blocked) >= 1
+
+
+def test_raycast_fan_is_safe_without_stage_or_learned_map():
+    """Without a stage or learned map the fan is a no-op."""
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 0.0), timer_s=100.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.st = None
+    bot.learned = None
+    bot._raycast_fan({"pos": [0.0, 0.0, 0.0], "rot": 0.0, "aim_rot": 0.0}, now[0])
+    assert bot.stats["rays_cast"] == 0
+
+
 def test_a_crowd_sends_him_for_a_combo_bonus_first():
     now = [0.0]
     ganados = [((800.0 * k, 0, 2500), True) for k in range(-2, 3)]       # five close by
