@@ -1781,6 +1781,9 @@ DEDICATED = [
     ("sonic1_shadow", lambda t, p: __import__("gbox.sonic1_reader", fromlist=["x"]).title_test(t, p),
      lambda: __import__("gbox.sonic1_reader", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.sonic1_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("re6", lambda t, p: "resident evil 6" in t and p == "xbox360",
+     lambda: __import__("gbox.re6_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re6_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 # extractor -> resolve a pick whose words name nobody ("the character in the middle of the screen", x/y, slot,
