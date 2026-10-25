@@ -1204,6 +1204,9 @@ DEDICATED = [
      lambda ctx, game, e, work: __import__("gbox.aki_wcw", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    ("re6", lambda t, p: "resident evil 6" in t and p == "xbox360",
+     lambda: __import__("gbox.re6_reader", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.re6_reader", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
