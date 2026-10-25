@@ -30,6 +30,7 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     if game.get('game_id') == GE007_PORT_ID:
         from . import ge007_unlock
         return ge007_unlock.pre_launch(ctx)
+    from . import re6_ps3_unlock
     if not profile['verified']:
         if (game.get('game_id') == MERC3D_ID and
                 str(game.get('platform') or '').lower() in ('3ds', 'n3ds')):
@@ -50,6 +51,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == re6_ps3_unlock.GAME_ID and game.get('platform') == re6_ps3_unlock.PLATFORM:
+            # RE6 PS3 (BLUS30855): launch verified but no unlock routine or save
+            # structure mapped. Report the honest pending state; never write here.
+            gate = re6_ps3_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(gate['categories']),
+                    'requires': gate['requires'], 'next_step': gate['next_step']}
         if game.get('game_id') == SGC_GEMS_ID and game.get('platform') == SGC_GEMS_PLATFORM:
             # Sonic Gems Collection: the state-save layout is mapped and the
             # save digests are pinned, but no writer and no runtime-verified
@@ -116,6 +124,13 @@ def profile_for(game: dict) -> dict:
         return ge007_unlock.profile()
     from . import doax2_unlock
     from . import popww_unlock
+    from . import re6_ps3_unlock
+    if game.get('game_id') == re6_ps3_unlock.GAME_ID and game.get('platform') == re6_ps3_unlock.PLATFORM:
+        # RE6 PS3 (BLUS30855): EBOOT hash pinned and RPCS3 launch verified, but
+        # no native unlock routine, save structure map, or live RAM measurement
+        # exists yet. Report pending_research; never write a save here.
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(re6_ps3_unlock.CATEGORIES), **re6_ps3_unlock.profile_gate()}
     if game.get('game_id') == popww_unlock.GAME_ID and game.get('platform') == popww_unlock.PLATFORM:
         # Prince of Persia - Warrior Within (GameCube, disc G2OE41): the exact owned
         # revision is bound and its category inventory is attached, but no native
