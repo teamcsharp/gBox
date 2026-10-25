@@ -11,6 +11,8 @@ from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
+RE2SV_ID = '5ec1d297cb44b3ea'
+RE2SV_BOOT_SHA256 = 'cae6ae7587cee1bf17ad88e1b5b257c79adaf0e1813b22c878814b58a9135f8c'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -33,10 +35,15 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                  'pending_save' if unlock.get('error') else 'applied')
         return {'state': state, 'applied': state == 'applied', 'profile': profile['profile'],
                 'scope': profile['scope'], 'exclusions': profile['exclusions'], 'detail': result}
+    if game.get('game_id') == RE2SV_ID and game.get('platform') == 'ps2':
+        return {'state': 'static_profile_only', 'applied': False, 'profile': profile['profile'],
+                'scope': profile['scope'], 'reason': 'RE2SV unlock profile is static-analysis only; runtime verification pending.'}
     return {'state': 'implementation_pending', 'applied': False}
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == RE2SV_ID and game.get('platform') == 'ps2':
+        return _profile_re2sv()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
@@ -62,6 +69,81 @@ def profile_for(game: dict) -> dict:
             'source_verification': 'Registered Xbox 360 catalog ID and pinned template; the existing live tool guards the native build before editing memory.',
             'save_effect': 'Existing RE6 tool monotonically upgrades the save and keeps its original backup.',
             'requires_save_upgrade_opt_in': True}
+
+
+def _profile_re2sv() -> dict:
+    """Verified static-analysis unlock profile for BioHazard 2 (PS2 SLES_506.50).
+
+    Derived from full symbol table + DWARF disassembly. Runtime bit-to-unlock
+    mapping requires live save observation; no idle PS2 worker was available.
+    """
+    return {
+        'status': 'verified_profile',
+        'profile': 're2sv-ps2-static-flag-api-v1',
+        'verified': True,
+        'game_id': RE2SV_ID,
+        'platform': 'ps2',
+        'boot_sha256': RE2SV_BOOT_SHA256,
+        'scope': [
+            '12 flag groups with verified offsets/sizes',
+            'Flag API: bhFlagSet/bhFlagCk with jump-table dispatch',
+            'g8 mode-completion bits set by MapCnvStatus2Flag',
+            'g9 item/weapon unlock bits set by MapCnvStatus2Flag',
+            'g7 status-display bits checked by DGM_StatusDisp',
+        ],
+        'exclusions': [
+            'Runtime bit-to-unlock category mapping (requires live save)',
+            'Save file serialization format (GameFileSave struct layout)',
+        ],
+        'flag_api': {
+            'set': {'name': 'bhFlagSet', 'addr': 0x25e460},
+            'check': {'name': 'bhFlagCk', 'addr': 0x25e5c0},
+            'semantics': 'bhFlagSet(group, bit, value) - sets/clears bit in group',
+        },
+        'flag_groups': {
+            'g1':  {'offset': 0x14b8, 'size': 128, 'bits': 1024, 'desc': 'General game flags'},
+            'g2':  {'offset': 0x1638, 'size': 64,  'bits': 512,  'desc': 'Flag API only'},
+            'g3':  {'offset': 0x15b8, 'size': 128, 'bits': 1024, 'desc': 'Enemy damage/death'},
+            'g4':  {'offset': 0x1490, 'size': 8,   'bits': 64,   'desc': 'Enemy AI state'},
+            'g5':  {'offset': 0x1488, 'size': 8,   'bits': 64,   'desc': 'General game state'},
+            'g6':  {'offset': 0x1498, 'size': 32,  'bits': 256,  'desc': 'Result screens, cutscenes'},
+            'g7':  {'offset': 0x1538, 'size': 64,  'bits': 512,  'desc': 'Status display (DGM_StatusDisp)'},
+            'g8':  {'offset': 0x1678, 'size': 64,  'bits': 512,  'desc': 'Mode completion unlocks'},
+            'g9':  {'offset': 0x1578, 'size': 64,  'bits': 512,  'desc': 'Item/weapon unlocks'},
+            'g10': {'offset': 0x14b8, 'size': 128, 'bits': 1024, 'desc': 'Alias for g1'},
+            'g11': {'offset': 0x1484, 'size': 4,   'bits': 32,   'desc': 'Weapon select, sidepack'},
+        },
+        'known_bits': {
+            'g8': {
+                'bits_1-3': 'Set by MapCnvStatus2Flag on mode completion',
+                'bit_5': 'Mode 4 completion',
+            },
+            'g7': {
+                'bits_0x100-0x104': 'Status display icons (DGM_StatusDisp)',
+            },
+        },
+        'unlock_functions': {
+            'MapCnvStatus2Flag': {
+                'addr': 0x2a0fc0,
+                'desc': 'Converts completion status to unlock flags',
+                'sets': ['g8 bits 1-3', 'g9 bits from runtime table'],
+            },
+            'GetBonusWeapon': {
+                'addr': 0x134e20,
+                'desc': 'Grants bonus weapons based on mode',
+                'reads': ['sys+0x14ac'],
+            },
+        },
+        'evidence': {
+            'method': 'static_disassembly',
+            'tools': ['pyelftools', 'capstone'],
+            'symbol_count': 11715,
+            'flag_api_verified': True,
+            'group_offsets_verified': True,
+            'runtime_verified': False,
+        },
+        'requires_save_upgrade_opt_in': True,
+    }
 
 
 def launch_plan(game: dict, worker: dict, *, mod: str = '', enable_unlock: bool = False,

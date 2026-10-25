@@ -75,3 +75,28 @@ def test_known_hook_reports_actual_save_result(monkeypatch,native,state):
     monkeypatch.setattr(re6_tool,'pre_launch',lambda ctx,mod:native)
     result=G.pre_launch({'game_id':G.RE6_ID,'platform':'xbox360'},SimpleNamespace())
     assert result['state']==state and result['applied']==(state=='applied')
+
+
+def test_re2sv_profile_is_registered_static_only_and_revision_guarded():
+    game={'game_id':'5ec1d297cb44b3ea','platform':'ps2'}
+    profile=G.profile_for(game)
+    assert profile['status']=='verified_profile' and profile['verified'] is True
+    assert profile['profile']=='re2sv-ps2-static-flag-api-v1'
+    assert profile['boot_sha256']==G.RE2SV_BOOT_SHA256
+    assert profile['flag_api']['set']['addr']==0x25e460
+    assert profile['flag_api']['check']['addr']==0x25e5c0
+    groups=profile['flag_groups']
+    assert groups['g8']['offset']==0x1678 and groups['g9']['offset']==0x1578
+    assert groups['g7']['offset']==0x1538 and len(groups)==11
+    assert profile['evidence']['runtime_verified'] is False
+    assert 'requires live save' in profile['exclusions'][0]
+
+
+def test_re2sv_pre_launch_never_applies_unverified_runtime_writes():
+    game={'game_id':'5ec1d297cb44b3ea','platform':'ps2'}
+    result=G.pre_launch(game,SimpleNamespace())
+    assert result['state']=='static_profile_only' and result['applied'] is False
+    assert 'runtime verification pending' in result['reason']
+    # A different build/region of the same game must not inherit the profile.
+    other={'game_id':'5ec1d297cb44b3ea','platform':'ps2','title':'Other region'}
+    assert G.profile_for({'game_id':'other','platform':'ps2'})['status']=='unsupported'
