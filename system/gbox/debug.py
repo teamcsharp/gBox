@@ -23,6 +23,7 @@ CPUS = {
     "apple2": "6502", "bbcmicro": "6502", "lynx": "65c02", "pce": "65c02", "pcecd": "65c02",
     "snes": "65816", "satellaview": "65816", "sufami": "65816",
     "dos": "x86_16", "pc": "x86_32",
+    "ps4": "x86_64",
     "xbox360": "ppc",                                         # Xenon: 64-bit PPC, 32-bit addresses (VMX128 ops undecoded)
     # Z80 / LR35902 / others: Capstone has no decoder (memory + raw bytes only)
 }
@@ -44,6 +45,7 @@ def _cs(cpu: str):
         "65816": (c.CS_ARCH_MOS65XX, c.CS_MODE_MOS65XX_65816_LONG_MX),
         "x86_16": (c.CS_ARCH_X86, c.CS_MODE_16),
         "x86_32": (c.CS_ARCH_X86, c.CS_MODE_32),
+        "x86_64": (c.CS_ARCH_X86, c.CS_MODE_64),
     }
     if cpu not in table:
         raise ValueError(f"no disassembler for {cpu}")
@@ -98,7 +100,7 @@ class Debugger:
         cpu = self.cpu
         if cpu == "arm" and self.features & {"regs"} and (self.regs().get("cpsr", 0) >> 5) & 1:
             cpu = "thumb"                                     # CPSR T bit
-        width = {"6502": 3, "65c02": 3, "65816": 4}.get(cpu, 8)
+        width = {"6502": 3, "65c02": 3, "65816": 4, "x86_64": 15}.get(cpu, 8)
         return disassemble(cpu, self.read(address, count * width), address, count)
 
     def halt(self):
@@ -262,6 +264,39 @@ class XeniaProcMem(Debugger):
         raise Unavailable("Xenia runs without a CPU debugger here: memory, memory_search and disassembly only")
 
     resume = step = set_breakpoint = remove_breakpoint = halt
+
+
+class ShadPS4ProcMem(MemoryDebugger):
+    """shadPS4 process virtual memory, including emulator/host allocations.
+
+    Addresses pass unchanged to the adapter; no 32-bit masking or guessed PS4
+    RAM base. CPU execution controls require a debugger which upstream does not
+    expose over this interface.
+    """
+
+    def __init__(self, adapter):
+        super().__init__(adapter, "x86_64")
+
+    def read(self, address, length):
+        try:
+            return self.ad.read_memory(address, length)
+        except (ValueError, RuntimeError, OSError) as e:
+            raise Unavailable(str(e)) from e
+
+    def write(self, address, data: bytes):
+        try:
+            self.ad.write_memory(address, bytes(data))
+        except (ValueError, RuntimeError, OSError) as e:
+            raise Unavailable(str(e)) from e
+        return {"written": len(data), "via": "process memory", "scope": "process_virtual"}
+
+    def info(self):
+        return super().info() | {"scope": "process_virtual", "pointer_size": 8, "endianness": "little",
+                                 "note": "Mappings include the emulator and host libraries; identify the game module before editing."}
+
+    def paused(self):
+        import contextlib
+        return contextlib.nullcontext()
 
 
 class GdbDebugger(Debugger):

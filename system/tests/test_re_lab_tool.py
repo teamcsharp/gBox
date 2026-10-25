@@ -243,3 +243,31 @@ def test_disc_executable_output_remains_usable_without_a_live_session(live, tmp_
     result = lab.re_executable(lab.ExeIn(game_id=GID, source="disc"), ctx)
     assert result["source"] == "disc" and result["session_id"] == result["worker_id"] == ""
     assert result["revision"] == {} and state["session_checks"] == 0 and not state["reads"]
+
+
+@pytest.mark.parametrize("source", ["disc", "path"])
+def test_ps4_executable_tool_reports_elf64_and_keeps_source_hash(live, tmp_path, source):
+    import struct
+    state, ctx = live
+    ident = b"\x7fELF\x02\x01\x01\x09" + bytes(8)
+    header = struct.pack("<16sHHIQQQIHHHHHH", ident, 0xFE10, 62, 1, 0x900000000, 64, 0, 0, 64, 56, 1, 0, 0, 0)
+    program = struct.pack("<II6Q", 1, 5, 120, 0x900000000, 0x900000000, 4, 4, 1)
+    raw = header + program + b"\x48\x89\xe5\xc3"
+    rom = tmp_path / "eboot.bin"
+    rom.write_bytes(raw)
+    state["game"].update(platform="ps4", format="bin", source_paths=[str(rom)], launch={"path": str(rom)})
+    inp = lab.ExeIn(game_id=GID, source=source, path=str(rom) if source == "path" else "")
+    result = lab.re_executable(inp, ctx)
+    assert result["entry"] == result["base"] == "0x900000000"
+    assert result["processor"] == "x86:LE:64:default" and result["notes"]
+    assert result["source_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert result["sha256"] != result["source_sha256"]
+    assert rom.read_bytes() == raw and not state["reads"]
+
+
+def test_ps4_ram_image_refused_before_reading_memory(live):
+    state, ctx = live
+    state["game"].update(platform="ps4")
+    with pytest.raises(ValueError, match="host memory"):
+        lab.re_executable(request(), ctx)
+    assert not state["reads"] and not ctx.artifacts

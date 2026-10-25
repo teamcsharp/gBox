@@ -54,6 +54,7 @@ RAM_RANGE = {"gamecube": (0x80000000, 0x81800000), "wii": (0x80000000, 0x9400000
              "psx": (0x80000000, 0x80200000), "dreamcast": (0x8C000000, 0x8D000000), "ps2": (0x00000000, 0x02000000),
              "gba": (0x02000000, 0x03008000), "nds": (0x02000000, 0x02400000)}
 BIG = {"ps3", "gamecube", "wii", "n64", "n64dd", "genesis", "segacd", "sega32x", "saturn", "x68000", "xbox360"}
+POINTER_SIZE = {"ps4": 8}
 
 
 class MapError(ValueError):
@@ -522,7 +523,7 @@ class RamMap:
         self.title = spec.get("title") or self.id
         self.platform = str(spec.get("platform") or "")
         self.endian_name = spec.get("endian") or ("big" if self.platform in BIG else "little")
-        self.pointer_size = num(spec.get("pointer_size", 4), "pointer_size")
+        self.pointer_size = num(spec.get("pointer_size", POINTER_SIZE.get(self.platform, 4)), "pointer_size")
         if self.pointer_size not in (2, 4, 8):
             raise MapError("pointer_size is 2, 4 or 8")
         pr = spec.get("pointer_range") or RAM_RANGE.get(self.platform)

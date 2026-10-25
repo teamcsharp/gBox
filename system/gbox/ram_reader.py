@@ -185,6 +185,8 @@ class ShmReader(Reader):
 
 
 def _adapter_kind(ad) -> str:
+    if getattr(ad, "name", "") == "shadps4":
+        return "procmem"
     dbg = type(getattr(ad, "dbg", None)).__name__
     if dbg == "GdbDebugger":
         return "gdb"

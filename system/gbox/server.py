@@ -3275,7 +3275,7 @@ def create_app(config: Config) -> FastAPI:
         return store.facets()
 
     # spoken or typed platform / region words that are not in titles (#2375: "Resident Evil 2 Dual Shock PS1 USA")
-    PLATFORM_WORDS = {"ps1": "psx", "psx": "psx", "psone": "psx", "playstation": "psx", "ps2": "ps2", "ps3": "ps3",
+    PLATFORM_WORDS = {"ps1": "psx", "psx": "psx", "psone": "psx", "playstation": "psx", "ps2": "ps2", "ps3": "ps3", "ps4": "ps4",
                       "psp": "psp", "n64": "n64", "nintendo64": "n64", "gamecube": "gamecube", "gc": "gamecube",
                       "ngc": "gamecube", "wii": "wii", "wiiu": "wiiu", "snes": "snes", "sfc": "snes", "nes": "nes",
                       "xbox": "xbox", "xbox360": "xbox360", "x360": "xbox360", "dreamcast": "dreamcast", "dc": "dreamcast",
@@ -3642,6 +3642,13 @@ def create_app(config: Config) -> FastAPI:
         reject_broken_launch(gid, mod, actor)
         origin = origin if isinstance(origin, dict) else {"via": "internal"}
         e = store.catalog_get(gid) or _404()
+        if e.get("platform") == "ps4":
+            if (e.get("launch") or {}).get("kind") == "ps4_package":
+                raise HTTPException(409, "PS4 package needs installation: finish the copy, prepare the extracted "
+                                    "eboot.bin + sce_sys/param.sfo game folder, then rescan the PS4 library")
+            if debug or node == "linux":
+                raise HTTPException(409, "shadPS4 currently runs on a Windows x64 worker; use debug=false. "
+                                    "RAM and disassembly remain available through Inspect.")
         if node in ("idle", "other"):
             if debug:
                 raise HTTPException(409, "Full debugger mode currently requires the Spark; use debug=false on the other PC")
@@ -3683,7 +3690,7 @@ def create_app(config: Config) -> FastAPI:
             req.require_worker = byname[0]["id"] if byname else node
         elif (e.get("launch") or {}).get("kind") == "native_port":
             req.require_os = "linux"                      # native ports build and stream from the Linux worker
-        elif e.get("platform") in ("ps2", "ps3"):
+        elif e.get("platform") in ("ps2", "ps3", "ps4"):
             # PS2 on the Spark uses an experimental ARM CPU backend. Keep ordinary
             # play on the Windows PC's mature recompiler and direct game display.
             req.require_os = "windows"
@@ -4852,7 +4859,7 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_ranges", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
+        if req.op not in ("read_memory", "read_ranges", "query_memory_map", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):

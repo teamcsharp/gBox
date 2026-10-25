@@ -35,6 +35,31 @@ test('Home settings and bounded query encode user filters',()=>{
  assert.equal(H.safeMediaURL('//external.example/image'),'');assert.equal(H.safeMediaURL('https://external.example/image'),'');assert.equal(H.safeMediaURL('/\\external/image'),'');assert.equal(H.safeMediaURL('/api/media/example'),'/api/media/example');
 });
 
+test('PS4 packages remain disabled while copying and after the full package arrives',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await setup(evaluate,send,`fixtures[0].platform='ps4';fixtures[0].format='ps4_pkg';fixtures[0].playable='copy_incomplete';`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-play]').disabled`),true);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-play]').textContent`),'Copy incomplete');
+  await evaluate(`document.querySelector('[data-lh-play]').click();`);
+  assert.deepEqual(await evaluate('launches'),[]);
+  await evaluate(`fixtures[0].playable='installation_required';ctl.refresh();`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-play]').disabled`),true);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-play]').textContent`),'Needs extracted game');
+  await evaluate(`fixtures[0].format='ps4_folder';fixtures[0].playable='untested';ctl.refresh();`);
+  assert.equal(await evaluate(`document.querySelector('[data-lh-play]').disabled`),false);
+  await evaluate(`document.querySelector('[data-lh-play]').click();ctl.dispose();`);
+  assert.deepEqual(await evaluate('launches'),['a']);
+ });
+});
+
+test('PS4 package launch readiness rejects stale playable status and allows extracted games',()=>{
+ assert.equal(H.playability({format:'ps4_pkg',playable:'launch failed: unavailable'}).allowed,false);
+ assert.equal(H.playability({playable:'copy_incomplete'}).label,'Copy incomplete');
+ assert.equal(H.playability({playable:'installation_required'}).allowed,false);
+ assert.equal(H.playability({format:'ps4_folder',playable:'untested'}).allowed,true);
+ assert.equal(H.playability({playable:false}).allowed,false);
+});
+
 test('Home shelf selects a game, retains the normal game menu, and changes to a persistent list view',async()=>{
  await withPage(async(evaluate,send)=>{
   await setup(evaluate,send);

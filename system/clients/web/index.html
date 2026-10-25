@@ -1577,12 +1577,13 @@ library.after = () => {
 function card(g) {
   // best available art from the drive: box art, else snap, else wheel logo, else cart art (resolved server-side)
   const art = g.media && Object.keys(g.media).length ? `<img loading="lazy" alt="" src="/api/media/${g.game_id}/best?w=360&${tq()}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{textContent:'no artwork'}))">` : `<span>no artwork</span>`;
-  const where = g.core ? `Spark · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
+  const ready = GBoxHome.playability(g);
+  const where = g.platform === "ps4" ? "Windows · shadPS4" : g.core ? `Spark · ${g.core}` : (g.launch && g.launch.kind === "attract" ? "Windows node" : "no runtime");
   return `<div class="card" data-gid="${esc(g.game_id)}" data-title="${esc(g.title)}">${bootBadgeHTML(g.game_id)}<button class="fav" title="${g.favorite ? "Remove from favorites" : "Add to favorites"}" onclick='toggleFav(${JSON.stringify(g.game_id)}, this)'>${g.favorite ? "★" : "☆"}</button><div class="art">${art}</div><div class="meta">
     <div class="t">${esc(g.title)}</div>
     <div class="s">${esc(g.system || g.platform)}${g.year ? " · " + esc(g.year) : ""}${g.manufacturer ? " · " + esc(g.manufacturer) : ""}</div>
-    <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(g.playable)}</span>${launchReportBadge(g)}</div>
-    <div class="row"><button class="act pri" title="${WHERE === "local" && window.GBOX_LOCAL?.worker ? "Play on this PC (" + esc(window.GBOX_LOCAL.worker) + ")" : "Play"}" onclick='play(${JSON.stringify(g.game_id)})'>Play</button>
+    <div class="s">${g.size ? (g.size / 2 ** 20).toFixed(g.size > 2 ** 30 ? 0 : 1) + " MB · " : ""}${g.last_played ? "played " + new Date(g.last_played * 1000).toLocaleDateString() + " · " : ""}${(g.cached_on || []).length ? "cached · " : ""}${esc(where)} · <span class="${/failed/.test(g.playable) ? "bad" : /launches/.test(g.playable) ? "ok" : ""}">${esc(ready.label || g.playable)}</span>${launchReportBadge(g)}</div>
+    <div class="row"><button class="act pri" ${ready.allowed ? "" : "disabled"} title="${esc(ready.reason) || (WHERE === "local" && window.GBOX_LOCAL?.worker ? "Play on this PC (" + esc(window.GBOX_LOCAL.worker) + ")" : "Play")}" onclick='play(${JSON.stringify(g.game_id)})'>${esc(ready.label || "Play")}</button>
       ${g.core && window.GBOX_LOCAL?.worker ? (WHERE === "local"
           ? `<button class="act" title="Run on the DGX Spark GPU and stream it here" onclick='play(${JSON.stringify(g.game_id)},"linux")'>Spark</button>`
           : `<button class="act" title="Run natively on this PC (full FPS)" onclick='play(${JSON.stringify(g.game_id)},window.GBOX_LOCAL.worker)'>This PC</button>`) : ""}
@@ -4017,9 +4018,20 @@ const gray = n => i => { const v = n === 256 ? i : Math.round(i * 255 / (n - 1))
 async function inspectView(sid) {
   I.info = await rpc(sid, "info").catch(e => ({ error: e.message }));
   const caps = I.info.capabilities || {};
+  I.memoryMap = null;
+  const newSession = I.sid !== sid;
+  if (newSession) {
+    I.bytes = I.snap = I.cands = null;
+    D.regs = {}; D.prev = {}; D.addr = null; D.info = null;
+    I.addr = I.base = I.toff = I.info.platform === "ps4" ? null : 0;
+    if (I.info.platform === "ps4") I.src = "ram";
+    I.sid = sid;
+  }
+  if (I.info.platform === "ps4" && caps.query_memory_map === "supported")
+    I.memoryMap = await rpc(sid, "query_memory_map").catch(e => ({ error: e.message, regions: [] }));
   if (!I.info.rom || /\.(gcz|rvz|wbfs|iso|chd|cue|gdi|cdi|bin|m3u|7z)$/i.test(I.info.rom)) I.tsrc = "ram";   // disc images: tiles from RAM
   const base = { gamecube: 0x80000000, wii: 0x80000000, dreamcast: 0x8C000000, naomi: 0x8C000000, psx: 0x80000000, psp: 0x08800000, gba: 0x02000000, nds: 0x02000000 }[I.info.platform];
-  if (base && I.plat !== I.info.platform) { I.addr = base; I.base = base; I.toff = base; }
+  if (base && (newSession || I.plat !== I.info.platform)) { I.addr = base; I.base = base; I.toff = base; }
   I.plat = I.info.platform;
   return `<div class="inspect">
     <div><img id="scr" class="screen" tabindex="0" alt="Live game" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">
@@ -4047,21 +4059,22 @@ async function inspectView(sid) {
           <button class="act" id="dbpadd">Add</button></div>
         <pre class="dis" id="ddis">…</pre><div class="mut" id="dbps"></div><div class="mut" id="dmsg"></div></div>
       <div class="panel"><h4>Search memory</h4>
-        <div class="bar">base 0x<input id="sbase" size="9" value="${hex(I.base)}"> span <input id="sspan" size="7" value="${I.span}">
+        <div class="bar">base 0x<input id="sbase" size="14" value="${I.base == null ? "" : hex(I.base)}"> span <input id="sspan" size="7" value="${I.span}">
           <button class="act" id="snap">New snapshot</button></div>
         <div class="bar">keep bytes that are <select id="sop"><option value="eq">= value</option><option value="chg">changed</option><option value="same">unchanged</option><option value="inc">increased</option><option value="dec">decreased</option></select>
           <input id="sval" size="4" placeholder="hex"> <button class="act" id="sfilter">Filter</button></div>
         <div id="sres" class="mut"></div></div></div>
     <div>
       <div class="panel"><h4>Memory</h4>
+        ${I.memoryMap ? `<div class="bar"><select id="mregion" style="max-width:100%"><option value="">Choose a process memory region</option>${(I.memoryMap.regions || []).map((r, i) => `<option value="${i}">${esc(r.start)} - ${esc(r.end)} ${r.writable ? "RW" : "R"}${r.executable ? "X" : ""} ${esc(r.type || "")}</option>`).join("")}</select></div><p class="mut">${esc(I.memoryMap.error || I.memoryMap.note || "Process mappings include emulator and host memory.")}</p>` : ""}
         <div class="bar"><select id="msrc"><option value="ram">RAM</option>${I.info.rom ? '<option value="rom">ROM file</option>' : ""}</select>
-          0x<input id="maddr" size="9" value="${hex(I.addr)}"><button class="act" id="mprev">−</button><button class="act" id="mnext">+</button>
+          0x<input id="maddr" size="14" value="${I.addr == null ? "" : hex(I.addr)}"><button class="act" id="mprev">−</button><button class="act" id="mnext">+</button>
           <label><input type="checkbox" id="mauto" ${I.auto ? "checked" : ""}> live</label>
           <button class="act" id="mcopy">Copy hex</button></div>
         <pre id="hexv" class="hex">loading…</pre><div id="mmsg" class="mut"></div></div>
       <div class="panel"><h4>Tiles / sprite sheet</h4>
         <div class="bar"><select id="tsrc">${I.info.rom ? '<option value="rom">ROM file</option>' : ""}<option value="ram">RAM</option></select>
-          0x<input id="toff" size="9" value="${hex(I.toff)}"><button class="act" id="tprev">◀</button><button class="act" id="tnext">▶</button>
+          0x<input id="toff" size="14" value="${I.toff == null ? "" : hex(I.toff)}"><button class="act" id="tprev">◀</button><button class="act" id="tnext">▶</button>
           <select id="tfmt">${Object.entries(FMT).map(([k, f]) => `<option value="${k}">${f[0]}</option>`).join("")}</select>
           zoom <input id="tzoom" type="number" min="1" max="8" value="${I.zoom}" style="width:46px"></div>
         <canvas id="tiles" class="tiles"></canvas>
@@ -4072,6 +4085,7 @@ async function inspectView(sid) {
 
 async function hexRefresh(sid) {
   try {
+    if (I.addr == null) throw new Error("Choose a process memory region or enter an address.");
     I.bytes = await readRange(sid, I.src, I.addr, I.len);
     const rows = [];
     for (let r = 0; r < I.len; r += 16) {
@@ -4088,6 +4102,7 @@ async function tilesRender(sid) {
   const [, per, ncol, dec] = FMT[I.fmt], n = I.cols * I.rows;
   const msg = $("#tmsg");
   try {
+    if (I.toff == null) throw new Error("Choose a process memory region or enter an address.");
     const b = await readRange(sid, I.tsrc, I.toff, per * n);
     const cv = $("#tiles"); if (!cv) return;
     cv.width = I.cols * 8; cv.height = I.rows * 8;
@@ -4113,6 +4128,18 @@ async function toClipboards(canvas, name, meta) {   // OS clipboard (PNG) + gBox
 
 inspectView.after = sid => {
   const v = id => $(id).value;
+  const region = $("#mregion");
+  if (region) region.onchange = () => {
+    if (region.value === "") return;
+    const row = I.memoryMap?.regions?.[Number(region.value)], address = Number(row?.start);
+    if (!row || !Number.isSafeInteger(address) || address < 0) return;
+    I.src = "ram"; I.addr = I.base = address; I.span = Math.min(row.size, 65536);
+    I.snap = I.cands = null;
+    $("#msrc").value = "ram"; $("#maddr").value = $("#sbase").value = hex(address);
+    $("#sspan").value = I.span;
+    D.addr = address; $("#daddr").value = hex(address); $("#dfollow").checked = false;
+    hexRefresh(sid); cpuRefresh(sid, false);
+  };
   $("#msrc").value = I.src; $("#tsrc").value = I.tsrc; $("#tfmt").value = I.fmt;
   $("#msrc").onchange = () => { I.src = v("#msrc"); hexRefresh(sid); };
   $("#maddr").onchange = () => { I.addr = parseInt(v("#maddr"), 16) || 0; hexRefresh(sid); };
@@ -4147,7 +4174,7 @@ inspectView.after = sid => {
     $("#sres").innerHTML = `${I.cands.length.toLocaleString()} candidates` + (I.cands.length <= 64 ? ": " + I.cands.map(i =>
       `<a href="#" data-j="${I.base + i}">0x${hex(I.base + i)}=${hex(now[i], 2)}</a>`).join(" ") : " (keep filtering)");
   };
-  $("#sres").onclick = e => { const j = e.target.dataset?.j; if (j === undefined) return; e.preventDefault(); I.src = "ram"; $("#msrc").value = "ram"; I.addr = (+j) & ~15; $("#maddr").value = hex(I.addr); hexRefresh(sid); };
+  $("#sres").onclick = e => { const j = e.target.dataset?.j; if (j === undefined) return; e.preventDefault(); I.src = "ram"; $("#msrc").value = "ram"; I.addr = Math.floor(Number(j) / 16) * 16; $("#maddr").value = hex(I.addr); hexRefresh(sid); };
   const tre = () => tilesRender(sid), page = () => FMT[I.fmt][1] * I.cols * I.rows;
   $("#tsrc").onchange = () => { I.tsrc = v("#tsrc"); I.sel = null; tre(); };
   $("#toff").onchange = () => { I.toff = parseInt(v("#toff"), 16) || 0; tre(); };
@@ -4272,7 +4299,7 @@ async function cpuRefresh(sid, withRegs) {
     if ($("#dvram").options.length === 1) (inf.vram || []).forEach((v, i) => $("#dvram").add(new Option(`${v.label}${v.address == null ? " (address from video registers: n/a)" : ""}`, i)));
     const pc = D.regs.pc, at = $("#dfollow").checked && pc !== undefined ? pc : D.addr;
     if (at === null || at === undefined) { $("#ddis").textContent = "Enter an address to disassemble."; return; }
-    const lines = await rpc(sid, "debug_disasm", { address: Math.max(0, at - 32), count: 40 });
+    const lines = await rpc(sid, "debug_disasm", { address: inf.cpu === "x86_64" ? at : Math.max(0, at - 32), count: 40 });
     const bpset = new Set(bps.filter(b => b.kind === "exec").map(b => b.address));
     $("#ddis").innerHTML = lines.map(l => `<span class="l ${l.addr === pc ? "pc" : ""} ${bpset.has(l.addr) ? "bp" : ""}" data-a="${l.addr}">${hex(l.addr)}  ${l.bytes.padEnd(8)}  ${esc(l.mnemonic.padEnd(8))} ${esc(l.operands)}</span>`).join("");
     const cur = $("#ddis .pc"); if (cur && $("#dfollow").checked) cur.scrollIntoView({ block: "center" });

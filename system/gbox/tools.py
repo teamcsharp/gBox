@@ -797,6 +797,9 @@ def _examine_for_launch(inp_examine, examine_ready, host_os):
 
 def _launch_game(inp: LaunchIn, ctx: Ctx):
     g = inp.game
+    if g.platform == "ps4" and g.launch.get("kind") == "ps4_package":
+        raise ToolUnavailable("This PS4 package is not installed: wait for its copy to finish, then prepare "
+                              "the extracted game folder (eboot.bin and sce_sys/param.sfo) and rescan the PS4 library.")
     launch_mod = inp.mod
     timings, staging, jump = {}, None, None
     unlock_result = {'state': 'research_pending', 'applied': False}
@@ -903,7 +906,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
         big = src.is_file() and src.stat().st_size > ctx.config.stage_min_mb * 1024 * 1024
-        if g.platform not in ("ps3", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Switch XCI/NSP streams from the user's share; copying 15+ GB before play stalls launch
+        if g.platform not in ("ps3", "ps4", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Folder games need sibling assets; Switch containers stream from the share.
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
             receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
@@ -935,6 +938,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             src,startup=sm64_startup.prepare_launch(src,ctx.config)
             diag['native_startup']=startup
             if startup.get('applied'):ctx.progress(71,'Mario 64: native title startup; automatic empty-save Options disabled')
+        if g.platform == "ps4":
+            from . import shadps4
+            # Fail before closing the user's current game if the pending PS4
+            # package, folder or runtime isn't ready for an attempted boot.
+            src = shadps4.boot_path(str(src))
+            shadps4.executable(ctx.config)
         diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
@@ -989,6 +998,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if not inp.capture_backend:
         from . import custom_build_unlocks
         detail['unlocks'] = custom_build_unlocks.on_launch(sid, ctx, requested_mod=inp.mod)
+        if g.platform == "ps4":
+            detail['unlocks']['edition_profile'] = unlock_result
     if not inp.capture_backend:
         try:
             from . import gameplay_actions
@@ -1504,6 +1515,8 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
     if op == "read_ranges":                            # the RAM inspector's batched reads (gbox/ram_reader.py serve)
         from . import ram_reader
         return ram_reader.serve(sid, ad, args)
+    if op == "query_memory_map":
+        return ad.query_memory_map()
     if op == "read_rom":
         data = _rom_bytes(g["_rom_path"])
         off, n = int(args.get("offset", 0)), max(1, min(int(args.get("length", 4096)), 65536))
@@ -3649,6 +3662,14 @@ def memory_search(inp: MemSearchIn, ctx: Ctx):
 
     st = MSEARCH.get(inp.session_id)
     if inp.op == "start":
+        if g.get("platform") == "ps4":
+            # shadPS4 maps native guest code into its own process. A full process
+            # scan includes host allocations and can allocate many GiB here.
+            if not inp.ranges:
+                raise ValueError("PS4 searches require explicit ranges=[[address, size]] from query_memory_map")
+            if any(len(r) != 2 or r[0] < 0 or r[1] <= 0 for r in inp.ranges) \
+                    or sum(r[1] for r in inp.ranges) > 16 << 20:
+                raise ValueError("PS4 search ranges must be positive and total at most 16 MiB")
         ranges = inp.ranges or (ad.regions() if hasattr(ad, "regions") else MAIN_RAM.get(g.get("platform"), []))
         if not ranges:
             raise ValueError("give ranges=[[address, size]] for this emulator")
@@ -3663,7 +3684,15 @@ def memory_search(inp: MemSearchIn, ctx: Ctx):
         total = sum(len(b) for _, b in blocks)
         if inp.value is not None:
             pat = S.pack(fmt, inp.value if inp.type == "f32" else int(inp.value))
-            st["cands"] = [(a + i, val(b, i)) for a, b in blocks for i in _finds(b, pat, w)]
+            matches = ((a + i, val(b, i)) for a, b in blocks for i in _finds(b, pat, w))
+            if g.get("platform") == "ps4":
+                import itertools
+                st["cands"] = list(itertools.islice(matches, 200001))
+                if len(st["cands"]) > 200000:
+                    MSEARCH.pop(inp.session_id, None)
+                    raise ValueError("Too many PS4 matches; narrow the address range or search value")
+            else:
+                st["cands"] = list(matches)
             st["blocks"] = None
         return {"result": {"scanned_mb": round(total / 2**20, 1),
                            "candidates": len(st["cands"]) if st["cands"] is not None else total // w}}
@@ -3688,6 +3717,8 @@ def memory_search(inp: MemSearchIn, ctx: Ctx):
                     for i in range(k, min(k + 4096, len(old)) - w + 1, w):
                         if keep(val(old, i), n := val(new, i)):
                             cands.append((a + i, n))
+                            if g.get("platform") == "ps4" and len(cands) > 200000:
+                                raise ValueError("Too many PS4 matches; narrow the range and start again")
             st["cands"], st["blocks"] = cands, None
         else:
             cands, blk, buf = [], None, b""

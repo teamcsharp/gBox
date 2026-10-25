@@ -10,6 +10,7 @@ The typed Ghidra tools (analyze_binary, ghidra_script) import a file with Ghidra
   n64        ROM (.z64/.v64/.n64, in a .zip)                                boot code ROM 0x1000 (1 MiB) at the header entry
   gba        ROM                                                            the ROM at 0x08000000 (ARM LE)
   xbox360    disc (.iso, XDVD)                                              default.xex -> PE image (gbox.re6.xex_image)
+  ps4        extracted eboot.bin or .prx/.sprx                              ELF64 / decrypted, uncompressed SELF
   any        source=ram + session_id: the session's main RAM read through the control plane -> ELF at the RAM base
 
 Output goes to <data_dir>/analysis/re/<game_id>/ on this node (the Spark: the same folder Windows sees as
@@ -43,6 +44,7 @@ PLATFORM_CPU = {
     "gba": ("arm", "ARM:LE:32:v4t", 40, False),
     "xbox360": ("ppc64", None, 20, True),      # Xenon: ELF loader's PowerPC:BE:32 default; VMX128 opcodes won't decode
     "xbox": ("x86", "x86:LE:32:default", 3, False),   # Original Xbox: 32-bit little-endian x86, processor pinned for Ghidra
+    "ps4": ("x86_64", "x86:LE:64:default", 62, False),
 }
 DC_BASE = 0x8C010000
 GBA_BASE = 0x08000000
@@ -118,6 +120,8 @@ def ram_layout(platform: str) -> tuple[int, int]:
 
 
 def ram_to_image(platform: str, ram: bytes, base: int, *, entry: int | None = None) -> tuple[bytes, dict]:
+    if platform == "ps4":
+        raise ValueError("PS4 process mappings include host memory; a verified guest-only RAM image is not available")
     cpu, proc, machine, be = PLATFORM_CPU.get(platform, (None, None, None, None))
     if machine is None:
         raise ValueError(f"no CPU mapping for platform {platform!r}")
@@ -208,6 +212,9 @@ def _rom_bytes(rom: Path, exts: tuple[str, ...]) -> bytes:
 def extract_from_disc(cfg, game: dict, rom: Path, progress=lambda p, m: None) -> tuple[bytes, bytes, dict]:
     """-> (ELF bytes, the executable as stored on the disc/ROM, info)."""
     plat = game.get("platform") or ""
+    if plat == "ps4":
+        from .ps4_executable import read_executable
+        return read_executable(rom)
     if plat in ("gamecube",):
         from .gcdisc import GCDisc
         d = GCDisc(_gc_iso(cfg, game, rom, progress))
@@ -456,8 +463,12 @@ def re_executable(inp: ExeIn, ctx):
             src = "ram"
     if src == "path":
         p = Path(inp.path)
-        raw = p.read_bytes()
-        if raw[:4] == b"\x7fELF":
+        raw = p.read_bytes() if plat != "ps4" else b""
+        if plat == "ps4":
+            from .ps4_executable import read_executable
+            elf, raw, info = read_executable(p)
+            notes += info.pop("notes", [])
+        elif raw[:4] == b"\x7fELF":
             elf, info = raw, {"format": "ELF", "entry": struct.unpack_from(">I" if raw[5] == 2 else "<I", raw, 0x18)[0]}
         elif raw[:8] == b"PS-X EXE":
             elf, info = psx_exe_to_elf(raw)
@@ -467,6 +478,8 @@ def re_executable(inp: ExeIn, ctx):
             raise ValueError(f"{p.name}: give an ELF, a PS-X EXE or a DOL (raw images: use source=ram or a disc)")
         info["source_file"] = p.name
     elif src == "ram":
+        if plat == "ps4":
+            raise ValueError("PS4 process mappings include host memory; use source=disc/path for executable analysis")
         if not inp.session_id:
             raise ValueError("source=ram needs session_id (a running session of this game)")
         live = _live_ram_target(ctx, game, inp.session_id)

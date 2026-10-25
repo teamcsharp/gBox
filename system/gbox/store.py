@@ -177,6 +177,9 @@ class Store:
                     if row:
                         old = json.loads(row[1])
                         for k in self.STATUS:
+                            if (k == "playable" and e.get("format") == "ps4_pkg"
+                                    and e.get("playable") in ("copy_incomplete", "installation_required")):
+                                continue  # package readiness is measured on this scan, not learned gameplay status
                             e[k] = old.get(k, e.get(k))
                         for k in self.USER_FIELDS:     # incoming scan defaults cannot replace operator/session values
                             if k in old:

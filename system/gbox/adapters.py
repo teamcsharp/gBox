@@ -26,12 +26,12 @@ OPS = ["launch_game", "stop_game", "pause", "resume", "get_frame", "get_audio", 
 
 # Rewind policy per platform.
 # No rewind where snapshotting every few frames would cost frame rate (Dolphin/PCSX2/Citra cores).
-NO_REWIND = {"gamecube", "wii", "ps2", "3ds", "wiiu", "switch",
+NO_REWIND = {"gamecube", "wii", "ps2", "ps4", "3ds", "wiiu", "switch",
              "dreamcast", "naomi", "atomiswave"}         # Flycast: 27 MB states every few frames stutter and break manual saves
 # 3D / CD systems: snapshot every 15 frames (coarser steps, cheap); 8/16-bit: every 4 frames (smooth).
 COARSE_REWIND = {"n64", "n64dd", "psx", "dreamcast", "naomi", "saturn", "psp", "segacd", "pcecd", "3do", "jaguar", "neocd", "cdi", "pcfx"}
 # Pads whose games actually use L2/R2 (triggers): never steal those for rewind / fast-forward.
-TRIGGERS_USED = {"psx", "ps2", "dreamcast", "naomi", "gamecube", "wii", "n64", "n64dd", "3ds", "wiiu", "switch"}
+TRIGGERS_USED = {"psx", "ps2", "ps4", "dreamcast", "naomi", "gamecube", "wii", "n64", "n64dd", "3ds", "wiiu", "switch"}
 FLYCAST_PLATFORMS = {"dreamcast", "naomi", "atomiswave"}
 # Keep rendered textures in emulated VRAM, so future states can include them.
 # Unthreaded rendering also keeps serialization size stable between query/write.
@@ -4370,6 +4370,11 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
     if game.get("core") and plat != "arcade" and systems.core_for(plat)[0] is None:
         game = game | {"core": None}                       # catalog still has a core the platform rule has since dropped
     override = config.emulators.get(plat)
+    if plat == "ps4":
+        from .shadps4 import ShadPS4Adapter
+        if override and override.adapter != "shadps4":
+            raise ToolUnavailable("PS4 requires [emulators.ps4] adapter='shadps4'")
+        return ShadPS4Adapter(config)
     if override and override.adapter == "command":
         return CommandAdapter(override)
     launch = game.get("launch") or {}

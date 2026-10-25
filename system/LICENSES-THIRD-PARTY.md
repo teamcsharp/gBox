@@ -11,6 +11,7 @@ The exceptions are vendored under `gbox/vendor/`, each with its licence file and
 |---|---|---|---|
 | FastAPI, Pydantic, Uvicorn, HTTPX | control plane | MIT / BSD-3 | pip dependency |
 | RetroArch | emulator frontend | GPLv3 | separate process, UDP commands; not bundled |
+| shadPS4 | PS4 emulation | GPL-2.0-or-later | optional official portable release, separate process with IPC and process-memory inspection; source: https://github.com/shadps4-emu/shadPS4 |
 | Flycast (libretro core) | Dreamcast | GPLv2 | loaded by RetroArch; not bundled |
 | Ghidra | static analysis | Apache-2.0 | separate process (`analyzeHeadless`); the gBox script ships in `adapters/ghidra` |
 | Blender | 3D reconstruction | GPLv2+ | separate process; the bridge script runs inside Blender. ponytail: a script that imports `bpy` is arguably GPL-covered, so keep it under a GPL-compatible license if distributed |

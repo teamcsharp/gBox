@@ -223,7 +223,7 @@ class Inspector:
         length = max(1, min(int(length), HEX_MAX))
         chain = []
         if pointer:
-            psize = self.map.pointer_size if self.map else 4
+            psize = self.map.pointer_size if self.map else ram_map.POINTER_SIZE.get(self.platform, 4)
             lo, hi = self.map.pointer_range if self.map else ram_map.RAM_RANGE.get(self.platform, (1, 1 << 64))
             addr = pointer[0]
             for off in pointer[1:]:
@@ -235,7 +235,9 @@ class Inspector:
             address = addr
         data = self.reader.read(int(address), length, wait=1.0)
         return {"address": int(address), "address_hex": ram_map.hexa(int(address)), "length": len(data),
-                "hex": data.hex(), "chain": chain, "big_endian": self.big_endian(), "at": round(self.clock(), 3)}
+                "hex": data.hex(), "chain": chain, "big_endian": self.big_endian(),
+                "pointer_size": self.map.pointer_size if self.map else ram_map.POINTER_SIZE.get(self.platform, 4),
+                "at": round(self.clock(), 3)}
 
     # -- search --
     def default_region(self) -> tuple[int, int]:
@@ -662,7 +664,7 @@ def routes(app, store, auth, rpc=None, frame=None, data_dir=None):
         insp = inspector(sid)
         insp.watch()
         vals = insp.values()
-        out = {"session_id": sid, "map": insp.map.id if insp.map else None, "map_error": insp.map_error,
+        out = {"session_id": sid, "platform": insp.platform, "map": insp.map.id if insp.map else None, "map_error": insp.map_error,
                "title": insp.map.title if insp.map else None, "groups": insp.map.groups if insp.map else {},
                "rows": vals.rows() if vals is not None else [], "errors": len(vals.errors) if vals is not None else 0,
                "at": round(vals.at, 3) if vals is not None else None,

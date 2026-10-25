@@ -46,7 +46,8 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     (r"playstation portable|playstation minis|\bpsp\b", "psp", "ppsspp", []),
     (r"playstation 2|\bps2\b", "ps2", "pcsx2", ["pcsx2/bios", "ps2->pcsx2/bios"]),   # HyperSpin keeps PS2 BIOS in system/ps2
     (r"playstation 3|ps3", "ps3", None, []),                    # RPCS3 on Windows nodes (no libretro core)
-    (r"playstation 4|playstation 5", "ps_modern", None, []),
+    (r"playstation 4|\bps4\b|shadps4", "ps4", None, []),       # standalone shadPS4; no libretro core
+    (r"playstation 5|\bps5\b", "ps_modern", None, []),
     (r"playstation", "psx", "pcsx_rearmed", ["scph5500.bin", "scph5501.bin", "scph5502.bin", "scph1001.bin"]),
     # --- NEC / SNK / others ---
     (r"pc-fx", "pcfx", "mednafen_pcfx", ["pcfx.rom"]),

@@ -23,6 +23,12 @@ granted_permissions = ["read", "execute", "stage", "network", "install", "memory
 blender_search = ["C:/Users/maste/Desktop/Blender Builds/Builds"]
 ghidra_home = "/home/ehm_eckx/reverse/ghidra_12.1.4_PUBLIC"   # the operator's own Ghidra on the Spark (JDK 21 pinned per run)
 
+# PS4 setup belongs in each node's gbox.local-<hostname>.toml; point at the standalone shadPS4 core.
+# [emulators.ps4]
+# adapter = "shadps4"
+# executable = "D:/Emulators/shadPS4/shadPS4.exe"
+# stage_local = false             # preserve the complete extracted game folder, not only eboot.bin
+
 [retroarch_bios]
 linux = "/mnt/gbox/hyperspin/Arcade/emulators/RetroArch/system"
 windows = "//10.89.1.125/HyperSpin Attraction/Arcade/emulators/RetroArch/system"
@@ -52,6 +58,16 @@ kind = "files"
 mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS3", windows = "//10.89.1.125/QuickSwap2/Emulation/PS3" }
+
+[[libraries]]
+id = "ps4"
+kind = "files"
+platform = "ps4"
+hash = false                      # copying packages receive only a bounded header probe
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/PS4", windows = "//10.89.1.125/QuickSwap2/Emulation/PS4" }
+# Packages appear as pending installation; launch requires <game>/eboot.bin + <game>/sce_sys/param.sfo.
 
 # Additional QuickSwap2 ROM folders. BIOS, emulator installations and NAND backups are not games.
 

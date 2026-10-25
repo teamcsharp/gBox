@@ -25,7 +25,7 @@
     ["equals", "= value"], ["not_equals", "≠ value"], ["range", "in range"]];
   const TABS = ["Live", "Events", "Hex", "Search"];
   const LIVE_MS = 250, BACKGROUND_MS = 2000, HEX_MS = 500, SEARCH_MS = 1500;
-  const hex8 = n => "0x" + (Number(n) >>> 0).toString(16).toUpperCase().padStart(8, "0");
+  const hex8 = n => "0x" + Number(n).toString(16).toUpperCase().padStart(8, "0");
   const hex2 = n => n.toString(16).toUpperCase().padStart(2, "0");
 
   function num(s) {
@@ -126,11 +126,12 @@
       ` <span class="ri-hs">${ESC(r.ascii)}</span></div>`).join("");
   }
 
-  function word(hex, o, big = true) {           // the 4-byte word a click lands in (aligned), as the game reads it
-    const at = o - (o % 4), b = (hex.match(/../g) || []).slice(at, at + 4).map(h => parseInt(h, 16));
-    if (b.length < 4) return null;
-    const v = big ? (b[0] * 2 ** 24 + (b[1] << 16) + (b[2] << 8) + b[3]) : (b[3] * 2 ** 24 + (b[2] << 16) + (b[1] << 8) + b[0]);
-    return { at, value: v >>> 0 };
+  function word(hex, o, big = true, size = 4) { // pointer-sized aligned word, without 32-bit address truncation
+    if (![2, 4, 8].includes(size)) return null;
+    const at = o - (o % size), b = (hex.match(/../g) || []).slice(at, at + size).map(h => parseInt(h, 16));
+    if (b.length < size) return null;
+    const v = (big ? b : b.reverse()).reduce((n, byte) => n * 256 + byte, 0);
+    return Number.isSafeInteger(v) ? { at, value: v } : null;
   }
 
   function valuesText(list) {
@@ -209,11 +210,16 @@
     async function readHex(opts = {}) {
       Object.assign(S.hex, opts);
       const h = S.hex;
-      const q = h.pointer ? `pointer=${encodeURIComponent(h.pointer)}` : `address=${encodeURIComponent(hex8(h.address ?? 0x80000000))}`;
       try {
+        if (!h.pointer && h.address == null) {
+          if (!S.live) await refreshLive();
+          if (S.live?.platform === "ps4") throw new Error("Enter a process address from Inspect's memory-region list.");
+        }
+        const q = h.pointer ? `pointer=${encodeURIComponent(h.pointer)}` : `address=${encodeURIComponent(hex8(h.address ?? 0x80000000))}`;
         const out = await api(`${base}/hex?${q}&length=${h.length}`);
         h.prev = h.data && h.at === out.address ? h.data : null;
-        h.data = out.hex; h.at = out.address; h.chain = out.chain || []; h.big = out.big_endian !== false; h.error = "";
+        h.data = out.hex; h.at = out.address; h.chain = out.chain || []; h.big = out.big_endian !== false;
+        h.pointerSize = out.pointer_size || 4; h.error = "";
         if (!h.pointer) h.address = out.address;
         render(S, "hex");
         return out;
@@ -221,7 +227,7 @@
     }
 
     function follow(offset) {                   // a clicked word as a pointer: open where it points
-      const w = word(S.hex.data || "", offset, S.hex.big);
+      const w = word(S.hex.data || "", offset, S.hex.big, S.hex.pointerSize || 4);
       if (!w) return null;
       return readHex({ address: w.value, pointer: "" });
     }
@@ -326,7 +332,7 @@
       `<div class="ri-body">` +
       `<div class="ri-pane" data-pane="Live"><div class="ri-live"><p class="ri-e">Reading…</p></div></div>` +
       `<div class="ri-pane" data-pane="Events"><div class="ri-bar"><button class="ri-b ri-clear">Clear</button></div><div class="ri-events"></div></div>` +
-      `<div class="ri-pane" data-pane="Hex"><div class="ri-bar">0x<input class="ri-hexaddr" size="9" placeholder="80000000" data-nomic>` +
+      `<div class="ri-pane" data-pane="Hex"><div class="ri-bar">0x<input class="ri-hexaddr" size="14" placeholder="address" data-nomic>` +
       `<select class="ri-hexlen">${[64, 128, 256, 512, 1024].map(n => `<option${n === 256 ? " selected" : ""}>${n}</option>`).join("")}</select>` +
       `<input class="ri-ptr" size="18" placeholder="pointer: base,off,off" data-nomic><button class="ri-b ri-go">Go</button>` +
       `<label><input type="checkbox" class="ri-hexlive" checked> live</label></div>` +
@@ -422,7 +428,7 @@
       panel.tab = tab; savePrefs({ tab });
       el.querySelectorAll(".ri-tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
       el.querySelectorAll(".ri-pane").forEach(d => { d.hidden = d.dataset.pane !== tab; });
-      if (tab === "Hex" && !ctl.S.hex.data) ctl.readHex({ address: ctl.S.hex.address ?? 0x80000000 });
+      if (tab === "Hex" && !ctl.S.hex.data) ctl.readHex();
       if (tab === "Search") ctl.refreshSearch();
     };
     el.querySelector(".ri-tabs").onclick = e => { const t = e.target.closest("button"); if (t) show(t.dataset.tab); };
@@ -504,7 +510,7 @@
     for (const ev of ["keyup", "keypress"]) el.addEventListener(ev, e => e.stopPropagation());
     $(".ri-go").onclick = () => {
       const raw = $(".ri-hexaddr").value.trim().replace(/^0x/i, ""), a = raw ? num("0x" + raw) : NaN;
-      ctl.readHex({ address: isNaN(a) ? 0x80000000 : a, length: +$(".ri-hexlen").value, pointer: $(".ri-ptr").value.trim() });
+      ctl.readHex({ address: isNaN(a) ? null : a, length: +$(".ri-hexlen").value, pointer: $(".ri-ptr").value.trim() });
     };
     $(".ri-hexlen").onchange = () => ctl.readHex({ length: +$(".ri-hexlen").value });
     show(panel.tab);

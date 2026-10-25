@@ -149,7 +149,7 @@ def test_capabilities_does_not_start_watcher_or_claim_realtime_support(tmp_path,
     assert support["realtime"] is False and support["active_target_detection"] is False
     assert support["animation_retarget"] is False
     assert {t["id"] for t in support["targets"]} == set(M.CHARACTERS)
-    assert set(result["unsupported_platforms"]) == {"pc", "ps3"}
+    assert set(result["unsupported_platforms"]) == {"pc", "ps3", "ps4"}
 
 
 def test_combined_build_forwards_player_and_enemy_profiles(tmp_path, monkeypatch):

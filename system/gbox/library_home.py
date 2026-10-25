@@ -355,7 +355,7 @@ class HomeData:
         order = {'snap': 0, 'fanart': 1, 'poster': 2, 'flyer': 3, 'cabinet': 4, 'boxart': 5, 'wheel': 6, 'cartart': 7}
         art = [{'kind': 'image', 'url': f'/api/media/{quote(gid, safe="")}/{kind}', 'label': kind.replace('_', ' ').title(), 'source': 'art'}
                for kind in sorted(kinds, key=lambda k: (order.get(k, 8), k))]
-        public = {key: row.get(key) for key in ('game_id', 'title', 'platform', 'system', 'year', 'manufacturer', 'category', 'players', 'region', 'playable')}
+        public = {key: row.get(key) for key in ('game_id', 'title', 'platform', 'system', 'year', 'manufacturer', 'category', 'players', 'region', 'playable', 'format')}
         return public | {'favorite': bool(row.get('favorite')), 'last_played': last_played,
             'plays': stats.get('plays', 0), 'last_device': stats.get('last_device'), 'devices': stats.get('devices', []),
             'models_count': stats.get('models_count', 0), 'mods_count': stats.get('mods_count', 0), 'reports_count': stats.get('reports_count', 0),

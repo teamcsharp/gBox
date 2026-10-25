@@ -12,7 +12,7 @@ HOST_OS = platform.system().lower()          # "windows" | "linux"
 
 
 class EmulatorConfig(BaseModel):
-    adapter: str = "retroarch"        # "retroarch" | "command" | "rocketlauncher"
+    adapter: str = "retroarch"        # "retroarch" | "command" | "rocketlauncher" | "shadps4"
     executable: str | None = None     # default for retroarch: the provisioned/apt retroarch
     core: str | None = None           # libretro core name ("flycast") or path to a .so/.dll
     args: list[str] = []              # extra args; "{rom}" is substituted for the command adapter
@@ -416,6 +416,16 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # kind = "files"                  # or "attract" for a HyperSpin / Attract-Mode tree
 # paths = { linux = "/mnt/gbox/roms", windows = "//nas/roms" }
 # mount = "//nas/roms"            # linux: mounted read-only at paths.linux by `gbox setup`
+
+# [[libraries]]                  # extracted PS4 games: <game>/eboot.bin + <game>/sce_sys/param.sfo
+# id = "ps4"
+# kind = "files"
+# platform = "ps4"
+# paths = { windows = "D:/Games/PS4", linux = "/mnt/games/PS4" }
+# [emulators.ps4]                # standalone shadPS4 core executable, not QtLauncher
+# adapter = "shadps4"
+# executable = "D:/Emulators/shadPS4/shadPS4.exe"   # set per-node in gbox.local-<hostname>.toml
+# stage_local = false            # eboot.bin needs the complete extracted game folder beside it
 
 # [[llm_endpoints]]
 # name = "ollama"

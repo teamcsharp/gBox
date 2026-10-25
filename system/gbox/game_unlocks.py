@@ -31,6 +31,11 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
         from . import ge007_unlock
         return ge007_unlock.pre_launch(ctx)
     if not profile['verified']:
+        if profile.get('platform') == 'ps4' and profile.get('capabilities'):
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': profile['reason'], 'scope': profile['scope'],
+                    'capabilities': profile['capabilities'],
+                    'evidence': profile['evidence'], 'blockers': profile['blockers']}
         if (game.get('game_id') == MERC3D_ID and
                 str(game.get('platform') or '').lower() in ('3ds', 'n3ds')):
             from . import merc3d_unlock
@@ -96,6 +101,11 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if str(game.get('platform') or '').casefold() == 'ps4':
+        from . import re_ps4
+        profile = re_ps4.unlock_profile(game)
+        if profile is not None:
+            return profile
     if game.get('game_id') == ACV_ID and game.get('platform') == 'xbox360':
         from . import acv_evidence
         inv = acv_evidence.inventory()

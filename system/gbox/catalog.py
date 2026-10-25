@@ -35,7 +35,7 @@ def _read(path: Path, offset: int, n: int) -> bytes:
 
 
 def param_sfo(b: bytes) -> dict:
-    """PS3/PSP PARAM.SFO -> {key: value} (TITLE, TITLE_ID, ...)."""
+    """PS3/PS4/PSP PARAM.SFO -> {key: value} (TITLE, TITLE_ID, ...)."""
     import struct
     if b[:4] != b"\x00PSF":
         return {}
@@ -75,6 +75,75 @@ def ps3_title_id(eboot: Path) -> str | None:
         return param_sfo((Path(eboot).parent.parent / "PARAM.SFO").read_bytes()).get("TITLE_ID") or None
     except Exception:                                      # noqa: BLE001 - unreadable/odd SFO: no per-game settings
         return None
+
+
+def ps4_metadata(eboot: Path, sfo_path: Path | None = None) -> dict:
+    """Validate an extracted PS4 application's metadata; a .bin/.pkg suffix is not platform evidence.
+
+    Updates and DLC need installation into a base game before launch. A malformed or unrelated SFO raises
+    ValueError, so callers never silently treat a PS3 executable or a PC repack as a PS4 application.
+    """
+    import struct
+    eboot = Path(eboot)
+    if eboot.name.lower() != "eboot.bin" or not eboot.is_file():
+        raise ValueError("PS4 games need an extracted eboot.bin with sce_sys/param.sfo")
+    sfo_path = sfo_path or eboot.parent / "sce_sys" / "param.sfo"
+    with Path(sfo_path).open("rb") as stream:
+        data = stream.read(1024 * 1024 + 1)
+    if len(data) > 1024 * 1024 or len(data) < 20 or data[:4] != b"\x00PSF":
+        raise ValueError("invalid PS4 sce_sys/param.sfo")
+    kt, dt, count = struct.unpack_from("<III", data, 8)
+    if count > (len(data) - 20) // 16 or not 20 + 16 * count <= kt <= dt <= len(data):
+        raise ValueError("invalid PS4 SFO tables")
+    for i in range(count):
+        ko, fmt, length, maximum, offset = struct.unpack_from("<HHIII", data, 20 + 16 * i)
+        if (kt + ko >= dt or data.find(b"\x00", kt + ko, dt) < 0 or length > maximum
+                or dt + offset + length > len(data) or (fmt == 0x0404 and length != 4)):
+            raise ValueError("invalid PS4 SFO entry")
+    try:
+        values = param_sfo(data)
+    except (ValueError, UnicodeError, struct.error) as exc:
+        raise ValueError("invalid PS4 sce_sys/param.sfo") from exc
+    if not re.fullmatch(r"CUSA\d{5}", str(values.get("TITLE_ID", ""))):
+        raise ValueError("PS4 sce_sys/param.sfo needs a CUSA title ID")
+    if values.get("CATEGORY", "gd") != "gd":
+        raise ValueError("PS4 update/DLC folders are not standalone games; install them into the base game")
+    if not isinstance(values.get("TITLE", ""), str):
+        raise ValueError("invalid PS4 title")
+    return values
+
+
+def ps4_package_metadata(path: Path) -> dict | None:
+    """Read only the fixed PKG header; report pending installation, never decrypt or claim playability.
+
+    Layout: shadps4-emu/shadPS4 v.0.5.0 src/core/file_format/pkg.h (PKGHeader). Size equality only
+    describes the container length: a copying client may preallocate, so it does not verify integrity.
+    """
+    import struct
+    path = Path(path)
+    before = path.stat()
+    with path.open("rb") as stream:
+        head = stream.read(0x1000)
+    after = path.stat()
+    if head[:4] != b"\x7fCNT":
+        return None
+    if len(head) < 0x1000:
+        raise ValueError("PS4 package header is incomplete; wait for the copy to finish")
+    try:
+        content_id = head[0x40:0x64].rstrip(b"\x00").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError("invalid PS4 package content ID") from exc
+    match = re.fullmatch(r"[A-Z]{2}\d{4}-(CUSA\d{5})_\d{2}-[A-Z0-9]{16}", content_id)
+    if not match:
+        raise ValueError("PS4 package header needs a CUSA content ID")
+    expected = struct.unpack_from(">Q", head, 0x430)[0]
+    content_offset, content_size = struct.unpack_from(">QQ", head, 0x30)
+    if expected < 0x1000 or content_offset + content_size > expected or after.st_size > expected:
+        raise ValueError("invalid PS4 package size fields")
+    changing = (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+    status = "copy_incomplete" if after.st_size < expected or changing else "installation_required"
+    return {"title_id": match[1], "content_id": content_id, "expected_size": expected,
+            "observed_size": after.st_size, "status": status, "integrity": "not_verified"}
 
 
 def sniff(path: Path) -> tuple[str | None, dict]:
@@ -219,8 +288,35 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
     by_hash: dict[str, CatalogEntry] = {}
     ps3 = {f.parents[2] for f in files if f.name.upper() == "EBOOT.BIN" and f.parent.name.upper() == "USRDIR"
            and f.parents[1].name.upper() == "PS3_GAME"}           # extracted PS3 disc folders (JB format)
+    ps4_sfos = {f.parent.parent: f for f in files
+                if f.name.lower() == "param.sfo" and f.parent.name.lower() == "sce_sys"}
+    ps4 = {f.parent: (f, ps4_sfos[f.parent]) for f in files
+           if f.name.lower() == "eboot.bin" and f.parent in ps4_sfos}
     for f in files:
         ext = f.suffix.lower()
+        ps4_root = next((d for d in ps4 if f.is_relative_to(d)), None)
+        if ps4_root:
+            eboot, sfo_path = ps4[ps4_root]
+            if f != eboot:
+                continue                                   # PS4 assets and modules are not separate games
+            try:
+                sfo = ps4_metadata(eboot, sfo_path)
+                root = next(Path(r) for r in roots if f.is_relative_to(r))
+                rel = f.relative_to(root).as_posix()
+                folder_title, region = title_from_name(ps4_root.name)
+                title = sfo.get("TITLE", "").strip() or folder_title
+                gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+                by_hash[gid] = CatalogEntry(
+                    game_id=gid, title=title, platform="ps4", platform_confidence="sce_sys/param.sfo",
+                    region=region, serial=sfo["TITLE_ID"], source_paths=[str(f)], library=lib_id,
+                    rel_path=rel, system="ps4", collections=[lib_id] if lib_id else [], core=None,
+                    hashes={}, size=f.stat().st_size, format="ps4_folder",
+                    runtimes={"ps4": runtimes.get("ps4", "shadps4")},
+                    launch={"kind": "emulator", "platform": "ps4", "path": str(f),
+                            "title_id": sfo["TITLE_ID"], "app_ver": sfo.get("APP_VER", "")}, profile_id=gid)
+            except (OSError, ValueError) as exc:
+                problems.append(f"{f}: {exc}")
+            continue
         disc = next((d for d in ps3 if f.is_relative_to(d)), None)
         if disc and not (f.name.upper() == "EBOOT.BIN" and f.parents[1].name.upper() == "PS3_GAME"):
             continue                                       # a PS3 game's own data files are not games
@@ -239,6 +335,31 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                     launch={"kind": "emulator", "platform": "ps3", "path": str(f)}, profile_id=gid)
             except OSError as e:
                 problems.append(f"{f}: {e}")
+            continue
+        if ext == ".pkg":
+            try:
+                package = ps4_package_metadata(f)
+                if package:
+                    root = next(Path(r) for r in roots if f.is_relative_to(r))
+                    rel = f.relative_to(root).as_posix()
+                    title, region = title_from_name(f.name)
+                    gid = hashlib.sha1(f"{lib_id}:{rel}".encode()).hexdigest()[:16]
+                    by_hash[gid] = CatalogEntry(
+                        game_id=gid, title=title, platform="ps4", platform_confidence="package header",
+                        region=region, serial=package["title_id"], source_paths=[str(f)], library=lib_id,
+                        rel_path=rel, system="ps4", collections=[lib_id] if lib_id else [], core=None,
+                        hashes={}, size=package["observed_size"], format="ps4_pkg", playable=package["status"],
+                        runtimes={"ps4": "installation_required"},
+                        launch={"kind": "ps4_package", "platform": "ps4", "path": str(f), **package,
+                                "reason": "Finish copying, then provide the extracted game folder with eboot.bin and sce_sys/param.sfo; packages do not boot directly"},
+                        profile_id=gid)
+                    continue
+            except (OSError, ValueError) as exc:
+                problems.append(f"{f}: {exc}")
+                continue
+        if platform_hint == "ps4":
+            if ext in (".bin", ".pkg", ".elf"):
+                problems.append(f"{f}: PS4 library entries need an extracted eboot.bin with sce_sys/param.sfo")
             continue
         archive = None
         archive_meta = {}

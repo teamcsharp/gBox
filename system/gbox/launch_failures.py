@@ -45,10 +45,10 @@ UNKNOWN_DEPLOY_GRACE_S = 2700.0      # no deploy record on this machine: verify 
 MAX_OCCURRENCES = 60
 DEFAULTS = {"auto_remedy": True, "investigate": True, "verify": True}
 
-ADAPTERS = ("retroarch", "dolphin", "flycast", "pcsx2", "duckstation", "rpcs3", "ppsspp", "xenia", "cemu", "mame",
+ADAPTERS = ("retroarch", "dolphin", "flycast", "pcsx2", "duckstation", "rpcs3", "shadps4", "ppsspp", "xenia", "cemu", "mame",
             "redream", "xemu", "cxbx", "melonds", "citra", "ryujinx", "yuzu", "mupen64plus", "mgba", "steam", "rocketlauncher")
 ADAPTER_RX = re.compile(r"\b(" + "|".join(ADAPTERS) + r")\b", re.I)
-PLATFORM_ADAPTER = {"gamecube": "dolphin", "wii": "dolphin", "ps3": "rpcs3", "xbox360": "xenia", "switch": "yuzu",
+PLATFORM_ADAPTER = {"gamecube": "dolphin", "wii": "dolphin", "ps3": "rpcs3", "ps4": "shadps4", "xbox360": "xenia", "switch": "yuzu",
                     "xbox": "cxbx", "pc_steam": "steam"}
 
 CANCELLED_RX = re.compile(r"cancelled by the operator|cancelled with its parent|^cancelled\b|stopped by the operator", re.I)

@@ -20,6 +20,12 @@
     return safe ? safeURL((io.url || (u => u))(safe)) : '';
   };
   const label = value => String(value || '').replace(/_/g, ' ');
+  function playability(game = {}) {
+    if (root.GBoxHome?.playability) return root.GBoxHome.playability(game);
+    const status = game.launch?.status || game.playable;
+    const pending = game.format === 'ps4_pkg' || game.launch?.kind === 'ps4_package' || ['copy_incomplete', 'installation_required'].includes(status);
+    return { allowed: game.playable !== false && !pending, label: pending ? (status === 'copy_incomplete' ? 'Copy incomplete' : 'Needs extracted game') : '' };
+  }
   function selectedBuild(data) {
     const raw = data.selected_build, row = typeof raw === 'string' ? { name: raw } : raw;
     const name = row?.mod_name || row?.name;
@@ -84,13 +90,14 @@
   }
   function render(data, io = {}) {
     const game = data.game || {}, models = list(data.models), builds = list(data.builds), reports = list(data.reports), activity = list(data.activity), media = list(data.media), timeline = events(data);
+    const ready = playability(game);
     const models3D = modelOptions(data), jobs = list(data.progress?.active_jobs), devices = list(game.devices);
     const modelTotal = game.models_count ?? models.length, buildTotal = game.mods_count ?? builds.length, reportTotal = game.reports_count ?? reports.length;
     const selected = selectedBuild(data), buildRows = builds.map((build, index) => ({ build, index }));
     if (selected) buildRows.sort((a, b) => Number(b.build.name === selected.name) - Number(a.build.name === selected.name));
     return `<div class="ghd-root">
       <header class="ghd-heading"><div><span class="ghd-eyebrow">${selected ? 'MOD BUILD WORKSPACE' : 'GAME WORKSPACE'}</span><h2>${esc(selected?.title || game.title || 'Game details')}</h2><p>${[selected ? game.title : '', game.system || game.platform, game.year, game.manufacturer].filter(Boolean).map(esc).join(' · ')}</p>${selected ? `<p class="ghd-selected-meta">${esc(date(selected.built))} · ${selected.verified ? 'Verified' : 'Unverified'}${selected.writer ? ` · ${esc(selected.writer)}` : ''}<br><code>${esc(selected.name)}</code></p>` : ''}</div>
-        <div class="ghd-actions">${selected ? '<button type="button" class="ghd-primary" data-ghd-action="play-selected">▶ Play selected build</button>' : ''}<button type="button" class="${selected ? '' : 'ghd-primary'}" data-ghd-action="play">▶ ${selected ? 'Play original game' : 'Play'}</button><button type="button" data-ghd-action="builds">Mod builds (${count(buildTotal)})</button><button type="button" data-ghd-action="models">Models (${count(modelTotal)})</button></div></header>
+        <div class="ghd-actions">${selected ? '<button type="button" class="ghd-primary" data-ghd-action="play-selected">▶ Play selected build</button>' : ''}<button type="button" class="${selected ? '' : 'ghd-primary'}" data-ghd-action="play"${ready.allowed ? '' : ' disabled'}>${esc(ready.label || (selected ? 'Play original game' : 'Play'))}</button><button type="button" data-ghd-action="builds">Mod builds (${count(buildTotal)})</button><button type="button" data-ghd-action="models">Models (${count(modelTotal)})</button></div></header>
       <div class="ghd-metrics"><div><b>${count(game.plays)}</b><span>times played</span></div><div><b>${esc(game.last_played ? date(game.last_played) : 'Not played yet')}</b><span>last played</span></div><div><b>${esc(game.last_device || 'No device recorded')}</b><span>last device</span></div><div><b>${count(modelTotal)} / ${count(buildTotal)}</b><span>models / mod builds</span></div><div><b>${count(reportTotal)}</b><span>reports</span></div></div>
       <section class="ghd-panel ghd-assets-panel" data-ghd-title-assets aria-label="Original title assets">${assetsHTML(null, game, io)}</section>
       <div class="ghd-columns"><section class="ghd-panel ghd-model-panel"><div class="ghd-section-heading"><h3>Models &amp; modding progress</h3><span class="ghd-tag">3D inspection</span></div>
@@ -207,6 +214,7 @@
       const button = event.target.closest('button'); if (!button || !host.contains(button) || disposed) return;
       const status = q('[data-ghd-action-status]'); status.textContent = '';
       const launches = button.dataset.ghdAction === 'play' || button.dataset.ghdAction === 'play-selected' || button.dataset.ghdBuild !== undefined;
+      if (button.dataset.ghdAction === 'play' && !playability(game).allowed) return;
       if (launches) { if (button.disabled) return; button.disabled = true; }
       const invoke = (name, ...args) => {
         if (typeof io[name] !== 'function') throw new Error(`${name === 'report' ? 'Report details' : name === 'session' ? 'Session details' : 'This action'} are unavailable in this client.`);

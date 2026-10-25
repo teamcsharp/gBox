@@ -4,6 +4,30 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const R = require('../clients/web/viz/ram-inspector.js');
 
+test('PS4 hex addresses and pointer following preserve all address bits', async () => {
+  const address = 0x900000000, calls = [];
+  assert.match(R.hexHTML(R.hexRows('aabbccdd', address)), /900000000/);
+  assert.deepEqual(R.word('0400000009000000', 4, false, 8), { at: 0, value: address + 4 });
+  assert.equal(R.word('ffffffffffffffff', 0, false, 8), null);
+  const ctl = R.create({ sid: 'ps4-session', api: async path => {
+    calls.push(path);
+    return { address, hex: '0400000009000000', big_endian: false, pointer_size: 8 };
+  }});
+  await ctl.readHex({ address });
+  await ctl.follow(4);
+  assert.match(calls[0], /address=0x900000000/);
+  assert.match(calls[1], /address=0x900000004/);
+});
+
+test('PS4 floating inspector does not invent a RAM address', async () => {
+  const calls = [];
+  const ctl = R.create({sid: 'ps4-session', api: async path => { calls.push(path); return {platform: 'ps4'}; }});
+  assert.equal(await ctl.readHex(), null);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /\/ram\/live/);
+  assert.match(ctl.S.hex.error, /Enter a process address/);
+});
+
 const LIVE = {
   session_id: 'w1-re4', map: 'G4BE08', title: 'Resident Evil 4 (GameCube, NTSC-U)', hz: 10, reads: 3, bytes: 4100, age_s: 0.04,
   groups: { game: 'Where the game is', merc: 'The Mercenaries', enemies: 'Live Ganados' },

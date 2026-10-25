@@ -6,6 +6,7 @@ Interface: `gbox/adapters.py`. The ops list in `OPS` mirrors plan §6. `get_capa
 |---|---|---|---|
 | RetroArchAdapter | any libretro core, first is Dreamcast/Flycast | launch, stop, pause, resume, read/write memory, save/load state, step frames, query, screenshot | protocol tested against a fake; no real RetroArch yet |
 | CommandAdapter | any emulator CLI | launch, stop, query | tested |
+| ShadPS4Adapter | PS4 on Windows x64 | launch/stop, native frame, default keyboard input, 64-bit process RAM/read-write/disassembly; pause/resume when IPC advertises it | core CLI verified; game validation pending; [setup and limits](shadps4.md) |
 | SteamAdapter | pc_steam | launch | uses the real Steam client's URI; not run in tests |
 
 Configure one per platform:

@@ -168,10 +168,10 @@ def character_capabilities() -> dict:
                                       "animation_retarget": False, "binding": "rigid geometry on the native skeleton",
                                       "targets": [{"id": k, "name": v["name"], "costumes": list(v["costumes"])}
                                                   for k, v in M.CHARACTERS.items()]},
-            "unsupported_platforms": ["pc", "ps3"],
+            "unsupported_platforms": ["pc", "ps3", "ps4"],
             "limitations": ["Requires an extracted Xbox 360 disc and a donor with body roles.",
                             "The selected native character must be chosen in game after launching the mod.",
-                            "No writer for the native PC or PS3 edition; no realtime body replacement.",
+                            "No writer for the native PC, PS3 or PS4 edition; no realtime body replacement.",
                             "A successful build does not verify its appearance or animations in gameplay."]}
 
 

@@ -94,6 +94,15 @@ def test_recent_order_counts_operator_plays_and_device_history(home):
     assert detail['counts']['sessions'] == 2
 
 
+def test_ps4_package_status_reaches_home_without_private_paths(home):
+    home.store.upsert_catalog([{'game_id': 're5-ps4', 'title': 'Resident Evil 5', 'platform': 'ps4',
+        'format': 'ps4_pkg', 'playable': 'copy_incomplete', 'source_paths': ['C:/private/RE5.pkg'],
+        'launch': {'kind': 'ps4_package', 'path': 'C:/private/RE5.pkg'}}])
+    row = home.client.get('/api/home/games/re5-ps4').json()['game']
+    assert row['format'] == 'ps4_pkg' and row['playable'] == 'copy_incomplete'
+    assert 'C:/private' not in json.dumps(row)
+
+
 def test_search_filters_sorting_and_bounded_paging(home):
     build(home)
     session(home, 'old-one', gid='sonic', started=600)

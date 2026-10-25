@@ -14,6 +14,14 @@ const data={game:{game_id:'a'.repeat(16),title:'Super Example',platform:'gamecub
  media:[{kind:'image',url:'/shot.png',label:'Captured gameplay'},{kind:'video',url:'/clip.mp4',label:'Recorded clip'}],progress:{status:'building',active_jobs:[{id:'job1',tool:'retarget',state:'running',progress:40,stage:'Preserving shoe volume'}]}};
 const pictured=structuredClone(data);pictured.models.forEach(m=>m.preview_url=illustration);pictured.builds[0].images[0].url=illustration;pictured.media[0].url=illustration;
 
+test('PS4 package details disable direct Play while preserving the pending label',()=>{
+ for(const [state,label] of [['copy_incomplete','Copy incomplete'],['installation_required','Needs extracted game']]){
+  const html=Detail.render({game:{title:'Resident Evil 5',platform:'ps4',format:'ps4_pkg',playable:state}});
+  assert.ok(html.includes('data-ghd-action="play" disabled'));
+  assert.ok(html.includes(label));
+ }
+});
+
 test('renders only recorded evidence, escapes labels and rejects executable media URLs',()=>{
  const input=structuredClone(data);input.game.title='<img src=x onerror=alert(1)>';input.models[0].name='<script>bad()</script>';input.media.push({kind:'image',url:'javascript:alert(1)',label:'unsafe'});
  const html=Detail.render(input);
