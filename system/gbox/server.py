@@ -1983,6 +1983,8 @@ def create_app(config: Config) -> FastAPI:
         a PC that is playing another game rather than closing it."""
         say = progress or (lambda pct, msg: None)
         sess = store.get("session", sid) or _404()
+        if sess.get("state") != "ended" or sess.get("replaced_by"):
+            raise HTTPException(409, "This session is not an ended, unreplaced game. Open its current session before reloading.")
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         wid = _wid(sid.split("-")[0])
         w = next((x for x in workers() if x["id"] == wid and x["online"]), None)
@@ -1996,13 +1998,21 @@ def create_app(config: Config) -> FastAPI:
         art = (LP.moment_of(store, sess) or {}).get("artifact") if moment else None
         if moment and not art:
             raise HTTPException(409, "No saved moment was found for that game; Reload starts it from boot.")
+        launch = LP.reload_input(store, sess, game)
+        launch_mod = launch["mod"]
         mod = str(sess.get("collection_mod") or sess.get("mod") or "").split(BM.STAGED_SEP)[0]
+        origin = {"via": "session_reload", "from_session": sid, "reload_id": new_id()}
         say(5, f"Starting {game['title']}" + (f" ({mod})" if mod else "") + f" on {w['name']}")
-        new = _run_job("launch_game", {"game": game, "mod": mod}, actor, worker=wid, wait=900,
+        new = _run_job("launch_game", launch, actor, worker=wid, wait=900, origin=origin,
                        progress=lambda pct, msg: say(5 + pct * .7, msg))
         nsid = new["session_id"]
-        store.put(LP.DISMISS_KIND, sid, {"session_id": sid, "ts": time.time(), "by": actor, "reloaded": nsid})
-        out = {"session_id": nsid, "from": sid, "worker": w["name"], "mod": mod, "moment_loaded": False}
+        try:
+            LP.link_reload(store, sess, nsid, wid, launch, origin, actor, time.time(), _wid)
+        except ValueError as error:
+            raise HTTPException(409, f"Reload returned session {nsid}, but its continuity could not be verified: {error}. "
+                                     "No previous replacement link was changed.") from error
+        out = {"session_id": nsid, "from": sid, "worker": w["name"], "mod": mod, "launch_mod": launch_mod,
+               "replacement_linked": True, "moment_loaded": False}
         if art:
             say(80, "Loading your last moment")
             time.sleep(6)                                         # let the game boot before loading a state

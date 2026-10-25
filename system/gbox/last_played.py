@@ -20,6 +20,74 @@ STATE_SUFFIXES = (".s01", ".s02", ".s03", ".s08", ".s09", ".s10", ".state", ".sa
 AGENT_ACTORS = ("agent", "mcp", "gbox-agent", "hermes")
 
 
+def reload_input(store, session: dict, game: dict) -> dict:
+    """Use the accepted original launch recipe and exact staged build when retained."""
+    sid = session["session_id"]
+    job = store.get("job", sid.split("-", 1)[-1]) or {}
+    original = job.get("input") or {}
+    accepted = (job.get("tool") == "launch_game" and job.get("state") == "succeeded"
+                and (job.get("output") or {}).get("session_id") == sid
+                and (original.get("game") or {}).get("game_id") == session.get("game_id"))
+    launch = {"game": original["game"] if accepted else game,
+              "mod": session.get("launch_mod") or session.get("staged_mod") or session.get("mod") or ""}
+    if accepted:
+        for key in ("jump", "pad"):
+            if key in original:
+                launch[key] = original[key]
+    return launch
+
+
+def link_reload(store, previous: dict, successor_id: str, worker_id: str, launch: dict,
+                origin: dict, actor: str, now: float, resolve=lambda wid: wid) -> None:
+    """Atomically link only this reload's accepted launch, never an unrelated or newer replacement."""
+    from .store import append_audit
+    sid = previous.get("session_id")
+    identity = ("session_id", "game_id", "adapter", "started", "ended", "mod", "collection_mod", "launch_mod", "staged_mod")
+    with store.lock:
+        store.db.execute("BEGIN IMMEDIATE")
+        try:
+            old = store.get("session", sid) or {}
+            new = store.get("session", successor_id) or {}
+            job_id = successor_id.split("-", 1)[-1]
+            job = store.get("job", job_id) or {}
+            inp, output = job.get("input") or {}, job.get("output") or {}
+            actual_game, expected_game = inp.get("game") or {}, launch["game"]
+            game_fields = ("game_id", "platform", "serial", "hashes", "launch", "library", "rel_path", "format", "source_paths")
+            if (not sid or sid == successor_id or old.get("state") != "ended" or old.get("replaced_by")
+                    or any(old.get(k) != previous.get(k) for k in identity)):
+                raise ValueError("The ended session changed or already has a replacement")
+            if (resolve(sid.split("-", 1)[0]) != worker_id or not successor_id.startswith(worker_id + "-")
+                    or new.get("session_id") != successor_id or new.get("state") != "running"
+                    or new.get("game_id") != old.get("game_id") or new.get("adapter") != old.get("adapter")
+                    or new.get("replaced_by") or new.get("reloaded_from") not in (None, sid)):
+                raise ValueError("The reload session does not match the original game, adapter or worker")
+            if (job.get("id") != job_id or job.get("tool") != "launch_game" or job.get("state") != "succeeded"
+                    or job.get("worker_id") != worker_id or job.get("require_worker") != worker_id
+                    or job.get("origin") != origin or output.get("session_id") != successor_id
+                    or origin.get("via") != "session_reload" or origin.get("from_session") != sid
+                    or not origin.get("reload_id")):
+                raise ValueError("The replacement is not the accepted launch from this reload")
+            if (any((actual_game.get(k) or None) != (expected_game.get(k) or None) for k in game_fields)
+                    or actual_game.get("game_id") != old.get("game_id")
+                    or (inp.get("mod") or "") != launch["mod"]
+                    or (new.get("launch_mod") or new.get("staged_mod") or new.get("mod") or "") != launch["mod"]
+                    or bool(inp.get("jump")) != bool(launch.get("jump"))
+                    or (inp.get("pad") or "") != (launch.get("pad") or "")):
+                raise ValueError("The accepted reload did not preserve the requested game build and launch controls")
+            receipt = {"from": sid, "to": successor_id, "launch_job": job_id, "worker_id": worker_id,
+                       "game_id": old["game_id"], "launch_mod": launch["mod"], "reload_id": origin["reload_id"], "at": now}
+            old.update(replaced_by=successor_id, reload_replacement=receipt)
+            new.update(reloaded_from=sid)
+            dismissed = {"session_id": sid, "ts": now, "by": actor, "reloaded": successor_id}
+            for kind, key, doc in (("session", sid, old), ("session", successor_id, new), (DISMISS_KIND, sid, dismissed)):
+                store.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)", (kind, key, json.dumps(doc)))
+            append_audit(store.db, actor, "session.reload_link", sid, receipt, ts=now)
+            store.db.commit()
+        except BaseException:
+            store.db.rollback()
+            raise
+
+
 def _rows(store, kind: str, fields: tuple[str, ...]) -> list[dict]:
     try:
         cols = ", ".join(f"json_extract(body,'$.{f}')" for f in fields)

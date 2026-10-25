@@ -127,12 +127,20 @@ def reload_fn(app):
 
 def transport(app, fn, import_result=None):
     calls = []
+    launches = [0]
 
     def run(tool, inp, *a, **k):
         calls.append((tool, dict(inp), k.get('worker')))
         if tool == 'launch_game':
-            app.store.put('session', 'w-new', {'session_id': 'w-new', 'game_id': 'ts', 'state': 'running', 'started': 999})
-            return {'session_id': 'w-new'}
+            launches[0] += 1
+            jid = 'new' if launches[0] == 1 else f'new{launches[0]}'
+            sid = 'w-' + jid
+            app.store.put('session', sid, {'session_id': sid, 'game_id': 'ts', 'state': 'running',
+                                          'started': 999 + launches[0], 'adapter': 'dolphin', 'mod': inp['mod']})
+            app.store.put('job', jid, {'id': jid, 'tool': tool, 'state': 'succeeded', 'input': inp,
+                                      'worker_id': k['worker'], 'require_worker': k['worker'],
+                                      'origin': k['origin'], 'output': {'session_id': sid}})
+            return {'session_id': sid}
         if tool == 'state_transfer':
             return {'result': import_result or {'loaded': True, 'load_verified': True}}
         pytest.fail(tool)
@@ -148,14 +156,18 @@ def test_reload_with_the_last_moment_launches_the_same_build_on_the_same_pc_then
     calls = transport(app, fn)
     out = fn('w-a', 'operator', True)
     assert [c[0] for c in calls] == ['launch_game', 'state_transfer']
-    assert calls[0][1]['mod'] == 'tts_sonic_full_cast' and calls[0][2] == 'w'
+    assert calls[0][1]['mod'] == 'tts_sonic_full_cast~9a1b' and calls[0][2] == 'w'
     assert calls[1][1] == {'session_id': 'w-new', 'op': 'import', 'artifact': art}
     assert out['session_id'] == 'w-new' and out['moment_loaded'] is True
+    assert out['replacement_linked'] and st.get('session', 'w-a')['replaced_by'] == 'w-new'
+    assert st.get('session', 'w-new')['reloaded_from'] == 'w-a'
     assert st.get(LP.DISMISS_KIND, 'w-a')['reloaded'] == 'w-new'
     calls.clear()
     st.put('session', 'w-new', st.get('session', 'w-new') | {'state': 'ended'})
-    fn('w-a', 'operator', False)                               # plain Reload: from boot, no state
+    fn('w-new', 'operator', False)                             # plain Reload: follow the exact ended successor
     assert [c[0] for c in calls] == ['launch_game']
+    assert st.get('session', 'w-a')['replaced_by'] == 'w-new'
+    assert st.get('session', 'w-new')['replaced_by'] == 'w-new2'
 
 
 def test_reload_never_stops_a_game_running_on_that_pc(app):
