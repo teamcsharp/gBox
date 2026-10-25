@@ -101,6 +101,12 @@ from gbox.goldeneye_files import (FILE_SEGMENT, NODE_SIZE, TEXTURE_RECORD_SIZE,
                                   GoldenEyeROM, GoldenEyeFormatError, _cstr)
 
 PAL_Z64_SHA256 = "40ff3643d3ed0be1b0b88266d298f455c15bd5a6f1a520c9aa2650b5f4b349de"
+# Versioned DEDICATED reader (characters.READER_VERSIONS["goldeneye"]). Bump on
+# any change that invalidates stored collection entries so collect() re-extracts
+# them. v6 = reader(6) milestone: images-segment base corrected to 0x8F7840 and
+# all 14 CsuitbondZ textures decode at exact model-record dimensions, embedded
+# as PNG data URIs in to_gltf().
+READER_VERSION = 6
 VERTEX_SIZE = 0x10
 JOINT_SIZE = 6
 
