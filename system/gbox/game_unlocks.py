@@ -16,6 +16,8 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+XIII_ID = '4f32cfd9649d71cf'  # XIII (USA), platform=gamecube
+XIII_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -44,6 +46,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == XIII_ID and game.get('platform') == XIII_PLATFORM:
+            from . import xiii_unlock_probe
+            gate = xiii_unlock_probe.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(xiii_unlock_probe.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -98,6 +107,13 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == XIII_ID and game.get('platform') == XIII_PLATFORM:
+        # Read-only probe only: the roster/map inventory and the UE2 profile save
+        # surface are mapped and digest-pinned, but no writer exists and nothing
+        # has been runtime-verified.
+        from . import xiii_unlock_probe
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(xiii_unlock_probe.CATEGORIES), **xiii_unlock_probe.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
