@@ -142,6 +142,35 @@ Submitted progress, native acceptance and observed escape are separate states.
 Other QTE modes retain automatic input; universal or zero-failure QTE completion
 has not been established. The older solo-recovery candidate remains disabled.
 
+The reviewed replacement also supports the native solo Mercenaries recovery
+event (game modes 2/5, button mode 5, key index 25). It advances the player's
+recovery progress only while the current request, dying state, round and adapter
+ownership remain verified. The original game callback sets HP to 3 and clears
+the progress; success requires observing that native outcome within three
+seconds. An attempted event cannot be retried merely by toggling the setting,
+replacing the controller, or waiting. A new verified round or an observed
+healthy-to-dying transition is required. This is narrower than universal QTE
+completion, and live recovery acceptance remains outstanding.
+
+## Mine exploration and escape (2026-10-25)
+
+Planting requires a measured floor route with at least 850 cm endpoint
+separation, requested at 900 cm, including a 250 cm placement-position allowance.
+Every segment is checked against current floor support, observed mines and
+nearby enemies. Missing or incomplete mine scans defer planting. Existing
+area-entry triggers and the 60-second fallback retain site spacing.
+
+A newly observed nearby mine releases the placement input immediately, even
+before the inventory count acknowledges consumption. Escape uses the actual
+actor position and remains required until the player is at least 600 cm from
+every retained placement hazard. Optional attacks and traversal prompts cannot
+delay departure; mandatory grabs, hit reactions and QTEs retain input priority.
+The bow is restored after placing a mine. Missing floor support retains the
+escape obligation and withholds combat and replanting instead of inventing a
+route. The 600 cm margin is navigation policy, not a measured blast radius;
+moving enemies and native animations can still interrupt motion. Unit and
+route regression tests do not establish uninterrupted live escape.
+
 ## Research checked 2026-10-21
 
 [Berserker's Reunion guide](https://gamefaqs.gamespot.com/ps3/980166-resident-evil-5-gold-edition/faqs/59792)

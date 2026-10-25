@@ -5569,6 +5569,12 @@ def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
         d = {}
     if add and pid:
         d[sid] = {"pid": int(pid), "ts": time.time()}
+        if sys.platform.startswith('linux'):
+            try:
+                from .worker_results import linux_process_identity
+                d[sid]['linux_identity'] = linux_process_identity(int(pid))
+            except Exception:
+                pass  # an unverified live legacy record must remain protected
     else:
         d.pop(sid, None)
     try:

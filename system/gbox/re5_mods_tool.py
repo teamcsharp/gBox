@@ -9,7 +9,7 @@ package through run() at round start, gbox/mercs_bot.py):
   fire_rate multiplier=N          scales firing tables and the re-fire timer (80); measured shot rate may differ
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
   instant_qte on=true|false       native progress assistance for verified button-accumulation / stick-wiggle events;
-                                  other QTE modes keep ordinary input automation, with outcome readback separate
+                                  scoped solo Mercenaries resuscitation; other QTEs keep ordinary input automation
   unlimited_health on=true|false full living HP each snapshot, plus exact-signature-verified Muteki hit immunity
   infinite_spray on=true|false    an infinite First Aid Spray (alias auto_first_aid): every character's loadout template
                                   gets a spray record (the game builds the item at the round start), and when the bot has

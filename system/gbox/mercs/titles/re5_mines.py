@@ -13,7 +13,9 @@ from ..deployables import Cadence
 from . import re5_weapons as W
 
 DEFAULT = {"enabled": True, "interval_s": 60., "only": False}
-DEPARTURE_CM = 300.  # spacing from the last mine / site (was 600: a standing bot never got a second mine down)
+CLEARANCE_CM = 600.  # conservative navigation margin; not a measured native blast radius
+SPAWN_MATCH_CM = 250.
+DEPARTURE_CM = CLEARANCE_CM  # scheduling spacing must never waive the retained escape obligation
 
 
 def settings_path():
@@ -58,10 +60,14 @@ MINE_VTABLES = frozenset({0x0162E5F8, 0x01629DB0})
 PLACED, DETONATING, ARMING = 0x1CF9, 0x1DE5, 0x1DB4
 
 
+class GroundMines(dict):
+    verified = False
+
+
 def ground_mines(memory):
     """Read deployed weapons on sUnit line 10; held/spare weapons have PLACED=0."""
     from . import re5_ps3 as R
-    result, seen = {}, set()
+    result, seen = GroundMines(), set()
     if not callable(getattr(memory, 'rd', None)):
         return result
     try:
@@ -71,13 +77,19 @@ def ground_mines(memory):
         unit = R.u32(memory, manager + R.UNIT_LINES + 10*R.LINE_STRIDE + R.LINE_FIRST)
         while R.ptr_ok(unit) and unit not in seen and len(seen) < 300:
             seen.add(unit)
-            if R.u32(memory, unit) in MINE_VTABLES and memory.rd(unit+PLACED, 1) == b'\x01':
+            placed = memory.rd(unit+PLACED, 1) if R.u32(memory, unit) in MINE_VTABLES else b'\x00'
+            if placed not in (b'\x00',b'\x01'):
+                return result
+            if placed == b'\x01':
                 pos = struct.unpack('>3f', memory.rd(unit+0x30, 12))
                 remaining = struct.unpack('>f', memory.rd(unit+ARMING, 4))[0]
-                if all(math.isfinite(v) for v in (*pos, remaining)):
-                    result[unit] = {'pos': pos, 'arming_s': remaining,
-                                    'detonating': memory.rd(unit+DETONATING, 1) == b'\x01'}
+                detonating = memory.rd(unit+DETONATING, 1)
+                if not all(math.isfinite(v) for v in (*pos, remaining)) or detonating not in (b'\x00',b'\x01'):
+                    return result
+                result[unit] = {'pos': pos, 'arming_s': remaining,
+                                'detonating': detonating == b'\x01'}
             unit = R.u32(memory, unit+R.UNIT_NEXT)
+        result.verified = unit == 0  # a corrupt/truncated/cyclic list is not a clear mine field
     except (ValueError, OSError, struct.error, IndexError):
         pass
     return result
@@ -217,6 +229,8 @@ class Controller:
         self.last_blast_snapshot = None
         self.cadence = Cadence(self.cadence.interval,self.cadence.only,self.cadence.enabled)
         self.scope_player = player
+        self.stats['mine_escape_active'] = False
+        self.stats['mine_placement_pending'] = False
 
     def event(self, kind, now, **fields):
         self.events.append({'kind': kind, 'at': now, **fields})
@@ -236,15 +250,19 @@ class Controller:
         """Completion requires measured separation, never a movement button alone."""
         if self.escape is None:
             return True
-        distance = math.dist(position, self.escape['pos'])
+        positions = list((self.escape.get('hazards') or {}).values()) or [self.escape['pos']]
+        if len(position) != 3 or not all(math.isfinite(v) for v in position):
+            return False
+        distance = min(math.dist(position, point) for point in positions)
         self.stats['mine_retreat_distance'] = round(distance, 1)
-        if distance < DEPARTURE_CM:
+        if distance < CLEARANCE_CM:
             return False
         self.event('retreat_complete', now, actor=self.escape['actor'], distance=distance,
                    elapsed_s=now-self.escape['at'])
         self.learn(self.escape['pos'],'retreats')
         self.stats['mine_retreats_completed'] = self.stats.get('mine_retreats_completed', 0)+1
         self.escape = None
+        self.stats['mine_escape_active'] = False
         return True
 
     def deferred_gun(self,snap,now):
@@ -257,6 +275,8 @@ class Controller:
         return None
 
     def tick(self, snap, now):
+        self.stats['mine_escape_active'] = self.escape is not None
+        self.stats['mine_placement_pending'] = self.pending is not None
         scope = snap.get('player') or {}
         if scope.get('ptr') is not None and (scope.get('hp') or 0) > 0:
             if self.scope_player is not None and scope['ptr'] != self.scope_player:
@@ -271,13 +291,15 @@ class Controller:
         exploding = {ptr for ptr, row in ground.items() if row['detonating']}
         if self.escape is not None:
             actor = self.escape['actor']
-            witnessed = actor in exploding or actor in self.detonating or any(
-                event.get('kind') == 'detonation_observed' and event.get('actor') == actor for event in self.events)
+            # A historical pointer alone cannot identify a reused native actor.
+            current = ground.get(actor)
+            witnessed = bool(current and current['detonating']
+                             and tuple(current['pos']) == tuple(self.escape['pos']))
             if witnessed:
                 self.escape['detonation_observed'] = True
             player = snap.get('player') or {}
             position = player.get('pos')
-            if actor not in ground and self.escape.get('detonation_observed') \
+            if actor not in ground and getattr(ground,'verified',True) and self.escape.get('detonation_observed') \
                     and not self.escape.get('removal_recorded'):
                 self.escape['removal_recorded'] = True
                 self.event('retreat_hazard_removed',now,actor=actor,pos=position,
@@ -313,8 +335,7 @@ class Controller:
         held=next((w for w in snap.get('inventory') or () if w.get('hand')),None)
         if held and held.get('item') in W.WEAPONS and W.WEAPONS[held['item']].family in W.DIRECT|{'bow'}:
             self.home_weapon=W.inventory_key(held)
-        if not self.cadence.enabled:
-            self.pending = None
+        if not self.cadence.enabled and self.pending is None:
             self.restore = None
             if held and held.get('id')==0x10A and scope.get('hp',0)>0 and scope.get('action') in (0,1) \
                     and not any(snap.get(k) for k in ('recovery_active','prompt','stage_prompt')):
@@ -324,7 +345,7 @@ class Controller:
         p = snap.get("player")
         busy = not p or snap.get("recovery_active") or snap.get("prompt") or snap.get("stage_prompt") \
             or p.get("action") in (4,5) or (p.get("hp") or 0) <= 0
-        if busy:
+        if not p or busy and self.pending is None:
             self.prepare_at = None
             return None
         if was_only and not self.cadence.only and self.pending is None and held and held.get('id')==0x10A:
@@ -342,17 +363,38 @@ class Controller:
         # A costume can carry several storage records: the equipped stack owns consumption.
         mine = next((w for w in choices if self.pending and w['slot'] == self.pending['slot']), None) \
             or next((w for w in choices if w.get('hand')), None) or next(iter(choices), None)
-        if mine is None:
-            self.stats["mine_status"] = "Waiting for the next game-created mine loadout"
-            return None
         if self.pending:
             pen = self.pending
-            if mine["slot"] != pen["slot"] or p["ptr"] != pen["player"]:
+            if p["ptr"] != pen["player"]:
                 self.pending = None
+                self.stats['mine_placement_pending'] = False
                 return None
-            deployed = {ptr: row for ptr, row in ground.items() if ptr not in pen['before']
-                        and math.dist(row['pos'], pen['pos']) < 250}
-            pen['deployed'].update(deployed)
+            nearby = {ptr:row for ptr,row in ground.items() if math.dist(row['pos'],pen['pos']) < SPAWN_MATCH_CM}
+            deployed = {ptr:row for ptr,row in nearby.items() if ptr not in pen['before']}
+            for ptr, row in deployed.items():
+                pen['deployed'].setdefault(ptr, dict(row))  # retain the observed position even if the actor disappears
+            observed = pen.setdefault('hazards',{})
+            for ptr,row in nearby.items():
+                observed.setdefault(ptr,dict(row))
+            if observed and self.escape is None:
+                # Separation is safety policy, not ownership credit. Start leaving
+                # as soon as a real nearby actor appears; its counter can lag.
+                actor = next(iter(observed))
+                positions = {ptr: tuple(row['pos']) for ptr,row in observed.items()}
+                self.escape = {'pos':positions[actor], 'actor':actor, 'at':now, 'hazards':positions,
+                               'route':pen.get('escape_route'), 'geometry':pen.get('escape_geometry')}
+                self.stats['mine_escape_active'] = True
+                self.stats['mine_status'] = 'Ground mine observed; leaving while placement acknowledgement is pending'
+            elif observed and self.escape['actor'] in observed:
+                self.escape['hazards'].update({ptr:tuple(row['pos']) for ptr,row in observed.items()})
+            if mine is None or mine['slot'] != pen['slot']:
+                # An exhausted stack can disappear; still retain any real ground
+                # actor, but do not treat absent inventory as verified consumption.
+                if now-pen['at']>5:
+                    self.event('placement_unconfirmed',now,pos=pen['pos'])
+                    self.pending=None; self.retry_at=now+5
+                    self.stats['mine_placement_pending']=False
+                return None if busy else {'hold':set()}
             infinite = False
             ad = getattr(self.m,'adapter',None)
             if ad is not None and pen['deployed']:
@@ -362,13 +404,16 @@ class Controller:
             if (mine["rounds"] < pen["count"] or infinite) and pen['deployed']:
                 self.stats["mines_placed"] = self.stats.get("mines_placed",0)+len(pen['deployed'])
                 self.stats['mine_infinite_supply_verified'] = infinite
-                self.stats["mine_status"] = "Ground Proximity Bomb verified; returning to gunplay"
+                self.stats["mine_status"] = "Ground Proximity Bomb verified; leaving its measured position"
                 self.stats['mine_last_ground_actor'] = hex(next(iter(pen['deployed'])))
                 for ptr in pen['deployed']:
-                    self.owned[ptr] = dict(ground.get(ptr, {'pos':pen['pos']}))
+                    self.owned[ptr] = dict(pen['deployed'][ptr])
                 actor = next(iter(pen['deployed']))
-                self.escape = {'pos': tuple(pen['pos']), 'actor': actor, 'at': now}
-                self.event('placement_verified', now, actor=actor, pos=pen['pos'],
+                positions = {ptr: tuple(row['pos']) for ptr,row in observed.items()}
+                self.escape = {'pos': positions[actor], 'actor': actor, 'at': now, 'hazards': positions,
+                               'route': pen.get('escape_route'), 'geometry': pen.get('escape_geometry')}
+                self.stats['mine_escape_active'] = True
+                self.event('placement_verified', now, actor=actor, pos=positions[actor], attempted_pos=pen['pos'],
                            hp=p.get('hp'), combo=snap.get('combo'), score=snap.get('score'))
                 self.learn(pen['pos'],'placements')
                 self.cadence.acknowledge(now,p["pos"])
@@ -378,29 +423,38 @@ class Controller:
                     if g.u32(addr) == mine["rounds"]:
                         self.stats["mine_refill_verified"] = g.wr(addr,struct.pack(">I",5))
                 self.pending = None
+                self.stats['mine_placement_pending'] = False
                 gun = self.return_gun(snap)
                 if gun and not self.cadence.only:
                     self.restore = W.inventory_key(gun)
                     self.restore_after = now + 1.2
-                    return {"hold":set()}
-                return {"hold":set()}
+                    return None if busy else {"hold":set()}
+                return None if busy else {"hold":set()}
             if now-pen["at"] > 5:
                 self.event('placement_unconfirmed', now, pos=pen['pos'])
                 self.stats["mine_status"] = "Placement unconfirmed; retry deferred"
                 self.pending=None; self.retry_at=now+5
+                self.stats['mine_placement_pending'] = False
                 gun=self.return_gun(snap)
                 if gun is not None and not self.cadence.only:
                     self.restore,self.restore_after=W.inventory_key(gun),now
-                return {"hold":set()}
+                return None if busy else {"hold":set()}
             age=now-pen["at"]
             # Type D's displayed "L1 Place" is the whole command. R1 can cancel it.
             # Release as soon as consumption starts so holding L1 cannot plant a second mine.
-            return {"hold": {'l1'} if mine['rounds'] == pen['count'] and age < 1.2 else set()}
+            if busy:
+                return None  # mandatory native prompts keep their existing input owner
+            return {"hold": {'l1'} if not observed and getattr(ground,'verified',True)
+                    and self.cadence.enabled and snap.get('mine_placement_safe') is True
+                    and mine['rounds'] == pen['count'] and age < 1.2 else set()}
         if self.escape is not None:
             self.clear_escape(now, p['pos'])
             if self.escape is not None:
                 self.stats['mine_status'] = 'Leaving planted mine; further placement deferred'
                 return self.deferred_gun(snap,now)
+        if mine is None:
+            self.stats["mine_status"] = "Waiting for the next game-created mine loadout"
+            return None
         if now < self.retry_at or not self.cadence.due(now,p["pos"]):
             return None
         # Scope this to every observed ground actor, including a human's mine.
@@ -423,13 +477,20 @@ class Controller:
                 self.stats['mine_status'] = 'Moving past a deployment site with repeated observed damage'
                 return self.deferred_gun(snap,now)
         # Bot supplies a current measured floor-route preflight before equipping.
-        # Legacy standalone callers can omit it; an explicit negative never plants.
-        if snap.get('mine_placement_safe') is False:
+        if snap.get('mine_placement_safe') is not True or not getattr(ground, 'verified', True):
             self.stats['mine_status'] = 'Placement deferred: no measured floor escape route'
             self.prepare_at = None
             return self.deferred_gun(snap,now)
+        route = snap.get('mine_escape_route')
+        if route:
+            from .re5_nav import NavMesh
+            hazards = [(row['pos'],CLEARANCE_CM) for row in ground.values()]
+            if not all(NavMesh.hazard_segment_clear(a,b,hazards) for a,b in zip([p['pos']]+list(route),route)):
+                self.stats['mine_status'] = 'Placement deferred: a fresh ground mine obstructs the escape corridor'
+                self.prepare_at = None
+                return self.deferred_gun(snap,now)
         # Leave room to retreat; a nearby explosion can stagger even a modified character.
-        if any((e.get("hp") or 0)>0 and math.dist(p["pos"],e["pos"])<350 for e in snap.get("enemies",())):
+        if any((e.get("hp") or 0)>0 and math.dist(p["pos"],e["pos"])<CLEARANCE_CM for e in snap.get("enemies",())):
             self.stats["mine_status"] = "Waiting for deployment space"
             return self.deferred_gun(snap,now)
         if not mine.get("hand"):
@@ -457,8 +518,10 @@ class Controller:
                 self.retry_at = now + 5
             return action
         self.pending={"at":now,"count":mine["rounds"],"slot":mine["slot"],"player":p["ptr"],
-                      'pos':p['pos'], 'before':set(ground), 'deployed':set()}
+                      'pos':p['pos'], 'before':set(ground), 'deployed':{},
+                      'escape_route': snap.get('mine_escape_route'), 'escape_geometry': snap.get('mine_escape_geometry')}
         self.last_attempt_position = tuple(p['pos'])
+        self.stats['mine_placement_pending'] = True
         self.stats["mine_attempts"]=self.stats.get("mine_attempts",0)+1
         self.event('placement_attempt', now, pos=p['pos'], hp=p.get('hp'),
                    combo=snap.get('combo'), score=snap.get('score'))

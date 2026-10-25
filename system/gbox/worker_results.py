@@ -6,6 +6,7 @@ released only after the control plane acknowledges its exact normalized digest.
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -86,7 +87,59 @@ def _windows_pid_reused_fallback(pid, recorded_at):
             and born > recorded_at + 1)
 
 
-def _pid_alive(pid, *, recorded_at=None):
+def _valid_linux_identity(identity):
+    if (not isinstance(identity, dict) or set(identity) != {'boot_id', 'start_ticks'}
+            or not isinstance(identity['boot_id'], str)
+            or type(identity['start_ticks']) is not int or not 0 <= identity['start_ticks'] < 2**64):
+        return False
+    try:
+        return str(uuid.UUID(identity['boot_id'])) == identity['boot_id']
+    except ValueError:
+        return False
+
+
+def linux_process_identity(pid):
+    """Read clock-independent Linux process identity; never signal or change it."""
+    if type(pid) is not int or pid <= 0:
+        raise ValueError('Invalid procfs process ID')
+    with open(f'/proc/{pid}/stat', 'rb') as stream:
+        raw = stream.read(65537)
+    left, right = raw.find(b'('), raw.rfind(b')')
+    if len(raw) > 65536 or left < 0 or right <= left or raw[:left].strip() != str(pid).encode():
+        raise ValueError('Invalid procfs process identity')
+    # comm may itself contain spaces and parentheses. Field 22 follows the
+    # final closing parenthesis; fields here start at field 3 (process state).
+    start_ticks = int(raw[right + 2:].split()[19])
+    with open('/proc/sys/kernel/random/boot_id', 'rb') as stream:
+        boot = stream.read(65)
+    identity = {'boot_id': boot.decode('ascii').strip(), 'start_ticks': start_ticks}
+    if len(boot) > 64 or not _valid_linux_identity(identity):
+        raise ValueError('Invalid procfs process identity')
+    return identity
+
+
+def _linux_pid_reused(pid, recorded_identity):
+    """Release only a different native identity; wall-clock timestamps prove nothing."""
+    if not _valid_linux_identity(recorded_identity):
+        return False  # legacy {pid, ts} and unknown ownership remain protected
+    try:
+        current = linux_process_identity(pid)
+    except FileNotFoundError:
+        # procfs can be unavailable even while a process lives. Confirm absence
+        # independently before releasing a session that disappeared mid-query.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except Exception:
+            pass
+        return False
+    except Exception:
+        return False  # permission/query uncertainty never releases a live session
+    return _valid_linux_identity(current) and current != recorded_identity
+
+
+def _pid_alive(pid, *, recorded_at=None, recorded_identity=None):
     if type(pid) is not int or pid <= 0:
         raise RuntimeError('Invalid owned emulator PID; activation was stopped')
     if os.name == 'nt':
@@ -115,11 +168,11 @@ def _pid_alive(pid, *, recorded_at=None):
             kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass  # read-only /proc metadata may still prove reuse
+    return not _linux_pid_reused(pid, recorded_identity) if sys.platform.startswith('linux') else True
 
 
 def _sync_dir(path: Path):
@@ -354,7 +407,8 @@ class ResultOutbox:
             if not isinstance(sid, str) or not isinstance(record, dict):
                 raise RuntimeError('Invalid native ownership manifest; activation was stopped')
             alive = (is_alive(record.get('pid')) if is_alive is not None
-                     else _pid_alive(record.get('pid'), recorded_at=record.get('ts')))
+                     else _pid_alive(record.get('pid'), recorded_at=record.get('ts'),
+                                     recorded_identity=record.get('linux_identity')))
             if alive:
                 protected.append(sid)
         return sorted(protected)

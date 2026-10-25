@@ -159,13 +159,13 @@ def test_a_majini_in_front_on_a_walkway_within_engage_counts_as_in_view():
     assert not R.Bot._in_view(p, {'pos':(0.,0.,4000.)})                # beyond ENGAGE
 
 
-def test_no_measured_escape_still_walks_away_from_the_planted_bomb(tmp_path):
-    # operator 2026-10-24: "Why does Wesker place a mine and just stand on it? He should place a mine and then run away"
+def test_lost_escape_route_keeps_obligation_without_inventing_floor(tmp_path):
+    # New placements require a measured route. If it disappears, do not invent a walk through a wall.
     bot = R.Bot(learn_dir=tmp_path,clock=lambda:10.)
     escape = {'actor':0x30800000,'pos':(0.,0.,0.),'at':9.}
     bot.mines = SimpleNamespace(escape=escape, clear_escape=lambda now,pos: False)
     mesh = SimpleNamespace(find=lambda *a,**k: 1, retreat=lambda *a,**k: [], learning_sig='t')
     p = {'ptr':1,'pos':(50.,0.,0.),'rot':0.,'hp':1000,'hp_max':1000,'action':0}
     act = bot._mine_retreat(p, {'nav':mesh,'player':p}, 10.)
-    assert act is not None and act['hold'] and bot.stats['mine_retreats_unmeasured'] == 1
-    assert 'walking straight away' in bot.stats['mine_retreat_status']
+    assert act == {'hold':set()} and bot.stats['mine_retreats_blocked'] == 1
+    assert bot.mines.escape is escape and 'blocked' in bot.stats['mine_retreat_status']

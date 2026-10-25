@@ -50,9 +50,7 @@ HEAD_H, GUN_H = 160.0, 140.0           # above the feet: a Majini's head, the pl
 # the body's yaw +-7: the upper body aims inside a cone)
 FX_LINE, LASER_VT, LASER_FROM, LASER_AT = 18, 0x015BD958, 0x200, 0x30
 SWITCH_EVERY_S, SWITCH_ACK_S, SWITCH_FAIL_S = 1.0, 1.5, 8.0
-MINE_ENEMY_CM, MINE_ESCAPE_CM = 400.0, 450.0   # mine preflight: no Majini this near (deployment or the escape), an
-                                              # escape route this long (operator 2026-10-24: "placing a mine when the
-                                              # setting specifies"; 800 / 600 held 91 placements back in one round)
+MINE_ENEMY_CM, MINE_ESCAPE_CM = 600.0, 600.0   # conservative policy margins, not measured native blast radii
 STAGE_LOOP_R, STAGE_LOOP_N, STAGE_LOOP_S, STAGE_BAN_S = 400.0, 3, 40.0, 60.0   # the same ladder / ledge this near taken
                                               # this often in this long: left alone this long (operator 2026-10-24: "jumping
                                               # down the ladder, putting back up the ladder ... repeatedly")
@@ -359,6 +357,10 @@ def snapshot(m) -> dict:
         snap["prompt"] = prompt(m)
         snap["stage_prompt"] = stage_prompt(m)
         snap["prompt_target"] = prompt_target(m)            # the Majini a finisher prompt is for (the combat layer)
+        request = selected_prompt(m, include_item_pickups=True)
+        snap['prompt_optional'] = bool(request and request['kind'] in (BTN_MELEE, BTN_STAGE)
+            and request['owner'] == p and request['mode'] == 1 and request['token'] == 'mash:square'
+            and action not in (4,5) and snap['player']['hp']>0 and not snap.get('recovery_active'))
         try:
             snap["nav"] = re5_nav.read(m, _NAV_CACHE)
         except (ValueError, OSError, struct.error):
@@ -1257,6 +1259,10 @@ class Bot:
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
+        if getattr(getattr(self,'mines',None),'escape',None) is not None \
+                and not self._mine_escape_mandatory(snap) and 'square' in str(button):
+            self.stats['mine_optional_prompts_deferred'] = self.stats.get('mine_optional_prompts_deferred',0)+1
+            return False
         if 'square' in str(button) and self.m is not None \
                 and egg_square_blocked(self.m,selected_prompt(self.m,include_item_pickups=True)) is not False:
             self.stats['egg_square_prompts_blocked']=self.stats.get('egg_square_prompts_blocked',0)+1
@@ -1270,6 +1276,13 @@ class Bot:
                 self.stats['route'] = 'stage action deferred: observed bomb at its measured landing'
                 return False
         return self.combat.prompt_ok(button, snap, now) if self.combat is not None else True
+
+    @staticmethod
+    def _mine_escape_mandatory(snap):
+        p = snap.get('player') or {}
+        optional = snap.get('prompt_optional')
+        return bool(snap.get('recovery_active') or p.get('action') in (4,5) or (p.get('hp') or 0)<=0
+                    or snap.get('prompt') and not optional)
 
     def recall(self, rows):
         self.round_lessons = rows
@@ -1799,8 +1812,7 @@ class Bot:
                 if heal_needed:
                     placement_safe,snap['mine_placement_safe'] = False,False
                 mine_action = self.mines.tick(snap, self.clock())
-                mandatory = snap.get("prompt") or snap.get("stage_prompt") or snap.get("recovery_active") \
-                    or p.get("action") in (4,5) or (p.get("hp") or 0)<=0
+                mandatory = self._mine_escape_mandatory(snap)
                 if self.mines.escape is not None and not mandatory:
                     escape_action = self._mine_retreat(p,snap,self.clock())
                     if escape_action is not None:
@@ -1937,6 +1949,13 @@ class Bot:
                     self.stats[counter] = self.stats.get(counter, 0) + 1
                     return {"tap": key}
             return {"hold": set()}
+        if getattr(getattr(self,'mines',None),'escape',None) is not None:
+            if p.get('action') in (4,5):
+                return {'hold':set()}  # grab/hit callbacks retain control until the native action finishes
+            if not self._mine_escape_mandatory(snap):
+                retreat = self._mine_retreat(p,snap,now)
+                if retreat is not None:
+                    return retreat
         if snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap)):  # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
             self.stats["prompt_holds"] = self.stats.get("prompt_holds", 0) + 1
@@ -3276,16 +3295,30 @@ class Bot:
         self.bonus_commitment.pause(now)
         mesh = snap.get("nav")
         if mesh is None:
-            self.stats["mine_retreat_status"] = "blocked: no escape mesh; retain departure requirement and allow gunplay"
-            return None
+            self.stats["mine_retreat_status"] = "blocked: no escape mesh; departure retains priority over combat"
+            return {"hold": set()}
+        retained = escape.get('hazards') or {escape['actor']: escape['pos']}
+        self.nav_dynamic_mines = dict(snap.get('ground_mines') or {})
+        self.nav_dynamic_mines.update({('retained',actor): {'pos':pos} for actor,pos in retained.items()})
+        hazards = [(row['pos'], MINE_ESCAPE_CM) for row in self.nav_dynamic_mines.values()]
+        def supported(candidate, margins=hazards):
+            return bool(candidate) and not any(isinstance(point,re5_nav.Traversal) for point in candidate) \
+                and all(mesh.floor_segment(a,b) and mesh.hazard_segment_clear(a,b,margins,departing=True)
+                        for a,b in zip([p['pos']]+list(candidate),candidate))
         if mesh.find(p["pos"],floor_only=True,height_slack=60.) is None:
             self.stats["mine_retreat_status"] = "returning to observed floor before escaping planted bomb"
             return self._recover_nav(p,mesh,now)
-        cached = self.route_for == "mine_escape:" + str(escape["actor"]) and self.route and now-self.route_at<=REPLAN_S
-        route = self.route if cached else mesh.retreat(p["pos"], escape["pos"], 600.,
+        cached = self.route_for == "mine_escape:" + str(escape["actor"]) and self.route and now-self.route_at<=REPLAN_S \
+            and math.dist(p['pos'],self.route[-1])>WP_REACHED and supported(self.route)
+        route = self.route if cached else mesh.retreat(p["pos"], escape["pos"], MINE_ESCAPE_CM,
                 blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
+        if not supported(route):
+            route = None
+        if route is None and escape.get('geometry') == mesh.learning_sig and supported(escape.get('route')):
+            route = escape['route']
         checkpoint_exit = bool(cached and escape.get('checkpoint_exit'))
-        if not route and escape.get('removal_recorded'):
+        if not route and escape.get('removal_recorded') and len(retained)==1 \
+                and getattr(snap.get('ground_mines'), 'verified', True):
             # A vanished, previously detonating actor removes that hazard, not
             # the obligation to leave its site. A real checkpoint path can now
             # turn around a dead end instead of requiring monotonic separation.
@@ -3298,30 +3331,30 @@ class Bot:
                 if candidate and not any(isinstance(point,re5_nav.Traversal) for point in candidate) \
                         and all(mesh.floor_segment(a,b) for a,b in zip([p['pos']]+candidate,candidate)):
                     route,checkpoint_exit = candidate,True
+                    self.nav_dynamic_mines = dict(snap.get('ground_mines') or {})
                     break
         for distance in (450., 300.):                       # a shorter measured way off the bomb before none at all
             if route:
                 break
-            route = mesh.retreat(p["pos"], escape["pos"], distance, blocked_links=self.blocked_links,
-                                 link_penalties=self.nav_learning.link_penalties(mesh))
+            candidate = mesh.retreat(p["pos"], escape["pos"], distance, blocked_links=self.blocked_links,
+                                     link_penalties=self.nav_learning.link_penalties(mesh))
+            route = candidate if supported(candidate) else None
         if not route:
-            # never stand on his own bomb (operator 2026-10-24: "Why does Wesker place a mine and just stand on it? He
-            # should place a mine and then run away from it"): straight away from it, the walk's own wall handling on
-            self.stats["mine_retreat_status"] = "no measured escape: walking straight away from the planted bomb"
-            self.stats["mine_retreats_unmeasured"] = self.stats.get("mine_retreats_unmeasured", 0) + 1
+            self.stats["mine_retreat_status"] = "blocked: no supported departure; combat and repeat planting withheld"
+            self.stats["mine_retreats_blocked"] = self.stats.get("mine_retreats_blocked", 0) + 1
             self.aiming_since = None
-            away = heading(p["pos"][0] - escape["pos"][0], p["pos"][2] - escape["pos"][2])
-            return {"hold": self._walk(p, away, now)}
+            return {"hold": set()}
         escape['checkpoint_exit'] = checkpoint_exit
         target = {"ptr": "mine_escape:" + str(escape["actor"]), "pos": route[-1]}
         self.plan_target = {"kind": "waypoint", "id": target["ptr"], "pos": target["pos"]}
-        self.stats["mine_retreat_status"] = "moving away on supported floor; weapon restored"
+        self.stats["mine_retreat_status"] = "moving away on supported floor; departure has priority"
         self.aiming_since = None
         return self._follow(p, target, mesh, False, now, learn=False,
-                            retreat_from=None if checkpoint_exit else escape["pos"])
+                            retreat_from=None if checkpoint_exit else escape["pos"], approved_route=route)
 
     def _mine_placement_preflight(self, snap, now):
         """Require a supported exit and a conservative observed threat margin, without relying on immunity."""
+        from . import re5_mines
         p,mesh = snap.get('player'),snap.get('nav')
         if getattr(self,'mines',None) is not None:
             bind=getattr(self.mines,'bind_learning',None)
@@ -3335,18 +3368,25 @@ class Bot:
             t = max(0.,min(1.,sum((point[k]-a[k])*delta[k] for k in range(3))/max(length2,1e-9)))
             return math.dist(point,tuple(a[k]+t*delta[k] for k in range(3)))
         near_enemy = p and any(math.dist(p['pos'],e['pos'])<MINE_ENEMY_CM for e in enemies)
-        if near_enemy:
+        if snap.get('ground_mines') is None or not getattr(snap.get('ground_mines'), 'verified', True):
+            reason = "current ground-mine scan is incomplete"
+        elif near_enemy:
             reason = f"living enemy within {MINE_ENEMY_CM:g}cm of deployment"
         elif p and mesh is not None:
             previous = getattr(self,'_mine_preflight',None)
             if previous is not None and previous['geometry'] == mesh.learning_sig and now-previous['at']<2. \
-                    and math.dist(previous['pos'],p['pos'])<25.:
+                    and previous.get('blocked') == frozenset(self.blocked_links) and math.dist(previous['pos'],p['pos'])<25.:
                 route = previous['route']
             else:
-                route = mesh.retreat(p['pos'],p['pos'],MINE_ESCAPE_CM+50.,blocked_links=self.blocked_links,
+                route = mesh.retreat(p['pos'],p['pos'],MINE_ESCAPE_CM+re5_mines.SPAWN_MATCH_CM+50.,blocked_links=self.blocked_links,
                                      link_penalties=self.nav_learning.link_penalties(mesh))
-                self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route}
-            allowed = bool(route) and math.dist(p['pos'],route[-1])>=MINE_ESCAPE_CM and mesh.floor_segment(p['pos'],route[0])
+                self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route,
+                                        'blocked':frozenset(self.blocked_links)}
+            allowed = bool(route) and not any(isinstance(point,re5_nav.Traversal) for point in route) \
+                and math.dist(p['pos'],route[-1])>=MINE_ESCAPE_CM+re5_mines.SPAWN_MATCH_CM \
+                and all(mesh.floor_segment(a,b)
+                        and mesh.hazard_segment_clear(a,b,[(p['pos'],MINE_ESCAPE_CM)],departing=True)
+                        for a,b in zip([p['pos']]+list(route),route))
             if allowed:
                 segments = list(zip([p['pos']]+route,route))
                 if any(distance_to_segment(e['pos'],a,b)<MINE_ENEMY_CM for e in enemies for a,b in segments):
@@ -3357,6 +3397,8 @@ class Bot:
                 else:
                     reason = "supported escape; observed enemy and explosive margins clear"
         snap['mine_placement_safe'] = allowed
+        snap['mine_escape_route'] = list(route) if allowed else None
+        snap['mine_escape_geometry'] = mesh.learning_sig if allowed else None
         self.stats['mine_placement_route_verified'] = allowed
         self.stats['mine_placement_safety_reason'] = reason
         return allowed
@@ -3522,6 +3564,12 @@ class Bot:
             state['index'] += 1
             state['walking'] = None
             self.stats['nav_recovery'] = 'recovery probe rejected by current observed bomb margin'
+            return {'hold':set()}
+        if getattr(getattr(self,'mines',None),'escape',None) is not None \
+                and not mesh.floor_segment(p['pos'],q,blocked_links=self.blocked_links):
+            state['index'] += 1
+            state['walking'] = None
+            self.stats['nav_recovery'] = 'mine escape retains priority; recovery segment has no verified floor support'
             return {'hold':set()}
         err = wrap(heading(q[0] - p["pos"][0], q[2] - p["pos"][2]) - p["rot"])
         self.stats["nav_recovery"] = f"probe {state['index'] + 1}: returning to nearby same-level floor"
@@ -3812,6 +3860,14 @@ class RE5PS3(Driver):
         self._stats = stats
         def source():
             button = prompt(m)
+            if self._stats.get('mine_escape_active') or self._stats.get('mine_placement_pending'):
+                request = selected_prompt(m,include_item_pickups=True)
+                if request and request['kind'] in (BTN_MELEE,BTN_STAGE) and request['mode']==1 \
+                        and request['token']=='mash:square':
+                    player = player_pointer(m)
+                    if ptr_ok(player) and request['owner']==player and m.rd(player+P_ACTION,1) not in (b'\x04',b'\x05') \
+                            and struct.unpack('>h',m.rd(player+P_HP,2))[0]>0 and not recovery_active(m,player):
+                        return None  # optional pickup/traversal/finisher cannot delay leaving a planted mine
             if button and 'square' in str(button) \
                     and egg_square_blocked(m,selected_prompt(m,include_item_pickups=True)) is not False:
                 return None  # mash requests bypass PromptPresser.ok; fence before that path

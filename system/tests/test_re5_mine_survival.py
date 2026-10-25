@@ -2,7 +2,13 @@ from types import SimpleNamespace
 
 from gbox.mercs.titles import re5_mines as M, re5_ps3 as R
 from gbox.mercs.titles.re5_nav import NavMesh, Traversal
-from test_re5_checkpoint_safety import state
+from test_re5_checkpoint_safety import state as _state
+
+
+def state():
+    snap, foe = _state()
+    snap["ground_mines"] = {}
+    return snap, foe
 
 
 def test_mine_preflight_rechecks_approaching_enemies_even_when_floor_route_is_cached(tmp_path):
@@ -175,14 +181,13 @@ def test_removed_bomb_dead_end_uses_real_checkpoint_route_without_waiving_depart
     assert bot.mines.escape is escape and escape['checkpoint_exit']
     # Before positive detonation/removal evidence the same turnaround is unsafe.
     escape.pop('removal_recorded');bot.route=None
-    # Before removal evidence the checkpoint turnaround is unsafe; with no measured way off it he still walks straight
-    # away from the bomb, never stands on it (operator 2026-10-24)
+    # With no supported departure, an invented straight line could run into a wall.
     act=bot._mine_retreat(player,snap,2.)
-    assert act is not None and 'walking straight away' in bot.stats['mine_retreat_status']
+    assert act == {'hold':set()} and 'blocked' in bot.stats['mine_retreat_status']
     assert len(calls)==1
 
 
-def test_blocked_escape_walks_away_and_never_allows_another_plant(tmp_path,monkeypatch):
+def test_blocked_escape_withholds_combat_and_never_allows_another_plant(tmp_path,monkeypatch):
     snap,_=state();snap['enemies']=[]
     bot=R.Bot(learn_dir=tmp_path,clock=lambda:1.)
     escape={'actor':9,'pos':snap['player']['pos'],'at':0.}
@@ -192,5 +197,5 @@ def test_blocked_escape_walks_away_and_never_allows_another_plant(tmp_path,monke
     monkeypatch.setattr(M,'ground_mines',lambda _: {})
     monkeypatch.setattr(bot,'_tick',lambda _: {'hold':{'l1','r1'}})
     act=bot.tick(snap)
-    assert act!={'hold':{'l1','r1'}} and act.get('hold')                    # off the bomb first (operator 2026-10-24)
-    assert bot.mines.escape is escape and 'walking straight away' in bot.stats['mine_retreat_status']
+    assert act=={'hold':set()}
+    assert bot.mines.escape is escape and 'blocked' in bot.stats['mine_retreat_status']

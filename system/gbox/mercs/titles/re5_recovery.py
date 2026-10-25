@@ -8,7 +8,8 @@ It never writes HP, never sets cActionButton completion bits and never restores 
 
 NOT verified live: that the nudge revives the player.  ``Outcome.RECOVERED`` is reported only from observed state
 (HP>1 and the recovery request gone); anything else is PENDING or TIMEOUT -- an honest failure.
-Nothing imports this module; wiring needs an independent root review and a separately authorised live observation.
+The legacy RecoveryNudge driver remains unwired. The separate scoped recovery module reuses the pure field
+validator/constants only; it does not use this driver's lifetime or outcome handling. Live acceptance is pending.
 """
 from __future__ import annotations
 

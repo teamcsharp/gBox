@@ -163,9 +163,10 @@ def test_preflight_rejects_trapped_placement_before_equip_and_accepts_supported_
     bot = R.Bot(learn_dir=tmp_path)
     snap,_ = state()
     snap['enemies'] = []
+    snap['ground_mines'] = {}
     assert bot._mine_placement_preflight(snap,0.)
     trapped = NavMesh([(0.,0.,0.),(100.,0.,0.),(0.,0.,100.)],[(0,1,2)],[[]])
-    assert not bot._mine_placement_preflight({'player':snap['player'] | {'pos':(20.,0.,20.)},'nav':trapped},1.)
+    assert not bot._mine_placement_preflight({'player':snap['player'] | {'pos':(20.,0.,20.)},'nav':trapped,'ground_mines':{}},1.)
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=2))
     monkeypatch.setattr(M,'ground_mines',lambda _: {})
     calls = []

@@ -73,7 +73,7 @@ def test_mine_controller_does_not_count_a_press_or_interrupted_attempt(monkeypat
     monkeypatch.setattr(M,"settings",lambda:dict(M.DEFAULT,interval_s=2))
     stats={}; c=M.Controller(SimpleNamespace(),stats,lambda *a:{"tap":"ddown"})
     mine={"id":0x10a,"item":10,"type":1,"slot":2,"grid":7,"rounds":5,"hand":True}
-    snap={"player":{"ptr":0x303f8a00,"pos":(0,0,0),"hp":1000,"action":0},"inventory":[mine]}
+    snap={"mine_placement_safe":True,"player":{"ptr":0x303f8a00,"pos":(0,0,0),"hp":1000,"action":0},"inventory":[mine]}
     assert c.tick(snap,0) is None
     assert c.tick(snap,3)=={"hold":{"l1"}}
     assert c.tick(snap,3.4)=={"hold":{"l1"}}
@@ -120,7 +120,7 @@ def test_mine_consumption_is_acknowledged_once(monkeypatch, observed_ground):
     monkeypatch.setattr(M,"settings",lambda:dict(M.DEFAULT,interval_s=2))
     stats={}; c=M.Controller(SimpleNamespace(),stats,lambda *a:None)
     mine={"id":0x10a,"item":10,"type":1,"slot":2,"grid":7,"rounds":5,"hand":True}
-    snap={"player":{"ptr":0x303f8a00,"pos":(0,0,0),"hp":1000,"action":0},"inventory":[mine]}
+    snap={"mine_placement_safe":True,"player":{"ptr":0x303f8a00,"pos":(0,0,0),"hp":1000,"action":0},"inventory":[mine]}
     c.tick(snap,0);c.tick(snap,3)
     mine["rounds"]=4
     deployed(observed_ground)
@@ -133,7 +133,7 @@ def test_infinite_game_created_stack_needs_new_ground_actor(monkeypatch, observe
     ad=FakeRE5(); ad.u32(T.DEF_TABLE+10*T.DEF_STRIDE+T.DEF_NOAMMO,1)
     stats={};c=M.Controller(SimpleNamespace(adapter=ad),stats,lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
     c.tick(snap,0); c.tick(snap,3); c.tick(snap,3.2)
     assert stats.get('mines_placed',0)==0
     deployed(observed_ground); c.tick(snap,3.5)
@@ -149,7 +149,7 @@ def test_mine_equipping_keeps_combat_from_cancelling_the_change(monkeypatch):
         return {'tap':'ddown'} if len(attempts)==1 else None
     c=M.Controller(SimpleNamespace(),{},switch)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':False}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
     c.tick(snap,0)
     assert c.tick(snap,3)=={'hold':set()}
     assert c.tick(snap,3.3)=={'hold':set()}
@@ -167,7 +167,7 @@ def test_consumed_mine_restores_a_gun_before_resuming_combat(monkeypatch, observ
     c=M.Controller(SimpleNamespace(),{},switch)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
     gun={'id':0x102,'item':2,'type':1,'slot':0,'grid':3,'rounds':10,'hand':False}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine,gun]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine,gun]}
     c.tick(snap,0);c.tick(snap,3)
     mine['rounds']=4
     deployed(observed_ground)
@@ -185,7 +185,7 @@ def test_mine_restore_uses_latest_operator_choice_not_first_gun_or_cached_slot(m
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
     original={'id':0x102,'item':2,'type':1,'slot':0,'grid':3,'rounds':10,'hand':False}
     selected={'id':0x11b,'item':0x1B,'type':1,'slot':8,'grid':5,'rounds':5,'hand':False}
-    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[original,mine,selected]}
+    snap={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[original,mine,selected]}
     state={};C.publish(state,7,snap,True,now=0);C.request(state,now=0,weapon=0x1B)
     c.preferred_gun=lambda fresh:C.preferred(state,fresh)
     c.tick(snap,0);c.tick(snap,3);mine['rounds']=4;deployed(observed_ground)
@@ -202,7 +202,7 @@ def test_mines_without_override_return_to_actual_last_gun_not_first_inventory_gu
     c=M.Controller(SimpleNamespace(),{},lambda *a:None)
     first={'id':0x102,'item':2,'type':1,'slot':0,'grid':3,'rounds':10,'hand':False}
     held={'id':0x11b,'item':0x1B,'type':1,'slot':8,'grid':5,'rounds':5,'hand':True}
-    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[first,held]}
+    snap={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[first,held]}
     c.tick(snap,0);held['hand']=False
     assert c.return_gun(snap) is held
 
@@ -215,7 +215,7 @@ def test_leaving_mines_only_resumes_preferred_gun_before_another_plant(monkeypat
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
     c=M.Controller(SimpleNamespace(),{},lambda item,*a:{'tap':W.quick_key(item)})
     c.preferred_gun=lambda snap:selected
-    snap={'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine,selected]}
+    snap={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine,selected]}
     c.tick(dict(snap,prompt='mash'),0)  # Only-mode selection was active, but a mandatory prompt prevented a plant.
     config.update(enabled=enabled,only=False)
     assert c.tick(snap,3)=={'tap':'dright'}
@@ -226,7 +226,7 @@ def test_verified_mine_requires_measured_escape_before_more_placement(monkeypatc
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=2))
     stats={}; c=M.Controller(SimpleNamespace(),stats,lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
     c.tick(snap,0); c.tick(snap,3); mine['rounds']=4; deployed(observed_ground)
     c.tick(snap,3.5)
     assert c.escape['actor']==0x30800000
@@ -268,7 +268,7 @@ def test_consumption_without_a_ground_mine_is_not_placement(monkeypatch):
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=2))
     stats={};c=M.Controller(SimpleNamespace(),stats,lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
     c.tick(snap,0);c.tick(snap,3);mine['rounds']=4
     assert c.tick(snap,3.7)=={'hold':set()}
     c.tick(snap,9)
@@ -280,7 +280,7 @@ def test_equipped_stack_and_new_actor_verify_placement_and_detonation(monkeypatc
     stats={};c=M.Controller(SimpleNamespace(),stats,lambda *a:None)
     first={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':False}
     held=dict(first,slot=6,hand=True)
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[first,held]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[first,held]}
     c.tick(snap,0);assert c.tick(snap,3)=={'hold':{'l1'}}
     held['rounds']=4;deployed(observed_ground);c.tick(snap,3.8)
     assert stats['mines_placed']==1
@@ -299,7 +299,7 @@ def test_switch_cooldown_does_not_repeatedly_block_gunplay(monkeypatch):
     calls=[]
     c=M.Controller(SimpleNamespace(),{},lambda *a:calls.append(a))
     mine={'id':0x10a,'slot':2,'grid':7,'rounds':5,'hand':False}
-    snap={'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
+    snap={'mine_placement_safe':True,'player':{'ptr':0x303f8a00,'pos':(0,0,0),'hp':1000,'action':0},'inventory':[mine]}
     c.tick(snap,0);c.tick(snap,3)
     assert c.tick(snap,3.5)=={'hold':set()} and not calls
     assert c.tick(snap,4.1) is None and len(calls)==1
@@ -316,8 +316,10 @@ def test_ground_reader_excludes_held_weapons_and_reads_arming_and_explosion():
         raw.put(ptr+M.PLACED,b'\x00');raw.put(ptr+M.DETONATING,b'\x00')
         raw.put(ptr+M.ARMING,struct.pack('>f',3))
     assert read_ground(m)=={}
+    assert read_ground(m).verified
     raw.put(ground+M.PLACED,b'\x01');raw.put(ground+0x30,struct.pack('>3f',1,2,3))
     assert read_ground(m)=={ground:{'pos':(1,2,3),'arming_s':3,'detonating':False}}
+    assert read_ground(m).verified
     raw.put(ground+M.ARMING,struct.pack('>f',0));raw.put(ground+M.DETONATING,b'\x01')
     assert read_ground(m)[ground]['detonating']
 
@@ -337,7 +339,7 @@ def test_exploded_removed_mine_still_requires_departure_and_cannot_stack(monkeyp
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
     stats={};controller=M.Controller(SimpleNamespace(),stats,lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    state={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
     controller.tick(state,0);controller.tick(state,3)
     mine['rounds']=4;deployed(observed_ground);controller.tick(state,3.5)
     observed_ground[0x30800000]['detonating']=True
@@ -357,7 +359,7 @@ def test_unowned_ground_mine_blocks_plant_even_without_driver_preflight(monkeypa
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
     controller=M.Controller(SimpleNamespace(),{},lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    state={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
     deployed(observed_ground)
     controller.tick(state,0)
     assert controller.tick(state,4.) is None
@@ -370,7 +372,7 @@ def test_failed_unconfirmed_attempt_must_move_before_retry(monkeypatch):
     monkeypatch.setattr(M,'settings',lambda:dict(M.DEFAULT,interval_s=3))
     controller=M.Controller(SimpleNamespace(),{},lambda *a:None)
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
-    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
+    state={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[mine]}
     controller.tick(state,0);controller.tick(state,3)
     controller.tick(state,9.)
     assert controller.tick(state,20.) is None and controller.stats['mine_attempts']==1
@@ -385,7 +387,7 @@ def test_tribal_bow_and_mine_inventory_restores_exact_bow_after_placement(monkey
     controller=M.Controller(SimpleNamespace(),{},lambda item,*args:calls.append(item) or {'tap':W.quick_key(item)})
     bow={'id':0x10f,'item':0xf,'type':1,'slot':6,'grid':3,'rounds':1,'cap':1,'hand':True}
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':False}
-    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
+    state={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
     controller.tick(state,0)
     assert controller.home_weapon==W.inventory_key(bow)
     bow['hand']=False;mine['hand']=True
@@ -401,7 +403,7 @@ def test_spacing_refusal_restores_available_bow_without_waiting_for_another_plan
     bow={'id':0x10f,'item':0xf,'type':1,'slot':6,'grid':3,'rounds':1,'cap':1,'hand':False}
     mine={'id':0x10a,'item':10,'type':1,'slot':2,'grid':7,'rounds':5,'hand':True}
     controller=M.Controller(SimpleNamespace(),{},lambda item,*args:{'tap':W.quick_key(item)})
-    state={'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
+    state={'mine_placement_safe':True,'player':{'ptr':123,'pos':(0.,0.,0.),'hp':1000,'action':0},'inventory':[bow,mine]}
     deployed(observed_ground)
     controller.tick(state,0)
     assert controller.tick(state,4.)=={'tap':'dleft'}

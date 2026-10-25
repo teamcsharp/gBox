@@ -205,13 +205,59 @@ class ProgressHook:
             return observed or self._result('waiting', str(error))
 
 
+def _invalidate_current(cfg, reason):
+    last = cfg.get('last') or {}
+    if last.get('completed') or last.get('verified'):
+        cfg['last_outcome'] = dict(last, current=False, writes=0)
+    phase = last.get('phase') if last.get('phase') in ('rejected', 'disabled') \
+        else 'waiting' if cfg.get('enabled') else 'disabled'
+    cfg['last'] = {'phase': phase, 'reason': last.get('reason', reason) if phase == 'rejected' else reason,
+                   'current': False, 'verified': False, 'native_accepted': False,
+                   'native_recovered': False, 'completed': False, 'writes': 0}
+    if cfg.get('recovery') is not None:
+        cfg['recovery'].invalidate(reason)
+
+
 def status(state):
+    from . import re5_controls as C
+    from .re5_live_weapon import adapter_identity
     cfg = state.get('qte_assist') or {}
+    last_scope = cfg.get('controller_scope')
+    if last_scope is not None:
+        process, owner, player = last_scope
+        controller = state.get('controller') or {}
+        reference = state.get('_weapon_adapter_ref')
+        adapter = reference() if callable(reference) else None
+        valid = cfg.get('enabled') and adapter is not None \
+            and adapter_identity(adapter, resolve_guest=True) == process \
+            and controller.get('active') and controller.get('owner') == owner \
+            and controller.get('player') == player \
+            and 0 <= time.monotonic()-controller.get('seen', -1e9) <= C.FRESH_S
+        if not valid:
+            _invalidate_current(cfg, 'Current QTE outcome scope is inactive, stale, or changed; prior outcomes are historical only.')
+    recovery = cfg.get('recovery')
+    recovery_status = {**(cfg.get('recovery_capability') or {'available': False}),
+                       **(recovery.status() if recovery else {'phase': 'waiting', 'completed': False,
+                           'reason': 'Waiting for a verified solo recovery event.'})}
+    if not cfg.get('enabled'):
+        recovery_status.update(phase='disabled', current=False, verified=False, completed=False, native_recovered=False)
     return {'enabled': bool(cfg.get('enabled')), 'native_modes': sorted(MODES),
-            'other_modes': 'ordinary input automation; native completion is not implemented',
+            'solo_recovery': recovery_status,
+            'last_outcome': dict(cfg['last_outcome']) if cfg.get('last_outcome') else None,
+            'other_modes': 'ordinary input automation; general native completion is not implemented',
             'phase': 'waiting' if cfg.get('enabled') else 'disabled',
             'verified': False, 'native_accepted': False, 'completed': False,
             **(cfg.get('last') or {})}
+
+
+def recovery_capability(game):
+    from . import re5_qte_recovery as recovery
+    detail = {'scope': 'solo_mercenaries_dying', 'game_modes': [2, 5], 'button_mode': 5, 'key_index': 25}
+    try:
+        recovery.validate(game)
+        return {**detail, 'available': True, 'reason': 'Native solo HP1 Circle recovery; current player/event guards apply.'}
+    except (OSError, ValueError, struct.error):
+        return {**detail, 'available': False, 'reason': 'Native solo recovery code signatures are not verified.'}
 
 
 def capability(game):
@@ -220,8 +266,10 @@ def capability(game):
         validate(game)
         available = adapter_identity(game.ad, resolve_guest=True) is not None
         return {'available': available, 'native_modes': sorted(MODES),
+                'solo_recovery': recovery_capability(game),
                 'reason': 'Native progress assistance for button accumulation and stick wiggle; '
-                          'other decoded QTEs use ordinary input.' if available else 'No current emulator process.'}
+                          'scoped solo recovery is reported separately; other QTEs use ordinary input.'
+                          if available else 'No current emulator process.'}
     except (OSError, ValueError, struct.error):
         return {'available': False, 'native_modes': [], 'reason': 'Native QTE signatures are not verified.'}
 
@@ -235,9 +283,16 @@ def configure(game, on=True):
             process = adapter_identity(game.ad, resolve_guest=True)
             if process is None:
                 raise Reject('No verified current emulator process for native QTE assistance.')
-            game.orig['qte_assist'] = {'enabled': True, 'process': process}
+            previous = game.orig.get('qte_assist') or {}
+            # A toggle is not evidence of a new recovery event. Preserve an
+            # uncertain-attempt receipt in the same emulator process.
+            retained = previous.get('recovery') if previous.get('process') == process else None
+            game.orig['qte_assist'] = {'enabled': True, 'process': process,
+                'process_object': game.ad.proc,
+                'recovery_capability': recovery_capability(game), **({'recovery': retained} if retained else {})}
         else:
             cfg = game.orig.setdefault('qte_assist', {})
+            _invalidate_current(cfg, 'Native QTE assistance disabled.')
             cfg.update(enabled=False, last={'phase': 'disabled', 'reason': 'Native QTE assistance disabled.',
                                            'verified': False, 'native_accepted': False, 'completed': False})
             cfg.pop('helper', None)
@@ -260,8 +315,7 @@ def maintain(adapter, snapshot, *, owner, enabled=True):
         if not cfg.get('enabled'):
             return status(state)
         if not enabled:
-            cfg['last'] = {'phase': 'waiting', 'reason': 'No active gameplay owner.', 'verified': False,
-                           'native_accepted': False, 'completed': False}
+            _invalidate_current(cfg, 'No active gameplay owner.')
             return status(state)
         try:
             game = mods.RE5(adapter)
@@ -275,6 +329,7 @@ def maintain(adapter, snapshot, *, owner, enabled=True):
                     or controller.get('player') != (snapshot.get('player') or {}).get('ptr'):
                 raise Reject('Waiting for the current solo bot owner and player.')
             scoped_player = controller['player']
+            cfg['controller_scope'] = (process, owner, scoped_player)
             scope = (process, owner)
             helper = cfg.get('helper')
             if helper is None or helper.scope != scope:
@@ -295,9 +350,36 @@ def maintain(adapter, snapshot, *, owner, enabled=True):
                 def wr(self, address, data):
                     if not owns_scope():
                         return False
+                    if recovery_write:
+                        from . import re5_qte_recovery as recovery_module
+                        current_recovery = cfg.get('recovery')
+                        attempt = getattr(current_recovery, 'helper', None)
+                        pending = getattr(attempt, 'pending', None)
+                        try:
+                            if not pending or address != pending['player']+recovery_module.F.P_PROGRESS \
+                                    or data != pending['target'] \
+                                    or recovery_module.write_fence(self, pending) > pending['threshold'] \
+                                    or not recovery_module._continuous(pending['clock_scope'], recovery_module.clock_scope(self)) \
+                                    or not owns_scope():
+                                return False
+                        except (OSError, ValueError, struct.error):
+                            return False
                     return game.wr(address, data)
 
-            result = helper.step(GuardedMemory(), snapshot, now, scope=scope)
+            memory = GuardedMemory()
+            result, recovery_write = None, False
+            if (cfg.get('recovery_capability') or {}).get('available'):
+                from . import re5_qte_recovery as recovery_module
+                recovery = cfg.get('recovery')
+                if recovery is None:
+                    recovery = cfg['recovery'] = recovery_module.Controller(scope)
+                recovery_write = True
+                try:
+                    result = recovery.step(memory, snapshot, now, scope=scope, scope_valid=owns_scope)
+                finally:
+                    recovery_write = False
+            if result is None:
+                result = dict(helper.step(memory, snapshot, now, scope=scope), kind='accumulation')
             if not owns_scope():
                 result = {'phase': 'rejected', 'reason': 'Process/controller scope changed during QTE readback.',
                           'verified': False, 'native_accepted': False, 'completed': False,
@@ -305,5 +387,7 @@ def maintain(adapter, snapshot, *, owner, enabled=True):
         except (OSError, ValueError, struct.error, RuntimeError, mods.Unsupported) as error:
             result = {'phase': 'rejected', 'reason': str(error), 'verified': False,
                       'native_accepted': False, 'completed': False, 'writes': 0}
+        if result.get('phase') == 'rejected' and cfg.get('recovery') is not None:
+            cfg['recovery'].invalidate(result['reason'])
         cfg['last'] = result
         return status(state)
