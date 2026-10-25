@@ -13,6 +13,9 @@ PROCESSOR = "x86:LE:64:default"
 MAX_IMAGE = 1024 * 1024 * 1024
 SCE_TYPES = {0xFE00: 2, 0xFE10: 3, 0xFE18: 3}
 PT_SCE_RELRO = 0x61000010
+# shadPS4 src/core/module.cpp reads these with TryLoadSegment, tolerating
+# absent metadata. Runtime LOAD/RELRO/DYNAMIC/DYNLIBDATA payloads are mandatory.
+OPTIONAL_SELF_METADATA = {0x6FFFFF00: "PT_SCE_COMMENT", 0x6FFFFF01: "PT_SCE_LIBVERSION"}
 
 
 def _span(data: bytes, offset: int, size: int, label: str) -> bytes:
@@ -45,8 +48,9 @@ def _headers(data: bytes, start: int = 0) -> tuple[tuple, list[tuple]]:
 def analysis_image(raw: bytes) -> tuple[bytes, dict]:
     """Validate a native file and return (ELF, provenance notes).
 
-    SELF is accepted only when its referenced segments are already decrypted,
-    uncompressed and complete. Reconstructed files retain ELF virtual addresses;
+    SELF payloads must be already decrypted, uncompressed and complete. Absent
+    unallocated SCE comment/version metadata is omitted with provenance.
+    Reconstructed files retain ELF virtual addresses;
     these are link-time addresses, not a claim about a running process's mappings.
     """
     if len(raw) > MAX_IMAGE:
@@ -104,9 +108,22 @@ def analysis_image(raw: bytes) -> tuple[bytes, dict]:
                 merged[-1] = (merged[-1][0], max(hi, merged[-1][1]))
             else:
                 merged.append((lo, hi))
-        for p in programs:
+        omitted = set()
+        for index, p in enumerate(programs):
             if p[5] and not any(lo <= p[2] and p[2] + p[5] <= hi for lo, hi in merged):
+                if p[0] in OPTIONAL_SELF_METADATA and p[1] == 0 and p[6] == 0:
+                    # Do not present zero-filled, nonexistent metadata as source
+                    # bytes. A PT_NULL header leaves every runtime segment intact.
+                    struct.pack_into("<II6Q", image, phoff + index * phsize, *([0] * 8))
+                    omitted.add(index)
+                    notes.append(f"Unavailable {OPTIONAL_SELF_METADATA[p[0]]} metadata "
+                                 f"(program header {index}, {p[5]} bytes) omitted as PT_NULL "
+                                 "in the analysis copy.")
+                    continue
                 raise ValueError("Incomplete PS4 SELF: a program segment has no decrypted payload")
+        if omitted:
+            size = max(head_end, *(p[2] + p[5] for i, p in enumerate(programs) if i not in omitted))
+            del image[size:]
         # SELF's embedded section table offsets do not identify reconstructed data.
         struct.pack_into("<Q", image, 40, 0)
         struct.pack_into("<HHH", image, 58, 0, 0, 0)

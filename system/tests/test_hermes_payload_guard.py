@@ -102,3 +102,47 @@ def test_run_output_outside_the_work_folders_is_refused_on_push():
     out = G.refusals(junk, files(**junk), G.HOMES)
     assert sorted(o.split(':')[0] for o in out) == ['system/.checkpoint.json', 'system/debug_probe.py', 'tetris_nes_build.json']
     assert all('outside' in o for o in out)
+
+
+def test_project_metadata_admits_only_the_exact_two_files():
+    payloads = {'system/gbox.toml': b'[emulators.ps4]\nadapter = "shadps4"\n',
+                'system/LICENSES-THIRD-PARTY.md': b'# Third-party licenses\n'}
+    assert G.refusals(payloads, files(**payloads), G.HOMES) == []
+    lookalikes = {
+        'system/gbox.toml.bak': b'text',
+        'system/gbox.toml.exe': b'text',
+        'system/gbox.toml/extra.py': b'print(1)',
+        'system/LICENSES-THIRD-PARTY.md-extra': b'text',
+        'system/LICENSES-THIRD-PARTY.md/extra.py': b'print(1)',
+        'system/GBOX.toml': b'text',
+        'system/other.toml': b'text',
+    }
+    refused = G.refusals(lookalikes, files(**lookalikes), G.HOMES)
+    assert {line.split(':', 1)[0] for line in refused} == set(lookalikes)
+    assert all('outside' in line for line in refused)
+
+
+@pytest.mark.parametrize('path', ['system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md'])
+@pytest.mark.parametrize('data,reason', [(b'MZ' + bytes(32), 'a Windows executable'),
+                                        (b'\x7fELF' + bytes(32), 'an ELF executable'),
+                                        (b'PK\x03\x04' + bytes(32), 'a zip archive'),
+                                        (b'#' + bytes(G.MAX_BYTES), 'too large')],
+                         ids=['pe', 'elf', 'zip', 'oversized'])
+def test_exact_project_filenames_do_not_exempt_payload_validation(path, data, reason):
+    refused = G.refusals([path], files(**{path: data}), G.HOMES)
+    assert len(refused) == 1 and reason in refused[0]
+
+
+def test_pre_push_checks_committed_project_metadata_and_rejects_disguised_binary(repo):
+    for name, text in [('gbox.toml', '[emulators.ps4]\nadapter = "shadps4"\n'),
+                       ('LICENSES-THIRD-PARTY.md', '# Third-party licenses\n')]:
+        (repo / 'system' / name).write_text(text)
+    git('add', '.', cwd=repo)
+    git('commit', '-m', 'project metadata', cwd=repo)
+    metadata = git('rev-parse', 'HEAD', cwd=repo)
+    remote = git('rev-parse', 'origin/main', cwd=repo)
+    line = lambda sha: io.StringIO(f'refs/heads/main {sha} refs/heads/main {remote}\n')
+    assert G.pre_push_main(line(metadata), repo) == 0
+    (repo / 'system/gbox.toml').write_bytes(b'\x7fELF' + bytes(32))
+    git('commit', '-am', 'disguised binary', cwd=repo)
+    assert G.pre_push_main(line(git('rev-parse', 'HEAD', cwd=repo)), repo) == 1

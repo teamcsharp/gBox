@@ -44,11 +44,15 @@ Inspect = Callable[[str], 'tuple[bytes | None, int | None]']
 # work: it was pushed from task worktrees straight into system/ until the pre-push hook refused it.
 HOMES = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'system/hermes/', 'system/profiles/',
          'system/scripts/', 'system/adapters/')
+# Tracked project metadata outside those directories. Exact membership only:
+# these are files, never filename prefixes or additional writable directories.
+PROJECT_FILES = frozenset({'system/gbox.toml', 'system/LICENSES-THIRD-PARTY.md'})
 
 
 def refusals(files: Iterable[str], inspect: Inspect | None = None, homes: tuple[str, ...] | None = None) -> list[str]:
     """One reason per file that must never be published. `inspect(path)` -> (first HEAD_BYTES bytes, size), or
-    (None, None) for a deleted or unreadable file (nothing to publish). `homes`: the only folders a push may touch."""
+    (None, None) for a deleted or unreadable file (nothing to publish). `homes`:
+    allowed folders, alongside the exact PROJECT_FILES; every admitted file still undergoes payload checks."""
     out = []
     for name in files:
         path = str(name).replace('\\', '/')
@@ -56,7 +60,7 @@ def refusals(files: Iterable[str], inspect: Inspect | None = None, homes: tuple[
         head, size = inspect(path) if inspect else (None, None)
         if inspect and head is None and size is None:
             continue
-        if homes and not path.startswith(homes):
+        if homes and not (path.startswith(homes) or path in PROJECT_FILES):
             out.append(f'{path}: outside the source, test, docs, profiles and client folders (run output stays in the workspace)')
             continue
         fixture = path.startswith(FIXTURE_HOME) and size is not None and size <= FIXTURE_MAX

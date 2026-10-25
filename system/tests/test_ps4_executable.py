@@ -26,6 +26,62 @@ def self_file(flags=0x800):
     return data + bytes(0x200 - len(data)) + elf[0x100:]
 
 
+def self_with_metadata(ptype=0x6FFFFF01, *, flags=0, memsz=0, payload=None):
+    elf = bytearray(executable()[:120])
+    struct.pack_into("<H", elf, 56, 2)
+    elf += struct.pack("<II6Q", ptype, flags, 0x200, 0, 0, 4, memsz, 1)
+    header = bytearray(32)
+    header[:10] = ps4.SELF_MAGIC + b"\x00\x01\x01\x12\x01\x01"
+    struct.pack_into("<H", header, 0x18, 1 if payload is None else 2)
+    segments = struct.pack("<4Q", 0x800, 0x200, 4, 4)
+    if payload is not None:
+        segments += struct.pack("<4Q", 0x100800, 0x210, 4, 4)
+    raw = bytes(header) + segments + elf
+    raw += bytes(0x200 - len(raw)) + executable()[0x100:]
+    if payload is not None:
+        raw += bytes(0x210 - len(raw)) + payload
+    return raw
+
+
+@pytest.mark.parametrize("ptype", [0x6FFFFF00, 0x6FFFFF01])
+def test_self_missing_unallocated_sce_metadata_is_explicitly_omitted(ptype):
+    raw = self_with_metadata(ptype)
+    result, info = ps4.analysis_image(raw)
+    assert result[0x100:] == b"\x48\x89\xe5\xc3"
+    assert result[120:176] == bytes(56)  # PT_NULL, no invented metadata bytes
+    assert struct.unpack_from("<I", raw, 64 + 120)[0] == ptype
+    assert any(ps4.OPTIONAL_SELF_METADATA[ptype] in note and "omitted as PT_NULL" in note
+               for note in info["notes"])
+
+
+@pytest.mark.parametrize("ptype", [0x6FFFFF00, 0x6FFFFF01])
+def test_self_present_sce_metadata_is_preserved_and_truncation_rejected(ptype):
+    raw = self_with_metadata(ptype, payload=b"meta")
+    result, info = ps4.analysis_image(raw)
+    assert result[0x200:] == b"meta"
+    assert struct.unpack_from("<I", result, 120)[0] == ptype
+    assert not any("omitted as PT_NULL" in note for note in info["notes"])
+    with pytest.raises(ValueError, match="Truncated"):
+        ps4.analysis_image(raw[:-1])
+
+
+@pytest.mark.parametrize("ptype", [1, ps4.PT_SCE_RELRO, 2, 0x61000000, 7, 0x61000001, 0x6FFFFF02])
+def test_self_missing_runtime_or_unknown_segment_still_fails(ptype):
+    with pytest.raises(ValueError, match="no decrypted payload"):
+        ps4.analysis_image(self_with_metadata(ptype, memsz=4))
+
+
+@pytest.mark.parametrize("kwargs", [{"flags": 4}, {"memsz": 4}])
+def test_self_metadata_with_memory_attributes_is_not_optional(kwargs):
+    with pytest.raises(ValueError, match="no decrypted payload"):
+        ps4.analysis_image(self_with_metadata(**kwargs))
+
+
+def test_missing_optional_metadata_does_not_hide_truncated_code():
+    with pytest.raises(ValueError, match="Truncated"):
+        ps4.analysis_image(self_with_metadata()[:-1])
+
+
 def test_elf64_preserves_64_bit_entry_and_source():
     raw = executable()
     result, info = ps4.analysis_image(raw)
