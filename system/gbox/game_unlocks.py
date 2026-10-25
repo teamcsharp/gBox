@@ -15,6 +15,8 @@ DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
+TSFP_ID = '1ccdf2aa4bfe4b32'  # TimeSplitters: Future Perfect (USA), platform=gamecube
+TSFP_PLATFORM = 'gamecube'
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -43,6 +45,15 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             gate = sgc_gems_probe.profile_gate()
             return {'state': 'research_pending', 'applied': False,
                     'reason': gate['reason'], 'scope': list(sgc_gems_probe.CATEGORIES),
+                    'evidence': gate['evidence'], 'blockers': gate['blockers'],
+                    'next': gate['next']}
+        if game.get('game_id') == TSFP_ID and game.get('platform') == TSFP_PLATFORM:
+            # TimeSplitters: Future Perfect: published Gecko code identified,
+            # but no runtime-verified unlock yet. Report the candidate state.
+            from . import timesplitters_fp_unlock
+            gate = timesplitters_fp_unlock.profile_gate()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': gate['reason'], 'scope': list(timesplitters_fp_unlock.CATEGORIES),
                     'evidence': gate['evidence'], 'blockers': gate['blockers'],
                     'next': gate['next']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
@@ -82,6 +93,13 @@ def profile_for(game: dict) -> dict:
         from . import sgc_gems_probe
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(sgc_gems_probe.CATEGORIES), **sgc_gems_probe.profile_gate()}
+    if game.get('game_id') == TSFP_ID and game.get('platform') == TSFP_PLATFORM:
+        # Candidate Gecko code profile: published code identified but not
+        # runtime-verified. No writer is reachable from the Play path.
+        from . import timesplitters_fp_unlock
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'scope': list(timesplitters_fp_unlock.CATEGORIES),
+                **timesplitters_fp_unlock.profile_gate()}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
