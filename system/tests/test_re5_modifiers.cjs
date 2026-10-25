@@ -83,6 +83,90 @@ test('egg mode rejects nonfinite or excessive rates and unavailable native capab
   await r.control.setEggs(true,20);assert.equal(r.commands().length,0);
 });
 
+test('live longbow queue stays pending until fresh native equip confirmation', async () => {
+  const r = rig(); r.status.capabilities.live_weapon = { available: true };
+  r.command = async input => {
+    assert.equal(input.op, 'live_weapon');
+    r.status.live_weapon = { phase: 'pending', verified: false, reason: 'Waiting for a safe pickup.' };
+    return { queued: true, verified: true }; // queue receipt cannot override native readback
+  };
+  await r.control.refresh(); await r.control.setLiveWeapon(true);
+  assert.deepEqual(r.commands()[0].body.input, { session_id: SESSION.session_id, op: 'live_weapon', on: true, weapon: 15 });
+  assert.equal(r.commands()[0].body.require_worker, 'worker');
+  assert.equal(r.commands()[0].body.agent_use, false);
+  assert.match(r.control.state().message, /Waiting for a safe pickup/);
+  assert.doesNotMatch(r.control.state().message, /equipped and confirmed/);
+  assert.match(M.html(r.control.state()), /data-re5-live-bow disabled/);
+  r.status.live_weapon = { phase: 'equipped', verified: false };
+  await r.control.refresh();
+  assert.doesNotMatch(M.html(r.control.state()), /Longbow equipped and confirmed/);
+  r.status.live_weapon.verified = true;
+  await r.control.refresh();
+  assert.match(M.html(r.control.state()), /Longbow equipped and confirmed in this round/);
+});
+
+test('live longbow cancellation requires current cancellation readback', async () => {
+  const r = rig(); r.status.capabilities.live_weapon = { available: true };
+  r.status.live_weapon = { phase: 'donor', verified: false };
+  r.command = async () => ({ verified: true });
+  await r.control.refresh(); await r.control.setLiveWeapon(false);
+  assert.equal(r.control.state().error, true);
+  assert.match(r.control.state().message, /Cancellation is pending/);
+  r.command = async () => {
+    r.status.live_weapon = { phase: 'cancelled', restoration_pending: true, verified: false };
+    return { verified: false };
+  };
+  await r.control.setLiveWeapon(false);
+  assert.equal(r.control.state().error, true);
+  assert.match(M.html(r.control.state()), /Cancellation pending: restoring/);
+  r.status.capabilities.live_weapon = { available: false, reason: 'Bot stopped.' };
+  await r.control.refresh();
+  assert.doesNotMatch(M.html(r.control.state()), /data-re5-live-cancel disabled/);
+  r.command = async () => { r.status.live_weapon = { phase: 'cancelled', verified: false }; return { queued: false }; };
+  await r.control.setLiveWeapon(false);
+  assert.equal(r.control.state().error, false);
+  assert.match(r.control.state().message, /request cancelled/);
+});
+
+test('active equipped requests refresh verification and can be cancelled after the controller stops', async () => {
+  const r = rig();
+  r.status.capabilities.live_weapon = { available: true };
+  r.status.live_weapon = { phase: 'equipped', active: true, verified: true };
+  let tick, cleared = false;
+  const context = vm.createContext({ module: { exports: {} }, setTimeout,
+    setInterval(fn) { tick = fn; return { unref() {} }; }, clearInterval() { cleared = true; } });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../clients/web/viz/re5-modifiers.js'), 'utf8'), context);
+  const host = { innerHTML: '' };
+  const ctl = context.module.exports.mount(host, { session: SESSION, api: r.api });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(host.innerHTML, /Longbow equipped and confirmed/);
+  r.status.capabilities.live_weapon.available = false;
+  r.status.live_weapon.verified = false;
+  r.status.live_weapon.reason = 'Waiting for a fresh native observation.';
+  tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.doesNotMatch(host.innerHTML, /Longbow equipped and confirmed/);
+  assert.doesNotMatch(host.innerHTML, /data-re5-live-cancel disabled/);
+  r.command = async () => { r.status.live_weapon = { phase: 'cancelled', active: false }; return { cancelled: true }; };
+  await ctl.setLiveWeapon(false);
+  assert.equal(r.commands().length, 1);
+  assert.equal(ctl.state().error, false);
+  const stale = { ...ctl.state(), stale: true, status: { ...r.status,
+    live_weapon: { phase: 'equipped', active: true, verified: true } } };
+  assert.doesNotMatch(M.html(stale), /Longbow equipped and confirmed/);
+  ctl.stop(); assert.equal(cleared, true);
+});
+
+test('old workers cannot receive a live weapon command and reasons are escaped', async () => {
+  const r = rig(); await r.control.refresh(); await r.control.setLiveWeapon(true);
+  assert.equal(r.commands().length, 0);
+  assert.match(M.html(r.control.state()), /Worker update pending/);
+  r.status.capabilities.live_weapon = { available: true };
+  r.status.live_weapon = { phase: 'pending', reason: '<img onerror=bad>' };
+  await r.control.refresh();
+  assert.doesNotMatch(M.html(r.control.state()), /<img onerror=bad>/);
+  assert.match(M.html(r.control.state()), /&#60;img onerror=bad&#62;/);
+});
+
 test('next Mercenaries selection retains actual mode costume and stage', async () => {
   const r = rig();
   r.status.capabilities.mercs_select = { available: true };

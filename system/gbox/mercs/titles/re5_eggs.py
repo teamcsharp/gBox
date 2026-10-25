@@ -29,7 +29,7 @@ def _u(memory,address):
     return struct.unpack('>I',memory.rd(address,4))[0]
 
 
-def world_items(memory,donor=None):
+def world_items(memory,donor=None,*,item_id=EGG_ID,item_vtable=EGG_VT):
     """Bounded ownerless native egg/ammo pickups, fenced against item-list reuse."""
     from . import re5_ps3 as R
     try:
@@ -41,14 +41,14 @@ def world_items(memory,donor=None):
         for actor in struct.unpack(f'>{count}I',raw):
             if not R.ptr_ok(actor) or actor%4:continue
             vt=_u(memory,actor);original=AMMO_VTABLES.get(vt)
-            if original is None and vt!=EGG_VT:continue
+            if original is None and vt!=item_vtable:continue
             data=memory.rd(actor+0x1BC0,0xB0)
             if struct.unpack_from('>I',data)[0]!=SOURCE_VT:continue
             item=struct.unpack_from('>H',data,0x76)[0];quantity=struct.unpack_from('>I',data,0x78)[0]
             handle=_u(memory,actor+0x1110);owner=_u(memory,actor+0x111C)
-            expected_original=EGG_ID if vt==EGG_VT else original
+            expected_original=item_id if vt==item_vtable else original
             converted=donor is not None and donor.get('actor')==actor and donor.get('handle')==handle \
-                and donor.get('vtable')==vt and donor.get('original_id')==original and item==EGG_ID
+                and donor.get('vtable')==vt and donor.get('original_id')==original and item==item_id
             if owner or not 0<handle<0xFFFFFFFF or not 0<quantity<=32767 \
                     or item!=expected_original and not converted:continue
             volume=struct.unpack_from('>I',data,0xA0)[0]
@@ -121,18 +121,18 @@ def prepare_pickup(g,snap):
     return next((v for v in world_items(g,donor) if v['ptr']==row['ptr'] and v['id']==EGG_ID),None)
 
 
-def pickup_request(memory,request,row,donor=None):
+def pickup_request(memory,request,row,donor=None,*,item_id=EGG_ID,item_vtable=EGG_VT):
     from . import re5_ps3 as R
     if not isinstance(request,dict) or request.get('label')!=R.PICKUP_LABEL \
             or request.get('token')!='mash:square' or request.get('kind')!=R.BTN_STAGE \
-            or request.get('target')!=row.get('handle') or row.get('id')!=EGG_ID:return None
+            or request.get('target')!=row.get('handle') or row.get('id')!=item_id:return None
     keys=('token','button','kind','mode','label','owner','target')
     signature=tuple(request.get(k) for k in keys)
     sp=_u(memory,R.S_PLAYER)
     if not R.ptr_ok(sp) or request.get('owner')!=_u(memory,sp+0x28):return None
     current=R.selected_prompt(memory,include_item_pickups=True)
     if not current or tuple(current.get(k) for k in keys)!=signature:return None
-    fresh=next((v for v in world_items(memory,donor) if all(v.get(k)==row.get(k)
+    fresh=next((v for v in world_items(memory,donor,item_id=item_id,item_vtable=item_vtable) if all(v.get(k)==row.get(k)
                 for k in ('ptr','handle','id','vtable'))),None)
     latest=R.selected_prompt(memory,include_item_pickups=True)
     return fresh if fresh and latest and tuple(latest.get(k) for k in keys)==signature else None

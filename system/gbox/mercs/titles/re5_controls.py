@@ -24,10 +24,22 @@ def bind_adapter(state,adapter):
     with LOCK:
         ref=state.get('_weapon_adapter_ref')
         if ref is not None and ref() is not adapter:
-            for key in ('preferred_weapon','random_weapon_request','weapon_pin'):
+            for key in ('preferred_weapon','random_weapon_request','weapon_pin','live_weapon'):
                 state.pop(key,None)
         try:state['_weapon_adapter_ref']=weakref.ref(adapter)
         except TypeError:state.pop('_weapon_adapter_ref',None)
+        proc = getattr(adapter, 'proc', None)
+        identity = (id(proc), getattr(proc, 'pid', None), getattr(adapter, 'generation', 0))
+        previous = state.get('_weapon_process_identity')
+        if previous is not None and previous != identity:
+            for key in ('preferred_weapon', 'random_weapon_request', 'weapon_pin'):
+                state.pop(key, None)
+            live = state.get('live_weapon')
+            if live:
+                live.update(active=False, phase='rejected', equipped=False,
+                            restoration_pending=bool(live.get('donor')),
+                            reason='Emulator process or generation changed; old source writes are forbidden.')
+        state['_weapon_process_identity'] = identity
 
 
 def preferred(state,snap):

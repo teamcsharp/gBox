@@ -400,6 +400,7 @@ UNIT_LINES, LINE_STRIDE, LINE_FIRST, UNIT_NEXT = 0x24, 0x20, 0xC, 0x8
 UI_LINES = (0, 26, 27, 28)
 N_LINES = 32
 UI_VTABLES = {0x015ABAC8: "uIdMerce00",         # the round's Mercenaries HUD (clock, score, combo)
+              0x015AB6E8: "uIdGameover00",     # Continue: state byte +0x17, Yes/No u32 +0x178
               0x015ABE28: "uIdPause00",         # the in-round pause menu (there while a round runs)
               0x015ABB80: "uIdNowLoading00",    # NOW LOADING
               0x015ABEE0: "uIdSaving00",        # saving the records on the results screen
@@ -423,6 +424,15 @@ ALERTS = {0x22: "alert_signin",                 # "... without signing in. Sign 
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR = 0x44, 0x174, 0x188
 TITLE_STEP, TITLE_PRESS_START = 0x1F8, 0x48
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_REUNION = 0, 7, 3
+# BLUS30491 app 01.01: 0x59299C dispatches state 2 to 0x592E5C. The input branch at 0x592F00 reads
+# choice +0x178; Right selects 1, Left selects 0, and 0x592FA8 stores the result. Confirmation calls
+# 0x591F9C: 0 retries (event 5,1), 1 exits (event 5,2). States 0/1 are the death/intro animation.
+# ELF SHA256 d901458f13beeb3d5bb0523eaac9c60102863a67f69b20905d8fa0c74e8be293.
+CONTINUE_VT, CONTINUE_STATE, CONTINUE_CHOICE = 0x015AB6E8, 0x17, 0x178
+CONTINUE_READY, CONTINUE_NO, CONTINUE_BLOCKED = 2, 1, 0x1D4
+CONTINUE_CODE = ((0x00592E5C, bytes.fromhex("7bbb00207f63db784bffe6295463063e")),
+                 (0x00592F00, bytes.fromhex("809f01782f840001419e02e0")),
+                 (0x00592F94, bytes.fromhex("801f01787f804800419e001c380000007f63db78913f0178901f018c")))
 
 
 def ui_units(m, lines=UI_LINES) -> dict:
@@ -441,6 +451,38 @@ def ui_units(m, lines=UI_LINES) -> dict:
     return out
 
 
+def continue_screen(m, ui=None) -> dict:
+    """Observe the native Continue choice; absent, unreadable or transitional dialogs never permit a press."""
+    out = {"where": "dead", "cursor": None, "target": CONTINUE_NO, "continue_unit": None,
+           "continue_state": None, "continue_ready": False}
+    try:
+        ui = ui_units(m, range(N_LINES)) if ui is None else ui
+        unit = ui.get("uIdGameover00")
+        if not ptr_ok(unit):
+            return out
+        raw = m.rd(unit, 0x1D8)
+        if len(raw) != 0x1D8 or struct.unpack_from(">I", raw)[0] != CONTINUE_VT:
+            return out
+        state, choice = raw[CONTINUE_STATE], struct.unpack_from(">I", raw, CONTINUE_CHOICE)[0]
+        out.update(continue_unit=unit, continue_state=state, cursor=choice if choice in (0, 1) else None)
+        if state != CONTINUE_READY or choice not in (0, 1) or struct.unpack_from(">I", raw, CONTINUE_BLOCKED)[0]:
+            return out
+        main = u32(m, S_MAIN)
+        # Other game-over modes bypass this state machine. +1D4 is the native readiness predicate's
+        # blocking reason (0x59148C); it is reset before its network/system-dialog checks each update.
+        if not ptr_ok(main) or u32(m, main + 0x182DC) & 0x503:
+            return out
+        if any(m.rd(address, len(code)) != code for address, code in CONTINUE_CODE):
+            return out
+        # A menu can be destroyed or begin confirming while these independent RAM reads are in flight.
+        out["continue_ready"] = (u32(m, unit) == CONTINUE_VT
+                                 and m.rd(unit + CONTINUE_STATE, 1) == bytes([CONTINUE_READY])
+                                 and u32(m, unit + CONTINUE_CHOICE) == choice)
+    except Exception:
+        out["continue_ready"] = False
+    return out
+
+
 def screen(m, merc=None) -> dict:
     """The deployment's menus interface (gbox/mercs_bot.py): where RE5 is, read from RAM. In a round: playing / dead /
     results (the round's own fields). Out of one (no player), from the interface units: the title's dialogs
@@ -448,9 +490,9 @@ def screen(m, merc=None) -> dict:
     reunion_title, reunion_solo, select_stage, select_player, loading, menu (the title's menus between those: wait),
     results (the clock at 0 and none of those up)."""
     snap = snapshot(m)
-    if own_screen(snap) != 'dead':
-        CONTINUE_PICK.selected_no = False
     out = {"where": own_screen(snap), "cursor": None, "target": None}
+    if out["where"] == "dead":
+        return continue_screen(m)
     if snap.get("player"):
         if out["where"] == "playing" and (ROSTER.pick is not None or ROSTER.round is None):
             mode, index = snap.get("mercenaries_mode"), snap.get("character_index")
@@ -462,6 +504,8 @@ def screen(m, merc=None) -> dict:
             out["character"] = ROSTER.started()
         return out
     ui = ui_units(m, range(N_LINES))
+    if "uIdGameover00" in ui:
+        return continue_screen(m, ui)
     plan = coverage().choose() if getattr(m, "adapter", None) is not None else None
     mode = snap.get("mercenaries_mode")
     if mode in MODE_ROSTERS:
@@ -649,26 +693,9 @@ class StagePick:
 STAGE_PICK = StagePick()
 
 
-class ContinuePick:
-    """BLUS30491 Continue accepts Right (No), then Cross; Circle is ignored."""
-    selected_no = False
-
-    def key(self):
-        return 'cross' if self.selected_no else 'dright'
-
-    def pressed(self, key):
-        if key == 'dright':
-            self.selected_no = True
-
-
-CONTINUE_PICK = ContinuePick()
-
-
 def pressed(scr: dict, key: str) -> None:
     """mercs_bot's Navigator: a key it sent on this screen."""
     STAGE_PICK.pressed(scr, key)
-    if scr.get('where') == 'dead':
-        CONTINUE_PICK.pressed(key)
     if scr.get("where") == "select_player" and key == "cross":
         ROSTER.confirm(scr.get("cursor"))
 
@@ -677,11 +704,13 @@ def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
     START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
-    character the cursors are on (the last ones played). Right then Cross answers "Continue? No" and returns through
-    the save confirmation for a new stage and character. Nothing anywhere else."""
+    character the cursors are on (the last ones played). On the input-ready Continue dialog, Right selects No and
+    Cross is allowed only after RAM confirms No, returning through save confirmation to stage/character selection."""
     where = scr.get("where")
     if where == 'dead':
-        return CONTINUE_PICK.key()
+        if scr.get("continue_ready") is not True or type(scr.get("cursor")) is not int:
+            return None
+        return "cross" if scr["cursor"] == CONTINUE_NO else "dright" if scr["cursor"] == 0 else None
     if where == "extra_content" and scr.get("next_mode") == "mercenaries":
         return "circle"
     if scr.get("mode_mismatch") and where in ("select_stage", "select_player", "reunion_title", "reunion_solo", "mercs_title", "mercs_solo"):
@@ -1090,6 +1119,9 @@ class Bot:
         self.healing = None
         from .re5_inventory_health import Controller as InventoryHealth
         self.inventory_heal = InventoryHealth(self.stats)
+        self.inventory_live_weapon = InventoryHealth(self.stats, allowed_ids={0x10F}, prefix='inventory_live_weapon')
+        self.live_weapon_pickup_at = -math.inf
+        self.live_weapon_rows_at, self.live_weapon_rows = -math.inf, []
         self.inventory_egg = InventoryHealth(self.stats,allowed_ids={0x136}|{
             0x100|wid for wid,spec in re5_weapons.WEAPONS.items()
             if spec.family in re5_weapons.DIRECT or spec.family=='bow'},prefix='inventory_egg')
@@ -1160,8 +1192,9 @@ class Bot:
 
     def save(self):
         if self._control_state is not None:
-            from . import re5_controls
+            from . import re5_controls, re5_live_weapon
             re5_controls.publish(self._control_state, id(self), {}, False)
+            re5_live_weapon.stop(self._control_state, getattr(self.m, 'adapter', None), id(self))
         if getattr(self.m, "adapter", None) is not None and modifications_allowed(self.m):
             from ...re5_mods_tool import maintain_fire_animation,maintain_item_animation
             maintain_fire_animation(self.m.adapter, enabled=False)
@@ -1204,6 +1237,11 @@ class Bot:
             self._control_state = ORIG.setdefault(id(self.m.adapter), {})
             re5_controls.bind_adapter(self._control_state,self.m.adapter)
             re5_controls.publish(self._control_state, id(self), snap, where == "playing" and bool(p))
+            from . import re5_live_weapon
+            re5_live_weapon.observe(self.m, self._control_state, snap, where)
+            live = self._control_state.get('live_weapon') or {}
+            if not live.get('active') and live.get('donor'):
+                re5_live_weapon.queue_supply(self.m.adapter)
         if where != "playing" or snap.get("prompt") not in ("stick:rotate", "stick:x", "stick:y"):
             self._stick_token = None
         self.stats["resuscitating"] = bool(snap.get("recovery_active") or snap.get("prompt") == "mash")
@@ -1251,6 +1289,7 @@ class Bot:
             self.healing = None
             self.inventory_heal.reset()
             self.inventory_egg.reset()
+            self.inventory_live_weapon.reset()
             if self.combat is not None:
                 self.combat.awareness = []
             if where == "results":
@@ -1786,11 +1825,15 @@ class Bot:
             return {"hold": set()}                     # the prompt presser owns rapid circle, never cross/aim/fire
         if p.get("hp") is not None and p["hp"] <= 0:
             if now - self.dead_tap > 1.5:
-                self.dead_tap = now
-                self.stats["continue_declined"] = self.stats.get("continue_declined", 0) + 1
-                key = CONTINUE_PICK.key()
-                CONTINUE_PICK.pressed(key)
-                return {"tap": key}
+                scr = continue_screen(self.m)
+                self.stats.update(continue_ready=scr["continue_ready"], continue_cursor=scr["cursor"],
+                                  continue_state=scr["continue_state"])
+                key = step(scr)
+                if key:
+                    self.dead_tap = now
+                    counter = "continue_declined" if key == "cross" else "continue_select_presses"
+                    self.stats[counter] = self.stats.get(counter, 0) + 1
+                    return {"tap": key}
             return {"hold": set()}
         if snap.get("prompt") and not (self.combat is not None and self.combat.optional_prompt_blocked(snap)):  # a finisher / a grab: the engine presses it; the gun
             self.aiming_since = None                        # stays down between its presses (L1 would cancel it)
@@ -1836,6 +1879,9 @@ class Bot:
         egg_action=self._egg_action(p,snap,now)
         if egg_action is not None:
             return egg_action
+        live_weapon_action = self._live_weapon_action(p, snap, now)
+        if live_weapon_action is not None:
+            return live_weapon_action
         if self._control_state is not None and not snap.get('rotten_egg_only') \
                 and not (getattr(getattr(self,'mines',None),'cadence',None)
                          and self.mines.cadence.enabled and self.mines.cadence.only):
@@ -2692,6 +2738,80 @@ class Bot:
             self.bonus_skip[target["id"]] = now + STAGE_BAN_S
         self.route = None
         return True
+
+    def _live_weapon_action(self, p, snap, now):
+        """Use this bot's existing input owner, native pickup prompt and equip menu."""
+        from . import re5_live_weapon as L
+        state = self._control_state or {}
+        cfg = state.get('live_weapon') or {}
+        ad = getattr(self.m, 'adapter', None)
+        def current():
+            return cfg.get('controller_owner') == id(self) and L.current_request(state, cfg, ad)
+        def emit(action):
+            if current():
+                return action
+            self.inventory_live_weapon.reset()
+            return {'hold': set()}
+        self.stats['live_weapon_phase'] = cfg.get('phase', 'idle')
+        self.stats['live_weapon_reason'] = cfg.get('reason', '')
+        if not current():
+            self.inventory_live_weapon.reset()
+            return None
+        if snap.get('rotten_egg_only'):
+            cfg['reason'] = 'Waiting for the active egg-only controller to release weapon selection.'
+            return None
+        if p.get('ptr') != cfg.get('player') or snap.get('prompt') or snap.get('recovery_active') \
+                or self.healing is not None or self.inventory_heal.active:
+            return None
+        if L.native_item(self.m, p['ptr'], snap.get('inventory'), held=True):
+            return None
+        target = L.inventory_item(self.m, p['ptr'], snap.get('inventory'))
+        if target:
+            if target.get('hand'):
+                cfg['reason'] = 'Inventory selects the bow, but the native bow class/owner is unconfirmed.'
+                return emit({'hold': set()})
+            if any((e.get('hp') or 0) > 0 and math.dist(p['pos'], e['pos']) < 350.
+                   for e in snap.get('enemies') or ()):
+                cfg['reason'] = 'Bow inventory exists; waiting for a safe ordinary equip.'
+                return None
+            self.stats['phase'] = 'live_weapon_equip'
+            self.bonus_commitment.pause(now)
+            if re5_weapons.quick_key(target):
+                return emit(self._switch_weapon(target, now, 'live native bow request') or {'hold': set()})
+            return emit(self.inventory_live_weapon.tick(self.m, snap, target, now) or {'hold': set()})
+        if ad is not None:
+            L.queue_supply(ad)
+        if now - self.live_weapon_rows_at >= .4:
+            self.live_weapon_rows = L.rows(self.m, cfg.get('donor'))
+            self.live_weapon_rows_at = now
+        world = self.live_weapon_rows
+        candidates = [row for row in world if row['id'] == L.ITEM]
+        if not candidates:
+            return None
+        row = min(candidates, key=lambda v: math.dist(p['pos'], v['pos']))
+        if now - self.live_weapon_pickup_at < .7:
+            return emit({'hold': set()})
+        request = selected_prompt(self.m, include_item_pickups=True)
+        if L.pickup_request(self.m, request, row, cfg.get('donor')):
+            self.live_weapon_pickup_at = now
+            cfg['reason'] = 'Exact bow pickup pressed; waiting for game-created inventory and weapon.'
+            return emit({'tap': 'square'})
+        mesh = snap.get('nav')
+        if mesh is None or any((e.get('hp') or 0) > 0 and math.dist(p['pos'], e['pos']) < 350.
+                               for e in snap.get('enemies') or ()):
+            return None
+        hazards = [(v['pos'], 600.) for v in (snap.get('ground_mines') or {}).values()]
+        route = mesh.route_avoiding_hazards(p['pos'], row['pos'], hazards)
+        if not route or any((e.get('hp') or 0) > 0 and any(math.dist(e['pos'], point) < 350.
+                           for point in [p['pos']] + route) for e in snap.get('enemies') or ()):
+            return None
+        if math.dist(p['pos'], row['pos']) < 100.:
+            err = wrap(heading(row['pos'][0]-p['pos'][0], row['pos'][2]-p['pos'][2])-p['rot'])
+            return emit({'hold': self._turn(err, aiming=False)})
+        self.stats['phase'] = 'live_weapon_pickup'
+        self.plan_target = {'kind': 'item', 'id': row['handle'], 'pos': row['pos']}
+        return emit(self._follow(p, {'ptr': ('live_weapon', row['ptr']), 'pos': row['pos']}, mesh,
+                                snap.get('stage_prompt'), now, learn=False))
 
     def _egg_action(self,p,snap,now,*,for_square=False):
         """One input owner for requested egg supply/equip and live-off gun restore."""

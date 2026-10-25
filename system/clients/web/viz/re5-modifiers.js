@@ -49,7 +49,7 @@
   }
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
-    const known = op === "random_weapon" || op === "select_weapon" || DEFINITIONS.some(row => row.op === op);
+    const known = op === "random_weapon" || op === "select_weapon" || op === "live_weapon" || DEFINITIONS.some(row => row.op === op);
     return { available: cap?.available === true,
       reason: cap?.reason || (!cap && known ? "Worker update pending; this control is unavailable." : "") };
   }
@@ -67,6 +67,21 @@
     if (definition.op !== "kill_time") return status?.[definition.field];
     const raw = status?.kill_time_range;
     return (typeof raw === "number" || typeof raw === "string" && /^\d+(?:\.\d+)?$/.test(raw)) ? Number(raw) : null;
+  }
+  function liveWeaponMessage(status) {
+    const request = status?.live_weapon;
+    if (!request) return capability(status, "live_weapon").reason || "Read the current live weapon request.";
+    if (request.restoration_pending) return request.reason || "Cancellation pending: restoring the unconsumed pickup.";
+    if (request.phase === "equipped" && request.verified === true) return "Longbow equipped and confirmed in this round.";
+    if (request.phase === "cancelled") return request.reason || "Live longbow request cancelled.";
+    if (request.phase === "unsupported") return request.reason || "Live replacement is unavailable for this game build.";
+    if (request.phase === "inventory_present") return "Longbow inventory entry present; waiting for its weapon model and confirmed equip.";
+    if (request.phase === "native_created") return "Longbow weapon created; waiting for confirmed equip.";
+    return request.reason || "Longbow requested for this round. Waiting for a safe pickup; the weapon has not changed yet.";
+  }
+  function liveRequestPending(request) {
+    return request && (request.active || request.restoration_pending
+      || ["pending", "donor", "inventory_present", "native_created"].includes(request.phase));
   }
   function rows(state) {
     return DEFINITIONS.map(def => {
@@ -132,12 +147,20 @@
       + (() => {                                    // any weapon in the game as the main gun (or the only one), next round
         const all = Array.isArray(state.status?.all_weapons) ? state.status.all_weapons : [];
         const ov = state.status?.weapon_override;
-        return `<label>Any weapon (replaces the main gun)<select data-re5-any-weapon aria-label="Any weapon">`
+        return `<label>Next-round weapon<select data-re5-any-weapon aria-label="Any weapon">`
           + `<option value="auto" ${!ov ? "selected" : ""}>The game's loadout</option>`
           + all.map(w => `<option value="${w.item}" ${ov?.item === w.item ? "selected" : ""}>${ESC(w.weapon)}</option>`).join("")
           + `</select></label><label><input type="checkbox" data-re5-any-only ${ov?.only ? "checked" : ""}> Only weapon (every gun slot, e.g. bow-only rounds)</label>`
           + `<p class="re5-mod-sub">${ESC(ov ? `${ov.weapon}${ov.only ? " as the only weapon" : " as the main gun"} from the next round.` : "Pick any RE5 weapon; it is given to every character from the next round.")}</p>`;
       })() + `</fieldset>`;
+    const liveCap = capability(state.status, "live_weapon"), liveRequest = state.status?.live_weapon;
+    const liveBusy = state.busy || state.pending || state.weaponPending || state.stale;
+    const livePending = liveRequestPending(liveRequest);
+    const liveControls = `<fieldset class="re5-mine-controls"><legend>Live longbow</legend>`
+      + `<button class="act" type="button" data-re5-live-bow ${liveBusy || livePending || !liveCap.available ? "disabled" : ""}>Equip longbow in this round</button>`
+      + `<button class="act" type="button" data-re5-live-cancel ${liveBusy || !livePending ? "disabled" : ""}>Cancel request</button>`
+      + `<p class="re5-mod-sub" role="status">${ESC(state.stale ? "Live weapon status unavailable; refresh to verify." : liveWeaponMessage(state.status))}</p>`
+      + `<small>Uses a safe pickup to create and equip the bow while playing. The panel confirms when the bow is equipped.</small></fieldset>`;
     const mine = state.status?.mine_settings, mineCap = capability(state.status, "mines");
     const eggOn = state.status?.rotten_egg_only === true;
     const eggCap = capability(state.status, "rotten_egg_only");
@@ -177,7 +200,7 @@
       + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
-      + teamControls + controls + rotationControls + eggControls + mineControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -319,6 +342,27 @@
       } catch (error) { state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
+    async function setLiveWeapon(enabled) {
+      if (typeof enabled !== "boolean" || state.busy || state.pending || state.weaponPending || state.stale || disposed
+          || (enabled ? !capability(state.status, "live_weapon").available : !liveRequestPending(state.status?.live_weapon))) return;
+      state.busy = true; state.error = false;
+      state.message = enabled ? "Requesting a longbow in this round..." : "Cancelling the live longbow request..."; paint();
+      try {
+        await preflight();
+        const result = await job("live_weapon", { on: enabled, weapon: 15 });
+        await read();
+        const request = state.status.live_weapon;
+        const requestId = result.request?.id || result.live_weapon?.id;
+        if (requestId && request?.id !== requestId) throw new Error("Live weapon request changed; refresh before trying again.");
+        if (!request || ["unsupported", "failed", "rejected"].includes(request.phase)
+            || enabled && result.queued !== true && !(request.phase === "equipped" && request.verified === true))
+          throw new Error(request?.reason || result.reason || "The live weapon request was not accepted.");
+        if (!enabled && (request.phase !== "cancelled" || request.restoration_pending))
+          throw new Error(request.reason || "Cancellation is pending; refresh to check the source pickup.");
+        state.message = liveWeaponMessage(state.status);
+      } catch (error) { state.error = true; state.message = error.message; }
+      finally { state.busy = false; paint(); }
+    }
     async function setMines(interval, enabled, only) {
       if (state.busy || state.pending || state.stale || disposed || !capability(state.status, "mines").available) return;
       interval = Number(interval);
@@ -421,7 +465,7 @@
       } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMultiplier, setMines, setAnyWeapon, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    return { refresh, change, setMultiplier, setMines, setAnyWeapon, setLiveWeapon, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -482,6 +526,8 @@
       if (event.target.matches?.("[data-re5-mine-interval]")) host.querySelector("[data-re5-mine-output]").textContent = event.target.value + " seconds";
     };
     host.onclick = event => {
+      if (event.target.closest?.("[data-re5-live-bow]") && !event.target.disabled) ctl.setLiveWeapon(true);
+      if (event.target.closest?.("[data-re5-live-cancel]") && !event.target.disabled) ctl.setLiveWeapon(false);
       if (event.target.closest?.("[data-re5-team-clear-route]") && !event.target.disabled) ctl.setTeam({ selected_route_id: null });
       if (event.target.closest?.("[data-re5-team-prepare]") && !event.target.disabled) ctl.preparePlayer2();
       if (event.target.closest?.("[data-re5-team-save]") && !event.target.disabled) ctl.setTeam({
@@ -494,6 +540,14 @@
       if (event.target.closest?.("[data-re5-refresh]") && !event.target.disabled) ctl.refresh();
       if (event.target.closest?.("[data-re5-random]") && !event.target.disabled) ctl.change("random_weapon");
     };
+    const livePoll = setInterval(() => {
+      const state = ctl.state();
+      if (!state.busy && !state.pending && !state.stale
+          && liveRequestPending(state.status?.live_weapon)) ctl.refresh();
+    }, 2500);
+    livePoll.unref?.();
+    const stop = ctl.stop;
+    ctl.stop = () => { clearInterval(livePoll); stop(); };
     ctl.refresh();
     return ctl;
   }

@@ -5,6 +5,23 @@ gBox can discover extracted PS4 game folders and launch them with its Windows x6
 QtLauncher is optional. Opening an emulator window is reported separately from
 verified gameplay. This does not establish compatibility for every PS4 game.
 
+The requested game host is **i9-NUC**, with lilspark as the gBox control and
+streaming host. The stopped local RE5 package copy and incomplete extraction on
+JAYBUILTFINALE were removed; the original NAS package remains intact. shadPS4
+has not booted this RE5 package yet. The i9 worker must be online and provisioned
+before that attempt. The Spark's ARM CPU cannot run this Windows x64 adapter.
+
+The shared configuration sets `preferred_launch_workers = { ps4 = "i9-NUC" }`.
+Automatic PS4 Play targets that online worker even when requested from another
+PC. If i9-NUC is offline, the launch returns an explanatory error without queuing
+work on JAYBUILTFINALE. An explicit node selection overrides this preference.
+
+The existing remote Windows view is an 8 fps desktop stream without Windows
+game audio, and its native remote view lacks the normal gameplay input binding.
+It is not yet a fluid remote PS4 playback path. Higher-rate window video,
+game audio and remote input need implementation and live validation before
+claiming full playback from lilspark.
+
 ## Prepared on JAYBUILTFINALE (2026-10-25)
 
 The official portable core 0.20.0 is installed at

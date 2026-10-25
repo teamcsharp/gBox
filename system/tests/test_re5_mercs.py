@@ -158,11 +158,12 @@ def test_death_presses_are_not_deaths_or_clock_bonuses(monkeypatch):
     now = [10.0]
     bot = R.Bot(clock=lambda: now[0], stats={"rounds": 1})
     bot.tick(R.snapshot(with_bonuses(world(timer=60.0), [(0.0, 13.0, 1200.0), (0.0, 13.0, 1800.0)])))
-    R.CONTINUE_PICK.selected_no = False
-    for t,key in ((12.0,'dright'), (14.0,'cross'), (16.0,'cross')):
+    for t,choice,key in ((12.0,0,'dright'), (14.0,1,'cross'), (16.0,1,'cross')):
         now[0] = t
-        assert bot.tick(R.snapshot(world(hp=0, timer=59.0))) == {"tap": key}
-    assert bot.stats["deaths"] == 1 and bot.stats["continue_declined"] == 3
+        bot.m = with_continue(world(hp=0, timer=59.0), choice=choice)
+        assert bot.tick(R.snapshot(bot.m)) == {"tap": key}
+    assert bot.stats["deaths"] == 1 and bot.stats["continue_declined"] == 2
+    assert bot.stats["continue_select_presses"] == 1
     assert bot.stats.get("deaths_continued", 0) == 0
     now[0] = 20.0
     bot.tick(R.snapshot(with_bonuses(world(timer=120.0), [(0.0, 13.0, 1200.0)])))
@@ -301,10 +302,10 @@ def test_aims_on_the_cameras_look_ray_when_there_is_one():
 
 
 def test_declines_continue_after_you_are_dead_and_walks_the_menus():
-    R.CONTINUE_PICK.selected_no = False
-    bot = R.Bot(clock=lambda: 10.0)
-    assert bot.tick(R.snapshot(world(hp=0))) == {"tap": "dright"}
-    assert bot.tick(R.snapshot(world(hp=0))) == {"hold": set()}      # not again within 1.5 s
+    mem = with_continue(world(hp=0))
+    bot = R.Bot(mem, clock=lambda: 10.0)
+    assert bot.tick(R.snapshot(mem)) == {"tap": "dright"}
+    assert bot.tick(R.snapshot(mem)) == {"hold": set()}      # not again within 1.5 s
     assert [R.menu_key(n) for n in range(4)] == ["start", "cross", "start", "cross"]
 
 
@@ -332,6 +333,13 @@ def between_rounds(names):
     return with_ui(mem, names)
 
 
+def with_continue(mem, *, state=2, choice=0, blocked=0):
+    with_ui(mem, [("uIdGameover00", {0x14: state, 0x178: choice, 0x1D4: blocked})])
+    for address, code in R.CONTINUE_CODE:
+        mem.put(address, code)
+    return mem
+
+
 def test_the_screens_between_rounds_come_from_the_interface_units():
     assert R.screen(between_rounds(["uIdStartUp21", "uIdTitle00", "uIdTopMenu00"]))["where"] == "select_stage"
     assert R.screen(between_rounds(["uIdStartUp22", "uIdTitle02", "uIdTopMenu00"]))["where"] == "select_player"
@@ -352,10 +360,11 @@ def test_it_presses_only_on_the_reunion_screens():
     assert R.step({"where": "select_player", "cursor": 2, "target": 6}) == "dright"
     assert R.step({"where": "select_player", "cursor": 7, "target": 6}) == "dleft"
     assert R.step({"where": "select_player"}) is None                                       # no cursor read: wait
-    R.CONTINUE_PICK.selected_no = False
-    assert R.step({"where": "dead"}) == "dright"
+    assert R.step({"where": "dead"}) is None
     R.pressed({'where':'dead'}, 'dright')
-    assert R.step({'where':'dead'}) == 'cross'
+    assert R.step({'where':'dead'}) is None
+    assert R.step({'where':'dead', 'continue_ready':True, 'cursor':0}) == 'dright'
+    assert R.step({'where':'dead', 'continue_ready':True, 'cursor':1}) == 'cross'
     assert R.ALERTS[9] == 'alert_ok'
     for where in ("menu", "loading", "unknown", "playing"):
         assert R.step({"where": where}) is None, where                       # never a press on the title's menus

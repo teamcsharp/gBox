@@ -231,6 +231,7 @@ class HermesConfig(BaseModel):
 
 class Config(BaseModel):
     sync_mod_builds_on_startup: bool = False  # opt-in upload of local builds to this worker's control plane
+    preferred_launch_workers: dict[str, str] = Field(default_factory=dict)  # platform -> worker name/ID for auto Play; no fallback
     gameplay_memory_enabled: bool = True  # operator gameplay journal and native capture on supported new launches
     gameplay_native_replay_enabled: bool = False  # experimental: BSV can change native load-state behavior
     data_dir: Path = Path(__file__).resolve().parents[1] / "gbox-data"   # never the working directory's (a script run
@@ -366,6 +367,7 @@ api_host = "127.0.0.1"            # bind 0.0.0.0 only on a trusted LAN; token au
 api_port = 8765
 cache_limit_gb = 20
 sync_mod_builds_on_startup = false # local builds stay here; explicit build downloads/exports still work
+# preferred_launch_workers = { ps4 = "i9-NUC" } # auto Play requires this PC online; explicit node choices override it
 granted_permissions = ["read", "execute", "stage", "network"]   # add memory_write / file_mutation / binary_patch explicitly
 # smb_credentials = "/etc/nas.cred"     # linux: username=/password= file used for SMB mounts
 # blender_search = ["C:/Users/me/Desktop/Blender Builds/Builds"]

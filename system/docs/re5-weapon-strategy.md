@@ -32,6 +32,36 @@ Each mod now starts from the current live weapon tables and changes only its own
 restored original firing intervals and damage could restore original firing speeds. Saved originals still govern
 scaling and restoration; combined-mod regression tests cover repeated application and independent removal.
 
+## Live longbow requests (2026-10-25)
+
+The live longbow control is separate from **Next-round weapon**. It requests a
+bow during the existing round, using the game's native pickup constructor and
+ordinary inventory/equip controls. It requires this exact PS3 build, a current
+solo bot, a free inventory grid, and a safely reachable ownerless ammo pickup.
+It keeps existing carried weapons. It is not a general arbitrary-item grant or
+an instantaneous replacement of every inventory slot.
+
+The source conversion changes only the validated pickup's serialized item and
+quantity. Native `9D417C/9D693C -> 9D6520 -> 151540` creates the item/weapon;
+the longbow registry key is `0x07010F00`, with weapon vtable `0x016289F8`.
+The controller then uses the real D-pad grid or inventory menu. It never
+relabels a carried gun, replaces its owner pointer, or asserts that a saved
+request is an equipped weapon. Completion needs fresh native bow class,
+player-owner and in-hand readback. Rendered appearance and actual arrow cadence
+still require live observation. Other live weapon IDs remain unsupported.
+
+The separate next-round override now covers all three verified preset banks,
+including original Mercenaries, and survives the randomizer's stock-loadout
+choice. Death rotation waits for the actual input-ready Continue dialog and
+reads its Yes/No selection; it confirms only observed No. Sending Right during
+the death animation no longer counts as selecting No.
+
+During the active-session investigation, the RE5 process remained alive but
+its native round and HUD clocks stopped near 88.6 seconds. The bot reported a
+lost/stalled round and stopped. No live bow source conversion was applied to
+that stalled process. Static constructor signatures and synthetic tests do not
+establish successful live equip or hyperspeed bow playback.
+
 ## Research checked 2026-10-21
 
 [Berserker's Reunion guide](https://gamefaqs.gamespot.com/ps3/980166-resident-evil-5-gold-edition/faqs/59792)

@@ -3634,7 +3634,7 @@ def create_app(config: Config) -> FastAPI:
     @app.post("/api/games/{gid}/launch")
     def launch(gid: str, node: str = "auto", debug: bool = False, mod: str = "", swap: bool = False,
                autoplay: bool = False, actor=Depends(auth), origin=Depends(request_origin)):
-        """Launch on the requested node; automatic PS2/PS3 play uses Windows, other cores prefer Linux.
+        """Launch on the requested node; configured platform workers take precedence for automatic play.
         debug=true: on the Spark with a full-debugger emulator (Dolphin / mGBA / DuckStation / MAME) where one exists.
         With a mod and the game already running, the mod is swapped into that session (same PC, moment kept) only
         when the caller names that session's PC (worker id, name or OS) as the node or asks for it (swap=true);
@@ -3649,6 +3649,15 @@ def create_app(config: Config) -> FastAPI:
             if debug or node == "linux":
                 raise HTTPException(409, "shadPS4 currently runs on a Windows x64 worker; use debug=false. "
                                     "RAM and disassembly remain available through Inspect.")
+        preferred = config.preferred_launch_workers.get(e.get("platform"), "").strip()
+        if node == "auto" and not debug and preferred:
+            target = next((w for w in workers() if w["online"]
+                           and (w["id"] == preferred or w["name"].casefold() == preferred.casefold())), None)
+            if target is None:
+                raise HTTPException(409, f"Preferred {e.get('platform', 'game').upper()} launch worker "
+                                    f"'{preferred}' is offline or unavailable. Bring it online or choose another "
+                                    "node explicitly; automatic play will not use a different PC.")
+            node = target["id"]
         if node in ("idle", "other"):
             if debug:
                 raise HTTPException(409, "Full debugger mode currently requires the Spark; use debug=false on the other PC")

@@ -7,6 +7,7 @@ api_port = 8765
 public_url = "http://10.89.1.246:8765"
 cache_limit_gb = 200
 sync_mod_builds_on_startup = false # do not send local game builds to the control plane automatically
+preferred_launch_workers = { ps4 = "i9-NUC" } # automatic PS4 Play stays on this PC; choose another node explicitly to override
 stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
 cache_dirs = { linux = "/home/ehm_eckx/gBox_alt/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified); the Spark: the NVMe hot tier
 cache_limits_gb = { linux = 150, windows = 250 }   # ceiling for staged library copies on that disk (LRU eviction; never mods, bases, libraries or cold data)

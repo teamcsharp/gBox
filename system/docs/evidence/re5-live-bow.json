@@ -1,0 +1,42 @@
+{
+  "investigated": "2026-10-25",
+  "build": "PS3 BLUS30491 app 01.01",
+  "analysis_binary_sha256": "d901458f13beeb3d5bb0523eaac9c60102863a67f69b20905d8fa0c74e8be293",
+  "analysis_project": "Spark:gbox-data/analysis/re5-egg-ballistics-navigation/RE5-egg-ballistics-navigation.gpr",
+  "analysis_artifacts": "Spark:gbox-data/analysis/re5-live-bow-audit/",
+  "native_pickup_path": ["0x008373E0", "0x001AFEF8", "0x001AEE90", "0x009D417C", "0x009D693C", "0x009D6520", "0x00151540"],
+  "source": {
+    "schema": "Ownerless spare-ammo actor cItemSetInfo: actor+0x1C36 BE u16 ID, +0x1C38 BE u32 count",
+    "mutation": "One guarded six-byte source write to ID0x10F/count1. Carried inventory IDs, existing weapon pointers, ownership and models are never written.",
+    "guards": "Exact build/native constructor signatures; actor class, handle, source class, collision-volume identity/enabled flag, ownership, stable bounded item list, current player, free grid slot, supported route, observed enemy/mine margins.",
+    "cancellation": "Only an unchanged unconsumed source with matching actor identity is restored. Unknown or changing item lists retain the donor and report restoration_pending. Already-created native inventory is retained. A new player or round ends the request; bot shutdown schedules guarded cleanup.",
+    "scope": "Adapter/process identity, PID, process generation, input-controller owner and current player fence the request. The resolved Linux guest PID/base or Windows base/process handle also must match, including a fresh guest-resolution check immediately before writes. Pending creation expires after 120 seconds. Old-process source writes are forbidden. Newer operator weapon choices supersede the request."
+  },
+  "factory": {
+    "r2": "0x0171C590",
+    "module_toc": "[0x01714EE0] = 0x016A4AB0",
+    "jump_table": "[module_toc-0x7F74] = 0x009D67AC",
+    "bow_branch": "[0x009D67B8] signed -0x4C -> 0x009D6760",
+    "egg_branch": "[0x009D6854] signed -0x4C -> 0x009D6760",
+    "shared_branch": "Calls0x00151540(kind7,itemID,variant0); the factory resolves the class registration before creating its unit.",
+    "registry": "DTI0x018704A4: name pointer+4=0x01423AD0 (uWp0f), class key+0x20=0x07010F00",
+    "weapon_vtable": "0x016289F8",
+    "get_dti": "Vtable+0x14 -> OPD0x016EFCC8 -> code0x010F1FD4, r2=0x0171C590",
+    "completion": "The native cItem must be active, ID0x10F, loaded and in hand; its real weapon pointer must have the bow vtable and owner+0x111C matching the current player. Re-read both owners and inventory before reporting equipped. This proves native class/owner, not rendered model residency.",
+    "inventory_layout": "The parser record starts four bytes before native cItem. Native cItem ID+4, count+8, active+0x29 and weapon+0x2C correspond to parser record+8, +0xC, +0x2D and +0x30; parser stride is 0x30."
+  },
+  "runtime_contract": {
+    "tool": "re5_mods op=live_weapon weapon=15 on=true; on=false cancels",
+    "phases": ["pending", "donor", "inventory_present", "native_created", "equipped", "cancelled", "rejected", "unsupported"],
+    "completion": "queued is never applied. inventory_present only confirms cItem; native_created requires the bow weapon class/owner. status.live_weapon.verified/completed are true only with current native equipped-bow evidence and a fresh active input controller.",
+    "input_owner": "Existing RE5 bot handles exact native pickup prompt, supported-floor navigation, quick-slot input or verified ordinary inventory-menu equip.",
+    "other_weapons": "Explicitly unsupported by this live supply operation; the separate next-round template control remains available.",
+    "no_restart": "The operation does not quit, restart, end the round, relaunch the emulator or write boot templates."
+  },
+  "limits": {
+    "donor": "No spare ownerless ammo or no free inventory slot leaves the request pending; no native give-item mailbox exists in this RE5 implementation.",
+    "live_acceptance": "Static native factory path and live signatures investigated; successful active-round bow pickup/model/equip acceptance must be recorded separately. Unit tests do not establish that runtime outcome.",
+    "speed": "Existing fire-rate table/timer scaling is not measured bow shots per second. The native animation accelerator is verified for magnums, not the longbow.",
+    "only_weapon": "This operation equips a native bow and preserves other carried items. It does not delete other weapons."
+  }
+}

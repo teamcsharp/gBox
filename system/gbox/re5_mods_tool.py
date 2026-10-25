@@ -288,6 +288,17 @@ class RE5:
             st['all_weapons']=[{'item':k,'weapon':w.name,'family':w.family} for k,w in sorted(re5_weapons.WEAPONS.items())]
             st['weapon_override']=self.orig.get('weapon_override')
             st['capabilities']['weapon_override']={'available':True,'reason':'Loadout template; takes effect next round.'}
+            from .mercs.titles import re5_live_weapon
+            st['live_weapon'] = re5_live_weapon.status(self.orig)
+            try:
+                re5_live_weapon.validate(self)
+                live_ready = re5_live_weapon.controller_ready(self.orig) and re5_live_weapon.adapter_identity(self.ad) is not None
+                st['capabilities']['live_weapon'] = {'available': live_ready,
+                    'reason': 'Native longbow pickup and ordinary equip during this round; waits for a safe ammo pickup.'
+                    if live_ready else 'Waiting for a fresh active solo RE5 bot.'}
+            except (ValueError, OSError, struct.error):
+                st['capabilities']['live_weapon'] = {'available': False,
+                    'reason': 'Native longbow construction signatures are not verified.'}
             st["capabilities"]["mines"] = {"available": True, "reason": "Mine cadence; loadout takes effect next round."}
             st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
             st['capabilities']['rotten_egg_only']={'available':True,
@@ -730,8 +741,10 @@ def bullet_damage(g: RE5, mult) -> dict:
 
 def template_records(t: bytes):
     """[(offset, id word, count, position, in_hand, levels)] of every item record in the template image."""
+    if len(t) % TEMPLATE_BLOCK:
+        raise ValueError('loadout template bank is truncated')
     out = []
-    for b in range(TEMPLATE_BLOCKS):
+    for b in range(len(t) // TEMPLATE_BLOCK):
         for r in range(12):
             off = b * TEMPLATE_BLOCK + r * TEMPLATE_REC
             w = struct.unpack_from(">11I", t, off)
@@ -995,28 +1008,45 @@ def weapon_override(g: RE5, weapon=None, only: bool = False) -> dict:
     weapon equipped with it" / "rounds where everyone is using a bow as the only weapon and they are rapid firing it").
     Kept across rounds: loadout() honours it instead of drawing random guns."""
     from .mercs.titles import re5_weapons
+    from .mercs.titles import re5_mines
     verify_main_presets(g)
-    t0 = g.keep("template", lambda: g.rd(TEMPLATE, TEMPLATE_BLOCKS * TEMPLATE_BLOCK))
+    re5_mines.verify_original_presets(g)
+    banks = [(TEMPLATE, TEMPLATE_BLOCKS, "template"),
+             *((address, 10, f"mine_bank_{address:x}") for address in re5_mines.ORIGINAL_BANKS)]
+    originals = [(address, g.keep(key, lambda a=address, n=blocks: g.rd(a, n * TEMPLATE_BLOCK)))
+                 for address, blocks, key in banks]
+    if any(len(original) != blocks * TEMPLATE_BLOCK
+           for (_, blocks, _), (_, original) in zip(banks, originals)):
+        raise ValueError('loadout template bank size differs')
     if weapon in (None, "", "auto"):
-        g.orig.pop("weapon_override", None)
-        return {"weapon_override": None, "verified": g.wr(TEMPLATE, bytes(_with_spray(g, bytearray(t0)))),
+        ok = True
+        for address, original in originals:
+            data = _with_spray(g, bytearray(original)) if address == TEMPLATE else original
+            ok = g.wr(address, bytes(data)) and ok
+        if ok:
+            g.orig.pop("weapon_override", None)
+        return {"weapon_override": g.orig.get("weapon_override"), "verified": ok,
+                "effective_next_round": True,
                 "note": "the game's loadout from the next round start"}
     item = int(str(weapon), 0) if isinstance(weapon, str) else int(weapon)
     item &= 0xFF
     w = re5_weapons.WEAPONS.get(item)
     if w is None:
         raise ValueError(f"unknown RE5 weapon {item:#x}")
-    t = bytearray(t0)
-    changed = 0
-    for off, idw, _, _, in_hand, _ in template_records(t0):
-        if idw >> 8 != 1 or idw in KNIFE_IDS or not (only or in_hand):
-            continue
-        struct.pack_into(">I", t, off, 0x100 | item)
-        struct.pack_into(">I", t, off + 7 * 4, 0)          # upgrade levels reset: none indexes past the new table
-        changed += 1
-    ok = g.wr(TEMPLATE, bytes(_with_spray(g, t)))
-    g.orig["weapon_override"] = {"item": item, "weapon": w.name, "only": bool(only)}
-    return {"weapon_override": g.orig["weapon_override"], "records": changed, "verified": ok,
+    changed, ok = 0, True
+    for address, original in originals:
+        t = bytearray(original)
+        for off, idw, _, _, in_hand, _ in template_records(original):
+            if idw >> 8 != 1 or idw in KNIFE_IDS or not (only or in_hand):
+                continue
+            struct.pack_into(">I", t, off, 0x100 | item)
+            struct.pack_into(">I", t, off + 7 * 4, 0)      # upgrade levels reset: none indexes past the new table
+            changed += 1
+        ok = g.wr(address, bytes(_with_spray(g, t) if address == TEMPLATE else t)) and ok
+    if ok:
+        g.orig["weapon_override"] = {"item": item, "weapon": w.name, "only": bool(only)}
+    return {"weapon_override": g.orig.get("weapon_override"), "records": changed, "verified": ok,
+            "effective_next_round": True, "template_banks": len(banks),
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
 
 
@@ -1070,10 +1100,12 @@ def random_cheats(g: RE5, seed=None) -> dict:
         result = run(g.ad, op, picked[field] if op != "infinite_ammo" else None, g=g)
         out[op] = result["verified"]
         picked[field] = result["status"][field]
-    if picked["loadout"]:
+    if picked["loadout"] or g.orig.get("weapon_override"):
         lo = loadout(g, seed=rng.random())
         out["loadout"] = lo["verified"]
         picked["loadout_barry"] = lo.get("barry")
+        if lo.get("weapon_override"):
+            picked["weapon_override"] = lo["weapon_override"]
     else:
         out["loadout"] = loadout(g, on=False)["verified"]
     out["weapon_replacement"] = replace_long_guns(g, rng.random())["verified"]
@@ -1177,6 +1209,9 @@ def time_bonus_multiplier(g: RE5, mult) -> dict:
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    if o.get('live_weapon'):
+        from .mercs.titles import re5_live_weapon
+        out['live_weapon'] = re5_live_weapon.configure(g, on=False)['verified']
     if o.get('rotten_eggs',{}).get('on'):
         from .mercs.titles import re5_eggs
         out['rotten_eggs']=re5_eggs.configure(g,False)['verified']
@@ -1292,6 +1327,11 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(loadout(g, extra.get("weapons"), extra.get("seed"), on))
     elif op == "weapon_override":
         res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
+    elif op == 'live_weapon':
+        from .mercs.titles import re5_live_weapon
+        res.update(re5_live_weapon.configure(g, extra.get('weapon'), on))
+        if res.get('queued'):
+            re5_live_weapon.queue_supply(g.ad)
     elif op == "replace_rockets":
         res.update(replace_rockets(g, extra.get("seed")))
     elif op == "replace_long_guns":
