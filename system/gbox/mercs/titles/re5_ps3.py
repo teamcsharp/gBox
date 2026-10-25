@@ -1511,6 +1511,12 @@ class Bot:
         target = self.route[0] if self.route and not isinstance(self.route[0],re5_nav.Traversal) \
             else (self.plan_target or {}).get('pos') or toward
         if abs(target[1]-pos[1])>60.:target=toward
+        # #3451: when plan_target is None the fallback target equals `toward`,
+        # so detour(pos, target, ...) is a zero-length search that returns
+        # None, leaving the player holding position until the 16 s bonus_skip
+        # re-tries the same walk — "pushed into the same wall again and again".
+        # Guard the detour call: only run A* when the goal is meaningfully
+        # different from the player position.
         eligible = 'lup' in keys and not keys.intersection({'l1','r1','l2'}) and not act.get('tap')
         if eligible and motion['effort']>=1.4:
             context=self.nav_learning.obstruction(mesh,pos,target,'stationary commanded movement across decisions',
@@ -1540,7 +1546,12 @@ class Bot:
                     if node is None:return None
                     height=mesh._height(node,point[0],point[2])
                     return (point[0],height,point[2]) if height is not None else None
-                route=obstacle_map.detour(pos,tuple(target),blocks,project=project,supported=supported,hazard_clear=safe)
+                # #3451: skip the degenerate zero-length case where target
+                # fell back to `toward` (plan_target was None at this moment).
+                if math.dist(pos, target) >= 10.:
+                    route=obstacle_map.detour(pos,tuple(target),blocks,project=project,supported=supported,hazard_clear=safe)
+                else:
+                    route=None
                 if route:
                     recovery=self._blocked_detour={'owner':owner,'goal':goal,'until':now+8.,'route':route}
                     self.stats['local_obstacle_detours']=self.stats.get('local_obstacle_detours',0)+1
