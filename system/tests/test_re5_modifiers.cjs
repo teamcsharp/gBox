@@ -8,7 +8,7 @@ const BD = require('../clients/web/viz/bot-demo.js');
 const CONTINUITY = require('../clients/web/viz/session-continuity.js');
 const SESSION = { session_id: 'worker-launch', game_id: M.GAME, state: 'running', adapter: 'rpcs3' };
 const BASE = { unlimited_health: false, infinite_ammo: true, fire_rate_x: 1, turn_speed_x: 1,
-  bullet_damage_x: 1, kill_time_on: false, kill_time_range: '3', in_hand: { weapon: 'M500' }, capabilities: Object.fromEntries(
+  bullet_damage_x: 1, kill_time_on: false, kill_time_range: '3', qte_assist: { enabled: false }, in_hand: { weapon: 'M500' }, capabilities: Object.fromEntries(
     [...M.DEFINITIONS.map(row => row.op), 'random_weapon'].map(op => [op, { available: true }])) };
 function rig() {
   const out = { status: structuredClone(BASE), calls: [], paints: [], sessions: [SESSION], active: [], clock: 0 };
@@ -26,7 +26,8 @@ function rig() {
     } else if (out.command) result = await out.command(body.input);
     else {
       const definition = M.DEFINITIONS.find(d => d.op === op);
-      out.status[definition.field] = definition.multiplier ? on ? multiplier : 1 : on;
+      if (op === 'instant_qte') out.status.qte_assist = { enabled: on, phase: 'waiting', completed: false };
+      else out.status[definition.field] = definition.multiplier ? on ? multiplier : 1 : on;
       if (op === 'kill_time' && multiplier !== undefined) out.status.kill_time_range = String(multiplier);
       result = { verified: true };
     }
@@ -167,6 +168,26 @@ test('old workers cannot receive a live weapon command and reasons are escaped',
   assert.match(M.html(r.control.state()), /&#60;img onerror=bad&#62;/);
 });
 
+test('native QTE setting requires capability and never reports a pending event as passed', async () => {
+  const r = rig();
+  r.command = async input => {
+    assert.equal(input.op, 'instant_qte');
+    r.status.qte_assist = { enabled: input.on, phase: 'pending', completed: false,
+      reason: 'Waiting for the native event outcome.' };
+    return { verified: true, qte_assist: structuredClone(r.status.qte_assist) };
+  };
+  await r.control.refresh(); await r.control.change('instant_qte', true);
+  assert.equal(r.control.state().error, false);
+  assert.equal(r.commands()[0].body.input.session_id, SESSION.session_id);
+  assert.match(M.html(r.control.state()), /Wiggle and accumulation events/);
+  assert.match(M.html(r.control.state()), /Waiting for the native event outcome/);
+  assert.doesNotMatch(r.control.state().message, /QTE (passed|completed)/i);
+  r.status.qte_assist = undefined;
+  r.status.capabilities.instant_qte = { available: false, reason: 'Worker update pending.' };
+  await r.control.refresh(); await r.control.change('instant_qte', true);
+  assert.equal(r.commands().length, 1);
+});
+
 test('next Mercenaries selection retains actual mode costume and stage', async () => {
   const r = rig();
   r.status.capabilities.mercs_select = { available: true };
@@ -289,6 +310,7 @@ test('ended or replaced sessions never receive a mutation', async () => {
 test('server capability blocks a supported control; unimplemented hooks never send jobs', async () => {
   const r = rig();
   r.status.capabilities.unlimited_health = { available: false, reason: 'Signature unavailable' };
+  r.status.capabilities.instant_qte = { available: false, reason: 'Build not verified.' };
   await r.control.refresh();
   for (const op of ['unlimited_health', 'aimbot', 'instant_qte', 'auto_parry', 'knife_knockback', 'write_memory'])
     await r.control.change(op, true);
@@ -301,7 +323,7 @@ test('server capability blocks a supported control; unimplemented hooks never se
 
 test('unknown state and escaped server reasons cannot become checked working controls', () => {
   const html = M.html({ status: { capabilities: { random_weapon: { available: false, reason: '<script>bad</script>' } } }, stale: false });
-  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 7);   // six modifiers + the infinite first aid spray
+  assert.equal((html.match(/aria-checked="mixed"/g) || []).length, 8);   // existing modifiers plus native QTE assistance
   assert.match(html, /&#60;script&#62;bad&#60;\/script&#62;/);
   assert.doesNotMatch(html, /<script>bad/);
 });

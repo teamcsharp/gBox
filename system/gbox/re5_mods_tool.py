@@ -8,6 +8,8 @@ package through run() at round start, gbox/mercs_bot.py):
   turn_speed multiplier=N         the stick turns the player N times faster, aimed and not (2 = default, "max" = 10)
   fire_rate multiplier=N          scales firing tables and the re-fire timer (80); measured shot rate may differ
   infinite_ammo on=true|false     no weapon spends rounds (the HUD shows the infinity sign; the Gatling's own flag)
+  instant_qte on=true|false       native progress assistance for verified button-accumulation / stick-wiggle events;
+                                  other QTE modes keep ordinary input automation, with outcome readback separate
   unlimited_health on=true|false full living HP each snapshot, plus exact-signature-verified Muteki hit immunity
   infinite_spray on=true|false    an infinite First Aid Spray (alias auto_first_aid): every character's loadout template
                                   gets a spray record (the game builds the item at the round start), and when the bot has
@@ -103,7 +105,7 @@ POWERFUL = {0x11B: "S&W M500", 0x11A: "Lightning Hawk", 0x119: "Hydra", 0x115: "
 MAGNUMS = (0x10B, 0x11A, 0x11B)
 REPLACE_WITH_MAGNUM = frozenset({0x10D, 0x105, 0x11C, 0x120})
 OPERATOR_SETTINGS = frozenset({"fire_rate", "turn_speed", "bullet_damage", "infinite_ammo", "unlimited_health", "kill_time",
-                               "infinite_spray"})
+                               "infinite_spray", "instant_qte"})
 KNIFE_IDS = {0x101, 0x10E, 0x114, 0x123, 0x124, 0x100}
 # infinite_spray: the First Aid Spray is item word 0x304 (type 3 = recovery items; the herbs are 0x305 / 0x307 / 0x309:
 # the same set as mercs/titles/re5_inventory_health.HEAL_IDS, which the bot heals with). An inventory slot (0x30 bytes
@@ -303,7 +305,10 @@ class RE5:
             st["capabilities"]["mercs_select"] = {"available": True, "reason": "Choose the next Mercenaries round."}
             st['capabilities']['rotten_egg_only']={'available':True,
                 'reason':'Native egg pickup/loadout then ordinary equip; active only after actual weapon confirmation.'}
-            for op in ("aimbot", "instant_qte", "auto_parry", "knife_knockback"):
+            from .mercs.titles import re5_qte
+            st['qte_assist'] = re5_qte.status(self.orig)
+            st['capabilities']['instant_qte'] = re5_qte.capability(self)
+            for op in ("aimbot", "auto_parry", "knife_knockback"):
                 st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
             st["operator_overrides"] = {k: dict(v) for k, v in self.orig.get("operator_overrides", {}).items()}
             st["random_weapon_request"] = re5_controls.request_status(self.orig)
@@ -1209,6 +1214,9 @@ def time_bonus_multiplier(g: RE5, mult) -> dict:
 def revert_all(g: RE5) -> dict:
     out = {}
     o = g.orig
+    if o.get('qte_assist'):
+        from .mercs.titles import re5_qte
+        out['instant_qte'] = re5_qte.configure(g, False)['verified']
     if o.get('live_weapon'):
         from .mercs.titles import re5_live_weapon
         out['live_weapon'] = re5_live_weapon.configure(g, on=False)['verified']
@@ -1275,7 +1283,8 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "infinite_life": "unlimited_health", "time_per_kill": "kill_time", "kill_bonus": "kill_time",
           "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier",
           "merc_time_bonus": "time_bonus_multiplier", "auto_first_aid": "infinite_spray", "first_aid": "infinite_spray",
-          "first_aid_spray": "infinite_spray", "infinite_first_aid": "infinite_spray"}.get(op, op)
+          "first_aid_spray": "infinite_spray", "infinite_first_aid": "infinite_spray",
+          "auto_qte": "instant_qte", "qte_assist": "instant_qte"}.get(op, op)
     operator = bool(extra.get("operator"))
     override = None
     if not operator and op in OPERATOR_SETTINGS:
@@ -1321,6 +1330,9 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(unlimited_health(g, on))
     elif op == "infinite_spray":
         res.update(infinite_spray(g, on))
+    elif op == 'instant_qte':
+        from .mercs.titles import re5_qte
+        res.update(re5_qte.configure(g, on))
     elif op == "bullet_damage":
         res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
     elif op == "loadout":

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ..driver import Driver
 from .. import obstacle_map
-from . import re5_combat, re5_motion, re5_nav, re5_weapons
+from . import re5_aim_geometry, re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -337,7 +337,11 @@ def snapshot(m) -> dict:
                     continue
                 pos = struct.unpack(">3f", m.rd(e + E_POS, 12))
                 hp, hp_max = struct.unpack(">hh", m.rd(e + E_HP, 4))
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+                enemy = {"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max}
+                geometry = re5_aim_geometry.read(m, enemy)
+                if geometry is not None:
+                    enemy["native_aim"] = geometry
+                snap["enemies"].append(enemy)
     # +104 identifies a camera MODE, not a player slot. Never reuse P1's
     # camera for a P2 view while the per-player camera decoder is unverified.
     cm = u32(m, S_CAMERA) if player_index(m) == 0 else 0
@@ -1331,6 +1335,10 @@ class Bot:
             self._control_state = ORIG.setdefault(id(self.m.adapter), {})
             re5_controls.bind_adapter(self._control_state,self.m.adapter)
             re5_controls.publish(self._control_state, id(self), snap, where == "playing" and bool(p))
+            from . import re5_qte
+            qte = re5_qte.maintain(self.m.adapter, snap, owner=id(self), enabled=where == 'playing' and bool(p))
+            self.stats['qte_native'] = qte
+            self.stats['qte_native_progress_writes'] = self.stats.get('qte_native_progress_writes', 0) + qte.get('writes', 0)
             from . import re5_live_weapon
             re5_live_weapon.observe(self.m, self._control_state, snap, where)
             live = self._control_state.get('live_weapon') or {}

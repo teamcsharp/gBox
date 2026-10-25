@@ -40,6 +40,7 @@ from pathlib import Path
 
 from .. import lessons as L
 from ..aim import Shots
+from . import re5_aim_geometry
 
 MAP_ID = "BLUS30491"
 
@@ -1055,6 +1056,24 @@ class Combat:
                 return {'hold': {'l1'} if waiting else set()}
             self.bow_ready_since = None
         aim = (foot[0], foot[1] + CHEST_H, foot[2])
+        aim_source = "humanoid chest estimate"
+        geometry = tgt.get("native_aim") or {}
+        if wid == 0x0F and (geometry.get("kind") == "uEm32" or geometry.get("requires_native_center") is True):
+            native_point = re5_aim_geometry.point(tgt)
+            if native_point is None:
+                self.bow_down_at = None
+                self.bow_aim = None
+                self.stats.pop("bow_aim_point", None)
+                if self.laserless_feedback_since is None:
+                    self.laserless_feedback_since = now
+                self.needs_firing_position = now-self.laserless_feedback_since >= STEER_REACQUIRE_S
+                self.stats.update(bow_aim_point_source="native creature center unavailable",
+                                  combat="longbow: waiting for verified creature geometry",
+                                  fire_gate="longbow: creature aim point unverified; trigger withheld")
+                return {"hold": set() if self.needs_firing_position else {"l1"}}
+            aim, aim_source = native_point, re5_aim_geometry.SOURCE
+        if wid == 0x0F:
+            self.stats.update(bow_aim_point=list(aim), bow_aim_point_source=aim_source)
         cam = snap.get("camera") or {}
         camera_direction = None
         try:
@@ -1116,6 +1135,7 @@ class Combat:
         if wid==0x0F:
             self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
                 'player_pos':list(p['pos']),'target_pos':list(foot),'origin':list(origin),
+                'aim_point':list(aim),'aim_point_source':aim_source,
                 'camera_at':camera_direction,
                 'distance_cm':round(distance,1),'yaw_error_rad':yaw,'pitch_error_rad':pitch,
                 'yaw_tolerance_rad':yaw_tol,'pitch_tolerance_rad':pitch_tol,

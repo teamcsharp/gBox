@@ -126,6 +126,22 @@ ends at native character, stage or mode selection and ordinary cursor selection
 resumes. Code signatures and page-chain tests verify this path; a live S-rank
 unlock sequence has not yet been observed completing with this implementation.
 
+The next precision correction covers `uEm32` (Licker). Its native world-center
+getter and sphere getter expose the model center near the low creature's body.
+After checking the exact class, getter code, active model and stable finite
+coordinates, the bow uses that center instead of the humanoid `feet + 110 cm`
+estimate. The model radius does not enlarge firing tolerance. This is a model
+center, not a decoded damage hitbox; other classes retain their prior estimate.
+
+`re5_mods op=instant_qte` enables native assistance for decoded accumulation
+mode 4 and stick-wiggle mode 6. It raises only the active display event's progress
+to its own target, allowing the original evaluator and owner callback to run.
+The hook checks build signatures, copied event identity, current process and
+guest mapping, controller/player ownership, cancellation and native readback.
+Submitted progress, native acceptance and observed escape are separate states.
+Other QTE modes retain automatic input; universal or zero-failure QTE completion
+has not been established. The older solo-recovery candidate remains disabled.
+
 ## Research checked 2026-10-21
 
 [Berserker's Reunion guide](https://gamefaqs.gamespot.com/ps3/980166-resident-evil-5-gold-edition/faqs/59792)
