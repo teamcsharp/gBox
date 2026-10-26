@@ -538,4 +538,7 @@ test('the shell wires the F5 steps: update through main.js, the F5 key carried o
   assert.match(html, /await compactFollow\(session, COMPACT\.sid, \{ force: true \}\);/);
   assert.match(html, /ensureBot: sid => botEnsure\(sid, 'F5', \{ raise: true \}\),/);
   assert.match(html, /clientViewNavigation\+\+; restoreClientView\.retryAt = 0; clientRefresh\.done\(\);/);
+  // the PiP hides every other element: an F5's dialog (only an F5's) stays visible over it
+  assert.match(html, /body\.gbox-compact > :not\(#gpu-game\)[^{]*:not\(#reconnect\.f5\)[^{]*\{ display:none !important; \}/);
+  assert.match(html, /el\.classList\.toggle\('f5', !!state\.f5\);/);
 });

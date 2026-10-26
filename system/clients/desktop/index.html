@@ -1291,7 +1291,13 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(#reconnect.f5):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  /* #reconnect.f5: an F5 pressed over the PiP shows its steps there too, packed into the small window */
+  body.gbox-compact #reconnect .rc-head { top:8px; left:12px; right:12px; font-size:13px; }
+  body.gbox-compact #reconnect .rc-flow { top:36px; left:12px; right:12px; bottom:92px; gap:6px 8px; overflow:auto; }
+  body.gbox-compact #reconnect .rbn { min-width:0; padding:4px 8px; font-size:11px; } body.gbox-compact #reconnect .rbn::after { display:none; }
+  body.gbox-compact #reconnect .rc-detail { max-width:160px; margin-top:2px; font-size:10px; }
+  body.gbox-compact #reconnect .rc-error { left:12px; right:12px; bottom:46px; font-size:12px; } body.gbox-compact #reconnect .rc-actions { left:12px; bottom:10px; }
   /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
   #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
@@ -4897,6 +4903,7 @@ function reconnectOverlay() {
 }
 function reconnectRender(state) {
   const el = reconnectOverlay();
+  el.classList.toggle('f5', !!state.f5);                       // an F5's dialog also shows over the PiP (compact style)
   el.querySelector('.rc-head b').textContent = state.f5 ? 'F5 · recovering gBox' : 'Reconnecting gBox';
   el.querySelector('[data-rc-flow]').innerHTML = state.steps.map(s => `<div class="rbn ${['ok', 'run', 'err', 'warn'].includes(s.status) ? s.status : ''}">` +
     `${esc(s.label)}<small>${esc(s.sub)}</small><span class="rc-detail">${esc(s.detail || '')}</span></div>`).join('');
