@@ -376,6 +376,8 @@ def load(ad, src: Path, disc_id: str, sid: str | None = None, sleep=time.sleep):
         folder.mkdir(parents=True, exist_ok=True)
         slot = folder / f"{_safe(disc_id, 6)}.s{LOAD_SLOT:02d}"
         keep = slot.with_name(slot.name + ".instant-keep")
+        if keep.is_file():                             # a load cut short before (a crash): the slot's own file first
+            os.replace(keep, slot)
         kept = slot.is_file()
         if kept:
             shutil.copyfile(slot, keep)

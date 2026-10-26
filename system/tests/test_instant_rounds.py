@@ -214,6 +214,21 @@ def test_a_changed_state_is_never_loaded_and_failures_drop_it_then_switch_instan
     assert lib.health()["fails_in_a_row"] == 0
 
 
+def test_a_load_cut_short_before_never_loses_the_slots_own_file(tmp_path):
+    m = merc_world()
+    ad = FakeDolphin(m, tmp_path, loads=False)
+    ad.state_dir().mkdir(parents=True)
+    (ad.state_dir() / "G4BE08.s08").write_bytes(b"ours from the last load")    # a crash left our state in the slot ...
+    (ad.state_dir() / "G4BE08.s08.instant-keep").write_bytes(b"the ring's own")  # ... and the slot's file aside
+    src = tmp_path / "state.bin"
+    src.write_bytes(b"state")
+    with RS.load(ad, src, "G4BE08", sleep=lambda s: None) as out:
+        assert (ad.state_dir() / "G4BE08.s08").read_bytes() == b"state" and ad.load_keys == 1
+        out["verified"] = True
+    assert (ad.state_dir() / "G4BE08.s08").read_bytes() == b"the ring's own"
+    assert not (ad.state_dir() / "G4BE08.s08.instant-keep").exists()
+
+
 # --- which round next -----------------------------------------------------------------------------------------------------
 COMBOS = [(room, who) for room in RM.STAGE_ROOMS for who in RM.PLAYERS]
 
