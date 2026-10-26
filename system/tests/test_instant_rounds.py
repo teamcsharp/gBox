@@ -621,3 +621,13 @@ def test_re5_cursor_steps_settle_faster_but_screens_and_confirms_keep_their_wait
     assert nav.poll_s(at, MB.POLL_S) == 0.1 and nav.poll_s({"where": "loading"}, MB.POLL_S) == MB.POLL_S
     plain = MB.Navigator(sent.append, R.step, sleep=lambda s: None, clock=lambda: now[0])
     assert plain.poll_s(at, MB.POLL_S) == MB.POLL_S                            # titles that did not opt in: unchanged
+    blind = MB.Navigator(sent.append, lambda scr: "dleft", sleep=lambda s: now.__setitem__(0, now[0] + s),
+                         clock=lambda: now[0], cursor=R.NAV_CURSOR)
+    walk = {"where": "select_stage", "cursor": None, "target": None}            # no cursor in RAM: a counted walk
+    assert blind.tick(walk) is None
+    now[0] += 0.51
+    assert blind.tick(walk) == "dleft"
+    now[0] += 0.65
+    assert blind.tick(walk) is None                                            # RAM can't show it moved: RETRY_S
+    now[0] += 0.6
+    assert blind.tick(walk) == "dleft"

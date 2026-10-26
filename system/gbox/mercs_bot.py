@@ -125,7 +125,7 @@ class Navigator:
         if now - self.sig_at < (self.cursor.get("stable_s", self.STABLE_S) if fast else self.STABLE_S):
             return None                                     # RAM has only just shown this screen: it may be passing
         retry = self.cursor.get("retry_s", self.RETRY_S) if self.cursor and str(self.last_key).startswith("d") \
-            else self.RETRY_S
+            and scr.get("cursor") is not None else self.RETRY_S   # RAM shows the cursor did not move: no double step
         if self.last_key is not None and now - self.last_at < retry:
             return None                                     # the last press has not shown in RAM yet
         if now - self.last_at < (self.cursor.get("stable_s", self.SETTLE_S) if fast else self.SETTLE_S):
