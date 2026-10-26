@@ -434,11 +434,15 @@ _SCAN.update({"F13": (0x64, 0), "F14": (0x65, 0), "F15": (0x66, 0),
               "Control_L": (0x1D, 0), "Control_R": (0x1D, 1), "Shift_L": (0x2A, 0)})
 
 
-def _pid_window(pid: int):
+def _pid_window(pid: int, include_minimized: bool = False):
     """The game's visible render window, including one docked inside gBox.
 
     Enumeration order is not a render-window identity: an owned Warning dialog
     can come first, even minimized, and would receive input and black captures.
+    include_minimized keeps the iconic skip off for readiness checks: emulators
+    launched with hidden_start() (SW_SHOWMINNOACTIVE) create their game window
+    minimized on purpose, and until gBox docks it (winembed un-minimizes) the
+    window is iconic but fully there — readiness must see it.
     """
     import ctypes
     from ctypes import wintypes
@@ -449,7 +453,7 @@ def _pid_window(pid: int):
     def consider(h):
         p = wintypes.DWORD()
         u.GetWindowThreadProcessId(h, ctypes.byref(p))
-        if p.value != pid or not u.IsWindowVisible(h) or u.IsIconic(h):
+        if p.value != pid or not u.IsWindowVisible(h) or (u.IsIconic(h) and not include_minimized):
             return
         title = ctypes.create_unicode_buffer(512)
         u.GetWindowTextW(h, title, len(title))
@@ -898,6 +902,7 @@ def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
     u32.SetWinEventHook.restype = wintypes.HANDLE
     u32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
     u32.PeekMessageW.argtypes = [ctypes.c_void_p, H, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+    u32.ShowWindow.argtypes = [H, ctypes.c_int]
     u32.MsgWaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD, wintypes.DWORD]
     u32.SetWindowLongPtrW.argtypes, u32.SetWindowLongPtrW.restype = [H, ctypes.c_int, ctypes.c_ssize_t], ctypes.c_ssize_t
     GWL_STYLE, GWL_EXSTYLE, WS_CHILD, WS_EX_LAYERED = -16, -20, 0x40000000, 0x00080000
@@ -969,6 +974,11 @@ def keep_offscreen(pid: int, limit_s: float = 90.0, give_up_s: float = 45.0):
                     for h in windows(False):
                         opaque(h)
                     for h, (x, y) in parked.items():
+                        # hidden_start() showed it minimized; SetWindowPos alone moves an iconic
+                        # window, it stays on the taskbar and invisible to the player. SW_SHOWNOACTIVATE
+                        # restores it without stealing focus (ticket #3688).
+                        if u32.IsIconic(h):
+                            u32.ShowWindow(h, 4)
                         u32.SetWindowPos(h, None, max(0, x), max(0, y), 0, 0, FLAGS)
                     return
         finally:
@@ -3104,7 +3114,10 @@ class YuzuAdapter(Adapter):
         for _ in range(60):
             if self.proc.poll() is not None:
                 raise RuntimeError(f"Yuzu exited before opening the game (code {self.proc.returncode})")
-            if _pid_window(self.proc.pid):
+            # hidden_start() launches yuzu minimized; until gBox docks it the game window is iconic,
+            # which _pid_window's default iconic skip would hide forever (ticket #3688: no app docked
+            # on the operator PC, so the minimized window was never "open" and launch timed out).
+            if _pid_window(self.proc.pid, include_minimized=True):
                 break
             time.sleep(1)
         else:
