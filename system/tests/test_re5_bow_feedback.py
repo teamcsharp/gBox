@@ -307,7 +307,7 @@ def test_gun_nearest_target_policy_is_unchanged_by_bow_retention(tmp_path):
     state['enemies']=[first,second]
     combat=C.Combat(memory,{},learn_dir=tmp_path)
     assert combat.choose_target(state,state['player'],state['enemies'],1.) is first
-    second['pos']=(150.,0.,0.)
+    second['pos']=(0.,0.,100.)           # in contact in front: taken at once (guns: front-weighted nearest, no bow lock)
     assert combat.choose_target(state,state['player'],state['enemies'],1.1) is second
 
 

@@ -906,8 +906,23 @@ def test_a_quick_turn_that_never_turns_is_switched_off_and_the_body_turns_instea
     s = snap(m, enemy=(0.0, 0.0, -300.0))
     for t in (0.0, 2.0):                              # two presses, the heading never moves
         assert bot.tick(s, s["player"], s["enemies"][0], t)["hold"] == {"ldown", "cross"}
-        act = bot.tick(s, s["player"], s["enemies"][0], t + 0.8)["hold"]
+        act = bot.tick(s, s["player"], s["enemies"][0], t + 0.75)["hold"]   # judged, inside the gap
         assert act & {"rleft", "rright"} and not act & {"ldown", "cross"}, act   # judged: the body swing goes on
     assert bot.qturn_off and "off" in bot.stats["quick_turn"]
     act = bot.tick(s, s["player"], s["enemies"][0], 5.0)["hold"]
     assert act & {"rleft", "rright"} and bot.stats["quick_turns"] == 2
+
+
+def test_the_majini_in_front_is_chosen_over_a_slightly_nearer_one_behind_and_the_target_is_held():
+    # live 2026-10-26 15:39: 19.6 s of a 30 s life turning with the gun down between the nearest Majini, hit 3 of 3 times
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 300.0))
+    front = s["enemies"][0]
+    behind = {"slot": 1, "ptr": ENEMY + 0x1000, "pos": (0.0, 0.0, -250.0), "hp": 800, "hp_max": 800}
+    s["enemies"] = [behind, front]
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.0) is front
+    behind["pos"] = (0.0, 0.0, -230.0)                 # a little nearer still: no swing round for him
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.1) is front
+    behind["pos"] = (0.0, 0.0, -60.0)                  # on top of him behind: worth the turn now
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.2) is behind
