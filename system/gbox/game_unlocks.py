@@ -35,11 +35,16 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
         if game.get('game_id') == PUYOTETRIS_ID and game.get('platform') == 'switch':
-            from . import puyotetris_unlock
+            from . import puyotetris_unlock, puyotetris_save
             record = puyotetris_unlock.profile()
+            # Revision-guarded save reader + overlay are available, but the
+            # overlay cannot write until an executable revision is proven.
             return {'state': 'research_pending', 'applied': False, 'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
-                    'unknown_counts': record['unknown_counts']}
+                    'unknown_counts': record['unknown_counts'],
+                    'save_reader_available': True,
+                    'save_overlay_gated': True,
+                    'save_overlay_gate': puyotetris_save.profile()['save_overlay_gate']}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
