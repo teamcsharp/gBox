@@ -1,0 +1,236 @@
+{
+ "format": "gbox-ram-map/1",
+ "id": "6fc93ff62e4eb868",
+ "title": "Resident Evil 6 (PS3, BLUS30855, RPCS3)",
+ "platform": "ps3",
+ "endian": "big",
+ "pointer_size": 4,
+ "pointer_range": [
+  "0x30000000",
+  "0x40000000"
+ ],
+ "match": {
+  "game_ids": [
+   "6fc93ff62e4eb868"
+  ],
+  "executable_sha256": "ddd022477e679cb1125dc327b0e43c5aeb4d8fa84352a7c8ae98ec74271d41ed"
+ },
+ "regions": [
+  {
+   "name": "guest",
+   "base": "0x30000000",
+   "size": "0x10000000"
+  }
+ ],
+ "notes": [
+  "SCAFFOLD (request 3275, 2026-10-26): PS3 BLUS30855 RAM map scaffold. Step 1 verified launch on Spark (session 2198666ea8194539-fc8bef25d3bd47bd, worker lilspark, RPCS3 v0.0.43-20355-4024ea31).",
+  "HOST RULE: live RE6 sessions go on i9-NUC (ec678a28567942b3), never Spark (operator MercMode rotation) and never JAYBUILTFINALE.",
+  "This map is a structural scaffold: field names and types are declared from the MT Framework pattern (same engine as RE5 PS3) and the Xbox 360 partial map (docs/re6-ram-map-0871eee3b68cdea3.json), but PS3 offsets are NOT yet measured live.",
+  "All pointer fields carry evidence 'pending-live-measurement' and must be verified on a live i9-NUC RPCS3 session before the observer is marked ready.",
+  "Do not mark mercs.ready=true until every required vocab name is mapped to a verified live address."
+ ],
+ "mercs": {
+  "ready": false,
+  "driver": null,
+  "menus": null,
+  "jump_at": "select_player",
+  "units_per_m": 100,
+  "vocab": {
+   "screen": null,
+   "merc.stage": null,
+   "merc.timer": null,
+   "merc.combo": null,
+   "merc.combo_timer": null,
+   "merc.score": null,
+   "merc.kills": null,
+   "player.pos": "player.pos",
+   "player.facing": null,
+   "player.hp": "player.hp",
+   "player.hp_max": "player.hp_max",
+   "player.state": null,
+   "player.aim_pitch": null,
+   "player.weapon": "player.weapon",
+   "player.ammo": null,
+   "enemies": null,
+   "projectiles": null,
+   "prompt.kind": null,
+   "prompt.button": null,
+   "bonuses": null,
+   "partner.pos": null
+  }
+ },
+ "groups": {
+  "sys": "Singletons (sPlayer, save manager, sActionButton, sBioMain)",
+  "player": "Player 1's uPlayer",
+  "merc": "Mercenaries save data (unlocks) and round state"
+ },
+ "fields": {
+  "sys.player_mgr": {
+   "address": "0x00000000",
+   "type": "ptr",
+   "group": "sys",
+   "description": "sPlayer singleton; +0x28 = player 1's uPlayer pointer (MT Framework pattern, same as RE5 PS3 but PS3 offset unmeasured)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 sPlayer at 0x83CA52FC (docs/re6-ram-map-0871eee3b68cdea3.json); PS3 offset must be found live on i9-NUC"
+  },
+  "sys.save_mgr": {
+   "address": "0x00000000",
+   "type": "ptr",
+   "group": "sys",
+   "description": "Save manager singleton; save data = [it] + 0x30",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 save_mgr at 0x83CA4F98; PS3 offset must be found live"
+  },
+  "sys.action_button": {
+   "address": "0x00000000",
+   "type": "ptr",
+   "group": "sys",
+   "description": "sActionButton singleton: 8 ButtonMgr, QTE / prompt units",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 sActionButton at 0x83CA4380; PS3 offset must be found live"
+  },
+  "sys.bio_main": {
+   "address": "0x00000000",
+   "type": "ptr",
+   "group": "sys",
+   "description": "sBioMain singleton; +0x182D4 -> cGameSys (timer, score, combo, kills) in RE5 PS3; RE6 PS3 offset unmeasured",
+   "source": "manual",
+   "evidence": "pending-live-measurement: RE5 PS3 sBioMain at 0x0191CEE4; RE6 PS3 offset must be found live"
+  },
+  "player.ptr": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28"
+    ]
+   },
+   "type": "ptr",
+   "group": "player",
+   "description": "Player 1's uPlayer (sPlayer+0x28)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 chain verified live; PS3 base offset unmeasured"
+  },
+  "player.pos": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0x50"
+    ]
+   },
+   "type": "f32",
+   "group": "player",
+   "description": "Position x, y, z (MT Framework uPlayer+0x50)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0x50 verified live; PS3 offset must be confirmed",
+   "count": 3,
+   "units": "world units"
+  },
+  "player.hp": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0xF20"
+    ]
+   },
+   "type": "s16",
+   "group": "player",
+   "description": "Life (uPlayer+0xF20 s16)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0xF20 verified live; PS3 offset must be confirmed",
+   "valid": [
+    0,
+    32767
+   ]
+  },
+  "player.hp_max": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0xF22"
+    ]
+   },
+   "type": "s16",
+   "group": "player",
+   "description": "LifeMax (uPlayer+0xF22 s16)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0xF22 verified live; PS3 offset must be confirmed",
+   "valid": [
+    0,
+    32767
+   ]
+  },
+  "player.slot": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0x3EE8"
+    ]
+   },
+   "type": "u32",
+   "group": "player",
+   "description": "Current weapon slot (0-6)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0x3EE8; PS3 offset must be confirmed"
+  },
+  "player.weapon": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0x3ED8"
+    ]
+   },
+   "type": "ptr",
+   "group": "player",
+   "description": "Current weapon object",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0x3ED8; PS3 offset must be confirmed"
+  },
+  "player.delta_time": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x28",
+     "0x18"
+    ]
+   },
+   "type": "f32",
+   "group": "player",
+   "description": "cUnit mDeltaTime, reset by the game every frame",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 uPlayer+0x18; PS3 offset must be confirmed"
+  },
+  "merc.stage_mask": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x9a4"
+    ]
+   },
+   "type": "u32",
+   "format": "hex",
+   "group": "merc",
+   "description": "Mercenaries stage mask (10 bits), player 1 save data (idx 0)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 save_mgr+0x9a4; PS3 offset must be confirmed"
+  },
+  "merc.character_mask": {
+   "pointer": {
+    "base": "0x00000000",
+    "offsets": [
+     "0x9a8"
+    ]
+   },
+   "type": "u32",
+   "format": "hex",
+   "group": "merc",
+   "description": "Mercenaries character + costume mask (30 bits)",
+   "source": "manual",
+   "evidence": "pending-live-measurement: Xbox 360 save_mgr+0x9a8; PS3 offset must be confirmed"
+  }
+ }
+}
