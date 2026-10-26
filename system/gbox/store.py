@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import time
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,6 +19,12 @@ _RESOLUTION_ID_TRUTHY = (
     "WHEN 'object' THEN json_extract(body,'$.context.resolution_chat_id') != '{}' "
     "ELSE json_extract(body,'$.context.resolution_chat_id') NOT IN ('',0) END"
 )
+
+
+READERS_MAX = 16                  # idle lock-free read connections kept open (one per concurrently reading thread)
+WAL_AUTOCHECKPOINT_PAGES = 4000   # 16 MB: the writer folds the WAL back itself only if the checkpoint thread falls behind
+WAL_SIZE_LIMIT = 64 * 1024 * 1024 # the WAL file is truncated to this after a reset (the Spark carried 79 MB for days)
+WAL_TRUNCATE_BYTES = WAL_SIZE_LIMIT
 
 
 def sha256(b: bytes) -> str:
@@ -43,16 +50,51 @@ def append_audit(db, actor, action, subject, data=None, *, ts=None):
     return cur.lastrowid
 
 
+class _Writer(sqlite3.Connection):
+    """The one shared read/write connection (store.db). Closing it, as every test teardown and maintenance CLI does,
+    also closes the lock-free read connections the Store opened beside it, so a temp directory can be removed on
+    Windows and no connection outlives the store. `on_close` is a weak method: the connection must not keep its
+    Store alive (an unreferenced Store is collected and closed at once, as before)."""
+    on_close: "weakref.WeakMethod | None" = None
+
+    def close(self):
+        hook = self.on_close() if self.on_close is not None else None
+        if hook is not None:
+            hook()
+        super().close()
+
+
 class Store:
+    """One writer, many readers (2026-10-26). Every write and every compound read-modify-write holds `lock` and runs on
+    `db`, as before. A plain read from a thread that does not hold the lock runs on a pooled read-only connection
+    (`reading()`): in WAL mode readers never wait for the writer or for each other, so a GET no longer queues behind a
+    commit or a long transaction. On the Spark the single lock made /api/workers take 6-10 s and /api/sessions 18-49 s
+    with ~20 threads waiting at `with self.lock:` at any moment (py-spy); the lock-holder was a full scan of the 214 MB
+    job kind (mercmode.control / autoplay_resume.latest_control, now indexed by docs_job_session)."""
+
     def __init__(self, data_dir: Path):
         self.dir = Path(data_dir)
         (self.dir / "artifacts").mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.dir / "gbox.sqlite3", check_same_thread=False)
+        self.path = self.dir / "gbox.sqlite3"
+        self.db = sqlite3.connect(self.path, check_same_thread=False, factory=_Writer)
+        self.db.on_close = weakref.WeakMethod(self._close_side_connections)
         self.lock = threading.RLock()
+        self._readers: list[sqlite3.Connection] = []     # idle lock-free read connections, any thread may take one
+        self._readers_lock = threading.Lock()
+        self._checkpointer: sqlite3.Connection | None = None
+        self._checkpoint_lock = threading.Lock()
+        self._versions: dict[str, int] = {}              # kind -> in-process writes so far (cache validators)
+        self.closed = False
+        # synchronous=NORMAL: in WAL mode a commit no longer fsyncs (the checkpoint does); a power cut can lose the last
+        # commits, a process crash cannot. The writer's own checkpoint is a fallback: checkpoint() runs them off-lock.
         self.db.executescript(f"""
             PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT_PAGES};
+            PRAGMA journal_size_limit={WAL_SIZE_LIMIT};
             CREATE TABLE IF NOT EXISTS docs(kind TEXT, id TEXT, body TEXT, PRIMARY KEY(kind, id));
             CREATE INDEX IF NOT EXISTS docs_kind ON docs(kind);
+            CREATE INDEX IF NOT EXISTS docs_job_session ON docs(json_extract(body,'$.input.session_id')) WHERE kind='job';
             CREATE TRIGGER IF NOT EXISTS slabel_identity_insert AFTER INSERT ON docs
                 WHEN NEW.kind='slabel' AND json_extract(NEW.body,'$.session_id') IS NOT NEW.id
                 BEGIN UPDATE docs SET body=json_set(body,'$.session_id',NEW.id)
@@ -84,6 +126,94 @@ class Store:
         n_fts = self.db.execute("SELECT COUNT(*) FROM catalog_fts").fetchone()[0]
         if n_cat != n_fts:                       # interrupted ingest / older index layout -> rebuild
             self.rebuild_fts()
+        try:                                     # an inherited WAL (79 MB on the Spark) shrinks at startup, nobody reads yet
+            self.checkpoint("TRUNCATE")
+        except sqlite3.Error:
+            pass
+
+    # --- connections: one locked writer, pooled lock-free readers ---
+    def _owns_lock(self) -> bool:
+        owned = getattr(self.lock, "_is_owned", None)
+        return bool(owned()) if owned is not None else True
+
+    @contextmanager
+    def reading(self):
+        """The connection a read runs on. A thread holding the Store lock (a read-modify-write, a BEGIN IMMEDIATE
+        transaction) keeps the shared connection: it must see its own uncommitted rows and never deadlock. Any other
+        thread reads the last committed state on a pooled read-only connection without taking the lock at all."""
+        if self._owns_lock():
+            yield self.db
+            return
+        db = self._take_reader()
+        try:
+            yield db
+        finally:
+            self._return_reader(db)
+
+    def _take_reader(self) -> sqlite3.Connection:
+        with self._readers_lock:
+            if self._readers:
+                return self._readers.pop()
+        db = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False, timeout=5.0)
+        db.execute("PRAGMA query_only=ON")
+        return db
+
+    def _return_reader(self, db: sqlite3.Connection):
+        with self._readers_lock:
+            if not self.closed and len(self._readers) < READERS_MAX:
+                self._readers.append(db)
+                return
+        db.close()
+
+    def _close_side_connections(self):
+        self.closed = True
+        with self._readers_lock:
+            readers, self._readers = self._readers, []
+            ckpt, self._checkpointer = self._checkpointer, None
+        for db in readers + ([ckpt] if ckpt is not None else []):
+            try:
+                db.close()
+            except sqlite3.Error:
+                pass
+
+    def close(self):
+        self.db.close()                          # _Writer.close -> _close_side_connections
+
+    def wal_bytes(self) -> int:
+        try:
+            return self.path.with_name(self.path.name + "-wal").stat().st_size
+        except OSError:
+            return 0
+
+    def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
+        """Fold the WAL back into the database file on a connection of its own, so the writer never pays for it inside
+        a commit and the Store lock is not held meanwhile (writers keep appending to the WAL while this copies).
+        PASSIVE never waits; TRUNCATE also resets the file to zero bytes once no reader needs it, waiting at most
+        a second for one. Returns SQLite's (busy, wal_frames, checkpointed_frames)."""
+        if mode not in ("PASSIVE", "FULL", "RESTART", "TRUNCATE"):
+            raise ValueError(mode)
+        with self._readers_lock:                 # only the lookup: readers keep coming and going during the copy
+            if self.closed:
+                raise sqlite3.ProgrammingError("store is closed")
+            if self._checkpointer is None:
+                self._checkpointer = sqlite3.connect(self.path, check_same_thread=False, timeout=1.0)
+                self._checkpointer.execute(f"PRAGMA journal_size_limit={WAL_SIZE_LIMIT}")
+            db = self._checkpointer
+        with self._checkpoint_lock:
+            return tuple(db.execute(f"PRAGMA wal_checkpoint({mode})").fetchone())
+
+    def checkpoint_due(self) -> tuple[int, int, int]:
+        """The periodic maintenance call (server thread store-checkpoint): a passive pass, then a truncating one when
+        the WAL file has grown past WAL_TRUNCATE_BYTES anyway (a reader held a snapshot while writers kept going)."""
+        out = self.checkpoint("PASSIVE")
+        if self.wal_bytes() > WAL_TRUNCATE_BYTES:
+            out = self.checkpoint("TRUNCATE")
+        return out
+
+    def version(self, kind: str) -> int:
+        """How many documents of a kind this process has written (put/delete) since start: a cache validator for
+        callers that re-read a whole kind on every poll (server.workers)."""
+        return self._versions.get(kind, 0)
 
     # --- catalog (indexed, full-text searchable) ---
     STATUS = ("playable", "analysis", "asset_mapping", "autoplay", "modding")
@@ -153,10 +283,10 @@ class Store:
 
     def favorites(self) -> list[dict]:
         """Every starred title, including ones whose files are currently missing from the catalog."""
-        with self.lock:
-            rows = self.db.execute("SELECT f.game_id, f.title, f.platform, f.ts, c.game_id IS NOT NULL FROM favorites f "
-                                   "LEFT JOIN catalog c ON c.game_id=f.game_id WHERE f.favorite=1 "
-                                   "ORDER BY f.title COLLATE NOCASE").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT f.game_id, f.title, f.platform, f.ts, c.game_id IS NOT NULL FROM favorites f "
+                              "LEFT JOIN catalog c ON c.game_id=f.game_id WHERE f.favorite=1 "
+                              "ORDER BY f.title COLLATE NOCASE").fetchall()
         return [{"game_id": g, "title": t, "platform": p, "favorited": ts, "in_catalog": bool(c)} for g, t, p, ts, c in rows]
 
     @staticmethod
@@ -213,8 +343,8 @@ class Store:
             self.db.commit()
 
     def catalog_get(self, game_id: str) -> dict | None:
-        with self.lock:
-            row = self.db.execute("SELECT body FROM catalog WHERE game_id=?", (game_id,)).fetchone()
+        with self.reading() as db:
+            row = db.execute("SELECT body FROM catalog WHERE game_id=?", (game_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
     def catalog_update(self, game_id: str, **fields):
@@ -276,14 +406,14 @@ class Store:
                 args.append(val)
         if start_letter is not None:                         # A-Z scrubber: how many titles sort before this letter
             w = " AND ".join(where + ["title < ? COLLATE NOCASE"])
-            with self.lock:
-                n = self.db.execute(f"SELECT COUNT(*) FROM catalog WHERE {w}", args + [start_letter]).fetchone()[0]
+            with self.reading() as db:
+                n = db.execute(f"SELECT COUNT(*) FROM catalog WHERE {w}", args + [start_letter]).fetchone()[0]
             return n, []
         w = ("WHERE " + " AND ".join(where)) if where else ""
-        with self.lock:
-            total = self.db.execute(f"SELECT COUNT(*) FROM catalog {w}", args).fetchone()[0]
-            rows = self.db.execute(f"SELECT body FROM catalog {w} ORDER BY {self.SORTS.get(sort, self.SORTS['name'])} LIMIT ? OFFSET ?",
-                                   args + [limit, offset]).fetchall()
+        with self.reading() as db:
+            total = db.execute(f"SELECT COUNT(*) FROM catalog {w}", args).fetchone()[0]
+            rows = db.execute(f"SELECT body FROM catalog {w} ORDER BY {self.SORTS.get(sort, self.SORTS['name'])} LIMIT ? OFFSET ?",
+                              args + [limit, offset]).fetchall()
         return total, [json.loads(r[0]) for r in rows]
 
     def prune_catalog(self, library: str, keep: set[str]) -> int:
@@ -299,8 +429,8 @@ class Store:
 
     def platform_summary(self) -> list[dict]:
         """Carousel data: per platform, game count and its biggest source systems (for the wheel logo)."""
-        with self.lock:
-            rows = self.db.execute("SELECT platform, system, COUNT(*) FROM catalog GROUP BY platform, system").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT platform, system, COUNT(*) FROM catalog GROUP BY platform, system").fetchall()
         out: dict[str, dict] = {}
         for plat, system, n in rows:
             p = out.setdefault(plat, {"platform": plat, "count": 0, "systems": []})
@@ -311,10 +441,10 @@ class Store:
         return sorted(out.values(), key=lambda p: -p["count"])
 
     def facets(self) -> dict:
-        with self.lock:
-            plat = self.db.execute("SELECT platform, COUNT(*) FROM catalog GROUP BY platform ORDER BY 2 DESC").fetchall()
-            sysm = self.db.execute("SELECT system, COUNT(*) FROM catalog GROUP BY system ORDER BY system").fetchall()
-            libs = self.db.execute("SELECT library, COUNT(*) FROM catalog GROUP BY library").fetchall()
+        with self.reading() as db:
+            plat = db.execute("SELECT platform, COUNT(*) FROM catalog GROUP BY platform ORDER BY 2 DESC").fetchall()
+            sysm = db.execute("SELECT system, COUNT(*) FROM catalog GROUP BY system ORDER BY system").fetchall()
+            libs = db.execute("SELECT library, COUNT(*) FROM catalog GROUP BY library").fetchall()
         return {"platforms": dict(plat), "systems": dict(sysm), "libraries": dict(libs)}
 
     # --- docs ---
@@ -322,45 +452,61 @@ class Store:
         with self.lock:
             self.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)", (kind, id, json.dumps(body, default=str)))
             self.db.commit()
+            self._versions[kind] = self._versions.get(kind, 0) + 1
 
     def delete(self, kind: str, id: str):
         with self.lock:
             self.db.execute("DELETE FROM docs WHERE kind=? AND id=?", (kind, id))
             self.db.commit()
+            self._versions[kind] = self._versions.get(kind, 0) + 1
 
     def get(self, kind: str, id: str) -> dict | None:
-        with self.lock:
-            row = self.db.execute("SELECT body FROM docs WHERE kind=? AND id=?", (kind, id)).fetchone()
+        with self.reading() as db:
+            row = db.execute("SELECT body FROM docs WHERE kind=? AND id=?", (kind, id)).fetchone()
         return json.loads(row[0]) if row else None
 
     def digest(self, kind: str) -> str:
         """A validator for all documents of a kind: it changes whenever one is added, changed or removed (any writer of
         this database, including scripts). Hashing the stored text is ~50x cheaper than decoding it (#712)."""
         h = hashlib.sha1()
-        with self.lock:
-            for (body,) in self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)):
+        with self.reading() as db:
+            for (body,) in db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid", (kind,)):
                 h.update(body.encode("utf-8", "surrogatepass"))
                 h.update(b"\0")
         return h.hexdigest()
 
+    def rows(self, kind: str) -> list[tuple[str, str]]:
+        """(id, stored JSON text) of every document of a kind, undecoded, in rowid order: a caller that keeps its own
+        decoded copies re-decodes only the texts that changed (server.workers: 21 of 23 registrations never do)."""
+        with self.reading() as db:
+            return db.execute("SELECT id, body FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
+
+    def fields(self, kind: str, names: tuple[str, ...]) -> list[dict]:
+        """Just these top-level fields of every document of a kind (nested values come back as JSON text); the
+        bodies stay undecoded (built_mods, last_played, library_home read whole kinds this way on every poll)."""
+        cols = ", ".join(f"json_extract(body,'$.{f}')" for f in names)
+        with self.reading() as db:
+            rows = db.execute(f"SELECT {cols} FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
+        return [dict(zip(names, r)) for r in rows]
+
     def all(self, kind: str, *, reverse: bool = False) -> list[dict]:
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
-                                   + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
+                              + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def recent(self, kind: str, limit: int) -> list[dict]:
         """The newest `limit` documents of a kind (rowid order), without decoding the whole archive."""
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid DESC LIMIT ?",
-                                   (kind, int(limit))).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid DESC LIMIT ?",
+                              (kind, int(limit))).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def running_sessions(self) -> list[dict]:
         """Live sessions only; admission polls must not decode the session archive."""
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM docs INDEXED BY docs_session_state "
-                                   "WHERE kind='session' AND json_extract(body,'$.state')='running'").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM docs INDEXED BY docs_session_state "
+                              "WHERE kind='session' AND json_extract(body,'$.state')='running'").fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def jobs(self, *, states: tuple[str, ...] | None = None, exclude_states: tuple[str, ...] = (),
@@ -395,25 +541,25 @@ class Store:
             query += " ORDER BY rowid DESC LIMIT ?"
             args.append(limit)
         query = "SELECT body FROM (" + query + ") ORDER BY rowid " + ("DESC" if reverse else "ASC")
-        with self.lock:
-            rows = self.db.execute(query, args).fetchall()
+        with self.reading() as db:
+            rows = db.execute(query, args).fetchall()
         return [json.loads(row[0]) for row in rows]
 
     def resolution_requests(self, limit: int = 20) -> list[dict]:
         """Newest auto-resolution reports, without decoding unrelated inbox threads."""
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM docs INDEXED BY docs_resolution_requests_created WHERE kind='request' AND "
-                                   + _RESOLUTION_ID_TRUTHY
-                                   + " ORDER BY COALESCE(json_extract(body,'$.created'),0) DESC,rowid ASC LIMIT ?",
-                                   (limit,)).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM docs INDEXED BY docs_resolution_requests_created WHERE kind='request' AND "
+                              + _RESOLUTION_ID_TRUTHY
+                              + " ORDER BY COALESCE(json_extract(body,'$.created'),0) DESC,rowid ASC LIMIT ?",
+                              (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
     def game_requests(self, game_id: str, statuses=("open", "in_progress", "blocked"), limit: int = 20) -> list[dict]:
         """Unfinished inbox requests targeting a game (context.game_id, or the Hermes favorite child request), newest
         first, as small rows: no body, thread or image is decoded (the session panel polls this every 5 s)."""
         marks = ",".join("?" for _ in statuses)
-        with self.lock:
-            rows = self.db.execute(
+        with self.reading() as db:
+            rows = db.execute(
                 "SELECT json_extract(body,'$.id'), json_extract(body,'$.number'), json_extract(body,'$.title'), "
                 "json_extract(body,'$.status'), json_extract(body,'$.context') FROM docs WHERE kind='request' AND "
                 "(json_extract(body,'$.context.game_id')=? OR json_extract(body,'$.context.hermes_favorite_game')=?) "
@@ -423,30 +569,31 @@ class Store:
                 for i, n, t, s, c in rows]
     def request_jobs(self, rid: str, limit: int = 200) -> list[dict]:
         """Jobs an inbox request started (parent_request_id or input.request_id), oldest first, for its story."""
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM (SELECT rowid,body FROM docs WHERE kind='job' AND "
-                                   "(json_extract(body,'$.parent_request_id')=? OR json_extract(body,'$.input.request_id')=?) "
-                                   "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid", (rid, rid, limit)).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM (SELECT rowid,body FROM docs WHERE kind='job' AND "
+                              "(json_extract(body,'$.parent_request_id')=? OR json_extract(body,'$.input.request_id')=?) "
+                              "ORDER BY rowid DESC LIMIT ?) ORDER BY rowid", (rid, rid, limit)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
     def audit_for(self, subject: str, limit: int = 200) -> list[dict]:
         """Audit entries about one subject (a request id), oldest first."""
-        with self.lock:
-            rows = self.db.execute("SELECT seq,ts,actor,action,data FROM audit WHERE subject=? ORDER BY seq LIMIT ?",
-                                   (subject, limit)).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT seq,ts,actor,action,data FROM audit WHERE subject=? ORDER BY seq LIMIT ?",
+                              (subject, limit)).fetchall()
         return [dict(seq=r[0], ts=r[1], actor=r[2], action=r[3], data=json.loads(r[4])) for r in rows]
 
     def running_job_counts(self) -> dict[str, int]:
         """Running jobs per claiming worker id, so a worker whose reported slots don't match is visible (#1294)."""
-        with self.lock:
-            rows = self.db.execute("SELECT json_extract(body,'$.worker_id'), COUNT(*) FROM docs WHERE kind='job' "
-                                   "AND json_extract(body,'$.state')='running' GROUP BY 1").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT json_extract(body,'$.worker_id'), COUNT(*) FROM docs INDEXED BY docs_queued_jobs "
+                              "WHERE kind='job' AND json_extract(body,'$.state')='running' GROUP BY 1").fetchall()
         return {wid: n for wid, n in rows if wid}
 
     def queued_jobs(self) -> list[dict]:
         """Claim only queued work, in submission order, without decoding every completed job."""
-        with self.lock:
-            rows = self.db.execute("SELECT body FROM docs WHERE kind='job' AND json_extract(body,'$.state')='queued' ORDER BY rowid").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT body FROM docs INDEXED BY docs_queued_jobs WHERE kind='job' "
+                              "AND json_extract(body,'$.state')='queued' ORDER BY rowid").fetchall()
         return [json.loads(row[0]) for row in rows]
 
     # --- audit ledger ---
@@ -457,21 +604,21 @@ class Store:
             return seq
 
     def audit_log_last_seq(self) -> int:
-        with self.lock:
-            r = self.db.execute("SELECT MAX(seq) FROM audit").fetchone()
+        with self.reading() as db:
+            r = db.execute("SELECT MAX(seq) FROM audit").fetchone()
         return r[0] or 0
 
     def audit_log(self, after: int = 0, limit: int = 200) -> list[dict]:
-        with self.lock:
-            rows = self.db.execute("SELECT seq,ts,actor,action,subject,data,hash FROM audit WHERE seq>? ORDER BY seq LIMIT ?",
-                                   (after, limit)).fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT seq,ts,actor,action,subject,data,hash FROM audit WHERE seq>? ORDER BY seq LIMIT ?",
+                              (after, limit)).fetchall()
         return [dict(seq=r[0], ts=r[1], actor=r[2], action=r[3], subject=r[4], data=json.loads(r[5]), hash=r[6]) for r in rows]
 
     def verify_audit(self) -> tuple[bool, int, str | None]:
         """Recompute the whole chain. Returns (ok, entries checked, first bad seq)."""
         prev, n = "0" * 64, 0
-        with self.lock:
-            rows = self.db.execute("SELECT seq,ts,actor,action,subject,data,prev,hash FROM audit ORDER BY seq").fetchall()
+        with self.reading() as db:
+            rows = db.execute("SELECT seq,ts,actor,action,subject,data,prev,hash FROM audit ORDER BY seq").fetchall()
         for seq, ts, actor, action, subject, data, p, h in rows:
             payload = canon({"ts": ts, "actor": actor, "action": action, "subject": subject, "data": json.loads(data)})
             if p != prev or sha256(prev.encode() + payload) != h:

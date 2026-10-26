@@ -8,9 +8,11 @@ HANDOFF = 'autoplay_handoff'
 
 def latest_control(store, sid, exclude_job_id=''):
     # Status polling is not intent. Order by creation time, not replacement rowid.
-    with store.lock:
-        row = store.db.execute(
-            "SELECT body FROM docs WHERE kind='job' "
+    # docs_job_session (gbox/store.py): without it this scanned every job ever run, 214 MB on the Spark, inside the
+    # Store lock, on every /api/sessions poll (mercmode.display_successors) - the lock-holder behind 10-50 s GETs.
+    with store.reading() as db:
+        row = db.execute(
+            "SELECT body FROM docs INDEXED BY docs_job_session WHERE kind='job' "
             "AND json_extract(body,'$.tool')='autoplay' "
             "AND json_extract(body,'$.input.session_id')=? "
             "AND json_extract(body,'$.input.op') IN ('start','stop') "
