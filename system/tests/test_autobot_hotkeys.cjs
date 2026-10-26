@@ -101,30 +101,43 @@ test('F3 failures are toasted in the control plane\'s words and a second press w
   assert.equal(r.calls.length, 1);
 });
 
-test('F5 asks the control plane to keep the bot driving before the client reload, then toasts what it did', async () => {
-  const r = shell({ COMPACT: { on: true, sid: 'w1-merc' },
-    api: url => ({ id: 'e1', state: 'succeeded', output: { action: 'started', kind: 'mercmode',
-      message: 'Autobot back in control of Resident Evil 5 (lilspark).' } }) });
-  r.streamSrc = 'http://spark:8765/api/sessions/w1-merc/mjpeg';
+test('F5 runs the one recovery flow as the operator and toasts how it went (reconnect-flow.js run({ f5: true }))', async () => {
+  const r = shell({ COMPACT: { on: true, sid: 'w1-merc' } });
+  r.ctx.GBoxReconnectFlow = require('../clients/desktop/reconnect-flow.js');
+  r.ctx.reconnectRun = async options => { r.order.push(plain(options)); return { done: true, f5: true, steps: [
+    { id: 'mercmode', status: 'ok', detail: 'Resident Evil 5 on lilspark' }, { id: 'stream', status: 'ok', detail: 'Live' },
+    { id: 'bot', status: 'ok', detail: 'The autobot is driving Resident Evil 5 (lilspark).' }] }; };
   await r.ctx.recoverAndRefresh();
-  await r.flush();
-  assert.deepEqual(r.order, ['api /api/sessions/w1-merc/autoplay/ensure', 'recoverStreams', 'refresh']);
-  assert.deepEqual(plain(r.calls[0].body), { reason: 'F5' });
-  assert.ok(r.toasts.includes('🤖 Autobot back in control of Resident Evil 5 (lilspark).'));
-  assert.equal(r.storage.has('gbox.f5.bot'), false, 'the kept request id is cleared once its answer was shown');
+  assert.deepEqual(r.order, [{ quiet: false, f5: true, resumed: null }]);
+  assert.equal(r.toasts[0], 'F5: updating gBox and bringing MercMode back…');
+  assert.match(r.toasts.at(-1), /^F5 done in \d+ s: Resident Evil 5 on lilspark · Live · The autobot is driving Resident Evil 5 \(lilspark\)\.$/);
+  assert.equal(r.calls.length, 0, 'the flow asks for the autobot (its bot step), not the key handler');
+  // an F5 a reload interrupted goes on with its key press time and without a second "updating" toast
+  const later = shell({});
+  later.ctx.reconnectRun = async options => { later.order.push(plain(options)); return { done: false }; };
+  await later.ctx.f5Recover({ started: 5, update: { status: 'ok', detail: 'Pulled 1 new commit' } });
+  assert.deepEqual(later.order, [{ quiet: false, f5: true, resumed: { started: 5, update: { status: 'ok', detail: 'Pulled 1 new commit' } } }]);
+  assert.deepEqual(later.toasts, []);
 });
 
-test('F5 on the operator\'s own game says nothing about bots and still refreshes; a failed check is said', async () => {
-  const own = shell({ COMPACT: { on: true, sid: 'w1-mine' },
-    api: () => ({ id: 'e2', state: 'succeeded', output: { action: 'none', reason: 'No autobot was driving this game.' } }) });
-  await own.ctx.recoverAndRefresh();
-  await own.flush();
-  assert.deepEqual(own.toasts, ['F5: reconnecting the stream…']);
-  assert.equal(own.order.at(-1), 'refresh');
-  const down = shell({ COMPACT: { on: true, sid: 'w1-mine' }, api: () => { throw Error('502 {"detail":"control plane restarting"}'); } });
-  await down.ctx.recoverAndRefresh();
+test('the F5 autobot check toasts what the control plane did, nothing for a game without a bot, and says a failed check', async () => {
+  const r = shell({ api: url => ({ id: 'e1', state: 'succeeded', output: { action: 'started', kind: 'mercmode',
+    message: 'Autobot back in control of Resident Evil 5 (lilspark).' } }) });
+  const job = await r.ctx.botEnsure('w1-merc');
+  assert.equal(job.id, 'e1');
+  assert.deepEqual(plain(r.calls[0]), { url: '/api/sessions/w1-merc/autoplay/ensure', body: { reason: 'F5' } });
+  for (let i = 0; i < 5; i++) await r.flush();
+  assert.ok(r.toasts.includes('🤖 Autobot back in control of Resident Evil 5 (lilspark).'));
+  assert.equal(r.storage.has('gbox.f5.bot'), false, 'the kept request id is cleared once its answer was shown');
+  const own = shell({ api: () => ({ id: 'e2', state: 'succeeded', output: { action: 'none', reason: 'No autobot was driving this game.' } }) });
+  await own.ctx.botEnsure('w1-mine');
+  for (let i = 0; i < 5; i++) await own.flush();
+  assert.deepEqual(own.toasts, []);
+  const down = shell({ api: () => { throw Error('502 {"detail":"control plane restarting"}'); } });
+  assert.equal(await down.ctx.botEnsure('w1-mine'), null);
   assert.ok(down.toasts.includes('⚠ F5: the autobot could not be checked: control plane restarting'));
-  assert.equal(down.order.at(-1), 'refresh');
+  const shown = shell({ api: () => { throw Error('502 {"detail":"control plane restarting"}'); } });   // the F5 dialog's bot step
+  await assert.rejects(shown.ctx.botEnsure('w1-mine', 'F5', { raise: true }), /^Error: control plane restarting$/);
 });
 
 test('the answer of an F5 check reaches the operator after the reload, once', async () => {
