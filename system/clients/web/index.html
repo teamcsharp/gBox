@@ -1795,11 +1795,17 @@ async function sessionsView(sid, mode) {
     setTimeout(mountBroadcastPanel, 0);                        // no await from here: runs once show() put the list in
     return (window.GBoxBroadcast ? GBoxBroadcast.panelHTML() : "") + '<div id="follow-idle"></div>' +
     `<p class="mut">Watch a running game, or reopen any game from your history (relaunches its ROM). A game with no recent picture says why when you open it.</p>` +
-    table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => { const v = pic(s); return `<tr>
+    table(["Game", "State", "Adapter", "Frame age", "", "Session"], ss.slice(0, 200).map(s => { const v = pic(s);
+      const ghost = s.state === "running" && s.worker_online === false;   // #2870: PC offline — dim, mark clearly
+      return `<tr${ghost ? ' style="opacity:.55"' : ''}>
       <td><a href="#" onclick='${s.state === "running" ? `show("Sessions",${JSON.stringify(s.session_id)})` : `play(${JSON.stringify(s.game_id)})`};return false'><b>${esc(s.title)}</b></a></td>
-      <td>${s.state === "running" ? (s.stopping ? '<span class="mut">stopping…</span>' : v.live ? '<span class="ok">running</span>'
+      <td>${s.state === "running" ? (ghost
+        ? `<span class="bad" title="The PC that runs this game is offline; the session will resume when it reconnects">PC offline</span>`
+        : s.stopping ? '<span class="mut">stopping…</span>' : v.live ? '<span class="ok">running</span>'
         : `<span class="bad" title="${esc(v.why)}">${esc(v.text)}</span>`) : '<span class="mut">ended</span>'}</td><td>${esc(s.adapter)}</td><td>${s.last_frame_age ?? "–"}s</td>
-      <td>${s.state === "running" ? (v.live ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>${sessionIsLocal(s) ? "Open" : "Watch"}</button>`
+      <td>${s.state === "running" ? (ghost
+        ? ""
+        : v.live ? `<button class="act pri" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>${sessionIsLocal(s) ? "Open" : "Watch"}</button>`
         : `<button class="act" title="${esc(v.why)}" onclick='show("Sessions",${JSON.stringify(s.session_id)})'>Open</button>`) : ""}
           ${s.game_id ? `<button class="act" onclick='play(${JSON.stringify(s.game_id)})'>Reopen</button>` : ""}</td>
       <td><code class="mut">${esc(s.session_id)}</code></td></tr>`; }));

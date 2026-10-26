@@ -86,3 +86,15 @@ test('a running session on an offline PC is never followed (#2870)', () => {
   assert.equal(F.pick([ghost], { session_id: 'jay-x' }), null);
   assert.equal(F.pick([ghost, NEW_DARK], null).session, NEW_DARK);
 });
+
+test('the Sessions list dims and marks a running session whose PC is offline (#2870)', () => {
+  const web = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
+  // the row dims when worker_online is false
+  assert.match(web, /const ghost = s\.state === "running" && s\.worker_online === false;/);
+  assert.match(web, /<tr\$\{ghost \? ' style="opacity:\.55"' : ''\}>/);
+  // the state cell says "PC offline" with a tooltip
+  assert.match(web, /PC offline<\/span>/);
+  assert.match(web, /title="The PC that runs this game is offline; the session will resume when it reconnects"/);
+  // no Watch button is offered on a ghost row
+  assert.match(web, /ghost\s*\?\s*""\s*\:/);
+});
