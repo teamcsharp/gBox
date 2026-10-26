@@ -14,6 +14,10 @@
       const live = id => continuity.resolve(id, sessions);
       const wanted = [...new Set([state.playing, state.active, state.pip].filter(Boolean))];
       const missing = wanted.filter(id => !live(id));
+      // a saved game whose PC is offline (#2870, worker_online) is reported apart from a merely absent one: the shell drops
+      // the saved view instead of retrying it every 2 s (operator 2026-10-26, i9-NUC's dead Mercenaries 3D session)
+      const rows = Array.isArray(sessions) ? sessions : [];
+      const offline = missing.filter(id => { const row = rows.find(s => s?.session_id === id); return !!row && row.state === 'running' && row.worker_online === false; });
       // show() selects its view synchronously, then waits for the content. Keep
       // that revision so later operator navigation cannot restore an old PiP.
       const showing = state.playing && live(state.playing) ? io.show('Sessions', live(state.playing).session_id)
@@ -29,7 +33,7 @@
       const active = live(state.pip || state.active) || live(state.playing);
       io.active(active || null);
       io.pip();
-      return { restored: wanted.filter(id => live(id)), missing };
+      return { restored: wanted.filter(id => live(id)), missing, ...(offline.length ? { offline } : {}) };
     }
     return { restore, cancel: () => { generation++; } };
   }

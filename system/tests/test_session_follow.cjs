@@ -87,6 +87,27 @@ test('a running session on an offline PC is never followed (#2870)', () => {
   assert.equal(F.pick([ghost, NEW_DARK], null).session, NEW_DARK);
 });
 
+// operator 2026-10-26 (i9-NUC): the Sessions view sat for hours on this PC's "running" Mercenaries 3D session whose worker
+// had been offline for 43 h: a black view, "Graphics settings loading…". Such a row is left like an ended one.
+test('a running session whose PC is offline is left for a live game, never kept as a black view (#2870)', () => {
+  const dead = { ...DOA3, session_id: 'nuc-merc3d', title: 'Resident Evil: The Mercenaries 3D', worker_online: false };
+  assert.deepEqual(F.decide(dead, { now: NOW }), { follow: true, why: 'offline' });                           // a demo's: at once
+  assert.deepEqual(F.decide({ ...dead, agent_owned: false }, { now: NOW }), { follow: false, why: 'offline' });   // yours: Watch it now offered
+  assert.equal(F.decide(dead, { now: NOW, pinned: 'nuc-merc3d' }).why, 'pinned');
+  assert.equal(F.decide({ ...dead, worker_online: true }).why, 'playing');
+  assert.equal(F.note(dead, NEW_DARK), 'Now showing SoulCalibur II on lilspark: i9-NUC is offline');
+  assert.match(F.waitHTML(NEW_DARK, { why: 'offline' }), /This game's PC is offline\. <b>SoulCalibur II<\/b> on lilspark is playing\. .*data-follow-go="spark-sc2"/);
+  // the web shell: the header says offline, the view says why (Retry / Stop / Relaunch) and follows, no panels load forever
+  const web = fs.readFileSync(path.join(__dirname, '..', 'clients', 'web', 'index.html'), 'utf8');
+  assert.match(web, /const offline = s\.state === "running" && s\.worker_online === false;/);
+  assert.match(web, /data-state="\$\{esc\(offline \? "offline" : s\.state \|\| 'missing'\)\}"/);
+  assert.match(web, /const verdict = here && !offline \? null : GBoxSessionLive\.judge\(s, workers, Date\.now\(\) \/ 1000\);/);
+  assert.match(web, /\$\{offline \? '<div id="follow-idle"><\/div>' : ""\}/);
+  assert.match(web, /\$\{s\.game_id && !offline \? `<details data-dock="gfx"/);
+  assert.match(web, /if \(head\?\.dataset\.state === "offline"\) \{[^\n]*\r?\n\s*playing = null; if \(active\?\.sid === sid\) active = null; pip\(\);\r?\n\s*const stop = btn => hardStop\(sid, btn\), relaunch = btn => relaunchSession\(sid, btn\);\r?\n\s*if \(\$\("#no-picture"\)\) GBoxSessionLive\.mount\([^\n]*\r?\n\s*followWatch\(sid\); return;/);
+  assert.match(web, /\(!sessionIsLocal\(s\) \|\| s\.worker_online === false\) \? GBoxSessionLive\.judge\(s, ws, nowS\)/);   // the list says so too
+});
+
 // operator 2026-10-24: "why is the game always idle?" - a parked MercMode game (warm) is left for the one playing
 {
   const F = require("../clients/web/viz/session-follow.js");

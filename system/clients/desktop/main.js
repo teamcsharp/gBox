@@ -528,8 +528,28 @@ async function restartWorker() {
   const r = await startWorker({ reconcileResults: true });
   return { ...r, restarted: r.started === true, lastExit: workerLastExit };
 }
+// "Relaunch worker" (operator 2026-10-26: i9-NUC's worker had been offline for 43 h while the app ran, watching MercMode).
+// The app's own local gBox service hosts this PC's worker (gbox/desktop_local.py): the service is asked to stop while idle
+// over its verified control pipe (gbox/worker_client_control.py: refused while a game or job runs here, nothing is killed)
+// and startLocalControl's exit watchdog starts it again in 5 s, worker included. Standalone keeps restartWorker()'s rules.
+async function relaunchLocalWorker() {
+  if (STANDALONE) return restartWorker();
+  if (clientHandoffBusy) return { running: false, started: false, error: 'Desktop refresh is in progress.' };
+  if (!localControlProcess) {
+    const started = await startLocalControl();
+    return started.running ? { ...started, started: true, relaunching: true } : { ...started, started: false };
+  }
+  // the service answers only while its worker runs; one that never came up cannot confirm an idle stop, and is not killed
+  const manual = ' Nothing was stopped. Quit gBox and start it again to relaunch this PC\'s worker (games on this PC stop with it).';
+  if (!localControlChannel) return { running: true, started: false, error: 'The local service has no verified idle shutdown channel.' + manual };
+  try { await localControlChannel.stop(); }
+  catch (error) { return { running: true, started: false, error: String(error.message || error) + manual }; }
+  localControlError = 'Relaunching this PC\'s gBox service and worker.';
+  return { running: false, started: true, relaunching: true };
+}
 ipcMain.handle("win:worker", (_e, op) => {
   if (op === "start") return startWorker();
+  if (op === "relaunch") return relaunchLocalWorker();
   if(!STANDALONE){
     if(op==='stop')return {running:!!connection.snapshot().local.worker?.running,
       error:'Local service ownership is preserved. Stop individual games from Sessions.'};

@@ -3665,7 +3665,7 @@ function gameOutputPlace(){
 }
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_HOLES = ".piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -3681,7 +3681,7 @@ async function embedTick() {
     // session download per tick left menus hidden behind the game. The live list refreshes in the background.
     const r = LIVE_SESSIONS.peek() || {ok:false};
     if (r.ok) $("#tb-mini").hidden = $("#tb-pad").hidden = !r.data.some(s => s.state === "running");
-    let mine = r.ok && r.data.filter(s => s.state === "running" && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
+    let mine = r.ok && r.data.filter(s => s.state === "running" && s.worker_online !== false && s.detail && s.detail.local_window && s.detail.worker_name === S.workerName
                                           && !EMB.closed.has(s.session_id) && (!COMPACT.on || s.session_id === COMPACT.sid)).sort((a, b) => (b.started || 0) - (a.started || 0))[0];
     const lease=nativeSessionLease?await nativeSessionLease.resolve(S.apiUrl,
       r.ok&&LIVE_SESSIONS.age()<3000?r:{ok:false},
@@ -3871,10 +3871,14 @@ const compactController = GBoxCompactGame.create({
       const history = await gbox.api('/api/sessions?limit=200');
       if (history.ok) session = GBoxSessionContinuity.resolve(requested.sid, history.data, session) || session;
     }
+    // a "running" game whose PC is offline (#2870, gbox/server.py worker_online) is never put on screen: nothing would
+    // come of it (operator 2026-10-26: i9-NUC's dead Mercenaries 3D session kept replacing the Spark's MercMode PiP)
+    if (session && session.state === 'running' && session.worker_online === false)
+      throw Object.assign(Error(`${sessionTitle(session) || 'This game'} runs on a PC that is offline; it was not opened. Your view was not changed.`), { offline: true });
     if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
     if (!session || session.state !== 'running') {
       const r = await liveSessions(0);
-      session = r.ok && r.data.filter(s => s.state === 'running').sort((a,b) => (b.started || 0) - (a.started || 0))[0];
+      session = r.ok && r.data.filter(s => s.state === 'running' && s.worker_online !== false).sort((a,b) => (b.started || 0) - (a.started || 0))[0];
     }
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
@@ -3999,10 +4003,15 @@ async function restoreClientView() {
   observed = restored?.view;
   clientRefresh.remember(observed); // Ctrl+R may arrive before the first periodic guest checkpoint
   if (restored?.cancelled || navigation !== clientViewNavigation) { clientRefresh.done(); return; } // operator navigation supersedes saved intent
+  // a saved game whose PC is offline (#2870; the guest knows from the rows, viz/session-refresh.js) is never reopened or
+  // retried every 2 s (operator 2026-10-26: after every reload the app went back into i9-NUC's dead Mercenaries 3D
+  // session); the view starts fresh and the reconnect flow shows the MercMode game instead
+  if (restored?.offline?.length) { clientRefresh.done(); toast(`The saved game runs on a PC that is offline (${restored.offline.join(', ')}): its view was not reopened.`, 8000); return; }
   if (value.compact) {
     try { await compactController.enter({ ...value, preserveGuest: true, restoreNavigation: navigation }); }
     catch (error) {
       if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
+      if (error.offline) { clientRefresh.done(); toast(error.message, 8000); return; }   // an offline PC: no retry loop
       // Keep the current window and any held picture during the replacement gap.
       // The retry retains the exact saved selection; it never chooses a newer game.
       if (!restoreClientView.retryAt) toast(error.message + ' Reconnecting your saved view automatically.', 10000);
@@ -4842,6 +4851,9 @@ const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'request failed'); return r.data; },
   pickHost: data => GBoxReconnectFlow.pickHost(data, S?.workerName),
   pipSession: () => COMPACT.on ? (globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || COMPACT.sid) : null,
+  health: sid => compactApi(`/api/sessions/${encodeURIComponent(sid)}/stream/health`, undefined, 'GET'),   // a shown game is kept; an offline PC's run is skipped
+  session: sid => sessionById(sid),                             // a parked (warm) MercMode game gives way to the one playing
+  recall: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
   ensureBot: sid => botEnsure(sid, 'F5'),                       // the MercMode game it put on screen keeps its autobot
   pipEnter: sid => compactController.enter({ sid }),
   pipRestore: () => compactRestore(),
@@ -4856,11 +4868,20 @@ setTimeout(() => {
   try { manual = sessionStorage.getItem('gbox.connection.manual'); resume = sessionStorage.getItem(GBoxReconnectFlow.RESUME_KEY); } catch {}
   if (resume || (manual !== 'local' && !EMB.sid && !COMPACT.on)) reconnectRun({ quiet: !resume, automatic: true });
 }, 4000);
-// Spark lost while watching: reconnect without restarting the shared service or interrupting its games.
-setInterval(async () => {
-  const st = await gbox.connectionStatus?.().catch(() => null);
-  if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false, automatic: true });
-}, 15000);
+// Spark lost while watching: reconnect without restarting the shared service or interrupting its games. The poll backs off
+// while it keeps failing (5 s doubling to a minute, GBoxReconnectFlow.backoff) and never reloads the client by itself.
+const RECONNECT_WATCH = { failures: 0, every: 15000 };
+async function reconnectWatch() {
+  try {
+    const st = await gbox.connectionStatus?.().catch(() => null);
+    if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) {
+      const out = await reconnectRun({ quiet: false, automatic: true });
+      RECONNECT_WATCH.failures = out?.done ? 0 : RECONNECT_WATCH.failures + 1;
+    } else RECONNECT_WATCH.failures = 0;
+  } catch { RECONNECT_WATCH.failures++; }
+  setTimeout(reconnectWatch, RECONNECT_WATCH.failures ? GBoxReconnectFlow.backoff(RECONNECT_WATCH.failures - 1) : RECONNECT_WATCH.every);
+}
+setTimeout(reconnectWatch, RECONNECT_WATCH.every);
 // F1 replay · F2 save state · F3 autobot · F4 load state · F5 refresh (operator 2026-10-26: "when i press F3, I intend to
 // start the autobot, not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it")
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
@@ -7795,6 +7816,71 @@ const pollStatusRight = singleFlightPoll(async () => {
 });
 statusRight(false).catch(() => {}); setInterval(() => statusRight(false).catch(() => {}), 5000);
 
+// ---- this PC's worker offline (operator 2026-10-26: i9-NUC's worker had been gone for 43 h while the app ran, watching
+// MercMode): after a minute offline a quiet badge says so, with one click to relaunch it through the app's own local gBox
+// service (main.js win:worker "relaunch"). The view on screen (PiP, docked game, Sessions page) is never changed by it. ----
+const WORKER_OFFLINE = { busy: false, note: '', since: 0, element: null };
+// pure: the badge's HTML, or null while this PC's worker is online, unknown, or offline for less than a minute.
+// w: this PC's /api/workers row (its newest registration), local: gbox.winWorker("status"), nowS: seconds
+function workerOfflineBadge(w, local, nowS, state) {
+  state = state || {};
+  if (!w || w.online) return null;
+  const since = Number.isFinite(w.last_seen) ? w.last_seen : state.since || nowS;
+  const offlineFor = Math.max(0, nowS - since);
+  if (offlineFor < 60) return null;
+  const dur = s => s < 120 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} h`;
+  const why = local?.lastExit?.reason || local?.reason || '';
+  const running = local?.running ? " (its process runs but hasn't checked in)" : '';
+  return `<span class="wo-text">⚠ ${esc(w.name || S?.workerName || 'This PC')}'s worker is offline (${esc(dur(offlineFor))})${running}.`
+    + (why ? ` <span class="mut">${esc(String(why).slice(0, 160))}</span>` : '') + `</span>`
+    + (state.note ? `<span class="wo-note mut">${esc(state.note)}</span>` : '')
+    + `<button class="act" type="button" data-worker-relaunch="1"${state.busy ? ' disabled' : ''} title="Restart this PC's gBox service and its worker; games keep running">${state.busy ? 'Relaunching…' : 'Relaunch worker'}</button>`;
+}
+function workerOfflineRender(html) {
+  let el = WORKER_OFFLINE.element || $('#worker-offline');
+  if (!html) { if (el) { el.classList.remove('on'); el.style.display = 'none'; } return; }
+  if (!el) {
+    el = document.createElement('div'); el.id = 'worker-offline'; el.setAttribute('role', 'status');
+    Object.assign(el.style, { position: 'fixed', left: '10px', bottom: '34px', zIndex: '95', display: 'none', gap: '8px', alignItems: 'center', flexWrap: 'wrap',
+      maxWidth: 'min(540px, calc(100vw - 20px))', padding: '6px 10px', borderRadius: '10px', background: 'rgba(20,20,28,.88)', color: '#eee',
+      font: '12px system-ui, sans-serif', boxShadow: '0 4px 18px #0008' });
+    el.addEventListener('click', e => { if (e.target.closest('[data-worker-relaunch]')) workerRelaunch(); });
+    document.body.append(el); WORKER_OFFLINE.element = el;
+  }
+  if (el.innerHTML !== html) el.innerHTML = html;
+  el.classList.add('on'); el.style.display = 'flex';
+}
+// this PC's row: a restart registers it under a new id and leaves the old ids behind, offline
+const workerNewest = (rows, name) => (rows || []).filter(w => w && w.name === name)
+  .sort((a, b) => (!!b.online - !!a.online) || ((b.last_seen || 0) - (a.last_seen || 0)))[0] || null;
+async function workerOfflineWatch() {
+  try {
+    if (!S?.workerName || S.autoStartWorker === false) { workerOfflineRender(null); return; }   // the worker is off by choice
+    const ws = await WORKERS.get();
+    const w = ws.ok ? workerNewest(ws.data, S.workerName) : null;
+    if (w && !w.online) { if (!WORKER_OFFLINE.since) WORKER_OFFLINE.since = Date.now() / 1000; } else WORKER_OFFLINE.since = 0;
+    const local = w && !w.online ? await gbox.winWorker?.('status').catch(() => null) : null;
+    workerOfflineRender(workerOfflineBadge(w, local, Date.now() / 1000, WORKER_OFFLINE));
+  } catch { /* the next poll says */ }
+}
+setInterval(workerOfflineWatch, 5000);
+async function workerRelaunch() {
+  if (WORKER_OFFLINE.busy) return;
+  WORKER_OFFLINE.busy = true; WORKER_OFFLINE.note = "Asking this PC's gBox service to restart…";
+  await workerOfflineWatch();
+  try {
+    const r = await gbox.winWorker('relaunch').catch(e => ({ error: e.message }));
+    if (r?.error || r?.started !== true) { WORKER_OFFLINE.note = r?.error || 'The worker did not restart; nothing was stopped.'; return; }
+    WORKER_OFFLINE.note = 'Relaunching: the worker checks in within about a minute when it can.';
+    for (let i = 0; i < 20; i++) {                               // the service is back in ~5 s; its worker registers after that
+      await new Promise(res => setTimeout(res, 3000));
+      const ws = await WORKERS.get(0).catch(() => ({}));
+      if (ws.ok && workerNewest(ws.data, S.workerName)?.online) { WORKER_OFFLINE.note = ''; break; }
+    }
+    if (WORKER_OFFLINE.note) WORKER_OFFLINE.note = 'Started, but the worker has not checked in yet. Click this PC in the status bar for its last exit.';
+  } finally { WORKER_OFFLINE.busy = false; await workerOfflineWatch(); }
+}
+
 // ================= every pop-up: drag by its header, resize from the corner; position + size remembered =================
 window.onFloatingMove = () => {
   if (EMB.sid && !EMB.busy) { EMB.busy = true; embedTick().finally(() => EMB.busy = false); }
@@ -7866,7 +7952,8 @@ function workerReconnectNote(w, local) {
   const state = w.online ? "This PC's worker is connected." :
     local && local.running ? "This PC's worker is running but hasn't checked in with the Spark." : "This PC's worker isn't running.";
   return `<p class="mut">${state} ↻ refreshes this panel.</p>${why}`
-    + (w.online || local?.running ? "" : `<button class="act" data-reconnect-worker="1">Reconnect this PC's worker</button>`);
+    + (w.online || local?.running ? "" : `<button class="act" data-reconnect-worker="1">Reconnect this PC's worker</button>`)
+    + (w.online ? "" : ` <button class="act" data-relaunch-worker="1" title="Restart this PC's gBox service and its worker; games keep running">Relaunch worker</button>`);
 }
 async function svcReconnect(key) {
   $("#svcbody").insertAdjacentHTML("afterbegin", '<p class="mut" id="svc-reconnecting">Reconnecting this PC\'s worker…</p>');
@@ -7889,6 +7976,7 @@ $("#svcbody").addEventListener("click", e => {
   const id = e.target.closest("[data-watch-worker]")?.dataset.watchWorker;
   if (id) remoteWatch(id);
   if (e.target.closest("[data-reconnect-worker]") && SVC_KEY && SVC_KEY.startsWith("worker:")) svcReconnect(SVC_KEY);
+  if (e.target.closest("[data-relaunch-worker]")) workerRelaunch();
 });
 let remoteDrag = null;
 $("#remote-pip .rp-head").addEventListener("pointerdown", e => {

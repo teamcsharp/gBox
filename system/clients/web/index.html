@@ -547,7 +547,7 @@ async function trayTick() {
     else GBoxBuildNotes.fresh(notes, TRAY.seen).slice(0, 4).reverse().forEach(bnAnnounce);   // stacked: the newest ends on top
     const unread = GBoxBuildNotes.unread(notes), cur = (window.active || {}).sid;
     // #2858: a game elsewhere with no recent picture is marked, not offered as watchable (its view says why)
-    const nowS = Date.now() / 1000, pics = new Map(run.map(x => [x.session_id, sessionIsLocal(x) ? { live: true } : GBoxSessionLive.judge(x, ws, nowS)]));
+    const nowS = Date.now() / 1000, pics = new Map(run.map(x => [x.session_id, sessionIsLocal(x) && x.worker_online !== false ? { live: true } : GBoxSessionLive.judge(x, ws, nowS)]));   // a game here on an offline worker is marked too (#2870)
     const chipTitle = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent", v = pics.get(x.session_id);
       return (l.label ? l.label + " · " : "") + (x.title || "") + (x.mod_title ? " · " + x.mod_title : "") + (agent ? " (an agent's test session)" : "") + " · " + (sessionIsLocal(x) ? "This PC" : "Remote: " + (sessionWorkerName(x) || "another computer")) + (v.live ? "" : " · " + v.text) + " · " + x.session_id; };
     const chip = x => { const l = labels[x.session_id] || {}, agent = l.owner === "agent", v = pics.get(x.session_id);
@@ -1828,7 +1828,7 @@ async function sessionsView(sid, mode) {
   if (!sid) {
     // #2858: a game elsewhere is offered to Watch only while a picture of it comes; otherwise the row says why
     const ws = await api("/api/workers").catch(() => null), nowS = Date.now() / 1000;
-    const pic = s => s.state === "running" && !sessionIsLocal(s) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
+    const pic = s => s.state === "running" && (!sessionIsLocal(s) || s.worker_online === false) ? GBoxSessionLive.judge(s, ws, nowS) : { live: true };
     setTimeout(mountBroadcastPanel, 0);                        // no await from here: runs once show() put the list in
     return (window.GBoxBroadcast ? GBoxBroadcast.panelHTML() : "") + '<div id="follow-idle"></div>' +
     `<p class="mut">Watch a running game, or reopen any game from your history (relaunches its ROM). A game with no recent picture says why when you open it.</p>` +
@@ -1845,12 +1845,16 @@ async function sessionsView(sid, mode) {
   const s = (mode === "examine" ? liveExamineSession(ss, sid) : original) || original || {};
   sid = s.session_id || sid;
   const local = !!(s.detail && s.detail.local_window);
+  // #2870: a "running" game whose PC is offline (gbox/server.py worker_online) is never a black view with panels that
+  // load forever (operator 2026-10-26, i9-NUC's Mercenaries 3D): it says so, offers Retry / Stop / Relaunch, and the
+  // view follows a game that plays (sessionsView.after)
+  const offline = s.state === "running" && s.worker_online === false;
   const btn = k => `<button class="act" data-k="${k}">${k}</button>`;
   const cardGame=s.game_id ? await api('/api/catalog/'+encodeURIComponent(s.game_id)).catch(()=>null) : null;
   const cardPlatform=s.platform||cardGame?.platform;
   SESSIONBUILD.session = s;                                   // sessionsView.after mounts the header's build rename on it
   SESSIONBUILD.session.platform=cardPlatform;
-  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(s.state || 'missing')}"><button class="act" onclick="showList()">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
+  const head = `<div class="bar" id="session-head" data-sid="${esc(sid)}" data-state="${esc(offline ? "offline" : s.state || 'missing')}"><button class="act" onclick="showList()">All sessions</button><button class="act" id="emulation-issue" aria-label="Report emulation issue and recover game" title="Game frozen or black? Capture diagnostics and save state, file an inbox report, and recover gameplay" style="padding:5px 7px;line-height:0;color:var(--bad)" onclick='reportEmulationIssue(${JSON.stringify(sid)})'><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg></button><button class="act" id="emulation-troubleshooting" aria-label="Emulation troubleshooting options" aria-expanded="false" aria-controls="emulation-troubleshooting-menu" title="Troubleshooting options" style="padding:5px 4px;line-height:0;margin-left:-6px" onclick='toggleEmulationTroubleshooting(${JSON.stringify(sid)})'><svg viewBox="0 0 16 16" width="13" height="17" fill="currentColor"><path d="M4 5l4 6 4-6z"/></svg></button>${window.GBoxSessionBuild ? GBoxSessionBuild.titleHTML(s) : `<b>${esc(s.title || 'Game session')}</b>`}
     <span class="tabs2"><button class="act ${!mode ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)})'>Play</button><button class="act ${mode === "inspect" ? "pri" : ""}" onclick='show("Sessions",${JSON.stringify(sid)},"inspect")'>Inspect</button><button class="act ${mode === "examine" ? "pri" : ""}" title="Pause and explore this frame as a real 3D scene (the game waits in picture-in-picture)" onclick='show("Sessions",${JSON.stringify(sid)},"examine")'>Examine 3D</button></span>
     <span class="mut">${esc(s.adapter)} · <code>${esc(sid)}</code></span>
     ${s.game_id === RE6_GAME && s.state === "running" ? `<button class="act" title="Pick weapons and items (every item, with pictures) for Mercenaries" onclick='re6Loadout(${JSON.stringify(sid)})'>Loadout</button>` : ""}
@@ -1875,9 +1879,9 @@ async function sessionsView(sid, mode) {
   // A game elsewhere with no recent picture (its PC offline, nothing on its screen or stream) is never an empty view: why,
   // with Retry / Stop / Relaunch under it, until a picture comes
   const elsewhere = local && s.detail.worker_name !== window.GBOX_LOCAL?.worker, here = local && !elsewhere;
-  const workers = here ? null : await api("/api/workers").catch(() => null);
+  const workers = here && !offline ? null : await api("/api/workers").catch(() => null);
   const hostPC = (workers || []).find(w => w.id === sid.split("-")[0]);
-  const verdict = here ? null : GBoxSessionLive.judge(s, workers, Date.now() / 1000);
+  const verdict = here && !offline ? null : GBoxSessionLive.judge(s, workers, Date.now() / 1000);   // a game here on an offline worker too
   return head + `
     <div class="play fit"><div>
       ${verdict && !verdict.live ? GBoxSessionLive.html({ sid, verdict, title: s.title, auth: tq(), online: !!hostPC?.online })
@@ -1885,8 +1889,8 @@ async function sessionsView(sid, mode) {
         ? `<div id="nativeslot" data-sid="${esc(sid)}" class="screen" style="background:#000"></div>`
         : GBoxRemoteGame.html({ sid, wid: sid.split("-")[0], worker: s.detail.worker_name || "another PC", title: s.title, auth: tq(),
             crop: !!hostPC?.features?.includes("desktop_game_crop"), pull: !!window.GBOX_LOCAL?.worker }))
-      : `<img id="scr" data-sid="${esc(sid)}" title="Ctrl+click: pick the object under the cursor (3D model)" class="screen" tabindex="0" alt="Live game view — click, then use the keyboard" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">`}
-      ${s.game_id ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
+      : `<img id="scr" data-sid="${esc(sid)}" title="Ctrl+click: pick the object under the cursor (3D model)" class="screen" tabindex="0" alt="Live game view — click, then use the keyboard" src="/api/sessions/${encodeURIComponent(sid)}/mjpeg?${tq()}">`}${offline ? '<div id="follow-idle"></div>' : ""}
+      ${s.game_id && !offline ? `<div id="wb" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading your controls…</p></div>` : ""}
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
         ${window.GBoxTacticalMap ? GBoxTacticalMap.html(sid) : ""}
@@ -1908,7 +1912,7 @@ async function sessionsView(sid, mode) {
         <button class="act" style="color:var(--bad)" onclick='sop(${JSON.stringify(sid)},"stop_game").then(()=>show("Sessions"))'>Stop</button>
         ${s.state === "running" && window.GBOX_LOCAL?.worker && s.detail?.worker_name !== window.GBOX_LOCAL.worker ? `<button class="act pri" title="Save state there, start the same game (and mod) on this PC, load it, close the other copy: native speed, your GPU, your controller" onclick='moveHere(${JSON.stringify(sid)}, this)'>Move to this PC</button>` : ""}</div>
       <p id="sopres" class="mut"></p></details></div>
-      ${s.game_id ? `<details data-dock="gfx" class="panel gfxbox sect" ${localStorage.getItem("gbox_gfx_open") === "1" ? "open" : ""} ontoggle='try{localStorage.setItem("gbox_gfx_open", this.open ? "1" : "0")}catch{}'>
+      ${s.game_id && !offline ? `<details data-dock="gfx" class="panel gfxbox sect" ${localStorage.getItem("gbox_gfx_open") === "1" ? "open" : ""} ontoggle='try{localStorage.setItem("gbox_gfx_open", this.open ? "1" : "0")}catch{}'>
         <summary draggable="true">Graphics settings</summary><div id="gfx" data-gid="${esc(s.game_id)}" data-sid="${esc(sid)}"><p class="mut">loading…</p></div></details>` : ""}
       <div id="dock-side" class="dock" data-zone="side"></div></div></div>`;
 }
@@ -2359,6 +2363,12 @@ sessionsView.after = (sid, mode) => {
   syncSessionFav();
   const head = $("#session-head");
   sessionBuildMount(head);
+  if (head?.dataset.state === "offline") {                     // its PC is offline (#2870): the banner, Retry / Stop / Relaunch, then a live game
+    playing = null; if (active?.sid === sid) active = null; pip();
+    const stop = btn => hardStop(sid, btn), relaunch = btn => relaunchSession(sid, btn);
+    if ($("#no-picture")) GBoxSessionLive.mount(document, { sid, api, stop, relaunch, onLive: () => show("Sessions", sid, mode) });
+    followWatch(sid); return;
+  }
   if (!head || head.dataset.state !== "running") { playing = null; pip(); followWatch(sid); return; }
   sid = head.dataset.sid; playing = sid;
   followNote(sid, head);
