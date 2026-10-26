@@ -75,10 +75,11 @@ Starting a build (`@launch mod=<build>`, Mods page, Builds) sets `adapter.overla
 1. lands the build's pending edits (`apply_pending`),
 2. links every overlay build of the game for that title into `load/<TID>/` (a staged `<build>~<key>` copy only while
    it is the one started; links whose build is gone are removed; foreign folders are never touched),
-3. writes `[DisabledAddOns]`: the started build enabled, every other folder of the title disabled,
+3. writes `[DisabledAddOns]`: the started build enabled, the title's other gBox builds disabled. A mod folder gBox did
+   not make keeps the state the operator gave it (enabled or disabled) and is listed as `foreign`,
 4. records the selection (`<runtime>/switch-overlays.json`) and reports it in the session detail (`overlay`).
 
-Starting the original game disables every folder of the title. Old full-copy builds still boot their own image until
+Starting the original game disables every gBox build of the title; the operator's own mod folders stay as they are. Old full-copy builds still boot their own image until
 they are converted. `switch_mods op=select build=<b>` (or `""`) sets the selection without starting the game; it
 takes effect at the next start.
 

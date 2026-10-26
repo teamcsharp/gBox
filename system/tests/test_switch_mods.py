@@ -200,7 +200,7 @@ def test_the_games_own_file_from_an_extracted_romfs_swaps_a_slot(tmp_path):
 
 # --- the emulator's view: links and the selection --------------------------------------------------------------------
 
-def test_starting_a_build_links_it_enables_it_and_disables_every_other_folder(tmp_path):
+def test_starting_a_build_links_it_enables_it_and_disables_the_other_gbox_builds(tmp_path):
     c = cfg(tmp_path)
     e = SM.eden(c)
     rom = nsp(tmp_path / "lib" / "Resident Evil 5.nsp")
@@ -210,17 +210,34 @@ def test_starting_a_build_links_it_enables_it_and_disables_every_other_folder(tm
     (foreign / "romfs").mkdir(parents=True)
     (foreign / "romfs" / "x").write_text("mine")
     r = SM.prepare_launch(c, e, GID, rom, "a")
-    assert r["selection"] == "applied" and r["enabled"] == "a" and sorted(r["disabled"]) == ["b", "operator_mod"]
+    assert r["selection"] == "applied" and r["enabled"] == "a" and sorted(r["disabled"]) == ["b"]
     assert r["mode"] == "link" and SM._linked(e.title_dir(RE5) / "a") and r["foreign"] == ["operator_mod"]
     assert (e.title_dir(RE5) / "a" / "romfs/arc/pl/pl00.arc").read_bytes() == b"A" * 16    # through the link
     assert (foreign / "romfs" / "x").read_text() == "mine"                                 # never touched
-    assert SM.read_disabled(e.config.read_text())[int(RE5, 16)] == ["b", "operator_mod"]
+    assert SM.read_disabled(e.config.read_text())[int(RE5, 16)] == ["b"]                   # the operator's mod stays on
     assert SM.selected(c, "eden", RE5)["build"] == "a"
-    original = SM.prepare_launch(c, e, GID, rom, None)                                    # every mod folder off
-    assert original["enabled"] is None and sorted(original["disabled"]) == ["a", "b", "operator_mod"]
+    original = SM.prepare_launch(c, e, GID, rom, None)                                    # every gBox build off
+    assert original["enabled"] is None and sorted(original["disabled"]) == ["a", "b"]
     assert SM.selected(c, "eden", RE5)["build"] is None
     edited = SM.write_files(c, GID, "a", {"arc/pl/pl00.arc": {"bytes": b"edited"}})       # an in-place edit shows
     assert (e.title_dir(RE5) / "a" / "romfs/arc/pl/pl00.arc").read_bytes() == b"edited" and not edited["pending"]
+
+
+def test_operator_mod_folders_keep_the_state_the_operator_gave_them(tmp_path):
+    """gBox only switches its own builds: a mod the operator installed by hand stays on or off as they set it, for a
+    build start and for the original game alike."""
+    c = cfg(tmp_path)
+    e = SM.eden(c)
+    rom = nsp(tmp_path / "lib" / "Resident Evil 5.nsp")
+    overlay(c, "a")
+    for name in ("mine_on", "mine_off"):
+        (e.title_dir(RE5) / name / "romfs").mkdir(parents=True)
+    SM.set_title_disabled(e, RE5, ["mine_off"], None)                     # the operator turned one of them off
+    r = SM.prepare_launch(c, e, GID, rom, "a")
+    assert r["enabled"] == "a" and sorted(r["foreign"]) == ["mine_off", "mine_on"]
+    assert SM.read_disabled(e.config.read_text())[int(RE5, 16)] == ["mine_off"]
+    SM.prepare_launch(c, e, GID, rom, None)
+    assert sorted(SM.read_disabled(e.config.read_text())[int(RE5, 16)]) == ["a", "mine_off"]
 
 
 def test_symlinks_work_like_junctions(tmp_path, monkeypatch):

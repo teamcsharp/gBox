@@ -4475,7 +4475,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     screen (docs/research/switch-emulator-spark.md).
     Mods are LayeredFS overlays (gbox.switch_mods, docs/switch-mods.md): before every start the build this session
     runs (overlay_build, set by tools._launch_game; None = the original game) is linked into Eden's load/<title id>/
-    and enabled, every other mod folder of the title disabled in [DisabledAddOns]. restart_title starts the same title
+    and enabled, the title's other gBox builds disabled in [DisabledAddOns]. restart_title starts the same title
     again in this session (an in-game swap or Reset): Eden layers mods only at boot."""
     name = "eden"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
@@ -4513,8 +4513,9 @@ class SwitchLinuxAdapter(StandaloneAdapter):
 
     def select_overlay(self) -> dict:
         """The LayeredFS selection for this start, written while Eden is down (gbox.switch_mods.prepare_launch): the
-        session's build enabled (its pending edits landed first), every other mod folder of the title disabled; the
-        original game disables them all. A failure blocks only a launch that asked for a build."""
+        session's build enabled (its pending edits landed first), the title's other gBox builds disabled; the
+        original game disables them all. Operator mod folders keep their state. A failure blocks only a launch that
+        asked for a build."""
         from . import switch_mods
         try:
             return switch_mods.prepare_launch(self.config, switch_mods.eden(self.config), getattr(self, "game_id", None),

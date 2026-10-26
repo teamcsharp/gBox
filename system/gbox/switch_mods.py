@@ -22,8 +22,8 @@ sources at v0.2.1 (the AppImage gBox runs, tag commit 58c1e20e) and master (26a0
 So a Switch build is a folder in the mod collection, <cache>/mods/<game_id>/<build>/ (romfs/, exefs/, the .gbox-mod.json
 marker with "layeredfs", .gbox-backup/<edit>/ holding what each edit replaced), linked into the emulator as
 <load>/<TID>/<build> (a symlink; a junction on Windows; a small copy when no link can be made). Starting a build enables
-its folder and disables every other folder of the title; the original game disables them all (prepare_launch, called
-by the adapters while the emulator is down). Editing a build rewrites only the files named, in place; while a session
+its folder and disables the title's other gBox builds; the original game disables them all; a mod folder the operator
+put there keeps the state they gave it (prepare_launch, called by the adapters while the emulator is down). Editing a build rewrites only the files named, in place; while a session
 on this node runs that build the edit waits in .gbox-pending/ (node-local, never in the collection manifest) and lands
 when the title restarts. An in-game swap is the edit plus one restart of the title in the same session
 (SwitchLinuxAdapter.restart_title): Eden layers mods only at boot and has no save states, so the title boots again and
@@ -907,8 +907,9 @@ def selected(cfg, kind: str, title_id: str) -> dict | None:
 def prepare_launch(cfg, emu: Emu, game_id: str | None, rom, build: str | None = None, *, serial=None,
                    apply: bool = True) -> dict:
     """Right before the emulator starts a Switch title (that emulator down): the build's pending edits land, its
-    folder is linked into <load>/<TID>/ and enabled, every other folder of the title disabled; build=None starts the
-    original game (all disabled). The result goes into the session detail ("overlay")."""
+    folder is linked into <load>/<TID>/ and enabled, the title's other gBox builds disabled; build=None starts the
+    original game (every gBox build disabled). Mod folders gBox did not make keep the state the operator gave them.
+    The result goes into the session detail ("overlay")."""
     tid = title_id_for(rom, serial)
     out = {"title_id": tid, "build": build or None, "emulator": emu.kind}
     if not tid:
@@ -941,12 +942,14 @@ def prepare_launch(cfg, emu: Emu, game_id: str | None, rom, build: str | None = 
         files = len(overlay_files(folder))
         if not entry.is_dir() or (files and not any((entry / d).is_dir() for d in _eden_dirs(folder))):
             raise RuntimeError(f"the overlay {build} is not reachable in {tdir}: the game would start without it")
-    mods = sorted(e.name for e in tdir.iterdir() if e.is_dir()) if tdir.is_dir() else []
+    entries = sorted(e for e in tdir.iterdir() if e.is_dir()) if tdir.is_dir() else []
+    mods = [e.name for e in entries if _ours(cfg, e)]         # gBox's builds only: a mod folder the operator put there
+    foreign = [e.name for e in entries if e.name not in mods]  # keeps the state they gave it, enabled or disabled
     dis = set_title_disabled(emu, tid, mods, build)
     remember(cfg, emu.kind, tid, game_id or "", build)
     return out | {"selection": "applied", "load": str(tdir), "mode": sync["linked"].get(build) if build else None,
                   "enabled": build or None, "disabled": dis["disabled"], "config_changed": dis["changed"],
-                  "pending_applied": applied, "files": files, "foreign": sync["foreign"], "pruned": sync["pruned"]}
+                  "pending_applied": applied, "files": files, "foreign": foreign, "pruned": sync["pruned"]}
 
 
 def running_users(game_id: str, folder_name: str) -> list[str]:
