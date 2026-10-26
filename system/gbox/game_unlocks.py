@@ -13,6 +13,7 @@ RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
 DOAPP_ID = '59c55e95af61abbe'  # Dead Or Alive ++ (Korea), platform=arcade
 NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
+SBAM_ID = '6cd93f2e36885f31'  # Super Bust-A-Move (PS2), SLUS_201.15
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -33,6 +34,23 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                     'reason': record['reason'],
                     'proven_revisions': record['proven_revisions'],
                     'unknown_counts': record['unknown_counts']}
+        if game.get('game_id') == SBAM_ID and game.get('platform') == 'ps2':
+            # Registration point for the Super Bust-A-Move (PS2) unlock work
+            # (request #2250). The fast Play path must never guess a write:
+            # report the live static evidence state and the staged,
+            # revision-guarded patch plan, and hand off to runtime acceptance.
+            from . import sbam_modeselect
+            record = sbam_modeselect.profile()
+            return {'state': 'research_pending', 'applied': False,
+                    'reason': record['unverified_note'],
+                    'proven_revisions': record['proven_revisions'],
+                    'unknown_counts': record['unknown_counts'],
+                    'patch_plan': record['patch_plan'],
+                    'next': ('runtime acceptance on an authorized agent session '
+                             '(i9-NUC or the Spark, idle, 2% audio): reach '
+                             'mode select, apply the staged panel-width patch, '
+                             'select a locked zone, store a gameplay image, '
+                             'then a second launch and rollback')}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
@@ -64,6 +82,15 @@ def profile_for(game: dict) -> dict:
         # pre_launch below short-circuits on verified=False, so no writer is reachable.
         return {'status': 'pending_research', 'profile': None, 'verified': False,
                 'scope': list(doax2_unlock.CATEGORIES), **doax2_unlock.profile_gate()}
+    if game.get('game_id') == SBAM_ID and game.get('platform') == 'ps2':
+        from . import sbam_modeselect
+        record = sbam_modeselect.profile()
+        return {'status': 'pending_research', 'profile': None, 'verified': False,
+                'game_id': SBAM_ID, 'platform': 'ps2',
+                'scope': list(sbam_modeselect.CATEGORIES),
+                'proven_revisions': record['proven_revisions'],
+                'patch_plan': record['patch_plan'],
+                'reason': record['unverified_note']}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}

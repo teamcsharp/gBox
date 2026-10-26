@@ -90,3 +90,114 @@ def test_ev_names_present_in_executable():
     elf = _elf()
     for row in mod.EV_NAMES:
         assert _cstr(elf, row["vaddr"]) == row["name"]
+
+
+# ---- unlock-registry registration (request #2250, next milestone) ----
+
+def test_owned_revision_is_recorded_in_proven_revisions():
+    assert mod.EXECUTABLE_SHA256 in mod.PROVEN_REVISIONS
+    record = mod.PROVEN_REVISIONS[mod.EXECUTABLE_SHA256]
+    assert record["artifact"]
+    assert "modes" in record["categories"]
+
+
+def test_inventory_is_honest_and_complete():
+    inv = mod.inventory()
+    assert set(inv) == set(mod.CATEGORIES)
+    # 21 character cstrings, all pinned and all still unknown
+    assert len(inv["characters"]) == len(mod.EV_NAMES)
+    for row in inv["characters"]:
+        assert row["status"] == "unknown"
+        assert "vaddr" in row["evidence"] or "0x" in row["evidence"]
+    # the three mode locks are listed, none proven
+    modes = {row["name"]: row for row in inv["modes"]}
+    for name in ("zone_select", "round_select", "bubble_select"):
+        assert name in modes and modes[name]["status"] == "unknown"
+
+
+def test_profile_carries_evidence_chain_and_patch_plan():
+    prof = mod.profile()
+    assert prof["verified"] is False
+    assert prof["proven_revisions"] == [mod.EXECUTABLE_SHA256]
+    assert prof["unknown_counts"]["characters"] == len(mod.EV_NAMES)
+    assert prof["unknown_counts"]["modes"] == 3
+    plan = prof["patch_plan"]
+    assert plan["revision"] == mod.EXECUTABLE_SHA256
+    (op, addr, data), = plan["writes"]
+    assert op == "w" and addr == mod.PANEL_GLOBAL_VADDR and data == b"\x01\x00\x00\x00"
+
+
+def test_staged_patch_plan_passes_the_revision_guard():
+    errors = mod.validate_write(mod.PATCH_PLAN["writes"], mod.PATCH_PLAN["revision"])
+    assert errors == []
+
+
+def test_write_plan_refused_without_proven_revision():
+    errors = mod.validate_write([("w", mod.PANEL_GLOBAL_VADDR, b"\x01")], "0" * 64)
+    assert any("binary_session" in e for e in errors)
+
+
+def test_write_plan_bounds():
+    rev = mod.EXECUTABLE_SHA256
+    assert mod.validate_write([("w", mod.PANEL_GLOBAL_VADDR, b"\x01\x00\x00\x00")], rev) == []
+    assert mod.validate_write([("r", mod.PANEL_GLOBAL_VADDR, b"\x01")], rev)   # unsupported op
+    assert mod.validate_write([("w", mod.PANEL_GLOBAL_VADDR, b"")], rev)      # empty write
+    assert mod.validate_write([("w", mod.PANEL_GLOBAL_VADDR, b"\x01" * 5)], rev)  # too wide
+    assert mod.validate_write([("w", 0x000F_0000, b"\x01")], rev)             # below .text
+    assert mod.validate_write([("w", 0x0080_0000, b"\x01")], rev)             # above window
+
+
+def test_accept_revision_rejects_bad_input():
+    import pytest as _p
+    with _p.raises(ValueError):
+        mod.accept_revision("nope", "art", {})
+    with _p.raises(ValueError):
+        mod.accept_revision("f" * 64, " ", {})
+    with _p.raises(ValueError):
+        mod.accept_revision("f" * 64, "art", {"bogus_category": []})
+    with _p.raises(ValueError):  # claims need evidence
+        mod.accept_revision("f" * 64, "art",
+                            {"characters": [{"name": "EV1_KATZE", "status": "unlocked"}]})
+    with _p.raises(ValueError):
+        mod.accept_revision("f" * 64, "art",
+                            {"characters": [{"name": "EV1_KATZE", "status": "maybe"}]})
+
+
+def test_accept_revision_records_and_dedupes_names():
+    out = mod.accept_revision("f" * 64, "art-42", {
+        "characters": [{"name": "EV1_KATZE", "status": "not_present",
+                        "evidence": "rea:roster_scan"}]})
+    assert out["verified"] is False and out["recorded"] == "f" * 64
+    inv = mod.inventory()
+    assert len([r for r in inv["characters"] if r["name"] == "EV1_KATZE"]) == 1
+    assert [r for r in inv["characters"] if r["name"] == "EV1_KATZE"][0]["status"] == "not_present"
+    # restore
+    mod.PROVEN_REVISIONS.pop("f" * 64, None)
+    mod.INVENTORY["characters"] = [
+        {"name": r["name"], "status": "unknown",
+         "evidence": r["evidence"]} for r in
+        [mod.inventory()["characters"][i] for i in range(21)]]
+
+
+def test_game_unlocks_registration_for_sbam():
+    from types import SimpleNamespace
+    from gbox import game_unlocks as G
+    game = {"game_id": mod.GAME_ID, "platform": "ps2"}
+    result = G.pre_launch(game, SimpleNamespace())
+    assert result["applied"] is False
+    assert result["state"] == "research_pending"
+    assert result["proven_revisions"] == [mod.EXECUTABLE_SHA256]
+    assert result["patch_plan"]["revision"] == mod.EXECUTABLE_SHA256
+    # launch plan must not produce any job for an unverified profile
+    worker = {"id": "w" * 16, "name": "JAYBUILTFINALE"}
+    plan = G.launch_plan(game, worker, enable_unlock=True, allow_save_upgrade=True)
+    assert plan["status"] == "unsupported_unlock" and plan["jobs"] == [] and plan["executed"] is False
+    # profile_for stays honest: never verified, no writer scope
+    prof = G.profile_for(game)
+    assert prof["verified"] is False and prof["status"] == "pending_research"
+
+
+def test_sbam_gate_cannot_be_bypassed_by_other_platform():
+    from gbox import game_unlocks as G
+    assert G.profile_for({"game_id": mod.GAME_ID, "platform": "psp"})["verified"] is False
+    assert G.profile_for({"game_id": "6" * 16, "platform": "ps2"})["verified"] is False

@@ -21,6 +21,9 @@ GAME_ID = "6cd93f2e36885f31"
 TITLE = "Super Bust-A-Move (PS2)"
 PLATFORM = "ps2"
 
+CATEGORIES = ("characters", "hidden_characters", "modes", "levels",
+              "stages", "costumes", "items", "extras")
+
 #: SHA-256 of the owned executable that was disassembled for these findings.
 EXECUTABLE_SHA256 = "eeb913a6eac79a58d8424dc18190310f1ae5d14d762dec5a339f44ad9870d965"
 
@@ -108,6 +111,121 @@ EV_NAMES = [
 ]
 
 
+#: Executable revisions opened and inspected in REA/Ghidra, keyed by SHA-256.
+#: The owned SLUS_201.15 executable was disassembled instruction by
+#: instruction for the mode-select lock site above.
+PROVEN_REVISIONS: dict[str, dict] = {
+    EXECUTABLE_SHA256: {
+        "artifact": "static-mode-select-disassembly-0x1192B4-0x119340",
+        "categories": ["modes"],
+    },
+}
+
+#: Per-entry category inventory for the owned revision.  Every entry that is
+#: not yet proven stays "unknown"; nothing is guessed.  The 21 EV/character
+#: cstrings are pinned by address in EV_NAMES (see the module docstring).
+INVENTORY: dict[str, list[dict]] = {
+    category: [] for category in CATEGORIES
+}
+for _row in EV_NAMES:
+    INVENTORY["characters"].append({
+        "name": _row["name"],
+        "status": "unknown",
+        "evidence": "cstring pinned at vaddr 0x%08X in the owned executable"
+                    % _row["vaddr"],
+    })
+INVENTORY["modes"].extend([
+    {"name": "zone_select", "status": "unknown",
+     "evidence": "lock site vaddr 0x001192B4-0x00119340 in the owned executable"},
+    {"name": "round_select", "status": "unknown",
+     "evidence": "no disassembled evidence yet"},
+    {"name": "bubble_select", "status": "unknown",
+     "evidence": "no disassembled evidence yet"},
+])
+
+#: The runtime patch plan that a future writer must pass through
+#: ``validate_write`` before it may be applied.  It is staged, not applied:
+#: the panel-width global (0x00571640) is 0 on disk and set by the game at
+#: runtime; a value of 1 selects the wide panel.  The key-index branch at
+#: 0x001192B8 (beqz -> 0x00119308) is the zone-lock gate: key index 0
+#: restricts a zone to key A only.
+PATCH_PLAN = {
+    "revision": EXECUTABLE_SHA256,
+    "writes": [
+        # wide selection panel (u32, 4 bytes at the documented global)
+        ("w", PANEL_GLOBAL_VADDR, b"\x01\x00\x00\x00"),
+    ],
+    "note": (
+        "Panel-width global only; the per-zone key-index gate at "
+        "0x001192B8 must be proven at runtime before any further write is "
+        "admitted by validate_write."
+    ),
+}
+
+
+def inventory() -> dict:
+    """Category inventory for the owned revision, copied for safe reuse."""
+    return {category: list(rows) for category, rows in INVENTORY.items()}
+
+
+def validate_write(writes: list[tuple], revision: str) -> list[str]:
+    """Guard a candidate memory-write plan against the recorded revision proof.
+
+    Returns a list of blocking reasons (empty = admissible).  This is the gate
+    any future PS2 writer must pass: it refuses writes when the running
+    revision was never inspected, when an address falls outside the owned
+    executable's documented PT_LOAD window, or when a write is wider than
+    4 bytes.
+    """
+    errors: list[str] = []
+    if revision not in PROVEN_REVISIONS:
+        errors.append(f"revision {revision!r} has no REA/Ghidra binary_session proof")
+    for op, address, data in writes:
+        if op != "w":
+            errors.append(f"unsupported operation {op!r}")
+        if not isinstance(data, (bytes, bytearray)) or not 1 <= len(data) <= 4:
+            errors.append(f"write at 0x{address:x} must be 1..4 bytes")
+        # PT_LOAD: file 0x1000 -> vaddr 0x100000, .text/.rodata/.sdata span
+        # 0x100000 .. ~0x571900; use the documented global window generously.
+        if not 0x0010_0000 <= address < 0x0080_0000:
+            errors.append(f"address 0x{address:x} outside documented PS2 RAM window")
+    return errors
+
+
+def accept_revision(revision: str, artifact: str, categories: dict[str, list[dict]]) -> dict:
+    """Record REA/Ghidra evidence for a revision (static analysis only).
+
+    Raises on malformed input.  Does NOT mark the profile verified:
+    verification requires the runtime acceptance checklist to complete.
+    """
+    if len(revision) != 64 or any(ch not in "0123456789abcdef" for ch in revision):
+        raise ValueError("revision must be a lowercase sha256 hex digest")
+    if not artifact.strip():
+        raise ValueError("artifact id required")
+    for category, rows in categories.items():
+        if category not in INVENTORY:
+            raise ValueError(f"unknown category {category!r}")
+        for row in rows:
+            if row["status"] not in ("unlocked", "not_present", "unknown"):
+                raise ValueError(f"bad status for {row.get('name')!r}")
+            if row["status"] != "unknown" and not str(row.get("evidence") or "").strip():
+                raise ValueError(f"{category}:{row.get('name')} needs evidence to leave unknown")
+        known = {r["name"] for r in INVENTORY[category]}
+        for row in rows:
+            if row["name"] in known:
+                INVENTORY[category] = [r for r in INVENTORY[category]
+                                       if r["name"] != row["name"]]
+        INVENTORY[category].extend(rows)
+        INVENTORY[category].sort(key=lambda r: r["name"])
+    PROVEN_REVISIONS[revision] = {"artifact": artifact, "categories": sorted(categories)}
+    return {"recorded": revision, "categories": sorted(categories),
+            "verified": False,
+            "next": ("runtime acceptance on an authorized agent session "
+                     "(i9-NUC or the Spark, idle, 2% audio): reach mode select, "
+                     "apply the staged patch, select a locked zone, store a "
+                     "gameplay image, then a second launch and rollback")}
+
+
 def profile() -> dict:
     """Static profile record for the owned build; verified is False by design."""
     return {
@@ -117,13 +235,27 @@ def profile() -> dict:
         "verified": False,
         "complete_unlock_profile": False,
         "executable_sha256": EXECUTABLE_SHA256,
+        "proven_revisions": sorted(PROVEN_REVISIONS),
+        "inventory": {category: list(rows)
+                      for category, rows in INVENTORY.items()},
+        "unknown_counts": {category: sum(1 for r in rows
+                                         if r["status"] == "unknown")
+                           for category, rows in INVENTORY.items()},
         "findings": list(INSTRUCTIONS),
         "lock_site": dict(LOCK_SITE),
         "panel_global": {"vaddr": PANEL_GLOBAL_VADDR,
                          "on_disk": PANEL_GLOBAL_ON_DISK},
         "ev_names": [dict(row) for row in EV_NAMES],
+        "patch_plan": {
+            "revision": PATCH_PLAN["revision"],
+            "writes": [(op, addr, bytes(data)) for op, addr, data
+                       in PATCH_PLAN["writes"]],
+            "note": PATCH_PLAN["note"],
+        },
         "unverified_note": (
-            "Static instruction evidence only. The zone/round/bubble locks are "
-            "not proven selectable at runtime and no patch has been applied; "
-            "registration into the unlock registry is the next step."),
+            "Static instruction evidence only; the owned revision is recorded "
+            "in PROVEN_REVISIONS with its static disassembly artifact. The "
+            "zone/round/bubble locks are not proven selectable at runtime and "
+            "no patch has been applied; runtime acceptance on an authorized "
+            "agent session is the next step."),
     }
