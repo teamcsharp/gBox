@@ -761,7 +761,10 @@ class Screensaver:
                             origin={'via': 'MercMode keep warm', 'session_id': sid})
         mercmode.keep_warm(self.store, w['name'], run['mercmode']['title'],
                            {'session_id': sid, 'game_id': run['game_id'], 'job': run['job'], 'worker_id': w['id'],
-                            **({'warm_adoption':run['warm_adoption'],'autoplay_job':_jid(stopped)}
+                            'autoplay_job':_jid(stopped),
+                            'display_park':{'round_id':(run.get('mercmode_last_round') or {}).get('round_id'),
+                                            'started':owned.get('started'),'pid':(owned.get('detail') or {}).get('pid')},
+                            **({'warm_adoption':run['warm_adoption']}
                                if run.get('warm_adoption') else {}),
                             'state': 'parked', 'at': now, 'pause_job': _jid(pause)})
         self._warm_label(sid, run['title'], now)

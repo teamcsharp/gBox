@@ -3076,19 +3076,49 @@ class YuzuAdapter(Adapter):
         self.bridge_proc = None
         self.paused_tids = []
         self.video_driver = None                       # Yuzu's renderer (qt-config.ini), for the Examine 3D matrix
+        self.debug = False
+        self.dbg = None
+        self.debug_port = None
+        self.keyboard_control = False
+        self.log = None
+        self.supported = set(type(self).supported)
+
+    def _exe(self):
+        configured = self.config.emulators.get('switch')
+        if configured and configured.executable:
+            return Path(configured.executable)
+        return self.config.library('hyperspin').root() / 'emulators' / 'yuzu' / 'yuzu.exe'
 
     def launch_game(self, rom: str) -> dict:
-        exe = self.config.library("hyperspin").root() / "emulators" / "yuzu" / "yuzu.exe"
+        exe = self._exe()
         if HOST_OS != "windows" or not exe.is_file():
             raise ToolUnavailable(f"portable Yuzu is unavailable on this Windows worker: {exe}")
+        if self.debug:
+            from .yuzu_runtime import private_debug_config, set_debug_config
+            with socket.socket() as port_probe:
+                port_probe.bind(('127.0.0.1', 0))
+                self.debug_port = port_probe.getsockname()[1]
+            set_debug_config(private_debug_config(exe, self.config), port=self.debug_port)
+        else:
+            # A prior debug run can save enabled=true on emulator exit. Ordinary
+            # play must not silently wait for a debugger on that private copy.
+            from .yuzu_runtime import private_debug_config, set_debug_config
+            try:
+                private_config = private_debug_config(exe, self.config)
+            except ValueError:
+                private_config = None
+            if private_config and private_config.with_name(private_config.name + '.gbox-debug-original').exists():
+                set_debug_config(private_config, port=6543, enabled=False, dump_nso=False)
         from . import gamepads
         guid = gamepads.sdl2_xbox_guid(exe.parent / "SDL2.dll")
         controller_config = exe.parent / "user" / "config" / "qt-config.ini"
         bridge = bool(guid and controller_config.is_file())
         if controller_config.is_file():
             gamepads.enable_yuzu_mouse_touch(controller_config)
-        if bridge:
+        if bridge or self.debug:
             gamepads.bind_yuzu_xinput_bridge(controller_config)
+            self.keyboard_control = True
+            self.supported.add('send_input')
         from .capture_backend import yuzu_backend
         self.video_driver = yuzu_backend(exe.parent / "user" / "config" / "qt-config.ini")
         env = gamepads.emulator_environment(os.environ)
@@ -3096,10 +3126,14 @@ class YuzuAdapter(Adapter):
             # Examine 3D (#971): RenderDoc's Vulkan layer for this process only (no injection, Yuzu's config untouched)
             from . import scene_capture
             self.proc = scene_capture.popen_layer([str(exe), "-g", rom], self.config.runtime / "scene_capture" / "rdc",
-                                                  cwd=exe.parent, startupinfo=hidden_start(), env=env)
+                                                  cwd=exe.parent, startupinfo=capture_start(), env=env)
         else:
-            self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=hidden_start(), env=env)
+            # Readiness ignores minimized windows. Publish a nonactivated render
+            # window before docking; minimized startup otherwise waits forever
+            # for the session that would restore it to be created.
+            self.proc = subprocess.Popen([str(exe), "-g", rom], cwd=exe.parent, startupinfo=capture_start(), env=env)
         keep_offscreen(self.proc.pid)
+        self.log = exe.parent / 'user' / 'log' / 'yuzu_log.txt'
         for _ in range(60):
             if self.proc.poll() is not None:
                 raise RuntimeError(f"Yuzu exited before opening the game (code {self.proc.returncode})")
@@ -3109,15 +3143,28 @@ class YuzuAdapter(Adapter):
         else:
             self.stop_game()
             raise RuntimeError("Yuzu did not open a game window within 60 seconds")
+        if self.debug:
+            try:
+                from .debug import GdbDebugger
+                self.dbg = GdbDebugger('127.0.0.1', self.debug_port, 'arm64', connect_timeout=90)
+                self.supported.update({'read_memory', 'write_memory', 'set_breakpoint', 'remove_breakpoint'})
+            except Exception:
+                self.stop_game()
+                raise
         if bridge:
             self.bridge_proc = subprocess.Popen([sys.executable, "-u", "-P", "-m", "gbox.yuzu_input", str(self.proc.pid)],
                                                 stdin=subprocess.PIPE, startupinfo=hidden_start())
         return {"pid": self.proc.pid, "rom": rom, "local_window": True, "controller_guid": guid,
                 "controller_mode": "xinput_keyboard_bridge" if bridge else "sdl",
                 "worker_name": __import__("platform").node(), "emulator": "yuzu", "renderer": self.video_driver,
+                "debug_port": self.debug_port, "debugger": self.dbg is not None,
+                "log": str(self.log), "validation": "window_open; gameplay not yet verified",
                 "examine": _examine_ok(self.proc, 10.0)}
 
     def stop_game(self) -> dict:
+        if self.dbg:
+            self.dbg.close()
+            self.dbg = None
         if self.paused_tids:
             self.resume()
         if self.bridge_proc and self.bridge_proc.poll() is None:
@@ -3132,17 +3179,53 @@ class YuzuAdapter(Adapter):
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def query_runtime(self) -> dict:
-        return {"running": bool(self.proc and self.proc.poll() is None), "paused": bool(self.paused_tids)}
+        return {"running": bool(self.proc and self.proc.poll() is None), "paused": bool(self.paused_tids),
+                "pid": self.proc.pid if self.proc else None, "debugger": self.dbg is not None,
+                "debug_port": self.debug_port, "log": str(self.log) if self.log else None}
+
+    def log_tail(self, n=16000):
+        if not self.log or not self.log.is_file():
+            return {'log': '', 'path': str(self.log) if self.log else None}
+        with self.log.open('rb') as stream:
+            stream.seek(max(0, self.log.stat().st_size - min(max(int(n), 0), 256000)))
+            return {'log': stream.read(256000).decode('utf-8', 'replace'), 'path': str(self.log)}
+
+    def debugger(self):
+        if self.dbg is None:
+            raise Unsupported('Yuzu guest debugging requires a private local debug=true launch')
+        return self.dbg
+
+    def read_memory(self, address, length):
+        return self.debugger().read(address, length)
+
+    def write_memory(self, address, data):
+        return self.debugger().write(address, data)
+
+    def set_breakpoint(self, *args, **kwargs):
+        return self.debugger().set_breakpoint(*args, **kwargs)
+
+    def remove_breakpoint(self, *args, **kwargs):
+        return self.debugger().remove_breakpoint(*args, **kwargs)
+
+    def send_input(self, events):
+        if not self.keyboard_control:
+            raise Unsupported('Yuzu keyboard control is not configured for this session')
+        from .yuzu_runtime import input_events
+        return win_send_keys(self.proc.pid, input_events(events), polite=bool(getattr(self, 'polite_input', False)))
 
     def get_frame(self) -> bytes:
         return win_grab(self.proc.pid)
 
     def pause(self) -> dict:
+        if self.dbg:
+            return self.dbg.halt()
         if not self.paused_tids:
             self.paused_tids = win_suspend_emulation(self.proc.pid)
         return {"paused": bool(self.paused_tids)}
 
     def resume(self) -> dict:
+        if self.dbg:
+            return self.dbg.resume()
         if self.paused_tids:
             win_resume_threads(self.paused_tids)
             self.paused_tids = []
@@ -4395,7 +4478,9 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         from .xenia import XeniaAdapter
         return XeniaAdapter(config, plat)
     if plat == "switch" and HOST_OS == "windows":
-        return YuzuAdapter(config)
+        ad = YuzuAdapter(config)
+        ad.debug = bool(debug)
+        return ad
     if HOST_OS == "windows" and game.get("launch", {}).get("kind") == "attract" and not game.get("core"):
         return RocketLauncherAdapter(config.library(game["library"]).root("windows"))   # no libretro core: drive's own emulators
     if HOST_OS == "linux" and plat in ("gamecube", "wii") and not (override and override.core) \

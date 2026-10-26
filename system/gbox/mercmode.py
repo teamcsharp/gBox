@@ -18,7 +18,7 @@ OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': [], 'keep_warm': 1}
+           'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {}}
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
 # seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
 # one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
@@ -65,6 +65,8 @@ def normalize(patch, current=None):
     if not isinstance(patch, dict) or set(patch)-DEFAULT.keys():
         raise ValueError('Unknown MercMode setting')
     out = {**DEFAULT, **(current or {}), **patch}
+    from .re_switch import normalize_preferences
+    out['preferred_editions'] = normalize_preferences(out['preferred_editions'])
     if type(out.get('keep_warm')) is bool:            # true/false from an older client: one title kept warm, or none
         out['keep_warm'] = int(out['keep_warm'])
     if type(out.get('keep_warm')) is not int or not 0 <= out['keep_warm'] <= WARM_MAX:
@@ -379,6 +381,83 @@ def link_rotation(store, run, successor, now):
     return True
 
 
+def display_successors(store, workers, running):
+    """Read-only viewer links from parked games to this host's current MercMode turn.
+
+    Warm games keep their real session identity. Persisting replacement links
+    would create A -> B -> A cycles when the same emulator takes another turn.
+    These links are projected only into the sessions response, after accepted
+    park/resume and autoplay controls; they grant no server control ownership.
+    """
+    from . import autoplay_resume
+    from .screensaver import STATE, ACTOR, _launch_session
+
+    def owned(worker, row):
+        sid=row.get('session_id','')
+        session=next((s for s in running if s.get('session_id')==sid),None)
+        if not session or session.get('state')!='running' or session.get('replaced_by') \
+                or row.get('worker_id')!=worker['id'] or not sid.startswith(worker['id']+'-') \
+                or (store.get('slabel',sid) or {}).get('owner')=='you':
+            return None
+        job=store.get('job',row.get('job')) or {}
+        if job.get('state')!='succeeded' or job.get('tool')!='launch_game' \
+                or job.get('require_worker')!=worker['id'] or job.get('worker_id')!=worker['id'] \
+                or _launch_session(store,row.get('job'),[session],worker_id=worker['id'],game_id=row.get('game_id')) is None:
+            return None
+        if row.get('warm_adoption'):
+            return session if warm_adoption_owned(store,worker,row,session) else None
+        return session if job.get('actor')==ACTOR and job.get('agent_use') else None
+
+    def control(worker, row, op, since):
+        sid=row['session_id'];job=autoplay_resume.latest_control(store,sid) or {}
+        if job.get('id')!=row.get('autoplay_job') or job.get('state')!='succeeded' \
+                or job.get('require_worker')!=worker['id'] or job.get('worker_id')!=worker['id'] \
+                or (job.get('input') or {}).get('op')!=op \
+                or autoplay_resume.revoked(store,sid,job.get('id')):
+            return False
+        if job.get('actor')!=ACTOR and not row.get('warm_adoption'):
+            return False
+        # A manual pause/reset/input wins even before its worker acknowledges it.
+        changed=store.db.execute("SELECT 1 FROM docs WHERE kind='job' "
+            "AND json_extract(body,'$.tool')='session_op' "
+            "AND json_extract(body,'$.input.session_id')=? "
+            "AND json_extract(body,'$.input.op') IN ('pause','resume','reset','load_state','send_input','stop_game') "
+            "AND json_extract(body,'$.created')>=? AND COALESCE(json_extract(body,'$.actor'),'')!=? LIMIT 1",
+            (sid,since,ACTOR)).fetchone()
+        return not changed
+
+    out={}
+    with store.lock:
+        for worker in workers:
+            host=worker.get('name')
+            if not host or not worker.get('online') or worker.get('federation') or not settings(store,host)['enabled']:
+                continue
+            run=store.get(STATE,host) or {};pool=warm_pool(store,host)
+            target=owned(worker,run) if run.get('mercmode') and run.get('phase')=='playing' else None
+            if not target or run.get('handover') or run.get('yield') or run.get('mercmode_rotate_requested') \
+                    or not control(worker,run,'start',run.get('started',0)) \
+                    or any(r.get('session_id')==target['session_id'] for r in pool.values()):
+                continue
+            if run.get('warm_resume_job') and (store.get('job',run['warm_resume_job']) or {}).get('state')!='succeeded':
+                continue
+            for row in pool.values():
+                proof=row.get('display_park') or {};source=owned(worker,row) if row.get('state')=='parked' else None
+                if not source or source['session_id']==target['session_id'] \
+                        or not re.fullmatch('[a-f0-9]{32}',str(proof.get('round_id',''))) \
+                        or proof.get('started')!=source.get('started') \
+                        or type(proof.get('pid')) is not int or proof['pid']<=0 \
+                        or proof['pid']!=(source.get('detail') or {}).get('pid') \
+                        or not control(worker,row,'stop',row.get('at',0)):
+                    continue
+                pause=store.get('job',row.get('pause_job')) or {};inp=pause.get('input') or {}
+                if pause.get('state')=='succeeded' and pause.get('actor')==ACTOR \
+                        and pause.get('worker_id')==worker['id']==pause.get('require_worker') \
+                        and pause.get('tool')=='session_op' and inp.get('session_id')==source['session_id'] \
+                        and inp.get('op')=='pause' and (inp.get('args') or {}).get('warm') is True:
+                    out[source['session_id']]=target['session_id']
+    return out
+
+
 def configure(store, host, patch):
     if not isinstance(host, str) or not 1 <= len(host) <= 120:
         raise ValueError('An exact worker name is required')
@@ -441,9 +520,10 @@ def host_preparation(store, worker):
 def inventory(store, worker, cfg=None, sessions=None):
     """sessions: store.all('session') when the caller already read it (one read for every host, not one per game)."""
     cfg = cfg or settings(store, worker['name'])
+    from .re_switch import preferred_spec
     rows = []
     for key in TITLES:
-        spec = TITLES[key]
+        spec = preferred_spec(key, TITLES[key], cfg)
         games = [g for gid in spec['game_ids'] if (g := store.catalog_get(gid))
                  and g.get('platform') == spec['platform']]
         tools = worker.get('tools')
@@ -478,6 +558,7 @@ def inventory(store, worker, cfg=None, sessions=None):
                 if candidate['verified']:break       # preferred accessible exact disc, never another disc's evidence
             if not access['verified']:reason=access.get('reason') or 'ROM is unavailable on this PC'
         rows.append({'title': key, 'name': spec['name'], 'map_id': spec['map_id'],
+                     'platform': spec['platform'], 'preferred_mode': spec.get('preferred_mode'),
                      'playable': bool(backend_ready and access['verified']), 'backend_playable':backend_ready,
                      'rom_access':access, 'reason': reason,
                      'game_id': selected_game['game_id'] if selected_game else None,
@@ -487,6 +568,9 @@ def inventory(store, worker, cfg=None, sessions=None):
 
 
 def preparation(platform):
+    if platform == 'switch':
+        return {'strategy': 'native_readiness_pending', 'instant_state_supported': False,
+                'reason': 'Switch emulator startup, No Mercy selection and native autoplay hooks need live verification.'}
     return ({'strategy': 'persistent_install_and_shader_cache', 'instant_state_supported': False,
              'reason': 'RPCS3 uses its installed data and retained caches, then verified native menus. '
                        'No save-state capture/reload. With keep_warm the next title boots paused in the round\'s last '

@@ -56,3 +56,14 @@ test('recovery commands follow the current same-game replacement and reject stal
   assert.equal(C.commandSession(old.session_id,[replaced,{...fresh,game_id:'other-game'}]),null);
   assert.equal(C.commandSession(old.session_id,[replaced,{...fresh,worker_online:false}]),null);
 });
+
+test('a warm MercMode view follows both turns while commands keep their selected game',()=>{
+  const a={...fresh,session_id:'worker-a',game_id:'re5'};
+  const b={...fresh,session_id:'worker-b',game_id:'re4'};
+  const parkedA={...a,warm:true,replaced_by:b.session_id,mercmode_display_successor:true};
+  assert.equal(C.resolve(a.session_id,[parkedA,b]),b);
+  assert.equal(C.commandSession(a.session_id,[parkedA,b]),null);
+  const parkedB={...b,warm:true,replaced_by:a.session_id,mercmode_display_successor:true};
+  assert.equal(C.resolve(b.session_id,[a,parkedB]),a);
+  assert.equal(C.resolve(a.session_id,[a,parkedB]),a);
+});

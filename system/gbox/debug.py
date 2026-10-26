@@ -24,6 +24,7 @@ CPUS = {
     "snes": "65816", "satellaview": "65816", "sufami": "65816",
     "dos": "x86_16", "pc": "x86_32",
     "ps4": "x86_64",
+    "switch": "arm64",
     "xbox360": "ppc",                                         # Xenon: 64-bit PPC, 32-bit addresses (VMX128 ops undecoded)
     # Z80 / LR35902 / others: Capstone has no decoder (memory + raw bytes only)
 }
@@ -46,6 +47,7 @@ def _cs(cpu: str):
         "x86_16": (c.CS_ARCH_X86, c.CS_MODE_16),
         "x86_32": (c.CS_ARCH_X86, c.CS_MODE_32),
         "x86_64": (c.CS_ARCH_X86, c.CS_MODE_64),
+        "arm64": (c.CS_ARCH_ARM64, c.CS_MODE_LITTLE_ENDIAN),
     }
     if cpu not in table:
         raise ValueError(f"no disassembler for {cpu}")

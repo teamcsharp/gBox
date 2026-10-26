@@ -27,8 +27,16 @@ _REPORT_LOCK=threading.RLock()
 
 
 def foreground_session_job(store, job, worker_id, *, require_live=True):
-    """Operator controls of this worker's live session must reach its authority."""
-    if job.get('agent_use') is not False or job.get('tool') not in ('session_op','get_frame','autoplay'):
+    """Exact-worker operator launches and live controls must reach their authority."""
+    if job.get('agent_use') is not False:
+        return False
+    if job.get('tool') == 'launch_game':
+        # A launch has no native session yet. Only an explicitly pinned operator
+        # request qualifies; ordinary claim/admission still decides if it can run.
+        game = (job.get('input') or {}).get('game')
+        return (job.get('require_worker') == worker_id and isinstance(game,dict)
+                and isinstance(game.get('game_id'),str) and bool(game['game_id']))
+    if job.get('tool') not in ('session_op','get_frame','autoplay'):
         return False
     sid = (job.get('input') or {}).get('session_id')
     if not isinstance(sid,str) or not sid.startswith(worker_id+'-'):

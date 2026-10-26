@@ -101,6 +101,11 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if str(game.get('platform') or '').casefold() == 'switch':
+        from . import re_switch
+        profile = re_switch.unlock_profile(game)
+        if profile is not None:
+            return profile
     if str(game.get('platform') or '').casefold() == 'ps4':
         from . import re_ps4
         profile = re_ps4.unlock_profile(game)

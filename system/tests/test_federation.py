@@ -201,22 +201,24 @@ def test_foreground_delivery_exception_requires_exact_live_operator_session(cfg,
 
 
 @pytest.mark.parametrize('blocked',['tool','os','admission'])
-def test_reserved_delivery_never_claims_background_when_control_is_ineligible(cfg,blocked,monkeypatch):
+@pytest.mark.parametrize('control_tool',['session_op','launch_game'])
+def test_reserved_delivery_never_claims_background_when_control_is_ineligible(cfg,blocked,control_tool,monkeypatch):
     app,c=plane(cfg);enroll(c)
     store=app.state.store;path='/api/federation/'+AUTH+'/commands'
     first=queued(app);c.post(path,json={'maximum':1})
     backgrounds=[queued(app,jid=str(i)*32) for i in (3,4,5)]
-    control=queued(app,jid='2'*32,tool='session_op',inp={'session_id':SID,'op':'query_runtime'})
+    inp={'game':{'game_id':'fixture'}} if control_tool=='launch_game' else {'session_id':SID,'op':'query_runtime'}
+    control=queued(app,jid='2'*32,tool=control_tool,inp=inp)
     if blocked=='tool':
         worker=store.get('worker',WID)
-        store.put('worker',WID,worker|{'tools':['launch_game']})
+        store.put('worker',WID,worker|{'tools':['launch_game' if control_tool=='session_op' else 'session_op']})
     elif blocked=='os':
         store.put('job',control,store.get('job',control)|{'require_os':'linux'})
     else:
         from gbox import unlock_job_policy
         real=unlock_job_policy.admit
         monkeypatch.setattr(unlock_job_policy,'admit',lambda store,app,parent,tool,inp,**kw:
-            'Fixture admission hold' if tool=='session_op' else real(store,app,parent,tool,inp,**kw))
+            'Fixture admission hold' if tool==control_tool else real(store,app,parent,tool,inp,**kw))
     for _ in range(3):
         assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==first
         assert all(store.get('job',jid)['state']=='queued' for jid in [control,*backgrounds])
@@ -236,6 +238,37 @@ def test_inflight_control_keeps_reserved_slot_when_its_session_ends(cfg):
     for _ in range(3):
         assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==control
         assert store.get('job',next_control)['state']=='queued'
+
+
+def test_exact_operator_launch_uses_one_reserved_delivery_without_cancelling_background(cfg):
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store;path='/api/federation/'+AUTH+'/commands'
+    first=queued(app)
+    c.post(path,json={'maximum':1})
+    record=store.get('federation_command',first)
+    store.put('federation_command',first,record|{'local_state':'queued','local_job_id':'9'*32})
+    launch=queued(app,jid='2'*32,inp={'game':{'game_id':'fixture'}})
+    assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==launch
+    later=queued(app,jid='3'*32,inp={'game':{'game_id':'fixture'}})
+    for _ in range(3):
+        assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==launch
+        assert store.get('job',later)['state']=='queued'
+        assert store.get('job',first)['state']=='running'
+
+
+@pytest.mark.parametrize('case',['agent','unbound','other-worker','missing-game'])
+def test_launch_delivery_exception_requires_exact_operator_worker(cfg,case):
+    from gbox.federation import foreground_session_job
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store
+    jid=queued(app,inp={'game':{'game_id':'fixture'}})
+    row=store.get('job',jid)
+    assert foreground_session_job(store,row,WID)
+    if case=='agent':row['agent_use']=True
+    elif case=='unbound':row['require_worker']=None
+    elif case=='other-worker':row['require_worker']='1'*16
+    else:row['input']={}
+    assert not foreground_session_job(store,row,WID)
 
 
 def test_job_cannot_forge_a_different_native_sid(cfg):

@@ -3813,7 +3813,10 @@ def create_app(config: Config) -> FastAPI:
         favs = built_mods.favorites(store)            # the session header's "★ Favorite this build" offer
         running = store.running_sessions()
         # #2870: a "running" row whose PC has gone offline can't be connected to (it showed a blank view). Say so.
-        pcs = {w["id"]: bool(w.get("online")) for w in workers()} if running else {}
+        session_workers = workers() if running else []
+        pcs = {w["id"]: bool(w.get("online")) for w in session_workers}
+        from .mercmode import display_successors
+        display_links = display_successors(store, session_workers, running)
         if not include_ended:
             rows = sorted(running, key=lambda s: s.get("started") or 0, reverse=True)
         elif limit > 0:
@@ -3834,6 +3837,10 @@ def create_app(config: Config) -> FastAPI:
         for s_ in rows:
             lv = live.get(s_["session_id"], {})
             row = s_ | {"last_frame_age": round(now - lv["ts"], 1) if lv.get("ts") else None}
+            if s_["session_id"] in display_links and not s_.get("replaced_by"):
+                # Viewer-only: a parked emulator remains its own live session.
+                row["replaced_by"] = display_links[s_["session_id"]]
+                row["mercmode_display_successor"] = True
             # the build folder it runs (a staged "<mod>~<build>" copy is still that build): the header renames it
             build = str(s_.get("collection_mod") or s_.get("mod") or "").split(built_mods.STAGED_SEP)[0]
             if build:
