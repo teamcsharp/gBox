@@ -187,7 +187,11 @@ BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his 
 HEAD_LO, HEAD_AIM_H = 1300.0, 1520.0             # operator 2026-10-22: "never shooting at the ground ... aiming at heads": a shot
                                                  # leaves only with the aim inside the head band (HEAD_LO .. BODY_HI above
                                                  # his feet, never below the gun), and the stick settles on HEAD_AIM_H
-LOW_BODY = (0.0, 700.0, 300.0)                   # a hurt Ganado (knocked down, fallen; staggering: his legs): lo, hi, aim
+LOW_BODY = (0.0, 400.0, 200.0)                   # a hurt Ganado (knocked down, fallen; staggering: his legs): lo, hi, aim
+                                                 # (was 0-700 / 300: shots 500-700 above the feet passed over one lying
+                                                 # flat - operator 2026-10-26: "Leon shoots directly in front of him when
+                                                 # the enemy is on the ground so he basically misses")
+LOW_AIM_BACK_S = 1.0                             # a low target the aim cannot get down to for this long: step back
 SMALL_BODY = (0.0, 450.0, 150.0)                 # a small animal (a chicken), health SMALL_HP or less: just off the ground
 SMALL_HP = 20                                    # (operator 2026-10-24: Leon missed "people he knocked down, people who
                                                  # fell down, chickens" - every shot went at head height over them)
@@ -222,6 +226,14 @@ CIRCLE_TURN, CIRCLE_BOX, CIRCLE_S = 2 * math.pi, 3000.0, 8.0   # a whole turn in
                                                  # (operator 2026-10-24: "Leon is running into a circle")
 BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
 ARRIVE = 650.0                                   # a waypoint this close is reached
+# Ladders: never climbed (operator 2026-10-26: "Leon has climbed the clock tower and is unable to turn around and go back
+# down the ladder. Make sure he is mapping this level so he knows not to climb the ladder"): routes avoid them, the CLIMB
+# UP prompt is not pressed, a goal only a ladder reaches is left; up one anyway (the start, an old route), he walks back
+# to its top and faces the way down - the prompt logic presses CLIMB DOWN. The disc's ladder links run foot -> top only,
+# so the planner had no way back down and he ran into the tower's walls
+LADDER_AVOID = 1e9                               # the planner's cost of a ladder: only when nothing else reaches a goal
+LADDER_RISE, LADDER_TOP_DY, LADDER_TOP_R = 1000.0, 600.0, 3500.0   # a ladder this tall; Leon this near its top's height
+LADDER_EDGE_R = 350.0                            # and within LADDER_TOP_R of it is up there; this near the top: the edge
 COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this close; give up on it after this long
 # Village (r400) time bonuses: the room's four small AEV events (live RAM 2026-10-20), (x, z) in world units
 HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0), (5592.0, 16384.0)]}
@@ -700,7 +712,7 @@ class Bot:
         without the map, the learned map alone."""
         if self.st is not None:
             try:
-                way = self.nav.path(self.st, start, goal)
+                way = self.nav.path(self.st, start, goal, ladder_cost=LADDER_AVOID)
                 if way:
                     return self._round_walls(start, [(w.x, w.z, w.action) if hasattr(w, "action") else tuple(w) for w in way])
             except Exception:                         # noqa: BLE001
@@ -863,6 +875,13 @@ class Bot:
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
             height, level = self._aim_body(p, tgt["pos"][1], dist, now, band)
+            if band is not BODY_BAND and not level and now - self.r_since > LOW_AIM_BACK_S:
+                # one on the ground the aim cannot get down to from here (the game's own pitch limit is short of
+                # PITCH_MAX): a step back brings him into it, never shots into the ground in front of him
+                self.stats["low_target_backsteps"] = self.stats.get("low_target_backsteps", 0) + 1
+                self.stats["combat"] = f"{tag}low target slot {tgt['slot']} d {dist:.0f}: stepping back to aim down at him"
+                self.r_since = None
+                return {"hold": {"down"}}
         deg = math.degrees(err)
         if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
@@ -946,6 +965,9 @@ class Bot:
         QTE (two buttons), a SHAKE OFF are always pressed."""
         if button not in ("a",):
             return True
+        if self.stats.get("ram_action") == "CLIMB UP":             # a ladder: never climbed (LADDER_AVOID)
+            self.stats["ladders_refused"] = self.stats.get("ladders_refused", 0) + 1
+            return False
         if self.stats.get("ram_action") == "TAKE" and not (self.goal or {}).get("item"):
             # ammo / grenades a Ganado dropped: infinite ammo, never worth Leon's second (operator 2026-10-24: "dont
             # have the bot pick up ammo in any mode ... Just fight"); hourglasses are taken by _take's own goal
@@ -1240,7 +1262,10 @@ class Bot:
         if lo + margin <= cur <= hi - margin:
             self.pitch_key, self.pitch_seen, self.pitch_push = None, (now, cur, None), None
             return set(), True
-        return self._aim_height(p, target_y + band_aim, dist, now)
+        keys, level = self._aim_height(p, target_y + band_aim, dist, now)
+        if level and band is not None and band is not BODY_BAND and not lo <= cur <= hi:
+            return keys, False                        # at the game's pitch limit and still above him: no shot over him
+        return keys, level
 
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
@@ -1279,6 +1304,47 @@ class Bot:
         self.pitch_key, self.pitch_seen = key, (now, cur, key)
         return ({key} if key else set()), False
 
+    def _ladder_route(self, way) -> bool:
+        """The planned way still climbs a ladder (nothing else reaches the goal): counted, and the caller leaves it."""
+        if any(len(w) > 2 and w[2] == "ladder" for w in way or ()):
+            self.stats["ladder_goals_left"] = self.stats.get("ladder_goals_left", 0) + 1
+            return True
+        return False
+
+    def _ladder_descent(self, p, now):
+        """Up where a ladder leads (the disc's ladder events: foot "pos", "top", "facing"): walk to its top, face the way
+        down - towards the foot, or away from the climbing facing when the two are one above the other - and step to
+        the edge; the CLIMB DOWN prompt it brings up is pressed by the prompt logic (prompt_ok). None: not up one."""
+        events = (self.st or {}).get("events") if isinstance(self.st, dict) else None
+        if not events:
+            return None
+        px, py, pz = p["pos"]
+        for e in events:
+            top, foot = e.get("top"), e.get("pos")
+            if e.get("kind") != "ladder" or not top or not foot or top[1] - foot[1] < LADDER_RISE:
+                continue
+            d = math.hypot(px - top[0], pz - top[2])
+            if abs(py - top[1]) > LADDER_TOP_DY or d > LADDER_TOP_R:
+                continue
+            self.stats["phase"] = "ladder_down"
+            self.r_since = None
+            if d > LADDER_EDGE_R:
+                self.stats["combat"] = f"up a ladder: back to its top ({d:.0f} away)"
+                return self._go(p, (top[0], top[2]), now)
+            run = math.hypot(foot[0] - top[0], foot[2] - top[2])
+            want = heading(foot[0] - top[0], foot[2] - top[2]) if run >= 150.0 else wrap((e.get("facing") or 0.0) + math.pi)
+            err = wrap(want - p["rot"])
+            if abs(err) > TURN_TOL:
+                self.stats["combat"] = f"up a ladder: facing the way down ({math.degrees(err):+.0f} deg)"
+                return {"hold": self._turn(err, aiming=False)}
+            if not getattr(self, "ladder_edge", False):
+                self.stats["ladder_descents"] = self.stats.get("ladder_descents", 0) + 1
+            self.ladder_edge = True
+            self.stats["combat"] = "up a ladder: at its top, CLIMB DOWN"
+            return {"hold": {"up"}}
+        self.ladder_edge = False
+        return None
+
     def _take(self, p, h: dict, now, pool: list) -> dict:
         self.stats["phase"] = "take_bonus"
         """Run to an item hourglass's stand point on the map's path and take it with A."""
@@ -1286,6 +1352,10 @@ class Bot:
         sx, sy, sz = h["stand"]
         if not self.goal or self.goal.get("item") is not h:
             self.goal = {"item": h, "pos": (sx, sz), "since": now, "path": self._path((px, py, pz), (sx, sy, sz))}
+            if self._ladder_route(self.goal["path"]):                 # only up a ladder: left for this round
+                pool.remove(h)
+                self.goal = None
+                return {"hold": set()}
         if math.hypot(sx - px, sz - pz) < TAKE_R:
             if now - self.goal.setdefault("take_since", now) > COLLECT_TRY_S:  # not taking it: retry once at the back, then leave it
                 pool.remove(h)
@@ -1665,6 +1735,9 @@ class Bot:
         act = self._combat(p, s, now)                                     # attacks, thrown weapons, a Ganado on him:
         if act is not None:                                               # before any bonus or route
             return act
+        act = self._ladder_descent(p, now)                                # up a ladder (the clock tower): down it first
+        if act is not None:
+            return act
         pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now and not threats_ram.dying(e)]
         near = min(pool, key=lambda e: (e["pos"][0] - px) ** 2 + (e["pos"][2] - pz) ** 2) if pool else None
         dist = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) if near else None
@@ -1694,6 +1767,10 @@ class Bot:
             if not self.goal or self.goal["pos"] not in self.bonus:
                 pos = min(self.bonus, key=lambda b: (b[0] - px) ** 2 + (b[1] - pz) ** 2)
                 self.goal = {"pos": pos, "since": now, "path": self._path((px, pz), pos)}
+                if self._ladder_route(self.goal["path"]):             # only up a ladder: left for this round
+                    self.bonus.remove(pos)
+                    self.goal = None
+                    return {"hold": set()}
             gx, gz = self.goal["pos"]
             d = math.hypot(gx - px, gz - pz)
             if d < COLLECT_R:                                             # break it: aim at it and fire
