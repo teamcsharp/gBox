@@ -299,9 +299,10 @@ class Screensaver:
                 if run:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
                     if run.get('mercmode') and host_cfg["enabled"] and not _local_scheduler(w) \
-                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(f'ended: {ROTATION}'):
-                        # a MercMode rotation: the next title starts in this same tick (the ready one is resumed at
-                        # once: no 30 s gap between the park and the swap)
+                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(
+                                (f'ended: {ROTATION}', *(f'ended: {why}' for why in BAD_ENDS.values()))):
+                        # a MercMode rotation, or a frozen / black game closed: the next title starts in this same tick
+                        # (the ready one is resumed at once: no 30 s gap between the park or the stop and the swap)
                         running = self.store.running_sessions()
                         reason = worker_reason(self.store, w, host_cfg, running, now)
                         out[w["name"]] = reason or self._start(w, host_cfg, now)
@@ -1077,7 +1078,11 @@ class Screensaver:
             if bad and not run.get("yield"):
                 upd["yield"] = BAD_ENDS.get(bad, f"{bad}: next game")
             self.store.put(STATE, run["worker"], run | upd)
-            return True
+        if bad:
+            # the frozen / black game goes and the next title comes now, not at the next 30 s tick (2026-10-26: RE4 froze
+            # on its results at 16:54:33, the stop came 15 s later and the prepared RE5 only at 16:55:58)
+            self.nudge(f'bad end ({bad}): next title')
+        return True
 
     def round_boundary(self, body, parent_job, now=None):
         from . import mercmode
