@@ -829,12 +829,17 @@ def tick(*, now=None):
                       sum(d['lane'] == lane for d in dispatched) for lane in ('inbox', 'favorite')}
             least = min((counts[v[1]['lane']] for v in node_options), default=0)
             choices = [v for v in node_options if counts[v[1]['lane']] == least]
+            priority_only = bool(node and (node.get('priority_only') or getattr(
+                hermes_pool.node_settings().get(node['name']), 'priority_only', False)))
+            if priority_only:
+                # the paid node never balances lanes: with 23 inbox runs against 2 favorites the balance offered it only
+                # favorites, and its list filter below then emptied the choice (2026-10-26: Kimi / Z.AI idle for hours)
+                choices = list(node_options)
             if node and node.get('primary'):
                 narrow = [v for v in node_options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])
             # read from this tick's own node settings (the toml), so the switch needs no gBox restart
-            if node and (node.get('priority_only') or getattr(hermes_pool.node_settings().get(node['name']),
-                                                              'priority_only', False)):
+            if priority_only:
                 # the paid node works the operator's list only (operator 2026-10-22: "make sure that my claude credit is
                 # going towards solving these issues I am mentioning"); nothing listed: its slot stays free this tick
                 listed = len(data.get('priority') or [])
