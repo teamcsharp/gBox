@@ -7,7 +7,8 @@
      library  this window uses the Spark's library, not This PC's (switching reloads the window, the flow resumes after it)
      mercmode a MercMode game runs on the chosen PC (turns MercMode on there if needed and waits for its launch)
      stream   its picture is fresh (asks that PC for a new encoder when it is not)
-     pip      the game is shown in picture-in-picture
+     pip      the game is shown in picture-in-picture (an operator's reconnect then asks io.ensureBot to keep its
+              autobot driving)
    Automatic reconnects never restart the shared service. An explicit reconnect action may restart it after a full
    minute without an answer; this allows a planned service restart to finish before considering another one. */
 (function (root) {
@@ -88,7 +89,12 @@
           if (await library() === 'reloading') return clone();
           io.forget(RESUME_KEY);
           const sid = await mercmode();
-          if (sid) { await stream(sid); await pip(sid); }
+          if (sid) {
+            await stream(sid); await pip(sid);
+            // an operator's reconnect (F5, Try again) brings the game back with its autobot driving (operator
+            // 2026-10-26); the control plane decides (gbox/bot_control.py). Automatic reconnects leave the bot alone.
+            if (!automatic && io.ensureBot) try { await io.ensureBot(sid); } catch { /* never fails the reconnect */ }
+          }
           else state.steps = state.steps.filter(s => ['spark', 'library'].includes(s.id));   // connected; no game to show
           state.done = true; render(clone()); io.show?.(false);
         } catch (error) {

@@ -21,24 +21,54 @@ test('missing real emulator audio gives an actionable error and never exports or
  const calls=[];const ctl=P.create({current:()=> 'worker-game',api:async(url,body)=>{calls.push(body);return {state:'succeeded',output:{result:{status:{av_span_s:0,audio_note:'Waiting for isolated emulator playback'}}}};},save:async()=>{throw Error('must not save');}});
  await ctl.exportLast();assert.equal(calls.length,1);assert.equal(calls[0].input.op,'status');assert.equal(ctl.state().error,true);assert.match(ctl.state().message,/isolated emulator playback/);
 });
-test('F3 toggle asks the actual selected worker and telemetry alone controls the autobot label',async()=>{
- const calls=[];const c=P.create({current:()=> 'actual-game',api:async(url,body)=>{if(url.startsWith('/api/autoplay/'))return {running:false,age_s:0};calls.push(body);return {state:'succeeded',output:{result:body.input.op==='status'?{running:true}:{stopped:true}}};},save:async()=>{}});
- await c.toggleAutobot();assert.deepEqual(calls.map(v=>[v.tool,v.require_worker,v.input.session_id,v.input.op]),[['autoplay','actual','actual-game','status'],['autoplay','actual','actual-game','stop']]);assert.equal(c.state().autobot,false);
+// F3 from any PC (operator 2026-10-26): one control-plane request for the shown game; the control plane asks that game's
+// worker (gbox/bot_control.py), so a remote game works the same as a local one
+function f3rig(answer){
+ const calls=[];const api=async(url,body,method)=>{calls.push({url,body,method});
+  if(url.startsWith('/api/autoplay/telemetry/'))return {running:true,age_s:0};
+  if(url.endsWith('/autoplay'))return answer.post?answer.post(url,body):{id:'t1',state:'running'};
+  if(url==='/api/jobs/t1')return answer.job;
+  throw Error('unexpected '+url);};
+ return {calls,c:P.create({current:()=> 'remote-game',api,save:async()=>{},delay:async()=>{},fade:()=>{}})};
+}
+test('F3 asks the control plane for the shown game and shows its answer',async()=>{
+ const {calls,c}=f3rig({job:{id:'t1',state:'succeeded',output:{action:'started',running:true,
+  message:'Autobot started on Resident Evil 5 (lilspark): playbook: mercs_bot.'}}});
+ const out=await c.toggleAutobot();
+ assert.deepEqual(calls[0],{url:'/api/sessions/remote-game/autoplay',body:{op:'toggle',source:'F3'},method:'POST'});
+ assert.equal(calls[1].url,'/api/jobs/t1');
+ assert.equal(out.ok,true);assert.equal(out.running,true);assert.match(out.message,/Autobot started on Resident Evil 5 \(lilspark\)/);
+ assert.equal(c.state().message,out.message);assert.equal(c.state().error,false);assert.equal(c.state().autobot,true);
 });
-test('F3 starts continuous autoplay on the watched remote worker',async()=>{
- const calls=[];const c=P.create({current:()=> 'remote-game',api:async(url,body)=>{
-  if(!body)return {running:true,age_s:0};calls.push(body);
-  return {state:'succeeded',output:{result:body.input.op==='status'?{running:false}:{started:'native'}}};
- },save:async()=>{}});
- await c.toggleAutobot();assert.equal(calls[1].require_worker,'remote');
- assert.deepEqual(calls[1].input,{session_id:'remote-game',op:'start',continuous:true});
- assert.equal(calls[1].agent_use,false);assert.equal(c.state().autobot,true);
+test('F3 failures carry the control plane\'s words, never raw HTTP',async()=>{
+ const {c}=f3rig({post:()=>{throw Error('409 {"detail":"lilspark (running Resident Evil 5) is offline, so the autobot can\'t be reached there right now."}');}});
+ const out=await c.toggleAutobot();
+ assert.equal(out.ok,false);assert.match(out.message,/^lilspark \(running Resident Evil 5\) is offline/);
+ assert.equal(c.state().error,true);
+ const failed=f3rig({job:{id:'t1',state:'failed',error:'i9-NUC did not answer within 25 s (offline or busy). Nothing was changed.'}});
+ assert.match((await failed.c.toggleAutobot()).message,/did not answer within 25 s/);
 });
-test('F3 does not change a session after the viewer selects another game',async()=>{
- let sid='old-game',finish;const calls=[];
- const c=P.create({current:()=>sid,api:async(url,body)=>{calls.push(body);return new Promise(r=>finish=r);},save:async()=>{}});
- const pending=c.toggleAutobot();sid='new-game';finish({state:'succeeded',output:{result:{running:false}}});
- await pending;assert.equal(calls.length,1);
+test('F3 pressed again while its request is on the way sends nothing more',async()=>{
+ let finish;const calls=[];
+ const c=P.create({current:()=> 'old-game',api:async(url,body)=>{calls.push(url);
+  if(url.startsWith('/api/autoplay/'))return {running:false,age_s:0};
+  return new Promise(r=>finish=r);},save:async()=>{},delay:async()=>{},fade:()=>{}});
+ const pending=c.toggleAutobot();assert.equal(await c.toggleAutobot(),null);
+ finish({id:'t1',state:'succeeded',output:{action:'stopped',running:false,message:'Autobot stopped: you have control.'}});
+ assert.equal((await pending).message,'Autobot stopped: you have control.');
+ assert.deepEqual(calls.filter(u=>u.endsWith('/autoplay')),['/api/sessions/old-game/autoplay']);
+});
+test('the shown game is the PiP stream, then the docked game, then what the gBox view shows',()=>{
+ assert.equal(P.shownSession({compact:'w1-pip',docked:'w2-dock',guest:{session:'w3-view'}}),'w1-pip');
+ assert.equal(P.shownSession({docked:'w2-dock',guest:{session:'w3-view'}}),'w2-dock');
+ assert.equal(P.shownSession({docked:'w2-dock',guest:{tab:'Sessions',session:'nuc-remote'}}),'nuc-remote',
+  'a remote game watched on its Sessions page beats a game docked on this PC');
+ assert.equal(P.shownSession({guest:{session:'w3-view',pip:'w4-pip'}}),'w3-view');
+ assert.equal(P.shownSession({guest:{session:null,pip:'w4-pip',playing:'w5-x'}}),'w4-pip');
+ assert.equal(P.shownSession({guest:{playing:'w5-x'}}),'w5-x');
+ assert.equal(P.shownSession({compact:'not a session',guest:{}}),null);
+ assert.equal(P.shownSession(),null);
+ assert.equal(P.readable(Error('500 {"detail":"boom"}')),'boom');assert.equal(P.readable(Error('plain words')),'plain words');
 });
 test('busy export coalesces clicks and reports worker job progress without optimistic success',async()=>{
  const r=rig();let finish;const api=r.api;

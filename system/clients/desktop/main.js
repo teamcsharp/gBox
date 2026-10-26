@@ -765,8 +765,8 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
-  if (input.key === 'F3' && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
-    mini.webContents.send('hotkey', 'autoplay'); ev.preventDefault(); return;
+  if ((input.key === 'F3' || input.key === 'F1') && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
+    mini.webContents.send('hotkey', GAME_KEYS[input.key]); ev.preventDefault(); return;   // the mini window: F3 autobot, F1 replay
   }
   if (input.key === "Escape" && compactWindow.state().on) {
     // Shell fields (notably the coach) own Escape. Their guarded DOM handler restores only outside text entry.
@@ -777,10 +777,12 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
 }));
-// Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
+// Universal game hotkeys, the same for every emulator (operator 2026-10-26: "when i press F3, I intend to start the autobot,
+// not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it"): F1 saves the replay (the last 3
+// minutes), F2 save state, F3 autobot on/off for the game shown (whichever PC runs it), F4 load state, F5 reloads the client.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
-const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" }; // F5 reloads only the client
+const GAME_KEYS = { F1: "replay", F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" };
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));

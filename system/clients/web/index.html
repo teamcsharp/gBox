@@ -1603,7 +1603,9 @@ async function botDemoMenu(ev, gid, title) {
   if (!(TRAY.ws || []).length) TRAY.ws = await api("/api/workers").catch(() => []);   // the tray has not polled yet
   if (anchor && !anchor.isConnected) return;
   const modifiers = window.GBoxRE5Modifiers?.eligible(current) ? {
-    html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api })
+    html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api,
+      // what this game keeps across reloads (gbox/game_prefs.py), shown with the live values
+      savedPrefs: () => api(`/api/sessions/${encodeURIComponent(current.session_id)}/game-prefs`) })
   } : window.GBoxRE4Spawn?.eligible(current) ? {
     html: GBoxRE4Spawn.sectionHTML(), mount: host => GBoxRE4Spawn.mount(host, { session: current, api })
   } : null;

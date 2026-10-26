@@ -888,6 +888,39 @@ class Screensaver:
         self.tick()
         return True
 
+    def current_run(self, sid: str) -> dict | None:
+        """This scheduler's live run on exactly this session, while its autobot is meant to drive it: playing, not handed
+        over to the operator, not ending and not switching titles. None otherwise (a parked or preloading game too)."""
+        run = self._by_session(sid)
+        if not run or run.get('phase') != 'playing' or run.get('handover') or run.get('yield') \
+                or run.get('mercmode_rotate_requested'):
+            return None
+        return run
+
+    def restart_bot(self, sid: str, *, requested_by: str = 'operator', why: str = 'F5 recovery',
+                    now: float | None = None) -> str | None:
+        """Start this scheduler's own autobot again on its current run (F5 found it stopped or quiet): the same autoplay
+        start the schedule makes (screensaver mode, the run's style knobs, this scheduler's actor), so MercMode keeps owning
+        the run. Returns the autoplay job id, or None when the session is no longer such a run."""
+        from .server import JobRequest
+        now = time.time() if now is None else now
+        with self.lock:
+            run = self.current_run(sid)
+            if not run:
+                return None
+            knobs = run.get('knobs')
+            if not isinstance(knobs, dict):
+                from . import imitate
+                knobs = imitate.choose_knobs(self.history(run['game_id']), self.rng)
+            job = self.submit(JobRequest(tool='autoplay', input={'session_id': sid, 'op': 'start', 'mode': 'auto',
+                                                                 'screensaver': True, 'style': knobs},
+                                         agent_use=True, require_worker=run['worker_id']), actor=ACTOR,
+                              origin={'via': 'autoplay screensaver', 'session_id': sid, 'recovery': why,
+                                      'requested_by': requested_by})
+            self.store.put(STATE, run['worker'], run | {'autoplay_job': _jid(job), 'knobs': knobs,
+                                                        'bot_restarted': {'at': now, 'why': why, 'by': requested_by}})
+            return _jid(job)
+
     def report(self, sid: str, result: dict) -> bool:
         """The worker's autoplay result. One that ended because the game froze or showed only black (bad_end) moves this
         PC on to its next game at the next tick (autoplay never leaves a frozen or black game on screen)."""
@@ -1142,6 +1175,16 @@ def telemetry_get(sid: str, now: float | None = None) -> dict:
         return {}
     return {k: v for k, v in t.items() if k != "at"} | {"age_s": round(now - t["at"], 1),
                                                          "running": t.get("running", True) and now - t["at"] < 30}
+
+
+def telemetry_last(sid: str, now: float | None = None) -> dict:
+    """The newest report exactly as autoplay sent it (running is what it said, however old) plus its age; {} when there
+    is none. F5 recovery tells "the bot stopped" (running false) from "the bot went quiet while driving" (stale)."""
+    now = time.time() if now is None else now
+    t = TELEMETRY.get(sid)
+    if not t or now - t["at"] > TELEMETRY_TTL:
+        return {}
+    return {k: v for k, v in t.items() if k != "at"} | {"age_s": round(now - t["at"], 1)}
 
 
 def install(app, store, config, auth, submit, workers, archive):
