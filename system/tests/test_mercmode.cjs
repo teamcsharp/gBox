@@ -103,12 +103,24 @@ test('between titles the transition shows a loading bar that follows the schedul
  assert.equal(launching.show,true);assert.equal(launching.progress,34);assert.match(launching.text,/Loading Resident Evil 5/);
  assert.equal(M.transition(host({phase:'launching'}),'w1-cur',5000).progress,60);
  assert.equal(M.transition(host({phase:'starting'}),'w1-cur',1115).progress,75);
- assert.equal(M.transition(host({phase:'playing'}),'w1-cur',1200).progress,92);
+ assert.deepEqual(M.transition(host({phase:'playing'}),'w1-cur',1200),{show:false,follow:'w1-next'});   // live: go to it, no loading screen
  assert.deepEqual(M.transition({settings:{enabled:false},current_run:{phase:'launching',mercmode:{}}},'w1-cur',1),{show:false});
  assert.deepEqual(M.transition(null,'w1-cur',1),{show:false});
  // a warm switch has a live game from its first moment: no loading screen, whatever its phase (2026-10-26: "I hate waiting")
  for(const phase of ['starting','playing'])assert.equal(M.transition(host({phase,warm_from:'ready'}),'w1-cur',1200).show,false);
  assert.equal(M.transition(host({phase:'launching',warm_from:'prelaunch',session_id:undefined}),'w1-cur',1045).show,true);
+});
+test('a viewer left on a dead or paused MercMode session follows the live run; another game there moves only once it ended',()=>{
+ // operator 2026-10-26: "so why is still here? i just want mercenaries perpetual" - after a service restart the PiP kept the
+ // dead session (an earlier worker id) and showed "Loading Resident Evil 5..." for 13 minutes while RE5 played
+ const host=(run,warm=[])=>({id:'w2',name:'lilspark',settings:{enabled:true},warm,
+   current_run:{mercmode:{title:'re5'},title:'Resident Evil 5',started:1000,session_id:'w2-live',...run}});
+ assert.deepEqual(M.transition(host({phase:'playing'}),'w1-dead',1200),{show:false,follow:'w2-live'});        // before the restart
+ assert.deepEqual(M.transition(host({phase:'playing'},[{session_id:'w2-warm'}]),'w2-warm',1200),{show:false,follow:'w2-live'});
+ assert.deepEqual(M.transition(host({phase:'playing',mercmode_predecessor:{session_id:'w2-prev'}}),'w2-prev',1200),{show:false,follow:'w2-live'});
+ assert.deepEqual(M.transition(host({phase:'playing'}),'w2-mine',1200),{show:false,follow:'w2-live',only_if_ended:true});   // maybe the operator's own game: moved only once it ended
+ assert.equal(M.transition(host({phase:'launching',session_id:null}),'w1-dead',1045).show,true);     // a cold start: the bar
+ assert.deepEqual(M.transition(host({phase:'playing'}),'w2-live',1200),{show:false});
 });
 test('the DJ queue shows now playing, the queue ahead and a form built from each title roster',()=>{
  const catalog={re4:{modes:{mercenaries:['Leon','Ada']},stages:['Village','Castle']},re5:{modes:{mercenaries:['Chris (BSAA)'],reunion:['Barry']},stages:['Public Assembly','The Mines']}};

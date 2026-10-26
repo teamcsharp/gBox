@@ -199,15 +199,29 @@
   // A warm switch (run.warm_from: the next title was kept in memory and, prepared, is resumed on the first frame of its
   // round) has a live game from the first moment: no loading screen, the PiP follows the new session as soon as its
   // bot is running (operator 2026-10-26: "I need it to be a seamless swap for these titles. I hate waiting").
+  // Is this viewer surely watching MercMode on that PC? Its run's game, a game of its warm pool, the run before, or a
+  // session of an earlier start of the PC's worker (a service restart ended it). Anything else may be the operator's own
+  // game there: the PiP moves only when that session has ended (the caller sees the running list, this status does not)
+  function watching(host,sid){
+    const run=host?.current_run||{};
+    if(!sid||!host?.id)return true;
+    if(sid===run.session_id||sid===run.mercmode_predecessor?.session_id)return true;
+    if((host.warm||[]).some(w=>w&&w.session_id===sid))return true;
+    return !String(sid).startsWith(host.id+'-');
+  }
   function transition(host,sid,now=Date.now()/1000){
     const run=host?.current_run;
     if(!host?.settings?.enabled||!run?.mercmode)return {show:false};
+    // the run is live on another session: the viewer goes to it - never a loading screen over a running game (operator
+    // 2026-10-26: "so why is still here? i just want mercenaries perpetual" - after a service restart the PiP kept the
+    // dead session and showed "Loading Resident Evil 5..." for 13 minutes while RE5 played)
+    if(run.phase==='playing'&&run.session_id&&run.session_id!==sid)
+      return watching(host,sid)?{show:false,follow:run.session_id}:{show:false,follow:run.session_id,only_if_ended:true};
     if(run.warm_from&&run.session_id)return {show:false,warm:true};
     const since=t=>Math.max(0,now-(Number(t)||now));
     let progress=null;
     if(run.phase==='launching')progress=8+Math.min(52,52*since(run.started)/90);
     else if(run.phase==='starting')progress=65+Math.min(20,20*since(run.up||run.started)/30);
-    else if(run.phase==='playing'&&run.session_id&&run.session_id!==sid)progress=92;
     if(progress===null)return {show:false};
     return {show:true,phase:run.phase,title:run.title||'',progress:Math.round(progress),
       text:`Loading ${run.title||'the next title'}…`,sub:'MercMode is switching titles; the next game boots in the background.'};
