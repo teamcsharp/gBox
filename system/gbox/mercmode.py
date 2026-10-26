@@ -648,6 +648,10 @@ def successor_autoplay(run, job, original):
                 and isinstance(created, (int, float)) and isinstance(before, (int, float)) and created > before)
 
 
+ROUND_MIN_S = 75.0              # a death this soon after an attempt began is a retry, not a round played (round_boundary)
+QUICK_DEATHS_PER_ROUND = 3      # ...though this many of them count as one, so a title where the bot keeps dying still rotates
+
+
 def accept_boundary(store, run, body, *, parent_job, now=None):
     """Check an active worker autoplay job and native terminal witness, not a flag.
 
