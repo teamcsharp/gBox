@@ -71,3 +71,76 @@ class Reflex(OnsetReflex):
 
 def reflex(rd, send, stats):
     return Reflex(rd, send, stats)
+
+
+# --- Parry layer ---------------------------------------------------------------
+# GameFAQs (DOA2 LE) pinpoint-hold counter data, mapped to the six HOLDS options
+# used by the onset reflex.  P1 on the left (back = "left"):
+#   high       -> up + back   ("up", "left")
+#   mid punch  -> back        ("left",)
+#   mid kick   -> forward     ("right",)
+#   low        -> down + back ("down", "left")
+# P1 on the right (back = "right"): mirror the horizontal.
+PARRY_HIGH   = "high"
+PARRY_MID_P  = "mid_punch"
+PARRY_MID_K  = "mid_kick"
+PARRY_LOW    = "low"
+
+_PARRY_LEFT = {PARRY_HIGH: ("up", "left"), PARRY_MID_P: ("left",),
+               PARRY_MID_K: ("right",), PARRY_LOW: ("down", "left")}
+_PARRY_RIGHT = {PARRY_HIGH: ("up", "right"), PARRY_MID_P: ("right",),
+                PARRY_MID_K: ("left",), PARRY_LOW: ("down", "right")}
+
+
+def parry_holds(side: int = 1) -> dict:
+    """The four attack classes -> the HOLDS tuple they map to, for P1 on the given side."""
+    return dict(_PARRY_LEFT if side == 1 else _PARRY_RIGHT)
+
+
+class ParryReflex(OnsetReflex):
+    """Onset reflex with a fixed parry table: each attack class maps to a specific hold
+    (no learning, no exploration).  The book still records outcomes so the stats panel
+    shows which parries land; but the choice is deterministic from the attack class.
+    Override step() to intercept the book.choose call and substitute the parry table."""
+
+    def __init__(self, rd, send, stats: dict, side: int = 1, rng=None):
+        super().__init__(rd, send, stats, warn=WARN, hp=(P1_HP, P2_HP), hp_max=HP_MAX, guard=FREE,
+                         options=HOLDS, hold_s=HOLD_S, judge_s=JUDGE_S, explore=0.0, rng=rng)
+        self.parry = parry_holds(side)
+        self.last_cls = None
+
+    def set_attack_class(self, cls: str | None):
+        """Called by the caller each poll with the current attack class
+        (e.g. 'high', 'mid_punch', 'mid_kick', 'low'), or None if unknown."""
+        self.last_cls = cls
+
+    def _pick_name(self) -> str:
+        """The hold name to use: parry table if the class is known, else the book."""
+        if self.last_cls in self.parry:
+            return "+".join(self.parry[self.last_cls])
+        return self.book.choose(self.key, None, self.names)
+
+    def step(self, now):
+        """Same as OnsetReflex.step but uses the parry table for the hold choice."""
+        if self.release_at is not None and now >= self.release_at:
+            self.send([{"key": k, "down": False} for k in (self.guard, *self.down)])
+            self.release_at = None
+        if self.judge is not None and now >= self.judge[0]:
+            _, name, p1, p2 = self.judge
+            n1, n2 = self._hp()
+            dealt = max(0, p2 - n2) if n2 <= self.hp_max else 0
+            taken = max(0, p1 - n1) if n1 <= self.hp_max else 0
+            self.book.record(self.key, None, name, dealt - taken, met=bool(dealt or taken))
+            self.stats["hold_dealt"] += dealt
+            self.stats["hold_taken"] += taken
+            self.stats["hold_best"] = self.book.best(self.key)
+            self.judge = None
+        w = self.rd(self.warn, 1)[0]
+        if w and not self.prev and self.judge is None and self.release_at is None:
+            name = self._pick_name()
+            h = self.options[self.names.index(name)]
+            p1, p2 = self._hp()
+            self.send([{"key": k, "down": True} for k in (self.guard, *h)])
+            self.down, self.release_at, self.judge = h, now + self.hold_s, (now + self.judge_s, name, p1, p2)
+            self.stats["holds"] += 1
+        self.prev = w

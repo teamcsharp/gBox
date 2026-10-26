@@ -21,7 +21,7 @@ INDEX = {
                                                     "sa2_inventory", "psotext", "characters"],
     "lz.prs_msb_decompress (Eighting PRS)": ["cnr2", "con2_inventory"],
     "lz.mio0_decompress (MIO0)": ["sm64_mario", "sm64_inventory", "sf64_inventory"],
-    "lz.yaz0_decompress (Yaz0)": ["oot_writer", "mm_inventory"],
+    "lz.yaz0_decompress (Yaz0)": ["oot_writer", "mm_inventory", "sms_inventory"],
     "lz.lzss_decompress (Okumura LZSS)": ["mm64_inventory", "ff7_models", "aki_wrestling"],
     "lz.lz10_decompress (LZ10)": ["tetris_ds", "sm64ds_chars (through formats.nitro)"],
     "nitro.NitroROM / narc / decompress / decode_texture / decode_display_list (Nintendo DS)":
@@ -31,6 +31,7 @@ INDEX = {
     "lz.refpack_decompress (RefPack)": ["mayhem_inventory (via gbox.refpack)"],
     "iso9660.walk": ["psxdisc", "gdrom", "defjam_inventory", "raidou2_inventory", "romexport"],
     "gcfst.parse_fst": ["gcdisc (and every GameCube title through it)", "formats.disc (GCZ)"],
+    "rarc.parse / rarc.walk (RARC archives)": ["sms_inventory", "tp_inventory"],
     "texture.morton / twiddled_index": ["ninja", "doa2_textures", "mkgold_geo"],
     "texture.tim_parse / tim_build": ["yukes_sd"],
     "rig.role_of_joint": ["re4gc_enemies", "doa2_weighted_retarget", "sm64_swap"],

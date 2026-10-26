@@ -5,7 +5,8 @@ import time
 
 from gbox import game_unlocks as U, tools as T
 
-SC2 = {"game_id": "201629ad498aba7b", "title": "Soul Calibur II (USA)", "platform": "gamecube"}
+SC2 = {"game_id": "201629ad498aba7b", "title": "Soul Calibur II (USA)", "platform": "gamecube"}  # .gcz build
+SC2_ISO = {"game_id": "e08e8a0c1b3c9060", "title": "Soul Calibur II (USA)", "platform": "gamecube"}  # .iso build
 
 
 def test_the_sc2_profile_is_verified_and_its_codes_decrypt():
@@ -19,6 +20,20 @@ def test_the_sc2_profile_is_verified_and_its_codes_decrypt():
         ops, bad = C.decode("gamecube", "\n".join(entry["lines"]))
         assert ops and not bad, entry["desc"]
     assert U.profile_for(SC2)["verified"] is False, "the save-template path stays untouched: this game unlocks in RAM"
+
+
+def test_the_sc2_iso_profile_is_verified_and_its_codes_decrypt():
+    prof = U.code_profile(SC2_ISO)
+    assert prof and prof["profile"] == "sc2-gc-usa-action-replay-v1" and len(prof["codes"]) == 3
+    # ISO and .gcz builds share the same unlock profile structure (same codes, verified flag)
+    sc2_prof = U.code_profile(SC2)
+    assert prof["profile"] == sc2_prof["profile"]
+    assert prof["verified"] == sc2_prof["verified"]
+    assert prof["codes"] == sc2_prof["codes"]
+    from gbox import cheats as C
+    for entry in prof["codes"]:
+        ops, bad = C.decode("gamecube", "\n".join(entry["lines"]))
+        assert ops and not bad, entry["desc"]
 
 
 def test_post_launch_holds_every_code_and_reports_a_bad_one_without_failing():
