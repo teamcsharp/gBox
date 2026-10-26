@@ -133,8 +133,12 @@ SWING_TURN = math.radians(45)          # a Majini further off the body's heading
 # A Majini behind: the quick turn (left stick down + cross, the run button; docs/mercenaries_re5_meta.md item 21, marked
 # "verify live") instead of ~1 s of body turning with the gun down. Self-verifying: the heading must swing at least
 # QUICK_TURN_SEEN within QUICK_TURN_CHECK_S, else after QUICK_TURN_TRIES presses without one it is off for the session
-QUICK_TURN_ERR, QUICK_TURN_SEEN = math.radians(120), math.radians(100)
-QUICK_TURN_CHECK_S, QUICK_TURN_GAP_S, QUICK_TURN_TRIES = 0.7, 1.5, 2
+QUICK_TURN_ERR, QUICK_TURN_SEEN = math.radians(100), math.radians(90)   # verified live 2026-10-26 15:39 (128 deg)
+QUICK_TURN_CHECK_S, QUICK_TURN_GAP_S, QUICK_TURN_TRIES = 0.7, 0.8, 2
+# Target choice: a Majini off the body's heading costs his distance times (1 + FRONT_WEIGHT * angle / pi), so the one in
+# front is shot while the one behind closes in; the current target is kept unless another costs under TARGET_SWITCH of
+# his (live 2026-10-26 15:39: 19.6 s of a 30 s life turning with the gun down between the nearest Majini, hit 3 of 3 times)
+FRONT_WEIGHT, TARGET_SWITCH = 1.5, 0.7
 POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
 WILD_YAW, WILD_PITCH = math.radians(30), math.radians(25)   # a ray error past this is not a turn to make: a torn read
@@ -802,8 +806,16 @@ class Combat:
         bow = any(w.get('hand') and w.get('id') == 0x10F for w in snap.get('inventory') or ())
         if not bow:
             self.bow_target_key = None
+        def cost(e):
+            off = abs(wrap(heading(e['pos'][0] - p['pos'][0], e['pos'][2] - p['pos'][2]) - (p.get('rot') or 0.0)))
+            return math.dist(p['pos'], e['pos']) * (1.0 + FRONT_WEIGHT * off / math.pi)
         def nearest(pool):
-            target = min(pool, key=lambda e: math.dist(p['pos'], e['pos']), default=None)
+            contact = [e for e in pool if math.dist(p['pos'], e['pos']) < POINT_BLANK]
+            target = min(contact or pool, key=(lambda e: math.dist(p['pos'], e['pos'])) if contact else cost, default=None)
+            held = next((e for e in pool if e.get('ptr', e.get('slot')) == getattr(self, 'target_key', None)), None)
+            if not contact and held is not None and target is not None and held is not target                     and cost(target) > TARGET_SWITCH * cost(held):
+                target = held                              # no swing for a slightly better one (one in contact: always)
+            self.target_key = target.get('ptr', target.get('slot')) if target is not None else None
             if not bow or target is None:
                 return target
             locked = next((e for e in pool if self.bow_target_key ==
