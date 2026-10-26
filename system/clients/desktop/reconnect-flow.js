@@ -109,12 +109,13 @@
       set('stream', 'run', 'Checking the picture…');
       const fresh = async () => { const h = await io.api(`/api/sessions/${encodeURIComponent(sid)}/stream/health`);
         return h && h.age_s != null && h.age_s < 3 && h.state === 'running'; };
-      if (await waitFor(fresh, 6000)) return set('stream', 'ok', 'Live');
+      if (await waitFor(fresh, 6000)) { set('stream', 'ok', 'Live'); return true; }
       set('stream', 'run', 'Picture is stale: asking for a new encoder…');
       await io.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: sid.split('-')[0],
         input: { session_id: sid, op: 'restart_stream', args: {} } }).catch(() => null);
-      if (await waitFor(fresh, 30000, 1500)) return set('stream', 'ok', 'Live again');
+      if (await waitFor(fresh, 30000, 1500)) { set('stream', 'ok', 'Live again'); return true; }
       set('stream', 'err', 'Still no fresh picture; showing the last frame while it recovers');
+      return false;
     }
     async function pip(sid) {
       set('pip', 'run', 'Opening picture-in-picture…');
@@ -136,9 +137,18 @@
           await spark(!automatic);
           if (await library() === 'reloading') return clone();
           io.forget(RESUME_KEY); io.forget(RELOAD_KEY);
-          const sid = await mercmode();
+          let sid = await mercmode();
+          // a picture that never comes back: MercMode may have moved on (a service restart starts its run on a new
+          // session, and right after it the status still names the dead one - operator 2026-10-26: "gbox reloaded to
+          // this", Resident Evil 5 on lilspark with no fresh picture while RE4 already played): ask again, follow it
+          for (let attempt = 0; sid && attempt < 3; attempt++) {
+            if (await stream(sid)) break;
+            const next = await mercmode();
+            if (!next || next === sid) break;
+            sid = next;
+          }
           if (sid) {
-            await stream(sid); await pip(sid);
+            await pip(sid);
             // an operator's reconnect (F5, Try again) brings the game back with its autobot driving (operator
             // 2026-10-26); the control plane decides (gbox/bot_control.py). Automatic reconnects leave the bot alone.
             if (!automatic && io.ensureBot) try { await io.ensureBot(sid); } catch { /* never fails the reconnect */ }
