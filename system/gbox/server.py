@@ -2409,7 +2409,7 @@ def create_app(config: Config) -> FastAPI:
                                                'idle_seconds','active_jobs')} | policy |
                         {'admission': {'allowed': reason is None, 'reason': reason},
                          'budget_kind': 'admission', 'hard_throttle': False,
-                         'storage': storage_purge_mod.summary(storage_purge_mod.latest(store, w['name']))})
+                         'storage': storage_purge_mod.summary(store, w['name'])})
         return {'excluded': sorted(ex), 'workers': rows}
 
     @app.post("/api/testing/workers/{wid}")
@@ -2984,6 +2984,12 @@ def create_app(config: Config) -> FastAPI:
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         _extraction_handoff(j)
+        if t.name == "storage_purge" and state == JobState.SUCCEEDED:
+            try:                                      # the PC's newest result for the Workers menu (gbox/storage_purge.py)
+                from . import storage_purge as storage_purge_mod
+                storage_purge_mod.remember(store, j, r.output or {})
+            except Exception as exc:                  # noqa: BLE001 - an accepted result stays accepted
+                store.audit('gbox-auto', 'storage_purge.remember_failed', j['id'], {'error': str(exc)[:300]})
         if t.name in ("session_op", "autoplay", "launch_game"):
             from . import screensaver
             saver = getattr(app.state, "autoplay_screensaver", None)

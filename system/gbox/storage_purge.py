@@ -62,7 +62,7 @@ SAVE_SUFFIXES = {".srm", ".sav", ".mcr", ".mcd", ".gci", ".ps2", ".state", ".p2s
 SAVE_RX = re.compile(r"\.(?:state\d+|s\d{2})$", re.I)
 KEPT_MAX = 500
 DAY = 86400.0
-RESULT_KIND = "job"                       # results live on the job (GET reads the newest succeeded one)
+RESULT_KIND = "storage_purge_result"      # store: "<pc lower>" -> the newest result's job id and totals (remember())
 
 
 # ------------------------------------------------------------------------------------------------ the job's models
@@ -785,33 +785,33 @@ def _free(root) -> int | None:
 
 # ------------------------------------------------------------------------------------------------ control plane: routes
 
-def latest(store, name: str, job_id: str = "") -> dict | None:
-    """The newest succeeded storage_purge job for this PC (or that job)."""
-    if job_id:
-        j = store.get("job", job_id)
-        return j if j and j.get("tool") == "storage_purge" else None
-    low = str(name or "").lower()
+def remember(store, job: dict, output: dict) -> dict:
+    """A finished storage_purge job (server._result_followups): the PC's newest result, read by the Workers menu
+    without scanning the job table. A deletion replaces the dry run's figure (the menu asks to check again)."""
+    t = output.get("totals") or {}
+    pc = str(output.get("pc") or ((job.get("input") or {}).get("facts") or {}).get("pc") or "")
+    doc = {"pc": pc, "job_id": job.get("id"), "at": time.time(), "dry_run": bool(output.get("dry_run")),
+           "items": t.get("items", 0), "freed_bytes": t.get("freed_bytes", 0), "unplayed_days": output.get("unplayed_days"),
+           "deletable": "central" in (((job.get("input") or {}).get("facts") or {}).get("sources") or [])}
+    if pc:
+        store.put(RESULT_KIND, pc.lower(), doc)
+    return doc
+
+
+def summary(store, name: str) -> dict | None:
+    """The Workers menu's "Free space: N GB unplayed": the PC's newest result (remember())."""
     try:
-        with store.lock:
-            rows = store.db.execute(
-                "SELECT body FROM docs WHERE kind='job' AND json_extract(body,'$.tool')='storage_purge' "
-                "AND json_extract(body,'$.state')='succeeded' ORDER BY rowid DESC LIMIT 200").fetchall()
-        jobs = [json.loads(r[0]) for r in rows]
+        return store.get(RESULT_KIND, str(name or "").lower())
     except Exception:                                    # noqa: BLE001
-        jobs = [j for j in store.all("job", reverse=True) if j.get("tool") == "storage_purge"
-                and j.get("state") == "succeeded"][:200]
-    return next((j for j in jobs if str((j.get("output") or {}).get("pc") or "").lower() == low), None)
-
-
-def summary(job: dict | None) -> dict | None:
-    """The Workers menu's "Free space: N GB unplayed": the newest dry run's totals."""
-    if not job:
         return None
-    out = job.get("output") or {}
-    t = out.get("totals") or {}
-    return {"job_id": job.get("id"), "at": job.get("finished") or job.get("created"), "dry_run": bool(out.get("dry_run")),
-            "items": t.get("items", 0), "freed_bytes": t.get("freed_bytes", 0), "unplayed_days": out.get("unplayed_days"),
-            "deletable": "central" in ((job.get("input") or {}).get("facts") or {}).get("sources", [])}
+
+
+def latest(store, name: str, job_id: str = "") -> dict | None:
+    """The PC's newest storage_purge job (or that job)."""
+    if not job_id:
+        job_id = (summary(store, name) or {}).get("job_id") or ""
+    j = store.get("job", job_id) if job_id else None
+    return j if j and j.get("tool") == "storage_purge" else None
 
 
 class StoragePurgeRequest(BaseModel):
@@ -871,5 +871,6 @@ def routes(app, store, auth, *, submit, workers, wid, origin_dep, job_request, r
                         pass
                 rows.append(r)
             out[group] = rows
+        facts = (j.get("input") or {}).get("facts") or {}
         return {"job_id": j.get("id"), "state": j.get("state"), "finished": j.get("finished"),
-                "deletable": (summary(j) or {}).get("deletable", False), **out}
+                "deletable": "central" in (facts.get("sources") or []), **out}

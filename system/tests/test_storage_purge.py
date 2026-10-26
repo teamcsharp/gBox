@@ -320,15 +320,22 @@ def test_route_queues_the_tool_on_the_named_pc_and_returns_its_newest_result(tmp
         r = c.post("/api/jobs", headers=h, json={"tool": "storage_purge", "input": {"dry_run": True}, "require_worker": "i9-NUC"})
         assert r.status_code == 200 and store.get("job", r.json()["id"])["input"]["facts"]["pc"] == "i9-NUC"
         assert c.get("/api/workers/i9-NUC/storage-purge", headers=h).status_code == 404
-        store.put("job", "done1", {"id": "done1", "tool": "storage_purge", "state": "succeeded", "finished": 5.0,
-                                   "input": {"facts": {"sources": ["central"]}},
-                                   "output": {"pc": "i9-NUC", "dry_run": True, "unplayed_days": 14,
-                                              "items": [{"kind": "game", "game": G_OLD, "title": "", "path": "D:/x"}],
-                                              "kept": [], "totals": {"items": 1, "freed_bytes": 7 << 30}}})
+        # the worker claims the dry run and answers: the PC's newest result is remembered for the menu
+        claimed = c.post("/api/workers/wnew/claim", headers=h, json={"idle_seconds": 0, "active_jobs": 0}).json()
+        assert claimed["tool"] == "storage_purge" and claimed["build_permit"]["operator"] is True
+        out = {"dry_run": True, "pc": "i9-NUC", "unplayed_days": 14, "include": ["games", "builds"],
+               "items": [{"kind": "game", "game": G_OLD, "title": "", "path": "D:/gBox/cache/" + G_OLD, "size": 7 << 30}],
+               "kept": [], "skipped": [], "totals": {"items": 1, "bytes": 7 << 30, "freed_bytes": 7 << 30}, "roots": {},
+               "system_drive": [], "warnings": []}
+        r = c.post("/api/workers/wnew/result", headers=h, json={"job_id": claimed["id"], "ok": True, "output": out})
+        assert r.status_code == 200, r.text
+        assert store.get("job", claimed["id"])["state"] == "succeeded"
         got = c.get("/api/workers/i9-NUC/storage-purge", headers=h).json()
-        assert got["job_id"] == "done1" and got["items"][0]["title"] == "Old Game" and got["deletable"] is True
+        assert got["job_id"] == claimed["id"] and got["items"][0]["title"] == "Old Game" and got["deletable"] is True
+        assert c.get(f"/api/workers/i9-NUC/storage-purge?job_id={claimed['id']}", headers=h).json()["job_id"] == claimed["id"]
         row = next(w for w in c.get("/api/testing/workers", headers=h).json()["workers"] if w["name"] == "i9-NUC")
         assert row["storage"]["freed_bytes"] == 7 << 30 and row["storage"]["dry_run"] is True
+        assert row["storage"]["job_id"] == claimed["id"]
         store.put("worker", "wnew", store.get("worker", "wnew") | {"tools": ["echo_artifact"]})   # not updated yet
         r = c.post("/api/workers/i9-NUC/storage-purge", headers=h, json={})
         assert r.status_code == 409 and "rebuild & relaunch" in r.json()["detail"]
