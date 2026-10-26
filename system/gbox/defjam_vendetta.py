@@ -94,11 +94,11 @@ def _need(b, o, n, what):
 
 
 def identify(iso) -> dict:
-    """Disc header of an ISO/GCM: game id, disc number, revision and internal name."""
-    with open(iso, "rb") as f:
-        h = f.read(0x60)
-    return {"game_id": h[:6].decode("ascii", "replace"), "disc": h[6], "revision": h[7],
-            "name": h[0x20:0x60].split(b"\0")[0].decode("latin-1"), "exact_build": h[:6] == DISC_ID.encode() and h[7] == 0}
+    """Disc header of an ISO/GCM/GCZ: game id, disc number, revision and internal name."""
+    from .gcdisc import GCDisc
+    d = GCDisc(iso)
+    return {"game_id": d.game_id, "disc": d._r(0x06, 1)[0], "revision": d._r(0x07, 1)[0],
+            "name": d.title, "exact_build": d.game_id == DISC_ID and d._r(0x07, 1)[0] == 0}
 
 
 def _triangulate(kind, v):
