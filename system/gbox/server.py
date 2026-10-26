@@ -25,6 +25,7 @@ from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import bot_control
 from . import game_prefs
 from . import padstate
+from . import pad_takeover
 from . import fit_events
 from . import operator_guard
 from .config import HOST_OS, Config
@@ -4253,7 +4254,7 @@ def create_app(config: Config) -> FastAPI:
         return picture_bounds.cached(sid, f)
 
     @app.get("/api/sessions/{sid}/mjpeg")
-    def mjpeg(sid: str, actor=Depends(auth)):
+    def mjpeg(sid: str, request: Request, actor=Depends(auth)):
         from .live_stream import async_mjpeg_parts, BackgroundCheck, BackgroundLease
         lv = _live(sid)
 
@@ -4265,12 +4266,13 @@ def create_app(config: Config) -> FastAPI:
         # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
         import uuid
         viewer = "mjpeg:" + uuid.uuid4().hex
-        operator_guard.report_watch(store, viewer, sid)
+        host = request.client.host if request.client else ""     # the machine viewing it (pad takeover: viewing())
+        operator_guard.report_watch(store, viewer, sid, host=host)
 
         async def watched_parts():
             renewed = time.time()                       # the route already created the first watch lease
             lease = BackgroundLease(
-                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid),
+                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid, host=host),
                 lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, None))
             try:
                 async for part in async_mjpeg_parts(lv, alive=alive):
@@ -4301,12 +4303,18 @@ def create_app(config: Config) -> FastAPI:
     padmap.register(app, auth)                                 # per-console controller maps (the glyph's right-click)
 
     @app.post("/api/sessions/{sid}/input")
-    def put_input(sid: str, ev: InputEvents, actor=Depends(auth)):
+    def put_input(sid: str, ev: InputEvents, request: Request, actor=Depends(auth), origin=Depends(request_origin)):
         lv = _live(sid)
-        # each pad event says who sent it (player / ui / autoplay / agent): the worker hands autoplay back only to the
-        # operator, never to an agent or a bridge pressing buttons in the same session
-        events = [e | {"src": padstate._source(actor, e)} if isinstance(e, dict) and "rpc" not in e and "src" not in e else e
-                  for e in ev.events]
+        # each pad event says who sent it (player / ui / autoplay / agent), from the authenticated actor - never what the
+        # client wrote: the worker gives the pad to the operator only, never to an agent or a bridge pressing buttons in
+        # the same session. The operator's own events also say whether they may take the pad from the session's bot for
+        # a moment (gbox/pad_takeover.py): not from automation, and only from a machine that is viewing this session.
+        host = request.client.host if request.client else ""
+        operator = padstate._source(actor, {}) in pad_takeover.OPERATOR_SOURCES
+        keys = any(isinstance(e, dict) and "rpc" not in e and isinstance(e.get("key"), str) and e["key"] for e in ev.events)
+        claim = operator and keys and not _automated(actor, origin) and operator_guard.viewing(store, sid, host)
+        events = pad_takeover.stamp(ev.events, lambda e: padstate._source(actor, e), lease=claim, actor=actor,
+                                    via=f"{origin.get('client') or 'app'}@{host}" if operator else "")
         if (store.get('session',sid) or {}).get('federation'):
             expires=time.time()+1.5
             events=[e|{'_federation_expires_at':expires} if isinstance(e,dict) and 'rpc' not in e else e for e in events]

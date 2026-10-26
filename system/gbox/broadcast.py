@@ -1579,7 +1579,8 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
                                  request.client.host if request.client else "")
         from .operator_guard import report_watch
         report_watch(store, "app:" + (request.client.host if request.client else "") + ":" +
-                     request.headers.get("x-gbox-client", ""), sid)
+                     request.headers.get("x-gbox-client", ""), sid,
+                     host=request.client.host if request.client else "")   # the pad takeover's viewing() check
         hub.refresh(force=True)
         hub.wait_tick()
         return {"watch": watch, "program": hub.program_status()}

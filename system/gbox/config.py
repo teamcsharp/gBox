@@ -309,6 +309,8 @@ class Config(BaseModel):
     showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     builds: BuildsConfig = BuildsConfig()            # [builds] auto_send: builds reach a PC only by the operator's download
+    takeover_idle_s: float = 3.0      # the operator's pad takes over from a playing bot; this long after their last input
+                                      # (nothing held) the bot takes the pad back (gbox/pad_takeover.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property

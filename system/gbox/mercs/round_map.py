@@ -10,6 +10,11 @@ caller passes its learned map's cells (walked / blocked, cell size). The newest 
 The combat layer's shot records (shot()) are kept for the whole round ("shots") and become the round's ballistic report
 (gbox.mercs.ballistics: "ballistics" in the JSON, ballistics/<stem>.json / .md beside it, two lines under the map).
 
+The stretches the operator drove (a pad takeover, gbox/pad_takeover.py: the bot's stats say operator_control and the
+takeover's operator_segment while it lasts) are the JSON's operator_segments - t_from / t_to, the keys they pressed per
+0.25 s and the route sampled meanwhile, drawn magenta - for learning from the operator later; that time counts as the
+"operator" phase, not the bot's.
+
     python -m gbox.mercs.round_map <folder>     # the newest round's hotspots
 """
 from __future__ import annotations
@@ -49,6 +54,7 @@ class RoundTrace:
         self.events: list[dict] = []            # stuck / kill / death markers
         self.shot_records: list[dict] = []      # every resolved shot the combat layer reported (shot())
         self.shot_records_dropped = 0
+        self.operator: list[tuple[int, str]] = []   # (sample index, takeover segment id): the operator drove then
         self.started = None
         self.last = -math.inf
 
@@ -67,6 +73,9 @@ class RoundTrace:
         self.samples.append((round(now, 2), round(x, 1), round(z, 1), round(y, 1)))
         self.states.append({k: str(state[k])[:120] for k in STATE_KEYS if state and state.get(k) not in (None, "")})
         self.mines.append([[round(m[0]), round(m[-1])] for m in mines][:16])
+        seg = state.get("operator_segment") if state and state.get("operator_control") is True else None
+        if isinstance(seg, str) and seg:
+            self.operator.append((len(self.samples) - 1, seg))
 
     def standstills(self) -> list[dict]:
         """Every stretch of STILL_S or more inside STILL_R: when, where, how long, what the bot was doing (its
@@ -94,8 +103,38 @@ class RoundTrace:
                 out.append({"from_s": round(self.samples[i][0] - (self.started or 0), 1), "seconds": round(secs, 1),
                             "at": [round(cx), round(cz)], "phase": phase, "fire_gate": top("fire_gate"),
                             "mine_status": top("mine_status"), "mine_retreat_status": top("mine_retreat_status"),
-                            "combat": top("combat"), "on_mine": bool(near), "code": self.code.get(phase)})
+                            "combat": top("combat"), "on_mine": bool(near), "code": self.code.get(phase),
+                            **({"operator": True} if any(i <= k <= j for k, _ in self.operator) else {})})
             i = j + 1
+        return out
+
+    def operator_segments(self) -> list[dict]:
+        """The stretches the operator drove (pad takeovers, gbox.pad_takeover), clipped to this round: t_from / t_to, the
+        keys they held or pressed per 0.25 s ([t, [keys]], absolute times like the route) and the route this round
+        sampled meanwhile - for learning from the operator later (nothing here learns)."""
+        if not self.operator or not self.samples:
+            return []
+        try:
+            from .. import pad_takeover
+            lookup = pad_takeover.segment
+        except Exception:                         # noqa: BLE001 - the route alone, without the keys
+            lookup = lambda _id: None             # noqa: E731
+        by: dict[str, list[int]] = {}
+        for k, seg in self.operator:
+            by.setdefault(seg, []).append(k)
+        lo, hi, out = self.samples[0][0], self.samples[-1][0], []
+        for seg, idx in by.items():
+            rec = lookup(seg) or {}
+            route = [list(self.samples[k][:3]) for k in idx]
+            t_from = max(float(rec.get("t_from") or route[0][0]), lo)
+            t_to = min(float(rec["t_to"]), hi) if rec.get("t_to") else route[-1][0]
+            step = float(rec.get("bucket_s") or 0.25)
+            out.append({"id": seg, "t_from": round(t_from, 2), "t_to": round(t_to, 2),
+                        "seconds": round(max(0.0, t_to - t_from), 2), "source": rec.get("source"),
+                        "actor": rec.get("actor"), **({"via": rec["via"]} if rec.get("via") else {}),
+                        "bucket_s": step, "keys": [row for row in rec.get("keys") or ()
+                                                   if t_from - step < row[0] <= t_to],
+                        "route": route, "from": route[0][1:3], "to": route[-1][1:3]})
         return out
 
     def shots(self) -> list[dict]:
@@ -118,9 +157,10 @@ class RoundTrace:
         return out[-SHOTS_KEPT:]
 
     def time_by_phase(self) -> dict:
+        driven = {k for k, _ in self.operator}             # the operator had the pad: their time, not the bot's phase
         out: dict[str, float] = {}
         for k, (a, b) in enumerate(zip(self.samples, self.samples[1:])):
-            ph = (self.states[k] if k < len(self.states) else {}).get("phase") or "?"
+            ph = "operator" if k in driven else (self.states[k] if k < len(self.states) else {}).get("phase") or "?"
             out[ph] = round(out.get(ph, 0.0) + min(b[0] - a[0], 2.0), 1)
         return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
@@ -163,12 +203,14 @@ class RoundTrace:
                                    meta=meta)
         if self.shot_records_dropped:
             report["records_dropped"] = self.shot_records_dropped
+        operator = self.operator_segments()
         return {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
                 "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
                 "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
                 "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
                 "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
-                "last_shots": self.shots(), "shots": self.shot_records, "ballistics": report, "code": self.code}
+                "last_shots": self.shots(), "shots": self.shot_records, "ballistics": report, "code": self.code,
+                "operator_segments": operator, "operator_s": round(sum(s["seconds"] for s in operator), 1)}
 
     def finish(self, walked=(), blocked=()) -> dict | None:
         """Write the round's JSON + SVG (when it has an out_dir and enough samples); the summary either way."""
@@ -225,6 +267,15 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
         op = 0.25 + 0.75 * i / max(len(pts) - 1, 1)
         out.append(f'<line x1="{X(a[1]):.1f}" y1="{Z(a[2]):.1f}" x2="{X(b[1]):.1f}" y2="{Z(b[2]):.1f}" '
                    f'stroke="#4ea1ff" stroke-width="2" stroke-opacity="{op:.2f}"/>')
+    for seg in s.get("operator_segments") or ():        # where the operator drove (pad takeover): magenta
+        route = seg.get("route") or []
+        if len(route) > 1:
+            path = " ".join(f"{X(p[1]):.1f},{Z(p[2]):.1f}" for p in route)
+            out.append(f'<polyline points="{path}" fill="none" stroke="#ff4fd8" stroke-width="3.5" stroke-opacity="0.9"/>')
+        if route:
+            tag = _esc("operator %g s" % (seg.get("seconds") or 0))
+            out.append(f'<text x="{X(route[0][1]) + 8:.1f}" y="{Z(route[0][2]) + 14:.1f}" fill="#ff4fd8" font-size="11">'
+                       f'{tag}</text>')
     if pts:
         out.append(f'<circle cx="{X(pts[0][1]):.1f}" cy="{Z(pts[0][2]):.1f}" r="6" fill="#3ddc84"/>')
         out.append(f'<circle cx="{X(pts[-1][1]):.1f}" cy="{Z(pts[-1][2]):.1f}" r="6" fill="#ffffff"/>')
@@ -241,7 +292,7 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
     label = (f'{s["title"]} {s["room"]} round {s["round_id"][:8]} - {s["seconds"]:g} s, {s["distance"]} units, '
              f'{s["cells_visited"]} cells, {s["stuck_events"]} stuck' + (f' - {s["verdict"]}' if s["verdict"] else ""))
     out.append(f'<text x="8" y="{H + 22:.0f}" fill="#e6e6e6">{_esc(label)}</text>')
-    out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck, yellow ring standing still (red: on a mine)</text>')
+    out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck, yellow ring standing still (red: on a mine), magenta the operator drove</text>')
     for i, text in enumerate(shots):
         out.append(f'<text x="8" y="{H + 66 + 22 * i:.0f}" fill="#7fd1b9">{_esc(text)}</text>')
     return "".join(out) + "</svg>"

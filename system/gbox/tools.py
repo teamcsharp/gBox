@@ -1465,7 +1465,10 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                                 and _player_takeover_input(pad)):
                             from . import padstate
                             padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
-                    if pad and "send_input" in ad.supported:
+                        from . import pad_takeover        # the operator's input takes the pad from the bot for a moment:
+                        game_pad = pad_takeover.inputs(   # the bot lets go first; its relayed presses wait meanwhile
+                            sid, game_pad, ad.send_input if "send_input" in ad.supported else None)
+                    if pad and game_pad and "send_input" in ad.supported:
                         demo = getattr((AUTOPLAY.get(sid) or {}).get("driver"), "demo", False)
                         if demo and game_pad and all(e.get("src") == "autoplay" for e in pad):
                             _polite_send(ad, game_pad)            # a bot demo's own presses (vision / missions)
@@ -1520,6 +1523,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                         ghost_runs.stop(sid)
                     except Exception:                  # noqa: BLE001
                         pass
+                    from . import pad_takeover
+                    pad_takeover.forget(sid)               # its pad lease and the bots' input gates go with it
                     SESSIONS.pop(sid, None)
             except Exception:
                 pass
@@ -2633,8 +2638,10 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
         _release_all(inp.session_id)                           # never leave a direction held: the character would keep running
         return {"result": {"stopped": bool(run), "mission": run and run["mission"]}}
     if inp.op == "status":
+        from . import pad_takeover
         return {"result": {"running": bool(run and run["thread"].is_alive()), "mission": run and run["mission"],
                            "mode": run and run.get("mode"), "took_over": bool(run and run.get("took_over")),
+                           **pad_takeover.status(inp.session_id),        # the operator holds the pad for a moment
                            "continuous": bool(run and getattr(run.get('inp'), 'continuous', False)),
                            "recovery": run and run.get('recovery'),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace),
@@ -2736,7 +2743,7 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
         if getattr(d, "_assist_release", None):                  # stopped / failed mid-run: never leave HP held
             d._assist_release()
         _ended(run)
-    _takeover(run, d, inp.session_id, since)
+    _bot_lease(run, d, inp.session_id, since)                  # its presses come back through the pump: relay gate
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
     return {"result": {"started": m["name"], "mode": "mission", "objective": m.get("objective")}}
@@ -2761,11 +2768,12 @@ def _saver_post(d, path, body):
             pass
 
 
-def _takeover(run, d, sid, since):
-    """The operator touches their own pad after autoplay started: hand control back at once (every mode). In
-    screensaver mode a mouse move hands the game over without stopping: autoplay plays on until the operator presses
-    Stop (operator 2026-10-20: "let it continue playing until I click the stop button"). The control plane is told
-    either way and keeps the game up."""
+def _takeover(run, d, sid, since, pad_stops=True):
+    """The operator touches their own pad after autoplay started: hand control back at once (a round preparation's walk,
+    _prepare_round). A playing bot passes pad_stops=False (_bot_lease): its pad is a brief takeover it yields to and
+    resumes after (gbox/pad_takeover.py), never a stop. In screensaver mode a mouse move hands the game over without
+    stopping: autoplay plays on until the operator presses Stop (operator 2026-10-20: "let it continue playing until I
+    click the stop button"). The control plane is told either way and keeps the game up."""
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
     cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
@@ -2773,6 +2781,8 @@ def _takeover(run, d, sid, since):
         if "rest_cursor" not in run:
             run["rest_cursor"] = _cursor()
         cursor = run["rest_cursor"]
+    if not pad_stops and cursor is None:             # nothing left to watch: the pad lease does the rest
+        return
 
     def running():                                   # the run's thread is set and started just after this: a thread
         th = run.get("thread")                       # not started yet (no ident) is not one that ended
@@ -2781,7 +2791,7 @@ def _takeover(run, d, sid, since):
     def watch():
         nonlocal cursor
         while not d.stopped and running():
-            if padstate.touched_after(sid, since) and not _mercs_human_controls(sid):
+            if pad_stops and padstate.touched_after(sid, since) and not _mercs_human_controls(sid):
                 d.stopped, run["took_over"] = True, True
                 _release_all(sid)
                 _saver_post(d, "yield", {"session_id": sid, "reason": "pad"})
@@ -2789,10 +2799,30 @@ def _takeover(run, d, sid, since):
             if cursor is not None:
                 c = _cursor()
                 if c and abs(c[0] - cursor[0]) + abs(c[1] - cursor[1]) > 8:
-                    cursor, run["handed_over"] = None, True    # theirs now; only the pad (or Stop) ends the autoplay
+                    cursor, run["handed_over"] = None, True    # theirs now; only Stop ends the autoplay
                     _saver_post(d, "yield", {"session_id": sid, "reason": "mouse"})
             time.sleep(0.1)
     threading.Thread(target=watch, daemon=True).start()
+
+
+def _bot_lease(run, d, sid, since):
+    """A playing bot takes pad takeovers (gbox/pad_takeover.py, operator 2026-10-26: "pick up the controller ... for a brief
+    moment ... then just put down a controller and give the gameplay back to the bot"): the operator's controller, on
+    this PC or forwarded by their app from any PC, makes it let go at once and it takes the pad back takeover_idle_s
+    (gbox.toml, 3 s) after their last input - never a stop, so F5 and MercMode carry on and Stop / F3 still stop it. A
+    human / co-op Mercenaries session's P1 belongs to the human (no takeover there). The screensaver's mouse hand-over
+    is watched as before."""
+    from . import pad_takeover
+    cfg = getattr(run.get("ctx"), "config", None)
+    pad_takeover.bind(sid, run, idle_s=getattr(cfg, "takeover_idle_s", None), data_dir=getattr(cfg, "data_dir", None),
+                      applies=lambda: not _mercs_human_controls(sid))
+    _takeover(run, d, sid, since, pad_stops=False)
+
+
+def _bot_send(run, ad, d):
+    """The send() a bot plays with (_autoplay_send) behind its session's pad takeover gate (gbox/pad_takeover.py)."""
+    from . import pad_takeover
+    return pad_takeover.Gate(run["sid"], _autoplay_send(ad, d))
 
 
 def _telemetry(run, ctx, title: str = "") -> None:
@@ -3099,10 +3129,13 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                 boundary_sink=HttpSink(ctx.server,_ap_headers(ctx),sid)
                 kw['round_boundary']=lambda body,stats:publish_boundary(boundary_sink,body,stats)
             try:
-                stats = pb.play(ad, _autoplay_send(ad, d), lambda: d.stopped, **kw)
+                stats = pb.play(ad, _bot_send(run, ad, d), lambda: d.stopped, **kw)
             finally:
                 if boundary_sink is not None:boundary_sink.close()
-            if stats.get("hung"):                              # the game froze: _ended gets it back (_bad_end)
+            from . import pad_takeover
+            # the game froze: _ended gets it back (_bad_end) - unless the operator was driving (menus the bot can't name
+            # while they had the pad are not a frozen game: theirs is never relaunched under them)
+            if stats.get("hung") and not pad_takeover.recent(sid):
                 run["bad_end"] = "hung"
             if run.get("prompt_watcher") is not None:
                 run["prompt_watcher"].stop.set()
@@ -3115,7 +3148,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                 run['live']['stopped_reason'] = 'native reads stayed unavailable after bounded retries; recovering continuous run'
         _release_all(sid)
         _ended(run)
-    _takeover(run, d, sid, since)
+    _bot_lease(run, d, sid, since)                             # the operator's pad: a brief takeover, then the bot again
     _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
@@ -3413,7 +3446,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
     platform = g.get("platform")
     sid = inp.session_id
     run = {"driver": d, "sid": sid, "since": since, "mode": inp.mode, "ctx": ctx, "inp": inp}
-    send = _autoplay_send(ad, d)
+    send = _bot_send(run, ad, d)
     if inp.mode == "replay":
         rec = imitate.pick_run(runs, ad.name, inp.run_id)
         if rec is None:
@@ -3481,7 +3514,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
             _ended(run)
         objective = f"playing in your style: {len(model['bursts'])} moves learned from {len(own)} recorded sessions"
     AUTOPLAY[sid] = run
-    _takeover(run, d, sid, since)
+    _bot_lease(run, d, sid, since)
     _black_watch(run, d, ad)                                   # only black on screen: get the game back
     run["thread"] = threading.Thread(target=go, daemon=True)
     run["thread"].start()
@@ -3995,6 +4028,9 @@ def _mercs_human_controls(sid: str) -> bool:
 
 
 def _release_all(sid: str) -> None:
+    from . import pad_takeover
+    if pad_takeover.active(sid):       # the operator has the pad: the bot let go of everything when they took it, and
+        return                         # the keys they hold now (forwarded from their app) stay theirs
     try:
         ad, _ = SESSIONS[sid]
         runtime = getattr(ad, '_mercs_bot_runtime', None)
@@ -4018,7 +4054,7 @@ def _vision_play(run, ad, g, goal, server):
     llm = "http://127.0.0.1:11434/v1" if host in ("127.0.0.1", "localhost") else f"http://{host}:11434/v1"
     run["log"] = []
     sid = _sid_of(run, ad)
-    _takeover(run, d, sid, run.get("since") or time.time())    # the operator grabs the controller: hand control back
+    _bot_lease(run, d, sid, run.get("since") or time.time())   # the operator grabs the controller: it yields a moment
     while not d.stopped:
         try:
             png = ad.get_frame()
