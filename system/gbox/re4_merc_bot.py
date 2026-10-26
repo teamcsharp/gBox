@@ -680,6 +680,7 @@ class Bot:
         return keys
 
     def _fight(self, p, tgt, now, s) -> dict:
+        self.stats["phase"] = "fight"
         px, _, pz = p["pos"]
         tx, _, tz = tgt["pos"]
         err = wrap(heading(tx - px, tz - pz) - p.get("aim_rot", p["rot"]))   # from where the gun points
@@ -714,6 +715,8 @@ class Bot:
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
         if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
             self.r_since = None                                         # far round - lowering it to turn and raising
+            self.stats["combat"] = f"turning to slot {tgt['slot']} d {dist:.0f} yaw {math.degrees(err):+.0f} (gun down)"
+            self.stats["fire_gate"] = "turning: hold"
             if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # it again cost 0.6 s and a swing
                 self.qturn_at = now                                             # landed meanwhile, live 2026-10-21)
                 self.stats["quick_turns"] += 1                                  # behind him: the quick turn (back + B)
@@ -724,10 +727,15 @@ class Bot:
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
             height, level = self._aim_body(p, tgt["pos"][1], dist, now, band)
+        deg = math.degrees(err)
         if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
+            self.stats["combat"] = f"aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
+            self.stats["fire_gate"] = "off target: hold" if abs(err) > fire_tol(dist) else "aim height: hold"
             return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
+        self.stats["combat"] = f"on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
+        self.stats["fire_gate"] = "on him"
         return {"hold": {"r"} | self._pull(now, tgt)}                    # on target: fire
 
     def _pull(self, now, tgt) -> set:
@@ -854,6 +862,8 @@ class Bot:
         return best
 
     def _evade(self, p, t, now, side: bool = False) -> dict:
+        self.stats["phase"] = "evade"
+        self.stats["combat"] = f"evade {t.kind} {t.dist:.0f} away (eta {t.eta:.1f} s)" 
         """Out of the way of an attack he can't stop in time: away from the attacker at a run (the quick turn first
         when the way out is behind him), for EVADE_S; side: across a thrown weapon's line (the side it passes on)."""
         px, _, pz = p["pos"]
@@ -872,6 +882,7 @@ class Bot:
         return self._run_out(p, now)
 
     def _run_out(self, p, now) -> dict:
+        self.stats["phase"] = "run_out"
         """The evade under way: the quick turn when the way out is behind him (once), then a run along it."""
         err = wrap(self.evade["away"] - p["rot"])
         if abs(err) > QUICK_TURN_ERR and not self.evade["turned"] and now - self.qturn_at > QUICK_TURN_S:
@@ -1029,6 +1040,7 @@ class Bot:
         return ({key} if key else set()), False
 
     def _take(self, p, h: dict, now, pool: list) -> dict:
+        self.stats["phase"] = "take_bonus"
         """Run to an item hourglass's stand point on the map's path and take it with A."""
         px, py, pz = p["pos"]
         sx, sy, sz = h["stand"]
@@ -1057,6 +1069,7 @@ class Bot:
         return self._follow(p, now)
 
     def _run_to(self, p, target_xyz, now) -> dict:
+        self.stats["phase"] = "run_to_target"
         """Close in on a Ganado round the walls (map path, refreshed as he moves) or straight without a map."""
         if self.st is None:
             return self._go(p, (target_xyz[0], target_xyz[2]), now)
@@ -1234,6 +1247,7 @@ class Bot:
         return self._go(p, (near["pos"][0], near["pos"][2]), now)
 
     def _explore(self, p, now, force=False) -> dict:
+        self.stats["phase"] = "explore"
         """Head for ground Leon has not walked: the open heading (of 16) whose ray ahead crosses the fewest walked cells and
         no learned wall, EXPLORE_R away; picked again on arrival or every few seconds."""
         px, _, pz = p["pos"]

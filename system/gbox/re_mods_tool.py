@@ -862,7 +862,9 @@ def merc_loadout_list(g) -> dict:
             "note": "records run right after the game's own Merc loadout routine (0x80018CC4) when a run starts"}
 
 
-RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72}      # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to shoot Ganados with
+RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72, 0x35}   # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to
+                                                  # shoot Ganados with; the Rocket Launcher (operator 2026-10-26: "always be replaced
+MAGNUMS = (0x29, 0x2A, 0x2B)                      # with a magnum of a random type"): Broken Butterfly, Killer7, Killer7 w/ Silencer
 
 
 def random_pool(g) -> list[tuple[int, int | None]]:
@@ -891,6 +893,8 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
     pool = random_pool(g)
     if weapon:                          # a fixed gun instead of a draw (operator 2026-10-24: "give Leon a rapid fire handcannon")
         wanted = str(weapon).lower().replace(" ", "")
+        if wanted in ("rocketlauncher", "rocket", "0x35"):      # never the rocket: a random magnum instead
+            wanted = R.item_name(rng.choice(MAGNUMS)).lower().replace(" ", "")
         pool = [p for p in pool if R.item_name(p[0]).lower().replace(" ", "") == wanted] or pool
     if not pool:
         raise RuntimeError("no givable weapons in the weapon table")
