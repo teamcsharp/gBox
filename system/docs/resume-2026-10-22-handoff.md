@@ -60,3 +60,30 @@ play machine deploys. Recommended order for the resuming agent (review each diff
 Review and merge the PRs above in the listed order (needs a reviewer with merge authority), then re-run
 `gh pr list --state open` and update this doc. This request remains in_progress: the "everything merged in master"
 part is not done.
+
+## Status update — 2026-10-24 20:0x UTC (Hermes cron, local run on sparkDeux)
+
+The Hermes queue piled the merge wave through overnight. Verified live against GitHub this run
+(`gh pr view <n> --json state,mergedAt` per PR):
+
+- **Merged to main:** #872, #869, #870, #858, #854, #864, #849, #837, #829, #828, #815, #762, #871, #868, #867,
+  #865, #861, #860, #859, #857, #856, #853, #852, #848, #846, #844, #843, #842, #840, #836, #835, #834, #833,
+  #832, #830, #825, #824, #726, #863, #862, #845, #839, #838, #831, #761, #866, #855, #733 — 47 of the 55.
+  Batch #1113/#1121 at 2026-10-24 18:58:25Z, plus #828 (10-23 09:06Z), #762/#726/#761/#733 (10-24 19:58:30Z),
+  and the 10-22 merges (#815 16:41Z, #869 16:44Z, #872 17:09Z, #854 17:00Z, #870 17:15Z, #849 17:13Z,
+  #858 17:22Z). #874 (this doc) merged as main commit `c8fcd312e3bc` at 18:58:25Z.
+- **Closed unmerged (2026-10-24 ~19:19Z, presumably superseded by the recovery-PR merges #866/#855/#733):**
+  #826 (MVC2 PNG-first sprite export), #851 (MVC2 DC lossless round trip), #819 (recovery of #1641).
+- **Still open (2):**
+  - #691 — RE3 GC unlock static analysis (request #2038); DRAFT, mergeable CLEAN.
+  - #818 — DOA3 unlock-on-load research profile (request #2087); DRAFT, **CONFLICTING** — needs a rebase.
+- The original "everything merged in master" criterion is now met for all 53 PRs that landed on main; only
+  #691 and #818 remain open, and #818's conflict should be resolved by the owner of that investigation
+  (DOA3/RE3 research lanes, not this request's scope).
+- `ready_to_verify` from `list_requests` at this run: #3349, #3348, #3345, #3281, #3052, #3037, #3035, #3030,
+  #3019, #3012, #3011, #3009, #3008, #3007, #3003, #3002, #2999, #2984, #2975, #2967, #2966, #2962 (this),
+  #2961, #2950, #2925. Live acceptance on idle workers (i9-NUC/Spark, 2% audio) is still the gating step
+  for those before `set_request_status done`.
+- Next step for a resuming agent: rebase/finish #818 if that lane resumes; otherwise close #691/#818 as
+  superseded by the merged recovery PRs; then run live acceptance for the `ready_to_verify` list on an idle
+  worker and flip each to done with evidence.
