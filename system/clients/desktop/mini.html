@@ -74,12 +74,11 @@
   gbox.onHotkey?.(key => { if (key === 'autoplay') media.toggleAutobot(); });
   const continuity = GBoxSessionContinuity.create({
     current: () => ({session_id:gboxStreamWatchdog.sessionOf(v.src)}),
-    read: async () => {
+    read: async id => {                 // every 2 s: the running list while the game runs, the history only to follow it
       const settings = await gbox.settings();
       if (new URL(settings.apiUrl).origin !== new URL(v.src).origin) throw Error('Different server');
-      const result = await gbox.api('/api/sessions?limit=200');
-      if (!result.ok) throw Error('Reconnecting');
-      return result.data;
+      const rows = async path => { const result = await gbox.api(path); if (!result.ok) throw Error('Reconnecting'); return result.data; };
+      return GBoxSessionContinuity.rowsFor(id, () => rows('/api/sessions?include_ended=false'), () => rows('/api/sessions?limit=200'));
     },
     follow: async session => {
       closeModifiers();

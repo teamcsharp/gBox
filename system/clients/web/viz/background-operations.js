@@ -23,7 +23,9 @@ function jobs(rows, empty) {
 // Spark launch) streams live in the bottom-right corner. The newest running game on the Spark wins.
 let pipSid = '';
 async function sparkPip() {
-  const sessions = await api('/api/sessions');
+  // running games only (#712): every 4 s, the default answer also built 60 ended rows on the server, which held
+  // the very stream this corner shows
+  const sessions = await api('/api/sessions?include_ended=false');
   const rows = (Array.isArray(sessions) ? sessions : sessions.sessions || []).filter(s => s.state === 'running'
     && ((s.detail || {}).worker_name === 'lilspark' || (s.detail || {}).staged_on === 'lilspark'));
   const s = rows.sort((a, b) => (b.started || 0) - (a.started || 0))[0];

@@ -106,6 +106,10 @@ def create_app(config: Config) -> FastAPI:
     from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
     cache_tiers.install(config)
     app = FastAPI(title="gBox", version="0.1.0")
+    # Before any route: a def endpoint's JSON answer is encoded in its threadpool thread, not on the event loop that
+    # carries every game stream (a polled 1.9 MB answer froze the app's view and Pine Box's feed: gbox/thread_json.py)
+    from .thread_json import ThreadJSONRoute
+    app.router.route_class = ThreadJSONRoute
     app.add_middleware(cache_tiers.TouchMiddleware)   # API traffic naming a game keeps it off the demotion list
     app.state.store = store
     from .character_collection import AutoCollection
@@ -2291,9 +2295,11 @@ def create_app(config: Config) -> FastAPI:
         # running_jobs is the Spark's own count. A worker reporting busy slots with none running here
         # has leaked them and will never claim the queued launch (#1294); the loader says so.
         running = store.running_job_counts()
-        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer
-        return [{k: v for k, v in w.items() if k != "local_builds"} | {"running_jobs": running.get(w["id"], 0)}
-                for w in workers()]
+        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer, and so do the
+        # build_sources of offline rows: ~75 KB of source hashes per stale registration that no check can use (they
+        # all need an online worker). 21 such rows made this 5-second poll 1.9 MB on 2026-10-26.
+        return [{k: v for k, v in w.items() if k != "local_builds" and (k != "build_sources" or w["online"])}
+                | {"running_jobs": running.get(w["id"], 0)} for w in workers()]
 
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
@@ -2413,10 +2419,17 @@ def create_app(config: Config) -> FastAPI:
                 "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None,
                 "games": sorted(frame.get("game_rects") or {})}      # sessions whose game window that screen shows (#2858)
 
+    def _known_worker(wid: str) -> tuple[str, bool]:
+        wid = _wid(wid)
+        return wid, store.get("worker", wid) is not None
+
     @app.post("/api/workers/{wid}/desktop/frame")
     async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
-        wid = _wid(wid)
-        if not store.get("worker", wid):
+        # Up to 8 frames a second while a PC's screen is watched (the Other PC view, a broadcast's desktop crop). The
+        # store reads wait on the store lock, which a job claim holds for a whole admission pass: in a thread, so the
+        # event loop that carries every game stream never waits with them.
+        wid, known = await asyncio.to_thread(_known_worker, wid)
+        if not known:
             raise HTTPException(404, "worker not found")
         image = await request.body()
         if not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9") or len(image) > 8_000_000:

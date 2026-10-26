@@ -45,6 +45,14 @@
     }
     return running(origin) ? origin : null;
   }
+  // The rows a follower's poll() needs (#712). While the watched game runs, the few-KB running list answers: its own
+  // row, a parked game's display successor and a same-game relaunch are all running. The history (~660 KB on the
+  // Spark, built row by row on the server) is read only once the watched game is no longer running, to find what
+  // replaced it. Each PiP read the history every 2 s, and each read held every game stream on the server ~0.1 s.
+  async function rowsFor(id, running, history) {
+    const rows = await running();
+    return Array.isArray(rows) && rows.some(s => s?.session_id === id) ? rows : history();
+  }
   function commandSession(id, rows, anchor = null) {
     const origin = (Array.isArray(rows) ? rows : []).find(s => s.session_id === id)
       || (anchor?.session_id === id ? anchor : null);
@@ -76,7 +84,7 @@
     }
     return {poll, cancel:() => {generation++; anchor=null;}};
   }
-  const api = {resolve, commandSession, create, hasPicture, picture};
+  const api = {resolve, rowsFor, commandSession, create, hasPicture, picture};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.GBoxSessionContinuity = api;
 })(globalThis);
