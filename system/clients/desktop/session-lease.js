@@ -21,7 +21,8 @@
     return {
       async resolve(authority,response,{worker,closed=new Set(),only=null}={}){
         if(current&&closed.has(current.session.session_id))current=null;
-        const found=response?.ok&&Array.isArray(response.data)?response.data.filter(s=>s.state==='running'
+        // a game whose PC is offline (#2870 worker_online) is never adopted; a docked game stays while its process lives
+        const found=response?.ok&&Array.isArray(response.data)?response.data.filter(s=>s.state==='running'&&s.worker_online!==false
           &&s.detail?.local_window&&s.detail.worker_name===worker&&!closed.has(s.session_id)
           &&(!only||s.session_id===only)).sort((a,b)=>(b.started||0)-(a.started||0))[0]:null;
         // Presentation may retain its known PID while unavailable. A different

@@ -2008,9 +2008,11 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             bot.save()                                 # what the last round taught
             was_in = True
         elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0:
-            # A retry can recreate the player without a sampled menu gap.
+            # A retry can recreate the player without a sampled menu gap: an attempt of its own, with its own route map
+            # (2026-10-26: one map spanned a whole RE4 turn of deaths and retries, so no single death could be traced)
             boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats['rounds']+=1
+            bot.trace_start(boundary_id)
         if room_on and s.get('player') and s.get('hp',0)>0:
             playing_observed=True
             if getattr(bot, "trace", None) is not None:

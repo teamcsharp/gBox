@@ -130,6 +130,11 @@ SHOTS_PER_ROUND = 3000                 # shot records kept per round (the round 
 # wall, the ground, a fence) holds the trigger.
 FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, ending no more than this short of him
 SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
+# A Majini behind: the quick turn (left stick down + cross, the run button; docs/mercenaries_re5_meta.md item 21, marked
+# "verify live") instead of ~1 s of body turning with the gun down. Self-verifying: the heading must swing at least
+# QUICK_TURN_SEEN within QUICK_TURN_CHECK_S, else after QUICK_TURN_TRIES presses without one it is off for the session
+QUICK_TURN_ERR, QUICK_TURN_SEEN = math.radians(120), math.radians(100)
+QUICK_TURN_CHECK_S, QUICK_TURN_GAP_S, QUICK_TURN_TRIES = 0.7, 1.5, 2
 POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
 WILD_YAW, WILD_PITCH = math.radians(30), math.radians(25)   # a ray error past this is not a turn to make: a torn read
@@ -453,6 +458,9 @@ class Combat:
         self.last_dot = None                  # (where, tgt ptr, t) the dot at the last tick: what a shot left on
         self.stunned: dict = {}               # Majini ptr -> until
         self.melees: dict = {}                # Majini ptr -> finishers pressed on him (a boss gets one)
+        self.qturn, self.qturn_at = None, -math.inf   # the quick turn under way {at, rot}; the last one pressed
+        self.qturn_ok = self.qturn_failed = 0
+        self.qturn_off = False                # QUICK_TURN_TRIES presses without a turn: not this game's chord
         self.zone = "head"
         self.reload_at = -1e9
         self.character = "?"
@@ -854,6 +862,44 @@ class Combat:
         self.stats["combat"] = "turning toward a front candidate"
         return {"hold": self._face(p, target["pos"])}
 
+    def _quick_turn(self, p, facing, now):
+        """A Majini more than QUICK_TURN_ERR off the heading, the gun down (stand / move): the quick turn (operator
+        2026-10-26: "turning around nonsensically ignoring threats"; live the same day: killed by a Majini 119 deg behind
+        while the body swung round at ~150 deg/s with the gun down). None: not now (off, recently used, aiming)."""
+        if (self.qturn_off or self.qturn is not None or abs(facing) < QUICK_TURN_ERR or p.get("action") not in (0, 1)
+                or now - self.qturn_at < QUICK_TURN_GAP_S or p.get("rot") is None):
+            return None
+        self.qturn, self.qturn_at = {"at": now, "rot": p["rot"]}, now
+        self.stats["quick_turns"] = self.stats.get("quick_turns", 0) + 1
+        self.stats["combat"] = f"quick turn: {math.degrees(facing):+.0f} deg behind"
+        return {"hold": {"ldown", "cross"}}
+
+    def _quick_turn_watch(self, p, now):
+        """The quick turn pressed: hands off while the heading swings (QUICK_TURN_CHECK_S at most), then judged - a swing
+        of QUICK_TURN_SEEN is a turn; none after QUICK_TURN_TRIES presses (and never one seen) switches it off for the
+        session, stats quick_turn says so. A stale press (no target ticks since) is dropped unjudged."""
+        q = self.qturn
+        if q is None or p.get("rot") is None:
+            return None
+        turned = abs(wrap(p["rot"] - q["rot"]))
+        if turned >= QUICK_TURN_SEEN:
+            self.qturn, self.qturn_ok = None, self.qturn_ok + 1
+            self.stats["quick_turn"] = f"works: {self.qturn_ok} turn(s), last {math.degrees(turned):.0f} deg"
+            return None
+        age = now - q["at"]
+        if age < QUICK_TURN_CHECK_S:
+            self.stats["combat"] = f"quick turn: {math.degrees(turned):.0f} deg so far"
+            return {"hold": set()}
+        self.qturn = None
+        if age > 3 * QUICK_TURN_CHECK_S:
+            return None                           # no target ticks in between: nothing to judge
+        self.qturn_failed += 1
+        if self.qturn_failed >= QUICK_TURN_TRIES and not self.qturn_ok:
+            self.qturn_off = True
+            self.stats["quick_turn"] = (f"no effect ({math.degrees(turned):.0f} deg in {QUICK_TURN_CHECK_S:g} s, "
+                                        f"{self.qturn_failed} presses): off, the body turns")
+        return None
+
     def _reposition(self, now, reason):
         if now >= self.step_until:
             self.step_until = now + STEER_STEP_S
@@ -923,6 +969,9 @@ class Combat:
         pl, wid, rounds, shot = self.observe(snap, now)
         if not pl:
             return {'hold':set()}
+        turning = self._quick_turn_watch(p, now)
+        if turning is not None:
+            return turning                        # the turn's animation plays out untouched
         if snap.get('rotten_egg_only') and wid!=0x36:
             self.stats['combat']='eggs only: awaiting native egg equip; gun trigger withheld'
             return {'hold':set()}
@@ -1080,6 +1129,9 @@ class Combat:
             # A ready weapon's measured first hit on him is stronger than body heading: the upper-body aim can
             # already be on target. Keep that shot instead of lowering the gun and restarting acquisition.
             self.near_ray_since = None
+            quick = self._quick_turn(p, facing, now)
+            if quick is not None:
+                return quick
             self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
             aim["state"] = "swing"
             return {"hold": self._face(p, foot)}

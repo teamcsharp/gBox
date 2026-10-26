@@ -26,6 +26,14 @@ test('a missing main stream shows the list and retains a healthy second stream, 
   assert.deepEqual(x.calls,[['show','Sessions'],['active','pip-B'],['pip']]);
   assert.deepEqual(out,{restored:['pip-B'],missing:['main-A']});
 });
+test('a saved game whose PC is offline is not reopened: the list shows instead (#2870, operator 2026-10-26)',async()=>{
+  const x=fixture([{session_id:'nuc-dead',state:'running',worker_online:false},{session_id:'pip-B',state:'running'}]);
+  const out=await x.ctl.restore({playing:'nuc-dead',active:'nuc-dead',pip:'pip-B'});
+  assert.deepEqual(x.calls,[['show','Sessions'],['active','pip-B'],['pip']]);
+  assert.deepEqual(out,{restored:['pip-B'],missing:['nuc-dead'],offline:['nuc-dead']},'offline is told apart from merely absent: the shell drops the saved view');
+  const gone=fixture([{session_id:'pip-B',state:'running'}]);
+  assert.deepEqual(await gone.ctl.restore({playing:'nuc-dead',pip:'pip-B'}),{restored:['pip-B'],missing:['nuc-dead']},'an absent game is retried as before');
+});
 test('a missing PiP does not remove the valid foreground stream or claim successful restoration',async()=>{
   const x=fixture([{session_id:'main-A',state:'running'}]);
   const out=await x.ctl.restore({playing:'main-A',active:'pip-B',pip:'pip-B'});

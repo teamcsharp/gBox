@@ -45,19 +45,25 @@
     // a MercMode game parked / preloading in the background is paused: follow the one playing (operator 2026-10-24:
     // "why is the game always idle?" - the view stayed on parked RE4's death screen while RE5 played)
     if (shown.state === "running" && shown.warm) return { follow: true, why: "parked" };
-    if (shown.state === "running") return { follow: false, why: "playing" };
+    // a "running" game whose PC is offline (#2870, worker_online) is not playing: a demo's is left for a live game, the
+    // operator's own stays with "Watch it now" offered; never a black view kept for hours (2026-10-26, i9-NUC Merc3D)
+    const offline = shown.state === "running" && shown.worker_online === false;
+    if (shown.state === "running" && !offline) return { follow: false, why: "playing" };
     if (pinned && pinned === shown.session_id) return { follow: false, why: "pinned" };
     if (program && program.mode === "session" && program.target === shown.session_id) return { follow: false, why: "pinned" };
+    if (offline && !shown.agent_owned && !shown.bot_demo) return { follow: false, why: "offline" };
     if (!shown.agent_owned && !shown.bot_demo) {                       // the operator's own game: time to Reopen it
       const since = now - (shown.ended || now);
       if (since < OWN_GRACE_S) return { follow: false, why: "your game ended", wait_s: Math.ceil(OWN_GRACE_S - since) };
     }
-    return { follow: true, why: "ended" };
+    return { follow: true, why: offline ? "offline" : "ended" };
   }
 
   function note(from, to) {
     const now = `Now showing ${titleOf(to)} on ${pcOf(to)}`;
-    return from ? `${now}: the ${titleOf(from)} session ended` : `${now}: no game was selected`;
+    if (!from) return `${now}: no game was selected`;
+    if (from.state === "running" && from.worker_online === false) return `${now}: ${pcOf(from)} is offline`;
+    return `${now}: the ${titleOf(from)} session ended`;
   }
 
   // the ended view while a game plays elsewhere but the view stays: the operator's own game (a countdown) or a pin
@@ -65,6 +71,7 @@
     const go = `<button class="act" data-follow-go="${ESC(next.session_id)}">Watch it now</button>`;
     const what = `<b>${ESC(titleOf(next))}</b> on ${ESC(pcOf(next))}`;
     if (d.why === "pinned") return `<p class="mut follow-wait" role="status">Pinned here. ${what} is playing. ${go}</p>`;
+    if (d.why === "offline") return `<p class="mut follow-wait" role="status">This game's PC is offline. ${what} is playing. ${go}</p>`;
     return `<p class="mut follow-wait" role="status">Showing ${what} in ${ESC(mins(d.wait_s || 0))}. `
       + `<button class="act" data-follow-stay="1">Stay here</button> ${go}</p>`;
   }

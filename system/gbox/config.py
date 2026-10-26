@@ -272,6 +272,11 @@ class Config(BaseModel):
     n64recomp_path: str | None = None     # N64Recomp executable or its folder for the `n64recomp` tool
     rpcs3_appimage: str | None = None     # linux PS3 sessions: an RPCS3 AppImage, its extracted AppRun or an rpcs3 binary
                                           # (unset: the official build for this CPU from GitHub, sha256-checked)
+    switch_appimage: str | None = None    # linux Switch sessions (gbox.adapters.SwitchLinuxAdapter): an Eden AppImage, its
+                                          # extracted AppRun or an eden binary; [emulators.switch].executable is honoured
+                                          # too when it exists on this host (docs/research/switch-emulator-spark.md)
+    switch_keys: str | None = None        # prod.keys for it (unset: a prod.keys at a Switch library's root, e.g. the
+                                          # share's _switch/prod.keys); copied into gBox's own Eden keys folder
     decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
     decomp_me_url: str = "https://decomp.me/api"
     ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)

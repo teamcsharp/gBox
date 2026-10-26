@@ -86,16 +86,17 @@ test('double click and Escape restore the app; native hover reaches the same con
   assert.equal(restores.length,2); assert.equal(prevented,2);
   assert.match(html,/ev\.event === 'compact-hover'/);
 });
-function embedding({remote=false,ok=true,ended=false}={}) {
+function embedding({remote=false,ok=true,ended=false,offline=false,pip=true,docked=true,single=false}={}) {
   const sessions=[{session_id:'picked',state:ended?'ended':'running',started:10,title:'Picked game',adapter:'retroarch',
-    detail:{pid:123,local_window:!remote,worker_name:remote?'other':'PC'}},
-    {session_id:'newer',state:'running',started:99,title:'Another game',detail:{pid:999,local_window:true,worker_name:'PC'}}];
-  const seen={surfaces:[],syncs:[],restores:0};
-  const compact={on:true,sid:'picked',local:!remote,aspect:16/9};
-  const emb={sid:'picked',pid:123,closed:new Set()};
+    ...(offline?{worker_online:false}:{}),detail:{pid:123,local_window:!remote,worker_name:remote?'other':'PC'}},
+    ...(single?[]:[{session_id:'newer',state:'running',started:99,title:'Another game',detail:{pid:999,local_window:true,worker_name:'PC'}}])];
+  const seen={surfaces:[],syncs:[],restores:0,shown:[]};
+  const compact={on:pip,sid:pip?'picked':null,local:!remote,aspect:16/9};
+  const emb={sid:docked?'picked':null,pid:docked?123:null,closed:new Set()};
   const node={classList:{contains:()=>false},hidden:true};
+  const wv={dataset:{ready:'false'},executeJavaScript:async code=>{seen.shown.push(code);},getBoundingClientRect:()=>({})};
   const ctx=vm.createContext({nativeSessionLease:null,LIVE_SESSIONS:{peek:()=>({ok,data:sessions})},S:{workerName:'PC'},EMB:emb,COMPACT:compact,
-    $:()=>node,document:{querySelector:selector=>selector==='section.on'?{id:'play'}:null},
+    $:()=>node,document:{querySelector:selector=>selector==='section.on'?{id:'play'}:selector==='#wv'?wv:null},
     GPU_GAME:{pid:null},gpuGameDispose:async()=>{},pipHandle(){},gbox:{embedSync:async value=>seen.syncs.push(value)},
     compactRestore:async()=>{seen.restores++;compact.on=false;},VIEW:{mode:'compact'},FLOW:{on:false},EYE:{on:false},
     GBoxReportStory:{isFullOpen:()=>false},GBoxCompactGame:{fit},GBoxEmbedGeometry:require('../clients/desktop/embed-geometry'),
@@ -157,4 +158,43 @@ test('replacement changes only the game stream and pad target, preserving PiP wi
 test('session ending restores the app; a temporary service error leaves PiP intact',async()=>{
   const x=embedding({ended:true}); await x.tick(); assert.equal(x.seen.restores,1);
   const y=embedding({ok:false}); await y.tick(); assert.equal(y.seen.restores,0); assert.equal(y.compact.on,true);
+});
+
+// #2870 / operator 2026-10-26 (i9-NUC): a "running" native game here whose worker is offline was docked and shown in the
+// Sessions view after every reload, a black view that never came. It is never auto-docked or auto-opened.
+test('a native game here whose worker is offline is never docked or shown; a game on a PC that answers still is',async()=>{
+  const live=embedding({pip:false,docked:false,single:true}); await live.tick();
+  assert.equal(live.emb.sid,'picked'); assert.equal(live.seen.shown.length,1); assert.match(live.seen.shown[0],/show\("Sessions", "picked"\)/);
+  const dead=embedding({offline:true,pip:false,docked:false,single:true}); await dead.tick();
+  assert.equal(dead.emb.sid,null,'not docked'); assert.deepEqual(dead.seen.shown,[],'the Sessions view is not moved to it');
+  assert.deepEqual(dead.seen.syncs,[]); assert.equal(dead.seen.surfaces.length,0);
+  // the lease that normally resolves the docked game applies the same rule (clients/desktop/session-lease.js)
+  const lease=require('../clients/desktop/session-lease.js').create({probe:async()=>({ok:true,alive:true})});
+  const offlineRow={session_id:'nuc-dead',state:'running',worker_online:false,started:5,detail:{pid:7,local_window:true,worker_name:'PC'}};
+  assert.equal(await lease.resolve('http://spark',{ok:true,data:[offlineRow]},{worker:'PC'}),null);
+  const healthy={...offlineRow,session_id:'nuc-live',worker_online:undefined};
+  assert.equal((await lease.resolve('http://spark',{ok:true,data:[offlineRow,healthy]},{worker:'PC'})).session.session_id,'nuc-live');
+});
+
+test('picture-in-picture never opens a game whose PC is offline, and never moves the Sessions view to it',async()=>{
+  const shown=[];
+  const wv={gboxReady:Promise.resolve(),executeJavaScript:async code=>{shown.push(code);}};
+  const rows=[{session_id:'nuc-dead',state:'running',title:'Resident Evil: The Mercenaries 3D (USA)',worker_online:false,started:20,
+    detail:{local_window:true,worker_name:'i9-NUC'}},{session_id:'spark-live',state:'running',title:'Resident Evil 5',started:9,detail:{worker_name:'lilspark'}}];
+  const ctx=vm.createContext({GBoxCompactGame:{create},GBoxSessionContinuity:require('../clients/web/viz/session-continuity.js'),
+    VIEW:{mode:'auto'},S:{apiUrl:'http://spark',workerName:'i9-NUC'},EMB:{sid:null},EYE:{on:false},clientViewNavigation:0,
+    gboxState:async()=>({}),sessionById:async sid=>rows.find(s=>s.session_id===sid)||null,liveSessions:async()=>({ok:true,data:rows}),
+    gbox:{api:async()=>({ok:true,data:rows}),token:async()=>'t',compactView:async v=>({...v})},sessionTitle:s=>s?.title||'',closePops(){},
+    document:{fullscreenElement:null,querySelector:sel=>sel==='#wv'?wv:null},window:{},miniPadTarget(){},embedTick(){},renderClientUpdate(){},
+    updateCompactMedia(){},compactCoach:{update(){}},$:()=>null,gboxStreamWatchdog:{healthUrl:()=>''},compactHover(){},compactRestore:async()=>{},toast(){},console});
+  const start=html.indexOf('const compactController = GBoxCompactGame.create({');
+  const compactController=vm.runInContext(html.slice(start,html.indexOf('const COMPACT = compactController.state;',start))+'\ncompactController',ctx);
+  await assert.rejects(compactController.enter({sid:'nuc-dead'}),/runs on a PC that is offline; it was not opened\. Your view was not changed\./);
+  assert.deepEqual(shown,[],'the Sessions view is not moved to it'); assert.equal(compactController.state.on,false);
+  // with nothing requested, the newest game on a PC that answers is the one shown, never the dead one
+  assert.match(html,/r\.data\.filter\(s => s\.state === 'running' && s\.worker_online !== false\)\.sort\(\(a,b\) => \(b\.started \|\| 0\) - \(a\.started \|\| 0\)\)\[0\]/);
+  // a saved view of such a game is dropped instead of retried every 2 s (the guest reports it offline), and the PiP error carries the offline mark
+  assert.match(html,/if \(restored\?\.offline\?\.length\) \{ clientRefresh\.done\(\); toast\(/);
+  assert.match(html,/if \(error\.offline\) \{ clientRefresh\.done\(\); toast\(error\.message, 8000\); return; \}/);
+  assert.match(html,/throw Object\.assign\(Error\(`\$\{sessionTitle\(session\) \|\| 'This game'\} runs on a PC that is offline/);
 });

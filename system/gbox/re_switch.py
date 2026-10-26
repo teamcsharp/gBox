@@ -42,6 +42,7 @@ def capabilities(game):
     if serial != RE5_TITLE_ID and not re.fullmatch(r'(?:resident\s+evil|biohazard)\s*5', title):
         return None
     return {'edition': 're5', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
+            'backends': {'windows': 'yuzu', 'linux': 'eden'},    # gbox.adapters.YuzuAdapter / SwitchLinuxAdapter
             'requested_mode': 'no_mercy', 'modes_in_release': ['mercenaries_united', 'no_mercy'],
             'no_mercy_in_release': True, 'full_playback_verified': False,
             'autoplay': {'available': False, 'reason': REASON},
