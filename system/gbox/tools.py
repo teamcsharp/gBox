@@ -2481,7 +2481,9 @@ def script_patch(inp: ScriptPatchIn, ctx: Ctx):
 
 class AutoplayIn(BaseModel):
     session_id: str = ""
-    op: str = "status"                     # list | start | stop | status
+    op: str = "status"                     # list | start | stop | status | prepare (MercMode: a warm game's menus driven
+                                           # to the start of a round in the background, then paused there: _prepare_round)
+    selection: dict | None = None          # prepare: the MercMode DJ's pick for that round {title, mode, character, stage}
     mission: str = ""                      # mission name; empty = take over from wherever the player is right now
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
@@ -2558,13 +2560,22 @@ def _missions(game_id=None):
 @tool("autoplay", "1.0", AutoplayIn, AutoplayOut, capabilities=["runtime"], timeout_s=60)
 def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
-    session's debugger. op=start | stop (hand control back) | status | list."""
+    session's debugger. op=start | stop (hand control back) | status | list | prepare (MercMode: drive a warm game's
+    menus to the start of a round and pause it there, _prepare_round)."""
     from .autoplay import Driver
+    if inp.op == 'prepare':
+        return {"result": _prepare_round(inp, ctx)}
     if inp.op in ('start', 'stop'):
         # Claim/release input ownership before setup or driver construction.
         # The future bot thread cannot revoke a warm observer during this gap.
         # The claim shares its pause lock; Start resumes only a pause already
-        # made by this exact observer, never an unrelated/manual pause.
+        # made by this exact observer (the boot's, or a round preparation's at
+        # its round start), never an unrelated/manual pause.
+        run = AUTOPLAY.get(inp.session_id)
+        if run and run.get('prepare') is not None and run.get("thread") is not None and run["thread"].is_alive():
+            # a round preparation still walking the menus: Start takes the game over from it (the walk stops and
+            # never pauses the game behind the new bot), Stop ends the walk the same way
+            _end_prepare(run, f'Autoplay {inp.op} took over the round preparation.')
         ad = (SESSIONS.get(inp.session_id) or (None,))[0]
         if ad is not None:
             from .mercs import warm_boot
@@ -2585,7 +2596,8 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
                            "mode": run and run.get("mode"), "took_over": bool(run and run.get("took_over")),
                            "continuous": bool(run and getattr(run.get('inp'), 'continuous', False)),
                            "recovery": run and run.get('recovery'),
-                           "last": run and run.get("result"), "steps": run and len(run["driver"].trace)}}
+                           "last": run and run.get("result"), "steps": run and len(run["driver"].trace),
+                           **({"prepare": run["prepare"].snapshot()} if run and run.get("prepare") is not None else {})}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
     if inp.mode not in ("auto", "playbook", "mission", "replay", "learned", "vision"):
@@ -3067,6 +3079,134 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
     run["thread"].start()
     _telemetry(run, ctx, (g or {}).get("title") or "")
     return {"started": run["mission"], "mode": "playbook", "objective": (pb.__doc__ or name).strip().splitlines()[0]}
+
+
+PREPARE_WAIT_S = 45.0          # the prepare op answers within the tool's own time: a fast walk (RE4 from a results screen)
+                               # reports prepared=true in the job result, a slower one (an RE5 stage load compiling shaders)
+                               # through the session's live warm receipt, which the session pump posts as it changes
+PREPARE_TIMEOUT_S = 600.0      # the walk gives up, and pauses the game back where it is, after this long
+PREPARE_STOP_WAIT_S = 15.0     # a stopping bot (the park's autoplay stop) gets this long to end before the walk starts
+
+
+def _end_prepare(run, reason: str) -> None:
+    """Start / Stop took a game whose round preparation still walks the menus: the walk ends and leaves the game as the
+    new control puts it (it never pauses the game behind the new bot)."""
+    rp = run.get("prepare")
+    if rp is not None:
+        rp.cancel(reason)
+    d = run.get("driver")
+    if d is not None:
+        d.stopped = True
+    th = run.get("thread")
+    if th is not None and th.is_alive() and th is not threading.current_thread():
+        th.join(PREPARE_STOP_WAIT_S)
+
+
+def _prepare_title(g: dict) -> str:
+    """The MercMode title's map id (G4BE08 / BLUS30491) of this session's game, for its round receipt."""
+    from .mercmode import TITLES
+    return next((t["map_id"] for t in TITLES.values() if (g or {}).get("game_id") in t.get("game_ids", ())),
+                (g or {}).get("title") or "")
+
+
+def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
+    """MercMode's seamless swap (gbox.screensaver warm pool; operator 2026-10-26: "continue playing a round of
+    mercenaries while the next session is loading and preparing in the background so the swap is seamless"): a warm
+    game waiting paused at its boot menu or at a results screen has its own menus driven to the first frame of a round -
+    unseen, in the background, at background priority - and is paused again right there
+    (gbox.mercs.warm_boot.RoundPrepare), so the switch to it lands in gameplay instead of a menu walk in the PiP.
+    The title's own playbook does the walk (re4_merc_bot.play / mercs_bot.play with prepare=True: the menu code autoplay
+    always uses, never a second menu driver), taking the DJ's selection when one is queued. The receipt (prepared,
+    character, stage - or prepared=false and why, the game paused back where it was: the switch then resumes it at its
+    menus as before) is this job's result when the walk ends within PREPARE_WAIT_S, else the session's live warm detail.
+    Stop, the player's pad, a manual pause or a closing session cancel the walk and leave the game to that control."""
+    import inspect
+    from .autoplay import Driver
+    from .mercs import warm_boot
+    sid = inp.session_id
+    if sid not in SESSIONS:
+        raise ValueError(f"session {sid} is not on this worker (relaunch it here)")
+    ad, g = SESSIONS[sid]
+    if _mercs_human_controls(sid):
+        raise Unsupported("A human / co-op Mercenaries session is never prepared in the background.")
+    run = AUTOPLAY.get(sid)
+    if run and run.get("thread") is not None and run["thread"].is_alive():
+        if run.get("prepare") is not None:
+            return {"already_preparing": True, "mode": "prepare", **run["prepare"].snapshot()}
+        if not (run.get("took_over") or getattr(run.get("driver"), "stopped", False)):
+            raise ValueError("Autoplay is playing this game; only a parked or warm MercMode game is prepared.")
+        run["thread"].join(PREPARE_STOP_WAIT_S)                   # the park's stop: its bot finishes releasing the pad
+        if run["thread"].is_alive():
+            raise ValueError("Autoplay is stopping; wait for it to stop before preparing this game.")
+    pb = _playbook(ad, g)
+    if pb is None or "prepare" not in inspect.signature(pb.play).parameters:
+        raise Unsupported(f"no playbook prepares {g.get('title') or g.get('game_id')} rounds (have: {', '.join(PLAYBOOKS)})")
+    title = _prepare_title(g)
+    name = pb.__name__.rsplit(".", 1)[-1]
+    d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], sid, log=lambda *a: None)
+    d.agent_use = bool(getattr(ctx, "agent_use", True))
+    since = time.time()
+    rp = warm_boot.start_round(ad, title, getattr(ctx, "job_id", None))   # the receipt first: the pump never posts a gap
+    rp.driver = d
+    try:
+        # the game is ours and paused warm (the boot observer's own pause, or the park's session_op pause): resume it
+        if not warm_boot.autoplay_control(ad, "prepare") and getattr(ad, "gbox_warm", False):
+            result = ad.resume()
+            if not warm_boot._confirmed_resume(result):
+                raise RuntimeError("Emulator did not confirm resuming the parked game.")
+            ad.gbox_warm = False
+        _warm_priority(ad, 10)                                   # unseen, in the background: the playing game keeps the CPU
+    except Exception as exc:
+        rp.cancel(f"The warm game could not be resumed for its round preparation: {exc}"[:240])
+        raise
+    game = dict(g or {})
+    if inp.selection:                                            # the DJ's pick: the title's menus select it (re4_menus.request /
+        launch = dict(game.get("launch") or {})                  # re5 coverage().request through the playbook's own path)
+        merc = launch.get("mercmode") if isinstance(launch.get("mercmode"), dict) else {}
+        game["launch"] = launch | {"mercmode": {**merc, "random_characters": True, "random_stages": True,
+                                                "selection": dict(inp.selection)}}
+    run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "prepare", "mission": f"prepare: {name}",
+                           "ctx": ctx, "inp": inp, "live": {}, "prepare": rp}
+
+    def go():
+        stats, error, prepared = {}, None, False
+        try:
+            if callable(getattr(ad, "wait_ready", None)):
+                ad.wait_ready(stopped=lambda: d.stopped)
+            _release_all(sid)
+            pb.setup(ad)
+            params = inspect.signature(pb.play).parameters
+            kw = {"prepare": True}
+            if "stats" in params:
+                kw["stats"] = run["live"] = {}
+            if "game" in params:
+                kw["game"] = game
+            if "session_id" in params:
+                kw["session_id"] = sid
+            deadline = since + PREPARE_TIMEOUT_S
+            stats = pb.play(ad, ad.send_input, lambda: d.stopped or time.time() > deadline, **kw) or {}
+            prepared = bool(stats.get("prepared"))
+            if not prepared and not d.stopped and time.time() > deadline:
+                stats = dict(stats, wandered=f"the menus did not reach a round within {PREPARE_TIMEOUT_S:g} s")
+        except Exception as exc:                                   # noqa: BLE001 - told in the receipt, never a relaunch
+            error = exc
+        finally:
+            _release_all(sid)
+            if run.get("took_over"):
+                rp.cancel("The player took control during round preparation.")
+            proc = getattr(ad, "proc", None)
+            owned = SESSIONS.get(sid, (None,))[0] is ad and (proc is None or proc.poll() is None)
+            receipt = rp.finish(prepared, stats, error, owned=owned)
+            run["result"] = {"ok": error is None, "playbook": name, **receipt,
+                             **({"error": str(error)[:300]} if error is not None else {})}
+            run["ended"] = time.time()
+    _takeover(run, d, sid, since)                                # the player's pad ends the walk (took_over: no pause)
+    run["thread"] = threading.Thread(target=go, daemon=True, name=f"autoplay-prepare-{sid}")
+    run["thread"].start()
+    _telemetry(run, ctx, (g or {}).get("title") or "")
+    run["thread"].join(PREPARE_WAIT_S)
+    return {"started": run["mission"], "mode": "prepare", **rp.snapshot(),
+            **({"selection": dict(inp.selection)} if inp.selection else {})}
 
 
 def _recorded_play(ctx, game_id) -> list[dict]:

@@ -51,6 +51,8 @@ LOG_KEEP = 300
 BAD_ENDS = {"black": "the game showed only black: next game", "hung": "the game froze: next game"}
 
 
+ROTATION = "verified native round boundary: next MercMode title"   # why a MercMode run ends at its native round boundary
+
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
 PENDING_TTL = 15 * 60
 BOT_DEMO = "bot_demo"                     # launch job id -> {game_id, by, at}: a bot demo (launched with autoplay on)
@@ -258,6 +260,7 @@ class Screensaver:
         self.builder = None
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
+        self.wake = None                                 # install(): the schedule loop's event; nudge() sets it
 
     def games(self, cfg) -> list[dict]:
         """The games a demo may play: the operator's most played, plus (roulette) favorites with demo builds."""
@@ -294,11 +297,28 @@ class Screensaver:
                 run = self.store.get(STATE, w["name"])
                 if run:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
+                    if run.get('mercmode') and host_cfg["enabled"] and not _local_scheduler(w) \
+                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(f'ended: {ROTATION}'):
+                        # a MercMode rotation: the next title starts in this same tick (the ready one is resumed at
+                        # once: no 30 s gap between the park and the swap)
+                        running = self.store.running_sessions()
+                        reason = worker_reason(self.store, w, host_cfg, running, now)
+                        out[w["name"]] = reason or self._start(w, host_cfg, now)
                 elif host_cfg["enabled"]:
                     reason = ('scheduled by this PC\'s local control plane' if _local_scheduler(w)
                               else worker_reason(self.store, w, host_cfg, running, now))
                     out[w["name"]] = reason or self._start(w, host_cfg, now)
         return out
+
+    def nudge(self, why: str = '') -> None:
+        """Tick now (on the schedule's own thread, install): a scheduler job landed on the worker (the pause, resume,
+        launch or autoplay start of a MercMode warm switch) or a native round boundary asked for the next title. The
+        30 s loop alone left the swap waiting up to a tick at every step (operator 2026-10-26: "the transitions between
+        loads is just too long ... I hate waiting"). Without the installed loop (tests) this is a no-op."""
+        wake = getattr(self, 'wake', None)
+        if wake is not None:
+            self.nudged = why
+            wake.set()
 
     def _worker_settings(self, worker, cfg):
         from . import mercmode
@@ -440,6 +460,8 @@ class Screensaver:
                 warm = warm_boot.receipt(sess, job)
                 if warm.get('state') == 'loading':
                     return f"preparing {run['title']} (native title/menu not ready)"
+                if warm.get('state') == 'preparing':
+                    return f"preparing {run['title']} (its round is being set up in the background)"
                 if warm.get('state') == 'cancelled':
                     return self._finish(w, run, now, 'native preparation cancelled; session left untouched')
                 if not warm_boot.prepared(sess, job, (run.get('mercmode') or {}).get('map_id')):
@@ -463,6 +485,11 @@ class Screensaver:
             run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
                     **({"jumped": True} if jumped else {})}
             self.store.put(STATE, w["name"], run)
+            if run.get('mercmode') and not run.get('mercmode_rotate_requested'):
+                # the next title boots beside this one from the moment this one is up (a cold start after a service
+                # restart has the pool warm again before the first round ends; operator 2026-10-26)
+                self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
+                run = self.store.get(STATE, w["name"]) or run
             if not jumped:
                 return f"launching {run['title']}"
             phase = "starting"
@@ -507,10 +534,13 @@ class Screensaver:
         if run.get('mercmode'):
             if run.get('mercmode_rotate_requested'):
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
-                return self._park(w, run, now, 'verified native round boundary: next MercMode title')
-            if phase == 'playing':
+                return self._park(w, run, now, ROTATION)
+            if phase in ('starting', 'playing') and sid:
+                # the next title boots (and prepares its round) as soon as this one is up: after a service restart the
+                # pool is warm again before the first round ends, not only at the switch (operator 2026-10-26)
                 ahead = self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
-                if ahead:
+                run = self.store.get(STATE, w['name']) or run            # _prelaunch marked the run (once per run)
+                if ahead and phase == 'playing':
                     return ahead
         if phase == "starting" and run.get('warm_resume_job'):
             resumed = self.store.get('job', run['warm_resume_job']) or {}
@@ -543,18 +573,30 @@ class Screensaver:
                 out.append({"knobs": res.get("knobs") or row.get("knobs") or {}, "score": res["score"]})
         return out
 
-    # --- MercMode warm pool (gbox.mercmode WARM / NEXT / PRELAUNCH_S) ---
-    # The next title boots in the round's last PRELAUNCH_S seconds beside the playing one (launch_game warm=true,
-    # keep_sessions): the worker pauses it as soon as it runs, so it makes no sound and nothing shows it (the clients
-    # follow current_run). At the native round boundary the finished title is paused in turn ("parked") and the waiting
-    # one resumed, instead of a stop and a cold boot. Only this scheduler's own agent launches on this exact PC ever enter
-    # the pool or get paused, resumed or stopped from it; anything else is dropped from the pool untouched. Any failure
-    # (no pause, a failed preload or resume, low memory, an older worker) falls back to the normal cold launch.
+    # --- MercMode warm pool (gbox.mercmode WARM / NEXT) ---
+    # The next title boots beside the playing one as soon as that one is up (launch_game warm=true, keep_sessions): the
+    # worker pauses it as soon as it runs, so it makes no sound and nothing shows it (the clients follow current_run).
+    # Then, on a worker with PREPARE_FEATURE, its own menus are driven to the first frame of a round
+    # in the background (autoplay op=prepare) and it is paused again right there: the pool entry is "ready". At the
+    # native round boundary the finished title is paused in turn ("parked") and the ready one resumed straight into
+    # gameplay, instead of a stop, a cold boot and a menu walk in the PiP (operator 2026-10-26: "never sitting on a game
+    # over screen or a menu screen ... match after match after match"). A parked title is prepared the same way once it
+    # is picked to play next. Only this scheduler's own agent launches on this exact PC ever enter the pool or get
+    # paused, resumed, prepared or stopped from it; anything else is dropped from the pool untouched. Any failure (no
+    # pause, a failed preload, prepare or resume, low memory, an older worker) falls back to the earlier behaviour: a
+    # failed prepare leaves the game paused where it was (its bot walks the menus after the switch), everything else
+    # the normal cold launch.
 
     def _warm_capable(self, w, merc_cfg):
         from . import mercmode
         return bool(merc_cfg.get('enabled') and merc_cfg.get('keep_warm') and not w.get('federation')
                     and mercmode.WARM_FEATURE in (w.get('features') or []))
+
+    def _prepare_capable(self, w):
+        """This worker's autoplay has op=prepare (an older one would fail the job: the switch then resumes the game at
+        its menus as before, so nothing is submitted to it)."""
+        from . import mercmode
+        return mercmode.PREPARE_FEATURE in (w.get('features') or [])
 
     def _warm_owned(self, w, row, running):
         """The running session of a pool entry (or of the current run), only when it is exactly this scheduler's own
@@ -578,11 +620,14 @@ class Screensaver:
             return None
         return sess
 
-    def _warm_label(self, sid, title, now, loading=False):
+    def _warm_label(self, sid, title, now, loading=False, state=None):
+        """state: loading (booting) | preparing (its menus are being driven to a round start) | ready (paused at its
+        boot menu / where its last round left it) | round_ready (paused on the first frame of its next round)."""
+        state = state or ('loading' if loading else 'ready')
+        text = {'loading': 'is preparing its native title/menu', 'preparing': 'is preparing its next round in the background',
+                'round_ready': 'waits paused at the start of its next round'}.get(state, 'waits paused for its turn')
         self.store.put('slabel', sid, {'session_id': sid, 'owner': 'agent', 'warm': True, 'ts': now,
-                                       'warm_state': 'loading' if loading else 'ready',
-                                       'task': f'MercMode: {title} ' + ('is preparing its native title/menu' if loading
-                                                                      else 'waits paused for its turn')})
+                                       'warm_state': state, 'task': f'MercMode: {title} {text}'})
 
     def _warm_stop(self, w, row, why):
         """Close one verified pool game (callers check _warm_owned first)."""
@@ -594,12 +639,16 @@ class Screensaver:
     def _warm(self, w, running, now):
         """This PC's verified pool: entries whose session ended, whose preload failed or timed out, or that are not
         exactly ours are dropped (never touched); a preload that came up gets its session id and the warm label; a
-        preload the emulator could not pause is closed (its title then cold-launches at its turn)."""
+        preload the emulator could not pause is closed (its title then cold-launches at its turn). A preload paused at
+        its boot menu, and a parked title picked to play next, get their round prepared (autoplay op=prepare) and
+        become "ready" on the worker's receipt (session detail warm, or the prepare job's result)."""
+        from .server import JobRequest
         from . import mercmode
         pool = mercmode.warm_pool(self.store, w['name'])
         out, changed = {}, False
         for title, row in pool.items():
             job = self.store.get('job', row.get('job')) or {}
+            map_id = (mercmode.TITLES.get(title) or {}).get('map_id')
             if not row.get('session_id'):
                 if job.get('state') in ('failed', 'rejected', 'invalid', 'cancelled') or now - row.get('at', now) > LAUNCH_TIMEOUT:
                     changed = True
@@ -618,16 +667,44 @@ class Screensaver:
                 changed = True
                 continue
             warm = warm_boot.receipt(sess, job)
-            if row.get('state') == 'prelaunch' and warm.get('state') == 'cancelled':
-                # Explicit control/process changes revoke this observer's
+            # the round receipt of this entry's own prepare job (one of an earlier preparation of the same game never
+            # counts: the game played since and waits parked again); a receipt without a job stamp is taken as is
+            round_receipt = warm_boot.round_receipt(sess, job, row.get('prepare_job') or '') if row.get('prepare_job') else {}
+            if row.get('state') == 'prelaunch' and warm.get('state') == 'cancelled' \
+                    or row.get('prepare_job') and round_receipt.get('state') == 'cancelled':
+                # Explicit control/process changes (Stop, the player's pad, a manual pause) revoke this observer's
                 # ownership; cancellation is not a failed bot game to close.
                 label = self.store.get('slabel', row['session_id']) or {}
                 self.store.put('slabel', row['session_id'], label | {'warm': False, 'warm_state': 'cancelled'})
                 changed = True
                 continue
-            waiting = warm.get('state') == 'loading' and now - row.get('at', now) <= LAUNCH_TIMEOUT
-            if row.get('state') == 'prelaunch' and job.get('state') == 'succeeded' and not waiting \
-                    and not warm_boot.prepared(sess, job, (mercmode.TITLES.get(title) or {}).get('map_id')):
+            prepare = self.store.get('job', row['prepare_job']) or {} if row.get('prepare_job') else {}
+            result = (prepare.get('output') or {}).get('result') or {} if prepare.get('state') == 'succeeded' else {}
+            if round_receipt.get('state') == 'failed' or result.get('state') == 'failed':
+                # the walk ended and the game did not pause: an unseen game running on with no bot is closed
+                why = round_receipt.get('reason') or result.get('reason') or 'no pause after the round preparation'
+                self._warm_stop(w, row, 'its round could not be prepared and the game did not pause: ' + str(why)[:200])
+                changed = True
+                continue
+            receipt = round_receipt if round_receipt.get('prepared') is not None else result
+            if row.get('state') != 'ready' and receipt.get('prepared') is True and receipt.get('paused') is True \
+                    and receipt.get('title') == map_id:
+                row = row | {'state': 'ready', 'prepared': {k: receipt.get(k) for k in
+                             ('character', 'stage', 'stage_index', 'mercenaries_mode', 'room', 'wait_s') if receipt.get(k) is not None}}
+                changed = True
+            elif not row.get('prepare_failed') and row.get('state') != 'ready':
+                failed = receipt.get('prepare_failed') if receipt.get('prepared') is False else None
+                if not failed and prepare.get('state') in ('failed', 'rejected', 'invalid', 'cancelled'):
+                    failed = f"prepare {prepare['state']}: {str(prepare.get('error') or '')[:160]}"
+                if not failed and row.get('prepare_job') and now - row.get('prepare_at', now) > LAUNCH_TIMEOUT:
+                    failed = 'the round preparation timed out'
+                if failed:
+                    row, changed = row | {'prepare_failed': str(failed)[:240]}, True
+            loading = warm.get('state') == 'loading' and now - row.get('at', now) <= LAUNCH_TIMEOUT
+            preparing = row.get('state') != 'ready' and bool(row.get('prepare_job')) and not row.get('prepare_failed') \
+                and now - row.get('prepare_at', now) <= LAUNCH_TIMEOUT
+            if row.get('state') == 'prelaunch' and job.get('state') == 'succeeded' and not loading and not preparing \
+                    and not warm_boot.prepared(sess, job, map_id):
                 self._warm_stop(w, row, 'native preparation was not confirmed: ' + str(warm.get('reason') or 'no native menu receipt'))
                 changed = True
                 continue
@@ -636,13 +713,47 @@ class Screensaver:
                 self._warm_stop(w, row, 'the finished game could not pause: ' + str(pause.get('error') or pause.get('state'))[:200])
                 changed = True
                 continue
+            if self._prepare_capable(w) and row.get('state') in ('prelaunch', 'parked') and not row.get('prepare_job') \
+                    and not row.get('prepare_failed') and not loading:
+                settled = (job.get('state') == 'succeeded' and warm_boot.prepared(sess, job, map_id)
+                           if row['state'] == 'prelaunch' else
+                           # a parked title: once it is picked to play next, after its pause and its bot's stop landed
+                           row.get('prepare_wanted') and pause.get('state') == 'succeeded'
+                           and (not row.get('autoplay_job') or (self.store.get('job', row['autoplay_job']) or {}).get('state') == 'succeeded'))
+                if settled:
+                    selection = row.get('selection')
+                    submitted = self.submit(JobRequest(tool='autoplay', input={'session_id': row['session_id'], 'op': 'prepare',
+                                                                               **({'selection': selection} if selection else {})},
+                                                       agent_use=True, require_worker=w['id']), actor=ACTOR,
+                                            origin={'via': 'MercMode prepare', 'session_id': row['session_id'], 'title': title})
+                    row, changed, preparing = row | {'prepare_job': _jid(submitted), 'prepare_at': now}, True, True
+            state = 'loading' if loading else 'preparing' if preparing else 'round_ready' if row.get('state') == 'ready' else 'ready'
             label = self.store.get('slabel', row['session_id']) or {}
-            if not label.get('warm') or label.get('warm_state') != ('loading' if waiting else 'ready'):
-                self._warm_label(row['session_id'], (mercmode.TITLES.get(title) or {}).get('name', title), now, waiting)
+            if not label.get('warm') or label.get('warm_state') != state:
+                self._warm_label(row['session_id'], (mercmode.TITLES.get(title) or {}).get('name', title), now, state=state)
             out[title] = row
         if changed:
             self.store.put(mercmode.WARM, w['name'], out)
         return out
+
+    def _warm_waiting(self, w, row, now):
+        """Why the next title is not ready to be swapped in yet (None: it is, or it never will be on its own): still
+        loading, or its round is still being prepared (a prepare running, or about to be submitted). The playing title
+        then plays another round meanwhile (round_boundary, EXTRA_ROUNDS_MAX)."""
+        if not row or row.get('state') in ('ready', 'releasing') or row.get('prepare_failed'):
+            return None
+        job = self.store.get('job', row.get('job')) or {}
+        session = self.store.get('session', row.get('session_id')) or {}
+        if row.get('state') == 'prelaunch' and (not row.get('session_id') or job.get('state') != 'succeeded'
+                                                or warm_boot.loading(session, job)):
+            return 'loading'
+        if not self._prepare_capable(w):
+            return None
+        if row.get('prepare_job'):
+            return 'preparing' if now - row.get('prepare_at', now) <= LAUNCH_TIMEOUT else None
+        if row.get('state') == 'prelaunch' or row.get('prepare_wanted'):
+            return 'preparing'                       # its prepare is submitted at the next tick (the pause / stop land first)
+        return None
 
     def _warm_release(self, w, running, now, why):
         """Close every verified pool game of this PC (MercMode off, keep_warm 0, the operator took over). A preload
@@ -669,8 +780,9 @@ class Screensaver:
             self._warm(w, running, now)
 
     def _resume_warm(self, w, pick, merc_cfg, now):
-        """Switch to a title kept warm (parked after its last turn) or preloaded in the previous round's last
-        PRELAUNCH_S seconds: no boot, no shader/PPU build. None when that title has nothing warm (cold launch)."""
+        """Switch to a title kept warm (parked after its last turn) or preloaded while the previous title played - at
+        best "ready": paused on the first frame of its prepared round, resumed straight into gameplay. No boot, no
+        shader/PPU build, no menu walk. None when that title has nothing warm (cold launch)."""
         from .server import JobRequest
         from . import mercmode
         running = self.store.running_sessions()
@@ -702,18 +814,39 @@ class Screensaver:
             self.store.put(STATE, w['name'], base | {'phase': 'launching', 'prelaunched': True})
             return f"switching to {pick['name']} (finishing its background load)"
         sid = row['session_id']
-        resume = self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'resume', 'args': {'warm': False}},
-                                        agent_use=True, require_worker=w['id']), actor=ACTOR,
-                             origin={'via': 'MercMode warm switch', 'session_id': sid})
+        if row.get('prepared'):
+            base['mercmode'] = base['mercmode'] | {'prepared': row['prepared']}
+        self.store.put('slabel', sid, {'session_id': sid, 'owner': 'agent', 'ts': now,
+                                       'task': f"autoplay screensaver: {pick['name']}"})
         if pick.get('selection') and row.get('selection') != pick['selection']:
+            # a DJ pick queued after this game was prepared: its menus are past, so it is taken at the next menu visit
             spec = mercmode.selection_job(pick['title'], sid, pick['selection'])
             if spec:
                 self.submit(JobRequest(tool=spec[0], input=spec[1], agent_use=True, require_worker=w['id']),
                             actor=ACTOR, origin={'via': 'MercMode queue', 'session_id': sid})
-        self.store.put('slabel', sid, {'session_id': sid, 'owner': 'agent', 'ts': now,
-                                       'task': f"autoplay screensaver: {pick['name']}"})
+        prepare = self.store.get('job', row['prepare_job']) or {} if row.get('prepare_job') else {}
+        if row.get('state') != 'ready' and row.get('prepare_job') and not row.get('prepare_failed'):
+            # its round preparation is still walking the menus (the extra rounds ran out): no wait for it - the bot takes
+            # the game over from the walk at once (autoplay start ends it where the menus are; the game is unpaused)
+            if prepare.get('state') == 'queued':
+                self.store.put('job', prepare['id'], prepare | {'state': 'cancelled', 'finished': now,
+                               'error': 'The MercMode switch took this game before its round preparation started'})
+                resume = self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'resume', 'args': {'warm': False}},
+                                                agent_use=True, require_worker=w['id']), actor=ACTOR,
+                                     origin={'via': 'MercMode warm switch', 'session_id': sid})
+                self.store.put(STATE, w['name'], base | {'phase': 'starting', 'session_id': sid, 'up': now - START_GRACE,
+                                                         'warm_resume_job': _jid(resume)})
+                return f"switching to {pick['name']} (kept warm: no reload)"
+            self.store.put(STATE, w['name'], base | {'phase': 'starting', 'session_id': sid, 'up': now - START_GRACE,
+                                                     'warm_from': 'preparing'})
+            return f"switching to {pick['name']} (its round preparation still runs: the bot takes over from it)"
+        resume = self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'resume', 'args': {'warm': False}},
+                                        agent_use=True, require_worker=w['id']), actor=ACTOR,
+                             origin={'via': 'MercMode warm switch', 'session_id': sid})
         self.store.put(STATE, w['name'], base | {'phase': 'starting', 'session_id': sid, 'up': now - START_GRACE,
                                                  'warm_resume_job': _jid(resume)})
+        if row.get('state') == 'ready':
+            return f"switching to {pick['name']} (its round is ready: resuming it in gameplay)"
         return f"switching to {pick['name']} (kept warm: no reload)"
 
     def _warm_fallback(self, w, run, now, why):
@@ -783,18 +916,14 @@ class Screensaver:
         return self._finish(w, run | {'mercmode_kept_warm': True}, now, why)
 
     def _prelaunch(self, w, run, cfg_merc, now):
-        """In the round's last PRELAUNCH_S seconds, boot the title that plays next beside this one, paused (or note that
-        it already waits warm), so the switch at the round's end is immediate. The pick is kept (NEXT) for the switch
-        even when the preload is skipped (low memory): that title then launches cold."""
+        """Once per run (and again after a failed attempt, round_boundary), as soon as this title is up: pick the title
+        that plays next and boot it beside this one, paused (or note that it already waits warm), so that it is ready -
+        booted, its round prepared - long before the switch. The pick is kept (NEXT) for the switch even when the preload
+        is skipped (low memory); the switch then waits for a later, successful attempt (round_boundary)."""
         from .server import JobRequest
         from . import mercmode
-        if run.get('mercmode_prelaunch') or run.get('mercmode_pinned') or not self._warm_capable(w, cfg_merc):
-            return None
-        if (run.get('mercmode_rounds') or 0) + 1 < cfg_merc['rounds_per_title'] and not cfg_merc.get('queue'):
-            return None
-        stats = telemetry_get(run['session_id'], now).get('stats') or {}
-        timer = stats.get('timer')
-        if stats.get('screen') != 'playing' or type(timer) not in (int, float) or not 0 < timer <= mercmode.PRELAUNCH_S:
+        if run.get('mercmode_prelaunch') or run.get('mercmode_pinned') or run.get('mercmode_stay') \
+                or not self._warm_capable(w, cfg_merc):
             return None
         history = self.store.get(mercmode.HISTORY, w['name']) or {}
         self.store.put(mercmode.HISTORY, w['name'], history | {'last_game_id': run['game_id']})   # never "next" = this one
@@ -806,11 +935,22 @@ class Screensaver:
             return None
         if pick.get('selection'):
             mercmode.pop_queue(self.store, w['name'])
-        self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'), 'at': now})
+        self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'), 'at': now,
+                                                  **({'queued': True} if pick.get('selection') else {})})
         running = self.store.running_sessions()
         pool = self._warm(w, running, now)
         ready = pool.get(pick['title'])
         if ready and ready.get('state') != 'releasing':
+            if ready.get('state') == 'parked' and self._prepare_capable(w) \
+                    and (not ready.get('prepare_job') or ready.get('prepare_failed')):
+                # a parked title picked to play next: its menus are driven from where its last round left it to its
+                # next round start meanwhile (_warm submits the prepare once its pause and stop have landed), with the
+                # DJ's pick when there is one; an earlier failed attempt is tried once more for this pick
+                row = {k: v for k, v in ready.items() if k not in ('prepare_job', 'prepare_at', 'prepare_failed')}
+                mercmode.keep_warm(self.store, w['name'], pick['title'],
+                                   row | {'prepare_wanted': True, **({'selection': pick['selection']} if pick.get('selection') else {})})
+                mark(title=pick['title'], warm=ready.get('state'), prepare=True)
+                return f"{pick['name']} waits warm for the next round (preparing its round)"
             mark(title=pick['title'], warm=ready.get('state'))
             return f"{pick['name']} waits warm for the next round"
         why = mercmode.memory_reason(w, now)
@@ -958,10 +1098,9 @@ class Screensaver:
             rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and count>=cfg['rounds_per_title'])
             head = (cfg.get('queue') or [None])[0] if cfg['enabled'] and not run.get('mercmode_pinned') else None
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
-            if ahead and ahead.get('title') != run['mercmode']['title'] and worker and any(
-                    r['playable'] and r['title'] == ahead.get('title') for r in mercmode.inventory(self.store, worker, cfg)):
-                rotate = True                    # picked (and preloaded) in this round's last seconds: that title is next
-            elif head and head['title'] == run['mercmode']['title']:
+            playable = lambda title: worker is not None and any(
+                r['playable'] and r['title'] == title for r in mercmode.inventory(self.store, worker, cfg))
+            if head and head['title'] == run['mercmode']['title']:
                 # the DJ queued this same game next: no relaunch, the running bot takes the selection at its menus
                 rotate = False
                 selection = mercmode.resolve_selection(head, self.rng)
@@ -972,29 +1111,52 @@ class Screensaver:
                                 actor=ACTOR, origin={'via': 'MercMode queue', 'session_id': run['session_id']})
                 mercmode.pop_queue(self.store, run['worker'])
                 run = run | {'mercmode': run['mercmode'] | {'selection': selection}}
-            elif head and worker and any(r['playable'] and r['title'] == head['title']
-                                         for r in mercmode.inventory(self.store, worker, cfg)):
+            elif head and playable(head['title']):
                 rotate = True                    # the DJ's next round is another game: switch after this round
+                run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_warm_attempts')}   # asked for: try again
+                if ahead and ahead.get('title') != head['title']:
+                    self.store.delete(mercmode.NEXT, run['worker'])      # the DJ's pick replaces the one made ahead
+                    ahead = None
+                    run = {k: v for k, v in run.items() if k != 'mercmode_prelaunch'}
+            elif ahead and ahead.get('title') != run['mercmode']['title'] and playable(ahead.get('title')) \
+                    and (ahead.get('queued') or ahead.get('cold')):
+                rotate = True                    # the DJ's round, picked (and preloaded) ahead: that title is next
             if rotate and worker and self._warm_capable(worker, cfg):
-                # the next title still loading in the background: this one plays another round meanwhile instead of a
-                # loading screen (operator 2026-10-24: "they could play a 2nd round of mercenaries and continue gaming
-                # while the game loads. i want the autobot playing the entire time"); swapped at a later boundary
-                nxt = (ahead or {}).get('title') or (run.get('mercmode_prelaunch') or {}).get('title')
+                # the switch waits until the next title is ready - booted, paused on the first frame of its round (a
+                # worker without op=prepare: paused at its menu) - and this title plays another round meanwhile, never a
+                # loading screen or a menu walk (operator 2026-10-24: "they could play a 2nd round of mercenaries and
+                # continue gaming while the game loads. i want the autobot playing the entire time"; 2026-10-26: "the
+                # transitions between loads is just too long and I need it to be a seamless swap"). A failed or skipped
+                # preload is tried again next round; after EXTRA_ROUNDS_MAX failed attempts MercMode stays in this title.
+                nxt = (ahead or {}).get('title') or (run.get('mercmode_prelaunch') or {}).get('title') \
+                    or (head or {}).get('title')
                 row = self._warm(worker, self.store.running_sessions(), now).get(nxt) if nxt else None
-                job = self.store.get('job', (row or {}).get('job')) or {}
-                session = self.store.get('session', (row or {}).get('session_id')) or {}
-                loading = row is not None and row.get('state') == 'prelaunch' and (
-                    not row.get('session_id') or job.get('state') != 'succeeded' or warm_boot.loading(session, job))
-                extra = run.get('mercmode_extra_rounds', 0)
-                if loading and extra < mercmode.EXTRA_ROUNDS_MAX:
+                waiting = self._warm_waiting(worker, row, now)
+                ready = bool(row) and not waiting and (row.get('state') == 'ready' or not self._prepare_capable(worker)
+                                                       or row.get('prepare_failed'))
+                if ready:
+                    run = {k: v for k, v in run.items() if k != 'mercmode_waiting_for'}
+                else:
                     rotate = False
-                    run = run | {'mercmode_extra_rounds': extra + 1}
+                    if not run.get('mercmode_stay'):
+                        run = run | {'mercmode_extra_rounds': run.get('mercmode_extra_rounds', 0) + 1,
+                                     'mercmode_waiting_for': waiting or 'the next title is not ready'}
+                        if not waiting:
+                            # nothing is on its way (the preload failed, was skipped or never happened): try again next
+                            # round; after EXTRA_ROUNDS_MAX such attempts this title keeps playing instead
+                            attempts = run.get('mercmode_warm_attempts', 0) + 1
+                            run = {k: v for k, v in run.items() if k != 'mercmode_prelaunch'} | {'mercmode_warm_attempts': attempts}
+                            if attempts >= mercmode.EXTRA_ROUNDS_MAX:
+                                name = (mercmode.TITLES.get(nxt) or {}).get('name', nxt or 'the next title')
+                                run = run | {'mercmode_stay': f"{name} could not be made ready {attempts} times: staying in this title"}
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
                 'mercmode_rounds':count,'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
-            return {'saved': True, 'rotate_requested': rotate}
+        if rotate:
+            self.nudge('native round boundary: the next title is ready')      # park and swap now, not at the next tick
+        return {'saved': True, 'rotate_requested': rotate}
 
     def pcs(self, cfg: dict, now: float | None = None) -> list[dict]:
         """Each PC, and why the screensaver would not start a game there now (reason None: it may at its next tick).
@@ -1066,7 +1228,8 @@ class Screensaver:
                 'titles':mercmode.inventory(self.store,w,sessions=sessions),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {}),
                 # the warm pool: titles waiting paused for their turn, and the title picked to play next
-                'warm':[{'title':t,'state':r.get('state'),'session_id':r.get('session_id'),'at':r.get('at')}
+                'warm':[{'title':t,'state':r.get('state'),'session_id':r.get('session_id'),'at':r.get('at'),
+                         'prepare_job':r.get('prepare_job'),'prepared':r.get('prepared'),'prepare_failed':r.get('prepare_failed')}
                         for t,r in sorted(mercmode.warm_pool(self.store,w['name']).items())],
                 'next':self.store.get(mercmode.NEXT,w['name'])})
         from .mercs.research_profiles import coverage, VERSION
@@ -1363,16 +1526,23 @@ def install(app, store, config, auth, submit, workers, archive):
         return {"directive": row}
 
     stopped = threading.Event()
+    saver.wake = threading.Event()                       # saver.nudge(): a tick now, between the 30 s ones
 
     def loop():
-        while not stopped.wait(30):
+        while not stopped.is_set():
+            nudged = saver.wake.wait(30)
+            saver.wake.clear()
+            if stopped.is_set():
+                break
             try:
                 saver.tick()
             except Exception as e:                       # one bad tick must not end the schedule
                 print(f"autoplay screensaver tick failed: {type(e).__name__}: {e}", flush=True)
+            if nudged:
+                continue                                 # the builder keeps its 30 s cadence
             try:
                 saver.builder.tick(bool(settings(store).get("roulette")))
             except Exception as e:                       # the roulette builder never stops the screensaver
                 print(f"autoplay roulette tick failed: {type(e).__name__}: {e}", flush=True)
     app.on_event("startup")(lambda: threading.Thread(target=loop, daemon=True, name="autoplay-screensaver").start())
-    app.on_event("shutdown")(stopped.set)
+    app.on_event("shutdown")(lambda: (stopped.set(), saver.wake.set()))

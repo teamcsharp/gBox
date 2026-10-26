@@ -1791,6 +1791,10 @@ class _Menus:
                 and type(scr.get('cursor')) is int and 0<=scr['cursor']<len(re4_menus.PLAYERS):
             self.boot.stats['character']=re4_menus.PLAYERS[scr['cursor']]
             self.boot.stats['character_source']='native_menu_cursor'
+        elif scr.get('where')=='select_stage' and scr.get('cursor')==scr.get('target') \
+                and type(scr.get('cursor')) is int and 0<=scr['cursor']<len(re4_menus.STAGES):
+            self.boot.stats['stage']=re4_menus.STAGES[scr['cursor']]      # the round's stage (MercMode's prepare receipt)
+            self.boot.stats['stage_index']=scr['cursor']
         return self.boot.tick(now, scr=scr)
 
 
@@ -1817,9 +1821,14 @@ def round_maps_dir_for(ad=None, learn_dir: Path | None = None) -> Path:
 
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
          clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None, game=None,
-         hooks=None, round_boundary=None, record_dir=None, session_id=None, source_job_id=None) -> dict:
+         hooks=None, round_boundary=None, record_dir=None, session_id=None, source_job_id=None,
+         prepare: bool = False) -> dict:
     """Drive Leon until stopped(); send(rows) presses keys. Returns the run's stats (stats, when given, is filled live:
     the watch panel shows it): backoffs, prompts, max_combo, combo, timer, rounds, menu_presses, screen.
+
+    prepare (MercMode's seamless swap, gbox.tools._prepare_round): only the menus - the walk ends on the round's first
+    in-round frame (Select Stage taken, the stage loaded, Leon in the room with the clock running) with nothing pressed
+    in it and stats["prepared"] True; the caller pauses the game at that exact point and the switch resumes it there.
 
     From boot, and between rounds, it gets to the next round from RAM (gbox.re4_menus: the title, the main menu's THE
     MERCENARIES, GAME START, Leon, the Village, the results, "You Are Dead": Continue Yes), one press at a time and only
@@ -1843,7 +1852,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         started_in = in_mercenaries(snapshot(m)) and _room_on(m)
     except Exception:                              # noqa: BLE001 - a read during a load: from the menus
         started_in = False
-    bot.stats.update(rounds=1 if started_in else 0, menu_presses=0)
+    bot.stats.update(rounds=1 if started_in else 0, menu_presses=0,
+                     **({"screen": "playing"} if started_in else {}))   # a prepared swap starts in the round: say so at once
     menus = _Menus(ad, m, send, sleep, clock, bot.stats, game=game, hooks=hooks)
     out_since, last_press, was_in, left_at = None, 0.0, started_in, None
     bot.stats["prompt_presses"] = 0
@@ -1859,7 +1869,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     playing_observed=started_in
     recorder=None
     record_dir=record_dir or getattr(getattr(ad,'config',None),'data_dir',None)
-    if record_dir is not None:
+    if record_dir is not None and not prepare:           # a prepare plays no round: nothing to record
         from .mercs.legacy_trace import LegacyRecorder
         provenance={key:value for key,value in {'source_session_id':session_id,
             'source_autoplay_job_id':source_job_id}.items() if isinstance(value,str) and 0<len(value)<=160}
@@ -1940,6 +1950,11 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             was_in = False
             sleep(0.25)
             continue
+        if prepare:
+            # MercMode prepare: the round is up (Leon in a Mercenaries room, the clock running): stop on this first
+            # in-round frame with nothing pressed; the caller pauses the game here (gbox.tools._prepare_round)
+            bot.stats.update(screen="playing", prepared=True, timer=s["timer"], room=s["room"])
+            break
         if not was_in:
             boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats["rounds"] += 1

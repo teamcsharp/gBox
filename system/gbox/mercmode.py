@@ -22,14 +22,23 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
 # seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
 # one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
-WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, worker_id, state: prelaunch|parked, at}}
+WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, worker_id, state: prelaunch|parked|ready, at,
+                                #          prepare_job, prepare_at, prepared: {character, stage, ...} | prepare_failed}}
+                                # prelaunch: booting / paused at its boot menu; parked: paused where its last round left
+                                # it (a results screen); ready: paused on the first frame of its next round (prepared)
 NEXT = 'mercmode_next'          # host -> the pick made ahead of the round's end (prelaunch), honoured at the switch
-PRELAUNCH_S = 3600.0            # seconds left on the round clock when the next title starts loading in the background:
-                                # any - it loads while the title's last round plays (operator 2026-10-24: "precaching of
-                                # the next rom during the playing of the current rom"; 30 s left a five-minute RE4 boot)
-EXTRA_ROUNDS_MAX = 3            # rounds the playing title adds while the next one is still loading, then a cold switch
+PRELAUNCH_S = 3600.0            # (status text) the next title starts loading in the background as soon as the playing one
+                                # is up - it loads and prepares its round while this one plays (operator 2026-10-24:
+                                # "precaching of the next rom during the playing of the current rom"; 2026-10-26: after a
+                                # service restart the pool boots at once, not only when the first title's round ends)
+EXTRA_ROUNDS_MAX = 3            # failed attempts to get the next title ready (a failed / skipped preload or prepare) before
+                                # MercMode stays in the playing title; while an attempt is on its way the playing title
+                                # adds rounds without limit - never a cold switch with a loading screen while a title plays
 WARM_MAX = 2                    # keep_warm upper bound (three titles at most: the playing one plus two waiting)
 WARM_FEATURE = 'mercmode_warm_launch'   # worker feature: launch_game keep_sessions/warm and session_op pause warm
+PREPARE_FEATURE = 'mercmode_prepare'    # worker feature: autoplay op=prepare drives a warm game's menus to a round start
+                                        # and pauses it there (operator 2026-10-26: "continue playing a round ... while the
+                                        # next session is loading and preparing in the background so the swap is seamless")
 WARM_MIN_FREE_BYTES = 8 * 1024**3       # memory guard: an extra emulator needs this much free RAM on the host ...
 WARM_MAX_MEMORY_PERCENT = 80            # ... and the host under this much used, both measured in the last 30 s
 QUEUE_MAX = 20
@@ -213,7 +222,7 @@ def presentation_launch(store, worker, job):
         nxt=TITLES.get(ahead.get('title')) or {}
         return bool(cfg['enabled'] and cfg['presentation_priority'] and ahead.get('title') in cfg['titles']
             and nxt.get('playable') and job.get('actor')==ACTOR and (job.get('input') or {}).get('warm') is True
-            and run.get('phase')=='playing' and run.get('worker_id')==worker.get('id')==job.get('require_worker')
+            and run.get('phase') in ('starting','playing') and run.get('worker_id')==worker.get('id')==job.get('require_worker')
             and game.get('game_id') in nxt.get('game_ids',()))
     return bool(cfg['enabled'] and cfg['presentation_priority'] and title in cfg['titles']
         and spec.get('playable') and job.get('tool')=='launch_game' and job.get('actor')==ACTOR
@@ -576,7 +585,8 @@ def preparation(platform):
     return ({'strategy': 'persistent_install_and_shader_cache', 'instant_state_supported': False,
              'reason': 'RPCS3 uses its installed data and retained caches, then verified native menus. '
                        'No save-state capture/reload. With keep_warm the next title boots paused in the round\'s last '
-                       f'{PRELAUNCH_S:g} s and the switch resumes it (gbox.screensaver warm pool).'}
+                       f'{PRELAUNCH_S:g} s, its menus are driven to a round start in the background (autoplay prepare) '
+                       'and the switch resumes it in gameplay (gbox.screensaver warm pool).'}
             if platform == 'ps3' else
             {'strategy': 'existing_dolphin_menu_jump_if_available', 'instant_state_supported': True,
              'reason': 'An existing matching Dolphin menu jump may be reused; otherwise native menus boot normally.'})

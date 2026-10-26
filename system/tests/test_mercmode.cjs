@@ -84,6 +84,9 @@ test('between titles the transition shows a loading bar that follows the schedul
  assert.equal(M.transition(host({phase:'playing'}),'w1-cur',1200).progress,92);
  assert.deepEqual(M.transition({settings:{enabled:false},current_run:{phase:'launching',mercmode:{}}},'w1-cur',1),{show:false});
  assert.deepEqual(M.transition(null,'w1-cur',1),{show:false});
+ // a warm switch has a live game from its first moment: no loading screen, whatever its phase (2026-10-26: "I hate waiting")
+ for(const phase of ['starting','playing'])assert.equal(M.transition(host({phase,warm_from:'ready'}),'w1-cur',1200).show,false);
+ assert.equal(M.transition(host({phase:'launching',warm_from:'prelaunch',session_id:undefined}),'w1-cur',1045).show,true);
 });
 test('the DJ queue shows now playing, the queue ahead and a form built from each title roster',()=>{
  const catalog={re4:{modes:{mercenaries:['Leon','Ada']},stages:['Village','Castle']},re5:{modes:{mercenaries:['Chris (BSAA)'],reunion:['Barry']},stages:['Public Assembly','The Mines']}};
