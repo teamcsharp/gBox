@@ -288,13 +288,26 @@ def link_rotation(store, run, successor, now):
     if not isinstance(prior,dict) or not run.get('mercmode') or run.get('worker_id')!=prior.get('worker_id') \
             or not 0<=now-prior.get('ended',0)<=900:
         return False
+    # A warm switch resumes the successor's own already-paused session: its launch job belongs to the pool row, not
+    # to this run. That switch still extends the chain the same way (the old session ends, the successor resumes).
+    if run.get('warm_from'):
+        job=store.get('job',run.get('warm_resume_job')) or {}
+    else:
+        job=store.get('job',run.get('job')) or {}
+        if job.get('tool')!='launch_game' or job.get('state')!='succeeded' \
+                or job.get('worker_id')!=run.get('worker_id') or job.get('require_worker')!=run.get('worker_id') \
+                or ((job.get('input') or {}).get('game') or {}).get('game_id')!=run.get('game_id'):
+            return False
     from .screensaver import _launch_session
-    job=store.get('job',run.get('job')) or {}
-    if job.get('tool')!='launch_game' or job.get('state')!='succeeded' \
-            or job.get('worker_id')!=run.get('worker_id') or job.get('require_worker')!=run.get('worker_id') \
-            or ((job.get('input') or {}).get('game') or {}).get('game_id')!=run.get('game_id'):
-        return False
-    if _launch_session(store,run.get('job'),[successor],worker_id=run.get('worker_id'),game_id=run.get('game_id')) is None:
+    if run.get('warm_from'):
+        # a paused session was resumed, not launched: its launch job only has to be this host's own accepted one
+        if job.get('tool')!='session_op' or job.get('state')!='succeeded' \
+                or job.get('worker_id')!=run.get('worker_id') or job.get('require_worker')!=run.get('worker_id'):
+            return False
+        if ((job.get('input') or {}).get('op')!='resume'
+                or (job.get('input') or {}).get('session_id')!=successor.get('session_id')):
+            return False
+    elif _launch_session(store,run.get('job'),[successor],worker_id=run.get('worker_id'),game_id=run.get('game_id')) is None:
         return False
     sid=successor.get('session_id','');old=store.get('session',prior.get('session_id')) or {}
     source_worker=prior.get('source_worker_id',prior['worker_id'])

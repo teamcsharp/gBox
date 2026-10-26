@@ -1018,3 +1018,25 @@ def test_a_title_still_loading_in_the_background_means_another_round_of_this_one
     body=boundary(run,now[0])
     assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False      # its preload has not finished
     assert store.get(S.STATE,w['name'])['mercmode_extra_rounds']==1
+
+
+def test_warm_switch_extends_the_watched_chain_via_the_resume_job():
+    # the resume is this run's accepted job (the paused successor's own launch job is not it): the switch must
+    # still link the chain, or the next title's native round boundary would be treated as a foreign run
+    store,w,saver,calls,now,tick,run,job,second,job2=second_turn()
+    sid=second['session_id']
+    second=store.get(S.STATE,w['name'])
+    # without the fix the switch's own launch job was not this run's: the chain would not have linked here
+    assert second['mercmode_predecessor']['session_id']==run['session_id']
+    # a foreign resume must not extend the chain
+    assert M.link_rotation(store,second,{'session_id':'other-1'},now[0]) is False
+    assert M.link_rotation(store,second|{'warm_resume_job':None},{'session_id':sid},now[0]) is False
+
+
+def test_warm_switch_rejected_when_the_resume_is_not_ours():
+    store,w,saver,calls,now,tick,run,job,second,job2=second_turn()
+    sid=second['session_id']
+    second=second|{'warm_resume_job':'warm-x'}
+    store.put('job','warm-x',{'id':'warm-x','tool':'session_op','state':'succeeded','worker_id':w['id'],
+                             'require_worker':'w9','input':{'op':'resume','session_id':sid}})
+    assert M.link_rotation(store,second,{'session_id':sid},now[0]) is False        # another worker's resume: no link
