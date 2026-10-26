@@ -1176,3 +1176,17 @@ def test_fight_stamps_phase_and_combat_state_for_the_round_map():
     run(bot, m, now, 0.0, n=3)
     assert bot.stats.get("phase") == "fight" and "slot" in str(bot.stats.get("combat"))
     assert bot.stats.get("fire_gate") in ("on him", "off target: hold", "aim height: hold", "turning: hold")
+
+
+def test_run_forwards_the_round_loadouts_weapon_and_chance():
+    # 2026-10-26: "no handcannon in their inventory" - run() never passed ROUND_OP's weapon to random_loadout
+    from unittest.mock import MagicMock
+    from gbox import re_mods_tool as RM
+    seen = {}
+    orig = RM.random_loadout
+    RM.random_loadout = lambda ad, g, *a, **kw: seen.update(kw) or {"verified": True}
+    try:
+        RM.run(None, "random_loadout", g=MagicMock(), **B.ROUND_OP[1])
+    finally:
+        RM.random_loadout = orig
+    assert seen.get("weapon") == "handcannon" and seen.get("weapon_chance") == 0.5

@@ -169,3 +169,17 @@ def test_lost_escape_route_keeps_obligation_without_inventing_floor(tmp_path):
     act = bot._mine_retreat(p, {'nav':mesh,'player':p}, 10.)
     assert act == {'hold':set()} and bot.stats['mine_retreats_blocked'] == 1
     assert bot.mines.escape is escape and 'blocked' in bot.stats['mine_retreat_status']
+
+
+def test_a_majini_fought_in_place_without_a_shot_is_left_for_the_route(tmp_path):
+    # round map 2026-10-26 (Prison): 34 s standing in break_for_time, "no line: hold fire" at one Majini
+    bot = R.Bot(world(),learn_dir=tmp_path,clock=lambda:10.)
+    bot.stats['shots'] = 5
+    p = {'pos':(100.,0.,0.),'rot':0.}
+    foe = {'ptr':0x30800000,'pos':(900.,0.,0.),'hp':800}
+    assert not any(bot._combat_stalled(p, foe, 10. + i * .1) for i in range(30))   # 3 s: not yet
+    bot.stats['shots'] = 6                                                   # a shot left the gun: a fresh start
+    assert not any(bot._combat_stalled(p, foe, 14. + i * .1) for i in range(39))   # 3.9 s, 39 ticks
+    assert bot._combat_stalled(p, foe, 18.1)                                 # 4 s over 40 ticks, standing: left alone
+    assert bot._stalled_until[0x30800000] > 18.1 and bot.combat.blocked_until[0x30800000] > 18.1 and bot.stats['combat_stalls_broken'] == 1
+    assert not bot._combat_stalled({'pos':(400.,0.,0.),'rot':0.}, foe, 19.)   # moved: a fresh start
