@@ -169,7 +169,7 @@ class CheckpointRing:
 
     def __init__(self, adapter, directory: Path, interval_s: float = 2.0, depth: int = 60, max_mb: int = 2048,
                  content=None, settle_s: float = 4.0, load_settle_s: float = 0.75, clock=time.monotonic, sleep=time.sleep,
-                 max_duty: float = 0.05, timer=time.perf_counter):
+                 max_duty: float = 0.05, timer=time.perf_counter, two_state: bool = False):
         self.adapter, self.dir = adapter, Path(directory)
         self.interval, self.depth = max(0.25, float(interval_s)), max(1, int(depth))
         # Frame-rate budget (#1489): a save state stalls the emulator while it serializes (Flycast: ~27 MB). The ring
@@ -177,6 +177,7 @@ class CheckpointRing:
         self.max_duty = max(0.0, float(max_duty or 0.0))
         self.timer, self.last_cost = timer, None
         self.max_bytes = max(0, int(max_mb)) * 2**20
+        self.two_state = bool(two_state)          # the operator's cap: one session keeps at most two states
         self.kind = getattr(adapter, "checkpoint_state", None)
         self.content = Path(content) if content else None
         self.settle_s, self.load_settle_s = settle_s, load_settle_s
@@ -377,6 +378,14 @@ class CheckpointRing:
         return sum(e["bytes"] for e in self.entries)
 
     def _trim(self) -> None:
+        # The operator's cap (#2846): one game session needs a maximum of two save states — the oldest checkpoint
+        # (the moment you came from) and the newest. Every checkpoint replaces the newest, the oldest is kept.
+        if self.two_state:
+            while len(self.entries) > 2:
+                self._drop(self.entries.pop(1))
+                if self.cursor is not None:
+                    self.cursor = max(0, self.cursor - 1)
+            return
         while len(self.entries) > self.depth or (self.max_bytes and self.size() > self.max_bytes and len(self.entries) > 1):
             self._drop(self.entries.pop(0))
             if self.cursor is not None:
@@ -440,6 +449,7 @@ class CheckpointRing:
         span = round(self.entries[-1]["ts"] - self.entries[0]["ts"], 1) if len(self.entries) > 1 else 0.0
         return {"entries": len(self.entries), "depth": self.depth, "interval_s": self.interval, "span_s": span,
                 "effective_interval_s": round(self.paced_interval(), 2), "max_duty": self.max_duty,
+                "two_state": self.two_state,
                 "last_save_s": None if self.last_cost is None else round(self.last_cost, 3),
                 "bytes": self.size(), "taken": self.taken, "cursor": self.cursor, "error": self.error}
 
@@ -674,6 +684,7 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
     max_duty = getattr(rc, "max_duty", 0.05)
     native = bool(getattr(adapter, "rewind_on", False))
     ring = reason = None
+    two_state = bool(getattr(rc, "two_state", False))
     if native:
         mode = "native"
     else:
@@ -687,7 +698,7 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
             sweep(config)
             interval = max(float(interval), float(getattr(adapter, "checkpoint_min_interval_s", 0) or 0))
             ring = CheckpointRing(adapter, ring_dir(config, sid), interval, depth, max_mb,
-                                  content=(game or {}).get("_rom_path"), max_duty=max_duty)
+                                  content=(game or {}).get("_rom_path"), max_duty=max_duty, two_state=two_state)
     # The pad reaches RetroArch's own hotkeys on Windows (XInput binds in the session cfg) and, streamed, where the
     # game leaves the triggers free (trigger_hotkeys); elsewhere the worker drives the native rewind and the ramp itself.
     # One owner for every chord, including the D-pad aliases. RetroArch's own trigger hotkeys are disabled in the

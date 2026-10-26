@@ -132,6 +132,34 @@ def test_ring_disk_cap_drops_the_oldest(tmp_path):
     assert [e["seq"] for e in ring.entries] == [3] and ring.size() <= 1 * 2**20
 
 
+def test_two_state_ring_keeps_only_the_oldest_and_the_newest(tmp_path):
+    # The operator's cap (#2846): one game session needs at most two save states — the moment you came from and
+    # the newest. Every checkpoint replaces the newest; the oldest (the anchor) survives the whole session.
+    clock, ad = Clock(), PathEmulator(tmp_path / "states")
+    ring = ring_for(tmp_path, ad, clock, interval_s=1.0, two_state=True)
+    for ad.frame in (10, 20, 30, 40, 50):
+        ring.maybe_take(clock.tick(1.0))
+    assert [e["seq"] for e in ring.entries] == [1, 5]
+    assert Path(ring.entries[0]["file"]).read_bytes() == b"frame=10"
+    assert Path(ring.entries[1]["file"]).read_bytes() == b"frame=50"
+    assert sorted(p.name for p in (tmp_path / "ring").glob("ckpt-*.bin")) == ["ckpt-000001.bin", "ckpt-000005.bin"]
+    assert ring.status()["two_state"] is True
+    # Rewinding walks newest -> oldest and lands on the anchor; release keeps only the anchor.
+    ad.frame = 55
+    assert ring.step_back()["seq"] == 5 and ad.frame == 50
+    assert ring.step_back()["seq"] == 1 and ad.frame == 10
+    assert ring.step_back() is None and ad.frame == 10
+    assert ring.release() == 1 and [e["seq"] for e in ring.entries] == [1]
+
+
+def test_two_state_off_by_default(tmp_path):
+    clock, ad = Clock(), PathEmulator(tmp_path / "states")
+    ring = ring_for(tmp_path, ad, clock, interval_s=1.0)
+    for ad.frame in range(1, 5):
+        ring.maybe_take(clock.tick(1.0))
+    assert [e["seq"] for e in ring.entries] == [1, 2, 3, 4] and ring.status()["two_state"] is False
+
+
 def test_step_back_walks_newest_to_oldest_and_release_drops_the_undone_future(tmp_path):
     clock, ad = Clock(), PathEmulator(tmp_path / "states")
     ring = ring_for(tmp_path, ad, clock, interval_s=1.0)
@@ -429,6 +457,7 @@ def test_xinput_reader_is_quiet_without_a_pad():
 
 def test_session_op_rewinds_through_the_ring_and_guards_saves(monkeypatch, tmp_path):
     cfg = Config(data_dir=tmp_path)
+    cfg.rewind.two_state = False          # this test walks a multi-step ring; the two-state cap is tested on its own
     clock, ad = Clock(), PathEmulator(tmp_path / "states")
     ad.stop_game, ad.proc = lambda: {}, None
     sid = "w-ring"
