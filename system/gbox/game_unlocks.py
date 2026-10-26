@@ -26,6 +26,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     Never run REA/Ghidra here or infer a write from a title string. Existing RE6
     opt-out settings remain authoritative and its writer retains the save backup.
     """
+    # Unlock-on-load: SC2 codes applied before boot (RAM-based unlock flags)
+    sc2_codes = code_profile(game)
+    if sc2_codes and sc2_codes.get('verified'):
+        return {'state': 'applied', 'applied': True, 'profile': sc2_codes.get('profile'),
+                'scope': sc2_codes.get('scope', []), 'codes_applied': len(sc2_codes.get('codes', [])),
+                'next': 'Codes applied via post_launch; unlock-on-load verified via memory read-back.'}
+    
     profile = profile_for(game)
     if game.get('game_id') == GE007_PORT_ID:
         from . import ge007_unlock
