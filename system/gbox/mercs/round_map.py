@@ -25,7 +25,11 @@ STILL_R, STILL_S = 120.0, 3.0   # within this radius for this long: standing sti
                                 # executed for these areas so that we can make corrections to the logic")
 MINE_R = 250.0            # a ground mine this near a standstill: he stood on / by a bomb
 STATE_KEYS = ("phase", "fire_gate", "weapon_policy", "mine_status", "mine_retreat_status", "combat", "weapon",
-              "bonus_target", "route", "stuck_reason")
+              "bonus_target", "route", "stuck_reason", "shots", "hits", "misses", "kills", "last_shot", "target_evidence",
+              "aim_feedback", "qte_presses", "hits_taken", "combo")
+SHOTS_KEPT = 20           # the last shots of a round, each with the aim and gate the bot had when it fired (operator
+                          # 2026-10-26: "see ... the aiming of the last 20 shots in a run ... how the aimbot will aim at a
+                          # person then aim away and begin firing which misses")
 
 
 class RoundTrace:
@@ -78,6 +82,25 @@ class RoundTrace:
             i = j + 1
         return out
 
+    def shots(self) -> list[dict]:
+        """The last SHOTS_KEPT shots: each sample where the shot count rose, with the aim (combat line: target, yaw /
+        pitch error), the fire gate, what the last shot did (hit / miss and why) and the 0.5 s of aim before it."""
+        out, prev = [], None
+        for k, st in enumerate(self.states):
+            try:
+                n = int(float(st.get("shots", "")))
+            except ValueError:
+                continue
+            if prev is not None and n > prev:
+                lead = [self.states[j].get("combat") for j in range(max(0, k - 2), k)]
+                out.append({"t": round(self.samples[k][0] - (self.started or 0), 2), "shots": n,
+                            "at": [round(self.samples[k][1]), round(self.samples[k][2])],
+                            "combat": st.get("combat"), "fire_gate": st.get("fire_gate"), "last_shot": st.get("last_shot"),
+                            "hits": st.get("hits"), "misses": st.get("misses"), "weapon": st.get("weapon"),
+                            "aim_before": lead})
+            prev = n
+        return out[-SHOTS_KEPT:]
+
     def time_by_phase(self) -> dict:
         out: dict[str, float] = {}
         for k, (a, b) in enumerate(zip(self.samples, self.samples[1:])):
@@ -123,7 +146,7 @@ class RoundTrace:
                 "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
                 "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
                 "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
-                "code": self.code}
+                "last_shots": self.shots(), "code": self.code}
 
     def finish(self, walked=(), blocked=()) -> dict | None:
         """Write the round's JSON + SVG (when it has an out_dir and enough samples); the summary either way."""

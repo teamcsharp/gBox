@@ -314,7 +314,6 @@ class RandomSelections:
     """Per-run cursor targets: random each round, or the requested next round (REQUESTS[key]). No blind counting."""
     BOOT_KEY = 'start'
     wandered = staticmethod(wandered)
-    step = staticmethod(step)
 
     def __init__(self,rng=None,key=None):
         import random
@@ -323,6 +322,7 @@ class RandomSelections:
         self.player=self.stage=None
         self.previous_player=self.previous_stage=None
         self.where=None
+        self.no_selected=False                   # "You Are Dead": No already highlighted (step pressed right)
 
     def screen(self,m,merc=None):
         out=screen(m,merc=merc)
@@ -346,8 +346,22 @@ class RandomSelections:
             if self.player is not None:self.previous_player=self.player
             if self.stage is not None:self.previous_stage=self.stage
             self.player=self.stage=None
+        if where!='dead':
+            self.no_selected=False
         self.where=where
         return out
+
+    def step(self,scr):
+        """The module's step, except "You Are Dead": No (right, then A) instead of Continue Yes - Yes replays the stage
+        with the same character, so every death kept him; No goes back through Select Player, where a different one is
+        drawn (operator 2026-10-26: "why dont the character change between rounds? Stop picking the same character").
+        A round someone asked for (REQUESTS) keeps Continue Yes."""
+        if scr.get('where')=='dead' and not (self.key is not None and REQUESTS.get(self.key)):
+            if not self.no_selected:
+                self.no_selected=True
+                return DPAD['right']
+            return 'a'
+        return step(scr)
 
 
 def Navigator(send, sleep=time.sleep, clock=time.time, stats: dict | None = None):

@@ -1141,3 +1141,22 @@ def test_setup_only_runs_the_unlock_bits_at_the_title():
     ad = _ad_with_memory(calls, mem)
     B.setup(ad)
     assert not any(a in dict(RM.RE4(ad).V.AIM_TURN) for a, _ in calls), "aim speed must not be applied at the title"
+
+
+def test_you_are_dead_answers_no_so_the_next_round_draws_a_new_character():
+    # operator 2026-10-26: "why dont the character change between rounds? Stop picking the same character"
+    from gbox import re4_menus as Mn
+    sel = Mn.RandomSelections(key="test-dead-no")
+    Mn.REQUESTS.pop("test-dead-no", None)
+    dead = {"where": "dead"}
+    assert sel.step(dead) == Mn.DPAD["right"] and sel.step(dead) == "a"   # No, not Continue Yes
+    sel.screen.__func__                                                       # (bound API unchanged)
+    sel.no_selected = False
+    Mn.REQUESTS["test-dead-no"] = {"player": 1, "stage": None}               # an asked-for round keeps Continue Yes
+    assert sel.step(dead) == "a"
+    Mn.REQUESTS.pop("test-dead-no", None)
+    assert sel.step({"where": "results"}) == "a"
+
+
+def test_the_trigger_taps_about_ten_times_a_second():
+    assert B.PRESS_HOLD <= 0.05 and B.PRESS_GAP <= 0.1
