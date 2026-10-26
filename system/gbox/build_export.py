@@ -39,6 +39,7 @@ from pathlib import Path
 
 FORMATS = ("same", "plain", "patch", "zip")
 MARKERS = (".gbox-mod.json", ".gbox-staged-of")
+GBOX_DIRS = (".gbox-backup", ".gbox-pending")   # a Switch overlay's edit history (gbox.switch_mods): not game files
 ROOT_EXTRAS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".json", ".glb", ".gltf")   # previews / reports gBox writes
 FOLDER_IMAGES = (".xex", ".dol", ".self", ".elf")                                    # a launch file inside a folder game
 CD_PLATFORMS = {"psx", "ps1", "saturn", "segacd", "megacd", "pcecd", "dreamcast", "dc", "neocd", "3do", "pcfx", "cdi",
@@ -107,7 +108,7 @@ def game_files(folder: Path, meta: dict) -> list[str]:
         if not p.is_file() or p.name in MARKERS or p.name.endswith(".part"):
             continue
         rel = p.relative_to(folder)
-        if len(rel.parts) == 1 and p.suffix.lower() in ROOT_EXTRAS:
+        if (len(rel.parts) == 1 and p.suffix.lower() in ROOT_EXTRAS) or rel.parts[0] in GBOX_DIRS:
             continue
         out.append(rel.as_posix())
     return out

@@ -47,8 +47,12 @@ CONSOLE_KEEP = 200
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
-# the running copy first there (launch_game saves it before closing, and refuses if it can't)
-RELAUNCH_BESIDE_UNSAFE = {"mgba"}
+# the running copy first there (launch_game saves it before closing, and refuses if it can't). Eden / Yuzu: one emulator
+# folder per PC (qt-config.ini with the LayeredFS selection, the NAND saves), and no save state to keep anyway.
+RELAUNCH_BESIDE_UNSAFE = {"mgba", "eden", "yuzu"}
+# Switch emulators: no save states; a build is a LayeredFS overlay read when the title boots (gbox.switch_mods). A swap
+# restarts the title: Eden in the same session (switch_mods op=apply_live), Yuzu by a relaunch without a moment.
+SWITCH_ADAPTERS = {"eden", "yuzu"}
 # Cloud memory cards (gbox/memory_card_sessions.py) are leased to ONE session: a copy started beside the running one
 # asks for the same lease and is refused ("This card is already inserted in another session", #3052, RE4 Reset on
 # i9-NUC). Those games close the running copy first (after its moment is saved), which syncs and releases the card.
@@ -984,6 +988,24 @@ def create_app(config: Config) -> FastAPI:
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w, tw = sid.split("-")[0], _swap_target(sid.split("-")[0], to)
         running, art, notes, old_luma = sess.get("state") == "running", None, [], None
+        if sess.get("adapter") in SWITCH_ADAPTERS and str(game.get("platform") or "") == "switch":
+            from . import switch_mods                # an older full-copy build boots its own image: a relaunch below
+            overlay = not mod or switch_mods.overlay_of(config, game["game_id"], mod.split(BM.STAGED_SEP)[0])
+            if sess.get("adapter") == "eden" and running and tw["id"] == _wid(old_w) and overlay:
+                say(4, f"Restarting {game['title']} " + (f"with {mod}" if mod else "(original)") +
+                    " in this session: Eden loads a LayeredFS build only when the title boots")
+                r = _run_job("switch_mods", {"op": "apply_live", "session_id": sid, "game_id": game["game_id"],
+                                             "build": mod}, actor, worker=tw["id"], wait=900, should_stop=stop,
+                             progress=lambda pct, msg: say(min(95, 5 + pct * .9), msg), origin=origin,
+                             queue_wait=SWAP_LAUNCH_QUEUE_S)
+                r = (r or {}).get("result") or {}
+                store.audit(actor, "session.swap", sid, {"to": tw["name"], "mod": mod, "new": sid, "in_place": True})
+                return {"session_id": sid, "from": sid, "worker": tw["name"], "mod": mod,
+                        "launch_mod": r.get("launch_mod") or mod, "state_loaded": False, "load_requested": False,
+                        "load_verified": None, "cancel_deferred": False, "in_place": True,
+                        "notes": list(r.get("notes") or []) + ["Same session: the title restarted with the build."]}
+            keep_state, keep_old = False, False     # Yuzu / another PC: the build boots fresh; the running copy closes first
+            notes.append("Switch emulators keep no save states: the build starts from boot; the game's own saves stay.")
         exclusive = _exclusive_rpcs3_restart(sess, old_w, tw)
         stopped_first = False
         launch_mod = mod

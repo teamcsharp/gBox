@@ -155,12 +155,18 @@ def gcz_to_iso(src: Path, dst: Path, progress=None):
         out.truncate(dsize)
 
 
+SWITCH_CONTAINERS = (".nsp", ".xci", ".nsz", ".xcz")
+
+
 def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress=None) -> dict:
     """Single-image games: copy the image (GCZ -> ISO) and apply changes. Keys: "@image" = byte patches on the image;
     a GameCube disc path (e.g. "PSO/ItemPMT.prs") = replace (in its slot when it fits, else moved after the last
     file; the FST entry gets the new offset/size)
-    or patch inside that file."""
+    or patch inside that file. Never a Switch container: those builds are LayeredFS overlays (gbox.switch_mods)."""
     rom = Path(rom)
+    if rom.suffix.lower() in SWITCH_CONTAINERS:
+        raise ValueError(f"{rom.name}: Switch builds are LayeredFS overlays of the base file (gbox.switch_mods: only "
+                         "the changed RomFS files); a copy of the whole container is never made")
     out_dir = mod_dir(cfg, game_id, name)
     from . import storage_policy
     storage_policy.require_off_system(cfg, out_dir, f"build {name}")
@@ -220,6 +226,8 @@ def launch_path(cfg, game_id: str, rom: Path, name: str) -> Path:
     if meta.get("launchable") is False:                # universal-modder staged files (um_mod): an overlay, not a game copy
         raise ValueError(f"mod {name!r} is a staged file set ({meta.get('kind', 'files')}), not a launchable copy of the "
                          "game: install its files with the game's mod loader (see its README)")
+    if isinstance(meta.get("layeredfs"), dict):        # a Switch overlay: the base file boots, the emulator layers the
+        return Path(rom)                               # build's folder over it (gbox.switch_mods.prepare_launch)
     if meta.get("image"):
         return _file_path(out, meta["image"])
     return out / Path(rom).relative_to(game_root(rom))
@@ -240,6 +248,7 @@ def _files(d: Path, hashes: bool = False) -> list[dict]:
             saved = {}
     for p in sorted(d.rglob('*')):
         if not p.is_file() or p.name.endswith('.part'): continue
+        if p.relative_to(d).parts[0] in LOCAL_ONLY: continue   # node-local (a Switch overlay's pending edits)
         stat = p.stat(); item = {'path': p.relative_to(d).as_posix(), 'size': stat.st_size}
         if hashes:
             key = (str(p.resolve()), stat.st_mtime_ns, stat.st_size)
@@ -264,6 +273,8 @@ def _files(d: Path, hashes: bool = False) -> list[dict]:
 
 STAGED_SEP = "~"                     # <mod>~<build>: a rebuilt mod staged beside a copy the running game holds open
 STAGED_MARK = ".gbox-staged-of"     # inside such a folder: the collection name it mirrors (never pushed back or listed)
+LOCAL_ONLY = (".gbox-pending",)      # folders of a build that never enter its manifest: a Switch overlay's edits waiting
+                                     # for the title to restart on this node (gbox.switch_mods)
 
 
 # Allow cold storage reads the same per-request timeout as the manifest.
@@ -329,8 +340,8 @@ def _matches(out: Path, files: list[dict]) -> bool:
             return False
         if path.is_file():
             relative = path.relative_to(out).as_posix()
-            if relative == STAGED_MARK or relative.endswith(".part"):
-                continue  # Local provenance/resumable downloads are not game assets.
+            if relative == STAGED_MARK or relative.endswith(".part") or relative.split("/")[0] in LOCAL_ONLY:
+                continue  # Local provenance/resumable downloads/pending overlay edits are not game assets.
             actual.add(relative.casefold())
     if actual != expected:
         return False
@@ -689,13 +700,26 @@ def delete_build(cfg, game_id: str, name: str, in_use=()) -> dict:
         except OSError:
             pass
     _LOCAL_CACHE.clear()                             # the next heartbeat reports the build gone
+    _forget_switch_links(cfg, game_id, removed)
     return {"removed": removed, "errors": errors}
+
+
+def _forget_switch_links(cfg, game_id: str, names) -> None:
+    """A deleted Switch overlay build leaves the emulator's load folder too (its link / copy there); best effort."""
+    if not names:
+        return
+    try:
+        from . import switch_mods
+        switch_mods.forget_build(cfg, game_id, names)
+    except Exception:                                # noqa: BLE001 - a dangling link is ignored by the emulator anyway
+        pass
 
 
 def remove(cfg, game_id: str, name: str) -> bool:
     out = mod_dir(cfg, game_id, name)
     if out.exists():
         shutil.rmtree(out)
+        _forget_switch_links(cfg, game_id, [name])
         return True
     return False
 

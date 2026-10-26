@@ -73,6 +73,8 @@ update `5d50031f5c8057b1` (sha1 of `quickswap-switch:<relative path>`).
 - Pointing the XDG folders at gBox's own runtime folder also keeps Eden's first-start migration dialog away: it offers
   to import yuzu/Citron/Sudachi/Suyu/Ryujinx folders only when it finds them under the same XDG roots.
 - Save states: Eden (yuzu) has none; rewind stays unsupported for Switch.
+- Mods: builds are LayeredFS overlays in `load/<TID>/` selected through `[DisabledAddOns]`, edited in place, applied
+  to a running game by restarting the title in the same session; never a copy of the NSP (docs/switch-mods.md).
 
 ## Live on the Spark with Eden v0.2.1 (2026-10-26)
 

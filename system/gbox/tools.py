@@ -921,6 +921,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                         ctx.progress(26, "N64 header checksum left unchanged: " + fin["reason"])
             ctx.progress(28, f"Using local build: {launch_mod}")
             diag["staged_mod"] = launch_mod
+        if g.platform == "switch":
+            from . import switch_mods          # LayeredFS: a build is an overlay of the base NSP, never a copy of it
+            ad.overlay_build = switch_mods.overlay_of(ctx.config, g.game_id, launch_mod) if inp.mod else None
+            if ad.overlay_build:
+                diag["overlay"] = ad.overlay_build
+                ctx.progress(29, f"{launch_mod}: a LayeredFS overlay of {src.name} (only its changed files)")
         lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
@@ -1622,7 +1628,12 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
         from .mercs import warm_boot
         warm_boot.cancel(ad)
-        return ad.reset() or {"reset": True}
+        before = getattr(getattr(ad, "proc", None), "pid", None)
+        out = ad.reset() or {"reset": True}
+        after = getattr(getattr(ad, "proc", None), "pid", None)
+        if after and after != before and ctx is not None:   # restarted in place (Eden): the pump re-docks the new pid
+            track_emulator(ctx.config, sid, after)
+        return out
     raise ValueError(f"rpc op {op} not allowed (read_memory, read_ranges, read_rom, info, state, reset, pause, resume, debug_*)")
 
 
@@ -1718,6 +1729,11 @@ class SessionOut(BaseModel):
     ended: bool = False
 
 def _session_accept(store, out: SessionOut, actor: str):
+    detail = out.result.get("session_detail") if isinstance(out.result, dict) else None
+    if isinstance(detail, dict) and detail and not out.ended:
+        with store.lock:                               # e.g. Eden restarted in place: its new pid (re-dock, audio)
+            if (s := store.get("session", out.session_id)) and s.get("state") != "ended":
+                store.put("session", out.session_id, s | {"detail": (s.get("detail") or {}) | detail})
     if out.ended and (s := store.get("session", out.session_id)):
         from .session_exit import intentional
         m = out.result.get("moment") if isinstance(out.result.get("moment"), dict) else {}
@@ -1764,7 +1780,13 @@ def session_op(inp: SessionIn, ctx: Ctx):
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset of its own (POST /api/sessions/{{sid}}/reset "
                               "relaunches the same game and mod on this PC instead, the old copy closing only once it runs)")
-        return {"result": ad.reset() or {"reset": True}, "session_id": inp.session_id, "ended": False}
+        before = getattr(getattr(ad, "proc", None), "pid", None)
+        res = ad.reset() or {"reset": True}
+        after = getattr(getattr(ad, "proc", None), "pid", None)
+        if after and after != before:                  # restarted in place (Eden): a new emulator process, same session
+            track_emulator(ctx.config, inp.session_id, after)
+            res = res | {"session_detail": {"pid": after}}
+        return {"result": res, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
     if inp.op == "stop_game":
@@ -4806,8 +4828,12 @@ def file_mod(inp: FileModIn, ctx: Ctx):
                 r.raise_for_status()
                 ch = {"bytes": r.content}
             changes[rel] = ch
-        build = filemods.build if filemods.is_folder_game(rom) else filemods.build_image   # folder game | ROM / disc image
-        res = build(ctx.config, g.game_id, rom, inp.name, changes, ctx.progress)
+        if g.platform == "switch":                     # LayeredFS: only the changed files, in place (never the NSP)
+            from . import switch_mods
+            res = switch_mods.file_mod_build(ctx, g.model_dump(), rom, inp.name, changes)
+        else:
+            build = filemods.build if filemods.is_folder_game(rom) else filemods.build_image   # folder game | ROM / disc image
+            res = build(ctx.config, g.game_id, rom, inp.name, changes, ctx.progress)
         from . import build_record                     # the Builds view: which job built it and the exact call
         build_record.stamp_marker(filemods.mod_dir(ctx.config, g.game_id, inp.name),
                                   build_call=build_record.call_of("file_mod", inp), **build_record.from_ctx(ctx))
@@ -5831,6 +5857,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
                               "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
+                              "switch_mods",   # switch_mods: Switch builds as LayeredFS overlays (in place, no NSP copies)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
     import subprocess
