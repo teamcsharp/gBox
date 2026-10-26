@@ -16,6 +16,8 @@ import mcp_types as T
 from mcp.server.lowlevel import Server
 
 from . import hermes_merges, hermes_tasks
+from . import mcp_bot_controls as BC
+from .mercs import directives as bot_directives
 
 READY_LIMIT = 25        # ready_to_verify entries list_requests returns (#1308)
 S, I, B = {"type": "string"}, {"type": "integer"}, {"type": "boolean"}
@@ -198,6 +200,57 @@ CONVENIENCE = {
     "get_session_observers": ("Read a session's passive gameplay observations, visible actors, changes, native model collection and repair request IDs, plus goals: what each session agent is trying to do, the evidence it still needs, how the operator can help, what to do if they cannot (if_unavailable) and what blocks it; cannot_help says when a character swap/pick test cannot run because none of the game's characters are collected yet. Hypotheses are not verified game mechanics.", obj({"session_id": S}, ["session_id"])),
     "list_sessions": ("Game sessions (session_id, title, adapter, state, last_frame_age). Live ones only unless include_ended.",
                       obj({"include_ended": B})),
+    # The Mercenaries autobot and the RAM mods as first-class tools (operator 2026-10-26, request #3889)
+    "bot_sessions": ("The running game sessions, each with its PC (host) and the Mercenaries autobot's live summary from the autoplay "
+                     "telemetry (running, phase, screen, rounds, kills, directive and directive_status, mines cadence, team role) and "
+                     "which mod tool the game takes (mod_tool: re5_mods for Resident Evil 5, re_mods for Resident Evil 4). Use it to "
+                     "find the session_id for bot_directive, game_mod and bot_strategy. Read only.", obj({})),
+    "bot_directive": ("An instant command for the session's Mercenaries autobot (RE4 and RE5; acted on within a second; every normal "
+                      "safeguard stays in force, the command only changes what the bot decides). command: fight (standing 15 s: fight the "
+                      "foes in sight instead of standing there), next_area (one-shot: leave this goal for the next time bonus / area), "
+                      "explore (15 s: reset the route and cover more of the level), hunt (20 s: seek, find and dispatch the enemies), "
+                      "score (20 s: build the combo), repetitive (8 s: drop the repeated action, back off, go forward), mine (RE5 one-shot: "
+                      "plant one proximity bomb at the next safe spot, then leave it; needs game_mod op=mines on), mine_trail (RE5 standing "
+                      "45 s: drop a mine, move at least 6 m on, repeat while leaving the area; the mine controller still decides every "
+                      "placement), missing (one-shot: adjust the aim for this weapon). RE4 has no mines: mine / mine_trail report that. Or "
+                      "text: free words matched to a command (\"drop landmines while fleeing\" -> mine_trail, \"go to the next time "
+                      "bonus\" -> next_area); unmatched text is an error, nothing is sent. hold_s (0 .. 600) overrides how long a standing "
+                      "mode lasts. Returns the stored directive row; bot_sessions shows directive_status as the bot acts.",
+                      obj({"session_id": S, "command": {"type": "string", "enum": list(bot_directives.COMMANDS)}, "text": S,
+                           "hold_s": {"type": "number", "minimum": 0, "maximum": 600}}, ["session_id"])),
+    "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
+                 "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
+                 "its params, allowed values and when it takes effect. params holds that tool's own fields only (RE5: multiplier, on, "
+                 "mode, character, stage, weapon, only; RE4: item, count, target, on, seconds, threshold, character, items, fire_rate, "
+                 "damage, reset, multiplier, melee_only, kind, force, direction, speed, seed, guns); any other field is rejected rather "
+                 "than silently dropped. Examples: RE5 weapon_override {weapon: 0x1A, only: true}; RE5 fire_rate {multiplier: 80}; RE5 "
+                 "mines {on: true, multiplier: 30}; RE4 random_loadout {character: \"all\", damage: 99.9}; RE4 spawn_multiplier {count: 3}. "
+                 "Returns the job (output.result carries verified and the tool's status); a job still running after 25 s comes back "
+                 "with its id for get_job. Writes to the operator's live game: use it for what the operator asked.",
+                 obj({"session_id": S, "op": S, "params": {"type": "object"}, "tool": {"type": "string", "enum": list(BC.MOD_TOOLS)}},
+                     ["session_id", "op"])),
+    "game_mod_ops": ("The ops game_mod accepts for the session's game (or for tool=re5_mods | re_mods without a session): each op's "
+                     "params with allowed values, its effect, when it takes effect (now / next round / next menu) and whether the tool "
+                     "retains it as the operator's setting for the session.",
+                     obj({"session_id": S, "tool": {"type": "string", "enum": list(BC.MOD_TOOLS)}})),
+    "bot_strategy": ("Change what the bot plays with for the rest of the session. settings.mods: [{op, ...params}] of the ops the "
+                     "title's tool retains as the operator's setting, which the bot's round hooks then apply instead of their package "
+                     "defaults (RE5: fire_rate, turn_speed, bullet_damage, infinite_ammo, unlimited_health, kill_time, infinite_spray, "
+                     "instant_qte, mines, rotten_egg_only, weapon_override; RE4: unlimited_health, infinite_ammo, combo_freeze, "
+                     "merc_timer_freeze, grenade_safe, merc_time_bonus, combo_time, aim_turn_speed, spawn_multiplier, random_loadout, "
+                     "merc_loadout, mercenaries_unlock; an RE4 operator loadout also makes the bot skip its own per-round random draw). "
+                     "settings.mercmode: {enabled, titles [re4|re5|re6], rounds_per_title 1..20, presentation_priority, keep_warm 0..2, "
+                     "queue, preferred_editions} for the session's PC (POST /api/mercmode; host defaults to that PC). settings.team "
+                     "(RE5 / RE6): {role solo_p1|teammate_p2|observe_human, training_profile assisted|unmodified_evaluation, "
+                     "auto_reduce_mods, selected_route_id} (mercs_team configure). With empty settings it returns the options, the PC's "
+                     "current MercMode settings and what is NOT settable at runtime (the RE5 Policy constants such as "
+                     "critical_radius_cm / boss_delay_combo, the RE4 package radii, the profile's playing_ops).",
+                     obj({"session_id": S, "settings": {"type": "object"}}, ["session_id"])),
+    "spawn_enemies": ("NOT available yet: spawning chosen enemies (or waves) at a stage's spawn points has no verified spawn address in "
+                      "Resident Evil 4 or 5; RE4's spawn_multiplier only clones the enemies the game spawns itself. The tool sends no "
+                      "input and returns {supported: false, reason, ticket} where ticket is the number of the open inbox request "
+                      "tracking the work (null when none is filed), so callers can follow it there.",
+                      obj({"session_id": S, "enemy": S, "count": I, "spawn_point": S})),
     "read_memory": ("Read live emulator memory of a running session (hex dump). Native addresses work "
                     "(0x8C000000 Dreamcast, 0x80000000 N64/GameCube).", obj({"session_id": S, "address": ADDR, "length": I},
                                                                              ["session_id", "address"])),
@@ -318,6 +371,20 @@ def build(base_url: str, token: str) -> Server:
 
     async def sessions(include_ended=False):
         return [s for s in await get("/api/sessions") if include_ended or not s.get("ended")]
+
+    async def live_session(sid):
+        """The running session row for sid; a clear error (not a worker rejection minutes later) for anything else."""
+        row = next((s for s in await get("/api/sessions") if s.get("session_id") == sid), None)
+        if row is None:
+            raise ValueError(f"unknown session {sid}; bot_sessions lists the live ones")
+        if row.get("state") != "running":
+            raise ValueError(f"session {sid} is {row.get('state')}, not running; bot_sessions lists the live ones")
+        return row
+
+    async def session_job(sid, tool, inp):
+        """A job on the session's own worker (the id before the dash), waited for like the job_ tools."""
+        body = {"tool": tool, "input": inp, "agent_use": True, "require_worker": sid.split("-")[0]}
+        return await wait_job(await start_background(body), JOB_WAIT_SECONDS)
 
     async def ask(text, session_id="", chat_id="", timeout_s=600):
         cid = chat_id or (await post("/api/chat"))["id"]
@@ -470,6 +537,75 @@ def build(base_url: str, token: str) -> Server:
             return await wait_job(job, JOB_WAIT_SECONDS)
         if name == "list_sessions":
             return await sessions(a.get("include_ended", False))
+        if name == "bot_sessions":
+            rows, workers = await sessions(), await get("/api/workers")
+            out = [BC.session_row(s, await get(f"/api/autoplay/telemetry/{s['session_id']}"), workers) for s in rows]
+            return {"sessions": out, "commands": {k: v["label"] for k, v in bot_directives.COMMANDS.items()}}
+        if name == "bot_directive":
+            await live_session(a["session_id"])
+            command = a.get("command")
+            if not command:
+                command = bot_directives.match(a.get("text") or "")
+                if not command:
+                    raise ValueError("no command matched the text, nothing sent; the commands: "
+                                     + "; ".join(f"{k} = {v['label']}" for k, v in bot_directives.COMMANDS.items()))
+            body = {"command": command} | ({"hold_s": a["hold_s"]} if a.get("hold_s") is not None else {})
+            out = await post(f"/api/sessions/{a['session_id']}/directive", body)
+            return out | {"matched_from_text": not a.get("command"),
+                          "note": "the bot reads it within a second; bot_sessions shows directive_status while it acts"}
+        if name == "game_mod":
+            session = await live_session(a["session_id"])
+            tool = BC.mod_tool_for(session, a.get("tool"))
+            inp = BC.mod_input(tool, a["session_id"], a["op"], a.get("params"))
+            return await session_job(a["session_id"], tool, inp) | {"mod_tool": tool, "op": inp["op"]}
+        if name == "game_mod_ops":
+            tool = a.get("tool")
+            if a.get("session_id"):
+                tool = BC.mod_tool_for(await live_session(a["session_id"]), tool)
+            return BC.describe_ops(tool) if tool else {t: BC.describe_ops(t) for t in BC.MOD_TOOLS}
+        if name == "bot_strategy":
+            session = await live_session(a["session_id"])
+            try:
+                tool = BC.mod_tool_for(session)
+            except ValueError:
+                tool = None
+            wid = a["session_id"].split("-")[0]
+            host = next((w.get("name") for w in await get("/api/workers") if w.get("id") == wid), None)
+            settings = a.get("settings") or {}
+            if not settings:
+                hosts = (await get("/api/mercmode")).get("hosts") or []
+                mine = next((h for h in hosts if h.get("name") == host), None)
+                return {"session_id": a["session_id"], "host": host, "mod_tool": tool, "options": BC.strategy_options(tool),
+                        "mercmode_current": (mine or {}).get("settings"), "mercmode_settings_source": (mine or {}).get("settings_source")}
+            applied = []
+            for kind, payload in BC.strategy_plan(tool, session, settings):
+                if kind == "mod":
+                    applied.append({"kind": "mod", "op": payload["op"], "job": await session_job(a["session_id"], tool, payload)})
+                elif kind == "mercmode":
+                    target = payload.pop("host", None) or host
+                    if not target:
+                        raise ValueError("the session's PC is not a registered worker; pass settings.mercmode.host")
+                    status = await post("/api/mercmode", {"host": target} | payload)
+                    mine = next((h for h in status.get("hosts") or [] if h.get("name") == target), None)
+                    applied.append({"kind": "mercmode", "host": target, "desired_settings": (mine or {}).get("desired_settings"),
+                                    "settings": (mine or {}).get("settings"), "settings_source": (mine or {}).get("settings_source")})
+                else:
+                    applied.append({"kind": "team", "job": await session_job(a["session_id"], "mercs_team", payload)})
+            return {"applied": applied, "not_settable": BC.NOT_SETTABLE}
+        if name == "spawn_enemies":
+            tool = None
+            if a.get("session_id"):                     # the ticket for this session's title, when one is filed
+                row = next((s for s in await get("/api/sessions") if s.get("session_id") == a["session_id"]), None)
+                try:
+                    tool = BC.mod_tool_for(row) if row else None
+                except ValueError:
+                    tool = None
+            found = BC.spawn_tickets(await get("/api/requests", status="open,in_progress"), tool)
+            return {"supported": False, "reason": BC.SPAWN_REASON, **found,
+                    "available_instead": {"re_mods": "game_mod op=spawn_multiplier params={count: 2..8}: every enemy the game spawns "
+                                                     "gets clones (not a chosen enemy at a chosen point)",
+                                          "re5_mods": "no spawn write; bot_directive command=hunt sends the bot to the spawn points it knows"},
+                    "requested": {k: a[k] for k in ("session_id", "enemy", "count", "spawn_point") if a.get(k) is not None}}
         if name == "get_session_observers":
             return await get(f"/api/sessions/{a['session_id']}/observers")
         if name == "read_memory":

@@ -1298,6 +1298,7 @@ class MercModeBoundary(BaseModel):
 
 class DirectiveIn(BaseModel):
     command: str
+    hold_s: float | None = None     # how long a standing mode lasts (0 .. directives.MAX_HOLD_S); default: the command's own
 
 
 class MercModePreparation(BaseModel):
@@ -1521,10 +1522,10 @@ def install(app, store, config, auth, submit, workers, archive):
         """An instant command for the session's autobot (the chat's dropdown): the bot reads it within a second."""
         from .mercs import directives
         try:
-            row = directives.post(sid, body.command, source=str(actor))
+            row = directives.post(sid, body.command, source=str(actor), hold_s=body.hold_s)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        store.audit(actor, "autoplay.directive", sid, {"command": body.command})
+        store.audit(actor, "autoplay.directive", sid, {"command": body.command} | ({"hold_s": body.hold_s} if body.hold_s is not None else {}))
         return {"directive": row}
 
     stopped = threading.Event()

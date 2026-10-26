@@ -1439,7 +1439,7 @@ class Bot:
         self.stats["directive_active"] = cmd
         if fresh:
             self.stats["directive_status"] = "acting: " + cmd
-        if cmd == "mine":
+        if cmd in ("mine", "mine_trail"):
             self.stats["directive_status"] = "RE4 Mercenaries has no mines to drop"
             return None
         if cmd == "missing":

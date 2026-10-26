@@ -21,11 +21,18 @@ COMMANDS = {
     'score': {'label': 'Go for score increases (build the combo)', 'hold_s': 20},
     'repetitive': {'label': 'You are doing a repetitive action (stop it, go forward)', 'hold_s': 8},
     'mine': {'label': 'Drop a mine and flee', 'hold_s': 0},
+    # operator 2026-10-26 (#3889): "have the bot drop landmines while fleeing an area" - a standing mode: RE5's mine controller
+    # is made due again each time its last mine is planted and left (6 m on), so he plants, moves on, plants ... (re5_ps3._mine_trail)
+    'mine_trail': {'label': 'Drop mines while leaving the area (plant, move on, repeat)', 'hold_s': 45},
     'missing': {'label': 'You are missing (adjust the aim for this weapon)', 'hold_s': 0},
 }
+MAX_HOLD_S = 600.0                                              # the longest a caller may make a standing mode last
 # typed words -> command (checked in order; the first match wins). Conservative: a plain note stays a plain note.
 PATTERNS = (
     ('repetitive', r'\b(repetitive|repeating|same thing|stuck in a loop|looping|going in circles|stop doing (that|this|it))\b'),
+    ('mine_trail', r'\bmines? trail\b|\b(drop|plant|lay|place|dropping|planting|laying) (land ?)?mines (while|as|when) (you |we )?'
+                   r'(flee\w*|leav\w*|run\w*|retreat\w*|escap\w*|get\w* (away|out))|\bkeep (dropping|planting|laying) (land ?)?mines\b'
+                   r'|\b(land ?)?mines while (fleeing|leaving|running|retreating|escaping)\b'),
     ('mine', r'\b(drop|plant|lay|place) (a |the )?mine\b|\bmine (and|then) (flee|run)\b'),
     ('missing', r'\b(you are |you\'re |keep |keeps )?(missing|miss(es)? (him|them|every|mostly))\b|\b(aim|shooting) (is )?(off|wrong|left|right)\b'),
     ('next_area', r'\b(next|another) (area|time bonus|bonus|hourglass|room|objective|checkpoint)\b|\bgo (to )?(the )?next\b|\bmove on\b'),
@@ -50,14 +57,23 @@ def match(text: str) -> str | None:
     return next((cid for cid, pattern in PATTERNS if re.search(pattern, low)), None)
 
 
-def post(sid: str, command: str, now: float | None = None, source: str = 'operator') -> dict:
+def post(sid: str, command: str, now: float | None = None, source: str = 'operator', hold_s: float | None = None) -> dict:
+    """Store the newest command for the session; hold_s (0 .. MAX_HOLD_S) overrides how long a standing mode lasts."""
     if command not in COMMANDS:
         raise ValueError('Unknown command: ' + ', '.join(COMMANDS))
+    hold = float(COMMANDS[command]['hold_s'])
+    if hold_s is not None:
+        try:
+            hold = float(hold_s)
+        except (TypeError, ValueError):
+            raise ValueError(f'hold_s: seconds 0 .. {MAX_HOLD_S:g}') from None
+        if not 0 <= hold <= MAX_HOLD_S:
+            raise ValueError(f'hold_s: seconds 0 .. {MAX_HOLD_S:g}')
     now = time.time() if now is None else now
     with _LOCK:
         _SEQ[0] += 1
         row = {'seq': _SEQ[0], 'command': command, 'label': COMMANDS[command]['label'], 'at': now,
-               'until': now + COMMANDS[command]['hold_s'], 'source': source}
+               'until': now + hold, 'source': source}
         _LATEST[sid] = row
         for old in sorted(_LATEST, key=lambda k: _LATEST[k]['at'])[:-MAX_SESSIONS]:
             _LATEST.pop(old, None)
