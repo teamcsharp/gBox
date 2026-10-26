@@ -1483,3 +1483,19 @@ def test_a_death_after_a_real_attempt_is_a_round_played():
     body=boundary(run,now[0],screen='dead',hp=0,tally_ready=False,timer=40)|{'round_id':'e'*32}
     assert saver.round_boundary(body,job,now[0])['rotate_requested'] is True
     assert store.get(S.STATE,w['name'])['mercmode_rounds']==1
+
+
+def test_inventory_walks_each_worker_alias_chain_once_however_many_sessions():
+    # 2026-10-26: /api/mercmode took 20-40 s on the loaded Spark - the alias chain was walked per session
+    store,w,saver,calls,now,tick=rig()
+    for k in range(300):
+        store.put('session',f'old{k%3}-s{k}',{'session_id':f'old{k%3}-s{k}','game_id':RE5,'state':'ended'})
+    reads=[]
+    real_get=store.get
+    def counting(kind,key):
+        if kind=='worker_alias':
+            reads.append(key)
+        return real_get(kind,key)
+    store.get=counting
+    M.inventory(store,w)
+    assert len(reads)<=3*8                              # three old worker ids, each walked at most once
