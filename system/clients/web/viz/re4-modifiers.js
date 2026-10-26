@@ -68,6 +68,40 @@
     const locked = state.busy || state.pending || state.stale;
     return ACTIONS.map(act => { const reason = state.unsupported?.[act.op] || ""; return { ...act, reason, disabled: !!(locked || reason) }; });
   }
+  // What this game keeps across reloads (operator 2026-10-26: "retain those settings across reloads"): every confirmed
+  // change here is saved per game on the control plane (gbox/game_prefs.py) and put back on new sessions; the bots'
+  // packages then keep it instead of their defaults. The panel shows the saved value beside the live one.
+  function savedText(op, kept) {
+    if (!kept || typeof kept !== "object") return "";
+    if (op === "loadout") return kept.mode === "random" ? "Random weapon (99.9× damage)" : "The game's own weapons";
+    if (op === "mercenaries_unlock") return "Mercenaries unlocked";
+    const def = DEFINITIONS.find(row => row.op === op), label = def?.label || op;
+    if (def?.kind === "toggle") return `${label} ${kept.on ? "on" : "off"}`;
+    if (def?.kind === "count") return kept.on && kept.count > 1 ? `${label} ×${kept.count}` : `${label}: normal`;
+    return kept.on ? `${label} ×${kept.multiplier}` : `${label}: the game's own`;
+  }
+  function savedDiffers(def, kept, state) {
+    if (!kept) return false;
+    if (def.kind === "toggle") { const live = value(state.status, def); return live !== null && live !== !!kept.on; }
+    const live = amount(state, def), want = def.kind === "count" ? (kept.on ? kept.count : 1) : (kept.on ? kept.multiplier : 1);
+    return live !== null && typeof want === "number" && Math.abs(live - want) > 0.011;
+  }
+  function savedState(entry) {
+    return entry?.state === "failed" ? `not on this session yet: ${entry.reason || "retrying"}`
+      : entry?.state === "applied" ? "applied to this session" : "being applied to this session";
+  }
+  function savedLine(state) {
+    const saved = state.saved;
+    if (!saved) return "";
+    const names = Object.keys(saved.settings || {});
+    if (!names.length) return "Changes confirmed here are kept for this game: they come back after reloads, relaunches and restarts.";
+    const failed = names.filter(op => saved.applied?.[op]?.state === "failed");
+    const pending = names.filter(op => saved.applied?.[op]?.state !== "applied");
+    const tail = saved.receives?.re_mods === false ? " Agent test sessions and paused games keep their own setup."
+      : failed.length ? ` Not on this session yet: ${failed.map(op => savedText(op, saved.settings[op])).join(", ")} (${saved.applied[failed[0]].reason || "retrying"}).`
+      : pending.length ? " Being applied to this session…" : " Applied to this session.";
+    return `Saved for this game: ${names.map(op => savedText(op, saved.settings[op])).filter(Boolean).join(" · ")}.${tail}`;
+  }
   function vitals(status) {
     if (!status || typeof status !== "object") return "Waiting for the game's status.";
     const parts = [];
@@ -78,16 +112,22 @@
     return parts.join(" · ") || "No vitals reported.";
   }
   function html(state = {}) {
+    const keepNote = row => {
+      const kept = state.saved?.settings?.[row.op];
+      return kept && savedDiffers(row, kept, state) ? `Saved: ${savedText(row.op, kept)} (${savedState(state.saved.applied?.[row.op])})` : "";
+    };
     const controls = rows(state).map(row => {
       if (row.kind === "toggle") {
-        const detail = (!row.available && row.reason) || (row.on === null ? "State unavailable" : "");
+        const detail = [(!row.available && row.reason) || (row.on === null ? "State unavailable" : ""), keepNote(row)]
+          .filter(Boolean).join(" · ");
         return `<label class="re5-mod-row"><span>${ESC(row.label)}${detail ? `<small>${ESC(detail)}</small>` : ""}</span>`
           + `<input type="checkbox" data-re4-mod="${row.op}" aria-label="${ESC(row.label)}" `
           + `aria-checked="${row.on === null ? "mixed" : row.on}" ${row.on ? "checked " : ""}${row.disabled ? "disabled" : ""}></label>`;
       }
       const setting = row.value ?? 1;
-      const detail = (!row.available && row.reason) || (!row.local ? `Current: ×${setting}`
-        : row.value === null ? "Not read back from the game; 1 = the game's own." : "Last value set here; the game does not report it.");
+      const detail = [(!row.available && row.reason) || (!row.local ? `Current: ×${setting}`
+        : row.value === null ? "Not read back from the game; 1 = the game's own." : "Last value set here; the game does not report it."),
+        keepNote(row)].filter(Boolean).join(" · ");
       return `<div class="re5-mod-slider"><label>${ESC(row.label)}: <output data-re4-value="${row.op}">×${setting}</output>`
         + `<small class="re4-mod-note">${ESC(detail)}</small>`
         + `<input type="range" data-re4-range="${row.op}" aria-label="${ESC(row.label)} multiplier" min="${row.min}" max="${row.max}" `
@@ -101,17 +141,28 @@
     return `<div class="re5-mod-heading"><b>RE4 modifiers</b><button type="button" class="act" data-re4-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div>`
       + `<p class="re5-mod-sub" data-re4-vitals>${ESC(vitals(state.status))}</p>`
+      + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re4-saved>${ESC(savedLine(state))}</p>` : "")
       + controls + buttons
       + `<p class="re5-mod-status${state.error ? " re5-mod-error" : ""}" role="${state.error ? "alert" : "status"}" aria-live="polite">`
       + `${ESC(state.message || "Read current settings from the game.")}</p>`;
   }
 
-  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now }) {
+  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now,
+                    savedPrefs = null }) {
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     const state = { status: null, applied: {}, unsupported: {}, busy: false, pending: null, stale: true,
-      message: "Reading current settings…", error: false };
+      message: "Reading current settings…", error: false, saved: null };
     let disposed = false;
     const snapshot = () => ({ ...state, applied: { ...state.applied }, unsupported: { ...state.unsupported } });
+    // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
+    async function loadSaved() {
+      if (typeof savedPrefs !== "function" || disposed) return;
+      try {
+        const v = await savedPrefs();
+        state.saved = v && typeof v === "object" && v.panels && typeof v.panels === "object" && !Array.isArray(v)
+          ? { settings: v.panels.re_mods || {}, applied: v.applied?.re_mods || {}, receives: v.receives || {} } : null;
+      } catch { /* saved settings are extra information; the game's own status still shows */ }
+    }
     const paint = () => { if (!disposed) render(snapshot()); };
     const alive = () => { if (disposed) throw new Error("Modifier panel closed."); };
     async function currentSession() {
@@ -143,10 +194,11 @@
         input: { session_id: sid, op, ...extra } }, "POST", 15000);
       return finish(submitted);
     }
-    async function read() {
+    async function read(saved = true) {
       const result = await job("status");
       if (!result.status || typeof result.status !== "object") throw new Error("Current modifier state is unavailable.");
       state.status = result.status; state.stale = false;
+      if (saved) await loadSaved();
       return result.status;
     }
     async function preflight() {
@@ -168,8 +220,10 @@
     async function refresh() {
       if (state.busy || disposed) return;
       state.busy = true; state.error = false; state.message = "Reading current settings…"; paint();
+      // the saved settings show at once, while the game itself is still being read on its PC
+      const saved = loadSaved().then(() => { if (state.busy && !disposed) paint(); });
       try {
-        await preflight(); await read();
+        await preflight(); await read(false); await saved;
         const retired = Object.keys(state.unsupported).length;
         state.message = retired ? "Settings read. Controls this game build cannot do stay disabled with the tool's reason."
           : "Settings read from the running game.";
@@ -264,6 +318,7 @@
     return ctl;
   }
   const api = { GAMES, TOOL, DEFINITIONS, ACTIONS, eligible, value, capability, rows, actions, vitals, html, create, mount,
+    savedText, savedLine,
     sectionHTML: () => `<style>${CSS}</style><section class="re4-modifiers" aria-label="RE4 modifiers"></section>` };
   root.GBoxRE4Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;

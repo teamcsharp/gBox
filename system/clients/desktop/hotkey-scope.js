@@ -1,5 +1,5 @@
-// gBox's hotkeys while a native game window docked in gBox has the keyboard (F2 save, F3 autoplay, F4 load, F5 client refresh,
-// Shift/Ctrl+F2 slot, Ctrl+I eyedropper, Alt+Enter / F11 full screen). The docked game owns the keyboard focus, so the keys
+// gBox's hotkeys while a native game window docked in gBox has the keyboard (F1 save replay, F2 save state, F3 autobot on/off,
+// F4 load state, F5 client refresh, Shift/Ctrl+F2 slot, Ctrl+I eyedropper, Alt+Enter / F11 full screen). The docked game owns the keyboard focus, so the keys
 // never reach gBox's pages and have to be Electron global shortcuts, which Windows delivers system-wide. They are held ONLY
 // while a game is docked AND gBox (or the game docked inside it) is the foreground window: the moment another application
 // (Blender, a browser, ...) comes to the front they are released, so that application gets every key as if gBox weren't
