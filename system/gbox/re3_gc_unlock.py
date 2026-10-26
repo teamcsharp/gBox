@@ -23,6 +23,46 @@ RE3_GC_REQUIRED_STRINGS = {
 }
 
 
+# Verified Ghidra evidence (Ghidra 12.1.4, PowerPC:BE:32:default, image base
+# 0x80003100, 4699 functions; ELF sha256 dcb56beb5f318623c2c0e488abd52e1d9ecf72a4dff693336df408bc8468a142).
+# ghidra_bridge jobs on request 1be8e7d76bf249d6, receipts 2026-10-26:
+#   open c81d2355501f4da2 / 5feffcbec9cf44a0 (receipts ec3ce8be16a84d68, dc4f4dfd2a254bad)
+#   strings a5c429ed81fb439d, e98eed9dfd8149a8, d00166c15df74d0e, da3bfbda7f564112
+#   xrefs 919b0cdb42ab4a5e, f9b625c335db4a15
+#   decompile 79cd0e1f54b94e63 (FUN_800f9200, receipt), 3302e2595cea46d7
+#     (FUN_800f832c, receipt c9361d6ed93a459d)
+RE3_GC_GHIDRA_EVIDENCE = {
+    's_select_bin': 0x80208920,       # 'bio19/prog/bin/select.bin'
+    'select_bin_ref': 0x80208b44,     # DATA table ref, no containing function
+    's_mercenaries_only': 0x802103d7,  # 'mercenaries only\n', no direct xref (table-driven)
+    's_number_of_save': 0x8020cfd4,   # status screen, FUN_800f884c/FUN_800f832c
+    's_epilogue': 0x8020d0f3,         # title/epilogue state machine FUN_800f9200
+    'FUN_800f9200': 0x800f9200,       # epilogue/state machine; polls _DAT_80247fd0/0x80247fdc
+    'FUN_800f832c': 0x800f832c,       # save status screen; save struct via FUN_8018fa14
+    'FUN_800f884c': 0x800f884c,       # save status screen (slot variant)
+    'play_frames': 0x8024d6cc,        # _DAT_8024d6cc play-time frame counter (R/W many)
+    # save-status struct semantics (FUN_800f832c): +0xc u8 save count,
+    # +4 u8 difficulty/character index.
+}
+
+# Revision-guarded native write plan (runtime application NOT yet implemented).
+# Guard: ELF sha256 must equal dcb56b...; the plan is applied only after the
+# in-memory image matches, and every write is paired with an undo entry so the
+# original games and saves are preserved (copy-on-write, never in place).
+RE3_GC_NATIVE_WRITE_PLAN = {
+    'guard_sha256': 'dcb56beb5f318623c2c0e488abd52e1d9ecf72a4dff693336df408bc8468a142',
+    'stage': 'plan-only',   # no byte writes authorized yet
+    'rollback': 'copy-on-write shadow of patched pages; restore on detach',
+    'open_questions': [
+        'Unlock flag bitfield address inside the loaded save struct not yet located '
+        '(menu eligibility is table-driven via select.bin; no direct xref to the '
+        '"mercenaries only" string at 0x802103d7).',
+        'Requires follow-up: decompile the select.bin loader and the state table at '
+        '0x80208b44 to find the eligibility gate that reads clear/unlock bits.',
+    ],
+}
+
+
 def re3_gc_lock_targets(elf: bytes) -> dict:
     """Bounded revision-guarded membership check for the RE3 GC unlock target.
 
@@ -83,6 +123,7 @@ def re3_gc_elf_profile(game: dict, root: Path) -> dict:
         'evidence': {'implementation': 'gbox.re3_gc_unlock (pending native writer)',
                      'analysis': RE3_GC_ANALYSIS_ELF,
                      'verification': 'Static exact-build membership only; runtime acceptance pending.'},
-        'save_effect': 'No save effect yet; the native writer is not implemented.',
+        'save_effect': 'No save effect yet; native writer is plan-only '
+                       '(RE3_GC_NATIVE_WRITE_PLAN, copy-on-write rollback).',
         'requires_save_upgrade_opt_in': True,
     }
