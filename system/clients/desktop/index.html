@@ -1266,6 +1266,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
+<script src="../web/viz/storage-purge.js"></script>
 <script src="../web/viz/picture-fit.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -2432,12 +2433,15 @@ async function testPcMenu(x, y) {                             // which PCs backg
         <label style="display:flex;gap:8px;align-items:center">Admit work below <input type="range" data-budget="${esc(w.name)}" min="10" max="90" step="5" value="${Number(w.budget_percent || 70)}"><span>${Number(w.budget_percent || 70)}%</span></label>
         <div role="status" style="font-size:11px;margin-top:4px">${esc(admission.reason || 'Ready for queued background work.')}</div>
         <button type="button" data-rebuild="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="Update this PC's code and packages, self-check, then restart its worker and gBox app; its bot games are saved and closed first (the operator's own game needs force)">⟳ Rebuild &amp; relaunch ${esc(w.name)}</button>
+        ${w.os === 'windows' && window.GBoxStoragePurge ? `<button type="button" data-purge="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="List the games on this PC that are not favorites and not played for 14 days, and the builds sent here automatically; nothing is deleted until you confirm the list">${esc(GBoxStoragePurge.buttonLabel(w))}</button>` : ''}
       </div>`;
     }).join('') || '<div class="mut">No workers are registered.</div>';
     fitMenu(m, e.clientX, e.clientY, 8, 40); };
   const r = await gbox.api('/api/testing/workers'); if (r.ok) render(r.data); else m.querySelector('[data-list]').textContent = r.error;
   m.oninput = ev => { const range = ev.target.closest('input[data-budget]'); if (range) range.nextElementSibling.textContent = range.value + '%'; };
   m.onclick = ev => {                                           // "⟳ Rebuild & relaunch <PC>" (gbox/node_rebuild.py): the panel follows it
+    const purge = ev.target.closest('button[data-purge]');       // "🧹 Free space": dry run, the list, then Delete these
+    if (purge) { m.style.display = "none"; storagePurgeOpen(purge.dataset.purge); return; }
     const b = ev.target.closest('button[data-rebuild]'); if (!b) return;
     m.style.display = "none";
     rebuildNode(b.dataset.rebuild).catch(error => toast(`Could not rebuild ${b.dataset.rebuild}: ${error.message}`));
@@ -6695,6 +6699,20 @@ function rebuildPanelOpen(target) {
     },
     onClose: () => { if (rebuildPanel === panel) rebuildPanel = null; } });
   if (!COMPACT.on) dragAnywhere(host);                           // the floating panel moves; over the PiP it fills the window
+}
+// ---- "🧹 Free space on <PC>" (operator 2026-10-26; gbox/storage_purge.py, ../web/viz/storage-purge.js) ----
+// A dry run of storage_purge on that PC (POST /api/workers/<name>/storage-purge), its list of unplayed games and
+// automatically sent builds with sizes and reasons, then "Delete these" (asked twice) deletes exactly that list.
+let storagePanel = null;
+function storagePurgeOpen(name) {
+  if (!window.GBoxStoragePurge) return toast('The storage panel did not load');
+  storagePanel?.close();
+  if (!$('#storage-panel-style')) { const style = document.createElement('style'); style.id = 'storage-panel-style'; style.textContent = GBoxStoragePurge.CSS; document.head.append(style); }
+  const host = document.createElement('div'); document.body.append(host);
+  const panel = storagePanel = GBoxStoragePurge.mount(host, { name, api: rebuildApi,
+    onDone: s => { if (s.status === 'done') toast(`🧹 ${s.text || GBoxStoragePurge.summaryText(s)}`); },
+    onClose: () => { if (storagePanel === panel) storagePanel = null; } });
+  dragAnywhere(host);
 }
 function botDemoInView(gid, pc) {
   if (!gid || !pc) return;

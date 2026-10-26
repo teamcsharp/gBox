@@ -257,6 +257,7 @@ class Screensaver:
         # builds(game_id) -> [built mod]; favorites() -> [{game_id, title}] (roulette; both optional)
         self.store, self.archive, self.submit, self.workers = store, archive, submit, workers
         self.builds, self.favorites = builds, favorites
+        self.config = None                           # install(): [builds] auto_send for the roulette's build choice
         self.builder = None
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
@@ -402,8 +403,11 @@ class Screensaver:
             return "no recorded game to play (play a game for a while first)"
         build = None
         if not merc_cfg['enabled'] and cfg.get("roulette") and self.builds:
-            from . import roulette
-            build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
+            from . import roulette, storage_policy
+            # builds are opt-in per PC ([builds] auto_send = false): a demo plays a build this PC already has or the
+            # operator downloaded here, else the stock game; it never copies one over (gbox/storage_policy.py)
+            build = roulette.demo_build([b for b in self.builds(g["game_id"]) if storage_policy.sendable(
+                self.store, self.config, w, g["game_id"], str(b.get("name") or ""))], self.rng)
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
@@ -412,7 +416,8 @@ class Screensaver:
                 'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'))}}
             if merc_pick.get('selection'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
-        inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
+        inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
+            {"mod": build["name"], "local_build_ok": True} if build else {})    # a stale copy here still demos
         if warm_ok and not mercmode.memory_reason(w, now):
             # a cold launch of a title with nothing warm keeps the pool's paused games (with too little memory the
             # worker's one-game rule closes them, without a save: nothing was played in them)
@@ -1382,6 +1387,7 @@ def install(app, store, config, auth, submit, workers, archive):
 
     saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers,
                         builds=builds_for, favorites=favorites)
+    saver.config = config
     app.state.autoplay_screensaver = saver
     from . import roulette
     from .server import JobRequest

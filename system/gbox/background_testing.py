@@ -68,6 +68,8 @@ def requires_admission(job):
         # These explicit status operations only discover configured programs.
         # Keep diagnostics available while busy/excluded; all compute stays gated.
         return False
+    if job.get('tool') == 'storage_purge' and (job.get('input') or {}).get('dry_run', True):
+        return False  # a storage dry run only reads the cache's folders (gbox/storage_purge.py); deleting stays gated
     return bool(job.get('agent_use') or job.get('low_priority')) and job.get('tool') not in controls
 
 
