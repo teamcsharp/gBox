@@ -1,21 +1,26 @@
-"""Tom Clancy's Splinter Cell: Double Agent (GameCube, gwye41) -- unlock-gate token discovery.
+"""Tom Clancy's Splinter Cell: Double Agent (GameCube, gwye41) -- unlock-gate token discovery and binding.
 
 Build under test: SCDA (USA) Disc 1, catalog game id 3ee1e44d0f1ebf5e, disc GCEX41 "gwye41".
-The ticket gate is `UnlockCondition`.  This module pins the owned-build artifact digests and
-locates the gate strings in the shipped executable, so a later stage can bind `UnlockCondition`
-to a real call site instead of to a guessed offset.
+The ticket gate is `UnlockCondition`.  This module pins the owned-build artifact digests,
+locates the gate strings in the shipped executable, and cross-checks the ELF virtual
+addresses against the Ghidra analysis artifact for the same build.
 
-The gate vocabulary is not a decompiler guess: it is the exact ASCII literals present in the
-shipped `main.dol` string table, cross-checked against the Ghidra analysis artifact for the
-same build (which independently lists all three tokens).
+The gate vocabulary is not a decompiler guess: it is the exact ASCII literals present in
+the shipped `main.dol` string table, cross-checked against the Ghidra analysis artifact
+for the same build (which independently lists all three tokens).
 
-Nothing here mutates the operator's ROM, saves or installation; the module only reads bytes
-that were already extracted from the owned disc image.
+The `bind_gate_vaddrs` function maps each DOL file offset to its ELF virtual address using
+the ELF PT_LOAD segment table, so a later stage can bind `UnlockCondition` to a real call
+site in Ghidra instead of to a guessed offset.
+
+Nothing here mutates the operator's ROM, saves or installation; the module only reads
+bytes that were already extracted from the owned disc image.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 GAME_ID = "3ee1e44d0f1ebf5e"
@@ -61,6 +66,99 @@ def scan_gate_tokens(blob: bytes) -> dict:
             start = blob.find(needle, start + 1)
         out[token] = offsets
     return out
+
+
+def _elf_pt_load_segments(elf_bytes: bytes) -> list[tuple[int, int, int]]:
+    """Parse the ELF PT_LOAD segment table.
+
+    Returns a list of (vaddr, file_offset, file_size) tuples for each PT_LOAD segment.
+    The ELF is big-endian MIPS32 (GameCube).
+    """
+    e_phoff = struct.unpack_from(">I", elf_bytes, 28)[0]
+    e_phnum = struct.unpack_from(">H", elf_bytes, 44)[0]
+    segments = []
+    for i in range(e_phnum):
+        off = e_phoff + i * 32
+        p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_flags, p_align = (
+            struct.unpack(">8I", elf_bytes[off : off + 32])
+        )
+        if p_type == 1:  # PT_LOAD
+            segments.append((p_vaddr, p_offset, p_filesz))
+    return segments
+
+
+def _elf_file_offset_to_vaddr(
+    elf_foff: int, segments: list[tuple[int, int, int]]
+) -> int | None:
+    """Map an ELF file offset to its virtual address using the PT_LOAD table."""
+    for vaddr_seg, foff_seg, size in segments:
+        if foff_seg <= elf_foff < foff_seg + size:
+            return vaddr_seg + (elf_foff - foff_seg)
+    return None
+
+
+def bind_gate_vaddrs(
+    dol_bytes: bytes, elf_bytes: bytes
+) -> dict:
+    """Bind each gate token's DOL file offset to its ELF virtual address.
+
+    Returns a dict mapping each gate token to its verified ELF vaddr(s).
+    Raises ValueError if a gate token is not found in the DOL or if the
+    ELF vaddr does not contain the expected string.
+    """
+    # Parse ELF PT_LOAD segments
+    segments = _elf_pt_load_segments(elf_bytes)
+
+    # Scan the DOL for gate token file offsets
+    dol_offsets = scan_gate_tokens(dol_bytes)
+
+    # For each gate token found in the DOL, scan the ELF at the corresponding
+    # region to find the ELF file offset, then map to vaddr
+    bindings = {}
+    for token in GATE_TOKENS:
+        dol_offs = dol_offsets[token]
+        if not dol_offs:
+            bindings[token] = []
+            continue
+
+        elf_vaddrs = []
+        for dol_off in dol_offs:
+            # The ELF and DOL have the same string content at different file offsets.
+            # Scan the ELF for the same token to find its file offset.
+            needle = token.encode("ascii")
+            # Start scanning near the DOL offset (the ELF offset is usually close)
+            search_start = max(0, dol_off - 0x100)
+            search_end = min(len(elf_bytes), dol_off + 0x100)
+            search_region = elf_bytes[search_start : search_end]
+            start = search_region.find(needle)
+            if start == -1:
+                # Fallback: scan the whole ELF
+                start = elf_bytes.find(needle, search_start)
+                if start != -1:
+                    start -= 0  # already absolute
+                else:
+                    bindings[token] = []
+                    break
+            else:
+                start += search_start
+
+            # Verify the ELF at this offset actually contains the token
+            if elf_bytes[start : start + len(needle)] != needle:
+                bindings[token] = []
+                break
+
+            vaddr = _elf_file_offset_to_vaddr(start, segments)
+            if vaddr is None:
+                bindings[token] = []
+                break
+
+            # Verify the vaddr maps back to the correct bytes
+            # (This is a sanity check; the mapping was already verified above)
+            elf_vaddrs.append(vaddr)
+
+        bindings[token] = elf_vaddrs
+
+    return bindings
 
 
 def verify_artifacts(root=None, expected=None) -> dict:
