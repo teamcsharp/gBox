@@ -29,7 +29,8 @@ MINE_R = 250.0            # a ground mine this near a standstill: he stood on / 
 STATE_KEYS = ("phase", "fire_gate", "weapon_policy", "mine_status", "mine_retreat_status", "combat", "weapon",
               "bonus_target", "route", "stuck_reason", "shots", "hits", "misses", "kills", "last_shot", "target_evidence",
               "aim_feedback", "qte_presses", "hits_taken", "combo", "enemies", "spawns", "hunt", "aim_guard", "boss",
-              "last_hit_by", "death_cause", "player_damage_events")   # the engine's HP-loss count: hits he took, and
+              "last_hit_by", "death_cause", "trigger_mode", "heal_deferred",
+              "player_damage_events")   # the engine's HP-loss count: hits he took, and
                           # in which decision (gbox.mercs.ballistics.turning: the hits taken while turning, gun down)
 SHOTS_KEPT = 20           # the last shots of a round, each with the aim and gate the bot had when it fired (operator
                           # 2026-10-26: "see ... the aiming of the last 20 shots in a run ... how the aimbot will aim at a
@@ -51,6 +52,9 @@ class RoundTrace:
         self.shot_records_dropped = 0
         self.started = None
         self.last = -math.inf
+        self.annex: dict = {}                   # extra top-level fields for the round's JSON (round_loadout, impacts ...)
+        self.auditor = None                     # (summary, trace) -> the round's audit (gbox.mercs.round_audit), kept as
+                                                # "audit": every round checked without anyone watching (operator 2026-10-26)
 
     def shot(self, record: dict) -> None:
         """A resolved shot record from the combat layer (gbox.mercs.ballistics): the round keeps them all."""
@@ -163,12 +167,20 @@ class RoundTrace:
                                    meta=meta)
         if self.shot_records_dropped:
             report["records_dropped"] = self.shot_records_dropped
-        return {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
-                "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
-                "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
-                "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
-                "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
-                "last_shots": self.shots(), "shots": self.shot_records, "ballistics": report, "code": self.code}
+        out = {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
+               "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
+               "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
+               "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
+               "hits_taken_events": sum(e["kind"] == "hit" for e in self.events),
+               "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
+               "last_shots": self.shots(), "shots": self.shot_records, "ballistics": report, "code": self.code}
+        out.update({k: v for k, v in self.annex.items() if k not in out})
+        if self.auditor is not None:
+            try:
+                out["audit"] = self.auditor(out, self)
+            except Exception as exc:              # noqa: BLE001 - a failed audit never loses the round's map
+                out["audit"] = {"verdict": "unknown", "problems": [f"audit failed: {type(exc).__name__}: {exc}"[:160]]}
+        return out
 
     def finish(self, walked=(), blocked=()) -> dict | None:
         """Write the round's JSON + SVG (when it has an out_dir and enough samples); the summary either way."""

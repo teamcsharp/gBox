@@ -79,6 +79,12 @@ DEFAULT_ZONE = "body"                   # zone_for's answer without the strategy
 THREAT_BLAST = True                     # False: only the sight / dot gates decide (the far-target gate's own tests)
 THREAT_BLAST_R = 500.0                  # a Majini this near on the player's level, roughly faced: the trigger stays down
 THREAT_BLAST_FACING = math.radians(30)
+# The same for a gun without a laser ray (operator 2026-10-26: "the laserless path must fire while turning toward a target
+# within ~3 m instead of lowering the gun"; 16:36 Missile Area: 100 s of 157 s fighting turning gun-down, hit 5 of 6
+# times): this near and inside this cone the gun stays up and fires while the aim corrects - no corridor, no alignment
+LASERLESS_BLAST_R, LASERLESS_BLAST_CONE = 300.0, math.radians(60)
+BLAST_GATE_LASERLESS = "threat: blasting (laserless)"   # its gate in the shot records (the ballistic report's by_gate)
+LASERLESS_SWITCH_S = 2.0                # a gun up this long without a laser ray is laserless (Combat.laserless_now)
 # The kill policy (docs/mercenaries_re5_meta.md section 1.3: "melee is the clock"): a leg shot until he kneels, then
 # the finisher (+5 s, i-frames) - the main kill method; a headshot (a head stun -> Headbutt / Uppercut, or the kill)
 # when he is far or the combo window is short; never a second melee on a boss (the wild swing).
@@ -548,11 +554,17 @@ class Combat:
         return pl if ptr_ok(pl) else 0
 
     def _in_hand(self, snap, pl):
-        """(weapon id, rounds) of the slot in hand."""
+        """(weapon id, rounds) of the slot in hand; (None, None) with a non-weapon in hand (self.item_in_hand): the
+        First Aid Spray is {id 0x304, type 3, item 4} - read as item 4 it was the Ithaca M37, its use a "shot" that
+        missed (2026-10-26: 85 shot rows as 0x4, 6 of 45 hits; 69 hits taken with the spray in hand)."""
+        self.item_in_hand = False
         inv = snap.get("inventory")
         if inv:
             s = next((x for x in inv if x.get("hand")), None)
             if s:
+                if s.get("type", 1) != 1:
+                    self.item_in_hand = True
+                    return None, None
                 return s.get("item", s.get("id", 0) & 0xFF), s.get("rounds")
         try:
             raw = self.m.rd(pl + P_INV, INV_SLOT * INV_SLOTS)
@@ -561,7 +573,11 @@ class Combat:
         for k in range(INV_SLOTS):
             o = k * INV_SLOT
             if struct.unpack_from(">I", raw, o + INV_HAND)[0] == 1 and raw[o + INV_USED]:
-                return struct.unpack_from(">I", raw, o + INV_ID)[0] & 0xFF, struct.unpack_from(">i", raw, o + INV_ROUNDS)[0]
+                word = struct.unpack_from(">I", raw, o + INV_ID)[0]
+                if word >> 8 != 1:
+                    self.item_in_hand = True
+                    return None, None
+                return word & 0xFF, struct.unpack_from(">i", raw, o + INV_ROUNDS)[0]
         return None, None
 
     def _shot(self, pl: int, rounds, aiming: bool, now: float) -> bool:
@@ -696,7 +712,9 @@ class Combat:
         if active:
             self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
             self.wid = wid
-        shot = active and self._shot(pl, rounds, p.get("action") == AIMING, now)
+        shot = active and not getattr(self, "item_in_hand", False) and self._shot(pl, rounds, p.get("action") == AIMING, now)
+        if active and getattr(self, "item_in_hand", False):
+            self.rounds_seen = None                       # a spray's count falling is no round fired
         if shot:
             self._on_shot(now)
         self._observe_bow(snap, now)
@@ -942,6 +960,26 @@ class Combat:
             aim.setdefault("gate", self.stats.get("fire_gate"))
         return act
 
+    def _note_ray(self, wid, ray: bool, ready: bool, now: float) -> None:
+        """Gun-up seconds without a laser ray, per weapon (a ray resets it): laserless_now() tells the driver to take a
+        laser gun from a quick slot at close range (re5_weapons.best_quick_slot laserless=)."""
+        last = getattr(self, "_ray_note_at", None)
+        dt = max(0.0, min(0.5, now - last)) if last is not None else 0.0
+        self._ray_note_at = now
+        if not isinstance(wid, int):
+            return
+        no_ray = self.__dict__.setdefault("no_ray_s", {})
+        if ray:
+            no_ray[wid] = 0.0
+        elif ready:
+            no_ray[wid] = no_ray.get(wid, 0.0) + dt
+
+    def laserless_now(self, wid) -> bool:
+        """This gun has been up LASERLESS_SWITCH_S without a laser ray (the bow always counts)."""
+        if wid == 0x0F:
+            return True
+        return (getattr(self, "no_ray_s", None) or {}).get(wid, 0.0) >= LASERLESS_SWITCH_S
+
     def _aim_begin(self, now, p, tgt, wid) -> dict:
         """This tick's aim record: the geometry and motion at the decision; the paths below add the aim and the gate."""
         foot, pos = tgt["pos"], p["pos"]
@@ -994,6 +1032,7 @@ class Combat:
         weapon = WEAPONS.get(wid)
         self.needs_firing_position = False
         aim = self._aim_begin(now, p, tgt, wid)
+        self._note_ray(wid, self._ray(snap, now) is not None, self._ready(p), now)
         # a direct gun with no laser ray is laserless only once the gun is up and still shows none (the ray exists only
         # while aiming: with the gun down every gun looked laserless, and that path lowers the gun and turns in place -
         # round map 2026-10-26: 42 s standing still in 'fight', "laserless gun: lower weapon and turn toward target")
@@ -1246,7 +1285,12 @@ class Combat:
         ray = None if wid==0x36 else self._ray(snap, now)
         if ray is not None and self.ray_blocked(ray, tgt["pos"]):
             corridor = False
-        if not corridor:
+        foot = tgt["pos"]
+        facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
+        blast = (wid not in (0x0F, 0x36) and rounds is not None and rounds > 0 and p.get("action") != 4
+                 and math.hypot(foot[0]-p["pos"][0], foot[2]-p["pos"][2]) < LASERLESS_BLAST_R
+                 and abs(foot[1]-p["pos"][1]) < 150.0 and abs(facing) < LASERLESS_BLAST_CONE)
+        if not corridor and not blast:
             self.bow_down_at = None
             self.needs_firing_position = True
             self.stats.update(weapon_policy=label+": blocked or unknown floor corridor",
@@ -1365,7 +1409,7 @@ class Combat:
             swing = self.bow_turning
             self.stats['bow_aim_phase'] = 'turning to target' if swing else 'tracking with aim held'
         else:
-            swing = abs(facing) > SWING_TURN and not aligned
+            swing = abs(facing) > SWING_TURN and not aligned and not blast   # a close threat: blast, never lower the gun
         # An on-target aim (camera ray already on his chest) supersedes the whole-body swing: if the aim line is
         # already on him, fire now instead of lowering the gun to turn the body. Only a genuinely off-axis aim for a
         # far-off heading turns first. Never swing mid-grab (action 4).
@@ -1380,7 +1424,7 @@ class Combat:
             self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
                               combat=label+": lower weapon and turn toward target")
             return {"hold": self._face(p, foot)}
-        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now,aligned=aligned):
+        if not blast and self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now,aligned=aligned):
             return {"hold":set()}
         if wid==0x0F:
             self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
@@ -1395,6 +1439,9 @@ class Combat:
             aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
         fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
                                       loaded=rounds is not None and rounds > 0)
+        if blast and not fire:
+            fire, policy = True, "laserless gun: close-threat blast"
+            self.stats["laserless_blasts"] = self.stats.get("laserless_blasts", 0) + 1
         self.stats["weapon_policy"] = policy
         keys = {"l1"} | self._yaw(yaw,deadzone=yaw_tol*BOW_TRACK if wid==0x0F else None) \
             | self._pitch(pl,p,pitch,now,deadzone=pitch_tol*BOW_TRACK if wid==0x0F else None)
@@ -1411,7 +1458,8 @@ class Combat:
         elif now-self.bow_up_at >= TAP_UP_S:
             self.bow_down_at = now
             keys.add("r1")
-        self.stats["fire_gate"] = label+": aimed "+("press/release" if wid in (0x0F,0x36) else "hold") if fire else policy+"; hold fire"
+        self.stats["fire_gate"] = (BLAST_GATE_LASERLESS if blast and fire and policy.endswith("blast") else
+                                   label+": aimed "+("press/release" if wid in (0x0F,0x36) else "hold") if fire else policy+"; hold fire")
         self.stats["combat"] = (f"{label} yaw {math.degrees(yaw):+.1f} pitch {math.degrees(pitch):+.1f} "
                                 f"{'TRIGGER' if 'r1' in keys else 'release / tracking'}")
         return {"hold": keys}

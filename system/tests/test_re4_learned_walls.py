@@ -5,17 +5,19 @@ import json
 import math
 
 from gbox import re4_merc_bot as B
-from tests.test_re4_merc_bot import FakeNav, PL, facing, item, world
+from tests.test_re4_merc_bot import FakeNav, PL, facing, item, turn_done, world
 
 
 def stuck_until(bot, m, now, events, t_max=8.0):
-    """Tick with Leon never moving until stats["stuck_events"] reaches events; the acts, in order."""
+    """Tick with Leon never moving (his turns on the spot do turn him) until stats["stuck_events"] reaches events; the
+    acts, in order."""
     acts, t = [], 0
     while bot.stats["stuck_events"] < events and t < t_max * 10:
         t += 1
         now[0] = t * 0.1
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
         acts.append(bot.tick(B.snapshot(m)))
+        turn_done(bot, m, acts[-1])
     return acts
 
 
@@ -38,9 +40,14 @@ def test_stuck_with_the_disc_map_learns_the_wall_and_the_next_plan_goes_round_it
     assert bot.stats["stuck_events"] == 2 and bot.stats["detours"] == 1   # still blocked: the detour
     assert any({"up", "b"} <= a.get("hold", set()) and ({"left", "right"} & a["hold"]) for a in acts[:-1]), \
         "after the replan he steers to the corner, not straight into the wall"
-    assert lm.blocked[(0, 1)] == 2 and len(way) > 1
+    # (a turn on the spot is never a stuck: the second one is a run that did not move, wherever it pointed) the first
+    # wall is kept, and neither stuck marked the cell he stands on
+    assert lm.wall((0, 1)) and len(way) > 1 and (0, 0) not in lm.blocked
+    second = bot.stuck_log[1]
+    assert second["cells"] and [0, 0] not in second["cells"]
     r = bot.stats["stuck_reason"]
-    assert "cell (0, 1)" in r and "room r400" in r and "heading 0" in r and "detour" in r and "replanned" in r
+    assert f"cell {tuple(second['cells'][0])}" in r and "room r400" in r and f"heading {second['heading_deg']}" in r \
+        and "detour" in r and "replanned" in r
     assert bot.stats["learned_map"].endswith("r400.json") and bot.stats["learned_floor_cells"] >= 1
     assert len(bot.stuck_log) == 2 and bot.stuck_log[0]["action"] == "vault" and bot.stuck_log[1]["action"] == "detour"
     bot.save()
@@ -94,14 +101,16 @@ def test_the_learned_map_is_saved_every_few_new_walls(tmp_path):
     now = [0.0]
     m = world([], room=0x400, leon=(100.0, 7.0, 200.0), timer_s=100.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
-    t = 0
+    t, seen = 0, -1
     while bot.stats["learned_walls"] < B.WALLS_PER_SAVE:
         t += 1
         now[0] = t * 0.1
-        facing(m, 0.9 * bot.stats["stuck_events"])                        # a new direction after every stuck
+        if bot.stats["stuck_events"] != seen:                             # a new direction after every stuck
+            seen = bot.stats["stuck_events"]
+            facing(m, 0.9 * seen)
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
-        bot.tick(B.snapshot(m))
-        assert t < 200
+        turn_done(bot, m, bot.tick(B.snapshot(m)))                        # (his turns on the spot do turn him)
+        assert t < 300
     assert (tmp_path / "r400.json").is_file() and bot._new_walls == 0     # saved by the stuck itself, not save()
     assert (tmp_path / "r400-stuck.jsonl").is_file()
     saved = B.LearnedMap(tmp_path / "r400.json")
