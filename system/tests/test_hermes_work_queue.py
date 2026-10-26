@@ -918,3 +918,35 @@ def test_a_run_that_never_did_agent_work_is_neither_a_failure_nor_a_review(env, 
     q.reconcile(env, [{'id': 'job', 'enabled': False}], {'job': run}, set(), now=200)
     assert item['no_progress_runs'] == 2 and item['retry_at'] == 320 and recorded == []
     assert hermes_result_review.gate(item) is None
+
+
+def test_a_priority_only_node_is_not_starved_by_the_lane_balance(env, monkeypatch):
+    # 2026-10-26: 23 inbox runs against 2 favorites - the lane balance offered the paid node only favorites, and its
+    # priority-list filter then emptied the choice: Kimi / Z.AI idle for hours with 16 listed RE6 tickets eligible
+    from gbox import hermes_pool
+    calls, jobs = _required_node_tick(monkeypatch, [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
+                                                    request('7' * 16, title='RE6 driver')])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    inner = q._api
+
+    def api(path, body=None):
+        if path == '/api/favorites':
+            return {'count': 2, 'items': [favorite('a' * 16), favorite('b' * 16)]}   # the least-loaded lane
+        if path == '/api/hermes/local/nodes':
+            r = inner(path, body)                                               # only the priority-only node seats work
+            return r | {'capacity': 8, 'nodes': [n | {'capable': n['name'] == 'sparkDeux'} for n in r['nodes']]}
+        return inner(path, body)
+    monkeypatch.setattr(q, '_api', api)
+    data = q._read(); data['priority'] = ['7' * 16]; q._save(data)
+    for n in range(3):                                     # three running inbox jobs: inbox is the busier lane
+        jobs.append({'id': f'busy{n}', 'name': q.PREFIX + 'inbox ' + ('9' * 15) + str(n), 'enabled': True,
+                     'schedule': {'kind': 'once'}})
+    nodes = hermes_pool.node_settings()
+    nodes['sparkDeux'] = nodes['sparkDeux'].model_copy(update={'priority_only': True, 'max_parallel_jobs': 8})
+    monkeypatch.setattr(hermes_pool, 'node_settings', lambda base=None: nodes)
+    import gbox.hermes_pool as HP
+    monkeypatch.setattr(HP, 'pool_limit', lambda: 16)                      # the fixture's pool (5) would seat the primary only
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'spark-local', 'model': 'gpt-oss:20b',
+                                                             'max_parallel_jobs': 16}})
+    result = q.tick(now=1000)
+    assert '7' * 16 in [d['request_id'] for d in result['dispatched']]
