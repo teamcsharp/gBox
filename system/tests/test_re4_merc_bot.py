@@ -1478,3 +1478,148 @@ def test_round_maps_land_in_the_re5_style_folder_with_or_without_a_learn_dir(tmp
     files = sorted(out.glob("*.json"))
     assert len(files) == 1 and files[0].name.endswith("-cafebabe.json") and len(list(out.glob("*.svg"))) == 1
     assert bot.stats["last_round_map"] == str(files[0].with_suffix(".svg"))
+
+
+# --- the stalemate rule (operator 2026-10-26): no Ganados for 15 s with time on the clock -> the clock is cut ---
+def _countdown(m, now, start_s=100.0):
+    m.put(B.MERC_TIMER, ">I", int((start_s - now) * 30))
+
+
+def _no_ganados(m):
+    m.put(B.EMMGR + 4, ">I", 1)                       # slot 0 is Leon: the table holds nobody else
+
+
+def test_a_stalemate_cuts_the_clock_to_five_seconds_once_per_round_and_records_it():
+    now = [0.0]
+    m = world([((0, 0, 3000), True)])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    facing(m, 0.0)
+    bot.tick(B.snapshot(m))                           # a Ganado alive: seen this round
+    _no_ganados(m)
+    for t in (1.0, 8.0, 14.0, 15.9):
+        now[0] = t
+        _countdown(m, t)
+        bot.tick(B.snapshot(m))
+    assert "stalemate_cut" not in bot.stats and B.snapshot(m)["timer"] > 80 and bot.stats["stalemate_idle_s"] == 14.9
+    now[0] = 16.0
+    _countdown(m, 16.0)
+    bot.tick(B.snapshot(m))
+    assert B.snapshot(m)["timer"] == 5.0              # MERC_TIMER: 150 frames
+    cut = bot.stats["stalemate_cut"]
+    assert cut["verified"] and cut["clock_before"] == 84.0 and cut["clock_after"] == 5.0
+    assert cut["target_s"] == 5 and cut["idle_s"] == 15.0 and bot.stats["stalemate_cuts"] == 1
+    assert "no enemies for 15 s" in bot.stats["stalemate_status"]
+    now[0] = 40.0
+    m.put(B.MERC_TIMER, ">I", 90 * 30)                # time came back (a bonus): still no second cut this round
+    bot.tick(B.snapshot(m))
+    now[0] = 41.0
+    m.put(B.MERC_TIMER, ">I", 89 * 30)
+    bot.tick(B.snapshot(m))
+    assert B.snapshot(m)["timer"] == 89.0 and bot.stats["stalemate_cuts"] == 1
+
+
+def test_a_round_that_never_showed_a_ganado_is_left_alone_and_a_new_round_starts_afresh():
+    now = [0.0]
+    m = world([])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    for t in (0.0, 10.0, 20.0, 30.0):
+        now[0] = t
+        _countdown(m, t)
+        bot.tick(B.snapshot(m))
+    assert B.snapshot(m)["timer"] == 70.0 and "stalemate_cut" not in bot.stats      # a slow start is no stalemate
+    m.put(B.EMMGR + 4, ">I", 2)                       # one Ganado spawns ...
+    m.put(EM + STRIDE, ">I", 0x601)
+    m.put(EM + STRIDE + 0x94, ">3f", 0.0, 0.0, 3000.0)
+    m.put(EM + STRIDE + B.EM_HP, ">hh", 1000, 1000)
+    now[0] = 31.0
+    _countdown(m, 31.0)
+    bot.tick(B.snapshot(m))
+    _no_ganados(m)                                    # ... and is gone
+    bot.trace_start("round-2")                        # the next round begins: the watch starts over
+    for t in (32.0, 47.0, 50.0):
+        now[0] = t
+        _countdown(m, t)
+        bot.tick(B.snapshot(m))
+    assert B.snapshot(m)["timer"] == 50.0 and "stalemate_cut" not in bot.stats
+
+
+def test_the_launch_settings_switch_the_rule_or_change_its_seconds():
+    now = [0.0]
+    m = world([((0, 0, 3000), True)])
+    stats = {}
+    from gbox.mercs import stalemate as S
+    S.configure(stats, {"launch": {"mercmode": {"stalemate_cut": True, "stalemate_cut_s": 12}}})
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    stats.update(bot.stats)
+    bot.stats = stats                                 # as play() and the engine rebind it
+    facing(m, 0.0)
+    bot.tick(B.snapshot(m))
+    _no_ganados(m)
+    for t in (1.0, 16.0):
+        now[0] = t
+        _countdown(m, t)
+        bot.tick(B.snapshot(m))
+    assert B.snapshot(m)["timer"] == 12.0 and stats["stalemate_cut"]["target_s"] == 12
+    off = world([((0, 0, 3000), True)])
+    bot2 = B.Bot(off, clock=lambda: now[0], nav=False)
+    bot2.stats["stalemate_cut_enabled"] = False
+    facing(off, 0.0)
+    now[0] = 0.0
+    bot2.tick(B.snapshot(off))
+    _no_ganados(off)
+    for t in (1.0, 16.0, 30.0):
+        now[0] = t
+        _countdown(off, t)
+        bot2.tick(B.snapshot(off))
+    assert B.snapshot(off)["timer"] == 70.0 and "stalemate_cut" not in bot2.stats
+
+
+def test_cut_clock_writes_through_the_memory_or_the_session_adapter_and_never_raises():
+    m = world([])
+    r = B.cut_clock(m, 0.2)                           # never under a second
+    assert r == {"verified": True, "clock_before": 100.0, "clock_after": 1.0, "target_s": 1.0}
+    assert struct.unpack(">I", m.rd(B.MERC_TIMER, 4))[0] == 30
+
+    class ReadOnly:                                   # the bot's shared-memory view (OwnShm): reads only
+        def __init__(self, mem): self.mem = mem
+        def rd(self, a, n): return self.mem.rd(a, n)
+    ro = ReadOnly(m)
+    r = B.cut_clock(ro, 5)
+    assert r["verified"] is False and "no clock writer" in r["reason"] and struct.unpack(">I", m.rd(B.MERC_TIMER, 4))[0] == 30
+    ro.adapter = SimpleNamespace(write_memory=lambda a, d: m.wr(a, d))     # mercs_bot binds the session adapter
+    r = B.cut_clock(ro, 5)
+    assert r["verified"] and r["clock_after"] == 5.0 and struct.unpack(">I", m.rd(B.MERC_TIMER, 4))[0] == 150
+    ro.adapter = SimpleNamespace(write_memory=lambda a, d: (_ for _ in ()).throw(OSError("gone")))
+    r = B.cut_clock(ro, 5)
+    assert r["verified"] is False and "OSError" in r["reason"]
+
+
+def test_a_read_only_view_records_the_failed_cut_three_times_then_rests():
+    now = [0.0]
+    m = world([((0, 0, 3000), True)])
+
+    class ReadOnly:
+        def __init__(self, mem): self.mem = mem
+        def rd(self, a, n): return self.mem.rd(a, n)
+    bot = B.Bot(ReadOnly(m), clock=lambda: now[0], nav=False)
+    facing(m, 0.0)
+    bot.tick(B.snapshot(m))
+    _no_ganados(m)
+    for t in (1.0, 16.0, 17.0, 18.5, 21.0, 30.0):
+        now[0] = t
+        _countdown(m, t)
+        bot.tick(B.snapshot(m))
+    cut = bot.stats["stalemate_cut"]
+    assert cut["verified"] is False and "no clock writer" in cut["reason"] and cut["attempt"] == 3
+    assert "stalemate_cuts" not in bot.stats and B.snapshot(m)["timer"] == 70.0 and bot.stalemate.done
+
+
+def test_play_binds_the_adapter_and_the_launch_settings_to_the_bot():
+    now = [0.0]
+    m = world([], room=0x120)                         # a story room: play() looks at the screen and leaves
+    sent, stats = [], {}
+    steps = iter(range(3))
+    B.play(None, sent.append, lambda: next(steps, None) is None, sleep=lambda s: now.__setitem__(0, now[0] + s), m=m,
+           clock=lambda: now[0], stats=stats, game={"launch": {"mercmode": {"stalemate_cut": False, "stalemate_cut_s": 9}}})
+    assert stats["stalemate_cut_enabled"] is False and stats["stalemate_cut_s"] == 9
+    assert not hasattr(m, "adapter")                  # no session adapter: nothing bound

@@ -341,3 +341,48 @@ test('both shells load the RE4 modifier script next to the RE5 one and the modul
   assert.doesNotMatch(source, /write_memory|read_memory|Bearer|x-gbox-actor/);
   assert.match(source, /agent_use: false/);
 });
+
+// --- the Mercenaries clock control and "Send a wave" (operator 2026-10-26: stalemates) ---
+test('the clock control uses re_mods add_time / set_time on the vitals clock; a Mercenaries stage is required', async () => {
+  const r = rig(); await r.control.refresh();                       // BASE: 95.5 s left in r400
+  r.command = async input => {
+    const before = r.status.merc_seconds_left, after = input.op === 'set_time' ? input.seconds : Math.max(1, before + input.seconds);
+    r.status.merc_seconds_left = after;
+    return { verified: true, clock_before: before, clock_after: after, seconds: after };
+  };
+  assert.equal(M.clockState(r.control.state()).disabled, false);
+  assert.match(M.html(r.control.state()), /<fieldset class="mercs-clock" >/); assert.match(M.html(r.control.state()), /96 s left on the clock/);
+  await r.control.addTime(-30);
+  assert.deepEqual(r.commands()[0].body, { tool: 're_mods', agent_use: false, require_worker: 'spark',
+    input: { session_id: 'spark-launch', op: 'add_time', seconds: -30 } });
+  assert.equal(r.control.state().message, 'Clock 96 → 66 s.'); assert.equal(r.control.state().error, false);
+  await r.control.setTime(5);
+  assert.deepEqual(r.commands()[1].body.input, { session_id: 'spark-launch', op: 'set_time', seconds: 5 });
+  assert.equal(r.control.state().status.merc_seconds_left, 5); assert.equal(r.control.state().message, 'Clock 66 → 5 s.');
+  for (const bad of [0, 31, 'x']) await r.control.addTime(bad);
+  for (const bad of [0, 61]) await r.control.setTime(bad);
+  assert.equal(r.commands().length, 2, 'out-of-range values never send a job');
+  const story = rig(); delete story.status.merc_seconds_left; story.status.room = 'r102'; await story.control.refresh();
+  assert.equal(M.clockState(story.control.state()).disabled, true); assert.match(M.html(story.control.state()), /no Mercenaries round is up/);
+  await story.control.addTime(-30); await story.control.setTime(5); assert.equal(story.commands().length, 0);
+  r.command = async () => { throw new Error(WII_UNSUPPORTED.replace('COMBO_WINDOW', 'MERC_TIMER')); };
+  await r.control.addTime(-5);
+  assert.match(M.clockState(r.control.state()).reason, /not located in/);
+  await r.control.refresh();
+  assert.equal(M.clockState(r.control.state()).disabled, true, 'a build without the clock word keeps the control retired');
+  assert.match(M.html(r.control.state()), /<fieldset class="mercs-clock" disabled>/);
+});
+
+test('Send a wave re-arms the spawn multiplier through spawn_wave and reports the clones honestly', async () => {
+  const r = rig(); await r.control.refresh();
+  r.command = async input => { assert.equal(input.op, 'spawn_wave'); return { verified: true, wave: true, factor: 3, enemies_alive: 7 }; };
+  const html = M.html(r.control.state());
+  assert.match(html, /data-re4-action="wave"[^>]*title="[^"]*clones only/); assert.match(html, />Send a wave</);
+  await r.control.action('wave');
+  assert.deepEqual(r.commands()[0].body.input, { session_id: 'spark-launch', op: 'spawn_wave' });
+  assert.match(r.control.state().message, /Wave sent: 7 enemies alive after the clone pass \(×3\)\. Clones only: nothing appears from zero\./);
+  assert.equal(r.control.state().error, false);
+  r.command = async () => ({ verified: false, reason: '0x80002800-0x800029E0 is in use' });
+  await r.control.action('wave');
+  assert.equal(r.control.state().error, true); assert.match(r.control.state().message, /in use/);
+});

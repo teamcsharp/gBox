@@ -409,8 +409,7 @@ class Screensaver:
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
         if merc_pick:
             game = game | {'launch':dict(game.get('launch') or {}) | {
-                'mercmode': {'random_characters': True, 'random_stages': True,
-                             **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}}
+                'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'))}}
             if merc_pick.get('selection'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
@@ -969,7 +968,7 @@ class Screensaver:
         keep = [run['session_id']] + [r['session_id'] for _, r in others if r.get('session_id')]
         selection = {'selection': pick['selection']} if pick.get('selection') else {}
         game = game | {'launch': dict(game.get('launch') or {}) | {
-            'mercmode': {'random_characters': True, 'random_stages': True, **selection}}}
+            'mercmode': mercmode.launch_block(cfg_merc, pick.get('selection'))}}
         job = self.submit(JobRequest(tool='launch_game', input={'game': game, 'jump': True, 'memory_cards': 'operator',
                                                                 'warm': True, 'keep_sessions': keep},
                                      agent_use=True, low_priority=True, require_worker=w['id']), actor=ACTOR,
@@ -1275,6 +1274,8 @@ class MercModeSettings(BaseModel):
     presentation_priority: bool | None = None
     queue: list[dict] | None = None             # the DJ queue: [{title, mode, character, stage}], None fields = random
     keep_warm: int | None = None                # titles waiting paused beside the playing one (0 = cold switches)
+    stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
+    stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
 
 
 class MercModeAdopt(BaseModel):
@@ -1450,6 +1451,7 @@ def install(app, store, config, auth, submit, workers, archive):
                 # an older worker's mercmode tool forbids unknown fields and cannot warm-launch anyway
                 relay={k:v for k,v in desired.items()
                        if (k!='keep_warm' or mercmode.WARM_FEATURE in (worker.get('features') or []))
+                       and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in (worker.get('features') or []))
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':body.host,**relay},
                     require_worker=worker['id']),actor=actor,

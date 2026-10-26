@@ -9,6 +9,7 @@
         ${host.scheduler_owner==='local'?`<p><small>This PC runs its own scheduler, including while disconnected. ${host.settings_source==='unobserved_local_scheduler'?'Local settings have not yet been observed. ':''}${host.command?.job?`Requested setting: ${escape(host.desired_settings?.enabled?'on':'off')} · ${escape(host.command.state||'queued')}${host.command.error?` · ${escape(host.command.error)}`:''}.`:''}</small></p>`:''}
         <div>${(host.titles||[]).map(title=>`<label style="display:block"><input type="checkbox" data-title="${escape(title.title)}" ${(host.settings?.titles||[]).includes(title.title)?'checked':''}> ${escape(title.name)}${title.playable?'':' · unavailable'}</label>${!title.playable?`<p><small>${escape(title.reason)}</small></p>`:''}`).join('')}</div>
         <label>Rounds before switching <input type="number" data-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}" style="width:4em"></label>
+        <label style="display:block"><input type="checkbox" data-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s with time left, the bot cuts the clock to <input type="number" data-stalemate-s min="1" max="60" value="${stalemateSeconds(host.settings)}" style="width:4em"> s</label>
         ${queueHTML(host,data.catalog)}
         <p><button type="button" data-save>Save this PC</button> <button type="button" data-prepare ${host.online?'':'disabled'}>Check cached assets</button>
         ${host.current_run?.mercmode?`<button type="button" data-stay="${escape(host.current_run.session_id)}">Stay in this game (autobot)</button>`:''}
@@ -42,9 +43,11 @@
       try{
         if(button.hasAttribute('data-save')){
           const titles=[...host.querySelectorAll('[data-title]:checked')].map(x=>x.dataset.title);
+          const stalemate=host.querySelector('[data-stalemate]'),stalemateS=host.querySelector('[data-stalemate-s]');
           await api('/api/mercmode',{host:host.dataset.host,enabled:host.querySelector('[data-enabled]').checked,
             presentation_priority:host.querySelector('[data-presentation]').checked,
-            titles,rounds_per_title:Number(host.querySelector('[data-rounds]').value)});
+            titles,rounds_per_title:Number(host.querySelector('[data-rounds]').value),
+            ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{})});
           await refresh();
         }else if(button.hasAttribute('data-stay')){
           await stay(api,button.dataset.stay);await refresh();
@@ -71,6 +74,13 @@
     if(!host)throw Error('This displayed session is no longer the current MercMode game.');
     await api('/api/mercmode',{host:host.name,enabled:false});
     return host.name;
+  }
+  // the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemy for 15 s with time on the clock ->
+  // the clock is cut to stalemate_cut_s (1..60, default 5) once per round. Saved per host; a launch carries it to the bot.
+  const STALEMATE={min:1,max:60,default:5};
+  function stalemateSeconds(settings){
+    const n=Math.round(Number(settings?.stalemate_cut_s));
+    return Number.isFinite(n)&&n>=STALEMATE.min&&n<=STALEMATE.max?n:STALEMATE.default;
   }
   // --- the picture-in-picture menu (operator 2026-10-24): one toggle between staying in this game and MercMode
   // rotating across titles, and an arrow that opens the titles it rotates through ---
@@ -154,6 +164,7 @@
     return `<div class="pip-mercmode" data-mm-host="${escape(host.name)}"><div class="pip-mercmode-row"><button type="button" data-mm-toggle aria-pressed="${on}">${label}</button><button type="button" data-mm-arrow aria-expanded="${open}" aria-label="Choose the titles MercMode rotates through">${open?'▾':'▸'}</button></div>`+
       `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}<label>Rounds before switching <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}"></label>`+
       `<span class="pip-mm-rounds-quick">${[5,10,20].map(n=>`<button type="button" data-mm-rounds-pick="${n}"${Number(host.settings?.rounds_per_title)===n?' aria-pressed="true"':''}>${n}</button>`).join('')}</span>`+
+      `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
       `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}</div></div>`;
   }
   async function menuAction(api,host,action,value){
@@ -175,6 +186,13 @@
       await api('/api/mercmode',{host:host.name,rounds_per_title:rounds});
       return `${rounds} round${rounds===1?'':'s'} before switching`;
     }
+    if(action==='stalemate'){
+      const enabled=value?.enabled===undefined?host.settings?.stalemate_cut!==false:!!value.enabled;
+      const seconds=stalemateSeconds({stalemate_cut_s:value?.seconds===undefined?host.settings?.stalemate_cut_s:value.seconds});
+      await api('/api/mercmode',{host:host.name,stalemate_cut:enabled,stalemate_cut_s:seconds});
+      return enabled?`Stalemate rule on: no enemy for 15 s, the bot cuts the clock to ${seconds} s (from the next launch)`
+        :'Stalemate rule off: the bot leaves the clock alone (from the next launch)';
+    }
     throw Error('Unknown MercMode action');
   }
   // --- between titles: what the PiP shows while the next game boots in the background ---
@@ -194,5 +212,6 @@
     return {show:true,phase:run.phase,title:run.title||'',progress:Math.round(progress),
       text:`Loading ${run.title||'the next title'}…`,sub:'MercMode is switching titles; the next game boots in the background.'};
   }
-  return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,describe};
+  return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,describe,
+    STALEMATE,stalemateSeconds};
 });

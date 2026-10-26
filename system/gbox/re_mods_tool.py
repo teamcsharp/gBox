@@ -14,7 +14,11 @@ Resident Evil 4 (GameCube NTSC-U, G4BE08) ops:
                                  as usual; below threshold x his full health the bot's tick writes hp = full (what one
                                  spray does), at most once per `seconds`; never dead, never out of a Mercenaries round
                                  (aliases first_aid, infinite_spray; status: auto_first_aid, sprays_used)
-  merc_time seconds=N            set the Mercenaries clock
+  merc_time seconds=N            set the Mercenaries clock (1..3600 s; alias set_time; read back)
+  merc_time_add seconds=N        add N seconds to the clock, or take them (negative, -3600..3600); never under 1 s
+                                 (alias add_time; operator 2026-10-26: a stalemate's clock cut to 5 s)
+  spawn_wave [count=N]           re-arm the spawn multiplier's clone pass: every spawned enemy-set entry is cloned
+                                 again beside what is out (clones only: zero enemies alive = nothing created)
   equip item=<weapon>            give it if missing, then the game's weapon-change path (model + code reload)
   weapon_mod item=<weapon> fire_rate=<frames|auto> damage=<x> reset=..   per-class fire interval / firepower tables
   merc_loadout character=<name|any> items=[...] on=<replace default guns>  applied at the start of each Merc run
@@ -563,6 +567,63 @@ def maintain_first_aid(ad_or_g, snap: dict, stats: dict | None = None, now: floa
         return {**result, "verified": False, "reason": f"first aid unavailable: {type(e).__name__}: {str(e)[:120]}"}
 
 
+MERC_TIME_MIN_S = 1               # no clock write ever leaves less than this (0 is the round's end)
+MERC_TIME_MAX_S = 3600
+MERC_TIME_ADD_RANGE = (-3600, 3600)
+
+
+def _merc_clock_write(g, target_s: float, requested) -> dict:
+    """MERC_TIMER (frames, FPS a second) set to target_s, read back: verified when the readback is within a second
+    (the clock counts down between the write and the read)."""
+    if g.room() >> 8 != 4:
+        raise ValueError("not in a Mercenaries stage")
+    before = g.m.u32(g.V.MERC_TIMER) / g.V.FPS
+    target = max(float(MERC_TIME_MIN_S), float(target_s))
+    frames = int(round(target * g.V.FPS))
+    g.m.wr(g.V.MERC_TIMER, struct.pack(">I", frames))
+    after = g.m.u32(g.V.MERC_TIMER)
+    return {"seconds": round(after / g.V.FPS, 2), "clock_before": round(before, 2), "clock_after": round(after / g.V.FPS, 2),
+            "requested_seconds": requested, "clamped": target != float(target_s),
+            "verified": frames - g.V.FPS <= after <= frames}
+
+
+def merc_time(g, seconds) -> dict:
+    """Set the Mercenaries clock (MERC_TIME_MIN_S .. MERC_TIME_MAX_S seconds), read back."""
+    n = int(round(float(seconds or 0)))
+    if not MERC_TIME_MIN_S <= n <= MERC_TIME_MAX_S:
+        raise ValueError(f"merc_time seconds: {MERC_TIME_MIN_S} .. {MERC_TIME_MAX_S}")
+    return {**_merc_clock_write(g, n, n), "note": "the Mercenaries clock set; never under one second"}
+
+
+def merc_time_add(g, seconds) -> dict:
+    """Add to (or, negative, take from) the Mercenaries clock; the clock never goes under MERC_TIME_MIN_S."""
+    n = int(round(float(seconds or 0)))
+    if n == 0 or not MERC_TIME_ADD_RANGE[0] <= n <= MERC_TIME_ADD_RANGE[1]:
+        raise ValueError("merc_time_add seconds: -3600 .. 3600, not 0 (negative takes time away)")
+    if g.room() >> 8 != 4:
+        raise ValueError("not in a Mercenaries stage")
+    before = g.m.u32(g.V.MERC_TIMER) / g.V.FPS
+    result = _merc_clock_write(g, before + n, n)
+    return {**result, "added_seconds": int(round(result["clock_after"] - before)) if result["verified"] else 0,
+            "note": "time added to the Mercenaries clock" if n > 0 else "time taken from the Mercenaries clock"
+            + ("; stopped at one second" if result["clamped"] else "")}
+
+
+def spawn_wave(g, count: int = 0) -> dict:
+    """Send a wave: re-arm the spawn multiplier's clone pass (SPAWN_DONE cleared), so every enemy-set entry the game has
+    spawned this round is cloned again next to what is out, factor-1 copies each (count, else the factor that is on,
+    else 2). It clones what is out: with zero enemies alive it cannot create any (no new enemy types either) - that is
+    the Ghidra request for the enemy-set spawner (gBox request: RE4 GC spawn any enemy / endless spawns)."""
+    current = g.m.rd(g.V.SPAWN_VARS, 1)[0] if g.m.rd(g.V.SPAWN_HOOK, 4) == g.V.SPAWN_HOOK_CODE[:4] else 0
+    factor = int(count) if count and int(count) > 1 else (current if current > 1 else 2)
+    result = spawn_multiplier(g, factor, True)
+    return {**result, "wave": True, "factor_before": current or 1,
+            "note": f"the clone pass re-armed: every spawned enemy-set entry gets {factor - 1} more cop"
+                    f"{'y' if factor == 2 else 'ies'} beside what is out ({result['enemies_alive']} alive after 1.5 s). "
+                    "Clones only: with zero enemies alive nothing is created, and no new enemy types; the multiplier "
+                    f"stays at {factor}x for the round's later spawns (spawn_multiplier count=1 turns it off)"}
+
+
 def merc_time_bonus(g, mult: float, melee_only: bool = True) -> dict:
     """Every Mercenaries time pickup goes through one mulli (seconds * 30 frames): scale its immediate."""
     a, word, base = g.V.TIME_BONUS_MUL
@@ -943,7 +1004,11 @@ ALIASES = {"unlock": "mercenaries_unlock", "unlock_mercenaries": "mercenaries_un
            "address_table": "addresses", "random_loadouts": "random_loadout", "random_weapons": "random_loadout",
            "random_weapon": "random_loadout", "randomize": "random_loadout", "first_aid": "auto_first_aid",
            "infinite_spray": "auto_first_aid", "first_aid_spray": "auto_first_aid",
-           "infinite_first_aid": "auto_first_aid", "auto_heal": "auto_first_aid"}
+           "infinite_first_aid": "auto_first_aid", "auto_heal": "auto_first_aid",
+           # the Mercenaries clock and the wave (operator 2026-10-26: stalemates): the clock control's op names
+           "set_time": "merc_time", "set_clock": "merc_time", "merc_time_set": "merc_time",
+           "add_time": "merc_time_add", "subtract_time": "merc_time_add", "cut_time": "merc_time_add",
+           "more_time": "merc_time_add", "send_wave": "spawn_wave", "wave": "spawn_wave", "enemy_wave": "spawn_wave"}
 # The operator's own choices (the re_mods tool and apply_saved: operator=True) are kept per game process, like
 # re5_mods_tool's operator overrides: the bots' packages (mercs_bot.apply_ops, re4_merc_bot.apply_package / apply_round,
 # operator=False) then apply them instead of their defaults, and an operator loadout (a random draw or the game's own)
@@ -1065,10 +1130,11 @@ def _run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool
     elif op in ("mercenaries_unlock", "unlock_all"):
         res.update(unlock_all(g, on, op == "unlock_all"))
     elif op == "merc_time":
-        if g.room() >> 8 != 4:
-            raise ValueError("not in a Mercenaries stage")
-        g.m.wr(g.V.MERC_TIMER, struct.pack(">I", int(max(0, seconds) * g.V.FPS)))
-        res.update(seconds=round(g.m.u32(g.V.MERC_TIMER) / g.V.FPS, 2))
+        res.update(merc_time(g, seconds))
+    elif op == "merc_time_add":
+        res.update(merc_time_add(g, seconds))
+    elif op == "spawn_wave":
+        res.update(spawn_wave(g, count))
     elif op == "merc_time_bonus":
         res.update(merc_time_bonus(g, multiplier if on else 1.0, melee_only))
     elif op in ("explosive_melee", "exploding_melee", "melee_explode"):
@@ -1177,6 +1243,7 @@ def _run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool
         raise ValueError("op: status | list | give | replace | equip | weapon_mod | merc_loadout | spawn_multiplier | warp | "
                          "teleport | flashbang | grenade | flashbang_loop | explosive_rounds | unlock_all | mercenaries_unlock | "
                          "infinite_ammo | combo_freeze | merc_timer_freeze | unlimited_health | auto_first_aid | merc_time | "
+                         "merc_time_add | spawn_wave | "
                          "merc_time_bonus | explosive_melee | super_melee | auto_spin | aim_turn_speed | combo_time | "
                          "grenade_safe | punch | merc_loadout_list | random_loadout | item_ids | addresses")
     res["status"] = g.status()
@@ -1190,10 +1257,11 @@ class REModsIn(BaseModel):
                             # merc_timer_freeze|unlimited_health|auto_first_aid|merc_time|combo_time|grenade_safe|punch|
                             # merc_loadout_list|random_loadout|item_ids|addresses
     item: str = ""          # give/replace: item name or id ("rocket launcher", "flash grenade", "0x37")
-    count: int = 0          # give: amount (0 = the game's default); spawn_multiplier: factor 2..8
+    count: int = 0          # give: amount (0 = the game's default); spawn_multiplier / spawn_wave: factor 2..8
     target: str = ""        # replace: case item (name, id or slot); warp: room "r102"; flashbang/grenade: player|aim
     on: bool = True         # patches / unlock: on or off
-    seconds: float = 0      # merc_time; flashbang_loop period; auto_first_aid: the least seconds between two sprays (2.5)
+    seconds: float = 0      # merc_time (1..3600); merc_time_add (-3600..3600); flashbang_loop period; auto_first_aid:
+                            # the least seconds between two sprays (2.5)
     threshold: float | None = None  # auto_first_aid: spray under this share of full health (0.35)
     character: str = ""     # merc_loadout: leon | ada | hunk | krauser | wesker | any
     items: list[str] = []   # merc_loadout: item names, "name:amount" for ammo/counts ("handgun ammo:200");

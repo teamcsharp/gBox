@@ -18,7 +18,12 @@ OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
 ADOPTION = 'mercmode_adoption'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
-           'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {}}
+           'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {},
+           # the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemies for 15 s with time on the
+           # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)
+           'stalemate_cut': True, 'stalemate_cut_s': 5}
+STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
+STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
 # seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
 # one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
@@ -83,6 +88,10 @@ def normalize(patch, current=None):
     if type(out['enabled']) is not bool or type(out['presentation_priority']) is not bool or type(out['rounds_per_title']) is not int \
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
+    from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
+    if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
+            or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
+        raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
         raise ValueError('Choose distinct titles from re4, re5, re6 and re3')
@@ -229,8 +238,18 @@ def presentation_launch(store, worker, job):
         and job.get('id')==run.get('job') and run.get('phase')=='launching'
         and run.get('worker_id')==worker.get('id')==job.get('require_worker')
         and game.get('game_id')==run.get('game_id') and run.get('game_id') in spec.get('game_ids',())
-        and {k:v for k,v in ((game.get('launch') or {}).get('mercmode') or {}).items() if k!='selection'}
+        and {k:v for k,v in ((game.get('launch') or {}).get('mercmode') or {}).items()
+             if k!='selection' and k not in STALEMATE_KEYS}
             =={'random_characters':True,'random_stages':True})
+
+
+def launch_block(cfg, selection=None) -> dict:
+    """The launch payload's mercmode block (game.launch.mercmode): random character and stage every round, the DJ's
+    exact selection when there is one, and the bots' stalemate rule settings (gbox.mercs.stalemate.configure reads
+    them on the worker)."""
+    return {'random_characters': True, 'random_stages': True,
+            **({'selection': selection} if selection else {}),
+            **{k: cfg[k] for k in STALEMATE_KEYS if k in cfg}}
 
 
 def adopt_current(store, worker, session, telemetry, *, now=None):

@@ -206,7 +206,9 @@ def test_only_verified_titles_are_playable_and_preparation_does_not_claim_rpc_st
 def test_mode_launches_without_recorded_play_and_never_changes_modifiers():
     store,w,saver,calls,now,tick,run,job=playing()
     launch=calls[0]['input']
-    assert launch['game']['launch']['mercmode']=={'random_characters':True,'random_stages':True}
+    # the bots' stalemate rule rides along (gbox.mercs.stalemate: default on, the clock cut to 5 s); no modifiers do
+    assert launch['game']['launch']['mercmode']=={'random_characters':True,'random_stages':True,
+                                                  'stalemate_cut':True,'stalemate_cut_s':5}
     assert set(launch)=={'game','jump','memory_cards'}
     assert run['mercmode']['title'] in ('re4','re5')
     tick(60*60)

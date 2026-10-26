@@ -416,6 +416,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     screen says "playing" (RE5: the round's intro, the player in the stage), before the engine gets the round, with
     stats["prepared"] True (+ character, stage); the caller pauses the game right there and the switch resumes it."""
     stats = stats if stats is not None else {}
+    from .mercs import stalemate as stalemate_rule
+    stalemate_rule.configure(stats, game)        # the launch's MercMode stalemate_cut / stalemate_cut_s for the title's bot
     prof = profile_for(ad, game or {})
     if prof is None:
         raise ValueError("this title has no Mercenaries profile (a RAM map with a mercs block)")

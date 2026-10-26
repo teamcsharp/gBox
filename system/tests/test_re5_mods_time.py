@@ -103,3 +103,64 @@ def test_a_doubled_hourglass_is_not_doubled_again():
     assert r["verified"] and r["scaled"] == 1 and r["hourglass_seconds"] == [60]
     r = T.run(m, "time_bonus_multiplier", multiplier=2)                         # 60 now, but this op wrote it
     assert r["verified"] and r["scaled"] == 0 and struct.unpack(">h", m.read_memory(HG + T.HG_SECONDS, 2))[0] == 60
+
+
+# --- the stalemate controls (operator 2026-10-26): time taken away, the clock set, the bot's cut ---
+def test_negative_add_time_takes_time_without_the_hud_notice_and_never_under_one_second():
+    m = with_round(FakeRE5(), clock=90)
+    r = T.run(m, "add_time", seconds=-30)
+    assert r["verified"] and r["clock_before"] == 90.0 and r["clock_after"] == 60.0
+    assert r["added_seconds"] == -30 and r["requested_seconds"] == -30 and not r["clamped"]
+    assert m.rf(GAME + T.GAME_CLOCK) == 60.0
+    assert (GS + T.GS_SHOW_BONUS, 1) not in m.writes and (GS + T.GS_LAST_BONUS, 4) not in m.writes   # no "+NN Sec."
+    m.f32(GS + T.GS_CLOCK, 60.0)                                                 # the game's next-frame HUD copy
+    r = T.run(m, "subtract_time", seconds=-3600)                                # the alias; far more than is left
+    assert r["op"] == "add_time" and r["verified"] and r["clock_after"] == 1.0 and r["clamped"]
+    assert r["added_seconds"] == -59 and "stopped at 1 s" in r["note"]
+    assert m.rf(GAME + T.GAME_CLOCK) == 1.0 and (GS + T.GS_SHOW_BONUS, 1) not in m.writes
+    for bad in (0, 3601, -3601):
+        with pytest.raises(ValueError, match="-3600 .. 3600"):
+            T.run(m, "add_time", seconds=bad)
+    m.f32(GS + T.GS_CLOCK, 1.0)
+    r = T.run(m, "add_time", multiplier=30)                                    # the panel's value as the multiplier
+    assert r["verified"] and r["clock_after"] == 31.0 and r["added_seconds"] == 30
+    assert struct.unpack(">i", m.read_memory(GS + T.GS_LAST_BONUS, 4))[0] == 30 and m.read_memory(GS + T.GS_SHOW_BONUS, 1) == b"\x01"
+
+
+def test_set_time_sets_the_countdown_and_only_a_rise_shows_the_bonus_notice():
+    m = with_round(FakeRE5(), clock=90)
+    r = T.run(m, "set_time", seconds=5)
+    assert r["verified"] and r["clock_before"] == 90.0 and r["clock_after"] == 5.0 and r["set_seconds"] == 5
+    assert m.rf(GAME + T.GAME_CLOCK) == 5.0 and (GS + T.GS_SHOW_BONUS, 1) not in m.writes
+    m.f32(GS + T.GS_CLOCK, 5.0)
+    r = T.run(m, "set_clock", multiplier=300)                                   # the alias; the panel's value
+    assert r["op"] == "set_time" and r["verified"] and r["clock_after"] == 300.0
+    assert struct.unpack(">i", m.read_memory(GS + T.GS_LAST_BONUS, 4))[0] == 295 and m.read_memory(GS + T.GS_SHOW_BONUS, 1) == b"\x01"
+    for bad in (0, 3601, -5):
+        with pytest.raises(ValueError, match="1 .. 3600"):
+            T.run(m, "set_time", seconds=bad)
+    with pytest.raises(ValueError, match="a number"):
+        T.run(m, "set_time", seconds="soon")
+    model = T.RE5ModsIn(session_id="w-1", op="add_time", seconds=-30)           # the job's input carries the seconds
+    assert model.seconds == -30 and T.RE5ModsIn(session_id="w-1", op="status").seconds is None
+
+
+def test_the_bots_set_clock_uses_the_owner_path_and_never_raises():
+    m = with_round(FakeRE5(), clock=90)
+    r = T.set_clock(m, 5)
+    assert r["verified"] and r["clock_before"] == 90.0 and r["clock_after"] == 5.0 and m.rf(GAME + T.GAME_CLOCK) == 5.0
+    assert (GS + T.GS_SHOW_BONUS, 1) not in m.writes
+    m.f32(GS + T.GS_CLOCK, 5.0)
+    assert T.set_clock(m, 0)["clock_after"] == 1.0                              # never at or under zero
+    assert T.set_clock(FakeRE5(), 5) == {"verified": False, "reason": "no round"}
+    m.u32(AREA, 0x1234)
+    r = T.set_clock(m, 5)
+    assert r["verified"] is False and "clock write unavailable" in r["reason"]
+
+
+def test_status_reports_the_clock_and_the_clock_capabilities():
+    m = with_round(FakeRE5(), clock=90)
+    st = T.run(m, "status")["status"]
+    assert st["merc_seconds_left"] == 90.0
+    assert st["capabilities"]["add_time"]["available"] and st["capabilities"]["set_time"]["available"]
+    assert T.run(FakeRE5(), "status")["status"]["merc_seconds_left"] is None

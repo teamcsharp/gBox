@@ -278,10 +278,17 @@ class RE5:
                   egg_status=eggs.get('status','disabled'),egg_native_equipped=bool(eggs.get('native_equipped')),
                   mine_animation_maintenance=self.orig.get('mine_animation_last'),
                   egg_animation_maintenance=self.orig.get('egg_animation_last'))
+        try:                                             # the Mercenaries clock, when a round is up (the panel shows it)
+            st["merc_seconds_left"] = round(self.f32(gamesys(self) + GS_CLOCK), 1)
+        except (RuntimeError, OSError, struct.error):
+            st["merc_seconds_left"] = None
         from .mercs.titles import re5_controls
         with re5_controls.LOCK:
             st["capabilities"] = {op: {"available": True, "reason": "Verified build; readback required."}
                                   for op in OPERATOR_SETTINGS}
+            for op in ("add_time", "set_time"):          # the clock controls (operator 2026-10-26: stalemates)
+                st["capabilities"][op] = {"available": True,
+                                          "reason": "Authoritative aGame countdown write, read back; a running round."}
             st["capabilities"]["random_weapon"] = re5_controls.capability(self.orig)
             st['capabilities']['select_weapon']=re5_controls.capability(self.orig)
             st['available_weapons']=re5_controls.available(self.orig)
@@ -1125,8 +1132,17 @@ def gamesys(g: RE5) -> int:
     return gs
 
 
-def _add_clock(ad, gs: int, seconds: float) -> dict:
-    """Mirror the verified native aGame add-time data path; never fall back to a transient HUD-only write."""
+MIN_CLOCK_S = 1.0                 # no write ever leaves the countdown at or under this: 0 is the round's end
+ADD_TIME_RANGE = (-3600, 3600)    # add_time: seconds added (or, negative, taken) in one write
+SET_TIME_RANGE = (1, 3600)        # set_time: the countdown's new value
+
+
+def _add_clock(ad, gs: int, seconds: float = 0.0, absolute=None) -> dict:
+    """Mirror the verified native aGame add-time data path; never fall back to a transient HUD-only write.
+
+    seconds: added to the authoritative countdown (negative takes time away); absolute: the countdown's new value
+    instead. Either way the clock written is never under MIN_CLOCK_S (a cut stops at one second: the round goes on
+    to its own end). The HUD's "+NN Sec." notice is published only when time was added, never for a cut."""
     import math
     rd = lambda address, size: bytes(ad.read_memory(address, size))
     u32 = lambda address: struct.unpack(">I", rd(address, 4))[0]
@@ -1144,29 +1160,72 @@ def _add_clock(ad, gs: int, seconds: float) -> dict:
     clock, before = f32(gs + GS_CLOCK), f32(owner + GAME_CLOCK)
     if not all(math.isfinite(v) and 0 < v < 86400 for v in (clock, before)) or abs(clock-before) > 2:
         raise RuntimeError("authoritative countdown disagrees with the live HUD or round is over")
+    wanted = float(absolute) if absolute is not None else before + float(seconds)
+    target = max(MIN_CLOCK_S, wanted)
+    delta = target - before
     if u32(S_AREA) != area or u32(area + AREA_GAME) != owner or u32(owner) != GAME_VT \
             or u32(S_MAIN) != main or u32(main + MAIN_GAMESYS) != gs:
         raise RuntimeError("timer owner changed before the write")
-    ad.write_memory(owner + GAME_CLOCK, struct.pack(">f", before + seconds))
+    ad.write_memory(owner + GAME_CLOCK, struct.pack(">f", target))
     after = f32(owner + GAME_CLOCK)
-    verified = math.isfinite(after) and before + seconds - .5 <= after <= before + seconds + .01
-    if verified:
+    verified = math.isfinite(after) and target - .5 <= after <= target + .01
+    if verified and delta >= 1:
         # The game copies owner -> HUD on its next frame; do not overwrite a concurrently advancing HUD clock.
-        ad.write_memory(gs + GS_LAST_BONUS, struct.pack(">i", int(round(seconds))))
+        ad.write_memory(gs + GS_LAST_BONUS, struct.pack(">i", int(round(delta))))
         ad.write_memory(gs + GS_SHOW_BONUS, b"\x01")
     return {"verified": verified, "clock_before": round(clock, 2), "clock_after": round(after, 2),
-            "clock_owner": hex(owner), **({"reason": "authoritative countdown write not confirmed"} if not verified else {})}
+            "clock_owner": hex(owner), "applied_seconds": round(delta, 2), "clamped": target != wanted,
+            **({"reason": "authoritative countdown write not confirmed"} if not verified else {})}
+
+
+def _seconds(value, what: str) -> int:
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} seconds: a number") from None
+    return n
 
 
 def add_time(g: RE5, seconds: float = 60.0) -> dict:
-    """Add to the authoritative aGame countdown and publish the native HUD bonus notification."""
-    n = int(round(float(seconds or 60)))
-    if not 1 <= n <= 3600:
-        raise ValueError("add_time seconds: 1 .. 3600")
+    """Add to (or, negative, take from) the authoritative aGame countdown; added time publishes the native HUD bonus
+    notification, a cut shows no notice and never leaves less than MIN_CLOCK_S on the clock."""
+    n = _seconds(60 if seconds is None else seconds, "add_time")
+    if n == 0 or not ADD_TIME_RANGE[0] <= n <= ADD_TIME_RANGE[1]:
+        raise ValueError("add_time seconds: -3600 .. 3600, not 0 (negative takes time away)")
     gs = gamesys(g)
     result = _add_clock(g.ad, gs, n)
-    return {**result, "added_seconds": n if result["verified"] else 0,
-            "note": "the HUD shows +NN Sec. like a finisher's bonus"}
+    applied = int(round(result["applied_seconds"])) if result["verified"] else 0
+    return {**result, "requested_seconds": n, "added_seconds": applied,
+            "note": "the HUD shows +NN Sec. like a finisher's bonus" if n > 0 else
+            "time taken from the authoritative countdown; the HUD follows next frame, no bonus notice"
+            + (f"; stopped at {MIN_CLOCK_S:g} s" if result.get("clamped") else "")}
+
+
+def set_time(g: RE5, seconds) -> dict:
+    """Set the authoritative aGame countdown to `seconds` (SET_TIME_RANGE), read back; a rise publishes the HUD notice."""
+    n = _seconds(seconds, "set_time")
+    if not SET_TIME_RANGE[0] <= n <= SET_TIME_RANGE[1]:
+        raise ValueError("set_time seconds: 1 .. 3600")
+    gs = gamesys(g)
+    result = _add_clock(g.ad, gs, absolute=n)
+    return {**result, "set_seconds": n,
+            "note": "the authoritative countdown set; the HUD follows next frame"}
+
+
+def set_clock(ad, seconds) -> dict:
+    """The bots' stalemate cut (gbox.mercs.stalemate): the countdown set to `seconds` (never under MIN_CLOCK_S) through
+    the same verified owner path as add_time, straight from the adapter like maintain_kill_time; a failure comes back as
+    a reason (verified False), never raised, so the bot's tick goes on."""
+    try:
+        rd = lambda address, size: bytes(ad.read_memory(address, size))
+        ptr = lambda value: 0x30000000 <= value < 0x40000000
+        main = struct.unpack(">I", rd(S_MAIN, 4))[0]
+        gs = struct.unpack(">I", rd(main + MAIN_GAMESYS, 4))[0] if ptr(main) else 0
+        if not ptr(gs):
+            return {"verified": False, "reason": "no round"}
+        return _add_clock(ad, gs, absolute=max(MIN_CLOCK_S, float(seconds)))
+    except Exception as error:         # A lost adapter must not stop the bot's next snapshot.
+        return {"verified": False, "reason": f"clock write unavailable: {type(error).__name__}: {str(error)[:120]}"}
 
 
 def hourglasses(g: RE5) -> list[int]:
@@ -1281,7 +1340,9 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "random_weapons": "loadout", "randomize": "random_cheats", "randomizer": "random_cheats",
           "random": "random_cheats", "unlimited_life": "unlimited_health", "infinite_health": "unlimited_health",
           "infinite_life": "unlimited_health", "time_per_kill": "kill_time", "kill_bonus": "kill_time",
-          "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "time_bonus": "time_bonus_multiplier",
+          "add_minute": "add_time", "merc_time": "add_time", "more_time": "add_time", "subtract_time": "add_time",
+          "cut_time": "add_time", "set_clock": "set_time", "merc_time_set": "set_time", "clock": "set_time",
+          "time_bonus": "time_bonus_multiplier",
           "merc_time_bonus": "time_bonus_multiplier", "auto_first_aid": "infinite_spray", "first_aid": "infinite_spray",
           "first_aid_spray": "infinite_spray", "infinite_first_aid": "infinite_spray",
           "auto_qte": "instant_qte", "qte_assist": "instant_qte"}.get(op, op)
@@ -1371,14 +1432,20 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         # so a later playing_ops call retains the operator's seconds and switch
         multiplier = res["seconds"] if res["seconds_max"] == res["seconds"] else None
     elif op == "add_time":
-        res.update(add_time(g, extra.get("seconds") or multiplier or 60))
+        seconds = extra.get("seconds")
+        if seconds is None:
+            seconds = multiplier if multiplier is not None else 60    # the panel carries the seconds as the value
+        res.update(add_time(g, seconds))
+    elif op == "set_time":
+        seconds = extra.get("seconds")
+        res.update(set_time(g, multiplier if seconds is None else seconds))
     elif op == "time_bonus_multiplier":
         res.update(time_bonus_multiplier(g, multiplier if multiplier is not None else extra.get("x", 1)))
     elif op == "revert_all":
         res.update(revert_all(g))
     else:
         raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | "
-                         "replace_rockets | random_cheats | kill_time | add_time | time_bonus_multiplier | revert_all | addresses")
+                         "replace_rockets | random_cheats | kill_time | add_time | set_time | time_bonus_multiplier | revert_all | addresses")
     if operator and op in OPERATOR_SETTINGS and res.get("verified"):
         g.orig.setdefault("operator_overrides", {})[op] = {"multiplier": multiplier, "on": bool(on)}
     res["status"] = g.status()
@@ -1430,6 +1497,7 @@ class RE5ModsIn(BaseModel):
     weapon: int | None = None      # existing loaded quick-slot gun; selection is retained for this session
     only: bool = False             # weapon_override: the chosen weapon in every gun slot (e.g. longbow-only rounds)
     ops: list[dict] = []           # apply_saved: [{name, op, on, multiplier?, weapon?, only?}]
+    seconds: float | None = None   # add_time: -3600..3600 (negative takes time away); set_time: the clock's new value 1..3600
 
 
 class RE5ModsOut(BaseModel):
@@ -1443,7 +1511,9 @@ def re5_mods(inp: RE5ModsIn, ctx):
     times faster, aimed and not; "max" = 10), fire_rate multiplier=N (firing tables and timer scaling; 80 is not
     measured shots per second; guarded magnum animation capped at8x), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
     (living HP refill and signature-verified Muteki incoming-hit immunity each snapshot), bullet_damage multiplier=N,
-    revert_all, status, addresses. The Mercenaries playbook applies the profile's package at round start."""
+    add_time seconds=N (-3600..3600: time added to / taken from the Mercenaries clock, never under 1 s), set_time
+    seconds=N (the clock set to 1..3600 s, e.g. 5 to end a stalemate), revert_all, status, addresses. The Mercenaries
+    playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") != "ps3":
@@ -1451,4 +1521,5 @@ def re5_mods(inp: RE5ModsIn, ctx):
     if (inp.op or "").strip().lower() == "apply_saved":
         return {"result": apply_saved(ad, inp.ops)}
     return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
-                           mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon,only=inp.only)}
+                           mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon,only=inp.only,
+                           **({"seconds": inp.seconds} if inp.seconds is not None else {}))}
