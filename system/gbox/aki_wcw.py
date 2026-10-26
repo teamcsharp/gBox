@@ -767,7 +767,14 @@ def build_mod(cfg, game: dict, pairs: list[tuple[dict, dict]], progress=lambda p
         shutil.rmtree(d)
     d.mkdir(parents=True)
     t = title or " vs ".join(m["name"] for m, _w in pairs)
-    img = ("WCW vs. nWo World Tour - " if gid == "59bf059d2eadd372" else "WCW nWo Revenge - ") + re.sub(r"[^\w .()'-]+", "", t).strip() + " (USA).z64"
+    if gid == "59bf059d2eadd372":
+        stem = "WCW vs. nWo World Tour - "
+    elif gid == "061264c636cc284d":
+        stem = "WCW-nWo Revenge (Europe) - "
+    else:
+        stem = "WCW nWo Revenge - "
+    region = "(Europe)" if gid == "061264c636cc284d" else "(USA)"
+    img = stem + re.sub(r"[^\w .()'-]+", "", t).strip() + f" {region}.z64"
     (d / img).write_bytes(b["rom"])
     (d / ".gbox-mod.json").write_text(json.dumps({
         "name": name, "game_id": gid, "image": img, "title": t, "built": time.time(),

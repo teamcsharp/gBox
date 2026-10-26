@@ -21,8 +21,8 @@ WRITERS = [
     ("gta_stories_models", ["player"], "Toni, every outfit"),
     ("re6_tool", ["player", "enemies", "enemy:<family>"], "Leon in every costume; zombies / J'avo"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
-    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour "
-                                                "(gbox.aki_wcw); Revenge has no writer yet"),
+    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour + Revenge "
+                                                 "(gbox.aki_wcw; Revenge USA + EU writer)"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
     ("pe_swap", ["player"], "Aya, all 5 outfits (field + battle share the model)"),
     ("ff7_swap", ["player"], "Cloud: field model (FIELD/CLOUD.BCX) + battle model (ENEMY6/CLOUD.LZS)"),

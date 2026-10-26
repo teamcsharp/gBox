@@ -79,3 +79,23 @@ def test_nw2p_writer_donor_replace_roundtrip(eu, tmp_path):
     assert struct.unpack_from(">H", out, W.Rom.r2r(target["set_addr"]))[0] & 0x7F == si
     # the donor's untouched geometry is what a new body record points at
     assert all(isinstance(v["model"], dict) for k, v in dparts.items() if isinstance(k, int))
+
+
+def _mod_image(gid: str, title: str) -> str:
+    """The region-aware mod image name build_mod derives (pure: no config needed)."""
+    import re
+    if gid == "59bf059d2eadd372":
+        stem = "WCW vs. nWo World Tour - "
+    elif gid == "061264c636cc284d":
+        stem = "WCW-nWo Revenge (Europe) - "
+    else:
+        stem = "WCW nWo Revenge - "
+    region = "(Europe)" if gid == "061264c636cc284d" else "(USA)"
+    return stem + re.sub(r"[^\w .()'-]+", "", title).strip() + f" {region}.z64"
+
+
+def test_mod_image_eu_region(eu):
+    """The EU mod must be named (Europe).z64, not the latent (USA).z64 bug."""
+    assert _mod_image("061264c636cc284d", "Giant as Sting") == "WCW-nWo Revenge (Europe) - Giant as Sting (Europe).z64"
+    assert _mod_image("bca7ec4ecf71d164", "Giant as Sting") == "WCW nWo Revenge - Giant as Sting (USA).z64"
+    assert _mod_image("59bf059d2eadd372", "Goldberg vs Hogan") == "WCW vs. nWo World Tour - Goldberg vs Hogan (USA).z64"
