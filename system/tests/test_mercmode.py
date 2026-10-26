@@ -742,11 +742,13 @@ def test_re4_menu_layer_honours_a_requested_round_once_then_returns_to_random():
 
 
 
-# --- warm pool: the next title boots paused in the round's last 30 s and is swapped in at the boundary ---
+# --- warm pool: the next title boots paused beside the playing one as soon as it is up, has its round prepared in the
+# background, and is swapped in - already in gameplay - at the round boundary ---
 
-def warm_playing(**cfg):
+def warm_playing(features=(M.WARM_FEATURE,),memory=None,**cfg):
     store,w,saver,calls,now,tick=rig()
-    w['features']=[M.WARM_FEATURE]
+    w['features']=list(features)
+    if memory is not None:w['resources']['memory_available_bytes']=memory
     M.configure(store,w['name'],{'enabled':True,**cfg})                    # keep_warm 1 is the default
     tick();gid=calls[0]['input']['game']['game_id']
     sid='w1-'+calls[0]['id']
@@ -761,6 +763,29 @@ def warm_playing(**cfg):
 
 def clock(run,now,left):
     S.telemetry_put(run['session_id'],{'running':True,'stats':{'screen':'playing','timer':left}},now=now[0])
+
+
+def preloads(calls):
+    """The warm preloads submitted so far (launch_game warm=true), oldest first."""
+    return [c for c in calls if c['tool']=='launch_game' and c['input'].get('warm') is True]
+
+
+def prepares(calls,sid=None):
+    """The round preparations submitted so far (autoplay op=prepare)."""
+    return [c for c in calls if c['tool']=='autoplay' and c['input'].get('op')=='prepare'
+            and (sid is None or c['input']['session_id']==sid)]
+
+
+ROUND_READY={'state':'ready','ready':True,'paused':True,'prepared':True,'source':'native_round','screen':'playing'}
+
+
+def round_ready(store,sid,title,prep=None,**fields):
+    """The worker's receipt: this warm game's menus were driven to the first frame of a round and it is paused there
+    (stamped with its prepare job when `prep` is given, as the worker does)."""
+    receipt=ROUND_READY|{'title':M.TITLES[title]['map_id'],'character':'Ada','stage':'Castle','stage_index':1}\
+        |({'job':prep['id']} if prep else {})|fields
+    store.put('session',sid,store.get('session',sid)|{'detail':{'warm':receipt}})
+    return receipt
 
 
 def up(store,launch,w,paused=True):
@@ -791,26 +816,34 @@ def ops(calls,sid,op=None):
 
 
 def preloaded(**cfg):
+    """A title plays and the next one's preload is on its way (submitted as soon as the playing one came up)."""
     store,w,saver,calls,now,tick,run,job=warm_playing(**cfg)
-    clock(run,now,25);tick(1)
-    return store,w,saver,calls,now,tick,run,job,calls[-1]
+    return store,w,saver,calls,now,tick,run,job,preloads(calls)[-1]
 
 
-def test_next_title_preloads_paused_beside_the_playing_one_while_its_last_round_plays():
-    # operator 2026-10-24: "precaching of the next rom during the playing of the current rom" - not in the last 30 s
-    store,w,saver,calls,now,tick,run,job=warm_playing()
-    clock(run,now,600);tick(1)
-    pre=calls[-1]
-    assert pre['tool']=='launch_game' and pre['actor']==S.ACTOR and pre['agent_use']
-    assert pre['input']['warm'] is True and pre['input']['keep_sessions']==[run['session_id']]   # never closes this game
+def test_next_title_preloads_paused_beside_the_playing_one_as_soon_as_it_is_up():
+    # operator 2026-10-24: "precaching of the next rom during the playing of the current rom"; 2026-10-26 (after a service
+    # restart left the pool cold): the pool boots at once, not only when the first title's last round plays
+    store,w,saver,calls,now,tick=rig()
+    w['features']=[M.WARM_FEATURE];M.configure(store,w['name'],{'enabled':True,'rounds_per_title':5})
+    tick();sid='w1-'+calls[0]['id']
+    store.put('session',sid,{'session_id':sid,'game_id':calls[0]['input']['game']['game_id'],'state':'running'})
+    assert not preloads(calls)                                               # nothing until this title's session is up
+    tick(1)
+    pre=preloads(calls)[-1];run=store.get(S.STATE,w['name'])
+    assert run['phase']=='starting' and run['mercmode_prelaunch']['job']==pre['id']   # booted beside it, before autoplay even started
+    assert not [c for c in calls if c['tool']=='autoplay']
+    assert pre['actor']==S.ACTOR and pre['agent_use']
+    assert pre['input']['warm'] is True and pre['input']['keep_sessions']==[sid]   # never closes this game
     assert pre['input']['game']['game_id']!=run['game_id']
     nxt=store.get(M.NEXT,w['name'])['title']
     assert pre['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
     assert M.warm_pool(store,w['name'])[nxt]['state']=='prelaunch'
-    tick(1);clock(run,now,20);tick(1)
-    assert calls[-1] is pre                                                  # preloaded once per round
-    assert store.get(S.STATE,w['name'])['session_id']==run['session_id']     # the current title plays on
-    assert not ops(calls,run['session_id'],'pause') and not ops(calls,run['session_id'],'stop_game')
+    tick(S.START_GRACE);run=store.get(S.STATE,w['name']);clock(run,now,600);tick(1);clock(run,now,20);tick(1)
+    assert preloads(calls)==[pre]                                            # preloaded once per run
+    assert store.get(S.STATE,w['name'])['session_id']==sid                   # the current title plays on
+    assert not ops(calls,sid,'pause') and not ops(calls,sid,'stop_game')
+    assert len(store.all('job'))==3                                          # the launch, its preload, autoplay: nothing else
 
 
 def test_preloaded_title_is_swapped_in_at_the_round_boundary_without_a_cold_boot():
@@ -820,15 +853,14 @@ def test_preloaded_title_is_swapped_in_at_the_round_boundary_without_a_cold_boot
     assert M.warm_pool(store,w['name'])[nxt]['session_id']==psid
     assert store.get('slabel',psid)['warm'] and store.get('slabel',psid)['owner']=='agent'   # labelled, not current
     assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
-    tick(1)
+    launches=len([c for c in calls if c['tool']=='launch_game'])
+    tick(1)                                                                  # the park and the swap in one tick (no 30 s gap)
     assert ops(calls,run['session_id'])[-1]['input']=={'session_id':run['session_id'],'op':'pause','args':{'warm':True}}
     assert not ops(calls,run['session_id'],'stop_game')                      # parked, never closed
     assert M.warm_pool(store,w['name'])[title]['state']=='parked'
-    assert S.worker_reason(store,w,S.settings(store)|{'workers':[w['name']]},store.running_sessions(),now[0]) is None
-    launches=len([c for c in calls if c['tool']=='launch_game'])
-    tick(1)
     cur=store.get(S.STATE,w['name'])
     assert cur['session_id']==psid and cur['phase']=='starting' and cur['mercmode']['title']==nxt
+    assert cur['warm_from']=='prelaunch'                                     # a live game: the PiP shows no loading screen
     assert ops(calls,psid)[-1]['input']=={'session_id':psid,'op':'resume','args':{'warm':False}}
     assert len([c for c in calls if c['tool']=='launch_game'])==launches     # no cold boot
     assert nxt not in M.warm_pool(store,w['name']) and store.get(M.NEXT,w['name']) is None
@@ -984,8 +1016,8 @@ def test_parked_title_is_resumed_on_its_next_turn_without_any_launch():
     body=boundary(second,now[0])|{'round_id':'b'*32}
     assert saver.round_boundary(body,job2,now[0])['rotate_requested'] is True
     psid=second['session_id']
-    tick(1)
-    assert 'finish pausing' in tick(1)[w['name']]                            # waits for its pause to land first
+    assert 'finish pausing' in tick(1)[w['name']]                            # parked; the first waits for its pause to land
+    assert 'finish pausing' in tick(1)[w['name']]
     pause=ops(calls,run['session_id'],'pause')[-1];store.put('job',pause['id'],pause|{'state':'succeeded'})
     tick(1)
     assert ops(calls,psid,'pause') and ops(calls,run['session_id'],'resume')
@@ -994,17 +1026,28 @@ def test_parked_title_is_resumed_on_its_next_turn_without_any_launch():
     assert not [c for c in calls if c['tool']=='session_op' and c['input']['op']=='stop_game']
 
 
-def test_failed_preload_falls_back_to_a_cold_launch_of_the_promised_title():
+def test_a_failed_preload_is_tried_again_next_round_and_never_a_cold_switch_while_this_title_plays():
+    # operator 2026-10-26: "the transitions between loads is just too long and I need it to be a seamless swap"
     store,w,saver,calls,now,tick,run,job,pre=preloaded()
     nxt=store.get(M.NEXT,w['name'])['title']
     store.put('job',pre['id'],pre|{'state':'failed','error':'boot failed'})
-    saver.round_boundary(boundary(run,now[0]),job,now[0]);tick(1)
-    assert nxt not in M.warm_pool(store,w['name'])                           # the failed preload left the pool
-    tick(1)
-    cold=calls[-1]
-    assert cold['tool']=='launch_game' and cold['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
-    assert 'warm' not in cold['input'] and cold['input']['keep_sessions']==[run['session_id']]   # the parked one stays
-    assert store.get(S.STATE,w['name'])['phase']=='launching'
+    for attempt in range(1,M.EXTRA_ROUNDS_MAX+1):
+        body=boundary(run,now[0])|{'round_id':chr(ord('a')+attempt)*32}
+        assert saver.round_boundary(body,job,now[0])['rotate_requested'] is False   # this title plays another round
+        cur=store.get(S.STATE,w['name'])
+        assert cur['mercmode_warm_attempts']==attempt and cur['mercmode_extra_rounds']==attempt
+        assert not ops(calls,run['session_id'],'stop_game') and not ops(calls,run['session_id'],'pause')
+        tick(1)
+        if attempt<M.EXTRA_ROUNDS_MAX:
+            again=preloads(calls)[-1]                                            # the same promised title, preloaded again
+            assert again is not pre and again['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
+            assert store.get(M.NEXT,w['name'])['title']==nxt
+            store.put('job',again['id'],again|{'state':'failed','error':'boot failed'})
+    cur=store.get(S.STATE,w['name'])
+    assert 'staying in this title' in cur['mercmode_stay'] and M.TITLES[nxt]['name'] in cur['mercmode_stay']
+    assert len(preloads(calls))==M.EXTRA_ROUNDS_MAX                           # no further attempts
+    assert cur['session_id']==run['session_id'] and cur['phase']=='playing'    # never a cold switch: it keeps playing
+    assert not [c for c in calls if c['tool']=='launch_game' and not c['input'].get('warm')][1:]
 
 
 def test_failed_resume_closes_that_game_and_cold_launches_the_same_title():
@@ -1023,34 +1066,40 @@ def test_failed_resume_closes_that_game_and_cold_launches_the_same_title():
     assert 'warm' not in cold['input']
 
 
-def test_a_preload_that_could_not_pause_is_closed_and_its_turn_launches_cold():
+def test_a_preload_that_could_not_pause_is_closed_and_preloaded_again_at_the_next_round():
     store,w,saver,calls,now,tick,run,job,pre=preloaded()
     nxt=store.get(M.NEXT,w['name'])['title']
     psid=up(store,pre,w,paused=False);tick(1)
     assert ops(calls,psid,'stop_game') and nxt not in M.warm_pool(store,w['name'])
-
-
-def test_low_memory_skips_the_preload_and_the_park():
-    store,w,saver,calls,now,tick,run,job=warm_playing()
-    w['resources']['memory_available_bytes']=4*GIB
-    launches=len([c for c in calls if c['tool']=='launch_game'])
-    clock(run,now,25);tick(1)
-    assert len([c for c in calls if c['tool']=='launch_game'])==launches
-    assert 'GiB' in store.get(S.STATE,w['name'])['mercmode_prelaunch']['skipped']
-    nxt=store.get(M.NEXT,w['name'])['title']                                 # the pick still holds at the switch
-    saver.round_boundary(boundary(run,now[0]),job,now[0]);tick(1)
-    assert ops(calls,run['session_id'],'stop_game') and not ops(calls,run['session_id'],'pause')
-    store.put('session',run['session_id'],store.get('session',run['session_id'])|{'state':'ended'})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False   # nothing ready: play on
+    store.put('session',psid,store.get('session',psid)|{'state':'ended'})
     tick(1)
-    cold=calls[-1]
-    assert cold['tool']=='launch_game' and cold['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
-    assert 'keep_sessions' not in cold['input'] and 'warm' not in cold['input']
+    again=preloads(calls)[-1]
+    assert again is not pre and again['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
+    assert not ops(calls,run['session_id'],'stop_game') and not ops(calls,run['session_id'],'pause')
+
+
+def test_low_memory_skips_the_preload_and_this_title_plays_on_instead_of_a_cold_switch():
+    store,w,saver,calls,now,tick,run,job=warm_playing(memory=4*GIB)
+    assert not preloads(calls)
+    assert 'GiB' in store.get(S.STATE,w['name'])['mercmode_prelaunch']['skipped']
+    nxt=store.get(M.NEXT,w['name'])['title']                                 # the pick holds for the next attempt
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
+    tick(1)
+    assert not ops(calls,run['session_id'],'stop_game') and not ops(calls,run['session_id'],'pause')
+    cur=store.get(S.STATE,w['name'])
+    assert cur['mercmode_warm_attempts']==1 and store.get(M.NEXT,w['name'])['title']==nxt
+    assert 'GiB' in cur['mercmode_prelaunch']['skipped'] and not preloads(calls)   # tried again this round: still no room
+    assert saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0])['rotate_requested'] is False
+    w['resources']['memory_available_bytes']=32*GIB                         # memory came back: the next attempt preloads
+    tick(1)
+    assert preloads(calls)[-1]['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
+    assert store.get(S.STATE,w['name'])['mercmode_warm_attempts']==2
 
 
 @pytest.mark.parametrize('cfg,features',[({'keep_warm':0},[M.WARM_FEATURE]),({},[])])
 def test_keep_warm_zero_or_an_older_worker_keeps_the_cold_switch(cfg,features):
-    store,w,saver,calls,now,tick,run,job=warm_playing(**cfg)
-    w['features']=features
+    store,w,saver,calls,now,tick,run,job=warm_playing(features=features,**cfg)
     launches=len([c for c in calls if c['tool']=='launch_game'])
     clock(run,now,25);tick(1)
     assert len([c for c in calls if c['tool']=='launch_game'])==launches and not M.warm_pool(store,w['name'])
@@ -1072,7 +1121,7 @@ def test_pool_never_touches_a_session_that_is_not_exactly_ours(foreign):
     store.put(M.NEXT,w['name'],{'title':other,'selection':None,'at':now[0]})
     saver.round_boundary(boundary(run,now[0]),job,now[0]);tick(1);tick(1)
     assert not ops(calls,osid)                                               # never paused, resumed or stopped
-    assert other not in M.warm_pool(store,w['name'])
+    assert all(r.get('session_id')!=osid for r in M.warm_pool(store,w['name']).values())   # dropped, not adopted
     assert store.get(S.STATE,w['name']) is None or store.get(S.STATE,w['name']).get('session_id')!=osid
 
 
@@ -1154,3 +1203,255 @@ def test_parking_a_title_stops_its_bot_before_pausing_the_game():
     stop=[i for i,c in enumerate(calls) if c['tool']=='autoplay' and c['input']=={'session_id':sid,'op':'stop'}]
     pause=[i for i,c in enumerate(calls) if c['tool']=='session_op' and c['input'].get('session_id')==sid and c['input']['op']=='pause']
     assert stop and pause and stop[0] < pause[0]
+
+
+# --- round preparation (operator 2026-10-26: "continue playing a round of mercenaries while the next session is loading and
+# preparing in the background so the swap is seamless"): a warm title's own menus are driven to the first frame of a round
+# in the background (autoplay op=prepare), it is paused there ("ready"), and the swap resumes it straight into gameplay ---
+
+PREPARED=(M.WARM_FEATURE,M.PREPARE_FEATURE)
+
+
+def prepare_done(store,w,prep,result=None):
+    """The worker took the prepare job (its tool call answered at once; the walk reports through the session detail)."""
+    store.put('job',prep['id'],prep|{'state':'succeeded','worker_id':w['id'],
+        'output':{'result':result or {'started':'prepare: re4_merc_bot','mode':'prepare','state':'preparing','prepared':False}}})
+
+
+def prepared_flow():
+    """A title plays; its successor was preloaded, paused at its boot menu, then prepared: the pool entry is 'ready'."""
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1];prepare_done(store,w,prep)
+    round_ready(store,psid,nxt,prep);tick(1)
+    return store,w,saver,calls,now,tick,run,job,pre,psid,nxt
+
+
+def test_a_preload_paused_at_its_menu_is_prepared_to_its_round_start_and_swapped_in_playing():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title']
+    assert not prepares(calls)                                               # not before the boot has paused at its menu
+    psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1]
+    assert prep['actor']==S.ACTOR and prep['agent_use'] and prep['require_worker']==w['id']
+    assert prep['input']=={'session_id':psid,'op':'prepare'}                 # the title's own menus, no selection queued
+    row=M.warm_pool(store,w['name'])[nxt]
+    assert row['state']=='prelaunch' and row['prepare_job']==prep['id']
+    assert store.get('slabel',psid)['warm_state']=='preparing'
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False   # not ready: another round
+    cur=store.get(S.STATE,w['name'])
+    assert cur['mercmode_waiting_for']=='preparing' and cur['mercmode_extra_rounds']==1
+    assert not ops(calls,run['session_id'],'pause') and not ops(calls,run['session_id'],'stop_game')
+    prepare_done(store,w,prep)
+    round_ready(store,psid,nxt,{'id':'an-earlier-prepare'});tick(1)
+    assert M.warm_pool(store,w['name'])[nxt]['state']=='prelaunch'          # another preparation's receipt: not this one's
+    round_ready(store,psid,nxt,prep);tick(1)
+    row=M.warm_pool(store,w['name'])[nxt]
+    assert row['state']=='ready' and row['prepared']['character']=='Ada' and row['prepared']['stage']=='Castle'
+    assert store.get('slabel',psid)['warm_state']=='round_ready'
+    assert len(prepares(calls))==1                                           # prepared once
+    assert saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0])['rotate_requested'] is True
+    launches=len([c for c in calls if c['tool']=='launch_game'])
+    tick(1)                                                                  # the park and the resume in one tick
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and cur['phase']=='starting' and cur['warm_from']=='ready'
+    assert cur['mercmode']['prepared']['character']=='Ada'
+    assert ops(calls,psid,'resume') and ops(calls,run['session_id'],'pause')
+    assert not any(c['tool'] in ('re_mods','re5_mods') for c in calls)      # the prepared round plays as prepared
+    resume=ops(calls,psid,'resume')[-1];store.put('job',resume['id'],resume|{'state':'succeeded'})
+    tick(1)
+    start=calls[-1]
+    assert start['tool']=='autoplay' and start['input']['session_id']==psid and start['input']['op']=='start'
+    assert store.get(S.STATE,w['name'])['phase']=='playing'
+    assert len([c for c in calls if c['tool']=='launch_game'])==launches     # no boot, no menu walk: gameplay
+    assert [r for r in store.all(S.LOG) if r.get('session_id')==run['session_id']][-1]['why']==S.ROTATION
+
+
+def test_a_worker_without_prepare_swaps_at_the_boot_menu_as_before():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    psid=up(store,pre,w);tick(1)
+    assert not prepares(calls)
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+
+
+def test_a_parked_title_is_prepared_again_once_it_is_picked_to_play_next():
+    # ... and only after its pause and its bot's stop have landed (the worker refuses a prepare on a stopping bot)
+    store,w,saver,calls,now,tick,run,job,pre,psid,nxt=prepared_flow()
+    saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0]);tick(1)
+    resume=ops(calls,psid,'resume')[-1];store.put('job',resume['id'],resume|{'state':'succeeded'});tick(1)
+    second=store.get(S.STATE,w['name']);assert second['phase']=='playing'
+    first=run['mercmode']['title'];fsid=run['session_id']
+    row=M.warm_pool(store,w['name'])[first]
+    assert row['state']=='parked' and row['prepare_wanted'] and store.get(M.NEXT,w['name'])['title']==first
+    assert not prepares(calls,fsid)
+    pause=ops(calls,fsid,'pause')[-1];store.put('job',pause['id'],pause|{'state':'succeeded'})
+    tick(1)
+    assert not prepares(calls,fsid)                                          # its bot's stop has not landed yet
+    stop=[c for c in calls if c['tool']=='autoplay' and c['input']=={'session_id':fsid,'op':'stop'}][-1]
+    store.put('job',stop['id'],stop|{'state':'succeeded'})
+    tick(1)
+    prep2=prepares(calls,fsid)[-1]
+    assert M.warm_pool(store,w['name'])[first]['prepare_job']==prep2['id']
+    job2=store.get('job',second['autoplay_job'])|{'state':'succeeded'};store.put('job',job2['id'],job2)
+    clock(second,now,100)
+    assert saver.round_boundary(boundary(second,now[0])|{'round_id':'c'*32},job2,now[0])['rotate_requested'] is False
+    prepare_done(store,w,prep2)
+    round_ready(store,fsid,first,prep2,character='HUNK',stage='Base');tick(1)
+    assert M.warm_pool(store,w['name'])[first]['state']=='ready'
+    assert saver.round_boundary(boundary(second,now[0])|{'round_id':'d'*32},job2,now[0])['rotate_requested'] is True
+    launches=len([c for c in calls if c['tool']=='launch_game'])
+    tick(1)
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==fsid and cur['warm_from']=='ready' and cur['mercmode']['prepared']['character']=='HUNK'
+    assert ops(calls,fsid,'resume') and ops(calls,psid,'pause')
+    assert len([c for c in calls if c['tool']=='launch_game'])==launches
+    assert not [c for c in calls if c['tool']=='session_op' and c['input']['op']=='stop_game']
+
+
+@pytest.mark.parametrize('how',['job_failed','walk_failed'])
+def test_a_failed_prepare_falls_back_to_the_boot_paused_game(how):
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title'];psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1]
+    if how=='job_failed':
+        store.put('job',prep['id'],prep|{'state':'failed','error':'Autoplay is stopping; wait for it to stop'})
+    else:
+        prepare_done(store,w,prep)                                           # the walk ended paused at a menu, not in a round
+        store.put('session',psid,store.get('session',psid)|{'detail':{'warm':{'state':'ready','ready':True,'paused':True,
+            'prepared':False,'source':'native_menu','title':M.TITLES[nxt]['map_id'],'screen':'select_player',
+            'prepare_failed':'the menus did not reach a round within 600 s'}}})
+    tick(1)
+    row=M.warm_pool(store,w['name'])[nxt]
+    assert row['state']=='prelaunch' and row['prepare_failed'] and not ops(calls,psid,'stop_game')
+    assert store.get('slabel',psid)['warm_state']=='ready'
+    assert len(prepares(calls))==1                                           # no second try on a preload
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True   # the earlier swap: at its menu
+    tick(1)
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and cur['warm_from']=='prelaunch' and ops(calls,psid,'resume')
+
+
+def test_a_prepare_whose_game_did_not_pause_closes_it_and_the_next_round_preloads_again():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title'];psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1];prepare_done(store,w,prep)
+    round_ready(store,psid,nxt,state='failed',ready=False,paused=False,reason='Emulator did not confirm it paused.')
+    tick(1)
+    assert ops(calls,psid,'stop_game') and nxt not in M.warm_pool(store,w['name'])
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
+    store.put('session',psid,store.get('session',psid)|{'state':'ended'});tick(1)
+    assert preloads(calls)[-1] is not pre and not ops(calls,run['session_id'],'stop_game')
+
+
+def test_a_prepare_cancelled_by_the_player_leaves_the_game_untouched():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title'];psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1];prepare_done(store,w,prep);before=len(calls)
+    round_ready(store,psid,nxt,state='cancelled',ready=False,paused=False,prepared=False,
+                reason='The player took control during round preparation.')
+    tick(1)
+    assert nxt not in M.warm_pool(store,w['name']) and len(calls)==before and not store.get('slabel',psid)['warm']
+
+
+def test_a_queued_dj_selection_reaches_the_prepared_round():
+    store,w,saver,calls,now,tick=rig()
+    w['features']=list(PREPARED)
+    M.configure(store,w['name'],{'enabled':True,'titles':['re4','re5'],
+        'queue':[{'title':'re4','character':'HUNK','stage':2},{'title':'re5','mode':'reunion','character':'Barry','stage':3}]})
+    tick();sid='w1-'+calls[0]['id']
+    assert calls[0]['input']['game']['launch']['mercmode']['selection']['character']=='HUNK'   # the DJ's first pick plays first
+    store.put('session',sid,{'session_id':sid,'game_id':calls[0]['input']['game']['game_id'],'state':'running'})
+    tick(1)
+    pre=preloads(calls)[-1];sel=pre['input']['game']['launch']['mercmode']['selection']
+    assert (sel['mode'],sel['character'],sel['stage'],sel['stage_name'])==('reunion','Barry',3,'Ancient Ruins')
+    assert M.settings(store,w['name'])['queue']==[] and store.get(M.NEXT,w['name'])['queued'] is True
+    tick(S.START_GRACE);run=store.get(S.STATE,w['name']);clock(run,now,200)
+    psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1]
+    assert prep['input']['selection']==sel                                   # the worker's menus select the DJ's round
+    prepare_done(store,w,prep);round_ready(store,psid,'re5',prep,character='Barry',stage='Ancient Ruins',stage_index=3);tick(1)
+    job=store.get('job',run['autoplay_job'])|{'state':'succeeded'};store.put('job',job['id'],job)
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+    tick(1)
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and cur['mercmode']['selection']==sel and cur['mercmode']['prepared']['character']=='Barry'
+    assert not any(c['tool']=='re5_mods' for c in calls)                     # nothing to queue: the round is the DJ's already
+
+
+def test_a_dj_pick_queued_after_the_preparation_is_taken_at_the_next_menu_visit():
+    # the prepared round is past its menus: it plays as prepared, and the DJ's pick for that title is taken by its bot
+    # at the next native menu visit (the round after), never lost
+    store,w,saver,calls,now,tick,run,job,pre,psid,nxt=prepared_flow()
+    pick={'title':nxt,'character':'Ada','stage':1} if nxt=='re4' else {'title':nxt,'mode':'reunion','character':'Josh','stage':3}
+    M.configure(store,w['name'],{'queue':[pick]})
+    assert saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0])['rotate_requested'] is True
+    tick(1)
+    assert store.get(S.STATE,w['name'])['warm_from']=='ready' and ops(calls,psid,'resume')
+    assert [e['title'] for e in M.settings(store,w['name'])['queue']]==[nxt]   # still queued for that title
+    resume=ops(calls,psid,'resume')[-1];store.put('job',resume['id'],resume|{'state':'succeeded'});tick(1)
+    second=store.get(S.STATE,w['name']);job2=store.get('job',second['autoplay_job'])|{'state':'succeeded'}
+    store.put('job',job2['id'],job2);clock(second,now,100)
+    assert saver.round_boundary(boundary(second,now[0])|{'round_id':'c'*32},job2,now[0])['rotate_requested'] is False
+    sent=[c for c in calls if c['tool'] in ('re_mods','re5_mods')][-1]
+    assert sent['input']['session_id']==psid and sent['input']['op']=='mercs_select' and sent['input']['character']==pick['character']
+    assert M.settings(store,w['name'])['queue']==[]
+
+
+def test_a_switch_forced_while_the_preparation_still_walks_takes_the_game_over_from_it():
+    # the playing title ended on its own (a crash) while the next one's menus were still being driven: no wait, no
+    # loading screen - autoplay starts on it at once (the worker ends the walk and plays on from wherever the menus are)
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title'];psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1];store.put('job',prep['id'],prep|{'state':'running','worker_id':w['id']})
+    store.put('session',psid,store.get('session',psid)|{'detail':{'warm':{'state':'preparing','ready':False,'paused':False,
+        'prepared':False,'source':'native_round','title':M.TITLES[nxt]['map_id'],'screen':'select_stage'}}})
+    store.put('session',run['session_id'],store.get('session',run['session_id'])|{'state':'ended'})
+    tick(1)                                                                  # the run ends (not a rotation: no same-tick start)
+    assert store.get(S.STATE,w['name']) is None
+    tick(1)
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and cur['phase']=='starting' and cur['warm_from']=='preparing'
+    assert not ops(calls,psid,'resume')                                      # unpaused already: nothing to resume
+    tick(1)
+    start=calls[-1]
+    assert start['tool']=='autoplay' and start['input']['op']=='start' and start['input']['session_id']==psid
+
+
+def test_a_switch_before_the_worker_took_the_prepare_cancels_it_and_resumes_the_menu_paused_game():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title'];psid=up(store,pre,w);tick(1)
+    prep=prepares(calls,psid)[-1]
+    store.put('session',run['session_id'],store.get('session',run['session_id'])|{'state':'ended'})
+    tick(1);tick(1)
+    assert store.get('job',prep['id'])['state']=='cancelled'
+    cur=store.get(S.STATE,w['name'])
+    assert cur['session_id']==psid and ops(calls,psid,'resume') and cur['warm_from']=='prelaunch'
+
+
+def test_the_dj_queueing_the_prepared_title_keeps_it_next_and_plays_it():
+    store,w,saver,calls,now,tick,run,job,pre,psid,nxt=prepared_flow()
+    M.configure(store,w['name'],{'queue':[{'title':nxt}]})
+    assert saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0])['rotate_requested'] is True
+    assert store.get(M.NEXT,w['name'])['title']==nxt
+
+
+def test_the_dj_asking_for_a_title_mercmode_gave_up_on_tries_it_again():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded(features=PREPARED)
+    nxt=store.get(M.NEXT,w['name'])['title']
+    store.put(S.STATE,w['name'],store.get(S.STATE,w['name'])|{'mercmode_stay':'gave up','mercmode_warm_attempts':3})
+    store.put('job',pre['id'],pre|{'state':'failed','error':'boot failed'})
+    M.configure(store,w['name'],{'queue':[{'title':nxt}]})
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False   # not ready yet: play on
+    cur=store.get(S.STATE,w['name'])
+    assert 'mercmode_stay' not in cur and cur['mercmode_warm_attempts']==1 and 'mercmode_prelaunch' not in cur
+    tick(1)
+    assert preloads(calls)[-1] is not pre                                    # preloaded again for the DJ
+
+
+def test_nudge_wakes_the_installed_schedule_loop_only():
+    import threading
+    store,w,saver,calls,now,tick=rig()
+    saver.nudge('a job landed')                                              # without the installed loop (tests): nothing
+    saver.wake=threading.Event();saver.nudge('a job landed')
+    assert saver.wake.is_set() and saver.nudged=='a job landed'

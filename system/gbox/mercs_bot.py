@@ -408,10 +408,13 @@ def tactical_publisher(sink, prof: dict):
 
 
 def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sleep, clock=time.time, m=None,
-         tactical=None, session_id=None, **_kw) -> dict:
+         tactical=None, session_id=None, prepare: bool = False, **_kw) -> dict:
     """Boot to a round from RAM, hand each round to the engine, back to the menus for the next; stats is filled
     live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
-    tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds."""
+    tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds.
+    prepare (MercMode's seamless swap, gbox.tools._prepare_round): the menus only - the walk ends the moment the title's
+    screen says "playing" (RE5: the round's intro, the player in the stage), before the engine gets the round, with
+    stats["prepared"] True (+ character, stage); the caller pauses the game right there and the switch resumes it."""
     stats = stats if stats is not None else {}
     from .mercs import stalemate as stalemate_rule
     stalemate_rule.configure(stats, game)        # the launch's MercMode stalemate_cut / stalemate_cut_s for the title's bot
@@ -557,6 +560,26 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                     except Exception as exc:
                         stats["mercs_unlocks"] = {"verified": False, "reason": str(exc)[:160]}
                     stats["_merc_unlock_at"] = clock()
+            if scr.get("where") == "playing" and prepare:
+                # MercMode prepare: the round is up - stop here with nothing pressed in it (the playing_ops and the
+                # engine belong to the autoplay that starts after the switch); the caller pauses the game at this frame
+                stats.update(screen="playing", prepared=True)
+                roster = getattr(menus, "ROSTER", None)          # RE5: the round's character from the title's own roster
+                character = scr.get("character") or (roster is not None and ((roster.round or [None])[0] or roster.last))
+                if character:
+                    stats["character"] = character
+                snapshot = getattr(menus, "snapshot", None)
+                try:
+                    snap = snapshot(m) if callable(snapshot) else {}
+                except Exception:                           # noqa: BLE001 - the stage is a courtesy of the receipt
+                    snap = {}
+                names = getattr(menus, "STAGE_NAMES", ())
+                index = snap.get("stage_index")
+                if isinstance(index, int) and 0 <= index < len(names):
+                    stats.update(stage=names[index], stage_index=index)
+                if snap.get("mercenaries_mode"):
+                    stats["mercenaries_mode"] = snap["mercenaries_mode"]
+                break
             if scr.get("where") == "playing" and E is not None:
                 if not playing_initialized and ad is not None and playing_ops:
                     failed = training_ops(playing_ops, stats)

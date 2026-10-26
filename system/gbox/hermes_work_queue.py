@@ -477,6 +477,10 @@ def choose(options, data):
 
 EMULATOR_STAGES = ('runtime',)   # favorite stages whose agents start emulators (replacement testing in a game)
 PRIORITY_PER_GAME = 12           # runs sharing one game when the operator prioritized the requests (candidates; RE6 has ~15 tickets)
+PAID_NO_PROGRESS_MAX = 3         # a ticket that did not advance its checkpoint in this many runs never goes to a paid
+                                 # (priority-only) node again: the local nodes and the review keep it (operator 2026-10-26:
+                                 # "Make sure that kimi isn't being burnt on requests that are failing" - #1440 at 62 attempts /
+                                 # 11 no-progress runs, #1813 22 / 21, #1915 25 / 25 were still dispatched to Kimi / Z.AI every 6 h)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
 
 
@@ -843,7 +847,8 @@ def tick(*, now=None):
                 # the paid node works the operator's list only (operator 2026-10-22: "make sure that my claude credit is
                 # going towards solving these issues I am mentioning"); nothing listed: its slot stays free this tick
                 listed = len(data.get('priority') or [])
-                choices = [v for v in choices if priority_rank(v[1], data) < listed]
+                choices = [v for v in choices if priority_rank(v[1], data) < listed
+                           and (v[1].get('no_progress_runs') or 0) < PAID_NO_PROGRESS_MAX]   # not the ones that keep failing
             chosen = choose(choices, data)
             if not chosen:
                 continue

@@ -1179,6 +1179,120 @@ def test_fight_stamps_phase_and_combat_state_for_the_round_map():
     assert bot.stats.get("fire_gate") in ("on him", "off target: hold", "aim height: hold", "turning: hold")
 
 
+def _prepare_rig(monkeypatch, tmp_path, g):
+    """tools.autoplay op=prepare over the real RE4 playbook on a simulated RE4 (tests/test_re4_menus.FakeRE4 reacts to
+    the presses like title.cpp); the emulator is a fake with pause / resume, parked paused (gbox_warm) like a warm game."""
+    from gbox import tools, autoplay as apmod
+
+    class D:
+        def __init__(self, *a, **k):
+            self.stopped, self.trace = False, []
+    monkeypatch.setattr(apmod, "Driver", D)
+    events = []
+
+    class Emu(SimpleNamespace):
+        def pause(self, **kw):
+            events.append("pause"); self.paused = True; return {"paused": True}
+
+        def resume(self, **kw):
+            events.append("resume"); self.paused = False; return {"paused": False}
+    ad = Emu(name="dolphin", supported={"send_input"}, send_input=g.send, proc=None, paused=True, gbox_warm=True,
+             config=SimpleNamespace(runtime=tmp_path, data_dir=tmp_path))
+    game = {"game_id": "78ab9efa2e310db4", "platform": "gamecube", "title": "Resident Evil 4",
+            "launch": {"mercmode": {"random_characters": True, "random_stages": True}}}
+    monkeypatch.setitem(tools.SESSIONS, "s4", (ad, game))
+    monkeypatch.setattr(tools, "AUTOPLAY", {})
+    monkeypatch.setattr(tools, "_telemetry", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_takeover", lambda *a, **k: None)
+    monkeypatch.setattr(tools, "_bad_end", lambda *a, **k: pytest.fail("a round preparation never relaunches the game"))
+    monkeypatch.setattr(B, "memory", lambda ad: g)
+    monkeypatch.setattr(B, "apply_package", lambda *a, **k: [])
+    monkeypatch.setattr(B, "apply_round", lambda *a, **k: [])
+    monkeypatch.setattr(B, "learn_dir_for", lambda ad: tmp_path / "learned")
+    now = [0.0]
+
+    def play(ad, send, stopped, stats=None, game=None, prepare=False, session_id=None):
+        return B.play(ad, send, stopped, m=g, stats=stats, game=game, prepare=prepare, session_id=session_id,
+                      sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+    pb = SimpleNamespace(__name__="gbox.re4_merc_bot", __doc__="RE4 bot.", setup=lambda ad: [], play=play)
+    monkeypatch.setattr(tools, "_playbook", lambda ad, g_: pb)
+    ctx = SimpleNamespace(server="http://x", headers={"authorization": "Bearer t"}, config=SimpleNamespace(runtime=tmp_path),
+                          agent_use=True)
+    return tools, ad, events, ctx, now
+
+
+def test_prepare_drives_the_menus_to_the_round_start_pauses_there_and_the_next_start_plays_without_menu_presses(monkeypatch, tmp_path):
+    """MercMode's seamless swap (operator 2026-10-26): the warm game, paused at PRESS START, has its own menus walked
+    (START, THE MERCENARIES, GAME START, the DJ's character and stage) and is paused again on the round's first frame
+    with nothing pressed in it; autoplay started on it afterwards is in a round at once - no menu press."""
+    from gbox import re4_menus as RM
+    from gbox.mercs import warm_boot
+    from test_re4_menus import FakeRE4
+    g = FakeRE4(routine=4, step=0, menu_cursor=3)
+    tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
+    r = tools.autoplay(tools.AutoplayIn(session_id="s4", op="prepare", selection={"title": "re4", "character": "HUNK", "stage": 2}),
+                       ctx)["result"]
+    assert r["prepared"] is True and r["state"] == "ready" and r["paused"] is True and r["mode"] == "prepare"
+    assert (r["title"], r["character"], r["stage"], r["stage_index"]) == ("G4BE08", "HUNK", "Base", 2)
+    assert g.picks == ["THE MERCENARIES", "GAME START", "HUNK", "Base"] and RM.screen(g)["where"] == "playing"
+    assert events == ["resume", "pause"] and ad.gbox_warm is True           # unparked for the walk, parked again at the round
+    assert warm_boot.status(ad)["prepared"] is True and warm_boot.status(ad)["character"] == "HUNK"
+    run = tools.AUTOPLAY["s4"]
+    assert run["result"]["prepared"] is True and run["live"]["menu_presses"] >= 4 and "bad_end" not in run
+    assert tools.autoplay(tools.AutoplayIn(session_id="s4", op="status"), ctx)["result"]["prepare"]["prepared"] is True
+    # the swap: autoplay plays from the first frame, nothing left to press in the menus
+    live, n = {}, [0]
+
+    def stopped():
+        n[0] += 1
+        return n[0] > 6
+    B.play(None, g.send, stopped, m=g, stats=live, sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+    assert live["menu_presses"] == 0 and live["rounds"] == 1 and live["screen"] == "playing"
+    assert g.picks == ["THE MERCENARIES", "GAME START", "HUNK", "Base"]      # no second walk through the menus
+
+
+def test_a_prepare_that_wanders_off_pauses_the_game_back_where_it_is_and_tells_why(monkeypatch, tmp_path):
+    from gbox import re4_menus as RM
+    from gbox.mercs import warm_boot
+    from test_re4_menus import FakeRE4, PG
+    g = FakeRE4(routine=4)
+    g.title_task(False)                                                      # the game's own loop runs a story room
+    g.put(PG + RM.G_ROUTINE, "B", 3)
+    g.put(PG + RM.G_ROOM, ">H", 0x101)
+    tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
+    r = tools.autoplay(tools.AutoplayIn(session_id="s4", op="prepare"), ctx)["result"]
+    assert r["prepared"] is False and r["state"] == "ready" and r["paused"] is True and "story" in r["prepare_failed"]
+    assert events == ["resume", "pause"] and ad.gbox_warm is True           # back where it was: the old menu-paused state
+    assert warm_boot.status(ad)["prepared"] is False and not g.picks
+    assert "bad_end" not in tools.AUTOPLAY["s4"]
+
+
+def test_a_prepare_refuses_a_game_a_bot_is_playing_and_stop_ends_a_walk_without_pausing(monkeypatch, tmp_path):
+    import threading
+    from gbox.mercs import warm_boot
+    from test_re4_menus import FakeRE4
+    g = FakeRE4(routine=4)
+    tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
+    hold = threading.Event()
+    playing = {"driver": SimpleNamespace(stopped=False), "thread": threading.Thread(target=hold.wait, daemon=True), "mission": "playbook"}
+    playing["thread"].start()
+    tools.AUTOPLAY["s4"] = playing
+    with pytest.raises(ValueError, match="playing this game"):
+        tools.autoplay(tools.AutoplayIn(session_id="s4", op="prepare"), ctx)
+    hold.set(); playing["thread"].join(2)
+    assert events == []                                                      # never resumed a game another bot plays
+    tools.AUTOPLAY.clear()
+    rp = warm_boot.start_round(ad, "G4BE08"); rp.driver = SimpleNamespace(stopped=False)
+    stuck = threading.Event()
+    walk = {"driver": rp.driver, "prepare": rp, "thread": threading.Thread(target=stuck.wait, daemon=True), "mission": "prepare: re4_merc_bot"}
+    walk["thread"].start(); tools.AUTOPLAY["s4"] = walk
+    monkeypatch.setattr(tools, "PREPARE_STOP_WAIT_S", 0.2)
+    assert tools.autoplay(tools.AutoplayIn(session_id="s4", op="stop"), ctx)["result"]["stopped"] is True
+    assert rp.driver.stopped and rp.snapshot()["state"] == "cancelled" and rp.finish(True, {})["state"] == "cancelled"
+    stuck.set()
+    assert events == []                                                      # the walk never paused the game behind the Stop
+
+
 def test_run_forwards_the_round_loadouts_weapon_and_chance():
     # 2026-10-26: "no handcannon in their inventory" - run() never passed ROUND_OP's weapon to random_loadout
     from unittest.mock import MagicMock

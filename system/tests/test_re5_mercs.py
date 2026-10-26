@@ -1852,3 +1852,39 @@ def test_a_distant_majini_beyond_a_wall_is_walked_to_along_the_navmesh_not_strai
     off = {"ptr": 8, "slot": 8, "pos": (5000.0, 0.0, 5000.0), "hp": 100}
     assert bot._pursue(p, off, mesh, False, 20.0) == {"hold": set()}
     assert bot.stats["route"] == "unreachable on current mesh"
+
+
+def test_re5_prepare_ends_at_the_round_intro_with_the_character_and_stage(monkeypatch):
+    """MercMode's round preparation on RE5's own screens (gbox.mercs_bot.play prepare=True): from the results screen one
+    START, and the moment the round is up (its intro: the player in the stage) the walk stops before the engine, with
+    the character and stage for the receipt; nothing is pressed in the round."""
+    from types import SimpleNamespace
+    from gbox import mercs_bot as MB
+    results = between_rounds(["uIdCursor"])
+    playing = with_ui(world(enemies=[((0.0, 0.0, 900.0), 800, 800)]), ["uIdMerce00", "uIdPause00"])
+
+    class Live:
+        """RE5's RAM as the game moves: START on the results screen brings the next round up."""
+        def __init__(self):
+            self.now, self.sent = results, []
+
+        def rd(self, a, n):
+            return self.now.rd(a, n)
+
+        def send(self, rows):
+            self.sent += [r["key"] for r in rows if r.get("down")]
+            if any(r["key"] == "start" and r.get("down") for r in rows):
+                self.now = playing
+    mem = Live()
+    prof = MB.profile_for(None, {"game_id": "e7ca89bbeb67360d"})
+    monkeypatch.setattr(MB, "profile_for", lambda ad, game: prof)
+    monkeypatch.setattr(MB, "lessons_writer", lambda *a, **k: None)
+    monkeypatch.setattr(MB, "title_engine", lambda p: SimpleNamespace(
+        play_round=lambda *a, **k: pytest.fail("a prepare never hands the round to the engine")))
+    now, steps = [0.0], iter(range(400))
+    stats = MB.play(None, mem.send, lambda: next(steps, None) is None, game={"game_id": "e7ca89bbeb67360d"}, m=mem,
+                    prepare=True, sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+    assert stats["prepared"] is True and stats["screen"] == "playing" and mem.sent == ["start"]
+    assert isinstance(stats.get("character"), str) and stats["character"]
+    assert stats["stage"] == R.STAGE_NAMES[0] and stats["stage_index"] == 0
+    assert stats["rounds"] == 0 and not stats.get("hung")

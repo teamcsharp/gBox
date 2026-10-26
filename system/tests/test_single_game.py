@@ -232,10 +232,12 @@ class _Emu(SimpleNamespace):
         if getattr(self, 'fail', False):
             raise RuntimeError('debugger not attached')
         self.paused = True
+        return {'paused': True}                              # the native adapters confirm (warm_boot checks the receipt)
 
     def resume(self, **kw):
         self.events.append(('resume', self.sid, kw))
         self.paused = False
+        return {'paused': False}
 
     def stop_game(self):
         self.events.append(('stop', self.sid, self.paused))
@@ -281,3 +283,63 @@ def test_session_op_warm_pause_and_resume_mark_the_game(monkeypatch):
     assert events[-1] == ('pause', 's', {}) and ad.gbox_warm is True and out['result']['warm'] is True
     tools.session_op(tools.SessionIn(session_id='w1-s', op='resume', args={'warm': False}), SimpleNamespace())
     assert events[-1] == ('resume', 's', {}) and ad.gbox_warm is False
+
+
+def test_a_round_prepared_pause_is_released_by_the_swap_resume_or_by_autoplay_start(monkeypatch):
+    """MercMode's seamless swap: the pause a round preparation made at the round's first frame (gbox.mercs.warm_boot.
+    RoundPrepare) is the parking pause; session_op resume (the scheduler's swap) releases it keeping the receipt, and
+    an autoplay start straight on the prepared game resumes it before the bot is set up."""
+    from gbox import autoplay as apmod
+    from gbox.mercs import warm_boot
+    events = []
+    ad = _Emu(sid='p', events=events, paused=False, proc=None)
+    rp = warm_boot.start_round(ad, 'G4BE08')
+    assert warm_boot.status(ad)['state'] == 'preparing' and warm_boot.status(ad)['prepared'] is False
+    receipt = rp.finish(True, {'character': 'HUNK', 'stage': 'Base', 'stage_index': 2, 'screen': 'playing'})
+    assert ad.paused and ad.gbox_warm is True and events[-1] == ('pause', 'p', {})
+    assert {k: receipt[k] for k in ('state', 'ready', 'paused', 'prepared', 'source', 'title', 'character', 'stage')} == {
+        'state': 'ready', 'ready': True, 'paused': True, 'prepared': True, 'source': 'native_round', 'title': 'G4BE08',
+        'character': 'HUNK', 'stage': 'Base'}
+    assert warm_boot.status(ad) == receipt and warm_boot.round_ready({'detail': {'warm': receipt}}, {}, 'G4BE08')
+    rp.cancel('late')                                                        # a finished preparation keeps its receipt
+    assert warm_boot.status(ad)['prepared'] is True
+    monkeypatch.setattr(tools, 'SESSIONS', {'w1-p': (ad, {'game_id': '78ab9efa2e310db4'})})
+    out = tools.session_op(tools.SessionIn(session_id='w1-p', op='resume', args={'warm': False}), SimpleNamespace())
+    assert events[-1] == ('resume', 'p', {}) and ad.gbox_warm is False and out['result']['warm'] is False
+    assert warm_boot.status(ad)['prepared'] is True                          # the pool entry stays "ready" until it is taken
+    rp2 = warm_boot.start_round(ad, 'G4BE08')
+    rp2.finish(True, {'screen': 'playing'})
+    assert ad.paused and ad.gbox_warm
+    monkeypatch.setattr(tools, 'AUTOPLAY', {})
+    monkeypatch.setattr(tools, '_warm_priority', lambda adapter, value: events.append(('priority', value)))
+
+    class Reached(Exception):
+        pass
+
+    def driver(*a, **k):
+        assert not ad.paused and not ad.gbox_warm and events[-2:] == [('resume', 'p', {}), ('priority', 0)]
+        raise Reached()
+    monkeypatch.setattr(apmod, 'Driver', driver)
+    with pytest.raises(Reached):
+        tools.autoplay(tools.AutoplayIn(session_id='w1-p', op='start'), SimpleNamespace(server='x', headers={'authorization': 'Bearer t'}))
+
+
+def test_a_failed_round_preparation_pauses_the_game_back_and_tells_why():
+    from gbox.mercs import warm_boot
+    events = []
+    ad = _Emu(sid='q', events=events, paused=False, proc=None)
+    rp = warm_boot.start_round(ad, 'BLUS30491')
+    receipt = rp.finish(False, {'screen': 'select_player', 'wandered': 'nothing moved in RAM for 120 s on select_player'})
+    assert receipt['state'] == 'ready' and receipt['paused'] is True and receipt['prepared'] is False
+    assert receipt['source'] == 'native_menu' and 'nothing moved' in receipt['prepare_failed']
+    assert ad.paused and ad.gbox_warm and warm_boot.prepared({'detail': {'warm': receipt}}, {}, 'BLUS30491')
+    assert not warm_boot.round_ready({'detail': {'warm': receipt}}, {}, 'BLUS30491')
+    failing = _Emu(sid='r', events=events, paused=False, proc=None, fail=True)
+    receipt = warm_boot.start_round(failing, 'BLUS30491').finish(True, {'screen': 'playing'})
+    assert receipt['state'] == 'failed' and receipt['paused'] is False and 'debugger' in receipt['reason']
+    cancelled = _Emu(sid='s', events=events, paused=False, proc=None)
+    rp = warm_boot.start_round(cancelled, 'G4BE08')
+    rp.cancel('The player took control during round preparation.')
+    assert rp.finish(True, {})['state'] == 'cancelled' and not cancelled.paused   # the player's game: never paused behind them
+    assert warm_boot.start_round(_Emu(sid='t', events=events, paused=False, proc=None), 'G4BE08').finish(
+        True, {}, owned=False)['state'] == 'cancelled'

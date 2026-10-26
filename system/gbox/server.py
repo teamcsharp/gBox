@@ -2974,6 +2974,11 @@ def create_app(config: Config) -> FastAPI:
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         _extraction_handoff(j)
+        if t.name in ("session_op", "autoplay", "launch_game"):
+            from . import screensaver
+            saver = getattr(app.state, "autoplay_screensaver", None)
+            if saver is not None and j.get("actor") == screensaver.ACTOR:
+                saver.nudge(f"{t.name} {state}")      # MercMode's warm switch takes its next step now, not at the next tick
         if t.name in game_prefs.TOOLS:
             try:                                      # the operator's menu change, kept for this game (gbox/game_prefs.py)
                 game_prefs.observe(store, j, state)
