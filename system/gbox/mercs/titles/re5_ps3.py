@@ -3838,6 +3838,9 @@ class Bot:
             else:
                 self.stats["directive_status"] = "mine placement is switched off (the mines setting)"
             return None
+        if cmd == "mine_trail":
+            self.stats["directive_status"] = self._mine_trail(now, fresh)
+            return None
         if cmd == "missing" and fresh:
             if self.combat is not None and hasattr(self.combat, "widen_aim"):
                 self.stats["directive_status"] = self.combat.widen_aim(now)
@@ -3847,6 +3850,25 @@ class Bot:
                     self.stats.pop(key, None)
             return None
         return cmd if cmd in ("fight", "hunt", "score") else None
+
+    def _mine_trail(self, now, fresh) -> str:
+        """The standing "drop landmines while fleeing an area" mode (directives mine_trail, operator 2026-10-26): whenever the mine
+        controller is idle (no placement pending, the last mine's escape complete) its cadence is made due again, so it plants at
+        the next spot its own checks allow (6 m from every mine and from the last site, a measured floor escape route, no Majini
+        within 6 m) and the usual retreat (_mine_retreat) leaves it before the next one: plant, move on, plant ... until the hold
+        ends. The controller still decides every press; this only removes the wait between mines. Returns the status line."""
+        controller = getattr(self, "mines", None)
+        cadence = getattr(controller, "cadence", None)
+        if cadence is None or not cadence.enabled:
+            return "mine trail: mine placement is switched off (the mines setting), nothing to plant"
+        if controller.pending is not None:
+            return "mine trail: planting"
+        if controller.escape is not None:
+            return "mine trail: leaving the planted mine before the next one"
+        cadence.last = now - cadence.interval - 1.0       # due now; the spacing from the last site still applies
+        if fresh:
+            cadence.position = None                       # the trail's first mine goes where he stands
+        return "mine trail: due now, planting at the next safe spot, then moving on"
 
     def _walk(self, p, want: float, now: float, *, precise=False, run=True) -> set:
         """Run toward a heading: turn first (the body turns in place), run (up + cross) once within 60 deg. Stuck

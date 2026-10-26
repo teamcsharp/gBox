@@ -42,6 +42,7 @@
     ["score", "Go for score increases", "Build the combo"],
     ["repetitive", "You are doing a repetitive action", "Stop it and go forward"],
     ["mine", "Drop a mine and flee", "Plant a mine, then leave"],
+    ["mine_trail", "Drop mines while leaving the area", "Plant, move on, repeat for 45 s (RE5, mines setting on)"],
     ["missing", "You are missing", "Adjust the aim for this weapon"],
   ];
   const HOLD_MS = 4000;                         // the settled full status stays this long before it folds

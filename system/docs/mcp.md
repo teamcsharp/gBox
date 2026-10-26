@@ -18,6 +18,12 @@ Code: `gbox/mcp_server.py`. Dependency: `pip install "mcp>=2.3"` (the `mcp` extr
 | `get_job(job_id)` | Poll a background job's state, progress, result and error. |
 | `launch_game(game_id, node?, debug?)` | `POST /api/games/{id}/launch`; returns the launch job (output carries the session id). |
 | `list_sessions(include_ended?)` | `/api/sessions`, live ones by default. |
+| `bot_sessions()` | The running sessions with their PC (`host`), the game's mod tool (`mod_tool`: `re5_mods` / `re_mods`) and the Mercenaries autobot's live summary from `/api/autoplay/telemetry/{sid}` (running, phase, screen, rounds, kills, `directive_status`, mines cadence, team role). Read only; the way to find a `session_id` for the three tools below. |
+| `bot_directive(session_id, command?, text?, hold_s?)` | An instant command for the session's autobot (`POST /api/sessions/{sid}/directive`, `gbox/mercs/directives.py`): `fight`, `next_area`, `explore`, `hunt`, `score`, `repetitive`, `mine`, `mine_trail`, `missing`; or free `text` matched to one ("drop landmines while fleeing" -> `mine_trail`); unmatched text is an error and nothing is sent. `hold_s` (0..600) sets how long a standing mode lasts. Returns the stored row. |
+| `game_mod(session_id, op, params?, tool?)` | One live RAM mod on the session's own PC, waited for like a `job_` tool: `re5_mods` for Resident Evil 5, `re_mods` for Resident Evil 4, chosen from the session's game (never from the emulator alone). `params` holds that tool's own job fields; anything else is rejected instead of silently dropped. Returns the job (`output.result.verified`). |
+| `game_mod_ops(session_id?, tool?)` | Every op `game_mod` accepts for that game: params with allowed values, effect, when it takes effect (now / next round / next menu), and whether the tool retains it as the operator's setting. |
+| `bot_strategy(session_id, settings?)` | What the bot plays with for the rest of the session: `settings.mods` (the retained ops: RE5 `fire_rate turn_speed bullet_damage infinite_ammo unlimited_health kill_time infinite_spray instant_qte mines rotten_egg_only weapon_override`; RE4 `unlimited_health infinite_ammo combo_freeze merc_timer_freeze grenade_safe merc_time_bonus combo_time aim_turn_speed spawn_multiplier random_loadout merc_loadout mercenaries_unlock`), `settings.mercmode` (`POST /api/mercmode` for the session's PC), `settings.team` (`mercs_team configure`, RE5 / RE6). Empty settings: the options, the PC's current MercMode settings and what is **not** settable (the RE5 `Policy` constants, the RE4 package radii, the profile's `playing_ops`). |
+| `spawn_enemies(...)` | Not available yet: no verified enemy-spawn write in RE4 or RE5 (RE4's `spawn_multiplier` only clones what the game spawns). Sends nothing; returns `{supported: false, reason, ticket}` with the open inbox request tracking the work. |
 | `get_broadcast_feeds()` | Current program, available PCs/sessions and stable playback URLs, including frame rate and freshness. |
 | `get_broadcast_status()` | Encoder frame progress, viewers, restarts and isolated emulator audio availability. |
 | `read_memory(session_id, address, length?)` | Session RPC `read_memory` (read-only peek, max 4096 bytes). |
@@ -44,13 +50,21 @@ credential server-side. The standalone reviewer remains available at `/mercenari
 
 Code comes from the mirror (`C:\_tools\gBox\system`), the config and token from the share (so nothing secret is copied).
 
-Claude Code (one line; user scope so it works from any folder):
+The venv needs the SDK once: `%LOCALAPPDATA%\gbox\venv\Scripts\python.exe -m pip install "mcp>=2.3"` (without it the server
+exits at import and Claude reports `CONNECTION_CLOSED`).
+
+Claude Code (one line, **from PowerShell or cmd**; user scope so it works from any folder). Git Bash eats the backslashes of
+unquoted Windows paths (`C:\Users\...` arrives as `C:Users...`, which is how the 2026-10-26 registration broke) and turns a
+`\\server` UNC path into `\server`; the share config is therefore given with forward slashes, which Python accepts:
 
 ```
-claude mcp add gbox --scope user -e PYTHONPATH=C:\_tools\gBox\system -- C:\Users\maste\AppData\Local\gbox\venv\Scripts\python.exe -m gbox --config \\10.89.1.246\ehm_eckx\gBox\system\gbox.toml mcp
+claude mcp add gbox -s user -e PYTHONPATH=C:\_tools\gBox\system -- "%LOCALAPPDATA%\gbox\venv\Scripts\python.exe" -P -m gbox --config //10.89.1.246/ehm_eckx/gBox/system/gbox.toml mcp
 ```
 
-Check with `claude mcp list` (or `/mcp` inside a session).
+(`-P` keeps the working directory off `sys.path`, as the Spark's Hermes registration does.) A config path that does not
+exist is not an error for `gbox --config`: it falls back to the defaults and then stops with `no token: ... gbox-data/api_token
+missing` next to the package, so check the path first when that message appears. Check with `claude mcp get gbox` (`√ Connected`),
+`claude mcp list`, or `/mcp` inside a session.
 
 Claude Desktop: add to `%APPDATA%\Claude\claude_desktop_config.json`, then restart Claude Desktop:
 
@@ -58,8 +72,8 @@ Claude Desktop: add to `%APPDATA%\Claude\claude_desktop_config.json`, then resta
 {
   "mcpServers": {
     "gbox": {
-      "command": "C:\\Users\\maste\\AppData\\Local\\gbox\\venv\\Scripts\\python.exe",
-      "args": ["-m", "gbox", "--config", "\\\\10.89.1.246\\ehm_eckx\\gBox\\system\\gbox.toml", "mcp"],
+      "command": "C:\\Users\\<you>\\AppData\\Local\\gbox\\venv\\Scripts\\python.exe",
+      "args": ["-P", "-m", "gbox", "--config", "//10.89.1.246/ehm_eckx/gBox/system/gbox.toml", "mcp"],
       "env": { "PYTHONPATH": "C:\\_tools\\gBox\\system" }
     }
   }

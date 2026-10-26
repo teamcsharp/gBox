@@ -20,10 +20,22 @@ from tests.test_re4_merc_bot import FakeNav, facing, world
     ("go for score increases", "score"), ("build the combo", "score"), ("increase the score", "score"),
     ("you are doing a repetitive action", "repetitive"), ("you keep going in circles", "repetitive"),
     ("drop a mine and flee", "mine"), ("plant a mine", "mine"),
+    ("drop landmines while fleeing an area", "mine_trail"), ("keep planting mines", "mine_trail"), ("mine trail", "mine_trail"),
+    ("lay mines as you retreat", "mine_trail"), ("drop mines while leaving", "mine_trail"),
     ("you are missing", "missing"), ("your aim is off", "missing"),
 ])
 def test_typed_words_match_their_command(text, command):
     assert D.match(text) == command
+
+
+def test_hold_s_overrides_how_long_a_standing_mode_lasts_within_bounds():
+    row = D.post("w-1", "mine_trail", now=100.0)
+    assert row["until"] == 145.0                                           # the command's own 45 s
+    assert D.post("w-1", "mine_trail", now=100.0, hold_s=90)["until"] == 190.0
+    assert D.post("w-1", "fight", now=100.0, hold_s=0)["until"] == 100.0   # a one-shot of a standing command
+    for bad in (-1, 601, "soon"):
+        with pytest.raises(ValueError, match="hold_s"):
+            D.post("w-1", "fight", now=100.0, hold_s=bad)
 
 
 @pytest.mark.parametrize("text", ["", "x", "nice run", "the wall is ugly", "stop getting hit", "a" * 200,
@@ -58,6 +70,10 @@ def test_endpoints_and_typed_chat_words_post_the_command(tmp_path):
         r = c.post("/api/sessions/w-s/directive", json={"command": "hunt"}).json()["directive"]
         assert r["command"] == "hunt" and r["until"] > r["at"]
         assert c.get("/api/sessions/w-s/directive").json()["directive"]["seq"] == r["seq"]
+        assert "mine_trail" in c.get("/api/sessions/w-s/directive").json()["commands"]
+        held = c.post("/api/sessions/w-s/directive", json={"command": "mine_trail", "hold_s": 120}).json()["directive"]
+        assert held["until"] - held["at"] == 120.0
+        assert c.post("/api/sessions/w-s/directive", json={"command": "mine_trail", "hold_s": 9999}).status_code == 422
 
 
 def at(m, now, hold=None):
@@ -144,3 +160,38 @@ def test_re4_missing_moves_the_aim_height_offset_and_mine_is_honestly_unavailabl
     command(bot, "mine")
     drive(bot, m, now, 1)
     assert "no mines" in bot.stats["directive_status"]
+    command(bot, "mine_trail")
+    drive(bot, m, now, 1)
+    assert "no mines" in bot.stats["directive_status"]
+
+
+def test_re5_mine_trail_rearms_the_mine_cadence_whenever_the_controller_is_idle(tmp_path):
+    """The standing mode: plant, leave (the controller's escape), plant again ... while the hold lasts; off when mines are off."""
+    import time
+    from gbox.mercs.titles import re5_mines as M, re5_ps3 as R
+    bot = R.Bot(learn_dir=tmp_path)
+    bot.mines = M.Controller(None, bot.stats, lambda *a, **k: None)
+    cadence = bot.mines.cadence                                              # the default cadence: on, one mine a minute
+    p, t0 = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}, time.time()
+    D.apply_to_stats(bot.stats, D.post("w-re5", "mine_trail", now=t0))
+    assert bot._operator_command(p, {}, None, 1000.0) is None               # no key of its own: the normal play goes on
+    assert cadence.last == 1000.0 - cadence.interval - 1.0 and cadence.position is None
+    assert bot.stats["directive_status"].startswith("mine trail: due now")
+    cadence.acknowledge(1001.0, p["pos"])                                   # the controller planted: spacing from here applies
+    bot.mines.escape = {"actor": 1, "pos": p["pos"], "at": 1001.0}
+    bot._operator_command(p, {}, None, 1002.0)
+    assert cadence.last == 1001.0 and "leaving the planted mine" in bot.stats["directive_status"]
+    bot.mines.escape = None                                                 # 6 m away: due again at once
+    bot._operator_command(p, {}, None, 1010.0)
+    assert cadence.last == 1010.0 - cadence.interval - 1.0 and cadence.position == (0.0, 0.0, 0.0)
+    bot.mines.pending = {"at": 1010.0}
+    bot._operator_command(p, {}, None, 1011.0)
+    assert bot.stats["directive_status"] == "mine trail: planting"
+    bot.mines.pending = None
+    cadence.configure(cadence.interval, False, False)                       # the mines setting off: the trail says so
+    bot._operator_command(p, {}, None, 1012.0)
+    assert "switched off" in bot.stats["directive_status"]
+    D.apply_to_stats(bot.stats, D.post("w-re5", "mine_trail", now=t0 - 100.0))   # an expired hold: no command any more
+    bot.commands.seen = None
+    assert bot._operator_command(p, {}, None, 1013.0) is None
+    assert bot.commands.current(bot.stats) == (None, False)
