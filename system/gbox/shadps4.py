@@ -43,11 +43,26 @@ def executable(config: Config) -> Path:
     configured = cfg.executable if cfg else None
     candidates = [configured] if configured else [
         str(config.runtime / "shadps4" / "shadPS4.exe"), "shadPS4.exe", "shadPS4"]
+    locked = None
     for candidate in candidates:
-        if candidate:
-            path = Path(shutil.which(candidate) or candidate)
-            if path.is_file():
-                return path.resolve()
+        if not candidate:
+            continue
+        path = Path(shutil.which(candidate) or candidate)
+        try:
+            if not path.is_file():
+                continue
+        except OSError as error:                    # WinError 5: stat blocked by an exclusive lock,
+            locked = locked or error                # antivirus or a deny ACL on this candidate
+            continue
+        try:
+            return path.resolve()
+        except OSError:                             # a running image may refuse the resolve()
+            return path                             # handle; execution can still be permitted
+    if locked is not None:
+        raise ToolUnavailable(f"shadPS4's executable exists but Windows denies access to it "
+                              f"({locked}). A running shadPS4 instance, antivirus or a deny ACL on the "
+                              f"runtime folder can lock {candidates}. Close leftover shadPS4 processes or "
+                              f"exclude the runtime folder, then retry the launch.")
     raise ToolUnavailable("shadPS4 is not installed on this worker. Set [emulators.ps4] "
                           "adapter='shadps4' and executable to the shadPS4 core executable, "
                           "or install it in runtime/shadps4 (see docs/shadps4.md).")
