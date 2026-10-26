@@ -3362,13 +3362,11 @@ class _ReloadHost:
 
     def start(self, sid, run, since) -> dict:
         """The bot again in its session with its own AutoplayIn and job context (the same x-gbox-parent-job: MercMode's
-        round boundaries stay this run's), unless autoplay was stopped or the player took the pad meanwhile."""
-        from . import padstate
+        round boundaries stay this run's), unless autoplay was stopped meanwhile. The player's pad is no stop (a pad
+        takeover, gbox/pad_takeover.py): one still running carries over and the restarted bot yields to it."""
         base = {"session_id": sid, "restarted": False}
         why = ("autoplay was stopped during the reload" if _AUTOPLAY_STOPS.get(sid, 0) >= since else
-               "the game ended" if sid not in SESSIONS else
-               "the player took the controller during the reload"
-               if padstate.touched_after(sid, since) and not _mercs_human_controls(sid) else None)
+               "the game ended" if sid not in SESSIONS else None)
         if why:
             _telemetry_stopped(run)
             return base | {"reason": why}
