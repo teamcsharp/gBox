@@ -141,6 +141,12 @@
           const response = await gbox.api(path, body, method);
           if (!response.ok) throw Error(response.error || 'Modifier request failed');
           return response.data;
+        },
+        // what this game keeps across reloads (gbox/game_prefs.py), shown with the live values
+        savedPrefs: async () => {
+          const response = await gbox.api(`/api/sessions/${encodeURIComponent(session.session_id)}/game-prefs`, undefined, 'GET');
+          if (!response.ok) throw Error(response.error || 'Saved settings unavailable');
+          return response.data;
         } });
     } catch (error) { console.warn('PiP modifiers:', error.message); }
   }

@@ -35,6 +35,7 @@ is pointed at it; requests go into a 5-entry queue {fn, r3..r10, f1, f2, result}
 next frame.
 """
 import struct
+import threading
 import time
 
 from pydantic import BaseModel
@@ -921,26 +922,108 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
     return res
 
 
+ALIASES = {"unlock": "mercenaries_unlock", "unlock_mercenaries": "mercenaries_unlock", "mercenaries": "mercenaries_unlock",
+           "ammo": "infinite_ammo", "god": "unlimited_health", "god_mode": "unlimited_health",
+           "invincible": "unlimited_health", "infinite_combo": "combo_freeze", "combo": "combo_freeze",
+           "freeze_timer": "merc_timer_freeze", "timer_freeze": "merc_timer_freeze", "inventory": "list", "swap": "replace",
+           "spawn": "spawn_multiplier", "enemy_multiplier": "spawn_multiplier", "more_enemies": "spawn_multiplier",
+           "unlock_everything": "unlock_all", "time_bonus": "merc_time_bonus", "combo_bonus_time": "combo_time",
+           "combo_window": "combo_time", "combo_bonus": "combo_time", "combo_timer": "combo_time",
+           "safe_grenades": "grenade_safe", "grenades_safe": "grenade_safe", "grenade_immunity": "grenade_safe",
+           "punch_enemies": "punch", "punches": "punch", "loadout": "merc_loadout", "loadouts": "merc_loadout_list",
+           "merc_loadouts": "merc_loadout_list", "item_table": "item_ids", "items": "item_ids",
+           "address_table": "addresses", "random_loadouts": "random_loadout", "random_weapons": "random_loadout",
+           "random_weapon": "random_loadout", "randomize": "random_loadout", "first_aid": "auto_first_aid",
+           "infinite_spray": "auto_first_aid", "first_aid_spray": "auto_first_aid",
+           "infinite_first_aid": "auto_first_aid", "auto_heal": "auto_first_aid"}
+# The operator's own choices (the re_mods tool and apply_saved: operator=True) are kept per game process, like
+# re5_mods_tool's operator overrides: the bots' packages (mercs_bot.apply_ops, re4_merc_bot.apply_package / apply_round,
+# operator=False) then apply them instead of their defaults, and an operator loadout (a random draw or the game's own)
+# is not replaced by the bot's loadout ops (operator 2026-10-26: "retain those settings across reloads").
+OPERATOR_SETTINGS = frozenset({"unlimited_health", "infinite_ammo", "combo_freeze", "merc_timer_freeze", "grenade_safe",
+                               "merc_time_bonus", "combo_time", "aim_turn_speed", "spawn_multiplier"})
+LOADOUT_OPS = frozenset({"random_loadout", "merc_loadout"})
+SAVED_OPS = frozenset({*OPERATOR_SETTINGS, "mercenaries_unlock", *LOADOUT_OPS})
+SAVED_MAX = 16
+_OPERATOR_LOCK = threading.RLock()
+
+
+def canonical(op: str) -> str:
+    op = str(op or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return ALIASES.get(op, op)
+
+
+def operator_overrides(ad) -> dict:
+    """This game process's kept operator choices: {op: {on, multiplier, count}, "loadout": {...}}."""
+    return STATE.setdefault(id(ad), {}).setdefault("operator_overrides", {})
+
+
 def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
         character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
         multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
         speed: float = 0, g=None, **extra) -> dict:
+    name = canonical(op)
+    operator = bool(extra.pop("operator", False))
+    args = dict(item=item, target=target, seconds=seconds, items=items, fire_rate=fire_rate, damage=damage,
+                melee_only=melee_only, kind=kind, force=force, direction=direction, speed=speed, g=g)
+    if name not in OPERATOR_SETTINGS and name not in LOADOUT_OPS:
+        return _run(ad, op, count=count, on=on, character=character, reset=reset, multiplier=multiplier, **args, **extra)
+    with _OPERATOR_LOCK:
+        kept = operator_overrides(ad)
+        if not operator:
+            if name in LOADOUT_OPS and kept.get("loadout"):
+                g = g or RE4(ad)
+                return {"op": name, "verified": True, "skipped": "the operator's own Mercenaries loadout is kept",
+                        "status": g.status()}
+            o = kept.get(name)
+            if o:
+                on, multiplier, count = o["on"], o.get("multiplier", multiplier), o.get("count", count)
+        res = _run(ad, op, count=count, on=on, character=character, reset=reset, multiplier=multiplier, **args, **extra)
+        if operator and res.get("verified") is True:
+            if name in OPERATOR_SETTINGS:
+                kept[name] = {"on": bool(on), "multiplier": multiplier, "count": count}
+            else:
+                kept["loadout"] = {"op": name, "character": character or "leon", "reset": bool(reset),
+                                   "at": time.time()}
+        return res
+
+
+def apply_saved(ad, ops, g=None) -> dict:
+    """The game's saved menu settings (gbox.game_prefs) on a new session, each as the operator's own change (kept as an
+    operator override, see run). Every item reports its own read-back; one failed item never stops the others."""
     g = g or RE4(ad)
-    op = op.strip().lower().replace(" ", "_").replace("-", "_")
-    op = {"unlock": "mercenaries_unlock", "unlock_mercenaries": "mercenaries_unlock", "mercenaries": "mercenaries_unlock",
-          "ammo": "infinite_ammo", "god": "unlimited_health", "god_mode": "unlimited_health", "invincible": "unlimited_health",
-          "infinite_combo": "combo_freeze", "combo": "combo_freeze", "freeze_timer": "merc_timer_freeze",
-          "timer_freeze": "merc_timer_freeze", "inventory": "list", "swap": "replace", "spawn": "spawn_multiplier",
-          "enemy_multiplier": "spawn_multiplier", "more_enemies": "spawn_multiplier", "unlock_everything": "unlock_all",
-          "time_bonus": "merc_time_bonus", "combo_bonus_time": "combo_time", "combo_window": "combo_time",
-          "combo_bonus": "combo_time", "combo_timer": "combo_time", "safe_grenades": "grenade_safe",
-          "grenades_safe": "grenade_safe", "grenade_immunity": "grenade_safe", "punch_enemies": "punch",
-          "punches": "punch", "loadout": "merc_loadout", "loadouts": "merc_loadout_list",
-          "merc_loadouts": "merc_loadout_list", "item_table": "item_ids", "items": "item_ids",
-          "address_table": "addresses", "random_loadouts": "random_loadout", "random_weapons": "random_loadout",
-          "random_weapon": "random_loadout", "randomize": "random_loadout", "first_aid": "auto_first_aid",
-          "infinite_spray": "auto_first_aid", "first_aid_spray": "auto_first_aid", "infinite_first_aid": "auto_first_aid",
-          "auto_heal": "auto_first_aid"}.get(op, op)
+    results: dict = {}
+    for entry in list(ops or [])[:SAVED_MAX]:
+        entry = entry if isinstance(entry, dict) else {}
+        op = canonical(entry.get("op"))
+        name = str(entry.get("name") or op)[:40]
+        if op not in SAVED_OPS or (op == "merc_loadout" and not entry.get("reset")):
+            results[name] = {"op": op, "verified": False, "reason": "not a saved RE4 setting"}
+            continue
+        try:
+            m = entry.get("multiplier")
+            res = run(ad, op, count=int(entry.get("count") or 0), on=bool(entry.get("on", True)),
+                      character=str(entry.get("character") or ""), damage=entry.get("damage"),
+                      reset=bool(entry.get("reset")), multiplier=float(m) if m is not None else 2.0, g=g, operator=True)
+            ok = res.get("verified") is True
+            results[name] = {"op": op, "verified": ok,
+                             **({} if ok else {"reason": str(res.get("reason") or res.get("note") or "not verified")[:200]})}
+        except Exception as e:                       # noqa: BLE001 - this item's reason; the rest still go in
+            results[name] = {"op": op, "verified": False, "reason": f"{type(e).__name__}: {e}"[:200]}
+    try:
+        status = g.status()
+    except Exception as e:                           # noqa: BLE001
+        status = {"error": f"{type(e).__name__}: {e}"[:200]}
+    return {"op": "apply_saved", "results": results, "status": status,
+            "verified": bool(results) and all(r["verified"] for r in results.values())}
+
+
+def _run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
+         character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
+         multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
+         speed: float = 0, g=None, **extra) -> dict:
+    g = g or RE4(ad)
+    op = canonical(op)
     res: dict = {"op": op}
     if op == "status":
         pass
@@ -1116,6 +1199,8 @@ class REModsIn(BaseModel):
     speed: float = 0        # auto_spin: degrees per second (default 360)
     seed: int | None = None # random_loadout: repeat a draw
     guns: int = 1           # random_loadout: how many random guns (count = ammo rounds each, default 200; damage = firepower x)
+    ops: list[dict] = []    # apply_saved: the game's saved menu settings (gbox.game_prefs), [{name, op, on, multiplier?,
+                            # count?, character?, damage?, reset?}]
 
 
 class REModsOut(BaseModel):
@@ -1143,6 +1228,9 @@ def re_mods(inp: REModsIn, ctx):
         hint = " Resident Evil 5: tool re5; Resident Evil 6: tool re6." if g.get("platform") in ("ps3", "xbox360") else ""
         raise Unsupported(f"re_mods: Resident Evil 4 on GameCube / Wii (Dolphin) so far; {g.get('title')} "
                           f"({g.get('platform')}): see docs/mercenaries.md for what each Mercenaries release has.{hint}")
+    if canonical(inp.op) == "apply_saved":
+        return {"result": apply_saved(ad, inp.ops)}
     return {"result": run(ad, inp.op, inp.item, inp.count, inp.target, inp.on, inp.seconds, inp.character, inp.items,
                           inp.fire_rate, inp.damage, inp.reset, inp.multiplier, inp.melee_only, inp.kind, inp.force,
-                          inp.direction, inp.speed, seed=inp.seed, guns=inp.guns, threshold=inp.threshold)}
+                          inp.direction, inp.speed, seed=inp.seed, guns=inp.guns, threshold=inp.threshold,
+                          operator=True)}

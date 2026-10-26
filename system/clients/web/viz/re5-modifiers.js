@@ -85,6 +85,61 @@
     return request && (request.active || request.restoration_pending
       || ["pending", "donor", "inventory_present", "native_created"].includes(request.phase));
   }
+  // What this game keeps across reloads (operator 2026-10-26: "retain those settings across reloads"): every confirmed
+  // change here is saved per game on the control plane (gbox/game_prefs.py) and put back on new sessions; the panel shows
+  // the saved value beside the live one.
+  const SAVED_LABELS = { mines: "Mines", rotten_egg_only: "Rotten eggs", weapon_override: "Next-round weapon" };
+  const ROLES = { solo_p1: "Autobot Player 1 (solo)", teammate_p2: "Player 2: follow and protect human Player 1",
+    observe_human: "Observe human Player 1" };
+  const PROFILES = { assisted: "assisted training", unmodified_evaluation: "unmodified evaluation" };
+  function savedText(op, value, status) {
+    if (!value || typeof value !== "object") return "";
+    const def = DEFINITIONS.find(row => row.op === op), label = def?.label || SAVED_LABELS[op] || op;
+    if (op === "mines") return value.on ? (value.multiplier === "only" ? "Mines only" : `Mines every ${value.multiplier} s`) : "Mines off";
+    if (op === "rotten_egg_only") return value.on ? `Rotten eggs only (×${value.multiplier})` : "Rotten eggs off";
+    if (op === "weapon_override") {
+      if (!value.on) return "Next-round weapon: the game's loadout";
+      const name = (Array.isArray(status?.all_weapons) ? status.all_weapons : []).find(w => w.item === value.weapon)?.weapon;
+      return `Next-round weapon: ${name || "weapon " + value.weapon}${value.only ? " (only weapon)" : ""}`;
+    }
+    if (op === "kill_time") return value.on ? `${label}: ${value.multiplier ?? "random"} s` : `${label} off`;
+    if (def?.multiplier) return value.on ? `${label} ×${value.multiplier ?? def.multiplier}` : `${label} off`;
+    return `${label} ${value.on ? "on" : "off"}`;
+  }
+  function savedDiffers(def, value, status) {
+    if (!value || !status) return false;
+    if (def.multiplier) {
+      const live = status[def.field], want = value.on ? Number(value.multiplier ?? def.multiplier) : 1;
+      return typeof live === "number" && Number.isFinite(want) && Math.abs(live - want) > 0.011;
+    }
+    const live = def.read ? def.read(status) : status[def.field];
+    return typeof live === "boolean" && live !== !!value.on;
+  }
+  function savedState(entry) {
+    return entry?.state === "failed" ? `not on this session yet: ${entry.reason || "retrying"}`
+      : entry?.state === "applied" ? "applied to this session" : "being applied to this session";
+  }
+  function savedLine(state) {
+    const saved = state.saved;
+    if (!saved) return "";
+    const names = Object.keys(saved.settings || {});
+    if (!names.length) return "Changes confirmed here are kept for this game: they come back after reloads, relaunches and restarts.";
+    const parts = names.map(op => savedText(op, saved.settings[op], state.status)).filter(Boolean);
+    const failed = names.filter(op => saved.applied?.[op]?.state === "failed");
+    const pending = names.filter(op => saved.applied?.[op]?.state !== "applied");
+    const tail = saved.receives?.re5_mods === false ? " Agent test sessions and paused games keep their own setup."
+      : failed.length ? ` Not on this session yet: ${failed.map(op => savedText(op, saved.settings[op], state.status)).join(", ")} (${saved.applied[failed[0]].reason || "retrying"}).`
+      : pending.length ? " Being applied to this session…" : " Applied to this session.";
+    return `Saved for this game: ${parts.join(" · ")}.${tail}`;
+  }
+  function teamSavedLine(state) {
+    if (!state.saved) return "";
+    const team = state.saved.team;
+    if (!team) return "Saved team and training choices are kept for this game.";
+    const where = state.saved.receives?.mercs_team === false ? " Used on your own sessions; MercMode and bot demos always play solo." : "";
+    return `Saved for this game: ${ROLES[team.role] || team.role} · ${PROFILES[team.training_profile] || team.training_profile}`
+      + `${team.auto_reduce_mods ? " · gradual reduction allowed" : ""}.${where}`;
+  }
   function rows(state) {
     return DEFINITIONS.map(def => {
       const on = value(state.status, def), cap = capability(state.status, def.op);
@@ -100,6 +155,7 @@
       + `<option value="teammate_p2" ${config.role === "teammate_p2" ? "selected" : ""}>Player 2: follow and protect human Player 1</option>`
       + `<option value="observe_human" ${config.role === "observe_human" ? "selected" : ""}>Observe human Player 1; no bot input</option></select></label>`
       + `<p class="re5-mod-sub">${ESC(p2?.available ? "Player 2 actor and separate controller verified." : p2?.reason || state.teamError || "Team controls require an updated worker.")}</p>`
+      + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-team-saved>${ESC(teamSavedLine(state))}</p>` : "")
       + `<button type="button" class="act" data-re5-team-prepare ${!team?.capabilities?.prepare_player2?.available ? "disabled" : ""}>Prepare Player 2 controller for next launch</button>`
       + `<p class="re5-mod-sub">${ESC(team?.player2_preparation?.reason || "Controller preparation never restarts this game or changes Player 1 controls.")}</p>`
       + `<label>Training profile<select data-re5-team-profile aria-label="Training profile">`
@@ -116,8 +172,11 @@
       + teamControls + `<p class="re5-mod-status${state.error ? " re5-mod-error" : ""}" role="status">${ESC(state.message || "Read current team settings.")}</p>`;
     const controls = rows(state).map(row => {
       const raw = state.status?.[row.field];
-      const detail = (!row.available && row.reason) || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
+      const live = (!row.available && row.reason) || (row.on === null ? "State unavailable" : row.multiplier && row.on ? `Current setting: ${row.unit ? raw + row.unit : "×" + raw}`
         : row.note && row.on ? row.note(state.status) : "");
+      const keep = state.saved?.settings?.[row.op];
+      const detail = [live, keep && savedDiffers(row, keep, state.status)
+        ? `Saved: ${savedText(row.op, keep, state.status)} (${savedState(state.saved.applied?.[row.op])})` : ""].filter(Boolean).join(" · ");
       const setting = amount(state.status, row), unit = row.op === "kill_time" ? "seconds" : "times";
       const slider = row.min === undefined ? "" : `<div class="re5-mod-slider"><label>${ESC(row.label)}: `
         + `<output data-re5-value="${row.op}">${setting} ${unit}</output>`
@@ -202,6 +261,7 @@
       + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
+      + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-saved>${ESC(savedLine(state))}</p>` : "")
       + teamControls + controls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
@@ -210,11 +270,22 @@
       + `${ESC(state.message || "Read current settings from the game.")}</p>`;
   }
 
-  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, teamControls = false }) {
+  function create({ session, api, render = () => {}, delay = ms => new Promise(r => setTimeout(r, ms)), now = Date.now, teamControls = false,
+                    savedPrefs = null }) {
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     let state = { status: null, busy: false, pending: null, weaponPending: null, stale: true, message: "Reading current settings…", error: false };
-    state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = "";
+    state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = ""; state.saved = null;
     let disposed = false;
+    // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
+    async function loadSaved() {
+      if (typeof savedPrefs !== "function" || disposed) return;
+      try {
+        const v = await savedPrefs();
+        state.saved = v && typeof v === "object" && v.panels && typeof v.panels === "object" && !Array.isArray(v) ? {
+          settings: v.panels.re5_mods || {}, applied: v.applied?.re5_mods || {},
+          team: v.panels.mercs_team?.team || null, receives: v.receives || {} } : null;
+      } catch { /* saved settings are extra information; the game's own status still shows */ }
+    }
     const paint = () => { if (!disposed) render({ ...state }); };
     const alive = () => { if (disposed) throw new Error("Modifier panel closed."); };
     async function currentSession() {
@@ -246,7 +317,7 @@
         input: { session_id: sid, op, ...extra } }, "POST", 15000);
       return finish(submitted);
     }
-    async function read() {
+    async function read(saved = true) {
       const result = state.teamOnly ? { status: {} } : await job("status");
       if (!result.status || typeof result.status !== "object") throw new Error("Current modifier state is unavailable.");
       state.status = result.status;
@@ -256,6 +327,7 @@
         try { await readTeam(); }
         catch (error) { state.team = null; state.teamError = error.message; }
       }
+      if (saved) await loadSaved();
       return result.status;
     }
     async function readTeam() {
@@ -280,11 +352,14 @@
     async function refresh() {
       if (state.busy || disposed) return;
       state.busy = true; state.error = false; state.message = "Reading current settings…"; paint();
+      // the saved settings show at once, while the game itself is still being read on its PC
+      const saved = loadSaved().then(() => { if (state.busy && !disposed) paint(); });
       try {
-        await preflight(); await read();
+        await preflight(); await read(false); await saved;
         state.message = state.weaponPending ? "Weapon switch is still pending. Refresh to check its result."
           : DEFINITIONS.every(def => capability(state.status, def.op).available)
-            ? "Settings read from the running game. Choices are kept for this session."
+            ? (savedPrefs ? "Settings read from the running game. Choices are kept for this game across reloads and relaunches."
+              : "Settings read from the running game. Choices are kept for this session.")
             : "Settings read. Unavailable controls show their status below.";
       } catch (error) { state.stale = true; state.error = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
@@ -312,7 +387,7 @@
           if (!id) throw new Error("Server queued no identifiable weapon request.");
           state.weaponPending = id;
           do {
-            await read();                              // queue acceptance is never reported as an equipped weapon
+            await read(false);                         // queue acceptance is never reported as an equipped weapon
             const request = state.status.random_weapon_request;
             if (request?.id === id && request.state === "confirmed") { confirmed = true; break; }
             if (request?.id === id && request.state === "rejected") throw new Error(request.reason || "The bot rejected the weapon switch.");
@@ -554,6 +629,7 @@
     return ctl;
   }
   const api = { GAME, RE6, DEFINITIONS, eligible, panelEligible, replacementSession, capability, rows, html, create, mount,
+    savedText, savedLine, teamSavedLine,
     sectionHTML: () => `<style>${CSS}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;

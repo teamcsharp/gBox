@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field, StrictBool
 STREAM_FRESH_S = 2.0       # a session's continuous stream newer than this owns its picture (stills wait)
 
 from . import tools as _builtin  # noqa: F401  (registers tools)
+from . import bot_control
+from . import game_prefs
 from . import padstate
 from . import fit_events
 from . import operator_guard
@@ -2839,6 +2841,11 @@ def create_app(config: Config) -> FastAPI:
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         _extraction_handoff(j)
+        if t.name in game_prefs.TOOLS:
+            try:                                      # the operator's menu change, kept for this game (gbox/game_prefs.py)
+                game_prefs.observe(store, j, state)
+            except Exception as exc:                  # noqa: BLE001 - an accepted result stays accepted
+                store.audit('gbox-auto', 'game_prefs.observe_failed', j['id'], {'error': str(exc)[:300]})
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         if t.name == "launch_game" and state != JobState.SUCCEEDED:
@@ -4547,6 +4554,14 @@ def create_app(config: Config) -> FastAPI:
     gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
     from . import screensaver                    # idle PCs play the operator's games in the operator's style
     screensaver.install(app, store, config, auth, submit, workers, app.state.gameplay_memory)
+    # menu settings kept per game, re-applied to every new session (gbox/game_prefs.py)
+    game_prefs.routes(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                      workers=workers, wid=_wid)
+    # F5 keeps the autobot driving; F3 starts it from any PC (gbox/bot_control.py)
+    bot_control.install(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                        workers=workers, wid=_wid, automated=_automated, origin_dep=request_origin,
+                        server_jobs=_server_job_threads, saver=app.state.autoplay_screensaver,
+                        prefs=app.state.game_prefs)
     from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
     tactical_map.install(app, auth)
     from . import tas_api

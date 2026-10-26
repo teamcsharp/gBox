@@ -119,3 +119,19 @@ test('a MercMode status that times out is asked again instead of failing the flo
   const out = await r.ctl.run();
   assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1');
 });
+
+test('an operator reconnect brings the MercMode game back with its autobot; automatic ones and failures never block', async () => {
+  for (const automatic of [false, true]) {
+    const r = rig(); const asked = [];
+    r.io.ensureBot = async sid => { asked.push(sid); };
+    const out = await r.ctl.run({ automatic });
+    assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1');
+    assert.deepEqual(asked, automatic ? [] : ['w1-s1'], 'F5 / Try again only (operator 2026-10-26)');
+  }
+  const r = rig(); r.io.ensureBot = async () => { throw Error('control plane restarting'); };
+  assert.equal((await r.ctl.run()).done, true);
+  const idle = rig(); idle.mercmode.hosts[0].current_run = null; const asked = [];
+  idle.io.ensureBot = async sid => { asked.push(sid); };
+  await idle.ctl.run();
+  assert.deepEqual(asked, [], 'no MercMode game: nothing to keep driving');
+});

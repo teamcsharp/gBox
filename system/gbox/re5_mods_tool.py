@@ -1385,9 +1385,43 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
     return res
 
 
+SAVED_OPS = frozenset({*OPERATOR_SETTINGS, "mines", "rotten_egg_only", "weapon_override"})
+SAVED_MAX = 16
+
+
+def apply_saved(ad, ops, g: RE5 | None = None) -> dict:
+    """The game's saved menu settings (gbox.game_prefs) on a new session, each applied as the operator's own change: the
+    ones in OPERATOR_SETTINGS become operator overrides again, so the profile's boot and round hooks keep them instead of
+    their defaults. Every item reports its own read-back; one failed item never stops the others."""
+    g = g or RE5(ad)
+    results: dict = {}
+    for item in list(ops or [])[:SAVED_MAX]:
+        item = item if isinstance(item, dict) else {}
+        op = str(item.get("op") or "")
+        name = str(item.get("name") or op)[:40]
+        if op not in SAVED_OPS:
+            results[name] = {"op": op, "verified": False, "reason": "not a saved RE5 setting"}
+            continue
+        try:
+            res = run(ad, op, item.get("multiplier"), bool(item.get("on", True)), g=g, operator=True,
+                      weapon=item.get("weapon"), only=bool(item.get("only")))
+            ok = res.get("verified") is True
+            results[name] = {"op": op, "verified": ok,
+                             **({} if ok else {"reason": str(res.get("reason") or res.get("note") or "not verified")[:200]})}
+        except Exception as e:                       # noqa: BLE001 - this item's reason; the rest still go in
+            results[name] = {"op": op, "verified": False, "reason": f"{type(e).__name__}: {e}"[:200]}
+    try:
+        status = g.status()
+    except Exception as e:                           # noqa: BLE001 - the per-item read-backs above still stand
+        status = {"error": f"{type(e).__name__}: {e}"[:200]}
+    return {"op": "apply_saved", "results": results, "status": status,
+            "verified": bool(results) and all(r["verified"] for r in results.values())}
+
+
 class RE5ModsIn(BaseModel):
     session_id: str
     op: str = "status"            # status | turn_speed | fire_rate | infinite_ammo | unlimited_health | bullet_damage | revert_all | addresses
+                                  # | apply_saved (ops: the game's saved menu settings, gbox.game_prefs)
     multiplier: str | float | None = None   # turn_speed (2; "max" = 10) / fire_rate (80) / bullet_damage (10); 1 = the game's
     on: bool = True               # infinite_ammo / unlimited_health on/off; multiplier off restores the game's values
     mode: str = "reunion"
@@ -1395,6 +1429,7 @@ class RE5ModsIn(BaseModel):
     stage: int = 0
     weapon: int | None = None      # existing loaded quick-slot gun; selection is retained for this session
     only: bool = False             # weapon_override: the chosen weapon in every gun slot (e.g. longbow-only rounds)
+    ops: list[dict] = []           # apply_saved: [{name, op, on, multiplier?, weapon?, only?}]
 
 
 class RE5ModsOut(BaseModel):
@@ -1413,5 +1448,7 @@ def re5_mods(inp: RE5ModsIn, ctx):
     ad, g = SESSIONS[inp.session_id]
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
+    if (inp.op or "").strip().lower() == "apply_saved":
+        return {"result": apply_saved(ad, inp.ops)}
     return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
                            mode=inp.mode, character=inp.character, stage=inp.stage,weapon=inp.weapon,only=inp.only)}
