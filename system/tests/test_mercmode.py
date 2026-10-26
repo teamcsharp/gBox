@@ -1499,3 +1499,13 @@ def test_inventory_walks_each_worker_alias_chain_once_however_many_sessions():
     store.get=counting
     M.inventory(store,w)
     assert len(reads)<=3*8                              # three old worker ids, each walked at most once
+
+
+def test_a_frozen_game_wakes_the_scheduler_at_once():
+    # 2026-10-26: RE4 froze on its results at 16:54:33, the stop came 15 s later and the prepared RE5 only at 16:55:58
+    store,w,saver,calls,now,tick,run,job=playing()
+    woke=[]
+    saver.nudge=lambda why='': woke.append(why)
+    assert saver.report(run['session_id'],{'bad_end':'hung'}) is True
+    assert woke and 'bad end (hung)' in woke[0]
+    assert store.get(S.STATE,w['name'])['yield']==S.BAD_ENDS['hung']
