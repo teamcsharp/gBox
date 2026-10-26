@@ -86,14 +86,17 @@ def test_tasks_poll_skips_history_inventory_and_unrelated_inbox_before_limits(cf
             body["must_not_decode"] = True
         store.put("request", body["id"], body)
     all_workers_calls = []
-    original = store.all
+    original, original_rows = store.all, store.rows
     def all_docs(kind, **kwargs):
         if kind in ("job", "request"):
             raise AssertionError("task poll requested unbounded history")
+        return original(kind, **kwargs)
+    def rows(kind):                      # server.workers reads the registrations undecoded, once (2026-10-26)
         if kind == "worker":
             all_workers_calls.append(kind)
-        return original(kind, **kwargs)
+        return original_rows(kind)
     monkeypatch.setattr(store, "all", all_docs)
+    monkeypatch.setattr(store, "rows", rows)
     _refuse_old_documents(monkeypatch)
     snapshot = client.get("/api/tasks").json()
     assert [j["id"] for j in snapshot["jobs"]] == ["active-newer", "active-older"]
@@ -162,9 +165,10 @@ def test_poll_queries_use_kind_and_job_state_indexes(tmp_path):
     try:
         statements = []
         store.db.set_trace_callback(statements.append)
-        store.all("session", reverse=True)
-        store.jobs(states=("queued", "running"), limit=1000, reverse=True)
-        store.resolution_requests()
+        with store.lock:        # a read outside the lock runs on a pooled read-only connection (2026-10-26): untraced
+            store.all("session", reverse=True)
+            store.jobs(states=("queued", "running"), limit=1000, reverse=True)
+            store.resolution_requests()
         store.db.set_trace_callback(None)
         by_kind, active, resolutions = [store.db.execute("EXPLAIN QUERY PLAN " + sql).fetchall() for sql in statements]
         assert any("docs_kind" in row[3] for row in by_kind)

@@ -90,12 +90,8 @@ def link_reload(store, previous: dict, successor_id: str, worker_id: str, launch
 
 def _rows(store, kind: str, fields: tuple[str, ...]) -> list[dict]:
     try:
-        cols = ", ".join(f"json_extract(body,'$.{f}')" for f in fields)
-        with store.lock:
-            rows = store.db.execute(f"SELECT {cols} FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
         out = []
-        for r in rows:
-            d = dict(zip(fields, r))
+        for d in store.fields(kind, fields):       # a lock-free read (gbox/store.py, 2026-10-26)
             for k, v in d.items():                 # nested JSON comes back as text
                 if isinstance(v, str) and v[:1] in "{[":
                     try:

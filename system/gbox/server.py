@@ -11,6 +11,7 @@ import re
 import subprocess
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Literal
 
@@ -34,6 +35,9 @@ from .store import Store, canon, sha256
 from .worker_results import result_digest
 
 WORKER_TTL = 30.0
+WORKERS_CACHE_S = 1.0             # workers(): registrations are decoded and admission-checked at most this often
+HEARTBEAT_PERSIST_S = 5.0         # a claim poll's heartbeat reaches the store this often unless a decision input changed
+STORE_CHECKPOINT_S = 15.0         # the WAL is folded back into gbox.sqlite3 this often, off the writer's commit path
 MOMENT_WAIT_S = 240.0            # a report's moment snapshot: state_transfer's own limit is 180 s, a queued job gets the rest
 # tools whose progress reports are console lines (several per report, newest last) that the desktop's rebuild panel shows:
 # the job doc keeps the last CONSOLE_KEEP of them (GET /api/jobs/{jid}/console; gbox/node_rebuild.py)
@@ -108,6 +112,24 @@ def _is_stop_job(job: dict) -> bool:
 def create_app(config: Config) -> FastAPI:
     store = Store(config.data_dir)
     store.config = config                    # acceptance hooks that place files (characters._collect_accept) find the cache
+
+    def _store_checkpoints(ref=weakref.ref(store)):
+        """gbox/store.py: fold the WAL back into the database every STORE_CHECKPOINT_S on the store's own connection,
+        off the writer's commit path and without the Store lock, truncating it once it has grown past 64 MB (the
+        Spark carried a 79 MB WAL for days while checkpoints ran inside commits, 2026-10-26). The thread only ever
+        holds the store weakly and ends when it is closed or collected (tests build hundreds of apps)."""
+        while True:
+            time.sleep(STORE_CHECKPOINT_S)
+            s = ref()
+            if s is None or s.closed:
+                return
+            try:
+                s.checkpoint_due()
+            except Exception as e:                # noqa: BLE001 - a busy or closed database: the next pass retries
+                if not s.closed:
+                    print(f"store checkpoint: {type(e).__name__}: {e}", flush=True)
+            del s
+    threading.Thread(target=_store_checkpoints, daemon=True, name="store-checkpoint").start()
     token = config.token()
     from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
     cache_tiers.install(config)
@@ -2229,13 +2251,35 @@ def create_app(config: Config) -> FastAPI:
         return {"ok": True, "time": time.time()}
 
     # --- tools & workers ---
+    workers_cache: dict = {"version": None, "at": 0.0, "docs": {}, "rows": []}
+    WORKERS_CACHE_KINDS = ("worker", "setting", "session", "slabel")   # what online / background_testing / admission read
+
     def workers() -> list[dict]:
+        """Every registration with online / background_testing / admission, computed at most once per WORKERS_CACHE_S
+        and again as soon as this process writes a document the answer is made of (store.version of a registration,
+        the Tasks-menu setting, a session or its label). 23 registrations (21 of them stale ids with ~85 KB of
+        build_sources each) are 2.1 MB of JSON: decoding them on every /api/workers, /api/sessions and /api/mercmode
+        poll cost 0.18 s of GIL per call on the Spark, and the per-worker admission check another ~70 store reads
+        (2026-10-26). A document whose stored text has not changed is not decoded again. Rows are shallow copies: a
+        caller may change a top-level key, never a nested value."""
         now = time.time()
-        from . import background_testing
-        ex = background_testing.excluded(store)
-        return [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex),
-                     "admission": {'allowed': (reason := background_testing.guarded_reason(store, w)) is None, 'reason': reason}}
-                for w in store.all("worker")]
+        c = workers_cache
+        version = tuple(store.version(k) for k in WORKERS_CACHE_KINDS)
+        if version != c["version"] or now - c["at"] > WORKERS_CACHE_S:
+            from . import background_testing
+            docs = {}
+            for wid, body in store.rows("worker"):
+                memo = c["docs"].get(wid)
+                docs[wid] = memo if memo is not None and memo[0] == body else (body, json.loads(body))
+            running = store.running_sessions()
+            setting = store.get("setting", background_testing.SETTING) or {}
+            ex = background_testing.excluded(store, setting=setting)
+            c["rows"] = [w | {"online": now - w["last_seen"] < WORKER_TTL, "background_testing": background_testing.allowed(w, ex),
+                              "admission": {'allowed': (reason := background_testing.guarded_reason(
+                                  store, w, now=now, running=running, setting=setting)) is None, 'reason': reason}}
+                         for _, w in docs.values()]
+            c["docs"], c["version"], c["at"] = docs, version, now
+        return [w | {"online": now - w["last_seen"] < WORKER_TTL} for w in c["rows"]]
 
     @app.get("/api/tools")
     def list_tools(actor=Depends(auth)):
@@ -2584,18 +2628,37 @@ def create_app(config: Config) -> FastAPI:
     def claim(wid: str, request: Request, activity: WorkerActivity | None = None, actor=Depends(auth)):
         return _claim(wid,request,activity,actor)
 
+    def _heartbeat_due(prev: dict, now: float, address: str | None, activity) -> bool:
+        """Whether this claim poll's heartbeat is written to the store. A worker polls every second and its registration
+        is 100-120 KB (build_sources), so persisting every poll was most of the control plane's 1-2 MB/s of WAL on the
+        Spark (2026-10-26). It is written at once when a decision input changed (a job started or finished, the PC's
+        address, operator input ending an idle spell) and otherwise every HEARTBEAT_PERSIST_S: every reader of
+        last_seen allows WORKER_TTL (30 s) or more, and the in-memory row the claim goes on with is always current."""
+        if now - (prev.get("last_seen") or 0) >= HEARTBEAT_PERSIST_S:
+            return True
+        if address and address != prev.get("address"):
+            return True
+        if activity is None:
+            return False
+        idle, was = activity.idle_seconds, prev.get("idle_seconds")
+        return activity.active_jobs != prev.get("active_jobs") or was is None or (idle is not None and idle < was)
+
     def _claim(wid,request,activity=None,actor=None,*,foreground_only=False):
         w = store.get("worker", wid)
         if not w:
             raise HTTPException(404, "unknown worker; register first")
         with store.lock:
-            w["last_seen"] = time.time()
-            if request.client and request.client.host:
-                w["address"] = request.client.host
+            now = time.time()
+            address = request.client.host if request.client and request.client.host else None
+            due = _heartbeat_due(w, now, address, activity)
+            w["last_seen"] = now
+            if address:
+                w["address"] = address
             if activity:
                 w["idle_seconds"] = activity.idle_seconds
                 w["active_jobs"] = activity.active_jobs
-            store.put("worker", wid, w)
+            if due:
+                store.put("worker", wid, w)
         # The unlock reconciler takes its own guard and then the Store lock.
         # Sample admission outside the Store lock to preserve that lock order.
         from .unlock_job_policy import admit

@@ -310,8 +310,8 @@ def warm_adoption_owned(store, worker, row, session):
             or current.get('worker_id') not in (None,worker['id']) or current.get('state')=='cancelled' \
             or autoplay_resume.revoked(store,sid,current.get('id')):
         return False
-    with store.lock:
-        changed=store.db.execute("SELECT 1 FROM docs WHERE kind='job' "
+    with store.reading() as db:
+        changed=db.execute("SELECT 1 FROM docs INDEXED BY docs_job_session WHERE kind='job' "
             "AND json_extract(body,'$.tool')='session_op' "
             "AND json_extract(body,'$.input.session_id')=? "
             "AND json_extract(body,'$.input.op') IN ('pause','resume','reset','load_state','send_input','stop_game') "
@@ -417,13 +417,15 @@ def display_successors(store, workers, running):
             return False
         if job.get('actor')!=ACTOR and not row.get('warm_adoption'):
             return False
-        # A manual pause/reset/input wins even before its worker acknowledges it.
-        changed=store.db.execute("SELECT 1 FROM docs WHERE kind='job' "
-            "AND json_extract(body,'$.tool')='session_op' "
-            "AND json_extract(body,'$.input.session_id')=? "
-            "AND json_extract(body,'$.input.op') IN ('pause','resume','reset','load_state','send_input','stop_game') "
-            "AND json_extract(body,'$.created')>=? AND COALESCE(json_extract(body,'$.actor'),'')!=? LIMIT 1",
-            (sid,since,ACTOR)).fetchone()
+        # A manual pause/reset/input wins even before its worker acknowledges it. By docs_job_session (gbox/store.py):
+        # this was a 214 MB scan of every job under the Store lock per /api/sessions poll on the Spark (2026-10-26).
+        with store.reading() as db:
+            changed=db.execute("SELECT 1 FROM docs INDEXED BY docs_job_session WHERE kind='job' "
+                "AND json_extract(body,'$.tool')='session_op' "
+                "AND json_extract(body,'$.input.session_id')=? "
+                "AND json_extract(body,'$.input.op') IN ('pause','resume','reset','load_state','send_input','stop_game') "
+                "AND json_extract(body,'$.created')>=? AND COALESCE(json_extract(body,'$.actor'),'')!=? LIMIT 1",
+                (sid,since,ACTOR)).fetchone()
         return not changed
 
     out={}

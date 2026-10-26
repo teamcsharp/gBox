@@ -874,10 +874,7 @@ def supersede(store, doc: dict) -> dict:
 def _fields(store, kind: str, fields: tuple[str, ...]) -> list[dict]:
     """Just these top-level fields of every document of a kind (inbox threads, session logs stay undecoded)."""
     try:
-        cols = ", ".join(f"json_extract(body,'$.{f}')" for f in fields)
-        with store.lock:
-            rows = store.db.execute(f"SELECT {cols} FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
-        return [dict(zip(fields, r)) for r in rows]
+        return store.fields(kind, fields)                        # a lock-free read (gbox/store.py, 2026-10-26)
     except Exception:                                            # noqa: BLE001 - another store: decode them all
         return [{f: d.get(f) for f in fields} for d in store.all(kind)]
 
