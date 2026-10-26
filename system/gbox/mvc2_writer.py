@@ -144,19 +144,57 @@ def parse_cid(token: str) -> int:
     raise ValueError(f"unknown MVC2 fighter {token!r} (use a hex id 00-3A, PLxx or a roster name)")
 
 
+def pick_sacrifice(disc, target: str, need_bytes: int) -> str:
+    """Smallest free-slack file whose own sectors + gap to the next file hold a `need_bytes` moved file.
+
+    Deterministic: smallest free slack first, then name order. Never picks ``target`` or 1ST_READ.BIN.
+    The chosen file's directory entry is repointed by patch_gdi to the moved data; it stops
+    resolving on the mod (the mod gives it up) - the original GDI is untouched.
+    """
+    entries = sorted(((k, v[0], v[1]) for k, v in disc.files.items()), key=lambda kv: kv[1])
+    cands = []
+    for i, (n, lb, sz) in enumerate(entries):
+        if n == target or n == "1ST_READ.BIN":
+            continue
+        slack = (entries[i + 1][1] - lb if i + 1 < len(entries) else (sz + 2047) // 2048) * 2048
+        if slack >= need_bytes:
+            cands.append((slack, n))
+    if not cands:
+        raise ValueError(f"no file has enough free sectors for a {need_bytes}-byte replacement (target {target})")
+    cands.sort()
+    return cands[0][1]
+
+
 def build_mod(gdi: str | Path, out_dir: str | Path, target_cid: int, donor_cid: int, slots=VISUAL_SLOTS,
-              name: str | None = None, progress=None) -> dict:
-    """Write a separate GDI (original untouched) whose PL<target>_DAT.BIN carries the donor's visual slots."""
+              name: str | None = None, progress=None, sacrifice: str | None = None) -> dict:
+    """Write a separate GDI (original untouched) whose PL<target>_DAT.BIN carries the donor's visual slots.
+
+    If the swapped DAT no longer fits the target's own sectors, the replacement is moved into a
+    sacrificed file's sectors (``sacrifice`` names one explicitly; otherwise :func:`pick_sacrifice`
+    picks the smallest-sacrifice automatically). The mod's directory entry for the sacrifice is
+    repointed to the moved data, so the mod no longer resolves it - the original GDI is untouched."""
     from .gdrom import GDRom, patch_gdi
     disc = GDRom(str(gdi))
     tname, dname = DAT_NAME.format(id=target_cid), DAT_NAME.format(id=donor_cid)
     tdat, ddat = disc.read(tname), disc.read(dname)
     new = swap_slots(tdat, ddat, slots)
     name = name or f"mvc2_{target_cid:02x}_{donor_cid:02x}"
-    out = patch_gdi(gdi, out_dir, name, {tname: new}, progress)
+    tslack = disc.files[tname]
+    tlba, tsize = tslack[0], tslack[1]
+    entries = sorted(((k, v[0], v[1]) for k, v in disc.files.items()), key=lambda kv: kv[1])
+    nxt = next((l for l in [e[1] for e in entries] if l > tlba), None)
+    room = (nxt - tlba) * 2048 if nxt else (tsize + 2047) // 2048
+    donors = []
+    if len(new) > room:
+        sac = sacrifice or pick_sacrifice(disc, tname, len(new))
+        donors = [sac]
+    out = patch_gdi(gdi, out_dir, name, {tname: new}, progress, donors=donors)
     return {"mod": name, "gdi": str(out), "target": tname, "donor": dname, "slots": list(slots),
             "target_sha256": hashlib.sha256(tdat).hexdigest(), "donor_sha256": hashlib.sha256(ddat).hexdigest(),
-            "mod_file_sha256": hashlib.sha256(new).hexdigest(), "old_size": len(tdat), "new_size": len(new)}
+            "mod_file_sha256": hashlib.sha256(new).hexdigest(), "old_size": len(tdat), "new_size": len(new),
+            "sacrifice": donors[0] if donors else None,
+            "message": (f"{tname} no longer resolves on this mod (sacrificed for space)" if donors
+                        else "no sacrifice needed") }
 
 
 def use(ctx, meta: dict, game: dict, inp) -> dict:
