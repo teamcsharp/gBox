@@ -197,7 +197,7 @@ test('the watch panel shows the newest note and how long ago', () => {
 test('the chat has an instant-command dropdown that posts the exact command for this session', async () => {
   const C = require('../clients/web/viz/autoplay-coach.js');
   assert.match(C.html('w-1'), /data-coach-cmds/);
-  assert.deepEqual(C.COMMANDS.map(c => c[0]), ['fight', 'next_area', 'explore', 'hunt', 'score', 'repetitive', 'mine', 'missing']);
+  assert.deepEqual(C.COMMANDS.map(c => c[0]), ['fight', 'next_area', 'explore', 'hunt', 'score', 'repetitive', 'mine', 'mine_trail', 'missing']);
   const calls = [], states = [];
   const host = { ownerDocument: undefined, matches: () => true, querySelector: sel => sel === 'input' ? input : sel === '[data-coach-status]' ? status : sel === '[data-coach-cmds]' ? button : null };
   const input = { addEventListener() {}, value: '', setAttribute() {} }, status = { dataset: {} }, button = { addEventListener() {}, setAttribute() {}, getBoundingClientRect: () => ({}) };
@@ -205,4 +205,45 @@ test('the chat has an instant-command dropdown that posts the exact command for 
   await ctl.command('fight');
   assert.deepEqual(calls[0], ['/api/sessions/w-1/directive', { command: 'fight' }]);
   assert.equal(states.at(-1).state, 'done'); assert.match(states.at(-1).text, /Fight them!.*sent/);
+});
+
+test('the command dropdown closes when the pointer goes elsewhere, when the window loses focus, and never survives a re-mount', async () => {
+  // operator 2026-10-26 (PiP, the menu stuck open over the game): "close dropdowns when i click away. I cant close this now"
+  const C = require('../clients/web/viz/autoplay-coach.js');
+  const listeners = { doc: {}, win: {} };
+  const on = store => (type, fn) => { (store[type] ||= []).push(fn); };
+  const off = store => (type, fn) => { store[type] = (store[type] || []).filter(f => f !== fn); };
+  const win = { addEventListener: on(listeners.win), removeEventListener: off(listeners.win) };
+  const stale = { className: 'coach-menu', removed: false, remove() { this.removed = true; } };
+  const made = [];
+  const doc = {
+    defaultView: win, addEventListener: on(listeners.doc), removeEventListener: off(listeners.doc),
+    querySelectorAll: sel => sel === '.coach-menu' ? [stale] : [],
+    createElement() {
+      const el = { className: '', style: {}, innerHTML: '', removed: false, handlers: {},
+        setAttribute() {}, addEventListener(t, fn) { this.handlers[t] = fn; }, remove() { this.removed = true; },
+        contains: node => node && node.inside === true, querySelector: () => null };
+      made.push(el); return el;
+    },
+    body: { append() {} },
+  };
+  let clicks = null;
+  const button = { addEventListener(t, fn) { if (t === 'click') clicks = fn; }, setAttribute() {}, getBoundingClientRect: () => ({ left: 10, bottom: 20 }), focus() {} };
+  const input = { addEventListener() {}, value: '', setAttribute() {} }, status = { dataset: {} };
+  const host = { ownerDocument: doc, matches: () => true, querySelector: sel => sel === 'input' ? input : sel === '[data-coach-status]' ? status : sel === '[data-coach-cmds]' ? button : null };
+  C.mount(host, { sid: 'w-1', api: async () => ({}) });
+  clicks({ preventDefault() {}, stopPropagation() {} });
+  assert.ok(stale.removed, 'a menu left by an earlier mount is removed when a new one opens');
+  assert.equal(made.length, 1);
+  assert.ok(listeners.doc.pointerdown?.length && listeners.doc.mousedown?.length && listeners.win.blur?.length);
+  listeners.doc.pointerdown[0]({ target: { inside: false } });          // a click on the game, the stream, anywhere else
+  assert.ok(made[0].removed, 'the menu closes on a pointer-down outside it');
+  assert.deepEqual([listeners.doc.pointerdown, listeners.doc.mousedown, listeners.win.blur].map(l => l.length), [0, 0, 0]);
+  clicks({ preventDefault() {}, stopPropagation() {} });                 // open again
+  assert.equal(made.length, 2);
+  listeners.win.blur[0]();                                              // the native game surface took the click
+  assert.ok(made[1].removed, 'the menu closes when the window loses focus');
+  clicks({ preventDefault() {}, stopPropagation() {} });
+  listeners.doc.pointerdown[0]({ target: { inside: true } });            // inside the menu: stays
+  assert.ok(!made[2].removed);
 });
