@@ -40,8 +40,8 @@ WRITERS = [
      "character on every costume, up to 44 per mod); zombies / J'avo. pose=source_proportions keeps a donor's own "
      "proportions instead of stretching it to the native bone lengths"),
     ("metal_arms", ["player", "npc", "enemy"], "Glitch; any bot (picked on screen)"),
-    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy USA, "
-                                                "World Tour USA and Revenge USA (gbox.aki_wcw)"),
+    ("aki_wrestling", ["<wrestler>", "player"], "any wrestler (several per ROM: op=match); No Mercy + World Tour + Revenge "
+                                                 "(gbox.aki_wcw; Revenge USA + EU writer)"),
     ("yukes_sd", ["<wrestler>"], "any wrestler, every costume (several per disc: op=match); SmackDown! 2 (PS1)"),
     ("defjam_writer", ["<wrestler>", "player"],
      "Def Jam Vendetta PS2: any of the 58 wrestler containers (player = the four story heroes, every costume); "
