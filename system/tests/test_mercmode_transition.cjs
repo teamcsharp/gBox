@@ -25,3 +25,14 @@ test('the overlay hands a live run on another session to follow(), one at a time
  release();await new Promise(r=>setTimeout(r,0));
  await ctl.poll();assert.deepEqual(followed,['w2-live','w2-live']);   // not there yet (a black first frame): tried again
 });
+test('a hung status read and an overlay up too long never leave the PiP on a frozen loading screen',async()=>{
+ // operator 2026-10-26: "mercmode is just sitting here frozen" - the PiP on "Loading Resident Evil 5..." while RE5 played
+ const rendered=[];let t=1000;
+ const data={hosts:[{name:'lilspark',id:'w1',settings:{enabled:true},current_run:{phase:'launching',title:'Resident Evil 5',started:990,mercmode:{title:'re5'}}}]};
+ const hang=T.create({mercmode:M,api:()=>new Promise(()=>{}),current:()=>'w1-old',render:s=>rendered.push(s),
+   timeout:()=>Promise.reject(Error('timed out')),now:()=>t});
+ await hang.poll();assert.equal(rendered.at(-1).show,false);            // the read never answered: hidden, not frozen
+ const ctl=T.create({mercmode:M,api:async()=>data,current:()=>'w1-old',render:s=>rendered.push(s),now:()=>t});
+ await ctl.poll();assert.equal(rendered.at(-1).show,true);
+ t+=241;await ctl.poll();assert.equal(rendered.at(-1).show,false);      // four minutes "launching": not a boot any more
+});

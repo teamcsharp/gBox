@@ -9,23 +9,31 @@
     #compact-transition .mmt-text b{display:block;font-size:17px;margin-bottom:3px}#compact-transition .mmt-text span{opacity:.75;font-size:11px}
     #compact-transition .mmt-bar{position:absolute;left:12%;right:12%;bottom:26px;height:6px;border-radius:3px;background:#ffffff26;overflow:hidden}
     #compact-transition .mmt-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#5aa0ff,#9bffd6);transition:width .6s linear}`;
-  function create({ mercmode, api, current, worker = () => null, render, follow = null, now = () => Date.now() / 1000 }) {
-    let stopped = false, polling = false, following = false;
+  // A status read that hangs never freezes the overlay (operator 2026-10-26, the PiP on "Loading Resident Evil 5..." while
+  // RE5 had played for 16 minutes: "mercmode is just sitting here frozen"): each read gives up after READ_TIMEOUT_S, and
+  // the overlay never stays up longer than SHOW_MAX_S without a read that says a title is really booting
+  const READ_TIMEOUT_S = 8, SHOW_MAX_S = 240;
+  function create({ mercmode, api, current, worker = () => null, render, follow = null, now = () => Date.now() / 1000,
+                    timeout = ms => new Promise((_, reject) => setTimeout(() => reject(Error('MercMode status timed out')), ms)) }) {
+    let stopped = false, polling = false, following = false, shownSince = null;
     const state = { show: false, title: '', progress: 0, phase: '', text: '', sub: '' };
     async function poll() {
       if (stopped || polling) return;
       const sid = current();
       polling = true;
       try {
-        const data = await api('/api/mercmode', undefined, 'GET');
+        const data = await Promise.race([api('/api/mercmode', undefined, 'GET'), timeout(READ_TIMEOUT_S * 1000)]);
         if (stopped) return;
         const next = mercmode.transition(mercmode.hostFor(data, sid, worker()), sid, now());
         Object.assign(state, { show: false, progress: 0, follow: null, only_if_ended: false }, next);
+        if (!state.show) shownSince = null;
+        else if (shownSince === null) shownSince = now();
+        else if (now() - shownSince > SHOW_MAX_S) state.show = false;      // not a boot any more: never a frozen screen
         if (next.follow && follow && !following) {          // the run plays elsewhere: the PiP goes to it (one at a time;
           following = true;                                 // a black first frame is retried on the next poll)
           Promise.resolve().then(() => follow(next.follow, Boolean(next.only_if_ended))).catch(() => {}).finally(() => { following = false; });
         }
-      } catch { state.show = false; }
+      } catch { state.show = false; shownSince = null; }
       finally { polling = false; }
       render({ ...state });
     }
