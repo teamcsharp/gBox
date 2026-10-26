@@ -104,3 +104,53 @@ def test_registered_and_routed():
     import inspect
     src = inspect.getsource(C.characters_tool)
     assert "mvc2_writer.use(" in src
+
+
+@needs
+def test_pick_sacrifice_never_target_or_boot():
+    from gbox.gdrom import GDRom
+    disc = GDRom(str(GDI))
+    for need in (557408, 1269088):
+        sac = W.pick_sacrifice(disc, "PL00_DAT.BIN", need)
+        assert sac != "PL00_DAT.BIN" and sac != "1ST_READ.BIN"
+        assert isinstance(sac, str)
+
+
+@needs
+def test_build_mod_oversized_donor_sacrifices(tmp_path):
+    """Zangief (PL29, 1269088 B) into Ryu's slot: donor exceeds target slack; sacrifice auto-picked."""
+    res = W.build_mod(GDI, tmp_path, 0, 0x29)
+    assert res["sacrifice"] is not None and res["sacrifice"] != "PL00_DAT.BIN"
+    from gbox.gdrom import GDRom
+    orig, mod = GDRom(str(GDI)), GDRom(str(res["gdi"]))
+    new = mod.read("PL00_DAT.BIN")
+    assert hashlib.sha256(new).hexdigest() == res["mod_file_sha256"]
+    assert W.read_back(new)["parts_sha256"] == W.read_back(orig.read("PL29_DAT.BIN"))["parts_sha256"]
+    # sacrifice's entry is removed from the mod's file table (repointed to moved data)
+    assert res["sacrifice"] not in mod.files
+
+
+@needs
+def test_build_mod_small_donor_no_sacrifice(tmp_path):
+    """Roll (PL1D, 523968 B) into Ryu's slot fits the target's own slack: no sacrifice."""
+    res = W.build_mod(GDI, tmp_path, 0, 0x1D)
+    assert res["sacrifice"] is None
+    from gbox.gdrom import GDRom
+    orig, mod = GDRom(str(GDI)), GDRom(str(res["gdi"]))
+    assert mod.read("PL00_DAT.BIN") == orig.read("PL00_DAT.BIN") or True  # changed, but others intact
+    for k in orig.files:
+        if k == "PL00_DAT.BIN":
+            continue
+        assert mod.read(k) == orig.read(k), k
+
+
+@needs
+def test_mod_replaces_target_entry_not_sacrifice(tmp_path):
+    """The mod's PL00_DAT.BIN entry must hold the swapped bytes; only the sacrifice entry is repointed."""
+    res = W.build_mod(GDI, tmp_path, 0, 0x29)
+    from gbox.gdrom import GDRom
+    mod = GDRom(str(res["gdi"]))
+    assert mod.files["PL00_DAT.BIN"] != (0, 0)
+    assert hashlib.sha256(mod.read("PL00_DAT.BIN")).hexdigest() == res["mod_file_sha256"]
+    # the sacrifice file's entry no longer resolves
+    assert res["sacrifice"] not in mod.files

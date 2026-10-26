@@ -442,6 +442,14 @@ def patch_gdi(src_gdi: str | Path, out_dir: str | Path, name: str, files: dict[s
             sec[doff + 10:doff + 14] = struct.pack("<I", len(data))
             sec[doff + 14:doff + 18] = struct.pack(">I", len(data))
             put(dlba, bytes(sec))
+        for dn in donors:                            # sacrificed donors: their sectors now hold moved data, so
+            dlba, doff = disc.records[dn]            # zero their directory record so the mod no longer resolves them
+            if dlba < start:
+                continue
+            f.seek((dlba - start) * ssz + (16 if ssz == 2352 else 0))
+            sec = bytearray(f.read(2048))
+            sec[doff:doff + sec[doff]] = b"\x00" * sec[doff]
+            put(dlba, bytes(sec))
     gdi = out_dir / f"{name}.gdi"
     gdi.write_text("\n".join(new_lines) + "\n")
     return gdi
