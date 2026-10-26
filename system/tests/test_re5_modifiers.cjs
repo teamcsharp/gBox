@@ -825,3 +825,79 @@ test('both PiP shells load modifier UI and compact right-click owns the gameplay
   assert.match(follow, /closePipMenu\(\)/);
   assert.match(mini, /follow: async session => \{\s*closeModifiers\(\)/);
 });
+
+// --- the Mercenaries clock control (operator 2026-10-26: stalemates) ---
+function clockRig(left = 95) {
+  const r = rig();
+  r.status.merc_seconds_left = left;
+  r.status.capabilities.add_time = { available: true }; r.status.capabilities.set_time = { available: true };
+  r.command = async input => {
+    const before = r.status.merc_seconds_left, wanted = input.op === 'set_time' ? input.seconds : before + input.seconds;
+    const after = Math.max(1, wanted); r.status.merc_seconds_left = after;
+    return { verified: true, clock_before: before, clock_after: after, clamped: after !== wanted };
+  };
+  return r;
+}
+const flush = async () => { for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+test('the Mercenaries clock control sends add_time / set_time with the exact seconds and confirms from the verified result', async () => {
+  const r = clockRig(); await r.control.refresh();
+  const html = M.html(r.control.state());
+  assert.match(html, /<fieldset class="mercs-clock" >/); assert.match(html, /95 s left on the clock/);
+  assert.match(html, /data-clock-delta[^>]*value="-30"/); assert.match(html, /Set clock to 5 s/);
+  assert.equal(M.clockState(r.control.state()).disabled, false);
+  await r.control.addTime('-30');
+  assert.deepEqual(r.commands()[0].body, { tool: 're5_mods', agent_use: false, require_worker: 'worker',
+    input: { session_id: 'worker-launch', op: 'add_time', seconds: -30 } });
+  assert.equal(r.control.state().message, 'Clock 95 → 65 s.'); assert.equal(r.control.state().error, false);
+  await r.control.setTime(5);
+  assert.deepEqual(r.commands()[1].body.input, { session_id: 'worker-launch', op: 'set_time', seconds: 5 });
+  assert.equal(r.control.state().message, 'Clock 65 → 5 s.'); assert.equal(r.control.state().status.merc_seconds_left, 5);
+  await r.control.addTime(30);
+  assert.equal(r.control.state().message, 'Clock 5 → 35 s.');
+  await r.control.addTime(-3600 + 3570);                 // -30 again: the game stops at 1 s and says so
+  assert.equal(r.control.state().message, 'Clock 35 → 5 s.');
+  await r.control.addTime(-30);
+  assert.equal(r.control.state().message, 'Clock 5 → 1 s (stopped at 1 s).');
+  const sent = r.commands().length;
+  for (const bad of [0, 31, -31, 'x']) await r.control.addTime(bad);
+  for (const bad of [0, 61, 2.5]) await r.control.setTime(bad);
+  assert.equal(r.commands().length, sent, 'out-of-range values never send a job');
+  r.command = async () => ({ verified: false, reason: 'authoritative countdown write not confirmed' });
+  await r.control.addTime(10);
+  assert.equal(r.control.state().error, true); assert.match(r.control.state().message, /not confirmed/); assert.equal(r.control.state().stale, true);
+});
+
+test('the clock control is disabled without a round or on a worker without the ops, and keeps its drafts across repaints', async () => {
+  const r = clockRig(null); await r.control.refresh();
+  assert.equal(M.clockState(r.control.state()).disabled, true); assert.match(M.html(r.control.state()), /no Mercenaries round is up/);
+  await r.control.addTime(-30); await r.control.setTime(5); assert.equal(r.commands().length, 0);
+  const old = rig(); old.status.merc_seconds_left = 90; await old.control.refresh();      // no add_time capability: an older worker
+  const st = M.clockState(old.control.state()); assert.equal(st.disabled, true); assert.match(st.reason, /Worker update pending/);
+  assert.match(M.html(old.control.state()), /<fieldset class="mercs-clock" disabled>/);
+  await old.control.setTime(5); assert.equal(old.commands().length, 0);
+  r.control.clockDraft({ delta: 12, set: 20 });
+  assert.match(M.html(r.control.state()), /data-clock-delta[^>]*value="12"/); assert.match(M.html(r.control.state()), /Set clock to 20 s/);
+  assert.equal(M.html({ ...r.control.state(), teamOnly: true }).includes('mercs-clock'), false, 'the RE6 team-only panel has no clock');
+});
+
+test('mounted clock inputs preview without a job and the buttons send the chosen seconds through the panel', async () => {
+  const r = clockRig();
+  const nodes = { '[data-clock-delta-out]': { textContent: '' }, '[data-clock-set-apply]': { textContent: '' },
+    '[data-clock-delta]': { value: '-12' }, '[data-clock-set]': { value: '9' } };
+  const host = { innerHTML: '', querySelector: selector => nodes[selector] || null };
+  const control = M.mount(host, { session: SESSION, api: r.api });
+  await flush();
+  host.oninput({ target: { value: '-12', matches: s => s === '[data-clock-delta]' } });
+  assert.equal(nodes['[data-clock-delta-out]'].textContent, '−12 s'); assert.equal(r.commands().length, 0);
+  host.oninput({ target: { value: '9', matches: s => s === '[data-clock-set]' } });
+  assert.equal(nodes['[data-clock-set-apply]'].textContent, 'Set clock to 9 s');
+  assert.deepEqual(control.state().clock, { delta: -12, set: 9 });
+  host.onclick({ target: { closest: s => s === '[data-clock-apply]' ? { disabled: false } : null } }); await flush();
+  assert.deepEqual(r.commands()[0].body.input, { session_id: 'worker-launch', op: 'add_time', seconds: -12 });
+  host.onclick({ target: { closest: s => s === '[data-clock-set-apply]' ? { disabled: false } : null } }); await flush();
+  assert.deepEqual(r.commands()[1].body.input, { session_id: 'worker-launch', op: 'set_time', seconds: 9 });
+  assert.equal(control.state().message, 'Clock 83 → 9 s.');
+  assert.match(host.innerHTML, /data-clock-delta[^>]*value="-12"/, 'the repaint keeps the slider where the operator left it');
+  control.stop();
+});

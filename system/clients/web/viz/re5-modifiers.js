@@ -4,6 +4,8 @@
   const GAME = "e7ca89bbeb67360d";
   const RE6 = "0871eee3b68cdea3";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  // the Mercenaries clock control (mercs-clock.js: add / take seconds, set the clock): ops add_time / set_time
+  const CLOCK = root.GBoxMercsClock || (typeof require === "function" ? (() => { try { return require("./mercs-clock.js"); } catch { return null; } })() : null);
   const DEFINITIONS = [
     { op: "unlimited_health", label: "Unlimited life", field: "unlimited_health" },
     { op: "infinite_ammo", label: "Infinite ammo", field: "infinite_ammo" },
@@ -51,7 +53,8 @@
   }
   function capability(status, op) {
     const cap = status?.capabilities?.[op];
-    const known = op === "random_weapon" || op === "select_weapon" || op === "live_weapon" || DEFINITIONS.some(row => row.op === op);
+    const known = op === "random_weapon" || op === "select_weapon" || op === "live_weapon" || op === "add_time" || op === "set_time"
+      || DEFINITIONS.some(row => row.op === op);
     return { available: cap?.available === true,
       reason: cap?.reason || (!cap && known ? "Worker update pending; this control is unavailable." : "") };
   }
@@ -145,6 +148,15 @@
       const on = value(state.status, def), cap = capability(state.status, def.op);
       return { ...def, on, ...cap, disabled: state.busy || state.pending || state.weaponPending || state.stale || !cap.available || on === null };
     });
+  }
+  // the clock control's state: usable with a running round on a worker that has the ops (operator 2026-10-26)
+  function clockState(state = {}) {
+    const cap = capability(state.status, "add_time"), round = CLOCK ? CLOCK.left(state.status) !== null : false;
+    return { ...(state.clock || {}), status: state.status, reason: cap.available ? "" : cap.reason,
+      disabled: !!(state.busy || state.pending || state.stale || !cap.available || !round) };
+  }
+  function clockHTML(state = {}) {
+    return CLOCK && !state.teamOnly ? CLOCK.html(clockState(state)) : "";
   }
   function html(state = {}) {
     const team = state.team, config = team?.config || {}, teamDisabled = state.busy || state.pending || state.stale || !team;
@@ -259,10 +271,11 @@
       + `<select data-re5-merc-stage aria-label="Mercenaries stage">${stages.map((s,i) => `<option value="${i}" ${i === next?.stage ? "selected" : ""}>${ESC(s)}</option>`).join("")}</select>`
       + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button>`
       + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
+    const clockControls = clockHTML(state);
     return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-saved>${ESC(savedLine(state))}</p>` : "")
-      + teamControls + controls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -275,6 +288,7 @@
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     let state = { status: null, busy: false, pending: null, weaponPending: null, stale: true, message: "Reading current settings…", error: false };
     state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = ""; state.saved = null;
+    state.clock = { delta: CLOCK ? CLOCK.DELTA.default : -30, set: CLOCK ? CLOCK.SET.default : 5 };   // the clock drafts (kept across repaints)
     let disposed = false;
     // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
     async function loadSaved() {
@@ -532,6 +546,34 @@
       } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
+    function clockDraft(draft) {                     // the slider / number previews: kept so a repaint never loses them
+      if (draft && typeof draft === "object") state.clock = { ...state.clock, ...draft };
+    }
+    async function clockJob(op, seconds, working) {
+      if (state.busy || state.pending || state.stale || disposed || !capability(state.status, op).available
+          || !CLOCK || CLOCK.left(state.status) === null) return;
+      state.busy = true; state.error = false; state.message = working; paint();
+      try {
+        await preflight();
+        const result = await job(op, { seconds });
+        await read();                                  // the fresh clock reading shows in the control
+        if (result.verified !== true) throw new Error(result.reason || result.note || "The game did not verify the clock change.");
+        state.message = CLOCK.describe(result);
+      } catch (error) { state.error = true; state.message = error.message; if (!state.pending) state.stale = true; }
+      finally { state.busy = false; paint(); }
+    }
+    async function addTime(requested) {               // the slider's seconds: negative takes time away (op add_time)
+      const seconds = CLOCK ? CLOCK.delta(requested) : null;
+      if (seconds === null) return;
+      state.clock.delta = seconds;
+      await clockJob("add_time", seconds, seconds > 0 ? `Adding ${seconds} s to the clock…` : `Taking ${-seconds} s off the clock…`);
+    }
+    async function setTime(requested) {               // "Set clock to N s" (op set_time): a stalemate's end
+      const seconds = CLOCK ? CLOCK.setSeconds(requested) : null;
+      if (seconds === null) return;
+      state.clock.set = seconds;
+      await clockJob("set_time", seconds, `Setting the clock to ${seconds} s…`);
+    }
     async function preparePlayer2() {
       if (!teamControls || !state.team?.capabilities?.prepare_player2?.available || state.busy || state.pending || state.stale || disposed) return;
       state.busy = true; state.error = false; state.message = "Preparing a separate Player 2 controller…"; paint();
@@ -542,7 +584,8 @@
       } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setMultiplier, setMines, setAnyWeapon, setLiveWeapon, setEggs, selectMercs, setTeam, preparePlayer2, state: () => ({ ...state }), stop: () => { disposed = true; } };
+    return { refresh, change, setMultiplier, setMines, setAnyWeapon, setLiveWeapon, setEggs, selectMercs, setTeam, preparePlayer2,
+      addTime, setTime, clockDraft, state: () => ({ ...state, clock: { ...state.clock } }), stop: () => { disposed = true; } };
   }
 
   const CSS = `.re5-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -595,6 +638,7 @@
       ctl.change(input.dataset.re5Mod, wanted);
     };
     host.oninput = event => {
+      if (CLOCK) { const draft = CLOCK.onInput(event.target, host); if (draft) { ctl.clockDraft(draft); return; } }
       if (event.target.matches?.("[data-re5-egg-rate]")) host.querySelector("[data-re5-egg-output]").textContent = event.target.value + " times";
       if (event.target.matches?.("[data-re5-range]")) {
         const op = event.target.dataset.re5Range;
@@ -603,6 +647,7 @@
       if (event.target.matches?.("[data-re5-mine-interval]")) host.querySelector("[data-re5-mine-output]").textContent = event.target.value + " seconds";
     };
     host.onclick = event => {
+      if (CLOCK && CLOCK.onClick(event.target, host, { addTime: ctl.addTime, setTime: ctl.setTime })) return;
       if (event.target.closest?.("[data-re5-live-bow]") && !event.target.disabled) ctl.setLiveWeapon(true);
       if (event.target.closest?.("[data-re5-live-cancel]") && !event.target.disabled) ctl.setLiveWeapon(false);
       if (event.target.closest?.("[data-re5-team-clear-route]") && !event.target.disabled) ctl.setTeam({ selected_route_id: null });
@@ -628,9 +673,9 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAME, RE6, DEFINITIONS, eligible, panelEligible, replacementSession, capability, rows, html, create, mount,
+  const api = { GAME, RE6, DEFINITIONS, eligible, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
     savedText, savedLine, teamSavedLine,
-    sectionHTML: () => `<style>${CSS}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
+    sectionHTML: () => `<style>${CSS}${CLOCK ? CLOCK.CSS : ""}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);

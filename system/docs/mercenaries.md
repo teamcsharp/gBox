@@ -329,6 +329,41 @@ the Spark's RPCS3; the frames in `docs/evidence/re5-mods/` are real frames of th
    Features shows every entry, Chapter Select lists every chapter with Professional, Library > Files is complete.
    Then open The Mercenaries and record which characters/stages are available. `re5 op=revert` returns the save.
 
+## Stalemate controls (operator 2026-10-26)
+
+"In mercenaries mode, sometimes the match ends up in a stalemate where the bot has nothing but time and no enemies."
+Three pieces, both titles:
+
+* **Clock ops.** RE5 `re5_mods`: `add_time seconds=N` takes -3600..3600 (negative takes time away; a cut shows no
+  "+NN Sec." HUD notice) and `set_time seconds=N` (1..3600) sets the authoritative aGame countdown; both read back
+  (`clock_before` / `clock_after` / `verified` / `clamped`) and never leave less than 1 s (`MIN_CLOCK_S`); `status`
+  reports `merc_seconds_left` and the `add_time` / `set_time` capabilities. RE4 `re_mods`: `merc_time seconds=N`
+  (alias `set_time`) is 1..3600 with the same read-back; `merc_time_add seconds=N` (alias `add_time`, -3600..3600)
+  moves the MERC_TIMER word, clamped at 1 s. Aliases on both: `subtract_time` / `cut_time` -> add, `set_clock` -> set.
+* **UI.** The modifier panels (the PiP right-click menu's top section, the Sessions view, the mini PiP) carry a
+  "Mercenaries clock" fieldset (clients/web/viz/mercs-clock.js): a slider -30..+30 s (default -30 = subtract) with
+  Apply, and "Set clock to N s" (1..60, default 5); RE4 -> `re_mods`, RE5 -> `re5_mods`, the same `/api/jobs` path as
+  the other panel controls, confirmed from the verified result. RE4's panel also has "Send a wave" (`spawn_wave`).
+* **The bots' stalemate rule** (gbox/mercs/stalemate.py, wired in gbox/re4_merc_bot.py and
+  gbox/mercs/titles/re5_ps3.py): while a round plays, no living enemy for 15 s (one was seen earlier this round, so a
+  slow spawn at the start is not a stalemate; on RE5, 45 s where the spawn hunt - `LULL_S` / `_hunt_spawns`, spawn
+  points known for the stage - can look for them first) with more than 10 s on the clock -> the clock is cut to 5 s once
+  per round (RE5 through `re5_mods_tool.set_clock`, the verified aGame owner path; RE4 through `re4_merc_bot.cut_clock`:
+  `m.wr`, or the session adapter behind a read-only shared-memory view). stats: `stalemate_cut` {at, idle_s,
+  target_s, clock_before, clock_after, verified[, reason]}, `stalemate_cuts`, `stalemate_status`, `stalemate_idle_s`;
+  the round map gets a `stalemate_cut` event where he stood. Settings: MercMode `stalemate_cut` (default on) and
+  `stalemate_cut_s` (1..60, default 5) per host (`POST /api/mercmode`; the MercMode panel and the PiP MercMode
+  section), carried to the bot in `game.launch.mercmode` like `rounds_per_title` (a change applies from the next
+  launch; launches without the block use the defaults).
+* **Spawning.** RE4: `spawn_wave [count=N]` re-arms the spawn multiplier's clone pass (SPAWN_DONE cleared): every
+  enemy-set entry the stage has spawned is cloned again beside what is out, factor-1 copies each - clones only: with
+  zero enemies alive it creates nothing, and it cannot pick enemy types. No Mercenaries spawn counter or cap is located
+  (re_games.py knows the ESL enemy-set table pG+0x52F4 and the single-entry spawner 0x800CA12C, not the wave logic).
+  RE5: nothing in re5_mods_tool.py controls enemy spawning (its "spawn templates" are the weapon loadouts). Both are
+  Ghidra requests, filed as gBox request tickets #3900 (RE5 PS3: the Mercenaries enemy set + spawn manager) and #3901
+  (RE4 GC: the em spawn routine + the Mercenaries spawn cap), queued right after the RE6 work: ops `spawn_enemy
+  {type, count, at}` / `spawn_wave` (a real wave) / `endless_spawns on`, a dropdown of enemy types per stage.
+
 ## Still to do
 
 PS2 / X360 / UHD unlock flags; RE3 clear-save crafting (PSX memory card, DC VMU, GC card); Mercs 3D save edit;

@@ -364,3 +364,62 @@ def test_random_loadout_draws_guns_with_their_ammo_and_repeats_by_seed(monkeypat
     assert any(r[1] == 1 and r[2] == gun for r in recs_a) and any(r[2] == ammo and r[3] == 200 for r in recs_a)
     seen = {tuple(T.run(ad, "random_loadout", seed=s, g=g)["picked"]) for s in range(30)}
     assert len(seen) > 1                                                    # not one fixed gun
+
+
+# --- the stalemate controls (operator 2026-10-26): the Mercenaries clock set / moved, a wave re-armed ---
+def merc_stage(ad, seconds=95.0, room=0x400):
+    pg = 0x80300000
+    ad.put(R.P_GLOBAL, struct.pack(">I", pg))
+    ad.put(pg + R.G_ROOM, struct.pack(">H", room))
+    ad.put(R.MERC_TIMER, struct.pack(">I", int(seconds * R.FPS)))
+    return pg
+
+
+def test_merc_time_sets_the_clock_never_under_a_second_and_reads_it_back():
+    ad, g = gc_game()
+    pg = merc_stage(ad)
+    r = T.run(ad, "set_time", seconds=5, g=g)                                # the alias the clock control sends
+    assert r["op"] == "merc_time" and r["verified"] and r["clock_before"] == 95.0 and r["clock_after"] == 5.0
+    assert r["seconds"] == 5.0 and struct.unpack(">I", ad.read_memory(R.MERC_TIMER, 4))[0] == 150
+    for bad in (0, 3601):
+        with pytest.raises(ValueError, match="1 .. 3600"):
+            T.run(ad, "merc_time", seconds=bad, g=g)
+    ad.put(pg + R.G_ROOM, struct.pack(">H", 0x102))
+    with pytest.raises(ValueError, match="Mercenaries stage"):
+        T.run(ad, "merc_time", seconds=5, g=g)
+    assert struct.unpack(">I", ad.read_memory(R.MERC_TIMER, 4))[0] == 150   # refused: nothing written
+
+
+def test_merc_time_add_takes_or_adds_seconds_and_stops_at_one():
+    ad, g = gc_game()
+    merc_stage(ad, 95.0)
+    r = T.run(ad, "add_time", seconds=-30, g=g)                              # the alias the clock control sends
+    assert r["op"] == "merc_time_add" and r["verified"] and (r["clock_before"], r["clock_after"]) == (95.0, 65.0)
+    assert r["added_seconds"] == -30 and not r["clamped"]
+    r = T.run(ad, "merc_time_add", seconds=30, g=g)
+    assert r["clock_after"] == 95.0 and r["added_seconds"] == 30 and "added" in r["note"]
+    r = T.run(ad, "subtract_time", seconds=-3600, g=g)
+    assert r["clock_after"] == 1.0 and r["clamped"] and r["added_seconds"] == -94 and "stopped at one second" in r["note"]
+    assert struct.unpack(">I", ad.read_memory(R.MERC_TIMER, 4))[0] == 30
+    for bad in (0, 3601, -3601):
+        with pytest.raises(ValueError, match="-3600 .. 3600"):
+            T.run(ad, "merc_time_add", seconds=bad, g=g)
+    ad.put(0x80300000 + R.G_ROOM, struct.pack(">H", 0x102))
+    with pytest.raises(ValueError, match="Mercenaries stage"):
+        T.run(ad, "merc_time_add", seconds=-5, g=g)
+
+
+def test_spawn_wave_rearms_the_clone_pass_with_the_factor_that_is_on(monkeypatch):
+    ad, g = gc_game()
+    calls = []
+    monkeypatch.setattr(T, "spawn_multiplier", lambda g_, factor, on=True, spread=30:
+                        (calls.append((factor, on)) or {"factor": factor, "enemies_alive": 3, "verified": True}))
+    r = T.run(ad, "send_wave", g=g)
+    assert r["op"] == "spawn_wave" and calls == [(2, True)] and r["wave"] and r["factor_before"] == 1 and r["verified"]
+    assert "zero enemies alive nothing is created" in r["note"] and "1 more copy" in r["note"]
+    ad.put(R.SPAWN_HOOK, R.SPAWN_HOOK_CODE)                                 # the multiplier is on at 3x
+    ad.put(R.SPAWN_VARS, bytes([3, 30]))
+    r = T.run(ad, "spawn_wave", g=g)
+    assert calls[-1] == (3, True) and r["factor_before"] == 3 and "2 more copies" in r["note"]
+    r = T.run(ad, "spawn_wave", count=4, g=g)
+    assert calls[-1] == (4, True)

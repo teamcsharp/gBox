@@ -5,6 +5,8 @@
   const GAMES = ["78ab9efa2e310db4", "e42c9b780c07c437"];          // Resident Evil 4 (USA) Disc 1 / Disc 2
   const TOOL = "re_mods";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+  // the Mercenaries clock control (mercs-clock.js): re_mods add_time (= merc_time_add) / set_time (= merc_time)
+  const CLOCK = root.GBoxMercsClock || (typeof require === "function" ? (() => { try { return require("./mercs-clock.js"); } catch { return null; } })() : null);
   // toggles are the tool's patch names (status reports each as "on" / "off"); numeric ops read back from status unless
   // `local`: the game does not report aim speed or the spawn factor, so the panel keeps the last value it verified
   const DEFINITIONS = [
@@ -27,6 +29,9 @@
       note: "Back to the game's own Mercenaries loadout for Leon from the next run." },
     { id: "unlock", op: "mercenaries_unlock", label: "Unlock Mercenaries", input: { on: true },
       note: "Every Mercenaries character and stage; the menus rebuild when the title menu opens." },
+    // operator 2026-10-26 (stalemates): re-arm the spawn multiplier's clone pass - clones what is out, nothing from zero
+    { id: "wave", op: "spawn_wave", label: "Send a wave", input: {},
+      note: "Every enemy the stage has spawned gets copies beside it again (clones only: with zero enemies alive nothing is created)." },
   ];
   // re_mods raises Unsupported ("re_mods: X is not located in <release> yet", "re_mods: Resident Evil 4 on GameCube / Wii
   // so far") and ValueError("op: status | list | ...") for an op this build cannot do; a transient failure ("the game did
@@ -102,6 +107,14 @@
       : pending.length ? " Being applied to this session…" : " Applied to this session.";
     return `Saved for this game: ${names.map(op => savedText(op, saved.settings[op])).filter(Boolean).join(" · ")}.${tail}`;
   }
+
+  // the clock control: a Mercenaries stage (status reports merc_seconds_left there) on a build whose tool has the ops
+  function clockState(state = {}) {
+    const retired = state.unsupported?.merc_time_add || state.unsupported?.merc_time || state.unsupported?.add_time || state.unsupported?.set_time || "";
+    const round = CLOCK ? CLOCK.left(state.status) !== null : false;
+    return { ...(state.clock || {}), status: state.status, reason: retired,
+      disabled: !!(state.busy || state.pending || state.stale || retired || !round) };
+  }
   function vitals(status) {
     if (!status || typeof status !== "object") return "Waiting for the game's status.";
     const parts = [];
@@ -142,7 +155,7 @@
       + `${state.busy ? "disabled" : ""}>Refresh</button></div>`
       + `<p class="re5-mod-sub" data-re4-vitals>${ESC(vitals(state.status))}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re4-saved>${ESC(savedLine(state))}</p>` : "")
-      + controls + buttons
+      + controls + (CLOCK ? CLOCK.html(clockState(state)) : "") + buttons
       + `<p class="re5-mod-status${state.error ? " re5-mod-error" : ""}" role="${state.error ? "alert" : "status"}" aria-live="polite">`
       + `${ESC(state.message || "Read current settings from the game.")}</p>`;
   }
@@ -151,9 +164,10 @@
                     savedPrefs = null }) {
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     const state = { status: null, applied: {}, unsupported: {}, busy: false, pending: null, stale: true,
-      message: "Reading current settings…", error: false, saved: null };
+      message: "Reading current settings…", error: false, saved: null,
+      clock: { delta: CLOCK ? CLOCK.DELTA.default : -30, set: CLOCK ? CLOCK.SET.default : 5 } };   // the clock drafts
     let disposed = false;
-    const snapshot = () => ({ ...state, applied: { ...state.applied }, unsupported: { ...state.unsupported } });
+    const snapshot = () => ({ ...state, applied: { ...state.applied }, unsupported: { ...state.unsupported }, clock: { ...state.clock } });
     // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
     async function loadSaved() {
       if (typeof savedPrefs !== "function" || disposed) return;
@@ -274,12 +288,41 @@
         const names = list => Array.isArray(list) ? list.join(", ") : "";
         state.message = act.id === "random" ? `Next Mercenaries run: ${names(result.picked) || "a random gun"} at 99.9× damage, equipped about 5 s in.`
           : act.id === "reset" ? "Leon's Mercenaries loadout is the game's own again from the next run."
+          : act.id === "wave" ? `Wave sent: ${Number.isFinite(result.enemies_alive) ? result.enemies_alive : "?"} enemies alive after the clone pass `
+            + `(×${result.factor || "?"}). Clones only: nothing appears from zero.`
           : `Mercenaries unlocked: ${names(result.unlocked?.characters) || "all characters"}; ${names(result.unlocked?.stages) || "all stages"}. `
             + "Menus rebuild when the title menu opens.";
       } catch (error) { failed(act.op, error); }
       finally { state.busy = false; paint(); }
     }
-    return { refresh, change, setValue, action, state: snapshot, stop: () => { disposed = true; } };
+    function clockDraft(draft) {                     // slider / number previews, kept across repaints
+      if (draft && typeof draft === "object") state.clock = { ...state.clock, ...draft };
+    }
+    async function clockJob(op, seconds, working) {
+      if (state.busy || state.pending || state.stale || disposed || !CLOCK || clockState(state).disabled) return;
+      state.busy = true; state.error = false; state.message = working; paint();
+      try {
+        await preflight();
+        const result = await job(op, { seconds });
+        await read();                                  // the fresh merc_seconds_left shows in the control
+        if (result.verified !== true) throw new Error(result.reason || result.note || "The game did not verify the clock change.");
+        state.message = CLOCK.describe(result);
+      } catch (error) { failed(op, error); }
+      finally { state.busy = false; paint(); }
+    }
+    async function addTime(requested) {               // the slider's seconds (negative takes time away): re_mods add_time
+      const seconds = CLOCK ? CLOCK.delta(requested) : null;
+      if (seconds === null) return;
+      state.clock.delta = seconds;
+      await clockJob("add_time", seconds, seconds > 0 ? `Adding ${seconds} s to the clock…` : `Taking ${-seconds} s off the clock…`);
+    }
+    async function setTime(requested) {               // "Set clock to N s": re_mods set_time (= merc_time, never under 1 s)
+      const seconds = CLOCK ? CLOCK.setSeconds(requested) : null;
+      if (seconds === null) return;
+      state.clock.set = seconds;
+      await clockJob("set_time", seconds, `Setting the clock to ${seconds} s…`);
+    }
+    return { refresh, change, setValue, action, addTime, setTime, clockDraft, state: snapshot, stop: () => { disposed = true; } };
   }
 
   const CSS = `.re4-modifiers{display:block!important;height:auto!important;overflow:visible;border-top:1px solid var(--line,#444);margin-top:5px;padding:9px 4px 2px;min-width:min(300px,calc(100vw - 48px));max-width:400px}
@@ -290,7 +333,7 @@
     .re5-mod-error{color:var(--bad,#f99)}
     .re5-mod-slider{font-size:11px;padding-bottom:5px}.re5-mod-slider label{display:block}.re5-mod-slider input{display:block;width:100%;accent-color:var(--pri,#8da7ff)}
     .re4-mod-note{display:block;font-size:11px;color:var(--mut,#aaa);margin-top:2px}
-    .re4-mod-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px}.re4-mod-actions .act{width:100%!important;font-size:11px;text-align:center!important;white-space:normal}
+    .re4-mod-actions{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-top:8px}.re4-mod-actions .act{width:100%!important;font-size:11px;text-align:center!important;white-space:normal}
     .re4-modifiers button:disabled{opacity:.55;cursor:default}`;
   function mount(host, options) {
     if (!host) return null;
@@ -305,11 +348,13 @@
       ctl.change(input.dataset.re4Mod, wanted);
     };
     host.oninput = event => {
+      if (CLOCK) { const draft = CLOCK.onInput(event.target, host); if (draft) { ctl.clockDraft(draft); return; } }
       if (!event.target.matches?.("[data-re4-range]")) return;
       const out = host.querySelector(`[data-re4-value="${event.target.dataset.re4Range}"]`);
       if (out) out.textContent = "×" + event.target.value;
     };
     host.onclick = event => {
+      if (CLOCK && CLOCK.onClick(event.target, host, { addTime: ctl.addTime, setTime: ctl.setTime })) return;
       const button = event.target.closest?.("[data-re4-action]");
       if (button && !button.disabled) ctl.action(button.dataset.re4Action);
       if (event.target.closest?.("[data-re4-refresh]") && !event.target.disabled) ctl.refresh();
@@ -317,9 +362,9 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAMES, TOOL, DEFINITIONS, ACTIONS, eligible, value, capability, rows, actions, vitals, html, create, mount,
+  const api = { GAMES, TOOL, DEFINITIONS, ACTIONS, eligible, value, capability, rows, actions, clockState, vitals, html, create, mount,
     savedText, savedLine,
-    sectionHTML: () => `<style>${CSS}</style><section class="re4-modifiers" aria-label="RE4 modifiers"></section>` };
+    sectionHTML: () => `<style>${CSS}${CLOCK ? CLOCK.CSS : ""}</style><section class="re4-modifiers" aria-label="RE4 modifiers"></section>` };
   root.GBoxRE4Modifiers = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(globalThis);

@@ -189,7 +189,7 @@ def test_the_playbook_applies_the_re5_package_through_re5_mods(monkeypatch):
     prof = {"platform": "ps3", "map_id": "BLUS30491"}
     failed = MB.apply_ops(m, [["turn_speed", {"multiplier": 2}], ["fire_rate", {"multiplier": 80}],
                              ["infinite_ammo", {"on": True}], ["no_such_op", {}]], prof)
-    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | replace_rockets | random_cheats | kill_time | add_time | time_bonus_multiplier | revert_all | addresses"]
+    assert failed == ["no_such_op: op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | replace_rockets | random_cheats | kill_time | add_time | set_time | time_bonus_multiplier | revert_all | addresses"]
     st = T.run(m, "status")["status"]
     assert st["turn_speed_x"] == 2.0 and st["fire_rate_x"] == 80.0 and st["infinite_ammo"] is True
 

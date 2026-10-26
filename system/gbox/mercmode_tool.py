@@ -16,6 +16,8 @@ class MercModeIn(BaseModel):
     queue: list[dict] | None=None         # the DJ queue (gbox.mercmode.queue_entry validates each round)
     keep_warm: int | None=None            # titles kept paused beside the playing one, next one preloaded (0 = off)
     preferred_editions: dict | None=None  # gbox.re_switch: e.g. RE5 on Switch, No Mercy
+    stalemate_cut: StrictBool | None=None # gbox.mercs.stalemate: the bots cut the clock when no enemy shows for 15 s
+    stalemate_cut_s: int | None=None      # ... to this many seconds (1..60; default 5)
 
 
 class MercModeOut(BaseModel):

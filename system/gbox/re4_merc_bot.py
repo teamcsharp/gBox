@@ -113,6 +113,7 @@ except ImportError:                              # a tree without it: vision onl
     re4_ram_prompts = None
 from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
 from .mercs import directives as operator_commands   # the chat's instant commands (fight, next area, explore ...)
+from .mercs import stalemate as stalemate_rule   # no Ganados for 15 s with time on the clock: the clock is cut
 try:
     from . import re4_menus                       # the title and the menus from RAM: boot -> a Mercenaries round
 except ImportError:                              # a tree without it: no presses out of a round
@@ -324,6 +325,31 @@ def memory(ad):
 
 def u32(m, a):
     return struct.unpack(">I", m.rd(a, 4))[0]
+
+
+def cut_clock(m, seconds: float) -> dict:
+    """The stalemate rule's write: the Mercenaries clock (MERC_TIMER, frames at 30 a second) set to `seconds`, never
+    under one second, through the bot's memory writer (m.wr: AdMem, a test's memory) or, behind a read-only view
+    (OwnShm / ShmMem), the owning session adapter (m.adapter.write_memory, as mercs_bot binds it). Read back: verified
+    when the clock is within a second of the target. Never raises; a failure is the reason in the result."""
+    target = max(1.0, float(seconds))
+    frames = int(round(target * 30))
+    try:
+        before = u32(m, MERC_TIMER) / 30.0
+        wr = getattr(m, "wr", None)
+        ad = getattr(m, "adapter", None)
+        if wr is None and ad is not None and callable(getattr(ad, "write_memory", None)):
+            wr = ad.write_memory
+        if wr is None:
+            return {"verified": False, "clock_before": round(before, 1), "clock_after": round(before, 1),
+                    "reason": "read-only memory view and no session adapter: no clock writer"}
+        wr(MERC_TIMER, struct.pack(">I", frames))
+        after = u32(m, MERC_TIMER)
+        return {"verified": frames - 30 <= after <= frames, "clock_before": round(before, 1),
+                "clock_after": round(after / 30.0, 1), "target_s": target,
+                **({} if frames - 30 <= after <= frames else {"reason": "MERC_TIMER readback does not match"})}
+    except Exception as error:                        # noqa: BLE001 - a lost adapter must not stop the tick
+        return {"verified": False, "reason": f"clock write unavailable: {type(error).__name__}: {str(error)[:120]}"}
 
 
 def aim_of(m, pl: int, rot: float, r: tuple) -> tuple:
@@ -630,12 +656,26 @@ class Bot:
                       # answers, the shotgun blasts into crowds, and what hit / killed Leon
                       "bosses": [], "bosses_seen": 0, "boss": "", "boss_shots": 0, "chainsaw_keepouts": 0,
                       "chainsaw_evades": 0, "crowd_blasts": 0, "weapon": "", "last_hit_by": "", "death_cause": ""}
+        # the operator's stalemate rule (gbox.mercs.stalemate): settings in stats (stalemate_cut_enabled / _s) from the
+        # launch's MercMode block (play() / mercs_bot.play put them there); the write is cut_clock on this memory
+        self.stalemate = stalemate_rule.Rule(lambda: self.stats)     # play() / the engine rebind bot.stats
+
+    def _stalemate_watch(self, s: dict, p: dict, now: float) -> None:
+        """No living Ganado for STALEMATE_S while the clock shows more than STALEMATE_CLOCK_S: the clock is cut to the
+        configured seconds once per round (stats["stalemate_cut"]: before / after; a 'stalemate_cut' event on the map)."""
+        living = sum(1 for e in s.get("enemies") or () if not threats_ram.dying(e))
+        target = self.stalemate.observe(now, living, s.get("timer"))
+        if target is None:
+            return
+        result = cut_clock(self.m, target)
+        self.stalemate.record(now, result, trace=getattr(self, "trace", None), pos=p["pos"])
 
     # -- the round's time bonuses --
     def _round(self, room):
         if room != self.room:
             self.save()                               # the last room's map and stuck log
             self.room = room
+            self.stalemate.new_round()
             self.learned = LearnedMap(self.learn_dir / f"r{room:03x}.json" if self.learn_dir else None)
             self.stats["learned_walls"] = len(self.learned.blocked)
             self.stats["learned_floor_cells"] = len(self.learned.walked)
@@ -1507,6 +1547,7 @@ class Bot:
         """This round's route map (gbox.mercs.round_map) under round_maps_dir/r<room>/: finishes the last one first."""
         from .mercs.round_map import RoundTrace
         self.trace_finish()
+        self.stalemate.new_round()                    # a new round: its own stalemate watch (one cut per round)
         room = f"r{self.room:03x}" if self.room is not None else "room"
         out = Path(self.round_maps_dir) / room if self.round_maps_dir is not None else None
         self.trace = RoundTrace(out, "G4BE08", room, round_id, CELL)
@@ -1619,6 +1660,7 @@ class Bot:
                     self.stats["deaths"] = self.stats.get("deaths", 0) + 1
                 return {"tap": "a"}
             return {"tap": "b" if now - self.timer_since > 6 else "a"}
+        self._stalemate_watch(s, p, now)                                  # no Ganados for a while: the clock is cut
         px, _, pz = p["pos"]
         act = self._combat(p, s, now)                                     # attacks, thrown weapons, a Ganado on him:
         if act is not None:                                               # before any bonus or route
@@ -1834,11 +1876,14 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     only when RAM fails or can't tell (operator 2026-10-20: "Vision analysis to me should be the last level that we
     have to fall back to"). stats["prompt_source"] says which one answered last."""
     m = m or memory(ad)
+    if ad is not None and getattr(m, "adapter", None) is None:
+        m.adapter = ad                                 # verified writes (the stalemate clock cut) use the owning adapter
     bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad),
                     round_maps_dir=round_maps_dir_for(ad, learn_dir)), set()
     if stats is not None:
         stats.update(bot.stats)
         bot.stats = stats
+    stalemate_rule.configure(bot.stats, game)          # the launch's MercMode stalemate_cut / stalemate_cut_s (default on, 5 s)
     try:
         started_in = in_mercenaries(snapshot(m)) and _room_on(m)
     except Exception:                              # noqa: BLE001 - a read during a load: from the menus

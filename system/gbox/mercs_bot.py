@@ -413,6 +413,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
     tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds."""
     stats = stats if stats is not None else {}
+    from .mercs import stalemate as stalemate_rule
+    stalemate_rule.configure(stats, game)        # the launch's MercMode stalemate_cut / stalemate_cut_s for the title's bot
     prof = profile_for(ad, game or {})
     if prof is None:
         raise ValueError("this title has no Mercenaries profile (a RAM map with a mercs block)")

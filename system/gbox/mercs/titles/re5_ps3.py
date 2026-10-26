@@ -30,6 +30,7 @@ from pathlib import Path
 
 from ..driver import Driver
 from .. import obstacle_map
+from .. import stalemate as stalemate_rule       # no enemies for 15 s with time on the clock: the clock is cut
 from . import re5_aim_geometry, re5_combat, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
@@ -1283,6 +1284,36 @@ class Bot:
         self.dot_seen: dict = {}                # Majini ptr -> when the laser dot was last on him
         self.stats.setdefault("pursuits", 0)
         self.stats.setdefault("unsighted", 0)
+        # the operator's stalemate rule (gbox.mercs.stalemate): settings in stats (stalemate_cut_enabled / _s) from the
+        # launch's MercMode block; the cut itself goes through re5_mods_tool.set_clock (the verified aGame owner write)
+        self.stalemate = stalemate_rule.Rule(lambda: self.stats)
+
+    def _can_hunt(self) -> bool:
+        """The spawn hunt (LULL_S / _hunt_spawns: after a lull he walks to the spawn points this stage has shown) has
+        somewhere to go: a hunt is under way, or spawn points are known for this stage. False on a tree without the
+        hunt, or on a stage's first round (no spawn point known yet)."""
+        if getattr(self, "_hunt", None) is not None:
+            return True
+        spawns = getattr(self, "_stage_spawns", None)
+        if not callable(spawns):
+            return False
+        try:
+            return bool(spawns())
+        except Exception:                                   # noqa: BLE001 - a lost spawn memory is no stalemate call
+            return False
+
+    def _stalemate_watch(self, snap, p, now) -> None:
+        """No living Majini (crows do not count, as in combat) for STALEMATE_S - HUNT_STALEMATE_S where the spawn hunt
+        can look for them first - while the clock shows more than STALEMATE_CLOCK_S: the countdown is cut to the
+        configured seconds once per round; stats["stalemate_cut"] and the round map keep the clock before / after."""
+        living = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1)
+        patience = stalemate_rule.HUNT_STALEMATE_S if self._can_hunt() else stalemate_rule.STALEMATE_S
+        target = self.stalemate.observe(now, living, snap.get("timer"), patience=patience)
+        if target is None:
+            return
+        from ...re5_mods_tool import set_clock
+        result = set_clock(self.m.adapter, target)
+        self.stalemate.record(now, result, trace=self._trace, pos=(p or {}).get("pos"))
 
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
@@ -1438,6 +1469,8 @@ class Bot:
                 self.stats["kill_time_added_s"] = round(self.stats.get("kill_time_added_s", 0.0) + bonus["added"], 1)
             elif bonus.get("kill_time") and not bonus.get("verified"):
                 self.stats["kill_time_reason"] = bonus.get("reason") or "write not confirmed"
+            if self.round_active and not snap.get("prompt"):
+                self._stalemate_watch(snap, p, now)             # a stalemate's clock cut (gbox.mercs.stalemate)
         if where != "playing" or not p:
             self.healing = None
             self.inventory_heal.reset()
@@ -1466,6 +1499,7 @@ class Bot:
             return
         if not self.round_active:
             self.map_goals.reset()
+            self.stalemate.new_round()
             from ..research_profiles import profile
             self.stats['guide_profile'] = profile('BLUS30491',snap.get('mercenaries_mode'))
             guidance = getattr(self, 'operator_guidance', None)

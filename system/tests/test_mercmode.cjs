@@ -30,15 +30,37 @@ test('operator can adopt the exact displayed solo bot without submitting a new l
  panel.dispose();
 });
 test('continuous presentation saves an explicit host setting',async()=>{
- const calls=[],listeners=new Map(),host={dataset:{host:'lilspark'},
+ const calls=[],listeners=new Map(),fields={'[data-rounds]':{value:'1'},'[data-stalemate]':{checked:false},'[data-stalemate-s]':{value:'12'}};
+ const host={dataset:{host:'lilspark'},
   querySelectorAll:()=>[{dataset:{title:'re4'}},{dataset:{title:'re5'}}],
-  querySelector:key=>key==='[data-rounds]'?{value:'1'}:{checked:true}};
+  querySelector:key=>fields[key]||{checked:true}};
  const button={closest:()=>host,hasAttribute:key=>key==='data-save'};
  const root={innerHTML:'',addEventListener:(n,fn)=>listeners.set(n,fn),removeEventListener:n=>listeners.delete(n)};
  const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
  await panel.ready;await listeners.get('click')({target:{closest:()=>button}});
- assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1}]);
+ assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1,
+  stalemate_cut:false,stalemate_cut_s:12}]);
  panel.dispose();
+});
+test('the stalemate rule is a host setting: on by default at 5 s, saved from the panel and the PiP menu, bounded 1..60',async()=>{
+ const full=M.render({hosts:[{name:'lilspark',id:'w1',online:true,settings:{enabled:true,titles:['re5'],rounds_per_title:1},titles:[]}]});
+ assert.match(full,/data-stalemate checked/);assert.match(full,/data-stalemate-s min="1" max="60" value="5"/);
+ const off=M.render({hosts:[{name:'lilspark',id:'w1',online:true,settings:{enabled:true,titles:['re5'],stalemate_cut:false,stalemate_cut_s:20},titles:[]}]});
+ assert.match(off,/data-stalemate > Stalemate/);assert.doesNotMatch(off,/data-stalemate checked/);assert.match(off,/data-stalemate-s[^>]*value="20"/);
+ const host={name:'lilspark',settings:{enabled:true,titles:['re4','re5'],stalemate_cut:true,stalemate_cut_s:5},titles:[]};
+ assert.match(M.menuHTML(host,true),/data-mm-stalemate checked/);assert.match(M.menuHTML(host,true),/data-mm-stalemate-s min="1" max="60" value="5"/);
+ assert.doesNotMatch(M.menuHTML({...host,settings:{...host.settings,stalemate_cut:false}},true),/data-mm-stalemate checked/);
+ assert.equal(M.stalemateSeconds({stalemate_cut_s:'61'}),5);assert.equal(M.stalemateSeconds({stalemate_cut_s:'30'}),30);assert.equal(M.stalemateSeconds({}),5);
+ const calls=[],api=async(path,body)=>{calls.push([path,body]);return {};};
+ assert.match(await M.menuAction(api,host,'stalemate',{enabled:true,seconds:'8'}),/cuts the clock to 8 s/);
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'lilspark',stalemate_cut:true,stalemate_cut_s:8}]);
+ assert.match(await M.menuAction(api,host,'stalemate',{enabled:false}),/leaves the clock alone/);
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'lilspark',stalemate_cut:false,stalemate_cut_s:5}]);
+ await M.menuAction(api,host,'stalemate',{seconds:'999'});
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'lilspark',stalemate_cut:true,stalemate_cut_s:5}],'an out-of-range number falls back to the default');
+ const shell=require('node:fs').readFileSync(require('node:path').join(__dirname,'../clients/desktop/index.html'),'utf8');
+ assert.match(shell,/\[data-mm-stalemate\]'\)\?\.addEventListener\('change', stalemate\)/);
+ assert.match(shell,/act\('stalemate', \{ enabled: slot\.querySelector\('\[data-mm-stalemate\]'\)\?\.checked,/);
 });
 test('a paired PC distinguishes its observed settings from pending central requests',()=>{
  const html=M.render({hosts:[{name:'paired',id:'w1',online:true,scheduler_owner:'local',
