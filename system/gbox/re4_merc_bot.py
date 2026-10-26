@@ -206,7 +206,8 @@ PACKAGE = [("mercenaries_unlock", {"on": True}),
 # from the game's weapon table at each Select Player, with its firepower scaled so a weak pick still kills; the
 # PACKAGE's fixed handcannon + weapon_mod are the fallback and are skipped when this runs
 ROUND_OP = ("random_loadout", {"character": "all", "damage": "99.9", "fire_x": 20, "on": True,    # 20x fire rate, every character
-                               "weapon": "handcannon"})   # operator 2026-10-24: "give Leon a rapid fire handcannon"
+                               "weapon": "handcannon", "weapon_chance": 0.5})   # the Hand Cannon half the time (operator
+                                                   # 2026-10-24), else a random campaign gun (operator 2026-10-26), both x20
 LOADOUT_OPS = ("merc_loadout", "weapon_mod")
 
 
