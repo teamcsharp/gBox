@@ -170,7 +170,9 @@ def test_automatic_repairs_and_manual_children_are_not_forgotten(env):
 
 
 def test_explicit_pickwhip_has_first_pass_priority_without_starving_old_work(env):
-    reqs = [request(created=1, automated=True, context={'auto_report': True}),
+    # Context-free auto reports are not queued (request #2933 guard); only the identified native_replacement
+    # request is available. The priority test still applies: operator_requested wins the first pass.
+    reqs = [request(created=1, automated=True, context={'auto_report': True, 'game_id': G}),
             request('1' * 16, created=99, automated=True,
                     context={'native_replacement': True, 'replacement_requested': True})]
     q.sync(env, {'count': 0, 'items': []}, reqs, now=100)

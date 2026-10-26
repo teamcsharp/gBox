@@ -38,6 +38,8 @@ def identified(report, session=None) -> bool:
     session = session or {}
     if any(meaningful(report.get(key)) for key in IDENTIFYING_FIELDS):
         return True
+    if meaningful(report.get('game_id')):
+        return True
     return bool(meaningful(session.get("game_id")) or meaningful(session.get("title"))
                 or meaningful(session.get("game_title")))
 
