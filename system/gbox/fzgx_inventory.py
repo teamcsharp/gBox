@@ -121,6 +121,21 @@ def build_manifest(src: str) -> dict:
 
         chars = roster(disc)
 
+        vehicle_names = []
+        card = "game/cardata.lz"
+        if card in disc.files:
+            from gbox.formats.avlz import decompress as _dz
+            import re as _re
+            cardout = _dz(disc.read(card))
+            vehicle_names = sorted(set(
+                s.decode() for s in _re.findall(rb'[ -~]{5,}', cardout)
+                if 6 <= len(s) <= 30
+                and any(c.isalpha() for c in s.decode())
+                and len(set(s)) > 4
+                and not s.startswith(b"#")
+                and not any(c in s for c in b"33?<>|\\")
+            ))
+
         samples = {}
         for p in [
             "chara/arc/arrow_sel.arc.lz", "bg/bg_big.tpl.lz", "bg/bg_big.gma.lz",
@@ -152,6 +167,8 @@ def build_manifest(src: str) -> dict:
                 "rel_modules": sum(1 for p in disc.files if p.endswith(".rel")),
             },
             "samples": samples,
+            "vehicle_names": vehicle_names,
+            "vehicle_count": len(vehicle_names),
             "launch": {"core": "dolphin", "format": "gcz", "library": "hyperspin"},
         }
         return manifest
