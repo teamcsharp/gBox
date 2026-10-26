@@ -180,7 +180,7 @@ class FakeNav:
     def stage(self, room):
         return {"hourglasses": self.items}
 
-    def path(self, st, start, goal):
+    def path(self, st, start, goal, **kw):
         from gbox.re4_navmap import Waypoint
         gx, gy, gz = goal if len(goal) == 3 else (goal[0], 0.0, goal[1])
         return [Waypoint(*w) for w in (self.way or [])] + [Waypoint(gx, gy, gz, None)]
@@ -1623,3 +1623,58 @@ def test_play_binds_the_adapter_and_the_launch_settings_to_the_bot():
            clock=lambda: now[0], stats=stats, game={"launch": {"mercmode": {"stalemate_cut": False, "stalemate_cut_s": 9}}})
     assert stats["stalemate_cut_enabled"] is False and stats["stalemate_cut_s"] == 9
     assert not hasattr(m, "adapter")                  # no session adapter: nothing bound
+
+
+def test_a_ladder_is_never_climbed_and_a_goal_only_a_ladder_reaches_is_left():
+    # operator 2026-10-26: "Leon has climbed the clock tower and is unable to turn around and go back down the ladder.
+    # Make sure he is mapping this level so he knows not to climb the ladder"
+    now = [0.0]
+    m = world([], room=0x400, leon=(0.0, 0.0, 0.0))
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.stats["ram_action"] = "CLIMB UP"
+    assert bot.prompt_ok("a", B.snapshot(m)) is False and bot.stats["ladders_refused"] == 1
+    bot.stats["ram_action"] = "CLIMB DOWN"
+    assert bot.prompt_ok("a", B.snapshot(m)) is True
+    h = item("time_bonus", 0.0, 5000.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=FakeNav([h], path=[(0.0, 0.0, 2000.0, None), (0.0, 3000.0, 2500.0, "ladder")]))
+    bot.items, bot.st = [h], bot.nav.stage(0x400)                         # the disc map loaded (a round began)
+    assert bot._take(B.snapshot(m)["player"], h, now[0], bot.items) == {"hold": set()}
+    assert bot.items == [] and bot.stats["ladder_goals_left"] == 1
+
+
+def test_up_a_ladder_he_walks_back_to_its_top_faces_the_way_down_and_steps_to_the_edge():
+    now = [0.0]
+    ladder = {"kind": "ladder", "pos": [0.0, 0.0, 0.0], "top": [0.0, 3000.0, 600.0], "facing": 0.0}
+    m = world([], room=0x400, leon=(0.0, 3000.0, 2600.0))                 # on the tower top, 2 m from the ladder
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.st = {"events": [ladder]}
+    facing(m, math.pi)                                                    # facing the ladder's top
+    act = bot._ladder_descent(B.snapshot(m)["player"], now[0])
+    assert bot.stats["phase"] == "ladder_down" and "back to its top" in bot.stats["combat"] and act["hold"], act
+    m.put(PL + 0x94, ">3f", 0.0, 3000.0, 700.0)                           # at the top, facing away from the edge
+    facing(m, 0.0)
+    act = bot._ladder_descent(B.snapshot(m)["player"], now[0])
+    assert act["hold"] & {"left", "right"} and "facing the way down" in bot.stats["combat"]
+    facing(m, math.pi)                                                    # towards the foot: step to the edge
+    assert bot._ladder_descent(B.snapshot(m)["player"], now[0]) == {"hold": {"up"}}
+    assert bot.stats["ladder_descents"] == 1
+    m.put(PL + 0x94, ">3f", 0.0, 0.0, -500.0)                             # down on the ground: nothing to do
+    assert bot._ladder_descent(B.snapshot(m)["player"], now[0]) is None
+
+
+def test_a_hurt_ganado_on_the_ground_is_aimed_low_and_never_shot_over_from_the_pitch_limit():
+    # operator 2026-10-26: "why Leon shoots directly in front of him when the enemy is on the ground so he basically misses"
+    m = world([((0.0, 0.0, 1900.0), True)])                               # knocked down 1.9 m ahead
+    m.put(EM + STRIDE + B.threats_ram.EM_ROUTINE, "4B", 2, 1, 0, 0)       # r_no_0 2: hurt (on the ground)
+    bot = B.Bot(m, clock=lambda: 0.0, nav=False)
+    facing(m, 0.0)
+    tgt = B.snapshot(m)["enemies"][0]
+    assert B.body_band(tgt) == B.LOW_BODY and B.LOW_BODY[1] <= 400.0     # his body on the ground, not 0.7 m up
+    set_pitch(m, -0.45)                                                   # the game's own limit, short of his body
+    bot.r_since = -1.0                                                    # the gun up a while
+    p = B.snapshot(m)["player"]
+    bot._aim_body(p, tgt["pos"][1], 1900.0, 0.0, B.LOW_BODY)              # pushes the aim down
+    bot.pitch_push = (-1.0, p["pitch"], bot.pitch_push[2] if bot.pitch_push else "down")   # pushing moved nothing for 1 s
+    keys, level = bot._aim_body(B.snapshot(m)["player"], tgt["pos"][1], 1900.0, 0.5, B.LOW_BODY)
+    assert level is False                                                 # never "on him" over him at the limit
+
