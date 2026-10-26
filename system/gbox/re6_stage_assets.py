@@ -17,6 +17,19 @@ verifiable against any RE6 PS3 .arc:
   decoded here yet (next ticket step) but section boundaries and sizes are
   what the stage/bonus inventory needs to target.
 
+Second-stage stage-setup formats (decoded from the arc/PS3 containers,
+whose entries are plain zlib streams this module already inflates):
+
+* ``LDS`` event stage setup (ARC type 0x4c0db839, ``data\\event\\<ev>\\<ev>``):
+  ``\\0LDS`` magic, u16 version (0x17 on the retail dump), u16 event id,
+  u32 common tag 0xb9814f52, then block tables.
+* ``MWS`` stage placement files (ARC type 0x257d2f7c,
+  ``data\\stage\\<stage>\\scr\\scr00\\*``): ``\\0MWS`` magic, u16 version,
+  u16 flags, u32 record count, then ``count`` 0x40-byte records whose
+  first three big-endian f32 values are world-space placement positions
+  (verified on ``s0201_wood``: three records at x=3620.58, y=567.39,
+  z=2608.21 with 0xEDEDEDED filler).
+
 This module is pure static analysis: no emulator, no live game memory.
 """
 
@@ -43,7 +56,21 @@ ARC_TYPE_NAMES = {
     0x3B5C7FD3: "gui",
     0x7808EA10: "rtex",
     0x02358E1A: "sc",  # scenario pack entry inside sa/PS3 arcs
+    0x4C0DB839: "lds",  # \0LDS event stage setup (data\event\<ev>\<ev>)
+    0x257D2F7C: "mws",  # \0MWS stage placement (data\stage\*\scr\scr00\*)
+    0x76820D81: "tmc",  # \0TMC motion list (data\event\*\list\mot\*)
+    0x39C52040: "mcl",  # \0MCL camera list (data\event\*\list\cam\*)
+    0x6D5AE854: "lfe",  # \0LFE effect list (effect\efl\*)
+    0x2282360D: "sfx",  # \0SFX softbody (soft\chara\*)
+    0x4E397417: "dds",  # effect\dds textures
+    0x276DE8B7: "rt2d",  # effect\e2d runtime 2d textures
+    0x4323D83A: "stex",  # effect\stex / data\event\image stills
 }
+
+LDS_MAGIC = b"\0LDS"
+LDS_RETAIL_TAG = 0xB9814F52
+MWS_MAGIC = b"\0MWS"
+MWS_RECORD_SIZE = 0x40
 
 
 @dataclass
@@ -163,6 +190,74 @@ def parse_spk(data: bytes) -> SpkInfo:
     )
 
 
+def parse_lds(data: bytes) -> dict:
+    """Parse an LDS event stage-setup header.
+
+    Layout (big endian)::
+
+        0x00  4s  magic b"\\0LDS"
+        0x04  u16 version (0x17 on the retail US/Asia dump)
+        0x06  u16 event id (0x05ad e1050, 0x0561 e4000)
+        0x08  u32 common tag (0xb9814f52 on both retail events)
+        0x0c  u24 event size hint, then block tables
+    """
+    if len(data) < 0x20 or data[:4] != LDS_MAGIC:
+        raise ValueError("not an LDS event setup (bad magic)")
+    version, event_id = struct.unpack_from(">HH", data, 4)
+    tag = struct.unpack_from(">I", data, 8)[0]
+    return {
+        "version": version,
+        "event_id": f"0x{event_id:04x}",
+        "tag": f"0x{tag:08x}",
+        "size": len(data),
+    }
+
+
+@dataclass
+class MwsRecord:
+    offset: int
+    position: tuple[float, float, float]
+    raw: bytes
+
+
+@dataclass
+class MwsInfo:
+    version: int
+    flags: int
+    records: list[MwsRecord] = field(default_factory=list)
+
+
+def parse_mws(data: bytes) -> MwsInfo:
+    """Parse an MWS stage placement file.
+
+    Layout (big endian)::
+
+        0x00  4s  magic b"\\0MWS"
+        0x04  u16 version (0x0edd on the retail dump)
+        0x06  u16 flags (0x0081)
+        0x08  u32 record count
+        0x0c  count * 0x40-byte placement records; the first 12 bytes of
+              each record are three big-endian f32 world positions.
+
+    Records use 0xEDEDEDED filler words; the trailing bytes carry per
+    placement ids (not yet decoded).
+    """
+    if len(data) < 0x0C or data[:4] != MWS_MAGIC:
+        raise ValueError("not an MWS stage placement file (bad magic)")
+    version, flags = struct.unpack_from(">HH", data, 4)
+    count = struct.unpack_from(">I", data, 8)[0]
+    info = MwsInfo(version=version, flags=flags)
+    for i in range(count):
+        off = 0x0C + i * MWS_RECORD_SIZE
+        if off + MWS_RECORD_SIZE > len(data):
+            raise ValueError(f"MWS record {i} truncated")
+        x, y, z = struct.unpack_from(">fff", data, off)
+        info.records.append(
+            MwsRecord(offset=off, position=(x, y, z), raw=data[off : off + MWS_RECORD_SIZE])
+        )
+    return info
+
+
 def read_scenario(arc_path: Path) -> tuple[str, bytes]:
     """Inflate the single sc entry of an sa/PS3 scenario arc.
 
@@ -205,6 +300,23 @@ def inventory(arc_path: Path) -> dict:
             "section_sizes": [f"0x{s:x}" for s in info.section_sizes],
             "total_uncompressed": f"0x{info.total_uncompressed:x}",
         }
+    mws = [e for e in entries if e.type_name == "mws"]
+    if mws:
+        inv["stage_placements"] = []
+        for e in mws:
+            info = parse_mws(extract_arc_entry(arc_path, e))
+            inv["stage_placements"].append(
+                {
+                    "entry": e.name,
+                    "version": info.version,
+                    "flags": f"0x{info.flags:04x}",
+                    "records": len(info.records),
+                    "positions": [[round(v, 3) for v in r.position] for r in info.records],
+                }
+            )
+    lds = [e for e in entries if e.type_name == "lds" and not e.name.startswith("snd")]
+    if lds:
+        inv["event_setups"] = [dict(parse_lds(extract_arc_entry(arc_path, e)), entry=e.name) for e in lds]
     return inv
 
 
@@ -227,6 +339,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"  scenario {s['entry']}: SPK tag {s['spk_tag']} size {s['spk_size']} "
                     f"sections {len(s['section_sizes'])} uncompressed {s['total_uncompressed']}"
+                )
+            for p in inv.get("stage_placements", []):
+                print(
+                    f"  stage {p['entry']}: MWS v{p['version']} flags {p['flags']} "
+                    f"records {p['records']} positions {p['positions'][:4]}"
+                )
+            for s in inv.get("event_setups", []):
+                print(
+                    f"  event {s['entry']}: LDS v{s['version']} id {s['event_id']} "
+                    f"tag {s['tag']} size {s['size']}"
                 )
     return 0
 
