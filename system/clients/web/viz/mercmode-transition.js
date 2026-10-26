@@ -9,8 +9,8 @@
     #compact-transition .mmt-text b{display:block;font-size:17px;margin-bottom:3px}#compact-transition .mmt-text span{opacity:.75;font-size:11px}
     #compact-transition .mmt-bar{position:absolute;left:12%;right:12%;bottom:26px;height:6px;border-radius:3px;background:#ffffff26;overflow:hidden}
     #compact-transition .mmt-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#5aa0ff,#9bffd6);transition:width .6s linear}`;
-  function create({ mercmode, api, current, worker = () => null, render, now = () => Date.now() / 1000 }) {
-    let stopped = false, polling = false;
+  function create({ mercmode, api, current, worker = () => null, render, follow = null, now = () => Date.now() / 1000 }) {
+    let stopped = false, polling = false, following = false;
     const state = { show: false, title: '', progress: 0, phase: '', text: '', sub: '' };
     async function poll() {
       if (stopped || polling) return;
@@ -20,7 +20,11 @@
         const data = await api('/api/mercmode', undefined, 'GET');
         if (stopped) return;
         const next = mercmode.transition(mercmode.hostFor(data, sid, worker()), sid, now());
-        Object.assign(state, { show: false, progress: 0 }, next);
+        Object.assign(state, { show: false, progress: 0, follow: null, only_if_ended: false }, next);
+        if (next.follow && follow && !following) {          // the run plays elsewhere: the PiP goes to it (one at a time;
+          following = true;                                 // a black first frame is retried on the next poll)
+          Promise.resolve().then(() => follow(next.follow, Boolean(next.only_if_ended))).catch(() => {}).finally(() => { following = false; });
+        }
       } catch { state.show = false; }
       finally { polling = false; }
       render({ ...state });

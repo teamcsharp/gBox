@@ -3848,7 +3848,7 @@ function updateCompactMedia(on) {
   if (on && !compactTransition) {
     const overlay = document.createElement('div'); document.body.append(overlay);
     compactTransition = GBoxMercModeTransition.mount(overlay, { mercmode: GBoxMercMode, api: compactApi, current: compactCurrentSid,
-      worker: () => compactSession?.detail?.worker_name || null, visual: compactVisual });
+      worker: () => compactSession?.detail?.worker_name || null, visual: compactVisual, follow: compactFollowRun });
   } else if (!on && compactTransition) { compactTransition.stop(); $('#compact-transition')?.remove(); compactTransition = null; }
   // the game picture, not the frame, fills the PiP window (RE4's letterboxed 16:9 picture in its 4:3 frame)
   if (on && !COMPACT.local && !compactFit) {
@@ -3929,28 +3929,39 @@ const compactController = GBoxCompactGame.create({
 });
 const COMPACT = compactController.state;
 const compactRows = async read => { const r = await read(); if (!r.ok) throw Error('Stream connection unavailable'); return r.data; };
+// MercMode's run plays on a session the PiP is not showing (GBoxMercMode.transition says follow): go to it the way the
+// continuity follower goes to a replacement - its first real frame, then the stream (a dead or paused session never stays)
+async function compactFollowRun(sid, onlyIfEnded = false) {
+  if (!COMPACT.on || COMPACT.local || COMPACT.sid === sid) return;
+  const rows = await compactRows(() => liveSessions());
+  const list = Array.isArray(rows) ? rows : [];
+  if (onlyIfEnded && list.some(s => s.session_id === COMPACT.sid && s.state === 'running')) return;   // the operator's own game
+  const session = list.find(s => s.session_id === sid);
+  if (session && session.state === 'running' && session.worker_online !== false) await compactFollow(session, COMPACT.sid);
+}
 const compactContinuity = GBoxSessionContinuity.create({
   current: () => COMPACT.on && !COMPACT.local ? { ...compactSession, session_id: COMPACT.sid } : null,
   // every 2 s: the shared running list while the game runs, the history only to find what replaced it
   read: id => GBoxSessionContinuity.rowsFor(id, () => compactRows(() => liveSessions()),
     () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
-  follow: async (session, from) => {
-    const token = await gbox.token();
-    const webview = document.querySelector('#wv');
-    if (webview?.dataset.ready !== 'true') return;
-    const url = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/frame.jpg?token=${encodeURIComponent(token)}`;
-    const frame = await webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
-    if (!frame?.visible) return; // black boot frames do not replace the held gameplay
-    if (!COMPACT.on || COMPACT.sid !== from) return;
-    const image = $('#compact-stream');
-    if (image && frame.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
-    compactSession = session; compactTitle = sessionTitle(session);
-    closePipMenu();
-    compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
-    await compactController.follow(from, {sid:session.session_id, local:false});
-    document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
-  }
+  follow: (session, from) => compactFollow(session, from)
 });
+async function compactFollow(session, from) {
+  const token = await gbox.token();
+  const webview = document.querySelector('#wv');
+  if (webview?.dataset.ready !== 'true') return;
+  const url = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/frame.jpg?token=${encodeURIComponent(token)}`;
+  const frame = await webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
+  if (!frame?.visible) return; // black boot frames do not replace the held gameplay
+  if (!COMPACT.on || COMPACT.sid !== from) return;
+  const image = $('#compact-stream');
+  if (image && frame.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+  compactSession = session; compactTitle = sessionTitle(session);
+  closePipMenu();
+  compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
+  await compactController.follow(from, {sid:session.session_id, local:false});
+  document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
+}
 setInterval(() => compactContinuity.poll(), 2000); // keep polling while hidden/minimized
 addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
 const compactEnter = () => compactController.enter();
