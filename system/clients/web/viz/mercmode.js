@@ -178,9 +178,13 @@
     throw Error('Unknown MercMode action');
   }
   // --- between titles: what the PiP shows while the next game boots in the background ---
+  // A warm switch (run.warm_from: the next title was kept in memory and, prepared, is resumed on the first frame of its
+  // round) has a live game from the first moment: no loading screen, the PiP follows the new session as soon as its
+  // bot is running (operator 2026-10-26: "I need it to be a seamless swap for these titles. I hate waiting").
   function transition(host,sid,now=Date.now()/1000){
     const run=host?.current_run;
     if(!host?.settings?.enabled||!run?.mercmode)return {show:false};
+    if(run.warm_from&&run.session_id)return {show:false,warm:true};
     const since=t=>Math.max(0,now-(Number(t)||now));
     let progress=null;
     if(run.phase==='launching')progress=8+Math.min(52,52*since(run.started)/90);

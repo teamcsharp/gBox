@@ -2859,6 +2859,11 @@ def create_app(config: Config) -> FastAPI:
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         _extraction_handoff(j)
+        if t.name in ("session_op", "autoplay", "launch_game"):
+            from . import screensaver
+            saver = getattr(app.state, "autoplay_screensaver", None)
+            if saver is not None and j.get("actor") == screensaver.ACTOR:
+                saver.nudge(f"{t.name} {state}")      # MercMode's warm switch takes its next step now, not at the next tick
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         if t.name == "launch_game" and state != JobState.SUCCEEDED:

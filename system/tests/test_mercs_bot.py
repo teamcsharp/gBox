@@ -283,3 +283,21 @@ def test_leaving_the_load_clears_the_note_and_keeps_its_length():
     boot.tick(200.0)
     boot.tick(210.0, scr={"where": "results", "cursor": None})
     assert boot.stats["last_loading_s"] == 210.0 and "screen_note" not in boot.stats
+
+
+def test_prepare_stops_at_the_first_playing_screen_before_the_engine(monkeypatch):
+    """MercMode's seamless swap (gbox.tools._prepare_round): prepare=True walks the menus to the round and stops the moment
+    the title says "playing", before the engine gets the round; the caller pauses the game right there."""
+    g = FakeRE4(routine=4, step=0, menu_cursor=3)
+    now = [0.0]
+    monkeypatch.setattr(MB, "profile_for", lambda ad, game: PROFILE)
+    monkeypatch.setattr(MB, "apply_ops", lambda *a, **k: [])
+    monkeypatch.setattr(MB, "save_menu_moment", lambda ad, game: None)
+    monkeypatch.setattr(MB, "engine", lambda: SimpleNamespace(
+        play_round=lambda *a, **k: pytest.fail("a prepare never hands the round to the engine")))
+    steps = iter(range(800))
+    stats = MB.play(object(), g.send, lambda: next(steps, None) is None, game={"game_id": "re4"}, m=g, prepare=True,
+                    sleep=lambda s: now.__setitem__(0, now[0] + s), clock=lambda: now[0])
+    assert stats["prepared"] is True and stats["screen"] == "playing" and stats["rounds"] == 0
+    assert g.picks == ["THE MERCENARIES", "GAME START", "Leon", "Village"] and RM.screen(g)["where"] == "playing"
+    assert not stats.get("hung")

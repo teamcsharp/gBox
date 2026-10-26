@@ -4,9 +4,12 @@ The picture-in-picture menu (right-click the PiP) carries one MercMode toggle fo
 that owns the displayed game: **rotating titles · click to stay in this game** or **play
 across titles · click to turn on**; its arrow opens the titles that rotate (uncheck one to
 drop it; unavailable editions show their reason) and the rounds before switching. The web
-client's Mercenaries tab shows the same per-PC panel above the run reviewer. Between titles
-the PiP shows one of gBox's random visualizations with a loading bar that follows the
-scheduler's phase (launching, starting, playing) while the next game boots in the background.
+client's Mercenaries tab shows the same per-PC panel above the run reviewer. A warm switch
+(the next title kept in memory, its round prepared: see the warm pool below) shows no
+loading screen: the PiP follows the new session, already in gameplay. Only a cold launch -
+nothing of MercMode's running on that PC, e.g. right after a service restart - shows one of
+gBox's random visualizations with a loading bar that follows the scheduler's phase (launching,
+starting, playing) while the game boots.
 The PiP scales the game picture, not the frame, to its window: the server measures the
 frame's pure-black bars (`GET /api/sessions/<sid>/picture`) and the client crops RE4's
 letterboxed 16:9 picture out of its 4:3 frame after three agreeing measurements.
@@ -113,30 +116,70 @@ menu jump state through its established boot mechanism.
 ### Warm pool (`keep_warm`)
 
 `keep_warm` (0..2, default 1; `true`/`false` mean 1/0) is how many titles may wait
-in memory beside the one playing. When the round clock shows 30 s or less on the
-title's last round, the scheduler picks the next title (`mercmode_next`) and
+in memory beside the one playing. As soon as a title's session is up (before its
+autoplay even starts: after a service restart the pool is warm again before the
+first round ends), the scheduler picks the next title (`mercmode_next`) and
 launches it with `launch_game warm=true keep_sessions=[current, waiting...]`: the
 worker keeps those sessions, boots the new one and pauses it as soon as it runs
 (RPCS3 SIGSTOP / suspended process, Dolphin halted emulation: no emulation, no
 audio). Nothing shows it: the clients follow `current_run`, and its session label
-says it waits. At the verified native round boundary the finished title is paused
-(`session_op pause args.warm=true`, "parked") instead of stopped, and the waiting
-one is resumed and becomes the run; autoplay starts once the resume succeeded.
-A parked title is resumed on its next turn without any launch.
+says it waits.
+
+**Prepared rounds** (operator 2026-10-26: "continue playing a round of mercenaries
+while the next session is loading and preparing in the background so the swap is
+seamless"). On a worker with the `mercmode_prepare` feature, once the preload is
+paused at its boot menu the scheduler submits `autoplay op=prepare` for it. The
+worker resumes the game in the background (unseen, background priority), drives its
+own menus with the title's own menu code (RE4 `re4_merc_bot.play prepare=True`:
+START, THE MERCENARIES, GAME START, Select Player, Select Stage; RE5
+`mercs_bot.play prepare=True`: the Reunion / Mercenaries menus, stage and character
+select) up to the first frame of a round - with the DJ's selection when the pick
+carried one - and pauses it again right there (`gbox.mercs.warm_boot.RoundPrepare`,
+the parking pause). The receipt (`prepared: true`, character, stage) comes back as the
+job's result when the walk ends within 45 s, otherwise through the session's live
+`detail.warm` (source `native_round`), and the pool entry becomes `ready`. A parked
+title (paused where its last round left it, a results screen) is prepared the same
+way once it is picked to play next, after its pause and its bot's stop have landed.
+A walk that ends anywhere else (a story game, menus RAM cannot name, a 10 min
+timeout, an error) pauses the game back where it is and reports `prepared: false`
+with the reason: the switch then resumes it at its menus as before (its bot walks
+them). A walk whose game did not pause is closed and the title is preloaded again.
+Stop, the player's pad, a manual pause or a closing session cancel the walk and leave
+the game to that control.
+
+**The switch.** At the verified native round boundary the next title must be
+`ready` (a worker without `mercmode_prepare`: paused at its boot menu). If it is, the
+finished title is paused (`session_op pause args.warm=true`, "parked") instead of
+stopped and the ready one is resumed and becomes the run, in gameplay; autoplay
+starts once the resume succeeded and recognises it is already in a round. The park
+and the resume happen in the same scheduler tick, the boundary itself and every
+scheduler job that lands on the worker (pause, resume, launch, autoplay) tick the
+scheduler at once (`Screensaver.nudge`), so the swap takes seconds, not 30 s steps.
+If the next title is not ready - still booting, its round still being prepared, or
+its preload failed or was skipped (low memory) - the playing title plays another
+round instead, as many as it takes (`mercmode_extra_rounds`, `mercmode_waiting_for`);
+a failed or skipped preload is tried again at each round boundary, and after
+`EXTRA_ROUNDS_MAX` (3) such failed attempts MercMode stays in the playing title
+(`mercmode_stay` on the run says why) rather than showing a loading screen. The
+DJ queueing another game does the same: that game is preloaded and prepared first,
+then played; a DJ pick queued after a title's round was already prepared is taken by
+that title's bot at its next menu visit (the round after).
 
 Only the scheduler's own agent launches on that exact PC (same worker id and name,
 launch actor `autoplay-screensaver`, `agent_use`, exact launch identity, label not
-taken over by the operator) are ever paused, resumed or stopped from the pool;
-anything else is dropped from the pool untouched. The pool stays at `keep_warm`
-titles besides the next one (oldest closed first). Every failure falls back to the
-normal cold launch of the promised title: a failed or timed-out preload, a game
-that could not pause, a failed resume, less than 8 GiB free or 80% RAM used (then
-no preload and no park), `keep_warm` 0, a federated PC, or a worker without the
+taken over by the operator) are ever paused, resumed, prepared or stopped from the
+pool; anything else is dropped from the pool untouched. The pool stays at `keep_warm`
+titles besides the next one (oldest closed first). A cold launch with the loading
+screen happens only when nothing of MercMode's is playing on that PC: the first
+launch after a service restart or after the playing game ended on its own (a crash,
+the bot's lost round), a failed resume at the switch (that game is closed and the
+title launches cold), `keep_warm` 0, a federated PC, or a worker without the
 `mercmode_warm_launch` feature (older workers would close the playing game).
 Turning MercMode off or the operator taking over closes the waiting games. A warm
 game closes without a save (nothing was played in it). The preload has the same
 presentation priority as the launch it replaces. `GET /api/mercmode` lists each
-host's `warm` pool and `next` pick.
+host's `warm` pool (state `prelaunch` | `parked` | `ready`, `prepare_job`,
+`prepared`, `prepare_failed`) and `next` pick.
 
 `GET /api/mercmode` reports host settings and exact readiness reasons.
 `POST /api/mercmode` saves `{host, enabled, titles, rounds_per_title}`.
