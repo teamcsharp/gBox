@@ -411,6 +411,8 @@ ANTHROPIC_VERSION = '2023-06-01'
 CACHE = {'type': 'ephemeral'}
 EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
 THINKING = ('thinking', 'redacted_thinking')
+RATE_LIMIT_COOL_S = 60.0   # an upstream 429 holds every call of that node at least this long (Retry-After when longer):
+                           # 2026-10-26 Kimi answered 429 page after page while 16 runs kept retrying it
 THINKING_SWITCH_HOSTS = ('api.deepseek.com', 'api.kimi.com', 'api.z.ai')   # OpenAI-format upstreams with a thinking:{type} switch
 STOP_REASONS = {'tool_use': 'tool_calls', 'max_tokens': 'length', 'model_context_window_exceeded': 'length',
                 'refusal': 'content_filter'}
@@ -760,6 +762,7 @@ class LocalLLM:
         self._mu = threading.Lock()
         self.waiting = 0
         self.active = 0
+        self.cool_until = 0.0         # the upstream answered 429: no call goes out before this (Busy 429 locally)
         self.last_call_at = 0.0
         self.unloaded_at = 0.0
         self.totals = {'calls': 0, 'ok': 0, 'failed': 0, 'gated': 0, 'busy': 0, 'prompt_tokens': 0,
@@ -933,6 +936,23 @@ class LocalLLM:
             return s, strip_thinking(payload), meta | {'replayed_thinking': 0, 'thinking_stripped': True}
         return None
 
+    def cooling(self) -> None:
+        """Refuse locally while the upstream is rate limiting: no request reaches it (or counts against it)."""
+        left = self.cool_until - self.clock()
+        if left > 0:
+            with self._mu:
+                self.totals['busy'] += 1
+            raise Busy(429, f'Upstream rate limited: holding calls for {left:.0f} s', int(left) + 1)
+
+    def rate_limited(self, status: int, retry_after) -> None:
+        if status != 429:
+            return
+        try:
+            wait = float(retry_after)
+        except (TypeError, ValueError):
+            wait = 0.0
+        self.cool_until = max(self.cool_until, self.clock() + max(wait, RATE_LIMIT_COOL_S))
+
     async def acquire(self, s, gone=None):
         reason = await asyncio.to_thread(self.gate_reason)
         if reason:
@@ -975,6 +995,7 @@ class LocalLLM:
         t0 = self.clock()
         s, payload, meta = await self.prepare(body)
         try:
+            self.cooling()
             lock, waited = await self.acquire(s, gone)
         except Busy as e:
             self.log(meta | {'ts': t0, 'status': 'gated' if 'paused' in e.message else 'busy', 'error': e.message})
@@ -986,6 +1007,7 @@ class LocalLLM:
                     s, payload, meta = again
                     r = await client.post(_path(s), json=payload | {'stream': False})
             if r.status_code >= 400:
+                self.rate_limited(r.status_code, r.headers.get('Retry-After'))
                 raise Busy(502 if r.status_code >= 500 else r.status_code, 'Local inference: ' + _error_text(r),
                            retry_after_headers(r.headers.get('Retry-After')).get('Retry-After'))
             data = r.json()
@@ -1015,6 +1037,7 @@ class LocalLLM:
         t0 = self.clock()
         s, payload, meta = await self.prepare(body)
         try:
+            self.cooling()
             lock, waited = await self.acquire(s, gone)
         except Busy as e:
             self.log(meta | {'ts': t0, 'status': 'gated' if 'paused' in e.message else 'busy', 'error': e.message})
@@ -1049,6 +1072,7 @@ class LocalLLM:
                     text = _error_text(response)
                     await response.aclose()
             if response.status_code >= 400:
+                self.rate_limited(response.status_code, response.headers.get('Retry-After'))
                 await client.aclose()
                 self.release(lock)
                 self.log(meta | {'ts': t0, 'status': 'error', 'error': text[:300]})
