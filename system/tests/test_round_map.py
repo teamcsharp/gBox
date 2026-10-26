@@ -55,3 +55,18 @@ def test_re5_bot_writes_a_round_map_with_code_locations(tmp_path):
     bot = R.Bot(learn_dir=tmp_path / "lessons", clock=lambda: 0.0)
     m = __import__("gbox.mercs.round_map", fromlist=["code_map"]).code_map(R.PHASE_CODE, R.Bot, R.re5_combat.Combat)
     assert m["leave_proximity_bomb"].startswith("re5_ps3.py:") and "Bot._mine_retreat" in m["leave_proximity_bomb"]
+
+
+def test_the_last_shots_carry_the_aim_the_gate_and_the_result():
+    t = RoundTrace(None, "BLUS30491", "Village", "d" * 32, 400.0)
+    now, shots = 0.0, 0
+    for i in range(30):
+        aim = "yaw +2.0 pitch -1.0 FIRE" if i % 3 else "yaw -24.0 pitch -18.0 swing"
+        if i % 3 == 1:
+            shots += 1
+        t.add(now, 100.0 + i, 0.0, state={"shots": shots, "combat": aim, "fire_gate": "threat: blasting",
+                                          "last_shot": "miss: the ray passed him" if i % 2 else "hit"})
+        now += 0.3
+    s = t.summary()
+    assert len(s["last_shots"]) == 10 and s["last_shots"][-1]["combat"].startswith("yaw")
+    assert all("aim_before" in x and x["fire_gate"] == "threat: blasting" for x in s["last_shots"])

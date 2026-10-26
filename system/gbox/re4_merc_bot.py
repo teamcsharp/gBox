@@ -120,7 +120,9 @@ PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL
 SHOOT_RANGE = 2400.0                             # fire inside this
 BONUS_FIGHT_R = 2400.0                           # bonuses left: only a Ganado in view this close is fought first
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
-PRESS_HOLD, PRESS_GAP = 0.30, 0.40               # the trigger: down this long, then up; a press at most this often (live share tuning 2026-10-24 04:46)
+PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick down, one up - ~10 presses a second, the loop's
+                                                 # limit (operator 2026-10-26: "leon needs to fire about 20x faster"; the gun's
+                                                 # own interval is already /20, so presses were the cap at 0.30/0.40 = 1.4 a second)
 QUICK_TURN_ERR, QUICK_TURN_S = 2.3, 0.9          # a target this far round (radians): the quick turn (back + B), at
                                                  # most once in QUICK_TURN_S
 TURN_RATE = 3.0                                  # radians a second, the stick turning him (not aiming): the start;
