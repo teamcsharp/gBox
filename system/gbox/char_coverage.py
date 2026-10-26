@@ -267,7 +267,7 @@ def coverage(ctx, api) -> dict:
     rows = []
     for gid, g in ids.items():
         ex, roster = extractor_for(g)
-        have = [m for m in chars if m["source"].get("game_id") == gid and m.get("kind", "character") == "character"
+        have = [m for m in chars if m["source"].get("game_id") == gid and m.get("kind", "character") in ("character", "sprites")
                 and not m.get("variant_of")]
         slugs = {m["slug"] for m in have}
         missing = [r["name"] for r in roster if r["slug"] not in slugs]
@@ -293,7 +293,7 @@ def coverage(ctx, api) -> dict:
                                        "rip": sum(bool(r["rip"]["extractor"]) for r in rows),
                                        "reimport": sum(r["reimport"]["routed"] for r in rows),
                                        "both": sum(bool(r["rip"]["extractor"]) and r["reimport"]["routed"] for r in rows),
-                                       "collection": len([m for m in chars if m.get("kind", "character") == "character"])}}
+                                       "collection": len([m for m in chars if m.get("kind", "character") in ("character", "sprites")])}}
 
 
 def _close(q: str, title: str) -> bool:
