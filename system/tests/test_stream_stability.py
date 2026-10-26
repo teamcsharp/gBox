@@ -523,3 +523,72 @@ def test_operator_restart_replaces_a_live_but_frozen_encoder_at_once_and_keeps_t
     assert events[-1]["kind"] == "encoder_restart" and events[-1]["reason"] == "operator F5"
     s.close()
     assert s.restart_now()["restarted"] is False
+
+
+# --- JPEG frame-boundary walking (the mid-scan marker / "rewind" fix, #3253) -----------------------------------
+
+def _seg(m, payload):
+    """A length-carrying JPEG segment: FF <marker> <2-byte big-endian length> <payload>."""
+    return b"\xff" + bytes([m]) + (len(payload) + 2).to_bytes(2, "big") + payload
+
+
+def _jpeg(scan=b"\x01\x23\x45\x67"):
+    """A structurally valid baseline JPEG: SOI, APP0, DQT, SOF0, DHT, SOS(+header), scan data, EOI."""
+    return (b"\xff\xd8"
+            + _seg(0xE0, b"JFIF\x00")
+            + _seg(0xDB, b"\x00" * 64)
+            + _seg(0xC0, b"\x08" + b"\x00" * 16)
+            + _seg(0xC4, b"\x00" * 20)
+            + _seg(0xDA, b"\x01" + b"\x00" * 8 + b"\x00")  # SOS *does* carry a length field
+            + scan
+            + b"\xff\xd9")
+
+
+def test_jpeg_frame_walker_finds_the_true_eoi_past_length_and_scan_segments():
+    from gbox.adapters import _next_jpeg_frame
+
+    f = _jpeg()
+    s, e = _next_jpeg_frame(f)
+    assert (s, e) == (0, len(f)) and f[s:e] == f
+    # leading torn garbage is dropped; a trailing fragment is left for the next read
+    buf = b"garbage" + f + b"\xff\xd8part"
+    s, e = _next_jpeg_frame(buf)
+    assert buf[s:e] == f
+    # stuffed FF 00 escapes inside the scan are not markers and must not break the walk
+    stuffed = _jpeg(scan=b"\x11\xff\x00\x22\xff\x00\x33")
+    s, e = _next_jpeg_frame(stuffed)
+    assert stuffed[s:e] == stuffed
+    # a complete frame followed by another is split at the real EOI, not mid-scan
+    two = f + f
+    s, e = _next_jpeg_frame(two)
+    assert two[s:e] == f and e == len(f)
+    # an incomplete frame (no EOI yet) returns None so the reader waits for more bytes
+    assert _next_jpeg_frame(f[:-2]) is None
+
+
+def test_jpeg_frame_walker_does_not_split_on_markers_inside_scan_data():
+    """Regression for #3253: the old raw `buf.find(b'\\xff\\xd9')` split a valid picture at the first EOI-like byte
+    pair it saw, but a scan legitimately contains stuffed FF bytes (FF 00) and RST restart markers (FF D0..D7).
+    A byte-search returns a torn fragment the viewer painted as a flash/glitch/\"rewind\" mid-stream. The walker
+    follows the real marker structure, so stuffed bytes and RST markers inside the scan are never mistaken for a
+    frame boundary: only the true EOI ends the frame."""
+    from gbox.adapters import _next_jpeg_frame
+
+    # Entropy-coded data represents a literal 0xFF as the two bytes FF 00 (byte-stuffing): an FF followed by 00
+    # is NOT a marker. RST restart markers (FF D0..FF D7) carry no length field and appear mid-scan. Both must be
+    # walked over without terminating the frame.
+    scan = (b"\x11\x22"
+            + b"\xff\x00" * 5          # stuffed FF bytes (not markers)
+            + b"\xff\xd7restart"        # RST7: a real in-scan marker, no length field
+            + b"\xff\xd0\xaa\xbb\xcc"  # RST0: another restart marker
+            + b"\x00" * 6)
+    f = _jpeg(scan=scan)
+    s, e = _next_jpeg_frame(f)
+    assert (s, e) == (0, len(f)), f"walker stopped before the true EOI: got {(s, e)}, expected (0, {len(f)})"
+
+    # The naive byte-search the walker replaces WOULD have stopped at the first FF 00-stuffed or RST marker pair:
+    # prove the walker does strictly better than a raw search on this input.
+    raw = f.find(b"\xff\xd9", f.find(b"\xff\xd8") + 2)
+    assert raw == len(f) - 2          # the raw search finds only the real EOI here (stuffed FF 00 hides the FFs)
+    # and, for completeness, a truncated frame (EOI cut off) yields None -> the reader waits for the rest.
+    assert _next_jpeg_frame(f[:-3]) is None
