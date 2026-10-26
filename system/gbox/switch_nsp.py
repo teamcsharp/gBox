@@ -8,10 +8,18 @@ be mistaken for a readable asset blob.
 
 No Nintendo keys, keys databases or third-party tools are used or required:
 everything here works on the container bytes that the operator owns.
+
+The title-identity layer at the end (title_id, launchable, catalog_fields, describe) serves the catalog scan and the
+Switch launch (gbox.catalog, gbox.tools, gbox.adapters.SwitchLinuxAdapter): without keys a title id comes from a
+ticket's name (<title id><key generation>.tik), from a cnmt.xml member, or from a [TITLEID] tag in the file name. A
+title update keeps the base title id with its low 12 bits set to 0x800 (Resident Evil 6 [01002A000CD48800][v131072]
+updates the base 01002A000CD48000). Only the container header is read for it, never the 20 GB of content, so a scan
+over SMB can afford it.
 """
 from __future__ import annotations
 
 import hashlib
+import re
 import struct
 import sys
 import xml.etree.ElementTree as ET
@@ -38,6 +46,15 @@ __all__ = [
     "sha256_file",
     "classify_nca_header",
     "build_manifest",
+    "pfs0_names",
+    "title_id",
+    "title_id_from_names",
+    "is_update",
+    "base_title_id",
+    "version",
+    "describe",
+    "launchable",
+    "catalog_fields",
 ]
 
 
@@ -337,6 +354,135 @@ def build_manifest(
         },
     }
     return manifest
+
+
+# --- title identity without keys --------------------------------------------------------------------------------------
+UPDATE_BIT = 0x800
+MAX_MEMBERS = 4096                      # an NSP holds a handful of NCAs, tickets and certs; anything bigger is not one
+CNMT_LIMIT = 1 << 20                    # a cnmt.xml is a few KB: never read a big member for a title id
+_TITLE_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
+_VERSION_TAG = re.compile(r"\[v(\d+)\]")
+_TICKET = re.compile(r"([0-9A-Fa-f]{16})[0-9A-Fa-f]{16}\.tik")
+
+
+def pfs0_names(path: str | Path) -> list[str]:
+    """Member names from the container header alone (member table + name table, nothing after them). Lighter than
+    parse_pfs0_header, which also reconciles the table with the file size for the manifest."""
+    with open(path, "rb") as fh:
+        head = fh.read(_PFS0_HEADER_SIZE)
+        if len(head) < _PFS0_HEADER_SIZE:
+            raise ValueError(f"{Path(path).name}: too short for a PFS0 header")
+        magic, count, strings_size, _ = struct.unpack("<4sIII", head)
+        if magic != PFS0_MAGIC:
+            raise ValueError(f"{Path(path).name}: not a PFS0 container (magic {magic!r})")
+        if count > MAX_MEMBERS:
+            raise ValueError(f"{Path(path).name}: {count} members is not an NSP")
+        stride = _ENTRY_STRIDES[0]
+        raw = fh.read(stride * count)
+        table = fh.read(strings_size)
+    if len(raw) < stride * count:
+        raise ValueError(f"{Path(path).name}: truncated PFS0 member table")
+    names = []
+    for index in range(count):
+        name_at = struct.unpack_from("<I", raw, index * stride + 16)[0]
+        end = table.find(b"\x00", name_at)
+        names.append(table[name_at:end if end >= 0 else None].decode("utf-8", "replace"))
+    return names
+
+
+def title_id_from_names(names: Iterable[str]) -> str | None:
+    """The title id a ticket name states (<title id><key generation>.tik), upper-case, else None."""
+    for name in names:
+        m = _TICKET.fullmatch(name)
+        if m:
+            return m[1].upper()
+    return None
+
+
+def _title_id_from_cnmt(path: Path) -> str | None:
+    """The <Id> of a small cnmt.xml member; None without one or when the header does not reconcile with the file."""
+    try:
+        with path.open("rb") as fh:
+            image = parse_pfs0_header(fh, path.stat().st_size)
+            entry = image.find(".cnmt.xml")
+            if entry is None or entry.size > CNMT_LIMIT:
+                return None
+            meta = parse_content_meta(read_member(fh, image.data_offset, entry))
+    except (OSError, ValueError, ET.ParseError):
+        return None
+    tid = meta.title_id.removeprefix("0x").removeprefix("0X")
+    return tid.upper() if re.fullmatch(r"[0-9A-Fa-f]{16}", tid) else None
+
+
+def title_id(path: str | Path, names: list[str] | None = None) -> str | None:
+    """Title id (16 upper-case hex digits) of an NSP: from its ticket, else a cnmt.xml member, else a [TITLEID] tag in
+    the file name. None when none of them says; never a guess. `names`: pfs0_names(path) when the caller has it."""
+    path = Path(path)
+    if names is None:
+        try:
+            names = pfs0_names(path)
+        except (OSError, ValueError):
+            names = []
+    tid = title_id_from_names(names)
+    if not tid and any(n.endswith(".cnmt.xml") for n in names):
+        tid = _title_id_from_cnmt(path)
+    if tid:
+        return tid
+    m = _TITLE_TAG.search(path.name)
+    return m[1].upper() if m else None
+
+
+def is_update(tid: str) -> bool:
+    return (int(tid, 16) & 0xFFF) == UPDATE_BIT
+
+
+def base_title_id(tid: str) -> str:
+    """The base game's title id for an update (low 12 bits 0x800 cleared); a base id comes back unchanged."""
+    value = int(tid, 16)
+    return f"{(value - UPDATE_BIT) if (value & 0xFFF) == UPDATE_BIT else value:016X}"
+
+
+def version(path: str | Path) -> int | None:
+    """The [vNNNN] version tag in the file name (an update's), or None."""
+    m = _VERSION_TAG.search(Path(path).name)
+    return int(m[1]) if m else None
+
+
+def describe(path: str | Path) -> dict:
+    """What a launch or the catalog wants to know about an NSP, from its header and name; nothing is decrypted."""
+    path = Path(path)
+    try:
+        names, error = pfs0_names(path), None
+    except (OSError, ValueError) as exc:
+        names, error = [], str(exc)
+    tid = title_id(path, names)
+    return {"path": str(path), "title_id": tid, "base_title_id": base_title_id(tid) if tid else None,
+            "is_update": is_update(tid) if tid else False, "version": version(path),
+            "files": len(names), "has_ticket": any(n.endswith(".tik") for n in names),
+            "ncas": [n for n in names if n.endswith(".nca")], "error": error}
+
+
+def launchable(path: str | Path) -> tuple[bool, str]:
+    """(True, "") for a game NSP; (False, why) for a title update, which is content for an installed base game, not
+    something an emulator boots (Eden installs it into its NAND: a follow-up ticket). An unreadable file passes here
+    and fails in the emulator with the emulator's own message."""
+    info = describe(path)
+    if info["is_update"]:
+        return False, (f"{Path(path).name} is a title update (v{info['version'] or '?'}) for base title "
+                       f"{info['base_title_id']}, not a game: launch the base game; the update installs into "
+                       "the emulator's NAND")
+    return True, ""
+
+
+def catalog_fields(path: str | Path) -> tuple[str | None, dict]:
+    """(serial, extra launch fields) for a catalog row: the title id, and for an update its base title and version."""
+    info = describe(path)
+    if not info["title_id"]:
+        return None, {}
+    extra = {"title_id": info["title_id"]}
+    if info["is_update"]:
+        extra |= {"title_update": True, "base_title_id": info["base_title_id"], "version": info["version"]}
+    return info["title_id"], extra
 
 
 def _main(argv: Iterable[str]) -> int:

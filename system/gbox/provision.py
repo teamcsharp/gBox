@@ -714,6 +714,132 @@ def ensure_rpcs3_linux(cfg: Config, progress=None) -> dict:
     return _receipt("rpcs3", "ok", str(exe))
 
 
+# --- Switch on a Linux node (the Spark, aarch64): Eden -----------------------------------------------------------------
+# Decision and evidence: docs/research/switch-emulator-spark.md. Eden (yuzu's continuation) publishes official Linux
+# aarch64 AppImages on its own Forgejo and compiles NCE (the game's ARM64 code runs natively, no JIT) for Linux arm64.
+# Its release page publishes no digest for the AppImage, so gBox does not download it unchecked: the operator (or an
+# agent with the operator's OK) places the AppImage and names it in gbox.local-<host>.toml as switch_appimage.
+EDEN_RELEASE = "https://git.eden-emu.dev/eden-emu/eden/releases/tag/v0.2.1"
+EDEN_ASSET = {"aarch64": "Eden-Linux-v0.2.1-aarch64-gcc-standard.AppImage",
+              "x86_64": "Eden-Linux-v0.2.1-amd64-gcc-standard.AppImage"}
+SWITCH_KEY_FILES = ("prod.keys", "title.keys")
+
+
+def switch_linux_home(cfg: Config) -> Path:
+    """gBox's own Eden on Linux: the extracted AppImage (squashfs-root) and Eden's XDG folders."""
+    return cfg.runtime / "eden-linux"
+
+
+def switch_linux_env(cfg: Config) -> dict:
+    """Eden keeps keys, nand, sdmc, load and its log under $XDG_DATA_HOME/eden, qt-config.ini under $XDG_CONFIG_HOME/eden
+    and shader caches under $XDG_CACHE_HOME/eden (src/common/fs/path_util.cpp, fs_paths.h): gBox's own here, never the
+    user's ~/.local/share. Eden's docs call Wayland problematic and keep a "Force X11" switch: QT_QPA_PLATFORM=xcb."""
+    home = switch_linux_home(cfg)
+    return {"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
+            "XDG_DATA_HOME": str(home / "data"), "QT_QPA_PLATFORM": "xcb", **linux_audio_env()}
+
+
+def switch_linux_dir(cfg: Config) -> Path:
+    """Eden's data folder (keys/, nand/, sdmc/, load/, log/eden_log.txt)."""
+    return switch_linux_home(cfg) / "data" / "eden"
+
+
+def switch_linux_config(cfg: Config) -> Path:
+    """Eden's Qt settings file."""
+    return switch_linux_home(cfg) / "config" / "eden" / "qt-config.ini"
+
+
+def switch_linux_exe(cfg: Config) -> Path:
+    """What starts Eden: [emulators.switch].executable when it names something on this host (an AppRun, a folder with
+    one, an eden binary), else [switch_appimage] in the same forms, else the AppImage gBox extracted into its home.
+    A path ending in .AppImage is never run directly (FUSE, and a mount per launch): it is extracted once."""
+    emu = cfg.emulators.get("switch")
+    for conf in (Path(emu.executable).expanduser() if emu and emu.executable else None,
+                 Path(cfg.switch_appimage).expanduser() if cfg.switch_appimage else None):
+        if conf is None:
+            continue
+        if conf.is_dir():
+            for c in (conf / "AppRun", conf / "squashfs-root" / "AppRun", conf / "usr" / "bin" / "eden"):
+                if c.is_file():
+                    return c
+        elif conf.is_file() and not conf.name.lower().endswith(".appimage"):
+            return conf
+    return switch_linux_home(cfg) / "squashfs-root" / "AppRun"
+
+
+def switch_appimage_source(cfg: Config) -> Path | None:
+    """The configured AppImage file, if the configuration names one."""
+    emu = cfg.emulators.get("switch")
+    for conf in (Path(emu.executable).expanduser() if emu and emu.executable else None,
+                 Path(cfg.switch_appimage).expanduser() if cfg.switch_appimage else None):
+        if conf is not None and conf.is_file() and conf.name.lower().endswith(".appimage"):
+            return conf
+    return None
+
+
+def switch_keys_source(cfg: Config) -> Path | None:
+    """prod.keys: [switch_keys], else a prod.keys at the root of a Switch library (the share's _switch/prod.keys)."""
+    if cfg.switch_keys:
+        p = Path(cfg.switch_keys).expanduser()
+        return p if p.is_file() else None
+    for lib in cfg.libraries:
+        root = lib.root() if lib.platform == "switch" else None
+        if root and (root / "prod.keys").is_file():
+            return root / "prod.keys"
+    return None
+
+
+def switch_install_keys(src: Path, keys_dir: Path) -> list[str]:
+    """Copy prod.keys (and a title.keys beside it) into Eden's keys folder when missing or changed; returns what was
+    copied. The share stays untouched (read-only CIFS)."""
+    copied = []
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    for name in SWITCH_KEY_FILES:
+        s = src.parent / name if name != "prod.keys" else src
+        if not s.is_file():
+            continue
+        d = keys_dir / name
+        try:
+            same = d.is_file() and d.stat().st_size == s.stat().st_size and d.read_bytes() == s.read_bytes()
+        except OSError:
+            same = False
+        if not same:
+            shutil.copyfile(s, d)
+            copied.append(name)
+    return copied
+
+
+def ensure_switch_linux(cfg: Config, progress=None) -> dict:
+    """Switch on a Linux node: Eden from the configured AppImage (extracted once, no FUSE at launch) or binary, plus the
+    console keys copied into gBox's own Eden folder. Nothing is downloaded: see EDEN_RELEASE / EDEN_ASSET for the
+    file to place and docs/research/switch-emulator-spark.md for the decision. Not yet run on the Spark."""
+    if HOST_OS != "linux":
+        raise ToolUnavailable("eden (linux): Linux nodes only; Windows nodes run the operator's portable Yuzu")
+    home = switch_linux_home(cfg)
+    home.mkdir(parents=True, exist_ok=True)
+    exe = switch_linux_exe(cfg)
+    img = switch_appimage_source(cfg)
+    if img is not None:
+        mark, stat_ = home / "squashfs-root.from", f"{img} {img.stat().st_size} {int(img.stat().st_mtime)}"
+        if not exe.is_file() or not mark.is_file() or mark.read_text() != stat_:
+            progress and progress(12, f"Unpacking {img.name}")
+            _rpcs3_appimage_extract(img, home)             # the same --appimage-extract into home/squashfs-root
+            mark.write_text(stat_)
+            exe = switch_linux_exe(cfg)
+    if not exe.is_file():
+        asset = EDEN_ASSET.get(ARCH, "an Eden Linux AppImage")
+        raise ToolUnavailable(f"no Switch emulator on this Linux node: place {asset} from {EDEN_RELEASE} on this host "
+                              "and set switch_appimage = \"<path>\" in gbox.local-<hostname>.toml (or an extracted "
+                              "AppRun / eden binary); gBox does not download it because the release page publishes "
+                              "no checksum")
+    keys = switch_keys_source(cfg)
+    if keys is None:
+        raise ToolUnavailable("no prod.keys for the Switch emulator: set switch_keys in gbox.local-<hostname>.toml or "
+                              "keep prod.keys at the Switch library's root (the share's _switch/prod.keys)")
+    copied = switch_install_keys(keys, switch_linux_dir(cfg) / "keys")
+    return _receipt("eden", "ok", f"{exe}; keys from {keys}" + (f" ({', '.join(copied)} copied)" if copied else ""))
+
+
 def ensure_ghidra(cfg: Config) -> dict:
     ensure_jdk21(cfg)
     if (h := ghidra_home(cfg)) and (h / "support").exists():
