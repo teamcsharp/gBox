@@ -9,12 +9,14 @@ import math
 import json
 import re
 import time
+import uuid
 
 SETTING = 'mercmode'
 HISTORY = 'mercmode_history'
 PREPARATION = 'mercmode_preparation'
 OBSERVED = 'mercmode_observed'
 COMMAND = 'mercmode_command'
+ADOPTION = 'mercmode_adoption'
 DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title': 1,
            'presentation_priority': False, 'queue': [], 'keep_warm': 1}
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
@@ -226,7 +228,7 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
     No controller input, stop or launch. A human session, stale telemetry or a
     foreign job cannot become a scheduler-owned run through this operation.
     """
-    from .screensaver import STATE
+    from .screensaver import STATE, _launch_session
     now=time.time() if now is None else now
     sid=session.get('session_id','');wid=worker.get('id');cfg=settings(store,worker.get('name'))
     if not cfg['enabled'] or not worker.get('online') or worker.get('federation') \
@@ -245,16 +247,79 @@ def adopt_current(store, worker, session, telemetry, *, now=None):
     title=next((t for t,r in TITLES.items() if session.get('game_id') in r['game_ids'] and r['playable']),None)
     if title not in cfg['titles']:
         raise ValueError('This verified title is not selected for MercMode')
+    launch_id=sid.split('-',1)[1]
+    launch=store.get('job',launch_id) or {}
+    pid=(session.get('detail') or {}).get('pid'); started=session.get('started')
+    if launch.get('tool')!='launch_game' or launch.get('state')!='succeeded' \
+            or launch.get('worker_id')!=wid or launch.get('require_worker')!=wid \
+            or ((launch.get('input') or {}).get('game') or {}).get('game_id')!=session['game_id'] \
+            or _launch_session(store,launch_id,[session],worker_id=wid,game_id=session['game_id']) is None \
+            or type(pid) is not int or pid<=0 or type(started) not in (int,float) or not math.isfinite(started) \
+            or session.get('adapter') not in ('rpcs3','dolphin'):
+        raise ValueError('The adopted emulator needs its exact accepted launch and process identity')
     old=store.get(STATE,worker['name'])
     if old:
         if old.get('session_id')==sid and old.get('mercmode'):return old
         raise ValueError('The host already has a different scheduler-owned run')
+    proof={'version':1,'id':uuid.uuid4().hex,'worker':worker['name'],'worker_id':wid,
+           'session_id':sid,'game_id':session['game_id'],'job':launch_id,'pid':pid,'started':started,
+           'adapter':session['adapter'],
+           'autoplay_job':jid,'at':now}
+    store.put(ADOPTION,sid,proof)
+    label=store.get('slabel',sid) or {}
+    store.put('slabel',sid,label|{'session_id':sid,'owner':'agent','ts':now,
+                                 'task':'MercMode: explicitly adopted solo autoplay'})
     run={'worker':worker['name'],'worker_id':wid,'session_id':sid,'game_id':session['game_id'],
          'title':session.get('title') or TITLES[title]['name'],'phase':'playing','started':now,
          'playing_since':now,'autoplay_job':jid,'adopted_existing_solo':True,
+         'job':launch_id,'warm_adoption':proof['id'],
          'mercmode':{'title':title,'map_id':TITLES[title]['map_id'],'rounds_per_title':cfg['rounds_per_title']}}
     store.put(STATE,worker['name'],run)
     return run
+
+
+def warm_adoption_owned(store, worker, row, session):
+    """Only the exact explicitly adopted process may bypass scheduler launch provenance.
+
+    The durable receipt survives removal of the active run when it is parked.
+    It never authorizes a different process or a newer unrelated control owner.
+    """
+    from . import autoplay_resume
+    from .screensaver import ACTOR
+    sid=session.get('session_id')
+    proof=store.get(ADOPTION,sid) or {}
+    if not row.get('warm_adoption') or proof.get('version')!=1 or proof.get('id')!=row['warm_adoption'] \
+            or proof.get('worker')!=worker.get('name') or proof.get('worker_id')!=worker.get('id') \
+            or any(proof.get(k)!=row.get(k) for k in ('session_id','game_id','job','worker_id')) \
+            or session.get('state')!='running' or session.get('game_id')!=proof.get('game_id') \
+            or session.get('started')!=proof.get('started') \
+            or session.get('adapter')!=proof.get('adapter') \
+            or (session.get('detail') or {}).get('pid')!=proof.get('pid') \
+            or session.get('replaced_by') or (store.get('slabel',sid) or {}).get('owner')=='you':
+        return False
+    original=store.get('job',proof.get('autoplay_job')) or {}
+    if original.get('tool')!='autoplay' or original.get('state') not in ('assigned','running','succeeded') \
+            or original.get('worker_id')!=worker['id'] or original.get('require_worker')!=worker['id'] \
+            or (original.get('input') or {}).get('session_id')!=sid or (original.get('input') or {}).get('op')!='start' \
+            or autoplay_resume.revoked(store,sid,original.get('id')):
+        return False
+    current=autoplay_resume.latest_control(store,sid) or {}
+    if current.get('id')!=row.get('autoplay_job') or current.get('require_worker')!=worker['id'] \
+            or current.get('worker_id') not in (None,worker['id']) or current.get('state')=='cancelled' \
+            or autoplay_resume.revoked(store,sid,current.get('id')):
+        return False
+    with store.lock:
+        changed=store.db.execute("SELECT 1 FROM docs WHERE kind='job' "
+            "AND json_extract(body,'$.tool')='session_op' "
+            "AND json_extract(body,'$.input.session_id')=? "
+            "AND json_extract(body,'$.input.op') IN ('pause','resume','reset','load_state','send_input','stop_game') "
+            "AND json_extract(body,'$.created')>=? AND COALESCE(json_extract(body,'$.actor'),'')!=? LIMIT 1",
+            (sid,proof['at'],ACTOR)).fetchone()
+    if changed:
+        return False
+    return (current.get('id')==original.get('id') or current.get('actor')==ACTOR
+            and current.get('tool')=='autoplay' and (current.get('input') or {}).get('op') in ('start','stop')
+            and (current.get('input') or {}).get('session_id')==sid)
 
 
 def _same_host_worker(store, source, worker):

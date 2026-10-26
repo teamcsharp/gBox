@@ -260,14 +260,17 @@ def test_warm_pool_games_stay_up_or_close_without_a_save(monkeypatch, tmp_path):
     assert not [e for e in events if e[1] in ('cur', 'parked')]
 
 
-def test_warm_launch_is_paused_once_running_or_reported_unpaused():
+def test_warm_launch_starts_native_preparation_without_pausing_the_boot(monkeypatch):
+    from gbox.mercs import warm_boot
     events = []
     ok = _Emu(sid='a', events=events, paused=False)
-    assert tools._park_warm(ok) == {'paused': True} and ok.gbox_warm is True and ok.paused
-    broken = _Emu(sid='b', events=events, paused=False, fail=True)
-    out = tools._park_warm(broken)
-    assert out['paused'] is False and 'debugger' in out['reason'] and not getattr(broken, 'gbox_warm', False)
-    assert tools._park_warm(SimpleNamespace(name='steam'))['paused'] is False
+    calls = []
+    monkeypatch.setattr(warm_boot, 'start', lambda ad, game, owned:
+                        calls.append((ad, game, owned())) or {'state': 'loading', 'paused': False})
+    game = {'game_id': 'exact'}
+    assert tools._park_warm(ok, game, lambda: True) == {'state': 'loading', 'paused': False}
+    assert calls == [(ok, game, True)] and not ok.paused and not events
+    assert tools._park_warm(SimpleNamespace(name='steam'), game, lambda: True)['paused'] is False
 
 
 def test_session_op_warm_pause_and_resume_mark_the_game(monkeypatch):

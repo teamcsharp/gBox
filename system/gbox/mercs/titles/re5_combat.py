@@ -435,9 +435,14 @@ class Combat:
         self.wid = None
         self.round_t0 = None
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
+        self.round_weapons = {}
         self.last_timer = None
         self.finishers_seen = 0
         self.damage_unattributed = False
+        self.mine_damage_confounded = False
+        self.mine_confounded_until = -math.inf
+        self._mine_release_sample = False
+        self.round_unattributed_shots = 0
         self._unattributed_hp = {}
         self.infinite = False                 # the rounds don't count (the no-ammo flag): shots from the fire command
         self._fire_cmd_seen = 0
@@ -550,7 +555,7 @@ class Combat:
         self.shot_evidence = 'native_fire_command_inferred_infinite'
         return True
 
-    def _update_attribution(self, snap, index):
+    def _update_attribution(self, snap, index, now):
         """Shared enemy HP/counters cannot establish which local player hit it."""
         other_player = index != 0 or any(row.get('slot') == 2 and row.get('native_actor_verified') is True
             for row in snap.get('players') or () if isinstance(row, dict))
@@ -565,14 +570,35 @@ class Combat:
             # Discard unresolved solo correlation when a second player appears.
             self.shots.hp.clear()
             self.stunned.clear()
+        ground = snap.get('ground_mines')
+        active_setting = snap.get('mines_enabled', self.stats.get('mines_enabled')) is True
+        unreadable_active = active_setting and (ground is None or not getattr(ground, 'verified', True))
+        if ground or unreadable_active:
+            # Match the mine observer's two-second damage window. Presence itself also makes a gun/HP correlation
+            # ambiguous: the sampled list can miss the exact detonation frame between two observations.
+            self.mine_confounded_until = now + 2.
+        was_confounded = self.mine_damage_confounded
+        self.mine_damage_confounded = now <= self.mine_confounded_until
+        self._mine_release_sample = was_confounded and not self.mine_damage_confounded
+        self.stats['combat_mine_damage_confounded'] = self.mine_damage_confounded
         self.stats['combat_damage_attribution'] = ('unattributed_multiple_players' if self.damage_unattributed
-                                                   else 'solo_temporal_correlation')
+            else 'unattributed_mine_window' if self.mine_damage_confounded or self._mine_release_sample
+            else 'solo_temporal_correlation')
         self.stats['combat_player_index'] = index
 
     def _observe_impacts(self, enemies, now):
-        if not self.damage_unattributed:
+        mine_window = self.mine_damage_confounded or self._mine_release_sample
+        if not self.damage_unattributed and not mine_window:
+            self._unattributed_hp = {}
+            # Score expired records before a newer shot receives this tick's HP loss. Otherwise the two counts
+            # can assign the hit to the old head shot and the miss to the newer body shot.
+            self.shots.expire(now)
+            self._score(now)
             return self.shots.update(enemies, now)
         previous, current, losses, deaths = self._unattributed_hp, {}, 0., 0
+        if mine_window and not previous:
+            previous = {e.get('ptr', e.get('slot')): self.shots.hp[e.get('slot')][0]
+                        for e in enemies if e.get('slot') in self.shots.hp}
         for enemy in enemies:
             key = enemy.get('ptr', enemy.get('slot'))
             hp = enemy.get('hp')
@@ -585,13 +611,22 @@ class Combat:
         self._unattributed_hp = current
         self.stats['enemy_hp_loss_unattributed'] = self.stats.get('enemy_hp_loss_unattributed', 0) + losses
         self.stats['enemy_deaths_unattributed'] = self.stats.get('enemy_deaths_unattributed', 0) + deaths
-        while self.shots.pending and now - self.shots.pending[0] > self.shots.HIT_S:
+        while self.shots.pending and (mine_window or now - self.shots.pending[0] > self.shots.HIT_S):
             at = self.shots.pending.pop(0)
             pending = getattr(self, '_pending_where', [])
             record = pending.pop(0) if pending else (at, None, None, None, None)
             self.stats['shot_impacts_unattributed'] = self.stats.get('shot_impacts_unattributed', 0) + 1
-            self._log_shot(record[0], 'impact unattributed: multiple players can damage enemies',
-                           record[1], record[3], record[4], record[2])
+            self.round_unattributed_shots += 1
+            self._log_shot(record[0], 'impact unattributed: mine presence or recent detonation' if mine_window
+                           else 'impact unattributed: multiple players can damage enemies',
+                           record[1], record[3], record[4], record[2],
+                           weapon=record[5] if len(record) > 5 else self.wid,
+                           character=record[6] if len(record) > 6 else self.character)
+        if mine_window:
+            self.stats['mine_window_enemy_hp_loss_unattributed'] = self.stats.get('mine_window_enemy_hp_loss_unattributed', 0) + losses
+            # Rebase on every ambiguous sample so damage during the window cannot become a later gun hit.
+            self.shots.hp = {e.get('slot', e.get('id')): (e.get('hp'), (e.get('hp') or 0) <= 0) for e in enemies}
+            self._mine_release_sample = False
         return []
 
     def observe(self, snap, now, *, active=True):
@@ -611,7 +646,7 @@ class Combat:
             self._observed_snap, self._observation = snap, (0, None, None, False)
             return self._observation
         pl = p.get("ptr") or scoped
-        self._update_attribution(snap, index)
+        self._update_attribution(snap, index, now)
         wid, rounds = self._in_hand(snap, pl)
         if active:
             self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
@@ -916,9 +951,11 @@ class Combat:
                 return {"hold": {"l1", "cross"}}
             return {"hold": {"l1"}}
         facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
-        if abs(facing) > SWING_TURN and p.get("action") != 4:
+        if abs(facing) > SWING_TURN and p.get("action") != 4 and not (self._ready(p) and where is not None):
             # He is well off to the side or behind: the gun down, the body turned at ~150 deg/s (aiming turns ~30 deg/s:
             # live 2026-10-22 the gun stayed up through yaw errors of 90-160 deg, seconds of aiming at walls)
+            # A ready weapon's measured first hit on him is stronger than body heading: the upper-body aim can
+            # already be on target. Keep that shot instead of lowering the gun and restarting acquisition.
             self.near_ray_since = None
             self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
             return {"hold": self._face(p, foot)}
@@ -1130,7 +1167,7 @@ class Combat:
             self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
                               combat=label+": lower weapon and turn toward target")
             return {"hold": self._face(p, foot)}
-        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now):
+        if self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now,aligned=aligned):
             return {"hold":set()}
         if wid==0x0F:
             self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
@@ -1166,15 +1203,15 @@ class Combat:
                                 f"{'TRIGGER' if 'r1' in keys else 'release / tracking'}")
         return {"hold": keys}
 
-    def _laserless_stalled(self,p,tgt,wid,error,shot,now):
+    def _laserless_stalled(self,p,tgt,wid,error,shot,now,*,aligned=False):
         """Finite but static camera/heading feedback must not hold aim or turn in place forever."""
         key = (p.get("ptr"),tgt.get("ptr",tgt.get("slot")),wid)
         progress = self.laserless_progress
         if progress is None or progress["key"] != key:
             self.laserless_progress = {"key":key,"best":error,"improved":now,"started":now}
-        elif wid in (0x0F,0x36) and math.dist(p["pos"],tgt["pos"]) < BOW_STAND_R:
-            # a near Majini: keep shooting / bombarding him with rotten eggs, never walk off (operator 2026-10-24:
-            # "They need to be bombarding enemies with rotten eggs when rotten egg mode is active")
+        elif wid in (0x0F,0x36) and aligned and math.dist(p["pos"],tgt["pos"]) < BOW_STAND_R:
+            # Keep firing at an aligned nearby threat. Proximity alone cannot renew this lease: a static,
+            # off-target camera otherwise leaves the gun raised forever without a single trigger press.
             progress.update(improved=now,started=now)
         elif wid==0x0F and now-max(progress['started'],self.bow_target_damage.get(tgt.get('ptr'),-math.inf)) >= BOW_BURST_S:
             self.laserless_progress = None
@@ -1316,10 +1353,9 @@ class Combat:
             d_him = math.dist(lz[0], (foot[0], foot[1] + HEAD_H, foot[2]))
             reach = "short" if d_dot < d_him - 60 else ("past" if d_dot > d_him + 60 else "beside")
         self._pending_where = getattr(self, "_pending_where", [])
-        self._pending_where.append((now, where, ptr, reach, round(d_him) if foot is not None and lz is not None else None))
-        if not self.damage_unattributed:
-            w = self.tun.weapon(self.character, self.wid or 0)
-            w["shots"] += 1
+        self._pending_where.append((now, where, ptr, reach, round(d_him) if foot is not None and lz is not None else None,
+                                    self.wid, self.character))
+        # Native shots are counted above; learned weapon samples enter only when their outcome is resolvable.
 
     def _score(self, now):
         st = self.shots.stats
@@ -1328,10 +1364,14 @@ class Combat:
         self._scored_hits, self._scored_misses = hits, misses
         pend = getattr(self, "_pending_where", [])
         for _ in range(new_hits):
-            t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
+            t, where, ptr, reach, dist, wid, character = pend.pop(0) if pend else (now, None, None, None, None, self.wid, self.character)
             self.round_counts["hits"] += 1
-            w = self.tun.weapon(self.character, self.wid or 0)
+            w = self.tun.weapon(character, wid or 0)
+            w['shots'] += 1
             w["hits"] += 1
+            counts = self.round_weapons.setdefault((character, wid or 0), {'shots': 0, 'hits': 0})
+            counts['shots'] += 1
+            counts['hits'] += 1
             if where == "head":
                 self.stats["headshots"] += 1
                 self.round_counts["headshots"] += 1
@@ -1340,9 +1380,11 @@ class Combat:
                 self.stats["legshots"] = self.stats.get("legshots", 0) + 1
             if where in ("head", "leg") and ptr:          # a stun (the kneel / the head reel): in for the finisher
                 self.stunned[ptr] = now + STUN_S
-            self._log_shot(t, "headshot" if where == "head" else "hit", where, reach, dist, ptr)
+            self._log_shot(t, "headshot" if where == "head" else "hit", where, reach, dist, ptr, weapon=wid, character=character)
         for _ in range(new_misses):
-            t, where, ptr, reach, dist = pend.pop(0) if pend else (now, None, None, None, None)
+            t, where, ptr, reach, dist, wid, character = pend.pop(0) if pend else (now, None, None, None, None, self.wid, self.character)
+            self.tun.weapon(character, wid or 0)['shots'] += 1
+            self.round_weapons.setdefault((character, wid or 0), {'shots': 0, 'hits': 0})['shots'] += 1
             if where == 'egg_projectile':
                 cls,key='egg impact unconfirmed: no observed HP loss','egg_unconfirmed_impacts'
             elif where == "projectile":
@@ -1356,21 +1398,23 @@ class Combat:
             else:
                 cls, key = "miss: the dot beside him (aim)", "miss_beside"
             self.stats[key] = self.stats.get(key, 0) + 1
-            self._log_shot(t, cls, where, reach, dist, ptr)
+            self._log_shot(t, cls, where, reach, dist, ptr, weapon=wid, character=character)
         self.stats["shots"], self.stats["hits"], self.stats["misses"] = st["shots"], hits, misses
-        self.stats["accuracy"] = None if self.damage_unattributed or self.wid==0x0F or self.bow_round_observations else st["accuracy"]
+        self.stats["accuracy"] = None if self.damage_unattributed or self.round_unattributed_shots or self.wid==0x0F or self.bow_round_observations else st["accuracy"]
         self.stats.update(round_shots=self.round_counts["shots"], round_hits=self.round_counts["hits"],
                           round_accuracy=(round(self.round_counts["hits"] / self.round_counts["shots"], 3)
                                           if self.round_counts["shots"] and not self.damage_unattributed
-                                          and not self.bow_round_observations else None))
+                                          and not self.round_unattributed_shots and not self.bow_round_observations else None))
 
-    def _log_shot(self, t, cls, where, reach, dist, ptr):
+    def _log_shot(self, t, cls, where, reach, dist, ptr, *, weapon=None, character=None):
         """Every shot into the title's run-lessons log (operator: "why did he miss" -> its class)."""
         self.stats["last_shot"] = cls
+        weapon = self.wid if weapon is None else weapon
+        character = self.character if character is None else character
         try:
             self.lessons({"kind": "shot", "t": round(t, 2), "result": cls, "dot": where, "reach": reach,
-                          "dist_cm": dist, "target": ptr, "weapon": self.wid, "character": self.character,
-                          "trigger": (self.triggers.get(self.wid).mode if self.wid in self.triggers else None)})
+                          "dist_cm": dist, "target": ptr, "weapon": weapon, "character": character,
+                          "trigger": (self.triggers.get(weapon).mode if weapon in self.triggers else None)})
         except Exception:                              # noqa: BLE001 - a lesson lost never stops the fight
             pass
 
@@ -1388,9 +1432,9 @@ class Combat:
     def _headshot_metrics(self):
         shots, kills = self.stats.get("shots") or 0, self.stats.get("kills_seen_by_combat") or 0
         self.stats["headshot_pct"] = (round(100.0 * (self.stats.get("headshots") or 0) / shots, 1)
-                                      if shots and not self.damage_unattributed and not self.bow_round_observations else None)
+                                      if shots and not self.damage_unattributed and not self.round_unattributed_shots and not self.bow_round_observations else None)
         self.stats["shots_per_kill"] = round(shots / kills, 2) \
-            if kills and not self.damage_unattributed and not self.bow_round_observations else None
+            if kills and not self.damage_unattributed and not self.round_unattributed_shots and not self.bow_round_observations else None
 
     def start_round(self, now):
         """Called on an observed playing transition, never inferred from a clock bonus."""
@@ -1398,8 +1442,13 @@ class Combat:
             return
         self.round_t0 = now
         self.damage_unattributed = False
+        self.mine_damage_confounded = False
+        self.mine_confounded_until = -math.inf
+        self._mine_release_sample = False
+        self.round_unattributed_shots = 0
         self._unattributed_hp = {}
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
+        self.round_weapons = {}
         self.last_timer = None
         self.bow_down_at, self.bow_up_at = None, -1e9
         self.bow_turn_key, self.bow_turning = None, False
@@ -1469,14 +1518,18 @@ class Combat:
         w["rounds"] += 1
         w["finishers"] += rc["finishers"]
         w["time_gained_s"] = round(w["time_gained_s"] + rc["time_gained_s"], 1)
-        rate = rc["hits"] / rc["shots"] if rc["shots"] else None
-        if rate is not None:
-            if rate < HIT_RATE_WANT:                       # tighten: a smaller head, a longer settle
-                w["head_r"] = round(max(12.0, w["head_r"] * 0.85), 1)
-                w["settle_s"] = round(min(0.3, w["settle_s"] + 0.04), 3)
-            elif rate >= 0.999 and rc["shots"] >= 10:      # perfect: a notch looser (more shots)
-                w["head_r"] = round(min(HEAD_R, w["head_r"] * 1.1), 1)
-                w["settle_s"] = round(max(0.03, w["settle_s"] - 0.02), 3)
+        rate = rc["hits"] / rc["shots"] if rc["shots"] and not self.round_unattributed_shots else None
+        # Each firing weapon learns from its own observations, never from the weapon held at the results screen.
+        groups = self.round_weapons or ({} if self.round_unattributed_shots else {(self.character, self.wid or 0): rc})
+        for (character, wid), counts in groups.items():
+            tune = self.tun.weapon(character, wid)
+            weapon_rate = counts['hits'] / counts['shots'] if counts['shots'] else None
+            if weapon_rate is not None and weapon_rate < HIT_RATE_WANT:
+                tune["head_r"] = round(max(12.0, tune["head_r"] * 0.85), 1)
+                tune["settle_s"] = round(min(0.3, tune["settle_s"] + 0.04), 3)
+            elif weapon_rate is not None and weapon_rate >= 0.999 and counts['shots'] >= 10:
+                tune["head_r"] = round(min(HEAD_R, tune["head_r"] * 1.1), 1)
+                tune["settle_s"] = round(max(0.03, tune["settle_s"] - 0.02), 3)
         self.tun.d["rounds"].append({"character": self.character, "weapon": self.wid, "at": round(time.time()),
                                      **rc, "hit_rate": round(rate, 3) if rate is not None else None})
         self.tun.d["rounds"] = self.tun.d["rounds"][-200:]

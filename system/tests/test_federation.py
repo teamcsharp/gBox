@@ -5,6 +5,8 @@ not native execution, and imported sessions keep the actual local SID.
 """
 import time
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from gbox.models import Job, WorkerInfo
@@ -152,6 +154,88 @@ def test_queued_stop_is_not_starved_by_reoffered_running_commands(cfg):
     stop=queued(app,jid='2'*32,tool='session_op',inp={'session_id':SID,'op':'stop_game'})
     offered=c.post('/api/federation/'+AUTH+'/commands',json={'maximum':1}).json()['commands']
     assert offered[0]['id']==stop and app.state.store.get('job',first)['state']=='running'
+
+
+@pytest.mark.parametrize('tool,op',[('session_op','query_runtime'),('session_op','log_tail'),
+                                  ('get_frame',None),('autoplay','start')])
+def test_live_foreground_controls_pass_locally_queued_background_delivery(cfg,tool,op):
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store
+    worker=store.get('worker',WID)
+    store.put('worker',WID,worker|{'tools':worker['tools']+['get_frame','autoplay']})
+    path='/api/federation/'+AUTH+'/commands'
+    first=queued(app)
+    c.post(path,json={'maximum':1})
+    # Delivery was accepted centrally, but local background admission has not
+    # started execution. A foreground request must not wait for that job.
+    record=store.get('federation_command',first)
+    store.put('federation_command',first,record|{'local_state':'queued','local_job_id':'9'*32})
+    second=queued(app,jid='3'*32)
+    inp={'session_id':SID,**({'op':op} if op else {})}
+    control=queued(app,jid='2'*32,tool=tool,inp=inp)
+    offered=c.post(path,json={'maximum':1}).json()['commands']
+    assert [j['id'] for j in offered]==[control]
+    assert store.get('job',first)['state']=='running'
+    assert store.get('job',second)['state']=='queued'
+    later=queued(app,jid='4'*32,tool=tool,inp=inp)
+    again=c.post(path,json={'maximum':1}).json()['commands']
+    assert [j['id'] for j in again]==[control]
+    assert store.get('job',later)['state']=='queued'  # only one extra control in flight
+    stop=queued(app,jid='5'*32,tool='session_op',inp={'session_id':SID,'op':'stop_game'})
+    assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==stop
+
+
+@pytest.mark.parametrize('case',['agent','ended','other-worker','missing'])
+def test_foreground_delivery_exception_requires_exact_live_operator_session(cfg,case):
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store;path='/api/federation/'+AUTH+'/commands'
+    first=queued(app);c.post(path,json={'maximum':1})
+    sid=SID
+    if case=='ended':store.put('session',SID,store.get('session',SID)|{'state':'ended'})
+    if case=='other-worker':sid='1'*16+'-'+LOCAL
+    if case=='missing':sid=WID+'-'+'1'*32
+    control=queued(app,jid='2'*32,tool='session_op',inp={'session_id':sid,'op':'query_runtime'})
+    if case=='agent':store.put('job',control,store.get('job',control)|{'agent_use':True})
+    assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==first
+    assert store.get('job',control)['state']=='queued'
+
+
+@pytest.mark.parametrize('blocked',['tool','os','admission'])
+def test_reserved_delivery_never_claims_background_when_control_is_ineligible(cfg,blocked,monkeypatch):
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store;path='/api/federation/'+AUTH+'/commands'
+    first=queued(app);c.post(path,json={'maximum':1})
+    backgrounds=[queued(app,jid=str(i)*32) for i in (3,4,5)]
+    control=queued(app,jid='2'*32,tool='session_op',inp={'session_id':SID,'op':'query_runtime'})
+    if blocked=='tool':
+        worker=store.get('worker',WID)
+        store.put('worker',WID,worker|{'tools':['launch_game']})
+    elif blocked=='os':
+        store.put('job',control,store.get('job',control)|{'require_os':'linux'})
+    else:
+        from gbox import unlock_job_policy
+        real=unlock_job_policy.admit
+        monkeypatch.setattr(unlock_job_policy,'admit',lambda store,app,parent,tool,inp,**kw:
+            'Fixture admission hold' if tool=='session_op' else real(store,app,parent,tool,inp,**kw))
+    for _ in range(3):
+        assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==first
+        assert all(store.get('job',jid)['state']=='queued' for jid in [control,*backgrounds])
+
+
+def test_inflight_control_keeps_reserved_slot_when_its_session_ends(cfg):
+    app,c=plane(cfg);enroll(c)
+    store=app.state.store;path='/api/federation/'+AUTH+'/commands'
+    queued(app);c.post(path,json={'maximum':1})
+    control=queued(app,jid='2'*32,tool='session_op',inp={'session_id':SID,'op':'query_runtime'})
+    assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==control
+    original=store.get('session',SID)
+    store.put('session',SID,original|{'state':'ended'})
+    successor=WID+'-'+'8'*32
+    store.put('session',successor,original|{'session_id':successor})
+    next_control=queued(app,jid='3'*32,tool='session_op',inp={'session_id':successor,'op':'query_runtime'})
+    for _ in range(3):
+        assert c.post(path,json={'maximum':1}).json()['commands'][0]['id']==control
+        assert store.get('job',next_control)['state']=='queued'
 
 
 def test_job_cannot_forge_a_different_native_sid(cfg):

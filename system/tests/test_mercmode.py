@@ -59,9 +59,14 @@ def adoptable():
     store,w,saver,calls,now,tick=rig()
     M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
     sid='w1-current'
-    session={'session_id':sid,'game_id':RE5,'state':'running'}
+    session={'session_id':sid,'game_id':RE5,'state':'running','adapter':'rpcs3',
+             'started':now[0]-20,'detail':{'pid':1234}}
+    store.put('session',sid,session)
+    store.put('job','current',{'id':'current','tool':'launch_game','state':'succeeded','actor':'operator',
+        'agent_use':False,'created':now[0]-20,'worker_id':w['id'],'require_worker':w['id'],
+        'input':{'game':{'game_id':RE5}},'output':{'session_id':sid}})
     job={'id':'active','tool':'autoplay','state':'succeeded','worker_id':w['id'],
-         'require_worker':w['id'],'input':{'op':'start','session_id':sid}}
+         'require_worker':w['id'],'created':now[0]-10,'input':{'op':'start','session_id':sid}}
     store.put('job',job['id'],job)
     telemetry={'running':True,'age_s':1,'stats':{'source_session_id':sid,
         'source_autoplay_job_id':job['id'],'team_role':'solo_p1','screen':'playing'}}
@@ -74,7 +79,8 @@ def test_adoption_keeps_exact_current_solo_job_without_launch_or_input():
     assert run['session_id']==session['session_id'] and run['autoplay_job']=='active'
     assert run['adopted_existing_solo'] and run['mercmode']['title']=='re5'
     assert M.adopt_current(store,w,session,telemetry,now=now[0]+1)==run
-    assert len(store.all('job'))==1
+    assert len(store.all('job'))==2
+    assert run['job']=='current' and store.get(M.ADOPTION,session['session_id'])['id']==run['warm_adoption']
 
 
 @pytest.mark.parametrize('change',[{'running':False},{'age_s':9},{'age_s':float('nan')},
@@ -759,8 +765,10 @@ def up(store,launch,w,paused=True):
     """The worker finished a warm launch: its session runs, paused (detail.warm) unless the emulator could not."""
     sid='w1-'+launch['id']
     store.put('session',sid,{'session_id':sid,'game_id':launch['input']['game']['game_id'],'state':'running'})
+    title=next(spec['map_id'] for spec in M.TITLES.values() if launch['input']['game']['game_id'] in spec['game_ids'])
     store.put('job',launch['id'],store.get('job',launch['id'])|{'state':'succeeded','worker_id':w['id'],
-        'output':{'session_id':sid,'detail':{'warm':{'paused':paused}}}})
+        'output':{'session_id':sid,'detail':{'warm':{'paused':paused,'ready':paused,'state':'ready' if paused else 'failed',
+                                                   'source':'native_menu','title':title}}}})
     return sid
 
 
@@ -769,7 +777,8 @@ def owned(store,w,title,key,now,state='parked'):
     gid=M.TITLES[title]['game_ids'][0];sid=w['id']+'-'+key
     store.put('job',key,{'id':key,'tool':'launch_game','state':'succeeded','actor':S.ACTOR,'agent_use':True,
         'require_worker':w['id'],'worker_id':w['id'],'input':{'game':{'game_id':gid},'warm':True},
-        'output':{'session_id':sid,'detail':{'warm':{'paused':True}}}})
+        'output':{'session_id':sid,'detail':{'warm':{'paused':True,'ready':True,'state':'ready',
+                                                   'source':'native_menu','title':M.TITLES[title]['map_id']}}}})
     store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running'})
     M.keep_warm(store,w['name'],title,{'session_id':sid,'game_id':gid,'job':key,'worker_id':w['id'],'state':state,'at':now})
     return sid
@@ -830,6 +839,120 @@ def test_preloaded_title_is_swapped_in_at_the_round_boundary_without_a_cold_boot
     assert store.get(S.STATE,w['name'])['phase']=='playing'
     logged=[r for r in store.all(S.LOG) if r.get('session_id')==run['session_id']]
     assert logged and logged[-1]['mercmode_kept_warm'] and logged[-1]['why']=='verified native round boundary: next MercMode title'
+
+
+def test_successful_launch_waits_for_live_native_readiness_before_rotation():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w,paused=False)
+    loading={'state':'loading','ready':False,'paused':False,'screen':'loading'}
+    session=store.get('session',psid)|{'detail':{'warm':loading}}
+    store.put('session',psid,session)
+    tick(1)
+    assert nxt in M.warm_pool(store,w['name']) and not ops(calls,psid,'stop_game')
+    assert store.get('slabel',psid)['warm_state']=='loading'
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is False
+    assert not ops(calls,psid,'resume') and not ops(calls,run['session_id'],'pause')
+    store.put('session',psid,session|{'detail':{'warm':{'state':'ready','ready':True,'paused':True,'screen':'title',
+                                                      'source':'native_menu','title':M.TITLES[nxt]['map_id']}}})
+    tick(1)
+    assert store.get('slabel',psid)['warm_state']=='ready'
+    receipt=boundary(run,now[0])|{'round_id':'c'*32}
+    assert saver.round_boundary(receipt,job,now[0])['rotate_requested'] is True
+    tick(1);tick(1)
+    assert ops(calls,psid,'resume')
+
+
+def test_switch_taken_over_while_preparing_never_resumes_early():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w,paused=False)
+    session=store.get('session',psid)|{'detail':{'warm':{'state':'loading','ready':False,'paused':False}}}
+    store.put('session',psid,session)
+    pick={'title':nxt,'name':M.TITLES[nxt]['name'],'game_id':session['game_id'],'map_id':M.TITLES[nxt]['map_id']}
+    assert 'background load' in saver._resume_warm(w,pick,M.settings(store,w['name']),now[0])
+    waiting=store.get(S.STATE,w['name'])
+    assert waiting['prelaunched'] and waiting['phase']=='launching'
+    saver._advance(w,waiting,S.settings(store),store.running_sessions(),now[0]+1)
+    assert not ops(calls,psid,'resume')
+    store.put('session',psid,session|{'detail':{'warm':{'state':'ready','ready':True,'paused':True,
+                                                      'source':'native_menu','title':M.TITLES[nxt]['map_id']}}})
+    saver._advance(w,waiting,S.settings(store),store.running_sessions(),now[0]+2)
+    assert len(ops(calls,psid,'resume'))==1
+
+
+def test_cancelled_preparation_leaves_controlled_session_untouched():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w,paused=False)
+    session=store.get('session',psid)|{'detail':{'warm':{'state':'cancelled','ready':False,'paused':False}}}
+    store.put('session',psid,session)
+    saver._warm(w,store.running_sessions(),now[0])
+    assert nxt not in M.warm_pool(store,w['name']) and not ops(calls,psid)
+    assert not store.get('slabel',psid)['warm']
+
+
+@pytest.mark.parametrize('late_session', [False, True])
+def test_failed_claimed_preparation_closes_exact_launch_and_allows_cold_fallback(late_session):
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w,paused=False)
+    session=store.get('session',psid)|{'detail':{'warm':{'state':'loading','ready':False,'paused':False}}}
+    if late_session:
+        store.delete('session',psid)
+        store.put('job',pre['id'],pre|{'state':'running'})
+    else:
+        store.put('session',psid,session)
+    pick={'title':nxt,'name':M.TITLES[nxt]['name'],'game_id':session['game_id'],'map_id':M.TITLES[nxt]['map_id']}
+    saver._resume_warm(w,pick,M.settings(store,w['name']),now[0])
+    waiting=store.get(S.STATE,w['name'])
+    assert waiting.get('session_id') == (None if late_session else psid)
+    assert nxt not in M.warm_pool(store,w['name'])
+    if late_session: up(store,pre,w,paused=False)
+    store.put('session',psid,session|{'detail':{'warm':{'state':'failed','reason':'native timeout'}}})
+    saver._advance(w,waiting,S.settings(store),store.running_sessions(),now[0]+1)
+    stops=ops(calls,psid,'stop_game')
+    assert len(stops)==1 and stops[0]['require_worker']==w['id']
+    assert not ops(calls,run['session_id'],'stop_game')
+    assert not store.get(S.STATE,w['name']) and store.get(M.NEXT,w['name'])['cold']
+    # The stop completes; the old title is a parked game from the prior turn.
+    store.put('session',psid,session|{'state':'ended'})
+    store.put('session',run['session_id'],store.get('session',run['session_id'])|{'state':'ended'})
+    tick(2)
+    cold=calls[-1]
+    assert cold['tool']=='launch_game' and cold['input']['game']['game_id']==session['game_id']
+    assert 'warm' not in cold['input']
+
+
+@pytest.mark.parametrize('change', ['cancelled', 'human_owner', 'wrong_game', 'wrong_worker'])
+def test_claimed_preparation_fallback_never_stops_revoked_or_unrelated_session(change):
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w,paused=False)
+    session=store.get('session',psid)|{'detail':{'warm':{'state':'loading','ready':False,'paused':False}}}
+    store.put('session',psid,session)
+    pick={'title':nxt,'name':M.TITLES[nxt]['name'],'game_id':session['game_id'],'map_id':M.TITLES[nxt]['map_id']}
+    saver._resume_warm(w,pick,M.settings(store,w['name']),now[0])
+    waiting=store.get(S.STATE,w['name'])
+    if change=='cancelled': session['detail']['warm']['state']='cancelled'
+    elif change=='human_owner': store.put('slabel',psid,{'owner':'you'})
+    elif change=='wrong_game': session['game_id']='another-game'
+    else: store.put('job',pre['id'],store.get('job',pre['id'])|{'worker_id':'other-worker'})
+    store.put('session',psid,session)
+    saver._warm_fallback(w,waiting,now[0]+1,'native timeout')
+    assert not ops(calls,psid) and not ops(calls,run['session_id'],'stop_game')
+
+
+def test_legacy_worker_paused_launch_is_not_native_prepared():
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    psid=up(store,pre,w)
+    legacy=store.get('job',pre['id'])
+    legacy['output']['detail']['warm']={'paused':True}  # actual pre-readiness worker schema
+    store.put('job',pre['id'],legacy)
+    saver._warm(w,store.running_sessions(),now[0])
+    assert nxt not in M.warm_pool(store,w['name']) and ops(calls,psid,'stop_game')
+    assert not ops(calls,psid,'resume')
 
 
 def second_turn():

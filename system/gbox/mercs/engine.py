@@ -26,6 +26,7 @@ import uuid
 
 from . import driver as D
 from .reactions import PromptPresser
+from .read_retry import NativeReadRetry
 
 READY = False
 ROUND_GONE_S, LOST_S = 1.0, 20.0
@@ -101,6 +102,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     frame_fn = getattr(drv, "frame", None)
     clock_frame = [None]                              # the game's frame (driver.frame) at the last decision
     lat = Latency(stats)
+    read_retry = NativeReadRetry(stats, 'round')
 
     def hold(keys):
         nonlocal held
@@ -261,8 +263,19 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     return 'control_unavailable'
             now = clock()
             before_observation = dict(stats)
-            snap = drv.snapshot(m)
-            where = drv.screen(m, snap)
+            try:
+                snap = drv.snapshot(m)
+                where = drv.screen(m, snap)
+            except OSError as error:
+                # A missing sample is not a game decision. Release this bot's
+                # keys, preserve its round, then re-read for a bounded interval.
+                hold(set())
+                delay = read_retry.failed(error, now)
+                if delay is None:
+                    raise
+                sleep(delay)
+                continue
+            read_retry.recovered(now)
             if snap.get('scoring_players') == 2:
                 solo_native_round = False
             if session_runtime is not None:
@@ -432,6 +445,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             next_frame()
         return "stopped"
     finally:
+        read_retry.stopped()
         try:
             hold(set())
         finally:

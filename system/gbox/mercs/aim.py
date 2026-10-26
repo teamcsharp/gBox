@@ -93,8 +93,20 @@ class Shots:
         self.pending.append(now)
         self.stats["shots"] += 1
 
+    def expire(self, now: float) -> None:
+        """Resolve old shots before attributing damage observed on a later tick."""
+        while self.pending and now - self.pending[0] > self.HIT_S:
+            self.pending.pop(0)
+            self.stats["misses"] += 1
+        self._accuracy()
+
+    def _accuracy(self):
+        n = self.stats["hits"] + self.stats["misses"]
+        self.stats["accuracy"] = round(self.stats["hits"] / n, 3) if n else 0.0
+
     def update(self, enemies, now: float) -> list:
         """Score the pending shots against this tick's health; returns the enemies hurt since the last tick."""
+        self.expire(now)
         hurt, cur = [], {}
         for e in enemies:
             k, hp, dy = _attr(e, "slot", _attr(e, "id")), _attr(e, "hp"), _dying(e)
@@ -108,9 +120,5 @@ class Shots:
         if hurt and self.pending:
             self.pending.pop(0)
             self.stats["hits"] += 1
-        while self.pending and now - self.pending[0] > self.HIT_S:
-            self.pending.pop(0)
-            self.stats["misses"] += 1
-        n = self.stats["hits"] + self.stats["misses"]
-        self.stats["accuracy"] = round(self.stats["hits"] / n, 3) if n else 0.0
+        self._accuracy()
         return hurt

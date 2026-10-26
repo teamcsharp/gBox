@@ -220,6 +220,18 @@ class Reports:
     def __init__(self, store, data_dir, *, now=time.time):
         self.store, self.root, self.now = store, Path(data_dir), now
 
+    def recent(self, limit=20):
+        """Newest reports by creation time, independent of reconciliation writes."""
+        # Store.put replaces rows, so rowid order promotes old reports whenever
+        # their analysis or follow-up status changes. Limit only after ordering
+        # by the immutable creation time or real recent rounds can disappear.
+        with self.store.lock:
+            rows = self.store.db.execute(
+                "SELECT body FROM docs WHERE kind=? "
+                "ORDER BY COALESCE(json_extract(body,'$.created'),0) DESC,id DESC LIMIT ?",
+                (KIND, max(1, min(100, int(limit))))).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def note_path(self, title):
         return self.root/'mercs/curriculum'/title/'rounds.sqlite'
 
@@ -532,7 +544,7 @@ def install(app, store, config, auth):
     @app.get('/api/mercs/round-reports')
     def reports(limit: int = 20, actor=Depends(auth)):
         return {'target': TARGET, 'analysis_policy_applied': False,
-                'reports': store.recent(KIND, max(1, min(100, limit))),
+                'reports': runner.recent(limit),
                 'scanner': store.get(STATE, 'scanner'), 'health': store.get(STATE, 'health')}
 
     @app.get('/api/mercs/round-reports/{report_id}')

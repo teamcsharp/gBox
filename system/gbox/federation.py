@@ -26,6 +26,20 @@ IDENTITY = re.compile(r'[a-f0-9]{16,64}\Z')
 _REPORT_LOCK=threading.RLock()
 
 
+def foreground_session_job(store, job, worker_id, *, require_live=True):
+    """Operator controls of this worker's live session must reach its authority."""
+    if job.get('agent_use') is not False or job.get('tool') not in ('session_op','get_frame','autoplay'):
+        return False
+    sid = (job.get('input') or {}).get('session_id')
+    if not isinstance(sid,str) or not sid.startswith(worker_id+'-'):
+        return False
+    if not require_live:
+        return True  # an offered control retains its reservation until its result arrives
+    session = store.get('session',sid)
+    return bool(session and session.get('state') == 'running'
+                and session.get('worker_id',worker_id) == worker_id)
+
+
 def _bounded(value, maximum):
     try:
         if len(json.dumps(value, allow_nan=False).encode()) > maximum:
@@ -176,14 +190,22 @@ class Federation:
             # Recover even a claim response lost before its delivery row was saved.
             jobs=[j for j in self.store.jobs(states=('running',)) if j.get('worker_id')==wid]
             is_stop=lambda j:j['tool']=='session_op' and j.get('input',{}).get('op')=='stop_game'
+            is_control=lambda j:foreground_session_job(self.store,j,wid)
+            is_inflight_control=lambda j:foreground_session_job(self.store,j,wid,require_live=False)
             name=(self.store.get('worker',wid) or {}).get('name')
-            priority=any(is_stop(j) and j.get('require_worker') in (None,wid,name) for j in self.store.queued_jobs())
+            pending=[j for j in self.store.queued_jobs() if j.get('require_worker') in (None,wid,name)]
+            # A central "running" command may still be queued at the local
+            # authority (e.g. background work waiting for idle). Reserve one
+            # delivery opportunity for foreground control without cancelling
+            # those jobs or bypassing the ordinary claim/admission checks.
+            priority=(any(is_stop(j) for j in pending) and not any(is_stop(j) for j in jobs)) \
+                or (any(is_control(j) for j in pending) and not any(is_stop(j) or is_inflight_control(j) for j in jobs))
             while len(jobs)<maximum or priority:
-                job=self.claim(wid,request)
+                job=self.claim(wid,request,foreground_only=True) if len(jobs)>=maximum else self.claim(wid,request)
                 if not isinstance(job,dict):break
                 jobs.append(job)
                 priority=False
-            jobs.sort(key=lambda j:(not is_stop(j),j['created']))
+            jobs.sort(key=lambda j:(not is_stop(j),not is_inflight_control(j),j['created']))
             commands=[]
             for job in jobs[:maximum]:
                 record=self.store.get('federation_command',job['id'])

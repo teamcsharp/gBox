@@ -4276,7 +4276,8 @@ const GM = { menu: false, auto: false, slot: 0 };
 async function gameJob(tool, input, wait = true) {
   if(input?.session_id===EMB.sid&&EMB.authority&&EMB.authority!==S.apiUrl)
     throw Error('This game belongs to a different connection. Its window was preserved; no command was sent.');
-  const sid = input.session_id || EMB.sid || (await chatContext().catch(() => ({}))).session_id;
+  const sid = input.session_id || (typeof COMPACT !== 'undefined' && COMPACT.on ? COMPACT.sid : null)
+    || EMB.sid || (await chatContext().catch(() => ({}))).session_id;
   if (!sid) throw new Error("no game running");
   const r = await gbox.api("/api/jobs", { tool, input: { session_id: sid, ...input }, require_worker: sid.split("-")[0] });
   let j = jobOf(r, tool);                                      // #993: a missing answer is an error in words, not a TypeError
@@ -4360,7 +4361,7 @@ async function gameAction(a) {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
       const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
       if (st) GM.auto = !!st.running;
-      const r = await gameJob("autoplay", GM.auto ? { op: "stop" } : { op: "start", assist: a === "autoplay+",
+      const r = await gameJob("autoplay", GM.auto ? { op: "stop" } : { op: "start", continuous: true, assist: a === "autoplay+",
         ...(a === "autoplay-replay" ? { mode: "replay", reset: true } : {}) });
       GM.auto = !GM.auto && !!r.started; toast(GM.auto ? `🤖 gBox has control: ${r.objective || r.started}` : r.error || "You have control again");
     } else if (a === "talk") TALK.on ? talkStop() : talkStart();
@@ -4673,9 +4674,16 @@ gbox.onEmbedEvent?.(async ev => {
 async function recoverStreams() {
   const sid = (COMPACT.on ? COMPACT.sid : null) || EMB.sid;
   const steps = [];
-  if (sid && sid.includes('-')) steps.push(Promise.race([
-    gbox.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: sid.split('-')[0],
-      input: { session_id: sid, op: 'restart_stream', args: {} } }), new Promise(r => setTimeout(r, 4000))]).catch(() => null));
+  if (sid && sid.includes('-')) steps.push((async () => {
+    const history = await Promise.race([gbox.api('/api/sessions?limit=200'), new Promise(r => setTimeout(r, 4000))]);
+    if (!history?.ok) return;
+    const current = GBoxSessionContinuity.commandSession(sid, history.data);
+    if (!current) return; // never send recovery to an ended session while its replacement is starting
+    const target = current.session_id;
+    return Promise.race([
+      gbox.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: target.split('-')[0],
+        input: { session_id: target, op: 'restart_stream', args: {} } }), new Promise(r => setTimeout(r, 4000))]);
+  })().catch(() => null));
   for (const el of document.querySelectorAll('img[data-stream-follow], #compact-stream')) try { globalThis.gboxStreamWatch?.reconnect?.(el, 'operator F5'); } catch {}
   try { await gpuGameDispose(); } catch {}
   EMB.last = ''; GPU_GAME.retryAt = 0; GPU_GAME.failedPid = null; GPU_GAME.blockedPid = null;
@@ -4731,12 +4739,12 @@ function reconnectRun(options) { return reconnectFlow.run(options).catch(error =
 setTimeout(() => {
   let manual = null, resume = null;
   try { manual = sessionStorage.getItem('gbox.connection.manual'); resume = sessionStorage.getItem(GBoxReconnectFlow.RESUME_KEY); } catch {}
-  if (resume || (manual !== 'local' && !EMB.sid && !COMPACT.on)) reconnectRun({ quiet: !resume });
+  if (resume || (manual !== 'local' && !EMB.sid && !COMPACT.on)) reconnectRun({ quiet: !resume, automatic: true });
 }, 4000);
-// Spark lost while watching: show the flow, which waits for it (and restarts the Spark service if it stays down)
+// Spark lost while watching: reconnect without restarting the shared service or interrupting its games.
 setInterval(async () => {
   const st = await gbox.connectionStatus?.().catch(() => null);
-  if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false });
+  if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false, automatic: true });
 }, 15000);
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === 'autoplay' && COMPACT.on && compactMedia) return compactMedia.toggleAutobot();

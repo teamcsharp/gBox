@@ -64,7 +64,7 @@ def test_autoplay_relaunches_a_bot_demo_but_never_the_operators_own_game(app):
         if demo:
             S.autoplay_on_launch(store, jid, "re4")
     r = _reset(c, "w9-own", "autoplay")
-    assert r.status_code == 409 and "operator's own" in r.text
+    assert r.status_code == 409 and "continuous recovery" in r.text
     r = _reset(c, "w9-demo", "autoplay")
     assert r.status_code == 200, r.text
     j = r.json()

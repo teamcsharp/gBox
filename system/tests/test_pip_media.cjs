@@ -25,6 +25,21 @@ test('F3 toggle asks the actual selected worker and telemetry alone controls the
  const calls=[];const c=P.create({current:()=> 'actual-game',api:async(url,body)=>{if(url.startsWith('/api/autoplay/'))return {running:false,age_s:0};calls.push(body);return {state:'succeeded',output:{result:body.input.op==='status'?{running:true}:{stopped:true}}};},save:async()=>{}});
  await c.toggleAutobot();assert.deepEqual(calls.map(v=>[v.tool,v.require_worker,v.input.session_id,v.input.op]),[['autoplay','actual','actual-game','status'],['autoplay','actual','actual-game','stop']]);assert.equal(c.state().autobot,false);
 });
+test('F3 starts continuous autoplay on the watched remote worker',async()=>{
+ const calls=[];const c=P.create({current:()=> 'remote-game',api:async(url,body)=>{
+  if(!body)return {running:true,age_s:0};calls.push(body);
+  return {state:'succeeded',output:{result:body.input.op==='status'?{running:false}:{started:'native'}}};
+ },save:async()=>{}});
+ await c.toggleAutobot();assert.equal(calls[1].require_worker,'remote');
+ assert.deepEqual(calls[1].input,{session_id:'remote-game',op:'start',continuous:true});
+ assert.equal(calls[1].agent_use,false);assert.equal(c.state().autobot,true);
+});
+test('F3 does not change a session after the viewer selects another game',async()=>{
+ let sid='old-game',finish;const calls=[];
+ const c=P.create({current:()=>sid,api:async(url,body)=>{calls.push(body);return new Promise(r=>finish=r);},save:async()=>{}});
+ const pending=c.toggleAutobot();sid='new-game';finish({state:'succeeded',output:{result:{running:false}}});
+ await pending;assert.equal(calls.length,1);
+});
 test('busy export coalesces clicks and reports worker job progress without optimistic success',async()=>{
  const r=rig();let finish;const api=r.api;
  r.ctl=P.create({current:()=>r.sid,api:async(url,body)=>body?.input.op==='export'?new Promise(resolve=>finish=resolve):api(url,body),save:async clip=>{r.saves.push(clip);return {file:'clip'};}});

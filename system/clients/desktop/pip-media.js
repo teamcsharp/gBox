@@ -46,8 +46,9 @@
       const sid=current();if(stopped||toggling||!valid(sid))return;
       toggling=true;
       try{
-        const result=await job(sid,{op:'status'},'autoplay'),status=result.result||result;
-        await job(sid,{op:status.running?'stop':'start'},'autoplay');
+        const result=await job(sid,{op:'status'},'autoplay',STATUS_JOB_MS),status=result.result||result;
+        if(stopped||current()!==sid)return;
+        await job(sid,status.running?{op:'stop'}:{op:'start',continuous:true},'autoplay',STATUS_JOB_MS);
         await poll();
       }catch(error){state.error=true;state.message=error.message||String(error);paint();}
       finally{toggling=false;}

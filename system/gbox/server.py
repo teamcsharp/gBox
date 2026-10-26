@@ -829,8 +829,10 @@ def create_app(config: Config) -> FastAPI:
     # operator where they are: same PC, same moment (save state carried over), old copy closed, a frame check at the end.
     def _run_job(tool, inp, actor, worker=None, wait=240.0, progress=None, should_stop=None,
                  on_cancel_deferred=None, queue_wait=None, origin=None, agent_use: bool = False) -> dict:
-        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker, agent_use=agent_use), actor)
-        if origin:                                     # e.g. the launch a swap made: traceable to its parent job
+        # A resume's authorization fence must already exist when the job becomes claimable.
+        resume_origin = {'origin': origin} if isinstance(origin, dict) and origin.get('via') == 'autoplay_resume' else {}
+        j = submit(JobRequest(tool=tool, input=inp, require_worker=worker, agent_use=agent_use), actor, **resume_origin)
+        if origin and not resume_origin:                # e.g. the launch a swap made: traceable to its parent job
             with store.lock:
                 rec = store.get("job", j.id)
                 if rec is not None:
@@ -1243,6 +1245,9 @@ def create_app(config: Config) -> FastAPI:
         sid, sess = _live_session(sid)
         if sess.get("state") != "running":
             raise HTTPException(409, "This game has already ended, so there is nothing to restart: use Play again.")
+        from . import autoplay_resume
+        from .screensaver import telemetry_get
+        autoplay_before = autoplay_resume.snapshot(store, sid, telemetry_get(sid))
         game = store.catalog_get(sess.get("game_id") or "") or _404()
         old_w = sid.split("-")[0]
         tw = _swap_target(old_w, "")
@@ -1329,8 +1334,21 @@ def create_app(config: Config) -> FastAPI:
             store.put("session", sid, s_ | {"state": "ended", "ended": s_.get("ended") or time.time(), "replaced_by": nsid,
                                             "exit": s_.get("exit") or {"by": actor, "via": "relaunch", "to": nsid}})
         store.audit(actor, "session.relaunch", sid, {"new": nsid, "mod": launch_mod, "original": original, "beside": beside})
+        autoplay_resumed = False
+        resume = autoplay_resume.replacement_input(store, sid, nsid, autoplay_before)
+        if resume and not (should_stop and should_stop()):
+            try:
+                say(92, "Resuming autoplay on the replacement session")
+                result = _run_job('autoplay', resume, actor, worker=tw['id'], wait=65,
+                                  should_stop=should_stop, origin={'via': 'autoplay_resume',
+                                      'from_session': sid, 'source_job_id': autoplay_before['job_id']}).get('result') or {}
+                autoplay_resumed = bool(result.get('started') or result.get('already_running'))
+                if not autoplay_resumed:
+                    notes.append('The replacement is running, but autoplay did not confirm its input owner.')
+            except HTTPException as error:
+                notes.append('The replacement is running, but autoplay could not resume: ' + str(error.detail)[:240])
         return {"session_id": nsid, "from": sid, "worker": tw["name"], "mod": build, "launch_mod": launch_mod,
-                "notes": notes}
+                "notes": notes, "autoplay_resumed": autoplay_resumed}
 
     RESET_MODES = {"reset": "reset", "restart": "restart", "hard": "hard_reset"}   # mode -> the intent it needs
     RESET_ANSWER_S = 20.0    # a console reset answers in seconds; no answer by then means the emulator is frozen (#2369)
@@ -1376,12 +1394,13 @@ def create_app(config: Config) -> FastAPI:
         from . import screensaver as _demos
         if actor == "autoplay" and sess.get('state') == 'running':
             from .background_testing import agent_owned
-            # autoplay relaunches a game it froze only when it is a bot demo (launched with autoplay on, the operator's
-            # own demos included) or an agent's test session; never the operator's own game they asked it to play
-            if not (_demos.bot_demo(store, sid) or agent_owned(store.get('slabel', sid),
+            from .autoplay_resume import continuous
+            # Relaunch needs explicit continuous intent, a bot demo, or an agent-owned
+            # test session. A later Stop or human takeover revokes continuous intent.
+            if not (continuous(store, sid) or _demos.bot_demo(store, sid) or agent_owned(store.get('slabel', sid),
                                                                store.get('job', sid.split('-', 1)[-1]))):
-                raise HTTPException(409, "That game is the operator's own; autoplay relaunches only bot demos and "
-                                         "agent test sessions.")
+                raise HTTPException(409, "That game has not enabled continuous recovery; autoplay relaunches only "
+                                         "continuous runs, bot demos and agent test sessions.")
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
@@ -2491,6 +2510,9 @@ def create_app(config: Config) -> FastAPI:
 
     @app.post("/api/workers/{wid}/claim")
     def claim(wid: str, request: Request, activity: WorkerActivity | None = None, actor=Depends(auth)):
+        return _claim(wid,request,activity,actor)
+
+    def _claim(wid,request,activity=None,actor=None,*,foreground_only=False):
         w = store.get("worker", wid)
         if not w:
             raise HTTPException(404, "unknown worker; register first")
@@ -2513,10 +2535,19 @@ def create_app(config: Config) -> FastAPI:
         with store.lock:
             # Stop goes first (#1504): a stop never waits behind queued polls or captures of the game it ends.
             # Low-priority background work (the Sonic showcase) goes last.
-            for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j), bool(j.get("low_priority")))):
+            from .federation import foreground_session_job
+            for j in sorted(store.queued_jobs(), key=lambda j: (not _is_stop_job(j),
+                    not foreground_session_job(store,j,wid), bool(j.get("low_priority")))):
                 if (j["state"] == JobState.QUEUED and j["tool"] in w["tools"]
-                        and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])):   # by name: launched while that worker was restarting
+                        and j["require_os"] in (None, w["os"]) and j["require_worker"] in (None, wid, w["name"])
+                        and (not foreground_only or _is_stop_job(j) or foreground_session_job(store,j,wid))):   # by name: launched while that worker was restarting
                     if _demo_preempted(j, wid):
+                        continue
+                    from .autoplay_resume import claim_reason as autoplay_resume_claim_reason
+                    if why := autoplay_resume_claim_reason(store, j):
+                        store.put('job', j['id'], j | {'state': JobState.FAILED, 'finished': time.time(),
+                                                     'cancel': True, 'error': why})
+                        store.audit(actor, 'job.skip', j['id'], {'worker': wid, 'why': why})
                         continue
                     if j["tool"] == "launch_game" and (why := operator_guard.watching_reason(
                             store, wid, keep=operator_guard.kept_by(j))):
@@ -6274,7 +6305,7 @@ def create_app(config: Config) -> FastAPI:
             ids.update(s['session_id'] for s in store.running_sessions() if s['session_id'].startswith(wid+'-'))
         return sorted(ids)
     federation.routes(app,store,config,auth,
-        claim=lambda wid,request:claim(wid,request,actor='federation'),
+        claim=lambda wid,request,foreground_only=False:_claim(wid,request,actor='federation',foreground_only=foreground_only),
         accept_result=lambda wid,payload,actor:result(wid,JobResult.model_validate(payload),actor=actor),
         watch=federation_watch,
         take_input=lambda sid,wait:take_input(sid,wait,actor='federation'),

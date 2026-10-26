@@ -1791,13 +1791,16 @@ class _FakeMesh:
     def __init__(self, lengths):
         self.lengths = lengths
 
-    def route_length(self, a, b, avoid=None):
+    def route_length(self, a, b, avoid=None, blocked_links=(), link_penalties=None):
         return self.lengths.get(b)
 
 
 def _driver_for_combo():
+    from types import SimpleNamespace
     d = R.Bot.__new__(R.Bot)
     d.stats, d.bonus_skip, d.avoid, d.pursuit, d.route_len = {}, {}, None, None, None
+    d.blocked_links = set()
+    d.nav_learning = SimpleNamespace(link_penalties=lambda mesh: {})
     return d
 
 

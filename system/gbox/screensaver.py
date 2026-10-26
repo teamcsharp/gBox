@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import random
+from .mercs import warm_boot
 import threading
 import time
 
@@ -436,6 +437,13 @@ class Screensaver:
                 # waits for that exact launch to succeed (a resume sent earlier would be undone by that pause)
                 if job.get('state') != 'succeeded':
                     return f"launching {run['title']}"
+                warm = warm_boot.receipt(sess, job)
+                if warm.get('state') == 'loading':
+                    return f"preparing {run['title']} (native title/menu not ready)"
+                if warm.get('state') == 'cancelled':
+                    return self._finish(w, run, now, 'native preparation cancelled; session left untouched')
+                if not warm_boot.prepared(sess, job, (run.get('mercmode') or {}).get('map_id')):
+                    return self._warm_fallback(w, run, now, str(warm.get('reason') or 'native preparation failed'))
                 resume = self.submit(JobRequest(tool='session_op', input={'session_id': sess['session_id'], 'op': 'resume',
                                                                           'args': {'warm': False}},
                                                 agent_use=True, require_worker=run['worker_id']), actor=ACTOR,
@@ -462,6 +470,11 @@ class Screensaver:
         live = any(s.get("session_id") == sid for s in running)
         if not live:
             return self._finish(w, run, now, run.get("yield") or "the game ended")
+        if run.get('warm_adoption'):
+            from . import mercmode
+            sess=next(s for s in running if s.get('session_id')==sid)
+            if not mercmode.warm_adoption_owned(self.store,w,run,sess):
+                return self._finish(w,run,now,'adopted session ownership changed; game left untouched')
         if run.get('mercmode_predecessor'):
             # A native session can register just before its launch job completes.
             # Retry the receipt link after that exact job is accepted as succeeded.
@@ -554,16 +567,22 @@ class Screensaver:
         if (self.store.get('slabel', sid) or {}).get('owner') == 'you':
             return None
         job = self.store.get('job', row.get('job')) or {}
-        if job.get('tool') != 'launch_game' or job.get('actor') != ACTOR or not job.get('agent_use') \
-                or job.get('require_worker') != w['id']:
+        if job.get('tool') != 'launch_game' or job.get('require_worker') != w['id']:
             return None
         if _launch_session(self.store, row.get('job'), [sess], worker_id=w['id'], game_id=row.get('game_id')) is None:
             return None
+        if row.get('warm_adoption'):
+            from . import mercmode
+            return sess if mercmode.warm_adoption_owned(self.store,w,row,sess) else None
+        if job.get('actor') != ACTOR or not job.get('agent_use'):
+            return None
         return sess
 
-    def _warm_label(self, sid, title, now):
+    def _warm_label(self, sid, title, now, loading=False):
         self.store.put('slabel', sid, {'session_id': sid, 'owner': 'agent', 'warm': True, 'ts': now,
-                                       'task': f'MercMode: {title} waits paused for its turn'})
+                                       'warm_state': 'loading' if loading else 'ready',
+                                       'task': f'MercMode: {title} ' + ('is preparing its native title/menu' if loading
+                                                                      else 'waits paused for its turn')})
 
     def _warm_stop(self, w, row, why):
         """Close one verified pool game (callers check _warm_owned first)."""
@@ -590,16 +609,26 @@ class Screensaver:
                     out[title] = row
                     continue
                 row, changed = row | {'session_id': sess['session_id']}, True
-            if not self._warm_owned(w, row, running):
+            sess = self._warm_owned(w, row, running)
+            if not sess:
                 changed = True
                 continue
             if row.get('state') == 'releasing':
                 self._warm_stop(w, row, 'MercMode warm pool released')
                 changed = True
                 continue
-            warm = ((job.get('output') or {}).get('detail') or {}).get('warm') or {}
-            if row.get('state') == 'prelaunch' and job.get('state') == 'succeeded' and warm.get('paused') is not True:
-                self._warm_stop(w, row, 'the preloaded game could not pause: ' + str(warm.get('reason') or 'unknown'))
+            warm = warm_boot.receipt(sess, job)
+            if row.get('state') == 'prelaunch' and warm.get('state') == 'cancelled':
+                # Explicit control/process changes revoke this observer's
+                # ownership; cancellation is not a failed bot game to close.
+                label = self.store.get('slabel', row['session_id']) or {}
+                self.store.put('slabel', row['session_id'], label | {'warm': False, 'warm_state': 'cancelled'})
+                changed = True
+                continue
+            waiting = warm.get('state') == 'loading' and now - row.get('at', now) <= LAUNCH_TIMEOUT
+            if row.get('state') == 'prelaunch' and job.get('state') == 'succeeded' and not waiting \
+                    and not warm_boot.prepared(sess, job, (mercmode.TITLES.get(title) or {}).get('map_id')):
+                self._warm_stop(w, row, 'native preparation was not confirmed: ' + str(warm.get('reason') or 'no native menu receipt'))
                 changed = True
                 continue
             pause = self.store.get('job', row['pause_job']) or {} if row.get('pause_job') else {}
@@ -607,8 +636,9 @@ class Screensaver:
                 self._warm_stop(w, row, 'the finished game could not pause: ' + str(pause.get('error') or pause.get('state'))[:200])
                 changed = True
                 continue
-            if not (self.store.get('slabel', row['session_id']) or {}).get('warm'):
-                self._warm_label(row['session_id'], (mercmode.TITLES.get(title) or {}).get('name', title), now)
+            label = self.store.get('slabel', row['session_id']) or {}
+            if not label.get('warm') or label.get('warm_state') != ('loading' if waiting else 'ready'):
+                self._warm_label(row['session_id'], (mercmode.TITLES.get(title) or {}).get('name', title), now, waiting)
             out[title] = row
         if changed:
             self.store.put(mercmode.WARM, w['name'], out)
@@ -658,11 +688,16 @@ class Screensaver:
         selection = {'selection': pick['selection']} if pick.get('selection') else {}
         base = {'worker': w['name'], 'worker_id': w['id'], 'game_id': row.get('game_id') or pick['game_id'],
                 'title': pick['name'], 'started': now, 'job': row.get('job'), 'warm_from': row.get('state'),
+                **({'session_id': row['session_id']} if row.get('session_id') else {}),
+                **({'warm_adoption':row['warm_adoption'],'autoplay_job':row.get('autoplay_job')}
+                   if row.get('warm_adoption') else {}),
                 'mercmode_predecessor': mercmode.rotation_predecessor(self.store, w, now),
                 'mercmode': {'title': pick['title'], 'map_id': pick['map_id'],
                              'rounds_per_title': merc_cfg['rounds_per_title'], **selection}}
         job = self.store.get('job', row.get('job')) or {}
-        if not row.get('session_id') or row.get('state') == 'prelaunch' and job.get('state') != 'succeeded':
+        session = next((s for s in running if s.get('session_id') == row.get('session_id')), None)
+        if not row.get('session_id') or row.get('state') == 'prelaunch' and (
+                job.get('state') != 'succeeded' or warm_boot.loading(session, job)):
             # still loading: its preload becomes this run's launch, resumed once the worker has finished (and paused) it
             self.store.put(STATE, w['name'], base | {'phase': 'launching', 'prelaunched': True})
             return f"switching to {pick['name']} (finishing its background load)"
@@ -684,6 +719,18 @@ class Screensaver:
     def _warm_fallback(self, w, run, now, why):
         """A warm switch that failed: this run ends, and the same title (and queued round) launches cold next."""
         from . import mercmode
+        # A preload can acquire its session only after the pool entry was
+        # claimed. Resolve the exact launch again so a failed preparation is
+        # closed instead of becoming an orphan that blocks the cold fallback.
+        running = self.store.running_sessions()
+        sess = _launch_session(self.store, run.get('job'), running,
+                               worker_id=run['worker_id'], game_id=run['game_id'])
+        run = {k: v for k, v in run.items() if k != 'session_id'}
+        if sess:
+            run = run | {'session_id': sess['session_id']}
+            job = self.store.get('job', run.get('job')) or {}
+            if not self._warm_owned(w, run, running) or warm_boot.receipt(sess, job).get('state') == 'cancelled':
+                return self._finish(w, run, now, 'native preparation control changed; session left untouched')
         m = run.get('mercmode') or {}
         if m.get('title'):
             self.store.put(mercmode.NEXT, w['name'], {'title': m['title'], 'selection': m.get('selection'), 'at': now,
@@ -699,20 +746,23 @@ class Screensaver:
         from . import mercmode
         cfg = mercmode.settings(self.store, w['name'])
         running = self.store.running_sessions()
-        if not self._warm_capable(w, cfg) or mercmode.memory_reason(w, now) or not self._warm_owned(
-                w, {'session_id': run.get('session_id'), 'job': run.get('job'), 'worker_id': run.get('worker_id'),
-                    'game_id': run.get('game_id')}, running):
+        owned=self._warm_owned(w,run,running)
+        if run.get('warm_adoption') and not owned:
+            return self._finish(w,run,now,'adopted session ownership changed; game left untouched')
+        if not self._warm_capable(w, cfg) or mercmode.memory_reason(w, now) or not owned:
             return self._stop(w, run, now, why)
         sid = run['session_id']
         # its bot stops first: left running on the paused game it saw "nothing moved in RAM", reported a freeze, and the
         # worker's freeze recovery relaunched the parked game cold (2026-10-24: "why is it loading the same game again?")
-        self.submit(JobRequest(tool='autoplay', input={'session_id': sid, 'op': 'stop'}, agent_use=True,
+        stopped=self.submit(JobRequest(tool='autoplay', input={'session_id': sid, 'op': 'stop'}, agent_use=True,
                                require_worker=w['id']), actor=ACTOR, origin={'via': 'MercMode park', 'session_id': sid})
         pause = self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'pause', 'args': {'warm': True}},
                                        agent_use=True, require_worker=w['id']), actor=ACTOR,
                             origin={'via': 'MercMode keep warm', 'session_id': sid})
         mercmode.keep_warm(self.store, w['name'], run['mercmode']['title'],
                            {'session_id': sid, 'game_id': run['game_id'], 'job': run['job'], 'worker_id': w['id'],
+                            **({'warm_adoption':run['warm_adoption'],'autoplay_job':_jid(stopped)}
+                               if run.get('warm_adoption') else {}),
                             'state': 'parked', 'at': now, 'pause_job': _jid(pause)})
         self._warm_label(sid, run['title'], now)
         nxt = (self.store.get(mercmode.NEXT, w['name']) or {}).get('title')
@@ -896,8 +946,9 @@ class Screensaver:
                 nxt = (ahead or {}).get('title') or (run.get('mercmode_prelaunch') or {}).get('title')
                 row = self._warm(worker, self.store.running_sessions(), now).get(nxt) if nxt else None
                 job = self.store.get('job', (row or {}).get('job')) or {}
+                session = self.store.get('session', (row or {}).get('session_id')) or {}
                 loading = row is not None and row.get('state') == 'prelaunch' and (
-                    not row.get('session_id') or job.get('state') != 'succeeded')
+                    not row.get('session_id') or job.get('state') != 'succeeded' or warm_boot.loading(session, job))
                 extra = run.get('mercmode_extra_rounds', 0)
                 if loading and extra < mercmode.EXTRA_ROUNDS_MAX:
                     rotate = False
@@ -1065,6 +1116,8 @@ class Telemetry(BaseModel):
     title: str = ""
     stats: dict = {}
     demo: bool = False                    # a bot demo plays (the Sessions header says so)
+    autoplay_taken_over: bool = False
+    source_autoplay_job_id: str = ""
 
 
 TELEMETRY: dict[str, dict] = {}           # session id -> what autoplay is doing right now (in memory: live view only)
@@ -1159,7 +1212,7 @@ def install(app, store, config, auth, submit, workers, archive):
     def mercmode_adopt(body: MercModeAdopt, actor=Depends(auth)):
         from . import mercmode
         with saver.lock:
-            worker=next((w for w in saver.workers() if w.get('name')==body.host),None)
+            worker=next((w for w in _current_workers(saver.workers()) if w.get('name')==body.host),None)
             session=store.get('session',body.session_id)
             if not worker or not session:raise HTTPException(404,'Exact host/session unavailable')
             try:run=mercmode.adopt_current(store,worker,session,telemetry_get(body.session_id))
@@ -1236,6 +1289,9 @@ def install(app, store, config, auth, submit, workers, archive):
             raise HTTPException(422, "stats must contain finite JSON values") from None
         if len(encoded) > TELEMETRY_STATS_MAX_BYTES:
             raise HTTPException(413, "stats too large")
+        if body.autoplay_taken_over:
+            from .autoplay_resume import note_handoff
+            note_handoff(store, sid, body.source_autoplay_job_id)
         telemetry_put(sid, body.model_dump())
         return {"ok": True}
 

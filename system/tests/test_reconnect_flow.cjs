@@ -10,7 +10,7 @@ function rig(over = {}) {
     health: { state: 'running', age_s: 0.1 }, ...over };
   r.io = {
     status: async () => ({ mode: r.mode, remote: { ready: r.remoteReady } }),
-    restartSpark: async () => { r.restarts++; if (r.recoverOnRestart) r.remoteReady = true; },
+    restartSpark: async () => { r.restarts++; r.restartAt = clock; if (r.recoverOnRestart) r.remoteReady = true; },
     select: async mode => { calls.push(['select', mode]); r.mode = mode; },
     reload: async () => { r.reloads++; },
     remember: (k, v) => memory.set(k, v), forget: k => memory.delete(k),
@@ -28,6 +28,7 @@ function rig(over = {}) {
     show: () => {},
   };
   r.ctl = F.create({ io: r.io, render: s => renders.push(s), sleep: async ms => { clock += ms; }, now: () => clock });
+  r.elapsed = () => clock;
   return r;
 }
 
@@ -51,9 +52,41 @@ test('a silent Spark is restarted once, then the flow continues', async () => {
   const r = rig({ remoteReady: false, recoverOnRestart: true });
   const out = await r.ctl.run();
   assert.equal(r.restarts, 1); assert.equal(out.done, true);
+  assert.equal(r.restartAt, 60000);
   const s = rig({ remoteReady: false });
   const failed = await s.ctl.run();
   assert.equal(failed.done, false); assert.match(failed.error, /not answering/); assert.equal(failed.steps[0].status, 'err');
+  assert.equal(s.restarts, 1); assert.equal(s.restartAt, 60000);
+});
+
+test('a planned service restart that recovers after 20-30 seconds never triggers another restart', async () => {
+  for (const automatic of [false, true]) for (const recoveredAt of [20000, 30000]) {
+    const r = rig({ remoteReady: false });
+    r.io.status = async () => ({ mode: 'remote', remote: { ready: r.elapsed() >= recoveredAt } });
+    const out = await r.ctl.run({ automatic });
+    assert.equal(out.done, true); assert.equal(r.restarts, 0); assert.equal(r.pip, 'w1-s1');
+    assert.equal(r.elapsed(), recoveredAt);
+  }
+});
+
+test('automatic reconnect never restarts a shared service during a persistent outage', async () => {
+  const r = rig({ remoteReady: false });
+  for (const quiet of [true, false]) {
+    const out = await r.ctl.run({ automatic: true, quiet });
+    assert.equal(out.done, false); assert.match(out.error, /Automatic reconnect/);
+    assert.equal(r.restarts, 0); assert.equal(r.calls.length, 0);
+  }
+  r.recoverOnRestart = true;
+  const manual = await r.ctl.run({ quiet: true }); // quiet controls display, never operator intent
+  assert.equal(manual.done, true); assert.equal(r.restarts, 1); assert.equal(r.restartAt, 180000);
+});
+
+test('launch and PiP polling mark automatic intent while manual retry and F5 retain operator intent', () => {
+  const html = require('node:fs').readFileSync(require('node:path').join(__dirname, '../clients/desktop/index.html'), 'utf8');
+  assert.match(html, /reconnectRun\(\{ quiet: !resume, automatic: true \}\)/);
+  assert.match(html, /!st\.remote\.ready && COMPACT\.on\) reconnectRun\(\{ quiet: false, automatic: true \}\)/);
+  assert.match(html, /\[data-rc-retry\]'\)\.onclick = \(\) => reconnectRun\(\{ quiet: false \}\)/);
+  assert.match(html, /!reconnectFlow\.state\(\)\.done\) return reconnectRun\(\{ quiet: false \}\)/);
 });
 
 test('no running MercMode game: the flow only reconnects, never turns MercMode on or waits', async () => {

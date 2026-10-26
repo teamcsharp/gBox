@@ -1260,6 +1260,8 @@ class Bot:
     # --- the engine's brain interface ---
     def prompt_ok(self, button, snap, now) -> bool:
         if getattr(getattr(self,'mines',None),'escape',None) is not None \
+                and not (self.stats.get('mine_departure_yielded')
+                         and self._mine_hazard_removed(self.mines.escape,snap.get('ground_mines'))) \
                 and not self._mine_escape_mandatory(snap) and 'square' in str(button):
             self.stats['mine_optional_prompts_deferred'] = self.stats.get('mine_optional_prompts_deferred',0)+1
             return False
@@ -1283,6 +1285,15 @@ class Bot:
         optional = snap.get('prompt_optional')
         return bool(snap.get('recovery_active') or p.get('action') in (4,5) or (p.get('hp') or 0)<=0
                     or snap.get('prompt') and not optional)
+
+    @staticmethod
+    def _mine_hazard_removed(escape, ground):
+        """Only one exact, witnessed detonation and a currently verified clear scan may yield departure priority."""
+        if not escape or not escape.get('detonation_observed') or not escape.get('removal_recorded') \
+                or ground is None or not getattr(ground,'verified',True) or ground:
+            return False
+        retained = escape.get('hazards') or {escape['actor']:escape['pos']}
+        return len(retained)==1 and tuple(retained.get(escape['actor'],()))==tuple(escape['pos'])
 
     def recall(self, rows):
         self.round_lessons = rows
@@ -1768,6 +1779,7 @@ class Bot:
             self.stats["last_round_verdict"] = summary.get("verdict")
 
     def tick(self, snap: dict) -> dict:
+        self.stats['mine_departure_yielded'] = False
         try:
             self._round_trace(snap)
         except Exception as exc:                                  # noqa: BLE001 - the map never stops the bot
@@ -2149,6 +2161,13 @@ class Bot:
             decision = re5_strategy.detour_decision(snap, eta, distance < BONUS_REACH,
                 kind=tgt.get("kind", "time"), immediate_threat=bool(close_foes))
             allowed = decision.allowed or (tgt.get("kind", "time") == "time" and decision.reason not in HARD_REFUSALS)
+            if (decision.reason == "preserve combo or wait for a known window" and candidate is not None
+                    and self._combo_running(snap) and t > eta + BREAK_MARGIN_S
+                    and (self._laser_view(snap, candidate) == "on"
+                         or (self._in_view(p, candidate) and self._open(p,candidate,mesh,now)))):
+                # Keep a live chain with an exposed forward shot before a long trip.
+                # The checkpoint commitment survives this brief combat interruption.
+                allowed = False
             if checkpoint_lease and tgt.get("kind","time") == "time" \
                     and decision.reason == "dispatch nearby exposed threat first":
                 allowed = True  # only this bounded dispatch refusal; clock and route refusals remain authoritative
@@ -2470,7 +2489,8 @@ class Bot:
                 d = math.dist(p["pos"], e["pos"])
             else:
                 try:
-                    d = mesh.route_length(p["pos"], e["pos"], avoid=self.avoid)
+                    d = mesh.route_length(p["pos"], e["pos"], avoid=self.avoid,
+                        blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
                 except Exception:                           # noqa: BLE001
                     d = None
             if d is not None and d < best_d:
@@ -3286,6 +3306,7 @@ class Bot:
 
     def _mine_retreat(self, p, snap, now):
         """Leave a verified planted bomb using floor support; resume the held checkpoint afterwards."""
+        self.stats['mine_departure_yielded'] = False
         controller = getattr(self, "mines", None)
         escape = getattr(controller, "escape", None)
         if escape is None or controller.clear_escape(now, p["pos"]):
@@ -3293,8 +3314,19 @@ class Bot:
         self.stats["phase"] = "leave_proximity_bomb"
         self.stats["mine_retreat_status"] = "seeking supported floor route away from planted bomb"
         self.bonus_commitment.pause(now)
+        def yield_removed_hazard():
+            if not self._mine_hazard_removed(escape,snap.get('ground_mines')):
+                return False
+            # Keep the controller's measured-separation/anti-repeat obligation.
+            # A verified dead bomb must not make a blocked exit leave us defenseless.
+            self.nav_dynamic_mines = dict(snap['ground_mines'])
+            self.stats['mine_departure_yielded'] = True
+            self.stats['mine_retreat_status'] = 'detonated mine verified gone; combat/navigation resumed, further planting deferred'
+            return True
         mesh = snap.get("nav")
         if mesh is None:
+            if yield_removed_hazard():
+                return None
             self.stats["mine_retreat_status"] = "blocked: no escape mesh; departure retains priority over combat"
             return {"hold": set()}
         retained = escape.get('hazards') or {escape['actor']: escape['pos']}
@@ -3303,19 +3335,30 @@ class Bot:
         hazards = [(row['pos'], MINE_ESCAPE_CM) for row in self.nav_dynamic_mines.values()]
         def supported(candidate, margins=hazards):
             return bool(candidate) and not any(isinstance(point,re5_nav.Traversal) for point in candidate) \
-                and all(mesh.floor_segment(a,b) and mesh.hazard_segment_clear(a,b,margins,departing=True)
+                and all(mesh.floor_segment(a,b,blocked_links=self.blocked_links)
+                        and mesh.hazard_segment_clear(a,b,margins,departing=True)
                         for a,b in zip([p['pos']]+list(candidate),candidate))
         if mesh.find(p["pos"],floor_only=True,height_slack=60.) is None:
             self.stats["mine_retreat_status"] = "returning to observed floor before escaping planted bomb"
-            return self._recover_nav(p,mesh,now)
+            recovery = self._recover_nav(p,mesh,now)
+            if not recovery.get('hold') and not recovery.get('tap') and yield_removed_hazard():
+                return None
+            return recovery
         cached = self.route_for == "mine_escape:" + str(escape["actor"]) and self.route and now-self.route_at<=REPLAN_S \
             and math.dist(p['pos'],self.route[-1])>WP_REACHED and supported(self.route)
-        route = self.route if cached else mesh.retreat(p["pos"], escape["pos"], MINE_ESCAPE_CM,
+        route = self.route if cached else None
+        if route is None and escape.get('geometry') == mesh.learning_sig:
+            # The placement preflight already bought a departure toward the held
+            # checkpoint. Keep that direction instead of picking an arbitrary retreat.
+            # Passed waypoints may be dropped only when the remaining path still
+            # passes fresh floor, blocked-link and actual planted-mine checks.
+            planned = escape.get('route') or []
+            route = next((planned[i:] for i in range(len(planned)) if supported(planned[i:])),None)
+        if route is None:
+            route = mesh.retreat(p["pos"], escape["pos"], MINE_ESCAPE_CM,
                 blocked_links=self.blocked_links, link_penalties=self.nav_learning.link_penalties(mesh))
-        if not supported(route):
-            route = None
-        if route is None and escape.get('geometry') == mesh.learning_sig and supported(escape.get('route')):
-            route = escape['route']
+            if not supported(route):
+                route = None
         checkpoint_exit = bool(cached and escape.get('checkpoint_exit'))
         if not route and escape.get('removal_recorded') and len(retained)==1 \
                 and getattr(snap.get('ground_mines'), 'verified', True):
@@ -3340,6 +3383,8 @@ class Bot:
                                      link_penalties=self.nav_learning.link_penalties(mesh))
             route = candidate if supported(candidate) else None
         if not route:
+            if yield_removed_hazard():
+                return None
             self.stats["mine_retreat_status"] = "blocked: no supported departure; combat and repeat planting withheld"
             self.stats["mine_retreats_blocked"] = self.stats.get("mine_retreats_blocked", 0) + 1
             self.aiming_since = None
@@ -3351,6 +3396,32 @@ class Bot:
         self.aiming_since = None
         return self._follow(p, target, mesh, False, now, learn=False,
                             retreat_from=None if checkpoint_exit else escape["pos"], approved_route=route)
+
+    def _mine_checkpoint_exit(self, p, mesh, goal, distance):
+        """A bounded ordinary-floor prefix of the held checkpoint's real route."""
+        route = mesh.route(p['pos'],goal['pos'],avoid=self.avoid,blocked_links=self.blocked_links,
+                           link_penalties=self.nav_learning.link_penalties(mesh))
+        prefix, start = [], tuple(p['pos'])
+        for point in route or ():
+            if isinstance(point,re5_nav.Traversal):
+                return None  # an unperformed door/ledge action cannot buy a mine exit
+            previous = prefix[-1] if prefix else start
+            if math.dist(previous,point)<1.:
+                continue
+            if math.dist(start,point)>=distance:
+                # Clip a long segment at the clearance circle; distant enemies
+                # beyond the departure must not invalidate an otherwise safe exit.
+                delta = tuple(point[k]-previous[k] for k in range(3))
+                offset = tuple(previous[k]-start[k] for k in range(3))
+                a = sum(v*v for v in delta)
+                b = sum(offset[k]*delta[k] for k in range(3))
+                c = sum(v*v for v in offset)-distance*distance
+                fraction = min(1.,max(0.,(-b+math.sqrt(max(0.,b*b-a*c)))/a))
+                point = tuple(previous[k]+fraction*delta[k] for k in range(3))
+                prefix.append(point)
+                return prefix
+            prefix.append(tuple(point))
+        return None  # collect the nearby checkpoint before scheduling a mine
 
     def _mine_placement_preflight(self, snap, now):
         """Require a supported exit and a conservative observed threat margin, without relying on immunity."""
@@ -3373,15 +3444,25 @@ class Bot:
         elif near_enemy:
             reason = f"living enemy within {MINE_ENEMY_CM:g}cm of deployment"
         elif p and mesh is not None:
+            checkpoint = next((b for b in snap.get('bonuses') or ()
+                if b.get('kind','time')=='time' and b.get('ptr')==self.bonus_commitment.goal
+                and self.bonus_skip.get(b['ptr'],0)<=now),None)
+            checkpoint_key = (checkpoint['ptr'],tuple(checkpoint['pos'])) if checkpoint else None
             previous = getattr(self,'_mine_preflight',None)
             if previous is not None and previous['geometry'] == mesh.learning_sig and now-previous['at']<2. \
-                    and previous.get('blocked') == frozenset(self.blocked_links) and math.dist(previous['pos'],p['pos'])<25.:
+                    and previous.get('blocked') == frozenset(self.blocked_links) \
+                    and previous.get('checkpoint') == checkpoint_key and math.dist(previous['pos'],p['pos'])<25.:
                 route = previous['route']
             else:
-                route = mesh.retreat(p['pos'],p['pos'],MINE_ESCAPE_CM+re5_mines.SPAWN_MATCH_CM+50.,blocked_links=self.blocked_links,
-                                     link_penalties=self.nav_learning.link_penalties(mesh))
+                exit_distance = MINE_ESCAPE_CM+re5_mines.SPAWN_MATCH_CM+50.
+                route = self._mine_checkpoint_exit(p,mesh,checkpoint,exit_distance) if checkpoint else \
+                    mesh.retreat(p['pos'],p['pos'],exit_distance,blocked_links=self.blocked_links,
+                                 link_penalties=self.nav_learning.link_penalties(mesh))
                 self._mine_preflight = {'geometry':mesh.learning_sig,'at':now,'pos':tuple(p['pos']),'route':route,
-                                        'blocked':frozenset(self.blocked_links)}
+                                        'blocked':frozenset(self.blocked_links),'checkpoint':checkpoint_key}
+            self.stats['mine_departure_policy'] = 'held time-checkpoint route' if checkpoint else 'measured floor retreat'
+            if checkpoint and not route:
+                reason = 'held checkpoint has no ordinary-floor mine departure; continue its route before planting'
             allowed = bool(route) and not any(isinstance(point,re5_nav.Traversal) for point in route) \
                 and math.dist(p['pos'],route[-1])>=MINE_ESCAPE_CM+re5_mines.SPAWN_MATCH_CM \
                 and all(mesh.floor_segment(a,b)
@@ -3864,8 +3945,13 @@ class RE5PS3(Driver):
                 request = selected_prompt(m,include_item_pickups=True)
                 if request and request['kind'] in (BTN_MELEE,BTN_STAGE) and request['mode']==1 \
                         and request['token']=='mash:square':
+                    yielded = False
+                    if self._stats.get('mine_departure_yielded') and not self._stats.get('mine_placement_pending'):
+                        from . import re5_mines
+                        ground = re5_mines.ground_mines(m)
+                        yielded = ground is not None and getattr(ground,'verified',True) and not ground
                     player = player_pointer(m)
-                    if ptr_ok(player) and request['owner']==player and m.rd(player+P_ACTION,1) not in (b'\x04',b'\x05') \
+                    if not yielded and ptr_ok(player) and request['owner']==player and m.rd(player+P_ACTION,1) not in (b'\x04',b'\x05') \
                             and struct.unpack('>h',m.rd(player+P_HP,2))[0]>0 and not recovery_active(m,player):
                         return None  # optional pickup/traversal/finisher cannot delay leaving a planted mine
             if button and 'square' in str(button) \

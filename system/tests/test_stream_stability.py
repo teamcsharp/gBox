@@ -523,3 +523,22 @@ def test_operator_restart_replaces_a_live_but_frozen_encoder_at_once_and_keeps_t
     assert events[-1]["kind"] == "encoder_restart" and events[-1]["reason"] == "operator F5"
     s.close()
     assert s.restart_now()["restarted"] is False
+
+
+def test_operator_restart_preserves_real_frame_age_but_grants_encoder_startup_time():
+    clock, procs, killed = Clock(), [], []
+    s = make_stream(clock, procs, killed)
+    try:
+        procs[0].emit(); wait_seq(s, 1)
+        received = s.last_frame
+        clock.t += 20
+        assert s.restart_now('operator F5')['restarted']
+        assert s.latest == JPEG and s.last_frame == received
+        assert s.stats()['frame_age_s'] == 20.0
+        assert s.check() is None  # spawned, not the retained picture, grants startup time
+        clock.t += s.stall_s - .5
+        assert s.check() is None
+        procs[1].emit(b'\xff\xd8new\xff\xd9'); wait_seq(s, 2)
+        assert s.last_frame == clock.t and s.stats()['frame_age_s'] == 0.0
+    finally:
+        s.close()

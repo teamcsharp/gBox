@@ -468,6 +468,8 @@ def _save_previous_game(ad, game: dict, sid: str, ctx) -> dict:
 def _wake_for_close(ad):
     """A paused emulator (a MercMode warm game, SIGSTOP / suspended threads) is resumed before it is saved or killed:
     a stopped process never answers a save and holds a polite exit until it runs again."""
+    from .mercs import warm_boot
+    warm_boot.cancel(ad, 'The session is being closed or replaced.')
     if getattr(ad, 'paused', False) is True or getattr(ad, 'paused_tids', None):
         try:
             ad.resume()
@@ -501,19 +503,14 @@ def _warm_priority(ad, nice: int) -> None:
         pass
 
 
-def _park_warm(ad) -> dict:
-    """A MercMode warm launch (launch_game warm=true) is paused as soon as it runs: no emulation and no audio until the
-    control plane resumes it at the round boundary. {"paused": False, "reason"} when the emulator cannot pause; the
-    control plane then closes it and launches that title the normal way when its turn comes."""
+def _park_warm(ad, game, owned) -> dict:
+    """Let background boot finish before pausing; never freeze shader loading at guest-memory allocation."""
     pause = getattr(type(ad), 'pause', None)
     if not callable(pause):
-        return {'paused': False, 'reason': f"{getattr(ad, 'name', 'this emulator')} has no pause"}
-    try:
-        ad.pause()
-    except Exception as exc:                                 # noqa: BLE001 - reported; the game itself is up
-        return {'paused': False, 'reason': f'{type(exc).__name__}: {exc}'[:240]}
-    ad.gbox_warm = True                                      # closed without a save; SIGCONT before any kill
-    return {'paused': True}
+        return {'state': 'failed', 'ready': False, 'paused': False,
+                'reason': f"{getattr(ad, 'name', 'this emulator')} has no pause"}
+    from .mercs import warm_boot
+    return warm_boot.start(ad, game, owned)
 
 
 def _close_previous_games(ctx, keep=""):
@@ -637,6 +634,8 @@ def _stop_session(sid: str, args: dict, ctx) -> dict:
     """Stop = the emulator's process tree killed now (#1504). A save happens only when the operator asked for one
     (args.save), capped at STOP_SAVE_CAP_S and skipped past it; cleanup never holds the answer."""
     ad, _ = SESSIONS[sid]
+    from .mercs import warm_boot
+    warm_boot.cancel(ad, 'The session is stopping.')
     t0 = time.monotonic()
     timings, saved, moment = {}, None, None
     if getattr(ad, 'gbox_warm', False):
@@ -1075,7 +1074,14 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     track_emulator(ctx.config, sid, detail.get("pid") or getattr(getattr(ad, "proc", None), "pid", None))
     if inp.warm:
         _warm_priority(ad, 10)
-        detail["warm"] = _park_warm(ad)
+        warm_started = time.time()
+        def warm_owned():
+            from . import padstate
+            bot = AUTOPLAY.get(sid) or {}
+            thread = bot.get('thread')
+            return (SESSIONS.get(sid, (None,))[0] is ad and not padstate.touched_after(sid, warm_started)
+                    and not (thread is not None and thread.is_alive()))
+        detail["warm"] = _park_warm(ad, gd, warm_owned)
     if "staged_on" in locals():
         detail["staged_on"] = staged_on
     caps = rewind.capabilities(sid, ad.get_capabilities())
@@ -1348,6 +1354,48 @@ def _native_stills(sid: str, ad, server: str, headers: dict, every: float = NATI
             time.sleep(every)
 
 
+def _upload_stream_frames(sid: str, ad, stream, server: str, headers: dict):
+    """Reconnect stalled uploads without disturbing capture or the running emulator."""
+    def body():
+        last, live = -1, _EmulatorLiveness(ad)
+        while sid in SESSIONS:
+            if stream.wait(last, 1.0):
+                last, data = stream.seq, stream.latest
+                # Keep the last real picture when the emulator exits; never upload its empty display.
+                yield (len(data).to_bytes(4, "big") + data) if live() else b"\0\0\0\0"
+            else:
+                yield b"\0\0\0\0"
+    while sid in SESSIONS:
+        try:
+            # Response reads remain open for this long-lived request. Socket writes must be bounded: a stalled
+            # receiver otherwise strands this thread forever, beyond encoder or browser reconnect recovery.
+            with httpx.Client(base_url=server, headers=headers,
+                              timeout=httpx.Timeout(10, read=None, write=10)) as c:
+                response = c.post(f"/api/sessions/{sid}/stream", content=body(),
+                                  headers={"content-type": "application/octet-stream"})
+                response.raise_for_status()
+            reason = "upload response ended"
+        except httpx.HTTPError as e:
+            reason = type(e).__name__
+        if sid in SESSIONS:
+            print(f"gBox stream: upload of {sid} interrupted at {adapters._wall()} "
+                  f"({reason}); reconnecting", flush=True)
+            time.sleep(1)  # rejected/early responses must not spin a reconnect loop either
+
+
+def _player_takeover_input(events) -> bool:
+    """Only a player's new press claims input; stream cleanup releases do not.
+
+    Reconnecting/changing the viewed session releases the browser's remembered
+    buttons. Those neutral events still reach the emulator but must not stop a
+    bot the operator is only watching.
+    """
+    return any(isinstance(event, dict) and "rpc" not in event
+               and event.get("src", "player") in ("player", "ui")
+               and isinstance(event.get("key"), str) and bool(event["key"])
+               and event.get("down", True) is True for event in events or ())
+
+
 def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -1361,26 +1409,8 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     def frames():
         if stream is None:                               # local native window: no video stream, a still now and then
             return _native_stills(sid, ad, server, headers)
-        # one long-lived upload per session: [4-byte big-endian length][JPEG] ... (a POST per frame capped at ~6 fps)
-        def body():
-            last, live = -1, _EmulatorLiveness(ad)
-            while sid in SESSIONS:
-                if stream.wait(last, 1.0):
-                    last, data = stream.seq, stream.latest
-                    # An exited emulator leaves its virtual display empty (black). Those grabs are never sent: the
-                    # operator keeps the last real game frame until the session ends or the game comes back.
-                    yield (len(data).to_bytes(4, "big") + data) if live() else b"\0\0\0\0"
-                else:
-                    yield b"\0\0\0\0"                     # keepalive (zero-length frame)
-        while sid in SESSIONS:
-            try:
-                with httpx.Client(base_url=server, headers=headers, timeout=httpx.Timeout(10, read=None, write=None)) as c:
-                    c.post(f"/api/sessions/{sid}/stream", content=body(), headers={"content-type": "application/octet-stream"})
-            except httpx.HTTPError as e:
-                if sid in SESSIONS:
-                    print(f"gBox stream: upload of {sid} interrupted at {adapters._wall()} "
-                          f"({type(e).__name__}); reconnecting", flush=True)
-                time.sleep(1)
+        # One long-lived upload per session: [4-byte big-endian length][JPEG] ...
+        return _upload_stream_frames(sid, ad, stream, server, headers)
 
     answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10), ctx)
 
@@ -1395,12 +1425,15 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                         if "rpc" in e:
                             threading.Thread(target=answer, args=(e,), daemon=True).start()
                     if pad:
+                        if _player_takeover_input(pad):
+                            from .mercs import warm_boot
+                            warm_boot.cancel(ad, 'The player took control during background preparation.')
                         game_pad = rewind.feed(sid, pad)      # Consume time chords before injecting game input.
                         ring_record.touch(sid, pad)           # the operator's pad in use: the gameplay ring records
                         run = AUTOPLAY.get(sid)               # replay/learned autoplay presses directly: the operator's
                         if (run and run.get("mode") in ("replay", "learned", "playbook")   # own input (stream) takes over
                                 and run.get("thread") is not None and run["thread"].is_alive()
-                                and any(e.get("src", "player") in ("player", "ui") for e in pad)):
+                                and _player_takeover_input(pad)):
                             from . import padstate
                             padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
                     if pad and "send_input" in ad.supported:
@@ -1422,6 +1455,7 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     with httpx.Client(base_url=server, headers=headers, timeout=10) as c:
         pid = getattr(getattr(ad, "proc", None), "pid", None)
         scene_watch = _scene_row_watch(ad)                 # Examine 3D row still settling (#971)
+        warm_sent = None
         while sid in SESSIONS:
             time.sleep(3)
             try:
@@ -1429,6 +1463,12 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                 if now and now != pid:                     # emulator relaunched in place (RPCS3 load state): re-dock it
                     c.post(f"/api/sessions/{sid}/detail", json={"pid": now})
                     pid = now
+                from .mercs import warm_boot
+                warm = warm_boot.status(ad)
+                if warm is not None and warm != warm_sent:
+                    response = c.post(f"/api/sessions/{sid}/detail", json={"warm": warm})
+                    if response.is_success:
+                        warm_sent = warm
                 if scene_watch:                                # the Vulkan layer loads once the game boots
                     scene_watch = _refresh_scene_row(c, sid, ad)
                 running = ad.proc.poll() is None if getattr(ad, "proc", None) else ad.query_runtime().get("running", True)
@@ -1540,10 +1580,14 @@ def session_rpc(sid: str, op: str, args: dict, ctx=None):
     if op in ("pause", "resume"):                      # the pause button, instantly (no job queue, #1123)
         if op not in getattr(ad, "supported", ()):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} cannot {op} from gBox")
+        from .mercs import warm_boot
+        warm_boot.cancel(ad)
         return getattr(ad, op)() or {}
     if op == "reset":                                  # the console's reset switch, instantly (no job queue)
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset")
+        from .mercs import warm_boot
+        warm_boot.cancel(ad)
         return ad.reset() or {"reset": True}
     raise ValueError(f"rpc op {op} not allowed (read_memory, read_ranges, read_rom, info, state, reset, pause, resume, debug_*)")
 
@@ -1681,6 +1725,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
         return {"result": stream.restart_now("operator F5"), "session_id": inp.session_id, "ended": False}
     if inp.op == "reset":                                            # restart the emulated console (the session stays)
         ad, _ = SESSIONS[inp.session_id]
+        from .mercs import warm_boot
+        warm_boot.cancel(ad)
         if not callable(getattr(type(ad), "reset", None)):
             raise Unsupported(f"{getattr(ad, 'name', 'this emulator')} has no reset of its own (POST /api/sessions/{{sid}}/reset "
                               "relaunches the same game and mod on this PC instead, the old copy closing only once it runs)")
@@ -1693,6 +1739,9 @@ def session_op(inp: SessionIn, ctx: Ctx):
         from . import padstate
         padstate.report(ctx, inp.session_id, inp.args.get("events"), "agent")
     ad, _ = SESSIONS[inp.session_id]
+    if inp.op in ('pause', 'resume', 'load_state', 'send_input'):
+        from .mercs import warm_boot
+        warm_boot.cancel(ad)
     if inp.op in ("pause", "resume") and "warm" in (inp.args or {}):
         # MercMode warm pool: args.warm=true parks the game paused between its turns (closed later without a save);
         # resume clears it, so the game is an ordinary live session again once it is swapped in.
@@ -2436,6 +2485,7 @@ class AutoplayIn(BaseModel):
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
+    continuous: bool = False               # explicitly allow recovery of this bot's frozen game; Stop still wins
     # auto: a mission that fits (PSO) > the operator's learned style (enough recorded play) > vision.
     # replay: play one of the operator's recorded runs back from boot (reset=True restarts the game first).
     mode: str = "auto"                     # auto | playbook | mission | replay | learned | vision
@@ -2509,6 +2559,16 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
     session's debugger. op=start | stop (hand control back) | status | list."""
     from .autoplay import Driver
+    if inp.op in ('start', 'stop'):
+        # Claim/release input ownership before setup or driver construction.
+        # The future bot thread cannot revoke a warm observer during this gap.
+        # The claim shares its pause lock; Start resumes only a pause already
+        # made by this exact observer, never an unrelated/manual pause.
+        ad = (SESSIONS.get(inp.session_id) or (None,))[0]
+        if ad is not None:
+            from .mercs import warm_boot
+            if warm_boot.autoplay_control(ad, inp.op):
+                _warm_priority(ad, 0)
     game_id = _session_game_id(ctx, inp.session_id) if inp.session_id and inp.op in ("list", "start") else None
     if inp.op == "list":
         return {"result": {"missions": [{"name": m["name"], "objective": m.get("objective"), "game_id": m.get("game_id")}
@@ -2522,13 +2582,23 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
     if inp.op == "status":
         return {"result": {"running": bool(run and run["thread"].is_alive()), "mission": run and run["mission"],
                            "mode": run and run.get("mode"), "took_over": bool(run and run.get("took_over")),
+                           "continuous": bool(run and getattr(run.get('inp'), 'continuous', False)),
+                           "recovery": run and run.get('recovery'),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace)}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
     if inp.mode not in ("auto", "playbook", "mission", "replay", "learned", "vision"):
         raise ValueError("mode: auto | playbook | mission | replay | learned | vision")
     if run and run["thread"].is_alive():
-        return {"result": {"already_running": run["mission"]}}
+        if run.get('took_over') or getattr(run.get('driver'), 'stopped', False):
+            raise ValueError('Autoplay is stopping; wait for it to stop before starting it again.')
+        # A repeated Start updates recovery intent without replacing this run's live mode/style with request defaults.
+        active = run.get('inp')
+        if active is None:
+            active = run['inp'] = inp.model_copy(deep=True)
+        active.continuous = inp.continuous
+        run['source_autoplay_job_id'] = getattr(ctx, 'job_id', None) or run.get('source_autoplay_job_id', '')
+        return {"result": {"already_running": run["mission"], "effective_input": active.model_dump()}}
     d = Driver(ctx.server, ctx.headers["authorization"].split()[-1], inp.session_id, log=lambda *a: None)
     d.assist_hold_hp = inp.assist
     d.screensaver = (ctx.server, _ap_headers(ctx)) if inp.screensaver else None
@@ -2588,12 +2658,13 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
             pass                                               # not enough recorded play: vision
     if m is None:                                              # any other game: watch the screen, decide, press
         run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": "vision: " + (inp.goal or "make progress"), "mode": "vision",
-                                          "sid": inp.session_id, "since": since}
+                                          "sid": inp.session_id, "since": since, "ctx": ctx, "inp": inp}
         run["thread"] = threading.Thread(target=_vision_play, args=(run, ad, g, inp.goal, ctx.server), daemon=True)
         run["thread"].start()
         return {"result": {"started": run["mission"], "mode": "vision",
                            "objective": "vision autoplay (any game): screen -> model -> buttons"}}
-    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"], "mode": "mission", "sid": inp.session_id, "since": since}
+    run = AUTOPLAY[inp.session_id] = {"driver": d, "mission": m["name"], "mode": "mission", "sid": inp.session_id,
+                                    "since": since, "ctx": ctx, "inp": inp}
     cache = ctx.config.runtime / "autoplay"
     cache.mkdir(parents=True, exist_ok=True)
 
@@ -2679,7 +2750,9 @@ def _telemetry(run, ctx, title: str = "") -> None:
         live = run.get("live") or {}
         stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
         return {"running": running, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
-                "title": title, "stats": stats, "demo": bool(getattr(run.get("driver"), "demo", False))}
+                "title": title, "stats": stats, "demo": bool(getattr(run.get("driver"), "demo", False)),
+                "autoplay_taken_over": bool(run.get("took_over")),
+                "source_autoplay_job_id": run.get('source_autoplay_job_id') or getattr(ctx, "job_id", None) or ""}
 
     def post(running):
         try:
@@ -2726,7 +2799,18 @@ def _black(ad) -> bool | None:
     import base64
     from . import imitate
     try:
-        px = base64.b64decode(imitate.thumb(ad.get_frame()))
+        stream = getattr(ad, 'stream', None)
+        if stream is not None:
+            # Inspect the capture already feeding the viewer. Starting another
+            # desktop grab every five seconds competes with the live encoder.
+            # A stale stream is not evidence that the game itself went black.
+            frame = stream.latest
+            age = stream.clock() - stream.last_frame
+            if not frame or stream.closed or not 0 <= age <= 2.0:
+                return None
+        else:
+            frame = ad.get_frame()
+        px = base64.b64decode(imitate.thumb(frame))
     except Exception:                                          # noqa: BLE001 - no frame now: no verdict
         return None
     return bool(px) and sum(px) / len(px) < BLACK_LUMA
@@ -2762,12 +2846,14 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
                 sleep(5)
                 continue
             if b:
-                since = since or now
+                since = now if since is None else since
                 if now - since >= BLACK_FOR:
                     run["bad_end"] = "black"
                     d.stopped = True
                     return
-            elif b is False:
+            else:
+                # A missing/stale picture breaks the observation interval; it
+                # is not evidence of continuous black gameplay.
                 since = None
             sleep(5)
     threading.Thread(target=watch, daemon=True, name=f"autoplay-black-{run.get('sid', '')}").start()
@@ -2775,10 +2861,9 @@ def _black_watch(run, d, ad, clock=time.time, sleep=time.sleep):
 
 def _bad_end(run, sleep=time.sleep):
     """The game froze or showed only black: a screensaver demo moves on to its next game (the screensaver takes the
-    report); any other autoplay game (a bot demo: launched with autoplay on, any PC) is relaunched - same game and
-    build, same PC - and autoplay starts again on it with the same settings. Every request here says it is autoplay's
-    (x-gbox-actor), so the relaunch is recorded as autoplay's, never as the operator's, and the server refuses it for
-    the operator's own games (only bot demos and agent test sessions are relaunched)."""
+    report). The server permits a relaunch for continuous runs, bot demos and agent test sessions, preserving the
+    game, build, PC and current autoplay intent. Every request here identifies autoplay (x-gbox-actor), and the
+    replacement's authoritative resume decision must win over this worker's older intent."""
     ctx, sid, inp = run.get("ctx"), run.get("sid", ""), run.get("inp")
     if ctx is None or not sid:
         return
@@ -2805,6 +2890,13 @@ def _bad_end(run, sleep=time.sleep):
             job = httpx.get(f"{ctx.server}/api/jobs/{jid}", headers=headers, timeout=15).json()
             if job.get("state") == "succeeded":
                 out = job.get("output") or {}
+                if 'autoplay_resumed' in out:
+                    # A newer Stop, takeover or replacement-session command may have cancelled the captured start.
+                    # Only older servers without this decision need the compatibility request below.
+                    resumed = out['autoplay_resumed'] is True
+                    run['recovery'] = (f"relaunched as {out.get('session_id')}, "
+                                       + ("autoplay resumed by replacement" if resumed else "autoplay was not resumed"))
+                    return
                 new = out.get("session_id") or (out.get("result") or {}).get("session_id")
                 break
             if job.get("state") in ("failed", "rejected", "cancelled", "invalid"):
@@ -2814,12 +2906,20 @@ def _bad_end(run, sleep=time.sleep):
             run["recovery"] = "relaunch did not finish"
             return
         d = run.get("driver")
-        httpx.post(f"{ctx.server}/api/jobs", headers=headers, timeout=30, json={
+        r = httpx.post(f"{ctx.server}/api/jobs", headers=headers, timeout=30, json={
             "tool": "autoplay", "require_worker": new.split("-")[0], "agent_use": bool(getattr(d, "agent_use", True)),
             "input": {"session_id": new, "op": "start", "mode": getattr(inp, "mode", "auto") or "auto",
                       "screensaver": bool(getattr(inp, "screensaver", False)), "style": getattr(inp, "style", None) or {},
-                      **({"demo": True} if getattr(inp, "demo", False) else {})}})
-        run["recovery"] = f"relaunched as {new}, autoplay started again"
+                      **({"demo": True} if getattr(inp, "demo", False) else {}),
+                      **({"continuous": True} if getattr(inp, "continuous", False) else {})}})
+        if r.status_code >= 400:
+            run['recovery'] = f"relaunched as {new}, autoplay restart refused: {r.text[:200]}"
+            return
+        start = r.json()
+        if not start.get('id') or start.get('state') in ('failed', 'rejected', 'cancelled', 'invalid'):
+            run['recovery'] = f"relaunched as {new}, autoplay restart was not accepted"
+            return
+        run["recovery"] = f"relaunched as {new}, autoplay restart requested"
     except (httpx.HTTPError, ValueError) as e:
         run["recovery"] = f"relaunch failed: {type(e).__name__}"
 
@@ -2954,6 +3054,10 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             run["result"] = {"ok": True, "playbook": name, **stats, **({"setup_failed": len(failed)} if failed else {})}
         except Exception as e:
             run["result"] = {"ok": False, "error": str(e)}
+            if isinstance(e, OSError) and getattr(inp, 'continuous', False) and not d.stopped \
+                    and run.get('live', {}).get('native_read_status') == 'timeout':
+                run['bad_end'] = 'hung'
+                run['live']['stopped_reason'] = 'native reads stayed unavailable after bounded retries; recovering continuous run'
         _release_all(sid)
         _ended(run)
     _takeover(run, d, sid, since)

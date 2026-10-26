@@ -451,9 +451,11 @@ def test_prompt_frames_score_pending_hits_and_the_same_frame_is_observed_once(tm
     bot = R.Bot(m, clock=lambda: now[0], learn_dir=tmp_path, lessons=lambda e: None)
     bot.combat.infinite = True
     first = snap(m)
+    first['ground_mines'] = {}  # this gun-only observation has a verified empty mine list
     bot.observe_round(first, "playing", 0.0)
     m.put(PL + C.P_FIRE_CMD, ">I", 4)
     fire = snap(m)
+    fire['ground_mines'] = {}
     fire["prompt"] = "square"
     bot.observe_round(fire, "playing", 0.2)  # engine observation before prompt dispatch
     now[0] = 0.3                           # >25 ms: fallback fire command could otherwise count twice
@@ -462,6 +464,7 @@ def test_prompt_frames_score_pending_hits_and_the_same_frame_is_observed_once(tm
     assert bot.stats["shots"] == 1
     m.put(PL + C.P_FIRE_CMD, ">I", 0)
     hit = snap(m, hp=600)
+    hit['ground_mines'] = {}
     hit["prompt"] = "square"
     now[0] = 0.4
     assert bot.tick(hit) == {"hold": set()}
@@ -818,3 +821,20 @@ def test_laserless_gun_fires_when_off_axis_but_camera_ray_already_on_his_chest()
     assert "r1" in act["hold"], act                                     # on-target aim: fire, do not swing
     assert "swing" not in bot.stats.get("combat", "")
     assert "camera direction" in bot.stats.get("aim_feedback", "")
+
+
+@pytest.mark.parametrize('ready,on_target',[(True,True),(True,False),(False,True)])
+def test_valid_first_hit_keeps_off_axis_gun_raised_only_in_ready_pose(tmp_path,ready,on_target):
+    target=(300.,0.,100.)
+    dot=(300.,110.,100.) if on_target else (0.,110.,1000.)
+    memory=world(laser_dot=dot,enemy=target,aiming=ready,act_vt=C.READY_VT if ready else 0)
+    state=snap(memory,enemy=target)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    keys=combat.tick(state,state['player'],state['enemies'][0],1.)['hold']
+    if ready and on_target:
+        assert {'l1','r1'}<=keys
+        assert not ({'rleft','rright'} & keys)
+        assert combat.stats['aim_feedback']=='ray direction'
+    else:
+        assert 'rleft' in keys and not ({'l1','r1'} & keys)
+        assert 'swinging' in combat.stats['combat']

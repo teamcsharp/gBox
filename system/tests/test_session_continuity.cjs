@@ -47,3 +47,12 @@ test('closing or changing PiP during a delayed read cannot reopen the old game',
     assert.deepEqual(followed,[]);
   }
 });
+
+test('recovery commands follow the current same-game replacement and reject stale or mismatched targets',()=>{
+  const replaced={...old,replaced_by:fresh.session_id};
+  assert.equal(C.commandSession(old.session_id,[replaced,fresh]),fresh);
+  assert.equal(C.commandSession(fresh.session_id,[fresh]),fresh);
+  assert.equal(C.commandSession(old.session_id,[old]),null);
+  assert.equal(C.commandSession(old.session_id,[replaced,{...fresh,game_id:'other-game'}]),null);
+  assert.equal(C.commandSession(old.session_id,[replaced,{...fresh,worker_online:false}]),null);
+});

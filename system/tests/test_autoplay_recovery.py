@@ -4,6 +4,7 @@ import io
 import time
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 from gbox import screensaver as S
@@ -110,6 +111,30 @@ def test_a_refused_relaunch_is_noted_not_retried(monkeypatch):
     run = {"sid": "w-1", "bad_end": "black", "ctx": SimpleNamespace(server="http://cp", headers={}), "inp": None}
     T._bad_end(run, sleep=lambda s: None)
     assert run["recovery"].startswith("relaunch refused")
+
+
+@pytest.mark.parametrize('resumed', [False, True])
+def test_replacement_resume_decision_never_falls_back_to_another_start(monkeypatch, resumed):
+    http = Http(saved=False)
+    http.get = lambda *a, **kw: SimpleNamespace(json=lambda: {
+        'state': 'succeeded', 'output': {'session_id': 'w-2', 'autoplay_resumed': resumed}})
+    run = run_for(monkeypatch, http, bad='hung')
+    assert not any(url.endswith('/api/jobs') for _, url, _ in http.calls)
+    assert ('autoplay resumed by replacement' if resumed else 'autoplay was not resumed') in run['recovery']
+
+
+@pytest.mark.parametrize('status,body', [(409, {'detail': 'stopped'}), (200, {'id': 'aj', 'state': 'rejected'}),
+                                         (200, {})])
+def test_legacy_autoplay_restart_rejection_is_not_reported_as_started(monkeypatch, status, body):
+    http = Http(saved=False)
+    post = http.post
+    def respond(url, **kw):
+        if url.endswith('/api/jobs'):
+            return SimpleNamespace(status_code=status, json=lambda: body, text='stopped')
+        return post(url, **kw)
+    http.post = respond
+    run = run_for(monkeypatch, http, bad='hung')
+    assert 'autoplay restart refused' in run['recovery'] or 'autoplay restart was not accepted' in run['recovery']
 
 
 def test_the_screensaver_moves_on_from_a_black_game():

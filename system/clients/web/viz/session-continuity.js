@@ -45,6 +45,15 @@
     }
     return running(origin) ? origin : null;
   }
+  function commandSession(id, rows, anchor = null) {
+    const origin = (Array.isArray(rows) ? rows : []).find(s => s.session_id === id)
+      || (anchor?.session_id === id ? anchor : null);
+    const next = resolve(id, rows, origin);
+    if (!next || !running(next) || next.worker_online === false) return null;
+    // A replacement link may be stale/corrupt; a recovery command stays with the same known game.
+    if (next.session_id !== id && (!origin?.game_id || next.game_id !== origin.game_id)) return null;
+    return next;
+  }
   function create(io) {
     let busy = false, anchor = null, generation = 0;
     const selected = () => { const value = io.current(); return typeof value === 'string' ? {session_id:value} : value; };
@@ -67,7 +76,7 @@
     }
     return {poll, cancel:() => {generation++; anchor=null;}};
   }
-  const api = {resolve, create, hasPicture, picture};
+  const api = {resolve, commandSession, create, hasPicture, picture};
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.GBoxSessionContinuity = api;
 })(globalThis);

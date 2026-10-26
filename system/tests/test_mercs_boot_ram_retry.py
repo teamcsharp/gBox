@@ -56,16 +56,31 @@ def test_retry_honors_stop_flag_and_sends_no_boot_guess(monkeypatch):
     assert stats["boot_ram_status"]=="stopped" and len(sleeps)==2 and not sent
 
 
-def test_established_reader_failure_is_never_hidden_even_inside_boot_deadline(monkeypatch):
+def test_established_reader_failure_has_a_short_bound_and_preserves_error(monkeypatch):
     calls = []
     def screen(m):
         calls.append(1)
         if len(calls)==1:return {"where":"main_menu"}
         raise OSError(errno.EIO,"established read failed")
     now,sleeps,sleep = setup(monkeypatch,screen)
+    stats = {}
     with pytest.raises(OSError,match="established read failed"):
-        M.play(None,lambda _:None,lambda:False,m=object(),sleep=sleep,clock=lambda:now[0])
-    assert sleeps==[M.POLL_S]
+        M.play(None,lambda _:None,lambda:False,stats,m=object(),sleep=sleep,clock=lambda:now[0])
+    assert sum(sleeps)==2.+M.POLL_S
+    assert stats['native_read_status']=='timeout' and stats['native_read_retries']==8
+
+
+def test_established_menu_read_recovers_without_guessing_buttons(monkeypatch):
+    calls,inputs = [],[]
+    def screen(m):
+        calls.append(1)
+        if len(calls) in (2,3):raise OSError(errno.EAGAIN,'native transition')
+        return {'where':'main_menu' if len(calls)==1 else 'playing'}
+    now,sleeps,sleep = setup(monkeypatch,screen)
+    stats=M.play(None,inputs.extend,lambda:False,m=object(),sleep=sleep,clock=lambda:now[0])
+    assert not inputs and stats['rounds']==1
+    assert stats['native_read_status']=='ready' and stats['native_read_recoveries']==1
+    assert stats['native_read_retries']==2 and sum(sleeps)==.75
 
 
 def test_permanent_initial_error_is_not_retried_and_playing_failure_stays_visible(monkeypatch):

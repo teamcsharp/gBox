@@ -8,7 +8,8 @@
      mercmode a MercMode game runs on the chosen PC (turns MercMode on there if needed and waits for its launch)
      stream   its picture is fresh (asks that PC for a new encoder when it is not)
      pip      the game is shown in picture-in-picture
-   Nothing here stops or restarts a game; a restart of the Spark service only happens when the Spark itself is not answering. */
+   Automatic reconnects never restart the shared service. An explicit reconnect action may restart it after a full
+   minute without an answer; this allows a planned service restart to finish before considering another one. */
 (function (root) {
   'use strict';
   const STEPS = [
@@ -30,9 +31,10 @@
         await sleep(every);
       }
     }
-    async function spark() {
+    async function spark(allowRestart) {
       set('spark', 'run', 'Checking the Spark…');
-      if (await waitFor(async () => (await io.status())?.remote?.ready, 12000)) return set('spark', 'ok', 'The Spark answers');
+      if (await waitFor(async () => (await io.status())?.remote?.ready, 60000)) return set('spark', 'ok', 'The Spark answers');
+      if (!allowRestart) throw Object.assign(Error('The Spark is not answering. Automatic reconnect will keep checking; Try again can repair the connection.'), { step: 'spark' });
       set('spark', 'run', 'No answer: restarting gBox on the Spark…');
       try { await io.restartSpark(); } catch (error) { set('spark', 'run', 'Restart request failed (' + error.message + '); still waiting…'); }
       if (await waitFor(async () => (await io.status())?.remote?.ready, 120000, 2000)) return set('spark', 'ok', 'The Spark is back');
@@ -76,13 +78,13 @@
       await io.pipEnter(sid);
       set('pip', 'ok', 'Showing');
     }
-    async function run({ quiet = false } = {}) {
+    async function run({ quiet = false, automatic = false } = {}) {
       if (busy) return busy;
       busy = (async () => {
         state.steps = STEPS.map(([id, label, sub]) => ({ id, label, sub, status: 'wait', detail: '' })); state.done = false; state.error = '';
         io.show?.(!quiet);
         try {
-          await spark();
+          await spark(!automatic);
           if (await library() === 'reloading') return clone();
           io.forget(RESUME_KEY);
           const sid = await mercmode();

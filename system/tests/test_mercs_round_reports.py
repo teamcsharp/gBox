@@ -257,3 +257,21 @@ def test_report_routes_are_authenticated_and_send_no_job(evidence):
     result=client.get('/api/mercs/round-reports',headers={'authorization':'Bearer fixture'}).json()
     assert result['target']=='sparkDeux' and len(result['reports'])==1
     assert e.store.all('job')==before
+
+
+def test_recent_report_limit_ignores_old_report_reconciliation(evidence):
+    e=evidence
+    old=e.runner.materialize(e.runner.ingest(TITLE,e.record()))
+    e.clock[0]=1100.
+    newer=e.runner.materialize(e.runner.ingest(TITLE,e.record(rid='b'*32,at=1090.)))
+    e.clock[0]=1200.
+    newest=e.runner.materialize(e.runner.ingest(TITLE,e.record(rid='c'*32,at=1190.)))
+    # This is the real status update path, which replaces old's SQLite row.
+    e.clock[0]=1300.
+    e.runner.reconcile(old)
+    assert e.store.recent(R.KIND,1)[0]['id']==old['id']
+    app=FastAPI()
+    R.install(app,e.store,SimpleNamespace(data_dir=e.root),lambda:None)
+    result=TestClient(app).get('/api/mercs/round-reports?limit=2').json()
+    assert [r['id'] for r in result['reports']]==[newest['id'],newer['id']]
+    assert e.store.get(R.KIND,old['id'])['updated']==1300.

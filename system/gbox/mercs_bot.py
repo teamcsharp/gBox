@@ -492,6 +492,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     first_screen_read = False
     boot_read_started = clock()
     boot_read_attempts = 0
+    from .mercs.read_retry import NativeReadRetry
+    menu_read_retry = NativeReadRetry(stats, 'menu')
     previous_assignment = None
     try:
         while not stopped():
@@ -506,7 +508,18 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 # RPCS3 can expose its process before the title's guest pages
                 # exist. Retry those reads only during initial attachment; an
                 # established game's RAM failure remains an observable error.
-                if first_screen_read or exc.errno not in BOOT_RAM_TRANSIENT:
+                if first_screen_read:
+                    # An established title can briefly lose a readable page
+                    # during a native transition. Keep its input owner and
+                    # expose the pause; a persistent failure still ends the run.
+                    if runtime is not None:
+                        runtime.release()
+                    delay = menu_read_retry.failed(exc, clock())
+                    if delay is None:
+                        raise
+                    sleep(delay)
+                    continue
+                if exc.errno not in BOOT_RAM_TRANSIENT:
                     raise
                 boot_read_attempts += 1
                 waited = max(0.,clock()-boot_read_started)
@@ -520,6 +533,7 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 sleep(min(POLL_S,max(0.,BOOT_RAM_READ_S-waited)))
                 continue
             first_screen_read = True
+            menu_read_retry.recovered(clock())
             if boot_read_attempts:
                 stats.update(boot_ram_status="ready",boot_ram_wait_s=round(max(0.,clock()-boot_read_started),2))
             human_observation = team is not None and team['config']['role'] == 'observe_human'
@@ -599,6 +613,7 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 break
             sleep(POLL_S)
     finally:
+        menu_read_retry.stopped()
         if runtime is not None:
             runtime.release()
         if not first_screen_read and stats.get("boot_ram_status")=="waiting":

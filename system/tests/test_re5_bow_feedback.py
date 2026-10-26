@@ -162,6 +162,34 @@ def test_near_majini_keeps_the_rotten_eggs_flying_instead_of_repositioning(tmp_p
     assert not combat.needs_firing_position and throws>=10
 
 
+@pytest.mark.parametrize('wid',[0x0F,0x36])
+def test_near_target_with_static_off_axis_aim_releases_for_reacquisition(tmp_path,wid):
+    memory,state=scene(wid)
+    state['enemies'][0]['pos']=(0.,0.,600.)
+    state['camera']['at']=(1000.,140.,600.)
+    combat=C.Combat(memory,{},learn_dir=tmp_path)
+    for now in (1.,2.,3.):
+        keys=tick(combat,state,now)['hold']
+        assert 'l1' in keys and 'r1' not in keys
+    assert tick(combat,state,3.6)=={'hold':set()}
+    assert combat.needs_firing_position and combat.stats['shots']==0
+
+
+def test_near_bow_reacquisition_yields_actual_navigation_ticks(tmp_path):
+    memory,state=scene()
+    state['enemies'][0]['pos']=(0.,0.,600.)
+    state['camera']['at']=(1000.,140.,600.)
+    bot=R.Bot(memory,clock=lambda:10.,learn_dir=tmp_path)
+    assert 'l1' in bot._tick(dict(state))['hold']
+    bot.clock=lambda:12.6
+    assert bot._tick(dict(state))=={'hold':set()}
+    bot.clock=lambda:12.7
+    action=bot._tick(dict(state))
+    assert 'lup' in action['hold'] and not ({'l1','r1'} & action['hold'])
+    assert bot._following_route and bot.stats['phase']=='pursue'
+    assert bot.stats['shots']==0
+
+
 def test_bow_vertical_error_keeps_aim_and_never_turns_away_by_body_heading(tmp_path):
     memory,state=scene()
     state['player']['rot']=math.radians(50)

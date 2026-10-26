@@ -341,7 +341,6 @@ class MjpegStream:
         self._fails, self._next_spawn = 0, 0.0
         self.restarts += 1
         self._event("encoder_restart", restart=self.restarts, reason=reason)
-        self.last_frame = self.clock()
         self._spawn()
         return {"restarted": True, "restarts": self.restarts}
 
