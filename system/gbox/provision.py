@@ -730,13 +730,38 @@ def switch_linux_home(cfg: Config) -> Path:
     return cfg.runtime / "eden-linux"
 
 
+SWITCH_URL_STUB = "#!/bin/sh\n# gBox: Eden sessions never open a host browser (the Switch web applet's URLs)\nexit 0\n"
+
+
+def switch_linux_stub_dir(cfg: Config) -> Path:
+    """Folder put first on Eden's PATH: an xdg-open that does nothing (ensure_switch_linux writes it)."""
+    return switch_linux_home(cfg) / "bin"
+
+
 def switch_linux_env(cfg: Config) -> dict:
     """Eden keeps keys, nand, sdmc, load and its log under $XDG_DATA_HOME/eden, qt-config.ini under $XDG_CONFIG_HOME/eden
     and shader caches under $XDG_CACHE_HOME/eden (src/common/fs/path_util.cpp, fs_paths.h): gBox's own here, never the
-    user's ~/.local/share. Eden's docs call Wayland problematic and keep a "Force X11" switch: QT_QPA_PLATFORM=xcb."""
+    user's ~/.local/share. Eden's docs call Wayland problematic and keep a "Force X11" switch: QT_QPA_PLATFORM=xcb.
+    A game's web applet (RE5's first-boot "Open the privacy policy webpage?") makes Eden call QDesktopServices::openUrl,
+    which runs xdg-open, and that opened the Spark user's Firefox on the session display (2026-10-26). Qt picks xdg-open
+    from PATH before $BROWSER, so a no-op xdg-open goes first on PATH (after the AppImage's own bin folder, which has
+    none) and $BROWSER names it too. DISABLE_AUTO_UPDATES keeps the AppImage's self-updater hook from ever fetching."""
     home = switch_linux_home(cfg)
+    stub = switch_linux_stub_dir(cfg)
     return {"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
-            "XDG_DATA_HOME": str(home / "data"), "QT_QPA_PLATFORM": "xcb", **linux_audio_env()}
+            "XDG_DATA_HOME": str(home / "data"), "QT_QPA_PLATFORM": "xcb", **linux_audio_env(),
+            "PATH": os.pathsep.join([str(stub), os.environ.get("PATH", os.defpath)]),
+            "BROWSER": str(stub / "xdg-open"), "DEFAULT_BROWSER": str(stub / "xdg-open"), "DISABLE_AUTO_UPDATES": "1"}
+
+
+def switch_linux_url_stub(cfg: Config) -> Path:
+    """Write the no-op xdg-open (switch_linux_env) if it is missing or changed; returns its path."""
+    path = switch_linux_stub_dir(cfg) / "xdg-open"
+    if not path.is_file() or path.read_text(errors="replace") != SWITCH_URL_STUB:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(SWITCH_URL_STUB)
+    path.chmod(0o755)
+    return path
 
 
 def switch_linux_dir(cfg: Config) -> Path:
@@ -837,6 +862,7 @@ def ensure_switch_linux(cfg: Config, progress=None) -> dict:
         raise ToolUnavailable("no prod.keys for the Switch emulator: set switch_keys in gbox.local-<hostname>.toml or "
                               "keep prod.keys at the Switch library's root (the share's _switch/prod.keys)")
     copied = switch_install_keys(keys, switch_linux_dir(cfg) / "keys")
+    switch_linux_url_stub(cfg)
     return _receipt("eden", "ok", f"{exe}; keys from {keys}" + (f" ({', '.join(copied)} copied)" if copied else ""))
 
 

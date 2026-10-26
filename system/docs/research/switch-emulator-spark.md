@@ -2,7 +2,8 @@
 
 Decision, 2026-10-26: **Eden**, the yuzu continuation. gBox runs it through `gbox.adapters.SwitchLinuxAdapter`
 (provisioned by `gbox.provision.ensure_switch_linux`). Backup: Citron NEO. Everything below was read on the projects'
-own pages on 2026-10-26; "not verified" means exactly that. Nothing has been run on the Spark yet (tickets #3841, #3842).
+own pages on 2026-10-26; "not verified" means exactly that. First live runs on the Spark: "Live on the Spark with
+Eden v0.2.1" below (tickets #3841, #3842, #3954, #3955).
 
 ## Why Eden
 
@@ -73,17 +74,53 @@ update `5d50031f5c8057b1` (sha1 of `quickswap-switch:<relative path>`).
   to import yuzu/Citron/Sudachi/Suyu/Ryujinx folders only when it finds them under the same XDG roots.
 - Save states: Eden (yuzu) has none; rewind stays unsupported for Switch.
 
+## Live on the Spark with Eden v0.2.1 (2026-10-26)
+
+Eden v0.2.1 gcc-standard (sha256 494014f6...) from gBox's Eden home. Keys from the share, **no firmware installed**:
+neither game needs it to boot or play.
+
+**Boot crash (both games) and the fix.** With multi-core on, RE5 and RE6 stopped 3-4 s after Eden's "Launching" screen,
+right after the game's HID init (`SetPollingMode` in the log). RE5's main NSO creates an npad style-set watcher thread
+(main+0xCE7EA0: `BindNpadStyleSetUpdateEvent`, `CreateThread`, `StartThread`). The thread's first call
+(main+0xCE7FC0) is `nn::os::SetThreadCoreMask(self, 1, 0b110)`: it moves itself off core 0. From there Eden v0.2.1
+loses that thread's state. svcSetThreadCoreMask returns InvalidHandle (0xE401) for a handle that `CreateThread` had
+just filled in. Eden then dispatches SignalProcessWideKey twice and Break once with the stale registers of that same
+SVC: "Unmapped Write32 @ 0xE400", then `svcBreak` reason 0xE401 info 1, 6 at PC sdk+0x371658, the instruction after
+`svc #0xF`. Other threads jump to PC=4, and an IPC "SFCI magic" assert or a SIGSEGV follows. NCE and Dynarmic (debug
+launch) both fail, and the symptoms change from run to run, so this is a race in Eden's multi-core thread migration,
+not a setting. `game_settings.cpp` applies nothing to these titles; the line "Applied game settings for title ID" is
+only a log line. **Single-core (`[Core] use_multi_core=false`) boots both games**, so gBox writes it per title into
+Eden's per-game file (`EDEN_TITLE_SETTINGS`, `custom/<TITLE ID>.ini` with the `\use_global=false` / `\default=false`
+twins Eden writes itself). Every other game keeps multi-core.
+
+**RE6's v131072 update.** Eden v0.2.1 scans `[UI] Paths\external_content_dirs` for update/DLC NSPs at boot. gBox
+points it at the game's own folder when `switch_nsp.companions()` finds an update or DLC there, so nothing is
+installed into the NAND. The log confirms it: "ExeFS: Update (v0.2.0) applied successfully", main build id
+061D2A06...
+
+**Timings and speed** (windowed test runs, Eden reniced +10, Spark load average 21-32 from the operator's MercMode
+sessions):
+- RE5: title screen about 35 s after launch, menus at 60 FPS / 100 %. First boot: "No saved data was found" creates
+  the save, then the game asks "Open the privacy policy webpage?". Answer B (No). A, or Eden's web applet, ran
+  xdg-open, which opened the Spark user's Firefox on the session display. gBox now puts a no-op `xdg-open` first on
+  Eden's PATH (`provision.switch_linux_env`).
+- RE5 No Mercy is selectable from a fresh save: Play Game > Extra Content > The Mercenaries United > Start >
+  **No Mercy** ("more enemies than the original") > Stage select (Public Assembly) > Character select (Chris BSAA). A
+  round started: timer 2:00:00 counting down, score 000000, Majini on screen. Single-core gameplay measured about
+  36 FPS at 66 % speed, with stalls on first-time shader compiles (async shaders off); the death screen ran 58 FPS at
+  93 %. Not yet good enough for MercMode, so next: other emulators and Eden settings.
+- RE6 (with the update): "PRESS ANY BUTTON" about 31 s after launch, 60 FPS.
+
 ## Caveats and what is still unverified
 
 1. Eden's release page publishes no checksum for the AppImage, so gBox does **not** download it. Place
    `Eden-Linux-v0.2.1-aarch64-gcc-standard.AppImage` on the Spark and set `switch_appimage = "<path>"` in
    `gbox.local-lilspark.toml`; gBox extracts it once (`--appimage-extract`, no FUSE at launch).
 2. Firmware: Eden's quick start lists "firmware dumped from your console" as a prerequisite (Tools > Install
-   Firmware); whether RE5/RE6 boot without it is not verified. `/mnt/gbox/quickswap2/Emulation/_switch/backup/` was
-   not inspected (operator's folder).
-3. The RE6 v131072 update is a separate NSP: Eden installs updates into its NAND (`nand/user/Contents/registered`)
-   through its GUI; gBox refuses to "launch" the update file (`gbox.switch_nsp.launchable`) and a NAND install path
-   is a follow-up ticket. The base game boots without it.
+   Firmware), but RE5 and RE6 boot and play without it (2026-10-26). `/mnt/gbox/quickswap2/Emulation/_switch/backup/`
+   holds a raw NAND backup of the operator's console (BOOT0/1, rawnand.bin.*), not a firmware folder. It was not used.
+3. The RE6 v131072 update is a separate NSP. gBox refuses to "launch" the update file (`gbox.switch_nsp.launchable`)
+   and has Eden apply it from the game's folder (external content folders, above); no NAND install is needed.
 4. The Spark is busy (load ~25) with the operator's live game: the first Eden run there must be short, `nice -n 15`,
    on a private Xvfb display, and torn down; it was not run on 2026-10-26. The i9-NUC (the only PC for agent test
    sessions) was offline, so no Windows run either.
