@@ -8,6 +8,13 @@ Source deployment is manual: run `scripts/deploy_main.sh --deploy` after request
 file transfer or restart, including pending restarts. Replace installed copies of the old script and remove
 their cron entries; a repository change alone cannot disable an older installed deployment job.
 
+"Rebuild & relaunch <PC>" in the desktop app (the PiP right-click menu and the Tasks PC panel; `POST
+/api/workers/{name}/rebuild`, tool `rebuild_node`, `gbox/node_rebuild.py`) does not bypass this gate: on the Spark it
+reports the deployed main commit and whether runtime code waits for a restart, reinstalls the venv's packages, runs
+`gbox setup` as a self-check and then restarts `gbox.service` only after the same idle check the deploy uses (a busy
+Spark defers; `force` restarts anyway). The requesting app shows the console (`GET /api/jobs/{jid}/console`) and waits
+for the worker to come back.
+
 ## Control plane (bare metal)
 
 ```sh
