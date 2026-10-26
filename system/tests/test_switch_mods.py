@@ -165,6 +165,18 @@ def test_a_new_build_copies_only_the_overlay_folder(tmp_path):
         SM.copy_build(c, GID, "re5_chris", "bad name")
 
 
+def test_an_overlay_build_honours_the_no_builds_on_the_system_drive_policy(tmp_path, monkeypatch):
+    from gbox import storage_policy
+
+    def refuse(cfg, path, what, **kw):
+        raise storage_policy.SystemDriveRefused(f"{what}: {path} is on C:")
+    monkeypatch.setattr(storage_policy, "require_off_system", refuse)
+    c = cfg(tmp_path)
+    with pytest.raises(storage_policy.SystemDriveRefused, match="build re5_chris"):
+        SM.write_files(c, GID, "re5_chris", {"arc/x": {"bytes": b"x"}}, create=CREATE)
+    assert not (c.cache / "mods" / GID / "re5_chris").exists()
+
+
 def test_paths_are_romfs_unless_they_name_an_overlay_folder():
     assert SM.norm_path("arc/pl/pl00.arc") == "romfs/arc/pl/pl00.arc"
     assert SM.norm_path("\\RomFS\\arc\\x.arc") == "romfs/arc/x.arc" and SM.norm_path("exefs/main") == "exefs/main"

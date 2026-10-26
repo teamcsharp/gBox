@@ -35,13 +35,17 @@ same code, which Eden inherited.
 
 ```
 [DisabledAddOns]
+; RE5: title id 010018100CD46000, written in decimal
 1\title_id\default=false
-1\title_id=72089620779360256          # 010018100CD46000, decimal
+1\title_id=72084051251716096
 1\disabled\1\d\default=false
 1\disabled\1\d=re5_wesker_build
 1\disabled\size=1
 size=1
 ```
+
+An update applies before the mods (`PatchRomFS`: the update's RomFS, then `ApplyLayeredFS`), so an RE6 overlay
+replaces files of the v131072 game that gBox loads from the game's folder.
 
 Every value has its `\default=false` twin. A missing twin reads as the default in Eden (title 0, name `""`), so the
 entry would be silently ignored. Values with Eden's special characters (`~` among them) are written quoted, as
@@ -169,7 +173,9 @@ config untouched.
 
 ## Needs a live check
 
-Nothing here has run against a real emulator yet. Eden has not been run on the Spark at all (#3841).
+Eden v0.2.1 boots RE5 and RE6 to gameplay on the Spark (2026-10-26, single-core per title, RE6's update from the
+game's folder: docs/research/switch-emulator-spark.md). The overlay path itself has not run against a real emulator
+yet; only the tests above have.
 
 1. Eden on the Spark boots RE5 with an overlay build enabled, and `eden_log.txt` shows
    `RomFS: LayeredFS patches applied successfully`. With the original selected that line is absent.

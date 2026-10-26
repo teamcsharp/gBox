@@ -431,6 +431,8 @@ def create_build(cfg, game_id: str, name: str, title_id: str, *, game_title: str
             return folder
         if meta or (folder.exists() and any(folder.iterdir())):
             raise ValueError(f"{name} already exists as another kind of build of {game_id}: choose another name")
+        from . import storage_policy                   # no build on a Windows system drive (operator 2026-10-26)
+        storage_policy.require_off_system(cfg, folder, f"build {name}")
         folder.mkdir(parents=True, exist_ok=True)
         _write_meta(folder, new_meta(game_id, name, title_id, game_title=game_title, base=base, kind=kind, by=by))
     return folder
@@ -695,6 +697,8 @@ def copy_build(cfg, game_id: str, src: str, dst: str, *, by: str = "") -> dict:
     d = build_dir(cfg, game_id, dst)
     if d.exists():
         raise ValueError(f"{dst} already exists")
+    from . import storage_policy                       # no build on a Windows system drive (operator 2026-10-26)
+    storage_policy.require_off_system(cfg, d, f"build {dst}")
     tmp = d.with_name(f".{dst}.tmp-{uuid.uuid4().hex[:8]}")
     tmp.mkdir(parents=True)
     try:
