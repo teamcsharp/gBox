@@ -309,6 +309,18 @@ def test_kept_state_survives_with_the_new_classes(pkg):
     assert cov._C is old_cov and type(cov._C) is cov.Cov and cov._C.who() == "new", "a lazy singleton: kept, new class"
 
 
+def test_a_rollback_gives_kept_objects_their_old_classes_back(pkg):
+    cov = sys.modules[pkg.m("cov")]
+    kept = cov.get()
+    old_cls = type(kept)
+    pkg.write("cov.py", COV.replace("return 'old'", "return 'new'"))
+    p = H.plan([pkg.m("cov")], allowed=pkg.allowed, registry={})
+    done = H.swap(p, keep={pkg.m("cov"): ("_C",)})
+    assert kept.who() == "new" and done.rebound == ((kept, old_cls),)
+    H.restore(done)
+    assert type(kept) is old_cls and kept.who() == "old" and cov.Cov is old_cls and cov._C is kept
+
+
 def test_a_round_preparation_makes_the_reload_wait_then_answer_busy_with_nothing_changed(pkg):
     host = FakeHost(pkg.m("bot"))
     host.prepare = True

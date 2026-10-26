@@ -387,22 +387,36 @@ def _carry(mod, snap: dict, names) -> list:
     return kept
 
 
-def _rebind(obj) -> None:
-    """An object kept across the reload whose class was redefined becomes an instance of the new class."""
+def _rebind(obj):
+    """An object kept across the reload whose class was redefined becomes an instance of the new class. Returns the old
+    class when it did (restore() puts it back)."""
     if not _instance(obj):
-        return
+        return None
     cls = type(obj)
     mod = sys.modules.get(getattr(cls, "__module__", ""))
     new = getattr(mod, cls.__qualname__, None) if mod is not None and "." not in cls.__qualname__ else None
     if isinstance(new, type) and new is not cls:
         try:
             obj.__class__ = new
+            return cls
         except TypeError:
             pass
+    return None
+
+
+class Swapped(list):
+    """swap()'s record: [(module, old dict)] in reload order, and rebound = [(kept object, its old class)]."""
+    rebound: tuple = ()
 
 
 def restore(done) -> None:
-    """The old module dicts back, newest first (a failed reload, or rollback after a bot died on the new code)."""
+    """The old module dicts back, newest first (a failed reload, or rollback after a bot died on the new code); kept
+    objects get their old classes back."""
+    for obj, cls in reversed(getattr(done, "rebound", ())):
+        try:
+            obj.__class__ = cls
+        except TypeError:
+            pass
     for mod, snap in reversed(done):
         extra = set(mod.__dict__) - set(snap)
         mod.__dict__.update(snap)
@@ -410,11 +424,11 @@ def restore(done) -> None:
             mod.__dict__.pop(k, None)
 
 
-def swap(p: Plan, keep=None) -> list:
+def swap(p: Plan, keep=None) -> Swapped:
     """importlib.reload every planned module in order, carrying KEEP. Any exception restores all of them and raises
-    Refused. Returns [(module, old dict)] for restore()."""
+    Refused. Returns the record restore() undoes."""
     keep = KEEP if keep is None else keep
-    done, kept = [], []
+    done, kept = Swapped(), []
     for name in p.names:
         mod = sys.modules[name]
         snap = dict(mod.__dict__)
@@ -422,13 +436,12 @@ def swap(p: Plan, keep=None) -> list:
         try:
             importlib.reload(mod)
         except BaseException as exc:                       # noqa: BLE001 - every module comes back as it was
-            restore(done + [(mod, snap)])
+            restore([*done, (mod, snap)])
             raise Refused(f"{name} failed to reload: {type(exc).__name__}: {exc}"[:400], name) from exc
         done.append((mod, snap))
         names = (*keep.get(name, ()), *(snap.get("RELOAD_KEEP") or ()), *(mod.__dict__.get("RELOAD_KEEP") or ()))
         kept += _carry(mod, snap, names)
-    for obj in kept:
-        _rebind(obj)
+    done.rebound = tuple((obj, old) for obj in kept if (old := _rebind(obj)) is not None)
     return done
 
 
