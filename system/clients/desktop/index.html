@@ -1264,6 +1264,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/re4-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
+<script src="../web/viz/rebuild-panel.js"></script>
 <script src="../web/viz/picture-fit.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -1286,7 +1287,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
   /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
   #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
@@ -2429,11 +2430,17 @@ async function testPcMenu(x, y) {                             // which PCs backg
         <div class="mut" style="font-size:11px;margin:4px 0">CPU ${pct(resources.cpu_percent)} / ${gpu} / RAM ${pct(resources.memory_percent)}</div>
         <label style="display:flex;gap:8px;align-items:center">Admit work below <input type="range" data-budget="${esc(w.name)}" min="10" max="90" step="5" value="${Number(w.budget_percent || 70)}"><span>${Number(w.budget_percent || 70)}%</span></label>
         <div role="status" style="font-size:11px;margin-top:4px">${esc(admission.reason || 'Ready for queued background work.')}</div>
+        <button type="button" data-rebuild="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="Update this PC's code and packages, self-check, then restart its worker and gBox app; its bot games are saved and closed first (the operator's own game needs force)">⟳ Rebuild &amp; relaunch ${esc(w.name)}</button>
       </div>`;
     }).join('') || '<div class="mut">No workers are registered.</div>';
     fitMenu(m, e.clientX, e.clientY, 8, 40); };
   const r = await gbox.api('/api/testing/workers'); if (r.ok) render(r.data); else m.querySelector('[data-list]').textContent = r.error;
   m.oninput = ev => { const range = ev.target.closest('input[data-budget]'); if (range) range.nextElementSibling.textContent = range.value + '%'; };
+  m.onclick = ev => {                                           // "⟳ Rebuild & relaunch <PC>" (gbox/node_rebuild.py): the panel follows it
+    const b = ev.target.closest('button[data-rebuild]'); if (!b) return;
+    m.style.display = "none";
+    rebuildNode(b.dataset.rebuild).catch(error => toast(`Could not rebuild ${b.dataset.rebuild}: ${error.message}`));
+  };
   m.onchange = async ev => {
     const control = ev.target.closest('input[data-w], input[data-budget]'); if (!control) return;
     control.disabled = true;
@@ -3658,7 +3665,7 @@ function gameOutputPlace(){
 }
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_HOLES = ".piprz, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -4199,7 +4206,9 @@ function pipMenu(x, y) {
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
-                 ["fixgame", "⟳ Report & fix (relaunch this game)"], ["-"],
+                 ["fixgame", "⟳ Report & fix (relaunch this game)"],
+                 // "⟳ Rebuild & relaunch <PC>": update that PC's code + packages, self-check, restart its worker and app (gbox/node_rebuild.py)
+                 ...rebuildPcItems().map(p => [`rebuild:${p.name}`, esc(p.label)]), ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
                  ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
@@ -4357,6 +4366,7 @@ async function gameAction(a) {
   try {
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
+    if (a.startsWith("rebuild:")) return rebuildNode(a.slice(8));           // "⟳ Rebuild & relaunch <PC>"
     if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
       const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
@@ -6483,6 +6493,49 @@ function botDemoItems() {
   return window.GBoxBotDemo ? GBoxBotDemo.pcs(BOTPCS.list, S?.workerName) : [];
 }
 setTimeout(() => { try { botDemoItems(); } catch {} }, 5000);   // the list is there by the first right-click
+// ---- "⟳ Rebuild & relaunch <PC>" (operator 2026-10-26; gbox/node_rebuild.py, ../web/viz/rebuild-panel.js) ----
+// POST /api/workers/<name>/rebuild queues rebuild_node on that PC (its bot/agent games are saved and closed first; the
+// operator's own game refuses unless forced), then a PiP-sized panel follows the job's console (GET /api/jobs/{jid}/console:
+// monospace lines, a loading bar, the npx spinner with the current step) and the PC's return in /api/workers. Over the
+// PiP stream in compact mode, a floating panel otherwise; back online, the stream watchdog reconnects the PiP's stream.
+function rebuildPcItems() {
+  botDemoItems();                                               // refreshes BOTPCS.list in the background
+  return window.GBoxRebuildPanel ? GBoxRebuildPanel.pcs(BOTPCS.list, S?.workerName, compactSession?.detail?.worker_name) : [];
+}
+let rebuildPanel = null;
+const rebuildApi = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'request failed'); return r.data; };
+async function rebuildNode(name, force = false) {
+  const ws = (await gbox.api('/api/workers').catch(() => null))?.data;
+  if (Array.isArray(ws)) { BOTPCS.list = ws; BOTPCS.at = Date.now(); }
+  const before = (Array.isArray(ws) ? ws : BOTPCS.list).find(w => w.name === name) || {};
+  let r;
+  try { r = await rebuildApi(`/api/workers/${encodeURIComponent(name)}/rebuild`, { force }); }
+  catch (error) {
+    let detail = error.message; try { detail = JSON.parse(detail.replace(/^\d{3}\s+/, '')).detail || detail; } catch {}
+    if (!force && /use force/i.test(detail)) {                  // the operator is playing there: their call
+      toast(detail, 15000, { id: 'rebuild:' + name, actions: [[`Rebuild ${name} anyway`, () => rebuildNode(name, true).catch(e => toast('⚠ ' + e.message, 6000))]] });
+      return;
+    }
+    throw Error(detail);
+  }
+  const stopped = r.stopped?.length || 0;
+  toast(`Rebuilding ${name}…` + (stopped ? ` (${stopped} game session${stopped > 1 ? 's' : ''} saved and closed first)` : ''));
+  rebuildPanelOpen({ name, workerId: r.worker?.id || before.id || null, jobId: r.job_id });
+}
+function rebuildPanelOpen(target) {
+  rebuildPanel?.close();
+  if (!$('#rebuild-panel-style')) { const style = document.createElement('style'); style.id = 'rebuild-panel-style'; style.textContent = GBoxRebuildPanel.CSS; document.head.append(style); }
+  const host = document.createElement('div'); document.body.append(host);
+  const panel = rebuildPanel = GBoxRebuildPanel.mount(host, { ...target, api: rebuildApi, pip: () => COMPACT.on,
+    onOnline: () => {                                            // the PC is back: the stream watchdog reconnects the PiP's stream
+      toast(`✓ ${target.name} is back online`);
+      recoverStreams().catch(() => {});
+      compactContinuity.poll();
+      BOTPCS.at = 0; botDemoItems();
+    },
+    onClose: () => { if (rebuildPanel === panel) rebuildPanel = null; } });
+  if (!COMPACT.on) dragAnywhere(host);                           // the floating panel moves; over the PiP it fills the window
+}
 function botDemoInView(gid, pc) {
   if (!gid || !pc) return;
   document.querySelector('aside button[data-s="play"]')?.click();

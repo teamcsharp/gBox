@@ -8,6 +8,7 @@ import threading
 import time
 
 PREFIX = 'GBOX_CLIENT_CONTROL:'
+CURRENT = None   # the desktop app's control pipe when it owns this worker (gbox.node_rebuild asks it to relaunch the app)
 
 
 class PipeLines:
@@ -84,11 +85,13 @@ class Control:
 
 
 def from_environment():
+    global CURRENT
     secret = os.environ.get('GBOX_CLIENT_CONTROL', '')
     if not re.fullmatch(r'[a-f0-9]{64}', secret) or sys.stdin is None or sys.stdin.isatty():
         return None
     control = Control(secret, PipeLines(sys.stdin.fileno()), lambda line: print(line, flush=True))
     control.start()
+    CURRENT = control
     return control
 
 

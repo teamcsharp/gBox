@@ -43,7 +43,7 @@ function consume(file, args, { now = Date.now } = {}) {
   } catch (error) { return { requested: true, value: null, error: error.message }; }
 }
 
-function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, verifyPid } = {}) {
+function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, verifyPid, onRelaunch } = {}) {
   let ready = false, peerPid = null, verifying = null, buffer = '', pending = null, closed = false;
   function finish(error) {
     const p = pending; pending = null;
@@ -56,6 +56,8 @@ function workerChannel(child, secret, { now = Date.now, setTimer = setTimeout, c
   function accept(v) {
     if (closed) return;
     if (v.event === 'ready') { ready = true; peerPid = v.pid; }
+    // the verified worker, rebuilt from another gBox instance (gbox/node_rebuild.py), asks this app to relaunch
+    if (v.event === 'relaunch' && typeof onRelaunch === 'function') { try { onRelaunch(v); } catch {} }
     if (!pending || v.id !== pending.id) return;
     if (v.event === 'stopping') pending.accepted = true;
     if (v.event === 'refused') finish(String(v.reason || 'The local worker is busy.').slice(0, 240));

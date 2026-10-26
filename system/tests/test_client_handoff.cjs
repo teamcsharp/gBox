@@ -239,3 +239,16 @@ test('queued and in-flight native attach or GPU capture refuse idle handoff befo
   ctx.clientHandoffBusy=false;ctx.syncGameSurface=async()=>{throw Error('capture failed');};
   await assert.rejects(sync({}, {pid:123}),/capture failed/);assert.equal(ctx.embedSyncPending,0);
 });
+
+test('a relaunch request (rebuild_node) is honoured only from the verified worker peer',()=>{
+  const seen=[];const x=pipe({onRelaunch:v=>seen.push(v)});
+  x.feed({event:'relaunch',job:'early',delay_s:6});assert.deepEqual(seen,[],'before the worker proved itself nothing relaunches');
+  x.feed({event:'relaunch',job:'wrong-secret',secret:'b'.repeat(64)});assert.deepEqual(seen,[]);
+  x.feed({event:'ready'});assert.equal(x.control.ready(),true);
+  x.feed({event:'relaunch',job:'j1',delay_s:6,reason:'rebuilt'});
+  assert.equal(seen.length,1);assert.equal(seen[0].job,'j1');assert.equal(seen[0].delay_s,6);assert.equal(seen[0].reason,'rebuilt');
+  x.feed({event:'relaunch',job:'other-process',pid:99});assert.equal(seen.length,1,'another pid on the pipe is ignored');
+  const quiet=pipe();quiet.feed({event:'ready'});quiet.feed({event:'relaunch',job:'j2'});assert.equal(quiet.control.ready(),true,'no handler: nothing happens');
+  const throwing=pipe({onRelaunch:()=>{throw Error('boom');}});throwing.feed({event:'ready'});throwing.feed({event:'relaunch',job:'j3'});
+  assert.equal(throwing.control.ready(),true,'a failing handler never breaks the channel');
+});
