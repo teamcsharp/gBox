@@ -2958,8 +2958,8 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
-        if t.name == "mercmode" and inp.get("keep_warm") is None:
-            inp.pop("keep_warm", None)                 # an older worker's mercmode tool forbids the field, even as null
+        if t.name == "mercmode":                       # an older worker's mercmode tool forbids unknown fields, even as null
+            inp = {k: v for k, v in inp.items() if v is not None}
         if t.name == "evidence_capture":              # PR evidence: an in-server job driving agent test sessions
             return evidence_job(inp, actor)
         if t.name == "scene_capture":
