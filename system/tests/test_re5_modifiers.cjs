@@ -504,7 +504,7 @@ test('shell binds controls to the exact currently opened session and authenticat
   const shell = fs.readFileSync(require('node:path').join(__dirname, '../clients/web/index.html'), 'utf8');
   assert.match(shell, /<script src="\/viz\/re5-modifiers\.js"><\/script>/);
   assert.match(shell, /viewed\?\.session_id === anchor\?\.closest\?\.\("#session-head"\)\?\.dataset.sid/);
-  assert.match(shell, /GBoxRE5Modifiers\.mount\(host, \{ session: current, api \}\)/);
+  assert.match(shell, /GBoxRE5Modifiers\.mount\(host, \{ session: current, api,/);
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
 

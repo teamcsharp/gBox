@@ -2672,7 +2672,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k==='apiUrl'?S.configuredApiUrl||S[k]:S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load · F5 refresh client (a bot game keeps its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 refresh client (a bot game keeps its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -4203,7 +4203,8 @@ function pipMenu(x, y) {
                  ["fixgame", "⟳ Report & fix (relaunch this game)"], ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
-                 ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
+                 ["replay", "🎬 Save the last 3 minutes (replay)  F1"],
+                 ["save", "💾 Save state  F2", noStates], ["load", "📂 Load state  F4", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
                  ["strip", "⏪ Rewind / save-state film strip", noStates], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
@@ -4224,6 +4225,8 @@ function pipMenu(x, y) {
     const b = m.opening === opening && m.querySelector('[data-a="slot+"]');
     if (b && !b.disabled) b.textContent = `Save slot: ${slot}  ▸ next`;
   });
+  const replayItem = m.querySelector('[data-a="replay"]');
+  if (replayItem && !COMPACT.on && !EMB.sid) replayItem.remove();   // the replay needs a game shown here (PiP or docked)
 }
 // MercMode in the PiP menu (operator 2026-10-24): a toggle between staying in this game and rotating across titles,
 // and an arrow opening the titles it rotates through. Every change is one exact host setting; nothing launches here.
@@ -4384,6 +4387,7 @@ async function gameAction(a) {
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
     if (a === "autoplay") return await f3Autobot();               // the same as F3: the shown game, through the control plane
+    if (a === "replay") return await f1Replay();                  // the same as F1
     if (a === "save" || a === "load") await savedSlot();            // this game's kept save slot, once per shown game
     if (a === "autoplay+" || a === "autoplay-replay") {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
@@ -4848,10 +4852,27 @@ setInterval(async () => {
   const st = await gbox.connectionStatus?.().catch(() => null);
   if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false, automatic: true });
 }, 15000);
+// F1 replay · F2 save state · F3 autobot · F4 load state · F5 refresh (operator 2026-10-26: "when i press F3, I intend to
+// start the autobot, not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it")
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
   if (k === 'autoplay') return f3Autobot();                                    // the game this window shows, on any PC
+  if (k === 'replay') return f1Replay();                                       // the last 3 minutes of the shown game
   if (k === "client-refresh" || k === "reset") return recoverAndRefresh();      // old main processes still name F5 "reset"
   if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+// F1 saves the last 3 minutes of the shown game with audio (the PiP's corner button does the same): in the PiP through its
+// media controls, else through a controller of its own for the shown session. The replay's progress and result are toasted.
+const F1 = { ctl: null, sid: null };
+async function f1Replay() {
+  if (COMPACT.on && compactMedia) { toast('🎬 F1: saving the last 3 minutes…'); return compactMedia.exportLast(); }
+  const sid = await shownSessionSoon({ fallback: true }, 2500);
+  if (!sid) return toast('⚠ F1: no game is shown in this window. Open a running game, then press F1 to save its last 3 minutes.', 7000);
+  if (F1.sid !== sid) { F1.ctl?.stop(); F1.sid = sid;
+    F1.ctl = GBoxPipMedia.create({ current: () => F1.sid, api: compactApi, preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip),
+      render: s => { if (s.message) toast((s.error ? '⚠ ' : '🎬 ') + s.message, s.error ? 9000 : 6000, { id: 'f1-replay', kind: s.error ? 'bad' : '' }); } }); }
+  if (F1.ctl.state().busy) return toast('🎬 F1: the replay is still being saved…', 4000, { id: 'f1-replay' });
+  toast('🎬 F1: saving the last 3 minutes…', 6000, { id: 'f1-replay' });
+  return F1.ctl.exportLast();
+}
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process

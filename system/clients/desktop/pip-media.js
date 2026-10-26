@@ -1,4 +1,5 @@
-/* PiP replay export and live autoplay state. No microphone or client-side audio mix. */
+/* PiP replay export (the corner button, F1) and live autobot state (F3 toggles the autobot through the control plane).
+   No microphone or client-side audio mix. */
 (function(root) {
   'use strict';
   const SECONDS = 180;
@@ -72,7 +73,8 @@
       const deadline=now()+limit;
       while(['queued','running'].includes(result?.state)){
         if(!result.id)throw Error('The recording job has no ID');
-        state.progress=Number(result.progress?.pct)||0;state.message=result.progress?.msg||'Preparing the replay…';paint();
+        state.progress=Number(result.progress?.pct)||0;
+        state.message=result.progress?.msg||(tool==='recording'?'Preparing the replay…':'Asking the PC that runs this game…');paint();
         if(now()>=deadline)throw Error(input.op==='status'?'The recorder on that PC did not answer; no replay was started.':'Replay export is still running. Check the task list before trying again.');
         await delay(600);
         result=await api('/api/jobs/'+encodeURIComponent(result.id),undefined,'GET');
@@ -118,7 +120,7 @@
     return {poll,exportLast,toggleAutobot,state:()=>({...state}),stop:()=>{stopped=true;}};
   }
   function mount(host, options){
-    host.classList.add('pip-media');host.innerHTML=`<span class="pip-autobot" hidden>autobot</span><span class="pip-replay-status" role="status" aria-live="polite"></span><span class="pip-corner"><button class="pip-replay" type="button" aria-label="Export last 3 minutes of gameplay with audio" title="Save last 3 minutes and open the export folder">${ICON}</button></span>`;
+    host.classList.add('pip-media');host.innerHTML=`<span class="pip-autobot" hidden>autobot</span><span class="pip-replay-status" role="status" aria-live="polite"></span><span class="pip-corner"><button class="pip-replay" type="button" aria-label="Export last 3 minutes of gameplay with audio" title="Save last 3 minutes and open the export folder (F1)">${ICON}</button></span>`;
     const ctl=create({...options,render:state=>{
       host.dataset.busy=String(state.busy);host.dataset.error=String(state.error);
       host.querySelector('.pip-autobot').hidden=!state.autobot;

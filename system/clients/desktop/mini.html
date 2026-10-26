@@ -71,7 +71,8 @@
     preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip)
   });
   addEventListener('pagehide', () => media.stop(), {once:true});
-  gbox.onHotkey?.(key => { if (key === 'autoplay') media.toggleAutobot(); });
+  // F3 = the autobot of the shown game (on / off, through the control plane), F1 = save the last 3 minutes; nothing else
+  gbox.onHotkey?.(key => { if (key === 'autoplay') media.toggleAutobot(); else if (key === 'replay') media.exportLast(); });
   const continuity = GBoxSessionContinuity.create({
     current: () => ({session_id:gboxStreamWatchdog.sessionOf(v.src)}),
     read: async () => {

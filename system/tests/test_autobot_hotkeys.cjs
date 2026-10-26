@@ -156,6 +156,6 @@ test('the F3 key reaches the autobot handler; the game keys still reach the game
   vm.runInNewContext(code, ctx);
   for (const k of ['autoplay', 'client-refresh', 'save', 'slot+', 'eyedropper']) ctx.handler(k);
   assert.deepEqual(seen, ['f3', 'f5', 'game:save', 'game:slot+', 'eye']);
-  assert.match(main, /const GAME_KEYS = \{ F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" \}/);
+  assert.match(main, /const GAME_KEYS = \{ F1: "replay", F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" \}/);
   assert.match(html, /if \(a === "autoplay"\) return await f3Autobot\(\);/, 'the menu\'s Take control is the same request');
 });
