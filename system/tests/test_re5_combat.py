@@ -883,3 +883,31 @@ def test_a_moderate_error_at_the_muzzle_is_steered_like_any_other_and_still_blas
     assert {"l1", "r1"} <= act, act                  # the threat blast goes on (operator 2026-10-22)
     assert act & {"rleft", "rright"}, act            # ...while the stick takes the error out
     assert "aim_guard" not in bot.stats and bot.stats["fire_gate"] == "threat: blasting"
+
+
+def test_a_majini_behind_gets_the_quick_turn_and_the_aim_takes_over_once_the_heading_swings():
+    # operator 2026-10-26: "turning around nonsensically ignoring threats"; live: killed by a Majini 119 deg behind while
+    # the body swung round with the gun down
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, -300.0))            # straight behind him
+    assert bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"] == {"ldown", "cross"}
+    assert bot.stats["quick_turns"] == 1 and bot.stats["combat"].startswith("quick turn")
+    assert bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"] == set()   # hands off while it turns
+    s["player"]["rot"] = math.pi                      # the heading swung round: he faces the Majini
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.3)["hold"]
+    assert "l1" in act and not act & {"ldown", "cross"}, act
+    assert bot.stats["quick_turn"].startswith("works: 1")
+
+
+def test_a_quick_turn_that_never_turns_is_switched_off_and_the_body_turns_instead():
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, -300.0))
+    for t in (0.0, 2.0):                              # two presses, the heading never moves
+        assert bot.tick(s, s["player"], s["enemies"][0], t)["hold"] == {"ldown", "cross"}
+        act = bot.tick(s, s["player"], s["enemies"][0], t + 0.8)["hold"]
+        assert act & {"rleft", "rright"} and not act & {"ldown", "cross"}, act   # judged: the body swing goes on
+    assert bot.qturn_off and "off" in bot.stats["quick_turn"]
+    act = bot.tick(s, s["player"], s["enemies"][0], 5.0)["hold"]
+    assert act & {"rleft", "rright"} and bot.stats["quick_turns"] == 2
