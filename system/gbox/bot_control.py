@@ -18,6 +18,10 @@ POST /api/sessions/{sid}/autoplay/ensure  (F5). A bot is only ever (re)started o
 POST /api/sessions/{sid}/autoplay {op: toggle|start|stop}  (F3). Asks that PC whether autoplay runs, then starts or stops
   it as the requester (the desktop app's requests are the operator's). Automation cannot drive the operator's own game
   through it.
+POST /api/workers/{name}/bot-reload  (deploy_main.sh for a bot-only deploy; docs/hot-update.md). That PC's bot_reload
+  tool reloads its changed bot modules in place (gbox/hot_reload.py): the games keep running and every autobot restarts
+  in its session with its own input and job, so MercMode keeps owning its run. A session whose bot did not come back is
+  handed to F5's path (ensure: Screensaver.restart_bot for a MercMode run). wait_s > 0 answers when the worker is done.
 """
 from __future__ import annotations
 
@@ -39,6 +43,8 @@ START_WAIT_S = 75.0          # the autoplay tool's own limit is 60 s
 PENDING_START_S = 120.0      # an autoplay start younger than this, still queued / running: it is on its way
 TERMINAL = ('succeeded', 'failed', 'invalid', 'rejected', 'cancelled')
 RELAUNCHES = ('session_reset', 'session_swap', 'session_reload')   # the game is being replaced: its bot follows that
+RELOAD_TOOL = 'bot_reload'
+RELOAD_WAIT_S = 240.0        # the bot_reload tool's own limit is 180 s (a round preparation may make it wait 90 s)
 
 
 class ToggleIn(BaseModel):
@@ -50,6 +56,12 @@ class ToggleIn(BaseModel):
 
 class EnsureIn(BaseModel):
     reason: str = 'F5'
+
+
+class ReloadIn(BaseModel):
+    modules: list[str] = []      # bot modules (dotted names); empty: every loaded bot module whose source changed
+    settle_s: float = 5.0        # a restarted bot dying with an error this soon brings the old modules back
+    wait_s: float = 0.0          # > 0: answer once the worker has finished (deploy_main.sh waits), else the queued job
 
 
 def liveness(telemetry: dict) -> str:
@@ -430,6 +442,46 @@ class BotControl:
         return base | {'action': 'started', 'running': True, 'mode': res.get('mode'),
                        'objective': res.get('objective') or res.get('started') or res.get('already_running')}
 
+    # --- bot hot reload (gbox/hot_reload.py, docs/hot-update.md) ---
+    def bot_reload(self, name: str, body: ReloadIn, actor: str, origin: dict | None = None) -> dict:
+        """That PC's bot_reload tool: its changed bot modules reload in place, the games keep running, every autobot
+        restarts in its session with its own input and job. With wait_s, the answer carries the worker's result, and a
+        session whose bot did not come back goes through F5's path (ensure -> Screensaver.restart_bot for MercMode)."""
+        from .server import JobRequest
+        cands = [w for w in self.workers() if w.get('name') == name or w.get('id') == self.wid(name)]
+        w = next((x for x in cands if x.get('online')), cands[0] if cands else None)
+        if w is None:
+            raise HTTPException(404, f"no gBox worker '{name}'")
+        if not w.get('online'):
+            raise HTTPException(409, f"{w['name']} is offline: its bots can't be reloaded now.")
+        if RELOAD_TOOL not in (w.get('tools') or []):
+            raise HTTPException(409, f"{w['name']} runs gBox code without {RELOAD_TOOL}: bot changes go live there with a "
+                                     'service restart.')
+        inp = {'modules': list(body.modules), 'settle_s': body.settle_s}
+        origin = {**(origin or {}), 'via': 'bot reload'}
+        info = {'id': w['id'], 'name': w['name'], 'os': w.get('os')}
+        if body.wait_s <= 0:
+            j = self.submit(JobRequest(tool=RELOAD_TOOL, input=inp, require_worker=w['id']), actor, origin)
+            rec = j.model_dump(mode='json') if hasattr(j, 'model_dump') else dict(j)
+            if rec.get('state') == 'rejected':
+                raise HTTPException(409, rec.get('error') or 'the bot reload was rejected')
+            return {'job_id': rec.get('id'), 'state': rec.get('state'), 'worker': info}
+        jid, out = self.job(RELOAD_TOOL, inp, actor, worker=w['id'], wait=min(body.wait_s, RELOAD_WAIT_S),
+                            queue_wait=QUEUE_WAIT_S, origin=origin)
+        result = out.get('result') or {}
+        recovered = []
+        for r in result.get('restarted') or []:
+            if r.get('recover') and r.get('session_id'):
+                try:
+                    rec = self.ensure(r['session_id'], actor, reason='bot reload', origin=origin)
+                    recovered.append({'session_id': r['session_id'], 'job_id': rec.get('id'), 'state': rec.get('state')})
+                except HTTPException as exc:
+                    recovered.append({'session_id': r['session_id'], 'error': str(exc.detail)})
+        self.store.audit(actor, 'autoplay.bot_reload', w['id'], {'job': jid, 'ok': result.get('ok'),
+                                                                 'reloaded': result.get('reloaded'),
+                                                                 'reason': str(result.get('reason') or '')[:300]})
+        return {'job_id': jid, 'state': 'succeeded', 'worker': info, 'result': result, 'recovered': recovered}
+
 
 def install(app, store, auth, *, submit, workers, wid, automated, origin_dep, server_jobs, saver=None, prefs=None):
     ctl = BotControl(store, submit=submit, workers=workers, wid=wid, saver=saver, prefs=prefs, server_jobs=server_jobs)
@@ -446,5 +498,13 @@ def install(app, store, auth, *, submit, workers, wid, automated, origin_dep, se
     def autoplay_toggle(sid: str, body: ToggleIn, actor=Depends(auth), origin=Depends(origin_dep)):
         """F3: start or stop the autobot on the session a gBox window shows, from any PC."""
         return ctl.toggle(sid, body, actor, origin, automated=automated(actor, origin))
+
+    @app.post('/api/workers/{name}/bot-reload')
+    def worker_bot_reload(name: str, body: ReloadIn | None = None, actor=Depends(auth), origin=Depends(origin_dep)):
+        """Reload that PC's bot modules in place (no service restart: the games and MercMode's warm pool keep running).
+        The operator's or the deploy script's request (x-gbox-actor: deploy); automation never restarts the bots."""
+        if automated(actor, origin):
+            raise HTTPException(403, 'Only the operator or the deploy script reloads the bots.')
+        return ctl.bot_reload(name, body or ReloadIn(), actor, origin)
 
     return ctl

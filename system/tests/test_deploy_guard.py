@@ -124,3 +124,115 @@ def test_explicit_deployment_reaches_the_transfer_path(tmp_path, args):
     assert result.returncode == 73, result.stderr
     assert probe.read_text().startswith('clone -q ')
     assert lock.exists()
+
+
+# --- bot-only deploys reload the bots in place instead of restarting gbox.service (docs/hot-update.md) ---------------------
+SYSTEM = SCRIPT.parents[1]
+
+
+def _function(name):
+    text = SCRIPT.read_text(encoding='utf-8').replace('\r\n', '\n')
+    return re.search(r'^%s\(\) \{.*?^\}$' % name, text, re.M | re.S).group(0)
+
+
+def _env(tmp_path, **kw):
+    path = os.pathsep.join([str(SYSTEM), os.environ.get('PYTHONPATH', '')])
+    return os.environ | {'DST': tmp_path.as_posix(), 'PY': Path(sys.executable).as_posix(), 'PYTHONPATH': path,
+                         'PENDING': (tmp_path / 'restart-pending').as_posix(),
+                         'RELOAD_PENDING': (tmp_path / 'reload-pending').as_posix()} | kw
+
+
+def _activation(tmp_path, *files, pending=False, reload_pending=False, **env):
+    for name, on in (('restart-pending', pending), ('reload-pending', reload_pending)):
+        (tmp_path / name).unlink(missing_ok=True)
+        if on:
+            (tmp_path / name).write_text('')
+    script = tmp_path / 'activation.sh'
+    script.write_bytes((_function('activation_for') + '\nactivation_for "$@"\nprintf "%s" "$ACTIVATION"\n').encode())
+    out = subprocess.run([BASH, script.as_posix(), *files], env=_env(tmp_path, **env), capture_output=True, text=True,
+                         check=True)
+    return out.stdout
+
+
+def test_a_pure_bot_change_reloads_and_anything_else_restarts(tmp_path):
+    assert _activation(tmp_path, 'gbox/mercs/titles/re5_combat.py', 'gbox/mercs/titles/re5_ps3.py') == 'reload'
+    assert _activation(tmp_path, 'gbox/re4_merc_bot.py', 'gbox/re4_threats.py', 'gbox/mercs/round_map.py') == 'reload'
+    assert _activation(tmp_path, 'gbox/mercs/titles/re5_combat.py', 'gbox/screensaver.py') == 'restart'
+    assert _activation(tmp_path, 'gbox/server.py') == 'restart'
+    assert _activation(tmp_path, 'gbox/mercs/warm_boot.py') == 'restart', 'the warm pool is not bot logic'
+    assert _activation(tmp_path, 'profiles/gamedata/BLUS30491-ram.json') == 'restart'
+
+
+def test_pending_activations_and_a_broken_classifier(tmp_path):
+    assert _activation(tmp_path) == 'none'
+    assert _activation(tmp_path, reload_pending=True) == 'reload', 'a deferred reload is retried'
+    assert _activation(tmp_path, 'gbox/mercs/titles/re5_combat.py', pending=True) == 'restart', 'a deferred restart wins'
+    assert _activation(tmp_path, reload_pending=True, pending=True) == 'restart'
+    assert _activation(tmp_path, 'gbox/mercs/titles/re5_combat.py', PY=(tmp_path / 'no-python').as_posix()) == \
+        'restart', 'no classifier: the old behaviour'
+
+
+def _bot_reload(tmp_path, answers, token=True):
+    """deploy_main.sh's bot_reload with curl answering the canned route answers in turn (sleep and log stubbed)."""
+    if token:
+        (tmp_path / 'gbox-data').mkdir(exist_ok=True)
+        (tmp_path / 'gbox-data' / 'api_token').write_text('tok')
+    (tmp_path / 'answers.txt').write_text(''.join(a + '\n' for a in answers))
+    (tmp_path / 'count').write_text('0')
+    (tmp_path / 'curl.log').unlink(missing_ok=True)
+    script = tmp_path / 'reload.sh'
+    script.write_bytes((
+        'curl() { printf "%s\\n" "$*" >> "$CURL_LOG"; n=$(( $(cat "$COUNT") + 1 )); echo "$n" > "$COUNT"; '
+        'sed -n "${n}p" "$ANSWERS"; }\n'
+        'sleep() { :; }\nlog() { :; }\n' + _function('bot_reload')
+        + '\nbot_reload\nprintf "%s|%s" "$RELOAD_RESULT" "$RELOAD_WHY"\n').encode())
+    env = _env(tmp_path, CURL_LOG=(tmp_path / 'curl.log').as_posix(), COUNT=(tmp_path / 'count').as_posix(),
+               ANSWERS=(tmp_path / 'answers.txt').as_posix(), GBOX_WORKER='lilspark',
+               API_BASE='http://127.0.0.1:8765')
+    out = subprocess.run([BASH, script.as_posix()], env=env, capture_output=True, text=True, check=True).stdout
+    calls = (tmp_path / 'curl.log').read_text().splitlines() if (tmp_path / 'curl.log').exists() else []
+    return out.split('|', 1), calls
+
+
+def _answer(**result):
+    import json
+    return json.dumps({'job_id': 'j', 'state': 'succeeded', 'result': result})
+
+
+def test_the_deploy_asks_this_hosts_worker_to_reload(tmp_path):
+    (kind, why), calls = _bot_reload(tmp_path, [_answer(ok=True, reason='2 bot module(s) reloaded; 1 of 1 autobot(s) back in 1.8 s')])
+    assert (kind, why) == ('reloaded', '2 bot module(s) reloaded; 1 of 1 autobot(s) back in 1.8 s')
+    assert len(calls) == 1 and 'http://127.0.0.1:8765/api/workers/lilspark/bot-reload' in calls[0]
+    assert 'x-gbox-actor: deploy' in calls[0] and 'Authorization: Bearer tok' in calls[0] and '"wait_s"' in calls[0]
+
+
+def test_a_busy_worker_is_retried_then_deferred(tmp_path):
+    busy = _answer(ok=False, retry=True, reason='a MercMode round preparation is running on w1-x')
+    (kind, _), calls = _bot_reload(tmp_path, [busy, busy, _answer(ok=True, reason='done')])
+    assert kind == 'reloaded' and len(calls) == 3
+    (kind, why), calls = _bot_reload(tmp_path, [busy] * 6)
+    assert kind == 'busy' and 'round preparation' in why and len(calls) == 4
+
+
+def test_refused_and_failed_reloads(tmp_path):
+    (kind, why), _ = _bot_reload(tmp_path, [_answer(ok=False, reason='gbox.mercs_bot does not import: SyntaxError')])
+    assert kind == 'refused' and 'does not import' in why, 'old modules kept: no restart'
+    (kind, _), _ = _bot_reload(tmp_path, [_answer(ok=False, restart=True, reason='not bot modules')])
+    assert kind == 'failed', 'only a restart applies it'
+    (kind, why), _ = _bot_reload(tmp_path, ['{"detail": "lilspark runs gBox code without bot_reload"}'])
+    assert kind == 'failed' and 'without bot_reload' in why
+    (kind, _), calls = _bot_reload(tmp_path, [''])
+    assert kind == 'failed' and len(calls) == 1, 'no answer at all (route down): the restart path'
+    fresh = tmp_path / 'no-token'
+    fresh.mkdir()
+    (kind, why), calls = _bot_reload(fresh, [], token=False)
+    assert kind == 'failed' and 'api_token' in why and calls == []
+
+
+def test_the_deploy_never_restarts_for_a_reload_it_could_do():
+    text = SCRIPT.read_text(encoding='utf-8')
+    reload_branch = text[text.index('if [ "$ACTIVATION" = reload ]; then\n  bot_reload'):text.index('LAST_RESTART=')]
+    assert 'systemctl' not in reload_branch
+    assert 'reloaded)' in reload_branch and 'busy)' in reload_branch and 'refused)' in reload_branch
+    assert 'exit 1' in reload_branch.split('refused)')[1].split(';;')[0], 'broken bot code: an error, never a restart'
+    assert 'rm -f "$PENDING" "$RELOAD_PENDING"' in text, 'a restart covers a pending reload'

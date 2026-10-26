@@ -319,6 +319,8 @@ def run(server: str, token: str, config: Config, name: str | None = None,
                      name='player-damage-delivery', daemon=True).start()
     from .inspection_builds import source_inventory
     build_sources = source_inventory()  # Never recompute while old modules remain loaded in this process.
+    from . import hot_reload             # ...except bot modules a bot_reload swapped in: their entries follow (in place)
+    hot_reload.track(build_sources)
     threading.Thread(target=worker_resources.run, args=(stop, resource_sampler),
                      name='worker-resources', daemon=True).start()
     def current_info():

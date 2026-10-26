@@ -5957,7 +5957,8 @@ def create_app(config: Config) -> FastAPI:
         head_file = Path(config.data_dir) / "deployed-main.txt"
         if not sha or not head_file.is_file():
             return None
-        if (Path(config.data_dir) / "deploy-restart-pending").exists():
+        if (Path(config.data_dir) / "deploy-restart-pending").exists() \
+                or (Path(config.data_dir) / "deploy-reload-pending").exists():
             return False                             # on the share, but the service still runs the old code
         head = head_file.read_text().strip()
         if head.startswith(sha):
