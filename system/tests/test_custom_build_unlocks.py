@@ -159,3 +159,31 @@ def test_reconcile_propagates_existing_unlock_support_into_dispatch_instructions
     assert 'existing_unlock_support' not in text or 're6-x360-native-save-template-v1' in text
     support=re6_profile_for({'game_id':RE6_ID,'platform':'xbox360'})
     assert support['status']=='verified_profile'
+
+
+def test_res_survivor_psx_profile_statically_registered():
+    from pathlib import Path  # noqa: F401
+    from gbox import game_unlocks
+    g = {'game_id': 'a178bf02b925ec44', 'platform': 'sony_playstation'}
+    profile = game_unlocks.profile_for(g)
+    assert profile['status'] == 'verified_addresses'
+    assert profile['profile'] == 're-survivor-usa-psx-session-pokes-v1'
+    # Runtime acceptance is still pending: the profile must not claim full verification.
+    assert profile['verified'] is False
+    assert 'Rocket Launcher' in ' '.join(profile['scope'])
+    assert profile['evidence']['kernel_exe_sha1'] == '37faa3d5850e4bad0daa9c60c151e5a17cb2055e'
+    assert profile['evidence']['disc_bin_sha1'] == '19ee4d5633919418080fbcf093b6de450405d28a'
+
+
+def test_res_survivor_profile_tamper_guard():
+    from pathlib import Path
+    from gbox import game_unlocks
+    g = {'game_id': 'a178bf02b925ec44', 'platform': 'sony_playstation'}
+    path = Path(game_unlocks.__file__).resolve().parent.parent / 'profiles/gamedata/a178bf02b925ec44-unlock.json'
+    original = path.read_text(encoding='utf-8')
+    try:
+        path.write_text(original.replace('0x0007', '0x0009'), encoding='utf-8')
+        assert game_unlocks.profile_for(g)['status'] == 'unverified'
+    finally:
+        path.write_text(original, encoding='utf-8')
+    assert game_unlocks.profile_for(g)['status'] == 'verified_addresses'

@@ -11,6 +11,40 @@ from pathlib import Path
 
 RE6_ID = '0871eee3b68cdea3'
 RE6_TEMPLATE_SHA256 = '194cb5b71858f65feeb2b1703642ddc4ffde09b9a087119189b29b0ad7b83f11'
+RES_ID = 'a178bf02b925ec44'
+RES_TEMPLATE_SHA256 = '40171acaaac12366a2ea40aed300fe30ca4c30985fee30d02647bddca39ad228'
+
+
+def _res_profile() -> dict:
+    """Static-verified profile for the PSX Gun Survivor catalog build.
+
+    The 0x01714C/0x0170C4 values recorded on request #2033 are GameShark
+    enable-code probes, not unlock addresses; disassembly of the owned
+    KERNEL.BIN (load base 0x80010000, confirmed by both probe halfwords)
+    shows the weapon table and health are zero-initialized RAM, so the
+    unlock is a session-start poke plan, not a disc patch.
+    """
+    path = Path(__file__).resolve().parent.parent / 'profiles/gamedata' / f'{RES_ID}-unlock.json'
+    try:
+        template = json.loads(path.read_text(encoding='utf-8'))
+        digest = hashlib.sha256(json.dumps(template, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    except (OSError, ValueError) as error:
+        return {'status': 'unavailable', 'profile': None, 'verified': False, 'scope': [],
+                'reason': f'Static profile unavailable: {error}'}
+    if digest != RES_TEMPLATE_SHA256:
+        return {'status': 'unverified', 'profile': None, 'verified': False, 'scope': [],
+                'reason': 'Profile changed; the static verification must be repeated.'}
+    return {'status': 'verified_addresses', 'profile': 're-survivor-usa-psx-session-pokes-v1',
+            'verified': False,  # runtime acceptance still pending on an authorized worker
+            'game_id': RES_ID, 'template_sha256': digest,
+            'scope': template['scope'], 'not_present_on_disc': template['not_present_on_disc'],
+            'evidence': {'template': f'profiles/gamedata/{RES_ID}-unlock.json',
+                         'kernel_exe_sha1': template['revision']['kernel_exe_sha1'],
+                         'disc_bin_sha1': template['revision']['disc_bin_sha1'],
+                         'verification': 'KERNEL.BIN load base 0x80010000 confirmed by enable-code probes '
+                                         '(0x8001714c=0x023a, 0x800170c4=0x000a) in disassembly of the owned image.'},
+            'source_verification': template['source_verification'],
+            'runtime_acceptance': template['runtime_acceptance']}
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -37,6 +71,8 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    if game.get('game_id') == RES_ID and game.get('platform') == 'sony_playstation':
+        return _res_profile()
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}

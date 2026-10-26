@@ -1,0 +1,43 @@
+{
+  "title": "Resident Evil Survivor (USA, SLUS-01087) - rocket launcher with unlimited ammo",
+  "platform": "sony_playstation",
+  "revision": {
+    "exe": "SLUS_010.87",
+    "kernel_exe_sha1": "37faa3d5850e4bad0daa9c60c151e5a17cb2055e",
+    "slus_sha1": "1d1f15dbc532607ac93e22a5b996df3c0b4493c9",
+    "disc_bin_sha1": "19ee4d5633919418080fbcf093b6de450405d28a",
+    "chd_sha1": "3886e78ca66272788d2f8df593a1f7d64b0cb032"
+  },
+  "how": "Static verification of the owned disc image. KERNEL.BIN (PS-X EXE, pc0 0x80010b08) loads at 0x80010000; its text disassembly places the GameShark enable-code probes exactly at the documented hook addresses, confirming the load base and the published RAM addresses for the US revision. The weapon table and health are zero-initialized RAM (.bss) on this build, so no disc patch can carry the unlock; it must be applied as session-start RAM pokes after the game builds its state.",
+  "verified_addresses": {
+    "enable_probe_v1": {
+      "ram": "0x8001714c",
+      "observed_halfword": "0x023a",
+      "instruction": "beqz $v0, 0x80017a38",
+      "matches_gameshark": "D001714C 023A"
+    },
+    "enable_probe_v2": {
+      "ram": "0x800170c4",
+      "observed_halfword": "0x000a",
+      "instruction": "beq $v1, $v0, 0x800170f0",
+      "matches_gameshark": "D00170C4 000A"
+    }
+  },
+  "session_start_ram_pokes": {
+    "note": "Apply after the boot sequence completes (poll enable-probe bytes above) - never while KERNEL.BIN text is still initializing.",
+    "pokes": [
+      {"ram": "0x800AF818", "type": "u16", "value": "0x0007", "meaning": "weapon slot 1 item id = 7 (rocket launcher)"},
+      {"ram": "0x800AF81A", "type": "u16", "value": "0x00FF", "meaning": "weapon slot 1 ammo"},
+      {"ram": "0x800A8584", "type": "u16", "value": "0x00FF", "meaning": "health (QoL guard; keeps the session playable for acceptance)"}
+    ]
+  },
+  "scope": [
+    "Rocket Launcher with unlimited ammo (the only unlockable content in this US revision: earn S rank on normal difficulty)"
+  ],
+  "not_present_on_disc": [
+    "G-Con 45 support (ripped from the US build; not unlockable)",
+    "Extra characters, modes or costumes (none exist in this revision)"
+  ],
+  "runtime_acceptance": "pending: launch the owned CHD in an agent session on an authorized worker, apply pokes, confirm rocket launcher present with unlimited ammo; audio 2%.",
+  "source_verification": "Disassembly of the owned KERNEL.BIN with the load base cross-checked against both enable-code probes; disc CHD and extracted BIN SHA1s match the catalog hashes recorded on request #2033."
+}
