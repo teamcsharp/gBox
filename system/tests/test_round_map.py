@@ -28,7 +28,9 @@ def test_the_bot_traces_a_round_into_round_maps(tmp_path):
     for i in range(10):
         bot.trace.add(i * 0.3, i * 100.0, 0.0)
     bot.trace_finish()
-    assert bot.stats["last_round_map"].endswith(".svg") and (tmp_path / "round_maps" / "r400").is_dir()
+    # RE5's layout since 2026-10-26: round_maps/<title>/<room>/ (the deployment: gbox-data/mercs/round_maps/G4BE08/r400/)
+    assert bot.stats["last_round_map"].endswith(".svg") and (tmp_path / "round_maps" / "G4BE08" / "r400").is_dir()
+    assert not (tmp_path / "round_maps" / "r400").exists()
 
 
 def test_standing_on_a_planted_mine_is_found_with_its_phase_and_code(tmp_path):
