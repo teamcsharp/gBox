@@ -53,7 +53,8 @@ class Navigator:
     HOLD_S, DIR_HOLD_S, RETRY_S, SETTLE_S, STABLE_S = 0.3, 0.18, 1.2, 0.45, 0.5
     CONFIRMATION_MAX_S, CONFIRMATION_MAX_PRESSES = 120.0, 64
 
-    def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None, pressed=None):
+    def __init__(self, send, step, sleep=time.sleep, clock=time.time, stats: dict | None = None, pressed=None,
+                 cursor: dict | None = None):
         self.send, self.step, self.sleep, self.clock = send, step, sleep, clock
         self.pressed = pressed                              # the menus module's pressed(scr, key): a key that went in
         self.stats = stats if stats is not None else {}
@@ -61,11 +62,31 @@ class Navigator:
         self.stats.setdefault("ram_progress", 0)
         self.last_key, self.last_at, self.last_sig, self.sig_at = None, float("-inf"), None, float("-inf")
         self.confirmation_started, self.confirmation_presses, self.confirmation_error = None, 0, None
+        # a title's faster cursor steps (its menus module's NAV_CURSOR: {"stable_s", "retry_s", "poll_s"}): only a
+        # change of the cursor on the same screen settles in stable_s, only a D-pad press that has not shown in RAM is
+        # sent again after retry_s (the cursor did not move: no double step), and cursor screens are read every poll_s
+        # (RE5 2026-10-26: ~1.1 s a cursor step, 7 steps a round gap on average). Every other wait stays as it was.
+        self.cursor = dict(cursor or {})
+        self.cursor_only = False                            # the last change RAM showed moved only the cursor
 
     @staticmethod
     def sig(scr: dict):
         return (scr.get("where"), scr.get("title_step"), scr.get("title_sub"), scr.get("cursor"),
                 scr.get("confirmation_token"))
+
+    def forget(self) -> None:
+        """A round ran since the last look (the bot played; nobody read the menus): what the menus showed before it is
+        no evidence now - the next screen counts as progress and must settle before a press, nothing is retried, and a
+        confirmation chain open before it is over (its 120 s bound must not run through a round either)."""
+        self.last_key, self.last_at, self.last_sig, self.sig_at = None, float("-inf"), None, float("-inf")
+        self.cursor_only = False
+        self.confirmation_started, self.confirmation_presses, self.confirmation_error = None, 0, None
+
+    def poll_s(self, scr: dict, default: float) -> float:
+        """How long the caller waits before the next look: poll_s on a cursor screen of a title that opted in."""
+        if self.cursor.get("poll_s") and scr.get("cursor") is not None and scr.get("target") is not None:
+            return min(default, float(self.cursor["poll_s"]))
+        return default
 
     def observe(self, scr: dict, now: float | None = None) -> None:
         now = self.clock() if now is None else now
@@ -79,6 +100,9 @@ class Navigator:
         sig = self.sig(scr)
         if sig != self.last_sig:
             self.stats["ram_progress"] = self.stats.get("ram_progress", 0) + 1
+            last = self.last_sig
+            self.cursor_only = (last is not None and sig[3] is not None and last[3] is not None
+                                and sig[:3] == last[:3] and sig[4] == last[4] and sig[3] != last[3])
             self.last_sig, self.sig_at = sig, now
             self.last_key = None                            # the last press took: the next one may go at once
         self.stats["screen"] = scr.get("where")
@@ -97,11 +121,14 @@ class Navigator:
         key = self.step(scr)
         if key is None:
             return None
-        if now - self.sig_at < self.STABLE_S:
+        fast = bool(self.cursor) and self.cursor_only
+        if now - self.sig_at < (self.cursor.get("stable_s", self.STABLE_S) if fast else self.STABLE_S):
             return None                                     # RAM has only just shown this screen: it may be passing
-        if self.last_key is not None and now - self.last_at < self.RETRY_S:
+        retry = self.cursor.get("retry_s", self.RETRY_S) if self.cursor and str(self.last_key).startswith("d") \
+            else self.RETRY_S
+        if self.last_key is not None and now - self.last_at < retry:
             return None                                     # the last press has not shown in RAM yet
-        if now - self.last_at < self.SETTLE_S:
+        if now - self.last_at < (self.cursor.get("stable_s", self.SETTLE_S) if fast else self.SETTLE_S):
             return None
         hold = self.DIR_HOLD_S if key.startswith("d") else self.HOLD_S
         self.send([{"key": key, "down": True}])
@@ -144,12 +171,22 @@ class Boot:
         self.menus, self.m, self.ad, self.game, self.clock = menus, m, ad, game, clock
         self.stats = stats if stats is not None else {}
         self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats,
-                             pressed=getattr(menus, "pressed", None))
+                             pressed=getattr(menus, "pressed", None), cursor=getattr(menus, "NAV_CURSOR", None))
         self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
         self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
         self.boot_pressed, self.named = float("-inf"), False
         self.loading_since = None
+
+    def round_played(self) -> None:
+        """A round ran (the playbook saw it start, or the engine handed it back): the menus' stuck, lost and loading
+        clocks start again at the next look. They ran on through the round before: a round that began on a screen
+        reading "results" (its first frames, the clock still 0) and ended on the results screen showed no change at
+        all, so the whole round counted as "nothing moved in RAM for 150 s on results" - every RE4 MercMode turn on the
+        Spark ended there as hung on 2026-10-26 (ten runs; the stale loading clock also gave "stuck loading for 436 s")."""
+        self.nav.forget()
+        self.lost_since = self.still_since = self.progress = self.loading_since = None
+        self.stats.pop("screen_note", None)
 
     def tick(self, now: float | None = None, merc=None, scr: dict | None = None) -> str | None:
         now = self.clock() if now is None else now
@@ -603,6 +640,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 if damage_outbox is not None:
                     options["damage"] = damage_reports.Observer(damage_outbox.emit, damage_run, prof["map_id"], stats)
                 out = E.play_round(prof, m, send, stopped, stats, lessons, **options)
+                if callable(getattr(boot, "round_played", None)):
+                    boot.round_played()                     # the menus' clocks start again (not through the round)
                 if out == 'mercmode_boundary':
                     break                                   # native tally complete; scheduler owns sequential stop/launch
                 if out == "evidence_backpressure":
@@ -636,7 +675,7 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             if why:
                 stats.update(hung=True, wandered=why)
                 break
-            sleep(POLL_S)
+            sleep(boot.nav.poll_s(scr, POLL_S))             # cursor screens a little faster (the title's NAV_CURSOR)
     finally:
         menu_read_retry.stopped()
         if runtime is not None:

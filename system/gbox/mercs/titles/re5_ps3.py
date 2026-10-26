@@ -30,6 +30,7 @@ from pathlib import Path
 
 from ..driver import Driver
 from .. import obstacle_map
+from .. import round_map                         # round_gap_s: the seconds between two rounds (gap_end / gap_start)
 from .. import stalemate as stalemate_rule       # no enemies for 15 s with time on the clock: the clock is cut
 from . import re5_aim_geometry, re5_combat, re5_motion, re5_nav, re5_weapons
 
@@ -680,6 +681,13 @@ STEPS = {"results": "start", "select_stage": "cross", "title": "start",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
 BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
+# mercs_bot.Navigator's faster cursor steps on these menus (operator 2026-10-26: "I need this working way faster"): the
+# round maps and run logs of 2026-10-25/26 show every RE5 cursor press taken at once, ~1.1 s apart (0.18 s held, then
+# 0.5 s of "stable" after each cursor move, polled every 0.25 s); STAGE SELECT took a median 11 s and CHARACTER SELECT
+# 4.4 s of a 39 s gap. A cursor move on the same screen now settles in 0.3 s and cursor screens are read every 0.1 s; a
+# D-pad press RAM never showed goes again after 0.6 s (the cursor did not move, so it cannot step twice). Screen changes,
+# confirm presses (cross / circle / START) and the result screens keep every original wait.
+NAV_CURSOR = {"stable_s": 0.3, "retry_s": 0.6, "poll_s": 0.1}
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
 ORIGINAL_CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
@@ -1491,6 +1499,8 @@ class Bot:
             if where in ("dead", "results"):
                 if where == "dead" and self.round_end is None:
                     self.stats["deaths"] = self.stats.get("deaths", 0) + 1
+                if self.round_active:
+                    round_map.gap_end(self.stats, now)      # the next round's round_gap_s counts from here
                 if self.round_active and self.combat is not None:
                     self.combat.observe(snap, now, active=False)
                     self.combat.end_round(now)
@@ -1526,6 +1536,7 @@ class Bot:
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
                 self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
+            round_map.gap_start(self.stats, now, "menus")  # round_gap_s: since the last round ended (results / death)
             timer,start = snap.get("timer"),snap.get("timer_start")
             self.round_intro_timer = timer if isinstance(timer,(int,float)) and isinstance(start,(int,float)) \
                 and start>0 and abs(timer-start)<.02 else None
@@ -1839,6 +1850,9 @@ class Bot:
             self._trace_key = key
             self._trace = RoundTrace(self._trace_dir / "stage", "BLUS30491", "stage", uuid.uuid4().hex, 400.0,
                                      code=code_map(PHASE_CODE, Bot, re5_combat.Combat))
+            if self.round_active:                           # the round's own gap (observe_round started it)
+                self._trace.meta.update(round_gap_s=self.stats.get("round_gap_s"),
+                                        round_start_via=self.stats.get("round_start_via"))
         p = snap.get("player")
         if self._trace is not None and p:
             mines = [row["pos"] for row in (snap.get("ground_mines") or {}).values()

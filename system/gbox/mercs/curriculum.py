@@ -55,6 +55,11 @@ class Coverage:
                 pool = [x for x, n in totals.items() if n == min(totals.values())]
                 if self.last and len(pool) > 1:
                     pool = [x for x in pool if list(x) != self.last[:2]] or pool
+                    # the mode just played while it still has a least-played character: a mode change walks back out
+                    # to the title and in again (RE5: +13.7 s of menus, and 56% of the gaps between rounds switched
+                    # mode on 2026-10-25/26; operator 2026-10-26: "without breaks in between rounds"). Only least-played
+                    # pairs are ever chosen, so the balance is the same: the modes take turns in blocks
+                    pool = [x for x in pool if x[0] == self.last[0]] or pool
                 mode, char = self.rng.choice(pool)
                 low = min(self.counts.get(self.key(mode, char, s), 0) for s in self.stages)
                 stage = self.rng.choice([s for s in self.stages

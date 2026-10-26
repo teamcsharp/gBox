@@ -69,8 +69,9 @@ The rules a new playbook follows:
 - Check the code before trusting the addresses: compare a few code bytes of the routines the fields come from (RE4:
   `re4_menus.SIGNATURES`). Another build or another game at those addresses names nothing ("unknown") and presses
   nothing.
-- Save a menu moment or jump state where the game can be restored cleanly, before any code hooks: a Dolphin state
-  saved after RE4's hooks restores into a hang. `jumpstate.save` uses gBox's demo slot, never the operator's.
+- Save a menu moment or jump state where the game can be restored cleanly, before any code hooks (on 2026-10-20 a
+  Dolphin state saved after RE4's hooks restored into a hang). `jumpstate.save` uses gBox's demo slot, never the
+  operator's. RE4's instant rounds (docs/re4-menus.md) load states taken after the hooks, and RAM verifies every load.
 - Apply code hooks once per boot, at a screen where they hold (RE4: Select Player). The same Dolphin taking the hooks
   again on top of the first set, plus kept mods, froze a stage load (2026-10-20). Calls that run game code (re_mods
   `equip`, give items) wait for a running room: `re_mods_tool.RE4.call` refuses during a load or a menu.
