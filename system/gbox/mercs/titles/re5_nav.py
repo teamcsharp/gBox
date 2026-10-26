@@ -991,10 +991,10 @@ def funnel(start, portals: list, goal) -> list:
     return out
 
 
-def read(m, cache: dict | None = None) -> NavMesh | None:
+def read(m, cache: dict | None = None, s_ai: int | None = None) -> NavMesh | None:
     """The stage's navigation mesh from RAM (None between rounds); cache: {navmesh pointer: NavMesh} so a round's
-    mesh is read once (a few thousand small reads)."""
-    sai = _u32(m, S_AI)
+    mesh is read once (a few thousand small reads). s_ai overrides the s_ai singleton address (RE6's chain)."""
+    sai = _u32(m, S_AI) if s_ai is None else s_ai
     pf = _u32(m, sai + AI_PATHFINDING) if _ok(sai) else 0
     nav = _u32(m, pf + PF_NAVMESH) if _ok(pf) else 0
     if not _ok(nav):
