@@ -24,14 +24,37 @@ SANDBOX_NICE = 19
 WATCH_TTL_S = 180
 
 
-def report_watch(store, viewer: str, sid: str | None, *, now=None):
-    """Short renewable viewer lease; applies to bot demos as well as human-owned sessions."""
+def report_watch(store, viewer: str, sid: str | None, *, now=None, host: str = ""):
+    """Short renewable viewer lease; applies to bot demos as well as human-owned sessions. host: the viewing machine's
+    address (viewing(): the pad takeover's check that input comes from a machine that watches the session)."""
     import time
     if not sid:
         store.delete("session_watch", viewer)
         return
     store.put("session_watch", viewer, {"session_id": sid, "until":
-              (time.time() if now is None else now) + WATCH_TTL_S})
+              (time.time() if now is None else now) + WATCH_TTL_S, **({"host": host} if host else {})})
+
+
+VIEW_CACHE_S, VIEW_MISS_S = 2.0, 0.5         # the input route asks on every pad change: a store read at most this often
+_VIEWING: dict[tuple, tuple] = {}
+
+
+def viewing(store, sid: str, host: str = "", *, now=None) -> bool:
+    """Whether the machine at `host` watches session `sid` right now: its app said it shows the session
+    (POST /api/broadcast/watching) or it streams it (GET /api/sessions/{sid}/mjpeg). The operator's pad input takes the
+    pad from the session's bot only then (gbox/pad_takeover.py): a client never claims a session it isn't viewing. A row
+    written before hosts were recorded counts for any machine."""
+    import time
+    now = time.time() if now is None else now
+    hit = _VIEWING.get((sid, host))
+    if hit and hit[0] > now:
+        return hit[1]
+    rows = [r for r in store.all("session_watch") if r.get("session_id") == sid and r.get("until", 0) > now]
+    ok = any(not host or not r.get("host") or r.get("host") == host for r in rows)
+    if len(_VIEWING) > 512:
+        _VIEWING.clear()
+    _VIEWING[(sid, host)] = (now + (VIEW_CACHE_S if ok else VIEW_MISS_S), ok)
+    return ok
 
 
 def kept_by(job: dict | None) -> set:

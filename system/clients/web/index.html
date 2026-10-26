@@ -282,6 +282,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 </style>
 <script src="/padglyph.js"></script>
 <script src="/viz/pad-map.js"></script>
+<script src="/viz/pad-takeover.js"></script>
 <script src="/viz/session-pause.js"></script>
 <script src="/viz/session-presentation.js"></script>
 <script src="/viz/session-speed.js"></script>
@@ -3861,6 +3862,7 @@ function padTick() {
     held[key] = { buttons:now, player:c.player, sid };
     sendPadEvents(sid, events);
   }
+  if (typeof padTakeoverTick === "function") padTakeoverTick(sid, sources);   // the badge: you have the pad, not the bot
 }
 function padLoop() {         // a failing pass must never end controller input for the rest of the page's life
   try { padTick(); } catch (e) { console.warn("controller loop:", e); }
@@ -4003,6 +4005,51 @@ async function padMapRelaunch(sid, say) {   // the same game + build again on th
 }
 async function snap(sid) { const j = await runJob({ tool: "get_frame", input: { session_id: sid } }); const el = $("#sopres"); if (el) el.innerHTML = j.receipt_id ? `snapshot ${state(j.state)} — receipt <code>${j.receipt_id}</code>` : esc(j.error); }
 loadPadMaps();                                             // the console controller maps (refreshed when a game opens)
+
+// ---------------- pad takeover badge (viz/pad-takeover.js, gbox/pad_takeover.py) ----------------
+// Operator 2026-10-26: "take control from the bot with the controller for a brief moment and help them out ... then just
+// put down a controller and give the gameplay back to the bot". The controller loop forwards the pad to the session this
+// view shows (padTick); when that session's bot runs, its worker lets go at the first press and takes the pad back
+// takeover_idle_s after the last input. A game on this PC reads the controller itself (nothing forwarded): its worker
+// watches the same pad, so the badge follows this PC's pad for it the same way. The bot's live report says whether it runs
+// (polled while the pad is in use). The desktop shell's PiP mirrors the badge from GBOX:{ev:"padtakeover"}.
+const PADTAKE = { ctl: window.GBoxPadTakeover ? GBoxPadTakeover.create() : null, ui: null, polled: new Map(), sent: "" };
+function padTakeoverKeys(forwarded, sources) {     // Player 1's keys as the session gets them (forwarded) or this PC reads
+  const keys = new Set();
+  if (forwarded) { for (const h of Object.values(held)) if (h.sid === forwarded && h.player === 1) h.buttons.forEach(b => keys.add(b)); }
+  else for (const [gp, c] of sources) if (c.player === 1) pressed(gp, c).forEach(b => keys.add(b));
+  return keys;
+}
+function padTakeoverPoll(sid, now) {               // the session's bot: running? its takeover idle time?
+  const at = PADTAKE.polled.get(sid) || 0;
+  if (Date.now() - at < (now ? 400 : 2000)) return;
+  PADTAKE.polled.set(sid, Date.now());
+  Promise.resolve(api(`/api/autoplay/telemetry/${encodeURIComponent(sid)}`, undefined, "GET", 5000)).then(t => {
+    PADTAKE.ctl.bot(sid, t?.running === true && Number(t.age_s) < 15, Number(t?.stats?.operator_idle_s) * 1000);
+    padTakeoverRender();
+  }).catch(() => {});
+}
+function padTakeoverTick(forwarded, sources) {
+  if (!PADTAKE.ctl) return;
+  const sid = forwarded || (active && active.local && !padTarget ? active.sid : null);
+  const keys = sid ? padTakeoverKeys(forwarded, sources) : new Set();
+  if (sid && keys.size) padTakeoverPoll(sid, !PADTAKE.ctl.known(sid));
+  PADTAKE.ctl.observe(sid, keys);
+  padTakeoverRender();
+}
+function padTakeoverRender() {
+  if (!PADTAKE.ctl) return;
+  const st = PADTAKE.ctl.state();
+  PADTAKE.ui ||= GBoxPadTakeover.mount(document);
+  PADTAKE.ui.render(st);
+  // the shell's PiP: one line per change (shown / held / a new input; while held, every 5 s), it counts down on its own clock
+  const msg = { ev: "padtakeover", sid: st.sid, show: st.show, held: st.held, last: st.last,
+                remaining_ms: Math.round(st.remainingMs), idle_ms: st.idleMs };
+  const key = JSON.stringify([msg.sid, msg.show, msg.held, msg.held ? Math.floor(Date.now() / 5000) : msg.last]);
+  if (key !== PADTAKE.sent) { PADTAKE.sent = key; console.log("GBOX:" + JSON.stringify(msg)); }
+}
+setInterval(padTakeoverRender, 250);
+// ---------------- end pad takeover badge ----------------
 
 // ---------------- Inspect view: live game + memory (hex, edit, search) + tile/sprite viewer + copy to Blender ----------------
 const I = { src: "ram", addr: 0, len: 256, auto: true, bytes: null, tsrc: "rom", toff: 0, fmt: "nes", cols: 16, rows: 16, zoom: 3,

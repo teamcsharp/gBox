@@ -538,6 +538,8 @@ class Screensaver:
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
             if run.get('mercmode_rotate_requested'):
+                if operator_has_pad(sid, now):                 # never switched away under the operator's pad
+                    return f"{phase} {run['title']}: the operator has the pad, the switch waits"
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
                 return self._park(w, run, now, ROTATION)
             if phase in ('starting', 'playing') and sid:
@@ -565,7 +567,8 @@ class Screensaver:
             run |= {"phase": "playing", "autoplay_job": _jid(job), "playing_since": now}
             self.store.put(STATE, w["name"], run)
             return f"playing {run['title']}"
-        if phase == "playing" and not run.get('mercmode') and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:
+        if phase == "playing" and not run.get('mercmode') and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60 \
+                and not operator_has_pad(sid, now):            # the operator playing it now: the next game waits
             return self._stop(w, run, now, f"{cfg['session_minutes']} minutes: next game")
         return f"{phase} {run['title']}"
 
@@ -1360,6 +1363,13 @@ def telemetry_get(sid: str, now: float | None = None) -> dict:
         return {}
     return {k: v for k, v in t.items() if k != "at"} | {"age_s": round(now - t["at"], 1),
                                                          "running": t.get("running", True) and now - t["at"] < 30}
+
+
+def operator_has_pad(sid: str, now: float | None = None) -> bool:
+    """The operator holds the pad on this session's bot right now (a pad takeover, gbox/pad_takeover.py, from the bot's
+    live report): its game is never stopped or parked under them; the schedule goes on once the bot has it back."""
+    t = telemetry_get(sid, now)
+    return bool(t.get("running")) and t.get("age_s", 99) < 15 and (t.get("stats") or {}).get("operator_control") is True
 
 
 def telemetry_last(sid: str, now: float | None = None) -> dict:
