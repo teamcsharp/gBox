@@ -3916,13 +3916,12 @@ const compactController = GBoxCompactGame.create({
   present: () => { EMB.last = ''; embedTick(); }
 });
 const COMPACT = compactController.state;
+const compactRows = async read => { const r = await read(); if (!r.ok) throw Error('Stream connection unavailable'); return r.data; };
 const compactContinuity = GBoxSessionContinuity.create({
   current: () => COMPACT.on && !COMPACT.local ? { ...compactSession, session_id: COMPACT.sid } : null,
-  read: async () => {
-    const r = await gbox.api('/api/sessions?limit=200');
-    if (!r.ok) throw Error('Stream connection unavailable');
-    return r.data;
-  },
+  // every 2 s: the shared running list while the game runs, the history only to find what replaced it
+  read: id => GBoxSessionContinuity.rowsFor(id, () => compactRows(() => liveSessions()),
+    () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
   follow: async (session, from) => {
     const token = await gbox.token();
     const webview = document.querySelector('#wv');

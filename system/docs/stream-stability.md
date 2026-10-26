@@ -272,3 +272,43 @@ than a controlled performance claim. Native emulation still fell to about
 Receipts: Spark `gbox-data/re5-stream-background-checks-receipt.json` and
 `gbox-data/re5-rsx-affinity-measurement.json`. The temporary render-thread
 affinity diagnostic was restored; it is not a deployed performance setting.
+
+### Keep big answers off the stream's event loop (2026-10-26)
+
+Operator: "the app itself has a stutter every 5 seconds ... it also has a slight stutter with the pine box". Every
+game picture passes the control plane's one event loop: the worker's frame upload, each MJPEG view and the broadcast
+feeds (the H.264 encoder repeats the last ingested frame while ingest waits). FastAPI encodes the dict or list a
+plain `def` endpoint returns on that loop. `GET /api/workers` had grown to 1.9 MB (21 stale worker registrations,
+each with ~75 KB of `build_sources` hashes), and the app's status bar, the web view's tray and the session observers
+each poll it every 5 s. Each PiP follower (compact view, mini window) also read the 660 KB session history every 2 s.
+
+Measured with the real control-plane code (a fake 60 fps worker upload, one MJPEG viewer, a desktop CPU):
+
+| Poll | Frame gaps at each poll | Loop lag |
+|---|---|---|
+| none | max 23 ms | baseline |
+| `/api/workers` (1.9 MB) every 5 s, before | 77-93 ms | 57-89 ms |
+| `/api/sessions?limit=200` (656 KB) every 2 s, before | 110-139 ms | 104-136 ms |
+| `/api/workers` (now 359 KB) every 5 s, after | max 26 ms | baseline |
+| `/api/sessions?include_ended=false` every 1 s (what the PiPs read now) | max 29 ms | baseline |
+
+The loaded ARM Spark is slower than that desktop. A read-only probe of the live Spark (a 404 answered on the loop,
+20 requests a second over the LAN) saw single answers delayed 0.3-1 s every few seconds (p50 11 ms).
+
+- `gbox/thread_json.py`: the control plane's route class encodes a `def` endpoint's JSON answer in the threadpool
+  thread that ran it (same encoder, same bytes). Async endpoints, generators, response models, explicit status
+  codes or response classes and endpoints that set headers on the injected `Response` keep FastAPI's own path.
+- `GET /api/workers` leaves `build_sources` out of offline rows; checks that need them all require an online worker.
+- `POST /api/workers/{wid}/desktop/frame` (8 fps while a PC's screen is watched) reads the store in a thread. Async
+  routes must not take the store lock on the loop: a job claim holds it for a whole admission pass.
+- The PiP followers read the running list while the watched game runs, and the history only once it has ended or
+  been replaced (`GBoxSessionContinuity.rowsFor`). The idle-screen corner reads running sessions only.
+- The session observers read the indexed running rows every 5 s instead of decoding the whole session archive.
+
+Heavy Python work in any thread of the process still competes with the in-process worker's frame upload for the
+GIL: with on-loop encoding removed, a 656 KB history answer still delayed the upload ~60 ms. Frequently polled
+answers must stay small. Not verified on the live Spark or with Pine Box yet.
+
+Tests: `tests/test_stream_no_stutter.py` (a viewer of the production MJPEG generator keeps receiving frames while a
+slow answer is encoded; identical answers; the excluded route kinds; the slim worker list; the desktop-frame store
+reads off the loop) and `tests/test_stream_no_stutter.cjs` (the PiP followers' reads).
