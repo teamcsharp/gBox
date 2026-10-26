@@ -166,6 +166,13 @@ def test_the_library_is_one_folder_per_build_and_disc_revision(tmp_path):
 def test_the_library_keeps_two_per_combination_and_its_total_bound(tmp_path, monkeypatch):
     clock = [1000.0]
     lib = RS.Library(tmp_path / "lib", clock=lambda: clock[0])
+    (tmp_path / "lib").mkdir()
+    stale, fresh = tmp_path / "lib" / "capture-1-aa.tmp", tmp_path / "lib" / "capture-2-bb.tmp"
+    for f in (stale, fresh):
+        f.write_bytes(b"x")
+    old = time.time() - RS.STALE_CAPTURE_S - 60
+    import os
+    os.utime(stale, (old, old))                                      # a capture its run never filed
     for n in range(3):                                               # a third Leon / Village: the oldest goes
         clock[0] += 10
         src = tmp_path / f"s{n}.bin"
@@ -174,6 +181,7 @@ def test_the_library_keeps_two_per_combination_and_its_total_bound(tmp_path, mon
     left = lib.entries()
     assert len(left) == RS.MAX_PER_COMBO and lib.count((0x400, "Leon")) == 2
     assert {Path(e["file"]).read_bytes()[0] for e in left} == {1, 2} and not list(tmp_path.glob("s*.bin"))
+    assert not stale.exists() and fresh.exists()                     # swept when old; one still being written stays
     monkeypatch.setattr(RS, "MAX_TOTAL", 3)
     for who in ("Ada", "HUNK"):
         clock[0] += 10

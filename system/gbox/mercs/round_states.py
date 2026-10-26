@@ -44,6 +44,7 @@ GROW_P = 0.5                    # x the share of combinations the library lacks:
 CAPTURE_WAIT_S = 2.5            # a capture's state must be serialized within this of the round's first frame
 LOAD_SLOT = 8                   # the load key gBox binds in every Dolphin (checkpoint_load: F8); the slot file is borrowed
 RESTORE_AFTER_FAIL_S = 1.0      # a load that never showed: wait this long before the borrowed slot file is put back
+STALE_CAPTURE_S = 3600.0        # a capture-*.tmp this old was never filed (its run ended first): swept by prune()
 _SLOT_LOCK = threading.Lock()   # one borrowed slot file at a time (every gBox Dolphin on a host shares its user folder)
 
 
@@ -203,6 +204,12 @@ class Library:
                 dropped.append(e)
         for e in dropped:
             self.drop(e)
+        try:                                                    # a capture its run never filed (paused, stopped)
+            for f in self.folder.glob("capture-*.tmp"):
+                if time.time() - f.stat().st_mtime > STALE_CAPTURE_S:
+                    f.unlink(missing_ok=True)
+        except OSError:
+            pass
         return dropped
 
     def valid(self, entry: dict) -> str | None:
