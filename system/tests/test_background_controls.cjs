@@ -30,3 +30,9 @@ test('background controls render measured load, default budget, gaming toggle an
     assert.match(await evaluate(`document.querySelector('#testpcmenu').textContent`),/Gaming/);
   });
 });
+
+// operator 2026-10-26: "the dropdown for bot commands doesnt work in pip mode" - the compact-mode rule hid the menu
+test('compact mode leaves the bot command dropdown visible', () => {
+  const rule = html.split('\n').find(l => l.includes('body.gbox-compact > :not(#gpu-game)'));
+  assert.ok(rule && rule.includes(':not(.coach-menu)'), 'the compact hide-everything rule must exempt .coach-menu');
+});

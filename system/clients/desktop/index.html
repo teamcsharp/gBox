@@ -1286,7 +1286,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#pipmenu):not(script):not(style) { display:none !important; }
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
   /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
   #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }

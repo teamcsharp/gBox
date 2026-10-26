@@ -838,3 +838,15 @@ def test_valid_first_hit_keeps_off_axis_gun_raised_only_in_ready_pose(tmp_path,r
     else:
         assert 'rleft' in keys and not ({'l1','r1'} & keys)
         assert 'swinging' in combat.stats['combat']
+
+
+def test_a_direct_gun_with_the_gun_down_is_raised_not_treated_as_laserless():
+    # round map 2026-10-26: 42 s standing still in 'fight' - "laserless gun: lower weapon and turn toward target" -
+    # the laser ray only exists while aiming, so every gun looked laserless with the gun down and never came up
+    m = world(aiming=False, act_vt=0)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = supported_laserless(snap(m, enemy=(700.0, 0.0, 900.0)))        # a Majini off to the side, in range
+    s["laser"] = None                                                   # the gun is down: no ray
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert "l1" in act                                                  # raise the gun (the ray comes with it)
+    assert not str(bot.stats.get("combat", "")).startswith("laserless gun")
