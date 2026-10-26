@@ -889,3 +889,13 @@ def test_prioritized_work_on_one_game_fills_several_slots_in_one_tick(env, monke
     data = q._read(); data['priority'] = ids; q._save(data)
     result = q.tick(now=1000)
     assert len([d for d in result['dispatched'] if d['game_id'] == G]) >= 2
+
+
+def test_a_cooling_primary_route_does_not_halt_the_pool(env, monkeypatch):
+    # 2026-10-26: spark2's route in scheduler backoff returned 'waiting_for_route_supervisor' and Kimi / Z.AI sat idle
+    import json as _json
+    calls, _ = _required_node_tick(monkeypatch, [request('9' * 16, title='Fix typo')])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    (q.delivery.state_dir() / 'feedback.json').write_text(_json.dumps({'cooldowns': {'spark-local/gpt-oss:20b': 9e12}}))
+    result = q.tick(now=1000)
+    assert result['status'] != 'waiting_for_route_supervisor'

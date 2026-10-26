@@ -738,12 +738,14 @@ def tick(*, now=None):
         eligible = [r for r in routes if feedback.get('cooldowns', {}).get(r['provider']+'/'+r['model'], 0) <= now]
         primary = {'provider': (config.get('cron') or {}).get('model_provider'),
                    'model': (config.get('cron') or {}).get('model')}
-        if primary not in eligible:
-            return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
         from . import hermes_local
         local = hermes_local.is_local(primary)
         from . import hermes_pool
         pooled = local and hermes_pool.configured()
+        # A pool filters each node by its own cooldown below: spark2's route cooling down must not halt Kimi / Z.AI
+        # (2026-10-24 and 2026-10-26: 'waiting_for_route_supervisor' left every paid node idle for hours)
+        if primary not in eligible and not pooled:
+            return {'status': 'waiting_for_route_supervisor', 'favorites': data['favorites_count']}
         pool_state = _api('/api/hermes/local/nodes') if pooled else None
         if pooled:
             # A provider can list its models while refusing every paid call.
