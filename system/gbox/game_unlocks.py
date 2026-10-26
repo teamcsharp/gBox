@@ -29,7 +29,7 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
             # Registration point for the DOA++ (Korea) arcade unlock work. The
             # fast Play path must never guess a write: report the live static
             # evidence state and hand off to the background research task.
-            from . import doapp_unlock
+            from . import doapp_unlock, ts2_unlock
             record = doapp_unlock.profile()
             return {'state': 'research_pending', 'applied': False,
                     'reason': record['reason'],
@@ -70,6 +70,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    from . import ts2_unlock
+    if game.get('game_id') == ts2_unlock.GAME_ID and game.get('platform') == ts2_unlock.PLATFORM:
+        # TS2 unlock profile: research in progress, no verified write target.
+        # verified=False keeps the pre_launch writer unreachable.
+        prof = ts2_unlock.profile()
+        return {'status': prof['status'], 'profile': prof.get('profile'), 'verified': prof.get('verified', False),
+                'scope': prof.get('scope', []), 'exclusions': prof.get('exclusions', []),
+                'evidence': prof.get('evidence', {}), 'items': prof.get('items', []),
+                'save_effect': prof.get('save_effect', 'None'), 'game_id': prof.get('game_id'),
+                'requires_live_testing': prof.get('requires_live_testing', True),
+                'reason': prof.get('reason', '')}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
