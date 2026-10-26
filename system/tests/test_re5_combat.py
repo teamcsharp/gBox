@@ -850,3 +850,36 @@ def test_a_direct_gun_with_the_gun_down_is_raised_not_treated_as_laserless():
     act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
     assert "l1" in act                                                  # raise the gun (the ray comes with it)
     assert not str(bot.stats.get("combat", "")).startswith("laserless gun")
+
+
+def test_a_wild_ray_error_faces_him_levels_the_gun_and_holds_the_trigger():
+    # operator 2026-10-26, watching: "the bot will do a thing while aiming where they begin looking down and to the side
+    # while dispatching the foes" (round map Ship_Deck 11:37: yaw -55 / pitch -56 with the trigger held, the dot on nothing)
+    m = world(laser_dot=(-120.0, 20.0, 60.0))        # the ray from the gun down into the deck, 80 deg off to the right
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 300.0))             # a Majini 3 m straight ahead, on his level: a threat
+    s["player"]["pitch"] = -0.9                      # the snapshot's pitch, + = up: he is looking at the deck
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert "rup" in act and "rdown" not in act, act  # the gun comes up to level
+    assert not act & {"rleft", "rright"}, act        # his body already faces him: no ray-driven sweep
+    assert "r1" not in act and "l1" in act, act      # no rounds into the deck while the dot is off him
+    assert bot.stats["aim_guard"].startswith("wild") and bot.stats["aim_guards"] == 1
+    assert "guard wild" in bot.stats["combat"]
+    m = world(laser_dot=(0.0, 112.0, 300.0))         # the dot back on his chest: the ordinary fire goes on
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 300.0))
+    s["player"]["pitch"] = -0.9
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert "r1" in act and "aim_guard" not in bot.stats, act
+
+
+def test_a_majini_at_the_muzzle_is_faced_by_the_body_not_the_short_ray_and_still_blasted():
+    m = world(laser_dot=(60.0, 100.0, 140.0))        # the dot a hand's width beside him: a 1 m ray, 30 deg off
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 150.0))             # inside CLOSE_STEER_R, outside point blank
+    s["player"]["pitch"] = 0.0
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert {"l1", "r1"} <= act, act                  # the threat blast goes on (operator 2026-10-22)
+    assert not act & {"rleft", "rright", "rup", "rdown"}, act   # level, facing him: nothing to correct by the ray
+    assert bot.stats["aim_guard"].startswith("close")
+    assert bot.stats["fire_gate"] == "threat: blasting"

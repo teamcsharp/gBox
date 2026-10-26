@@ -1,4 +1,5 @@
-/* PiP replay export and live autoplay state. No microphone or client-side audio mix. */
+/* PiP replay export (the corner button, F1) and live autobot state (F3 toggles the autobot through the control plane).
+   No microphone or client-side audio mix. */
 (function(root) {
   'use strict';
   const SECONDS = 180;
@@ -11,6 +12,44 @@
     .pip-replay-status{position:absolute;right:46px;bottom:10px;max-width:calc(100vw - 125px);padding:3px 5px;border-radius:3px;background:#000b;font-size:10px;text-align:right;overflow-wrap:anywhere}.pip-replay-status:empty{display:none}
     .pip-media[data-error=true] .pip-replay-status{color:#ffb7b7}@keyframes pip-autobot-pulse{50%{opacity:.35}}@media(prefers-reduced-motion:reduce){.pip-autobot{animation:none}}`;
   const valid = sid => typeof sid === 'string' && /^[a-zA-Z0-9_-]{1,160}$/.test(sid) && sid.includes('-');
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+  // "409 {"detail":"lilspark ... is offline"}" (the desktop's API error) -> the detail the server wrote for the operator
+  function readable(error) {
+    const text = String(error?.message ?? error ?? '');
+    const m = /^\d{3}\s+(\{[\s\S]*\})\s*$/.exec(text);
+    if (m) try { const body = JSON.parse(m[1]); if (typeof body.detail === 'string') return body.detail; } catch {}
+    return text || 'The request failed';
+  }
+  // The game a window shows, for F3 / F5 (operator 2026-10-26: "start the Autobot on any game session by pressing the F3
+  // key, even if I'm on a different computer"): the PiP stream, else the session page open in the embedded gBox view (a
+  // remote game watched there beats a game docked on this PC), else the game docked here, else what the view shows
+  // otherwise (its own PiP). Never "a game somewhere": no shown game is null.
+  function shownSession({compact = null, docked = null, guest = null} = {}) {
+    const page = guest?.tab === 'Sessions' ? guest.session : null;
+    for (const sid of [compact, page, docked, guest?.session, guest?.pip, guest?.playing, guest?.active]) if (valid(sid)) return sid;
+    return null;
+  }
+  async function settle(api, job, {delay = wait, now = Date.now, limit = 150000, what = 'The autobot request'} = {}) {
+    const deadline = now() + limit;
+    while (['queued', 'running'].includes(job?.state)) {
+      if (!job.id) throw Error(what + ' has no ID.');
+      if (now() >= deadline) throw Error(what + ' is still running; check the task list.');
+      await delay(700);
+      job = await api('/api/jobs/' + encodeURIComponent(job.id), undefined, 'GET');
+    }
+    if (job?.state !== 'succeeded') throw Error(job?.error?.message || job?.error || what + ' failed.');
+    return job;
+  }
+  // F3 through the control plane (POST /api/sessions/{sid}/autoplay, gbox/bot_control.py): it follows a replaced session
+  // to the game running now and asks the PC that runs it, wherever this window is. The app's requests are the operator's.
+  async function autobot(api, sid, body = {op: 'toggle', source: 'F3'}, options = {}) {
+    if (!valid(sid)) throw Error('No game is shown here.');
+    let job;
+    try { job = await settle(api, await api('/api/sessions/' + encodeURIComponent(sid) + '/autoplay', body, 'POST'), options); }
+    catch (error) { throw Error(readable(error)); }
+    const out = job.output || {};
+    return {ok: true, action: out.action, running: out.running, message: out.message || 'Autobot request done.', output: out, job: job.id};
+  }
   function create({current, api, save, preferences = async () => ({}), render = () => {},
                    delay = ms => new Promise(resolve => setTimeout(resolve, ms)), now = Date.now,
                    fade = (fn, ms) => { const t = setTimeout(fn, ms); t?.unref?.(); }}) {
@@ -34,7 +73,8 @@
       const deadline=now()+limit;
       while(['queued','running'].includes(result?.state)){
         if(!result.id)throw Error('The recording job has no ID');
-        state.progress=Number(result.progress?.pct)||0;state.message=result.progress?.msg||'Preparing the replay…';paint();
+        state.progress=Number(result.progress?.pct)||0;
+        state.message=result.progress?.msg||(tool==='recording'?'Preparing the replay…':'Asking the PC that runs this game…');paint();
         if(now()>=deadline)throw Error(input.op==='status'?'The recorder on that PC did not answer; no replay was started.':'Replay export is still running. Check the task list before trying again.');
         await delay(600);
         result=await api('/api/jobs/'+encodeURIComponent(result.id),undefined,'GET');
@@ -42,16 +82,21 @@
       if(result?.state!=='succeeded')throw Error(result?.error?.message||result?.error||'Replay export failed');
       return result.output?.result||result.output||{};
     }
+    // F3 on the shown game: one control-plane request (status, then start or stop on that game's PC); the answer is
+    // shown here and returned for the shell's toast
     async function toggleAutobot(){
-      const sid=current();if(stopped||toggling||!valid(sid))return;
-      toggling=true;
+      const sid=current();if(stopped||toggling||!valid(sid))return null;
+      toggling=true;state.error=false;state.message='Autobot: asking the PC that runs this game…';paint();
+      let out;
       try{
-        const result=await job(sid,{op:'status'},'autoplay',STATUS_JOB_MS),status=result.result||result;
-        if(stopped||current()!==sid)return;
-        await job(sid,status.running?{op:'stop'}:{op:'start',continuous:true},'autoplay',STATUS_JOB_MS);
-        await poll();
-      }catch(error){state.error=true;state.message=error.message||String(error);paint();}
-      finally{toggling=false;}
+        out=await autobot(api,sid,{op:'toggle',source:'F3'},{delay,now,limit:STATUS_JOB_MS*5});
+        if(!stopped){state.message=out.message;paint();await poll();}
+      }catch(error){out={ok:false,message:readable(error)};state.error=true;state.message=out.message;paint();}
+      finally{
+        toggling=false;const shown=state.message;
+        fade(()=>{if(!toggling&&!state.busy&&state.message===shown){state.message='';state.error=false;paint();}},state.error?12000:6000);
+      }
+      return out;
     }
     async function exportLast(){
       const sid=current();if(stopped||state.busy||!valid(sid))return;
@@ -75,7 +120,7 @@
     return {poll,exportLast,toggleAutobot,state:()=>({...state}),stop:()=>{stopped=true;}};
   }
   function mount(host, options){
-    host.classList.add('pip-media');host.innerHTML=`<span class="pip-autobot" hidden>autobot</span><span class="pip-replay-status" role="status" aria-live="polite"></span><span class="pip-corner"><button class="pip-replay" type="button" aria-label="Export last 3 minutes of gameplay with audio" title="Save last 3 minutes and open the export folder">${ICON}</button></span>`;
+    host.classList.add('pip-media');host.innerHTML=`<span class="pip-autobot" hidden>autobot</span><span class="pip-replay-status" role="status" aria-live="polite"></span><span class="pip-corner"><button class="pip-replay" type="button" aria-label="Export last 3 minutes of gameplay with audio" title="Save last 3 minutes and open the export folder (F1)">${ICON}</button></span>`;
     const ctl=create({...options,render:state=>{
       host.dataset.busy=String(state.busy);host.dataset.error=String(state.error);
       host.querySelector('.pip-autobot').hidden=!state.autobot;
@@ -93,6 +138,6 @@
     const timer=setInterval(()=>ctl.poll(),2000);ctl.poll();
     return {...ctl,stop:()=>{clearInterval(timer);ctl.stop();}};
   }
-  const api={SECONDS,ARM_MS,CSS,ICON,create,mount};
+  const api={SECONDS,ARM_MS,CSS,ICON,create,mount,autobot,settle,shownSession,readable};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.GBoxPipMedia=api;
 })(globalThis);

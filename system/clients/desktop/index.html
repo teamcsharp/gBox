@@ -1264,6 +1264,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/re4-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
+<script src="../web/viz/rebuild-panel.js"></script>
 <script src="../web/viz/picture-fit.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -1286,7 +1287,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
   /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
   #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
@@ -2429,11 +2430,17 @@ async function testPcMenu(x, y) {                             // which PCs backg
         <div class="mut" style="font-size:11px;margin:4px 0">CPU ${pct(resources.cpu_percent)} / ${gpu} / RAM ${pct(resources.memory_percent)}</div>
         <label style="display:flex;gap:8px;align-items:center">Admit work below <input type="range" data-budget="${esc(w.name)}" min="10" max="90" step="5" value="${Number(w.budget_percent || 70)}"><span>${Number(w.budget_percent || 70)}%</span></label>
         <div role="status" style="font-size:11px;margin-top:4px">${esc(admission.reason || 'Ready for queued background work.')}</div>
+        <button type="button" data-rebuild="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="Update this PC's code and packages, self-check, then restart its worker and gBox app; its bot games are saved and closed first (the operator's own game needs force)">⟳ Rebuild &amp; relaunch ${esc(w.name)}</button>
       </div>`;
     }).join('') || '<div class="mut">No workers are registered.</div>';
     fitMenu(m, e.clientX, e.clientY, 8, 40); };
   const r = await gbox.api('/api/testing/workers'); if (r.ok) render(r.data); else m.querySelector('[data-list]').textContent = r.error;
   m.oninput = ev => { const range = ev.target.closest('input[data-budget]'); if (range) range.nextElementSibling.textContent = range.value + '%'; };
+  m.onclick = ev => {                                           // "⟳ Rebuild & relaunch <PC>" (gbox/node_rebuild.py): the panel follows it
+    const b = ev.target.closest('button[data-rebuild]'); if (!b) return;
+    m.style.display = "none";
+    rebuildNode(b.dataset.rebuild).catch(error => toast(`Could not rebuild ${b.dataset.rebuild}: ${error.message}`));
+  };
   m.onchange = async ev => {
     const control = ev.target.closest('input[data-w], input[data-budget]'); if (!control) return;
     control.disabled = true;
@@ -2672,7 +2679,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k==='apiUrl'?S.configuredApiUrl||S[k]:S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F2 save · F3 autoplay · F4 load · F5 refresh client · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 refresh client (a bot game keeps its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -3658,7 +3665,7 @@ function gameOutputPlace(){
 }
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_HOLES = ".piprz, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -4170,7 +4177,8 @@ async function pipModifiers(m, opening) {
         const result = await gbox.api(path, body, method);
         if (!result.ok) throw new Error(result.error || 'Modifier request failed');
         return result.data;
-      } });
+      },
+      savedPrefs: () => gamePrefsOf(session.session_id) });   // what this game keeps across reloads (gbox/game_prefs.py)
   } catch (error) {
     if (m.opening === opening) m.querySelector('[data-pip-modifiers]').textContent = error.message;
   }
@@ -4198,10 +4206,13 @@ function pipMenu(x, y) {
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
                  ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
-                 ["fixgame", "⟳ Report & fix (relaunch this game)"], ["-"],
+                 ["fixgame", "⟳ Report & fix (relaunch this game)"],
+                 // "⟳ Rebuild & relaunch <PC>": update that PC's code + packages, self-check, restart its worker and app (gbox/node_rebuild.py)
+                 ...rebuildPcItems().map(p => [`rebuild:${p.name}`, esc(p.label)]), ["-"],
                  // "🤖 Bot demo on <PC>" for this game, every online PC (this one included): it plays itself from boot
                  ...(EMB.game ? botDemoItems().map(p => [`bot:${p.name}`, esc(p.label)]) : []), ...(EMB.game && botDemoItems().length ? [["-"]] : []),
-                 ["save", "💾 Save state", noStates], ["load", "📂 Load state", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
+                 ["replay", "🎬 Save the last 3 minutes (replay)  F1"],
+                 ["save", "💾 Save state  F2", noStates], ["load", "📂 Load state  F4", noStates], ["slot+", `Save slot: ${GM.slot}  ▸ next`, noStates], ["slot-", "Save slot ◂ previous", noStates],
                  ["strip", "⏪ Rewind / save-state film strip", noStates], ...(/phantasy star/i.test(EMB.title || "") ? [["items", "🎒 Items & equipment…"]] : []),
                  ...(RI.cur ? [["reinv", "🎒 Inventory (change / give items)…"]] : []),
                  ...(/zelda/i.test(EMB.title || "") ? [["equip", "🗡 Equip screen (items, gear, upgrades)…"]] : []), ["-"],
@@ -4218,6 +4229,12 @@ function pipMenu(x, y) {
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
   pipModifiers(m, opening);
   pipMercMode(m, opening);
+  savedSlot().then(slot => {                                   // this game's kept save slot, once known
+    const b = m.opening === opening && m.querySelector('[data-a="slot+"]');
+    if (b && !b.disabled) b.textContent = `Save slot: ${slot}  ▸ next`;
+  });
+  const replayItem = m.querySelector('[data-a="replay"]');
+  if (replayItem && !COMPACT.on && !EMB.sid) replayItem.remove();   // the replay needs a game shown here (PiP or docked)
 }
 // MercMode in the PiP menu (operator 2026-10-24): a toggle between staying in this game and rotating across titles,
 // and an arrow opening the titles it rotates through. Every change is one exact host setting; nothing launches here.
@@ -4343,6 +4360,27 @@ async function fixGame() {
   }
   setTimeout(()=>reconnectRun({quiet:false}),4000);
 }
+// The PiP menu's own per-game values (operator 2026-10-26: "retain those settings across reloads"): the save-state slot is
+// kept for each game on the control plane (gbox/game_prefs.py, PUT /api/game-prefs/{game}/pip), read back once per game.
+const gamePrefsOf = sid => compactApi(`/api/sessions/${encodeURIComponent(sid)}/game-prefs`, undefined, 'GET');
+async function savedSlot() {
+  const sid = await shownSessionSoon();
+  if (!sid || GM.slotSid === sid) return GM.slot;
+  GM.slotSid = sid;
+  try {
+    const prefs = await gamePrefsOf(sid);
+    GM.prefsGame = prefs?.game_id || null;
+    const slot = prefs?.panels?.pip?.save_slot;
+    if (Number.isInteger(slot) && slot >= 0 && slot <= 9) GM.slot = slot;
+  } catch {}
+  return GM.slot;
+}
+async function savePipPref(settings) {
+  try {
+    const game = GM.prefsGame || (GM.slotSid ? (await sessionById(GM.slotSid))?.game_id : null);
+    if (game) await compactApi(`/api/game-prefs/${encodeURIComponent(game)}/pip`, { settings }, 'PUT');
+  } catch (error) { toast('⚠ The save slot is not kept for this game: ' + GBoxPipMedia.readable(error)); }
+}
 async function gameAction(a) {
   if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
   if(a==='mercmode-stay'){
@@ -4356,7 +4394,11 @@ async function gameAction(a) {
   try {
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
-    if (a === "autoplay" || a === "autoplay+" || a === "autoplay-replay") {
+    if (a.startsWith("rebuild:")) return rebuildNode(a.slice(8));           // "⟳ Rebuild & relaunch <PC>"
+    if (a === "autoplay") return await f3Autobot();               // the same as F3: the shown game, through the control plane
+    if (a === "replay") return await f1Replay();                  // the same as F1
+    if (a === "save" || a === "load") await savedSlot();            // this game's kept save slot, once per shown game
+    if (a === "autoplay+" || a === "autoplay-replay") {
       // autoplay also starts from the pad chord and stops when you touch the pad: ask the worker, not a local flag
       const st = await gameJob("autoplay", { op: "status" }).catch(() => null);
       if (st) GM.auto = !!st.running;
@@ -4372,7 +4414,7 @@ async function gameAction(a) {
     else if ((a === "save" || a === "load" || a === "strip") && capMissing("save_state")) toast(capMissing("save_state"));   // #2518: no job, no failure
     else if (a === "save") { toast("💾 Saving…"); const r = await gameJob("session_op", { op: "save_state", args: { slot: GM.slot } }); stripAdd(r); toast(`💾 Saved (slot ${r.slot ?? GM.slot})`); }
     else if (a === "load") { toast("📂 Loading…"); await gameJob("session_op", { op: "load_state", args: { slot: GM.slot } }); toast(`📂 Loaded slot ${GM.slot}`); }
-    else if (a === "slot+" || a === "slot-") { GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); }
+    else if (a === "slot+" || a === "slot-") { await savedSlot(); GM.slot = Math.max(0, Math.min(9, GM.slot + (a === "slot+" ? 1 : -1))); toast(`Save slot ${GM.slot}`); savePipPref({ save_slot: GM.slot }); }
     else if (a === "strip") stripShow();
     else if (a === "items") itemsShow();
     else if (a === "reinv") reinvShow();
@@ -4690,10 +4732,83 @@ async function recoverStreams() {
 }
 async function recoverAndRefresh() {
   toast('F5: reconnecting the stream…');
+  // the bot first: the control plane checks it (a reload cannot cut that off) while the picture is repaired
+  const ensured = botEnsure(await shownSessionSoon());
   try { await recoverStreams(); } catch {}
+  await Promise.race([ensured, new Promise(r => setTimeout(r, 3000))]);   // its id is kept before any reload
   // F5 also runs the whole reconnect flow: the Spark, its library, the MercMode game, a live picture, the PiP
   if (!COMPACT.on || !reconnectFlow.state().done) return reconnectRun({ quiet: false });
   return clientRefresh.refresh().catch(error => toast(error.message));
+}
+// a frozen embedded view must not hold F5 / F3 up (its session is then unknown: null)
+const shownSessionSoon = (options, ms = 1500) => Promise.race([shownSession(options).catch(() => null),
+  new Promise(r => setTimeout(() => r(null), ms))]);
+// F5 keeps the autobot driving (operator 2026-10-26: "When i reload the stream via F5 because the bot got stuck or the
+// stream freezes, bring it back up with the bot active and in control"). POST /api/sessions/{sid}/autoplay/ensure
+// (gbox/bot_control.py): only a game that had a bot gets it back (never the operator's own game without one), a bot whose
+// reports went stale is restarted, and the game's saved menu settings go back on. The answer is toasted, also after the
+// client reload F5 may do: the request id waits in sessionStorage.
+const BOT_ENSURE_KEY = 'gbox.f5.bot', BOT_ENSURE = { at: new Map(), following: null };
+async function botEnsure(sid, reason = 'F5') {
+  if (typeof sid !== 'string' || !sid.includes('-')) return null;
+  if (Date.now() - (BOT_ENSURE.at.get(sid) || 0) < 15000) return null;      // F5 and its reconnect flow: one request
+  BOT_ENSURE.at.set(sid, Date.now());
+  try {
+    const job = await compactApi(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason });
+    if (!job?.id) return null;
+    try { sessionStorage.setItem(BOT_ENSURE_KEY, JSON.stringify({ id: job.id, at: Date.now() })); } catch {}
+    followBotEnsure(job);
+    return job;
+  } catch (error) { toast('⚠ F5: the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000); return null; }
+}
+async function followBotEnsure(job) {
+  if (!job?.id || BOT_ENSURE.following === job.id) return;
+  BOT_ENSURE.following = job.id;
+  try {
+    const done = await GBoxPipMedia.settle(compactApi, job, { limit: 180000, what: 'The autobot check' });
+    const out = done.output || {};
+    if (out.action && out.action !== 'none') toast('🤖 ' + (out.message || 'Autobot checked.'), 7000);
+    compactMedia?.poll();
+  } catch (error) { toast('⚠ Autobot: ' + GBoxPipMedia.readable(error), 9000); }
+  finally {
+    try { if (JSON.parse(sessionStorage.getItem(BOT_ENSURE_KEY) || 'null')?.id === job.id) sessionStorage.removeItem(BOT_ENSURE_KEY); } catch {}
+    if (BOT_ENSURE.following === job.id) BOT_ENSURE.following = null;
+  }
+}
+setTimeout(() => {                                              // after the reload F5 may have done: its answer still arrives
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(BOT_ENSURE_KEY) || 'null'); } catch {}
+  if (saved?.id && Date.now() - saved.at < 180000) followBotEnsure({ id: saved.id, state: 'running' });
+  else try { sessionStorage.removeItem(BOT_ENSURE_KEY); } catch {}
+}, 2500);
+// The game this window shows (F3 / F5): the PiP stream, the session page open in the embedded gBox view, the game docked
+// here (this connection's), else what the view shows. fallback: the newest game running on this PC (a native window that
+// is not docked).
+async function shownSession({ fallback = false } = {}) {
+  const compact = COMPACT.on ? (globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || COMPACT.sid) : null;
+  const docked = EMB.sid && (!EMB.authority || EMB.authority === S.apiUrl) ? EMB.sid : null;
+  const guest = compact ? null : await gboxState().catch(() => ({}));
+  const sid = GBoxPipMedia.shownSession({ compact, docked, guest });
+  if (sid || !fallback) return sid;
+  return (await chatContext().catch(() => ({}))).session_id || null;
+}
+// F3 starts (or stops) the autobot on the game this window shows, whichever PC runs it (operator 2026-10-26: "Allow me
+// to start the Autobot on any game session by pressing the F3 key, even if I'm on a different computer using G Box"):
+// one control-plane request (POST /api/sessions/{sid}/autoplay) that reaches that game's worker; a toast says what came of it.
+const F3 = { busy: false };
+async function f3Autobot() {
+  if (F3.busy) return toast('🤖 F3: the autobot request is still on its way…');
+  F3.busy = true;
+  try {
+    const sid = await shownSessionSoon({ fallback: true }, 2500);
+    if (!sid) return toast('⚠ F3: no game is shown in this window (or its view is not answering). Open a running game, then press F3 to start its autobot.', 7000);
+    toast('🤖 F3: asking the PC that runs this game…');
+    const out = COMPACT.on && compactMedia && compactCurrentSid() === sid ? await compactMedia.toggleAutobot()
+      : await GBoxPipMedia.autobot(compactApi, sid, { op: 'toggle', source: 'F3' }).catch(error => ({ ok: false, message: error.message }));
+    if (!out) return;
+    if (out.ok) GM.auto = !!out.running;
+    toast(out.ok ? '🤖 ' + out.message : '⚠ Autobot: ' + out.message, out.ok ? 6000 : 9000);
+  } finally { F3.busy = false; }
 }
 // ---- reconnect flow: whatever it takes to get the Spark's MercMode game on screen (clients/desktop/reconnect-flow.js) ----
 function reconnectOverlay() {
@@ -4727,6 +4842,7 @@ const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'request failed'); return r.data; },
   pickHost: data => GBoxReconnectFlow.pickHost(data, S?.workerName),
   pipSession: () => COMPACT.on ? (globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || '') || COMPACT.sid) : null,
+  ensureBot: sid => botEnsure(sid, 'F5'),                       // the MercMode game it put on screen keeps its autobot
   pipEnter: sid => compactController.enter({ sid }),
   pipRestore: () => compactRestore(),
   show: on => { const el = reconnectOverlay(); el.classList.toggle('on', !!on);
@@ -4745,10 +4861,27 @@ setInterval(async () => {
   const st = await gbox.connectionStatus?.().catch(() => null);
   if (st?.mode === 'remote' && st.remote && !st.remote.ready && COMPACT.on) reconnectRun({ quiet: false, automatic: true });
 }, 15000);
+// F1 replay · F2 save state · F3 autobot · F4 load state · F5 refresh (operator 2026-10-26: "when i press F3, I intend to
+// start the autobot, not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it")
 gbox.onHotkey?.(k => { if (k === "eyedropper") return eyeStart();
-  if (k === 'autoplay' && COMPACT.on && compactMedia) return compactMedia.toggleAutobot();
+  if (k === 'autoplay') return f3Autobot();                                    // the game this window shows, on any PC
+  if (k === 'replay') return f1Replay();                                       // the last 3 minutes of the shown game
   if (k === "client-refresh" || k === "reset") return recoverAndRefresh();      // old main processes still name F5 "reset"
-  if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["autoplay", "save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+  if (k === "fullscreen") return viewAction(isFull() ? "main" : "full"); if (["save", "load", "slot+", "slot-"].includes(k)) gameAction(k); });
+// F1 saves the last 3 minutes of the shown game with audio (the PiP's corner button does the same): in the PiP through its
+// media controls, else through a controller of its own for the shown session. The replay's progress and result are toasted.
+const F1 = { ctl: null, sid: null };
+async function f1Replay() {
+  if (COMPACT.on && compactMedia) { toast('🎬 F1: saving the last 3 minutes…'); return compactMedia.exportLast(); }
+  const sid = await shownSessionSoon({ fallback: true }, 2500);
+  if (!sid) return toast('⚠ F1: no game is shown in this window. Open a running game, then press F1 to save its last 3 minutes.', 7000);
+  if (F1.sid !== sid) { F1.ctl?.stop(); F1.sid = sid;
+    F1.ctl = GBoxPipMedia.create({ current: () => F1.sid, api: compactApi, preferences: () => gbox.recPreferences(), save: clip => gbox.recSaveClip(clip),
+      render: s => { if (s.message) toast((s.error ? '⚠ ' : '🎬 ') + s.message, s.error ? 9000 : 6000, { id: 'f1-replay', kind: s.error ? 'bad' : '' }); } }); }
+  if (F1.ctl.state().busy) return toast('🎬 F1: the replay is still being saved…', 4000, { id: 'f1-replay' });
+  toast('🎬 F1: saving the last 3 minutes…', 6000, { id: 'f1-replay' });
+  return F1.ctl.exportLast();
+}
 addEventListener("keydown", e => {                            // A / F3 = autoplay, when the app (not a text box) has the keyboard
   if (!EMB.sid || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.("input, textarea, select, video, [contenteditable]")) return;
   if (e.key === "a" || e.key === "A") { e.preventDefault(); gameAction("autoplay"); }   // F2/F3/F4 come from the main process
@@ -6482,6 +6615,49 @@ function botDemoItems() {
   return window.GBoxBotDemo ? GBoxBotDemo.pcs(BOTPCS.list, S?.workerName) : [];
 }
 setTimeout(() => { try { botDemoItems(); } catch {} }, 5000);   // the list is there by the first right-click
+// ---- "⟳ Rebuild & relaunch <PC>" (operator 2026-10-26; gbox/node_rebuild.py, ../web/viz/rebuild-panel.js) ----
+// POST /api/workers/<name>/rebuild queues rebuild_node on that PC (its bot/agent games are saved and closed first; the
+// operator's own game refuses unless forced), then a PiP-sized panel follows the job's console (GET /api/jobs/{jid}/console:
+// monospace lines, a loading bar, the npx spinner with the current step) and the PC's return in /api/workers. Over the
+// PiP stream in compact mode, a floating panel otherwise; back online, the stream watchdog reconnects the PiP's stream.
+function rebuildPcItems() {
+  botDemoItems();                                               // refreshes BOTPCS.list in the background
+  return window.GBoxRebuildPanel ? GBoxRebuildPanel.pcs(BOTPCS.list, S?.workerName, compactSession?.detail?.worker_name) : [];
+}
+let rebuildPanel = null;
+const rebuildApi = async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw Error(r.error || 'request failed'); return r.data; };
+async function rebuildNode(name, force = false) {
+  const ws = (await gbox.api('/api/workers').catch(() => null))?.data;
+  if (Array.isArray(ws)) { BOTPCS.list = ws; BOTPCS.at = Date.now(); }
+  const before = (Array.isArray(ws) ? ws : BOTPCS.list).find(w => w.name === name) || {};
+  let r;
+  try { r = await rebuildApi(`/api/workers/${encodeURIComponent(name)}/rebuild`, { force }); }
+  catch (error) {
+    let detail = error.message; try { detail = JSON.parse(detail.replace(/^\d{3}\s+/, '')).detail || detail; } catch {}
+    if (!force && /use force/i.test(detail)) {                  // the operator is playing there: their call
+      toast(detail, 15000, { id: 'rebuild:' + name, actions: [[`Rebuild ${name} anyway`, () => rebuildNode(name, true).catch(e => toast('⚠ ' + e.message, 6000))]] });
+      return;
+    }
+    throw Error(detail);
+  }
+  const stopped = r.stopped?.length || 0;
+  toast(`Rebuilding ${name}…` + (stopped ? ` (${stopped} game session${stopped > 1 ? 's' : ''} saved and closed first)` : ''));
+  rebuildPanelOpen({ name, workerId: r.worker?.id || before.id || null, jobId: r.job_id });
+}
+function rebuildPanelOpen(target) {
+  rebuildPanel?.close();
+  if (!$('#rebuild-panel-style')) { const style = document.createElement('style'); style.id = 'rebuild-panel-style'; style.textContent = GBoxRebuildPanel.CSS; document.head.append(style); }
+  const host = document.createElement('div'); document.body.append(host);
+  const panel = rebuildPanel = GBoxRebuildPanel.mount(host, { ...target, api: rebuildApi, pip: () => COMPACT.on,
+    onOnline: () => {                                            // the PC is back: the stream watchdog reconnects the PiP's stream
+      toast(`✓ ${target.name} is back online`);
+      recoverStreams().catch(() => {});
+      compactContinuity.poll();
+      BOTPCS.at = 0; botDemoItems();
+    },
+    onClose: () => { if (rebuildPanel === panel) rebuildPanel = null; } });
+  if (!COMPACT.on) dragAnywhere(host);                           // the floating panel moves; over the PiP it fills the window
+}
 function botDemoInView(gid, pc) {
   if (!gid || !pc) return;
   document.querySelector('aside button[data-s="play"]')?.click();

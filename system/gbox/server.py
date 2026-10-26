@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field, StrictBool
 STREAM_FRESH_S = 2.0       # a session's continuous stream newer than this owns its picture (stills wait)
 
 from . import tools as _builtin  # noqa: F401  (registers tools)
+from . import bot_control
+from . import game_prefs
 from . import padstate
 from . import fit_events
 from . import operator_guard
@@ -33,6 +35,10 @@ from .worker_results import result_digest
 
 WORKER_TTL = 30.0
 MOMENT_WAIT_S = 240.0            # a report's moment snapshot: state_transfer's own limit is 180 s, a queued job gets the rest
+# tools whose progress reports are console lines (several per report, newest last) that the desktop's rebuild panel shows:
+# the job doc keeps the last CONSOLE_KEEP of them (GET /api/jobs/{jid}/console; gbox/node_rebuild.py)
+CONSOLE_TOOLS = {"rebuild_node"}
+CONSOLE_KEEP = 200
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
@@ -2377,6 +2383,52 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "worker.background_testing", w["id"], body.model_dump(exclude_none=True) | {'name': w['name']})
         return testing_workers(actor)
 
+    # --- rebuild & relaunch a PC from any gBox instance (operator 2026-10-26; gbox/node_rebuild.py) ------------------
+    class RebuildRequest(BaseModel):
+        force: bool = False      # also while the operator plays there (their game is saved and closed first)
+        restart: bool = True     # False: update and self-check only
+
+    @app.post("/api/workers/{name}/rebuild")
+    def worker_rebuild(name: str, body: RebuildRequest | None = None, actor=Depends(auth), origin=Depends(request_origin)):
+        """Queue `rebuild_node` on that PC (worker name or id) and answer its job id; the desktop follows the job's
+        console (GET /api/jobs/{jid}/console) and the PC's return (GET /api/workers). Refused while the operator plays a
+        non-bot game there unless force; agent/bot sessions (with force the operator's too) are saved and closed through
+        the normal stop path first. The operator's call only, never an agent's."""
+        body = body or RebuildRequest()
+        if operator_guard.is_agent(actor):
+            raise HTTPException(403, "Only the operator rebuilds a PC.")
+        w = next((x for x in workers() if x["name"] == name or x["id"] == _wid(name)), None)
+        if not w:
+            raise HTTPException(404, f"no gBox worker '{name}'")
+        if not w["online"]:
+            raise HTTPException(409, f"{w['name']} is offline: nothing can rebuild it until its worker is back.")
+        running = [s for s in store.running_sessions() if operator_guard.worker_of(s["session_id"]) == w["id"]]
+        mine = {s["session_id"] for s in _operator_busy(w["id"])}
+        title = lambda s: s.get("title") or s.get("game_id") or s["session_id"]   # noqa: E731
+        if mine and not body.force:
+            titles = ", ".join(sorted(title(s) for s in running if s["session_id"] in mine))
+            raise HTTPException(409, f"The operator is playing {titles} on {w['name']}. A rebuild saves and closes that "
+                                     "game and restarts the PC's worker and app; use force to do it anyway.")
+        origin = {**(origin if isinstance(origin, dict) else {}), "via": "worker_rebuild"}
+        stops = []
+        for s in running:
+            j = submit(JobRequest(tool="session_op", require_worker=w["id"],
+                                  input={"session_id": s["session_id"], "op": "stop_game", "args": {"moment": True}}),
+                       actor, origin)
+            stops.append({"session_id": s["session_id"], "job_id": j.id, "title": title(s),
+                          "operator": s["session_id"] in mine})
+        job = submit(JobRequest(tool="rebuild_node", require_worker=w["id"],
+                                input={"force": body.force, "restart": body.restart,
+                                       "stop_jobs": [x["job_id"] for x in stops]}), actor, origin)
+        if job.state == JobState.REJECTED:
+            hint = (" Its worker runs older code without the rebuild tool: restart that worker once (the app's Update & "
+                    "relaunch on that PC) and try again.") if "rebuild_node" in (job.error or "") else ""
+            raise HTTPException(409, (job.error or "the rebuild job was rejected") + hint)
+        store.audit(actor, "worker.rebuild", w["id"], {"name": w["name"], "job": job.id, "force": body.force,
+                                                      "stopped": [x["session_id"] for x in stops]})
+        return {"job_id": job.id, "worker": {"id": w["id"], "name": w["name"], "os": w.get("os")}, "stopped": stops,
+                "force": body.force}
+
     background_coordinator_cache = {'at': 0, 'runs': []}
     background_coordinator_lock = threading.Lock()
 
@@ -2864,6 +2916,11 @@ def create_app(config: Config) -> FastAPI:
             saver = getattr(app.state, "autoplay_screensaver", None)
             if saver is not None and j.get("actor") == screensaver.ACTOR:
                 saver.nudge(f"{t.name} {state}")      # MercMode's warm switch takes its next step now, not at the next tick
+        if t.name in game_prefs.TOOLS:
+            try:                                      # the operator's menu change, kept for this game (gbox/game_prefs.py)
+                game_prefs.observe(store, j, state)
+            except Exception as exc:                  # noqa: BLE001 - an accepted result stays accepted
+                store.audit('gbox-auto', 'game_prefs.observe_failed', j['id'], {'error': str(exc)[:300]})
         attempt = j.get("input") or {}
         op = attempt.get("op") or ""
         if t.name == "launch_game" and state != JobState.SUCCEEDED:
@@ -3134,8 +3191,15 @@ def create_app(config: Config) -> FastAPI:
             if event is not None:
                 j["fitting"] = fit_events.fold(j.get("fitting"), event)
                 _keep_goals(jid, j["fitting"], event)
+            # a console tool batches several console lines in one report, newest last: the loading screen shows the
+            # newest, the job's console keeps the last CONSOLE_KEEP (other tools' reports are one line, unchanged)
+            lines = ([ln for ln in msg.split("\n") if ln.strip()] if j["tool"] in CONSOLE_TOOLS else [msg]) or [msg]
+            msg = lines[-1]
             j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": msg, "ts": time.time()}
-            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+            j["progress_log"] = ((j.get("progress_log") or []) + lines)[-50:]
+            if j["tool"] in CONSOLE_TOOLS:
+                j["console"] = ((j.get("console") or []) + lines)[-CONSOLE_KEEP:]
+                j["console_seq"] = int(j.get("console_seq") or 0) + len(lines)
             store.put("job", jid, j)
         return {"ok": True, "cancel": bool(j.get("cancel"))}
 
@@ -3279,6 +3343,25 @@ def create_app(config: Config) -> FastAPI:
         job = store.get("job", jid) or _404()
         data = store.read_artifact(job["log_sha"]) if job.get("log_sha") else None
         return {"log": data.decode("utf-8", "replace")[-50000:] if data else ""}
+
+    @app.get("/api/jobs/{jid}/console")
+    def get_job_console(jid: str, after: int = 0, actor=Depends(auth)):
+        """The last CONSOLE_KEEP console lines of a console tool's job (rebuild_node) with a running line count, so a
+        poller fetches only what is new (?after=<seq> of its previous answer); other jobs give their progress log."""
+        j = store.get("job", jid) or _404()
+        lines = list(j.get("console") or j.get("progress_log") or [])
+        seq = int(j.get("console_seq") or len(lines))
+        if after > 0:
+            new = max(0, min(len(lines), seq - after))
+            lines = lines[len(lines) - new:] if new else []
+        wid = j.get("worker_id") or j.get("require_worker") or ""
+        w = store.get("worker", _wid(wid)) if wid else None
+        out = j.get("output") if isinstance(j.get("output"), dict) else {}
+        return {"id": jid, "tool": j["tool"], "state": j["state"], "seq": seq, "lines": lines,
+                "pct": float((j.get("progress") or {}).get("pct") or 0.0), "error": j.get("error"),
+                "finished": j.get("finished"), "cancel": bool(j.get("cancel")),
+                "worker": {"id": w["id"], "name": w.get("name"), "os": w.get("os")} if w else None,
+                "restart": out.get("restart"), "steps": out.get("steps"), "failed": out.get("failed")}
 
     @app.get("/api/receipts/{rid}")
     def get_receipt(rid: str, actor=Depends(auth)):
@@ -4572,6 +4655,14 @@ def create_app(config: Config) -> FastAPI:
     gameplay_demo.install(app,store,config,auth,submit,workers,app.state.gameplay_memory)
     from . import screensaver                    # idle PCs play the operator's games in the operator's style
     screensaver.install(app, store, config, auth, submit, workers, app.state.gameplay_memory)
+    # menu settings kept per game, re-applied to every new session (gbox/game_prefs.py)
+    game_prefs.routes(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                      workers=workers, wid=_wid)
+    # F5 keeps the autobot driving; F3 starts it from any PC (gbox/bot_control.py)
+    bot_control.install(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                        workers=workers, wid=_wid, automated=_automated, origin_dep=request_origin,
+                        server_jobs=_server_job_threads, saver=app.state.autoplay_screensaver,
+                        prefs=app.state.game_prefs)
     from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
     tactical_map.install(app, auth)
     from . import tas_api

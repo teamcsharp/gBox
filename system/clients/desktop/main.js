@@ -179,7 +179,7 @@ async function startLocalControl() {
       '--port','18765','--name',s.workerName,...(!s.autoStartWorker?['--no-worker']:[])],
       {env,cwd:s.repoLocal,windowsHide:true});
     localControlProcess=child;let buffer='';localControlError='';
-    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid)});
+    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid),onRelaunch:rebuildRelaunch});
     localControlChannel=channel;
     child.stdout.on('data',chunk=>{buffer+=String(channel.feed(chunk));let split;
       while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
@@ -501,7 +501,7 @@ async function startWorkerInner(options) {
   }
   const thisWorker = worker;
   const control = STANDALONE ? null : clientHandoff.workerChannel(thisWorker, controlSecret,
-    { verifyPid: pid => verifyWorkerPeer(thisWorker, pid) });
+    { verifyPid: pid => verifyWorkerPeer(thisWorker, pid), onRelaunch: rebuildRelaunch });
   workerControl = control;
   workerTail = "";
   const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
@@ -765,8 +765,8 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   }
   if (input.type !== "keyDown") return;
   const toggle = input.key === "F11" || (input.alt && input.key === "Enter");
-  if (input.key === 'F3' && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
-    mini.webContents.send('hotkey', 'autoplay'); ev.preventDefault(); return;
+  if ((input.key === 'F3' || input.key === 'F1') && !input.control && !input.alt && !input.shift && mini && wc === mini.webContents) {
+    mini.webContents.send('hotkey', GAME_KEYS[input.key]); ev.preventDefault(); return;   // the mini window: F3 autobot, F1 replay
   }
   if (input.key === "Escape" && compactWindow.state().on) {
     // Shell fields (notably the coach) own Escape. Their guarded DOM handler restores only outside text entry.
@@ -777,10 +777,12 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
   else if (input.key === "F2" && (input.shift || input.control) && !input.alt) { win.webContents.send("hotkey", input.shift ? "slot+" : "slot-"); ev.preventDefault(); }
   else if (GAME_KEYS[input.key] && !input.control && !input.alt && !input.shift) { win.webContents.send("hotkey", GAME_KEYS[input.key]); ev.preventDefault(); }
 }));
-// Universal game hotkeys, the same for every emulator: F2 save state, F4 load state, F3 autoplay on/off.
+// Universal game hotkeys, the same for every emulator (operator 2026-10-26: "when i press F3, I intend to start the autobot,
+// not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it"): F1 saves the replay (the last 3
+// minutes), F2 save state, F3 autobot on/off for the game shown (whichever PC runs it), F4 load state, F5 reloads the client.
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
-const GAME_KEYS = { F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" }; // F5 reloads only the client
+const GAME_KEYS = { F1: "replay", F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" };
 ipcMain.handle("win:fullscreen", (_e, on) => { win.setFullScreen(!!on); return win.isFullScreen(); });
 ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage.createFromDataURL(dataUrl)); return true; });
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));
@@ -1241,6 +1243,24 @@ ipcMain.handle("app:relaunch", async () => {
   setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 800);
   return true;
 });
+// Rebuild & relaunch from another gBox instance (gbox/node_rebuild.py, operator 2026-10-26): this PC's worker, once it
+// has updated its code and packages, asks over its authenticated parent pipe (client-handoff.cjs workerChannel) for the
+// app to relaunch; the worker restarts with the app. The delay lets the worker's job result reach the control plane,
+// where the requesting instance follows the console and waits for this PC to come back online.
+let rebuildRelaunching = false;
+async function rebuildRelaunch(v) {
+  if (rebuildRelaunching || quitting) return;
+  rebuildRelaunching = true;
+  const log = t => send("task", "rebuild", t);
+  const wait = Math.min(30000, Math.max(1000, Math.round((+v.delay_s || 5) * 1000)));
+  log(`rebuild job ${String(v.job || "").slice(0, 8)}: this PC's worker asked for a relaunch (${v.reason || "code updated"}); relaunching in ${wait / 1000} s\n`);
+  await new Promise(r => setTimeout(r, wait));
+  log("keeping the moment of this PC's running games…\n");
+  await keepMoments();
+  log("relaunching gBox…\n");
+  workerStopRequested = true;
+  setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 500);
+}
 
 // ---------------- File > Decant… (gbox/decant.py): a zip someone else installs as a standalone gBox ----------------
 // The manifest (what goes in, what is left out and why) is shown before saving. Code from the canonical tree when it's

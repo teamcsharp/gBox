@@ -1290,3 +1290,17 @@ def test_a_prepare_refuses_a_game_a_bot_is_playing_and_stop_ends_a_walk_without_
     assert rp.driver.stopped and rp.snapshot()["state"] == "cancelled" and rp.finish(True, {})["state"] == "cancelled"
     stuck.set()
     assert events == []                                                      # the walk never paused the game behind the Stop
+
+
+def test_run_forwards_the_round_loadouts_weapon_and_chance():
+    # 2026-10-26: "no handcannon in their inventory" - run() never passed ROUND_OP's weapon to random_loadout
+    from unittest.mock import MagicMock
+    from gbox import re_mods_tool as RM
+    seen = {}
+    orig = RM.random_loadout
+    RM.random_loadout = lambda ad, g, *a, **kw: seen.update(kw) or {"verified": True}
+    try:
+        RM.run(None, "random_loadout", g=MagicMock(), **B.ROUND_OP[1])
+    finally:
+        RM.random_loadout = orig
+    assert seen.get("weapon") == "handcannon" and seen.get("weapon_chance") == 0.5

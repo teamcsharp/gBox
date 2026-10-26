@@ -112,6 +112,10 @@ FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, e
 SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
 POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
+CLOSE_STEER_R = 180.0                 # a Majini this near the muzzle: the ray's angles are the gun's offset from his
+                                       # body, the body heading steers (operator 2026-10-26: "looking down and to the side")
+WILD_YAW, WILD_PITCH = math.radians(30), math.radians(25)   # a ray error past this is not a turn to make: a torn read
+LEVEL_PITCH = math.radians(15)         # the guard levels a gun pitched further than this
 BOW_RANGE = 2000.0                    # controller tuning, not a decoded projectile range
 BOW_YAW, BOW_PITCH = math.radians(6), math.radians(7)
 BOW_BURST_S = 3.0                     # observed target HP progress, never trigger/FIRE activity, renews this lease
@@ -991,6 +995,28 @@ class Combat:
         yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
         self.stats["aim_feedback"] = "ray direction" if steer else "near-origin ray; correction paused"
+        # Operator 2026-10-26, watching: "the bot will do a thing while aiming where they begin looking down and to the
+        # side while dispatching the foes" - round map Ship_Deck 11:37: yaw -5 / pitch +1 with the dot on his body,
+        # 0.26 s later yaw -55 / pitch -56 with the trigger held and the dot on nothing. A Majini inside CLOSE_STEER_R
+        # of the muzzle, or an error past WILD_YAW / WILD_PITCH, is the gun's offset from his body or a torn read, not
+        # a turn to make: the body faces him (the game's own heading), the gun is levelled, and a wild aim at a Majini
+        # further off holds the trigger (those rounds went into the deck) until the dot is back on him.
+        guard = None
+        if steer and where is None:
+            close = math.hypot(foot[0] - lz[0][0], foot[2] - lz[0][2]) < CLOSE_STEER_R
+            wild = abs(yaw_err) > WILD_YAW or abs(pitch_err) > WILD_PITCH
+            guard = "close" if close else "wild" if wild else None
+        if guard:
+            steer = False
+            self.stats["aim_guard"] = (f"{guard}: yaw {math.degrees(yaw_err):+.0f} pitch {math.degrees(pitch_err):+.0f}: "
+                                       f"face him, level the gun")
+            self.stats["aim_guards"] = self.stats.get("aim_guards", 0) + 1
+            keys |= self._face(p, foot)
+            level = p.get("pitch")                                # + = up (the driver's snapshot)
+            if level is not None and abs(level) > LEVEL_PITCH:
+                keys.add("rup" if level < 0 else "rdown")
+            if guard == "wild" and not point_blank:
+                tracking_fire = False
         if steer:
             keys |= self._yaw(yaw_err)
             keys |= self._pitch(pl, p, pitch_err, now)
@@ -1006,7 +1032,8 @@ class Combat:
         tune["mode"] = trig.mode
         weapon_label = hex(wid) if isinstance(wid, int) else "unknown"
         self.stats["combat"] = (f"{self.character} w{weapon_label} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
-                                f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} {'FIRE' if firing else ''}")
+                                f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} "
+                                f"{'FIRE' if firing else ''}{' guard ' + guard if guard else ''}")
         return {"hold": keys}
 
     @staticmethod

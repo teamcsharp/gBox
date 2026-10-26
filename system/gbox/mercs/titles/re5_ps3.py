@@ -134,6 +134,11 @@ SIGHT_CACHE_S = 0.3                    # a floor_segment answer is kept this lon
 SIGHT_BEND, SIGHT_SLACK = 1.1, 50.0    # ...or a navmesh route at most this much longer than the straight line: open
 PURSUE_NEAR = 200.0                    # this close he is fought whatever the floor says (a doorway, a corner)
 BLOCKED_VIEW_S, UNSIGHTED_S, PURSUE_S = 0.5, 2.5, 2.0
+COMBAT_STALL_S, COMBAT_STALL_R, COMBAT_STALL_BLOCK_S = 4.0, 120.0, 8.0   # the same Majini fought this long without a shot
+COMBAT_STALL_TICKS = 20                # ...over at least this many ticks (a stall is seen tick after tick, never a clock jump)
+                                       # leaving the gun, the player within this of where he stood: left alone this long
+                                       # and the route goes on (operator 2026-10-26: "They cannot afford to sit still
+                                       # ever"; round map Prison: 34 s in break_for_time, "no line: hold fire")
 VIEW_SHORT = 150.0                     # the dot this much short of him, roughly toward him: something in between
 WALL_R = 120.0                         # the dot this close to the muzzle: facing a wall
 COMBO_LAPSE_S = 0.6                    # a combo that fell with this much window left or less ran out (was not kept)
@@ -2083,9 +2088,9 @@ class Bot:
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
         # only Majini in sight are fought from here (open floor between, or right on him); the rest are walked to
-        sightable = [e for e in live if self._laser_view(snap, e) == "on" or
+        sightable = [e for e in live if (self._laser_view(snap, e) == "on" or
                      (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)) or
-                     self._in_view(p, e)] \
+                     self._in_view(p, e)) and getattr(self, "_stalled_until", {}).get(e.get("ptr", e.get("slot")), 0) <= now] \
             if self.combat is not None else live
         laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
             and (eq.get("item") in (0x0F,0x36) or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
@@ -2099,6 +2104,8 @@ class Bot:
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
+        if candidate is not None and self._combat_stalled(p, candidate, now):
+            candidate = None                                 # fought in place too long: he is blocked, the route goes on
         order = self._operator_command(p, snap, live, now)          # the operator's instant command (chat dropdown / words)
         operator = self.map_goals.resolve(snap, now)
         if operator is not None and order in ("fight", "hunt", "score"):
@@ -2412,6 +2419,32 @@ class Bot:
         if err < math.radians(20) and length < math.dist(origin, centre) - VIEW_SHORT:
             return "short"
         return None
+
+    def _combat_stalled(self, p, tgt, now) -> bool:
+        """Fought in place too long: the same Majini for COMBAT_STALL_S with no shot leaving the gun while the player
+        stays within COMBAT_STALL_R of where he stood. He is left alone for COMBAT_STALL_BLOCK_S (combat.blocked_until:
+        out of close_foes and sightable) and the bonus route goes on instead of holding fire at him."""
+        if self.combat is None:
+            return False
+        key = tgt.get("ptr", tgt.get("slot"))
+        shots = self.stats.get("shots", 0)
+        st = getattr(self, "_combat_stall", None)
+        moving = self.stats.get("phase") == "pursue" or self.switch_pending is not None   # walking to him, a switch
+        if st is None or st["key"] != key or shots != st["shots"] or moving                 or math.dist(p["pos"], st["pos"]) > COMBAT_STALL_R:
+            self._combat_stall = {"key": key, "shots": shots, "pos": tuple(p["pos"]), "since": now, "ticks": 0}
+            return False
+        st["ticks"] += 1
+        if now - st["since"] < COMBAT_STALL_S or st["ticks"] < COMBAT_STALL_TICKS:
+            return False
+        self._combat_stall = None
+        if not hasattr(self, "_stalled_until"):
+            self._stalled_until = {}
+        self._stalled_until[key] = now + COMBAT_STALL_BLOCK_S     # out of sightable (combat's own 0.8 s block is separate)
+        self.combat.blocked_until[key] = now + COMBAT_STALL_BLOCK_S
+        self.unsighted[key] = now + COMBAT_STALL_BLOCK_S
+        self.stats["combat_stalls_broken"] = self.stats.get("combat_stalls_broken", 0) + 1
+        self.stats["combat"] = f"fought in place {COMBAT_STALL_S:g} s without a shot: leaving him, the route goes on"
+        return True
 
     def _lost_sight(self, snap, p, tgt, now) -> bool:
         """The Majini being fought is not in sight after all: the dot stopped short of him (or at a wall) for
