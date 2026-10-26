@@ -137,6 +137,52 @@ def test_a_thrown_weapon_flying_at_leon_is_a_threat_one_flying_past_is_not():
     assert tr2.update(snap([], [dict(past, pos=(3000.0, 1400.0, 2700.0))]), 0.1) == []   # 3000 to his side
 
 
+def test_a_ganado_with_boss_health_is_the_stage_boss_a_chainsaw_man_in_the_village_and_the_waterworld():
+    # the disc's enemy set lists (profiles/gamedata/re4_r400_navmap.json / re4_r404_navmap.json): Dr. Salvador 6500 against
+    # 1200-1800 for the Village crowd, the Waterworld's sisters 3500 / 5000 against 400-1000 - the em id / type bytes are
+    # the crowd's own (0x16 types 0xb / 0xc; 0x20 type 0x16), so the full health is what names a boss
+    assert T.boss({"hp_max": 6500}, 0x400) == "chainsaw" and T.boss({"hp_max": 3500}, 0x404) == "chainsaw"
+    assert T.boss({"hp_max": 5000}, 0x402) == "boss" and T.boss({"hp_max": 4000}, 0x403) == "boss"   # Garrador, J.J.
+    assert T.boss({"hp_max": 1800}, 0x400) == "" and T.boss({"hp_max": None}, 0x400) == "" and T.boss({}, 0x400) == ""
+    assert T.boss({"hp_max": 6500}, None) == "chainsaw"                     # an unknown stage: the lethal reading
+    assert T.BOSS_HP > 1800 and T.BOSS_HP <= 3500                           # between the strongest Ganado and the weakest boss
+
+
+def test_a_boss_on_his_feet_is_a_threat_before_he_swings_and_every_boss_seen_is_kept():
+    tr = T.Tracker()
+    salvador = dict(ganado(2, (0.0, 0.0, 4000.0)), hp=6500, hp_max=6500, id=0x16, type=0xb)
+    s = snap([ganado(1, (0.0, 0.0, 2500.0)), salvador])
+    s["room"] = 0x400
+    out = tr.update(s, 0.0)
+    assert out[0].slot == 2 and out[0].kind == "chainsaw" and out[0].boss == "chainsaw" and out[0].lethal
+    assert abs(out[0].eta - (T.CHAINSAW_SWING_S + 2500.0 / T.CLOSE_SPEED)) < 0.01   # closes to his reach, then the saw
+    assert out[1].kind == "near" and not out[1].boss
+    assert tr.stats["bosses_seen"] == 1 and list(tr.bosses.values())[0] == {"slot": 2, "id": 0x16, "type": 0xb, "hp_max": 6500,
+                                                                           "kind": "chainsaw", "room": 0x400, "at": 0.0}
+    s["enemies"][1] = dict(salvador, pos=(0.0, 0.0, 1000.0), r=(1, 0x26, 1, 0))   # mid-swing in reach: the swing's own
+    t = next(x for x in tr.update(s, 0.1) if x.slot == 2)                        # timing, still a boss
+    assert t.kind == "swing" and t.boss == "chainsaw" and t.lethal
+    s["enemies"][1] = dict(salvador, r=(2, 1, 0, 0))                        # knocked down: not coming, still flagged
+    t = next(x for x in tr.update(s, 0.2) if x.slot == 2)
+    assert t.kind == "down" and t.boss == "chainsaw"
+    s["room"] = 0x402                                                       # the Castle: a Garrador, no eta of his own
+    t = next(x for x in tr.update(dict(s, enemies=[salvador]), 0.3) if x.slot == 2)
+    assert t.kind == "boss" and t.boss == "boss" and not t.lethal and t.eta == math.inf
+    assert tr.stats["bosses_seen"] == 1                                     # the same slot / id / type / health: once
+
+
+def test_the_attack_landing_when_leon_is_hit_is_remembered_for_the_death_cause():
+    tr = T.Tracker()
+    s = snap([ganado(1, (0.0, 0.0, 700.0), r=(1, 0x26, 1, 0), ev=T.EV_HIT), ganado(2, (0.0, 0.0, 3000.0))])
+    tr.update(s, 0.0)
+    assert tr.last_hit is None
+    tr.update(dict(s, player=dict(s["player"], r=(1, 0, 1, 0))), 0.1)      # Leon's routine 1: hit
+    h = tr.last_hit
+    assert h["slot"] == 1 and h["kind"] == "swing" and h["dist"] == 700 and h["hp_max"] == 1000 and h["eta"] == 0.0
+    assert not h["boss"] and h["at"] == 0.1 and tr.stats["landed"] == 0     # (landed is counted when the swing ends)
+    assert T.hit_record(tr.update(dict(s, player=dict(s["player"], r=(1, 0, 1, 0))), 0.2)[0], 0.2)["slot"] == 1
+
+
 def test_shots_are_scored_by_any_ganado_losing_health():
     sh = T.Shots()
     en = [ganado(1, (0, 0, 900)), ganado(2, (0, 0, 1800))]

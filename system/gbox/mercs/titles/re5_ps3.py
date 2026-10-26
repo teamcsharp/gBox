@@ -117,6 +117,20 @@ NAV_LEARNING_FILE = "BLUS30491-navigation.json"
 IDLE_S = 6.0                           # standing on one spot this long, off the stand, no hits landing: a wall stare
 IDLE_WALK_S = 2.0                      # the break-out walk (a turn off the wall, then running)
 STAND_R = 250.0                        # the stand: the round's start position, held from this close
+# The stand gone quiet (operator 2026-10-26: "long swaths of time where enemies are not spawning"; round maps
+# Experimental_Facility 11:22 / 11:49: 491 s and 585 s at the stand with no Majini, 68 and 78 kills): the game spawns
+# around the player, so he hunts the spawn points this stage has shown, the farthest unvisited first, until one shows
+LULL_S, LULL_AGAIN_S = 8.0, 3.0        # no living Majini this long: hunt (sooner once a hunt has happened this round)
+HUNT_REACH, HUNT_REVISIT_S, HUNT_GIVE_UP_S = 350.0, 90.0, 45.0   # a spawn point this near is visited, left alone this
+                                       # long after; a walk taking longer is abandoned for the next one
+SPAWN_CLUSTER_CM, SPAWNS_FILE = 400.0, "spawn_points.json"   # first-seen Majini positions per stage, this far apart
+# A boss (re5_combat.BOSS_HP: the Executioner, the Chainsaw / Gatling Majini ...) is the target the moment he is in sight
+# (operator 2026-10-26: "she is failing to recognize the threat of the boss and dispatch them. Bosses are threats that
+# require the remove their HP and dispatch them without delay (preferably from a distance)") unless a Majini is at arm's
+# length; inside BOSS_KEEP_R the gun comes down and a measured floor route takes him 6 m back before the next volley
+BOSS_YIELD_R = 350.0                   # a Majini this near is shot before the boss (the combat layer's immediate radius)
+BOSS_KEEP_R, BOSS_RETREAT_S, BOSS_RETREAT_GAP_S = 450.0, 2.5, 2.0   # back off from this close, this long, then fire
+                                       # for at least this long before backing off again (never a run without shots)
 BREAK_AT_S, BREAK_MARGIN_S = 60.0, 15.0   # leave the stand for time at this clock, or at the nearest one's ETA + this
 # Sight and pursuit (operator 2026-10-21: "If the person stands still ... what is there to see?"; live the same day the
 # bot spent 57 of 130 s aiming into walls at Majini behind them). A Majini is fought from where the player stands only
@@ -129,7 +143,8 @@ IN_VIEW_CONE = math.radians(60)        # ...and any Majini within ENGAGE this cl
 PHASE_CODE = {"leave_proximity_bomb": "Bot._mine_retreat", "gather_time": "Bot._bonus", "break_for_time": "Bot._bonus",
               "pursue": "Bot._pursue", "fight": "Combat.tick", "clear_nearby": "Combat.tick", "keep_combo": "Bot._tick",
               "stand": "Bot._tick", "idle": "Bot._tick", "healing": "Bot._heal", "recover_navigation": "Bot._recover_nav",
-              "obstacle_detour": "Bot._follow", "waiting_round_start": "Bot.tick", "egg_inventory": "Bot._egg_action"}
+              "obstacle_detour": "Bot._follow", "waiting_round_start": "Bot.tick", "egg_inventory": "Bot._egg_action",
+              "hunt_spawns": "Bot._hunt_spawns", "boss_range": "Bot._boss_range"}
 SIGHT_CACHE_S = 0.3                    # a floor_segment answer is kept this long per Majini
 SIGHT_BEND, SIGHT_SLACK = 1.1, 50.0    # ...or a navmesh route at most this much longer than the straight line: open
 PURSUE_NEAR = 200.0                    # this close he is fought whatever the floor says (a doorway, a corner)
@@ -1196,6 +1211,13 @@ class Bot:
         # every round's route + decision state on a map (gbox.mercs.round_map): where he stood still, doing what, which code
         self._trace_dir = (Path(learn_dir) if learn_dir is not None else lesson_store.ROOT).parent / "round_maps" / "BLUS30491"
         self._trace, self._trace_key = None, None
+        self._learn_root = Path(learn_dir) if learn_dir is not None else lesson_store.ROOT
+        self._spawn_seen: dict = {}            # this round: Majini ptr -> where he was first seen (a spawn point)
+        self._spawn_seen_stage = None          # ...on this stage (the stats name can change before the round resets)
+        self._spawn_points: dict = {}          # stage -> the spawn points learned (SPAWNS_FILE under the learn dir)
+        self._last_live_at = None              # the last tick with a living Majini: the lull clock
+        self._hunt, self._hunt_visited = None, {}
+        self._boss_run = None                  # the back-off from a boss under way: {key, since}
         from ..route_guidance import Guidance
         self.operator_guidance = Guidance(lesson_store.ROOT.parent.parent,'BLUS30491')
         from ..map_goals import Goals
@@ -1491,6 +1513,10 @@ class Bot:
                 self.climb_at = self.take_at = None
                 self.climb_pos = self.climb_tick = None
                 self.spawn, self.at_stand, self.stood = None, False, False
+                self._spawn_remember()                      # last round's spawn points: kept for this stage
+                self._spawn_seen.clear()
+                self._hunt, self._hunt_visited, self._last_live_at = None, {}, None
+                self._boss_run = None
                 self.hist.clear()
                 self.target = self.plan_target = self.aiming_since = None
                 self.reload_until = self.unstick_until = 0.0
@@ -1782,6 +1808,7 @@ class Bot:
             self._trace.add(self.clock(), p["pos"][0], p["pos"][2], p["pos"][1], self.stats, mines)
 
     def trace_finish(self) -> None:
+        self._spawn_remember()                               # the round's spawn points outlive the bot (a stop, too)
         trace, self._trace = self._trace, None
         if trace is None:
             return
@@ -2049,6 +2076,15 @@ class Bot:
         if getattr(getattr(self, "mines", None), "cadence", None) is not None \
                 and self.mines.cadence.only and self.mines.cadence.enabled and not snap.get('rotten_egg_only'):
             live = []
+        for e in live:                                   # where every Majini was first seen: this stage's spawn points
+            key = e.get("ptr", e.get("slot"))
+            if key not in self._spawn_seen:
+                if not self._spawn_seen:
+                    self._spawn_seen_stage = str(self.stats.get("stage") or "stage")
+                self._spawn_seen[key] = tuple(e["pos"])
+        self.stats["enemies"], self.stats["spawns"] = len(live), len(self._spawn_seen)
+        if live or self._last_live_at is None:
+            self._last_live_at = now
         eq = equipped(snap)
         if eq is not None:
             self.stats["weapon"] = f"{WEAPON_NAMES.get(eq['item'], 'uWp%02x' % eq['item'])} {eq['rounds']}/{eq['cap']}" \
@@ -2106,6 +2142,11 @@ class Bot:
             candidate = min(sightable, key=lambda e: math.dist(p["pos"], e["pos"]))   # in sight, off the camera: turn
         if candidate is not None and self._combat_stalled(p, candidate, now):
             candidate = None                                 # fought in place too long: he is blocked, the route goes on
+        boss = self._boss_first(p, live, sightable)
+        if boss is not None and (candidate is None or not self._boss(candidate)):
+            candidate = boss                                 # the boss first (operator 2026-10-26), whatever is nearer
+            self.stats["target_evidence"] = (f"boss first: hp {boss.get('hp')}/{boss.get('hp_max')} "
+                                             f"{math.dist(p['pos'], boss['pos']):.0f} away")
         order = self._operator_command(p, snap, live, now)          # the operator's instant command (chat dropdown / words)
         operator = self.map_goals.resolve(snap, now)
         if operator is not None and order in ("fight", "hunt", "score"):
@@ -2216,6 +2257,11 @@ class Bot:
             self.stats["combo_chases"] = self.stats.get("combo_chases", 0) + 1
             self.aiming_since = None
             return {"hold": self._walk(p, heading(near["pos"][0] - px, near["pos"][2] - pz), now)}
+        if tgt is None and not live and candidate is None \
+                and now - self._last_live_at >= (LULL_AGAIN_S if self._hunt_visited or self._hunt else LULL_S):
+            hunt = self._hunt_spawns(p, mesh, snap, now)        # the stand gone quiet: to where they spawn
+            if hunt is not None:
+                return hunt
         if tgt is None and not threats and candidate is None and self.spawn is not None and not self.at_stand:
             self.stats["phase"] = "stand"                   # the bonuses gathered: back to the stand
             self.stood = True
@@ -2234,7 +2280,7 @@ class Bot:
             if candidate is None:
                 return self.combat.seek_target(snap, p, live, now)
             tgt = candidate                               # existing finisher prompts still win before this decision
-        tgt = tgt or min(threats or live, key=lambda e: self._cost(p, e))
+        tgt = tgt or min(threats or live, key=lambda e: (0 if self._boss(e) else 1, self._cost(p, e)))
         self.plan_target = {"kind": tgt.get("kind", "enemy") if "ptr" in tgt else "enemy",
                             "id": tgt.get("ptr") if tgt.get("kind") in ("time", "combo") else tgt.get("slot"),
                             "pos": tgt["pos"]}
@@ -2242,6 +2288,10 @@ class Bot:
         tx, ty, tz = tgt["pos"]
         dist = math.hypot(tx - px, tz - pz)
         want = heading(tx - px, tz - pz)
+        if "ptr" in tgt and tgt.get("kind") not in ("time", "combo") and self._boss(tgt) and dist < BOSS_KEEP_R:
+            backing = self._boss_range(p, tgt, mesh, snap, now, dist)
+            if backing is not None:
+                return backing
         if tgt.get("kind") in ("time", "combo"):            # a time bonus: walked to, taken with its prompt
             self.aiming_since, self.target = None, tgt["slot"]
             if tgt.get("walk"):
@@ -2898,6 +2948,135 @@ class Bot:
         if gun is not None and not gun.get("hand"):
             return self._switch_weapon(gun, now, "resume after healing")
         return None
+
+    @staticmethod
+    def _boss(e) -> bool:
+        """A boss by his health (re5_combat.BOSS_HP: the one-finisher rule's own line): the Executioner, the Chainsaw /
+        Gatling / Giant Majini, the Reaper. An ordinary Majini has 800-1000."""
+        return (e.get("hp_max") or 0) >= re5_combat.BOSS_HP
+
+    def _boss_first(self, p, live, sightable):
+        """The boss to fight now: the nearest one in sight, unless an ordinary Majini is within BOSS_YIELD_R (he is
+        shot first, then the boss); None when there is none in sight."""
+        bosses = [e for e in sightable if self._boss(e)]
+        if not bosses:
+            return None
+        if any(not self._boss(e) and math.dist(p["pos"], e["pos"]) <= BOSS_YIELD_R for e in live):
+            return None
+        return min(bosses, key=lambda e: math.dist(p["pos"], e["pos"]))
+
+    def _boss_range(self, p, boss, mesh, snap, now, dist) -> dict | None:
+        """A boss inside BOSS_KEEP_R: no stand-up fight at arm's length (operator 2026-10-26: "dispatch them without
+        delay (preferably from a distance)"). The gun comes down and a measured floor route away from him (the mesh's
+        retreat, 6 m) is walked for at most BOSS_RETREAT_S, then he turns and fires for BOSS_RETREAT_GAP_S at least
+        before backing off again. None: the fight goes on here (no mesh to measure a way back by, or shots are due)."""
+        key = boss.get("ptr", boss.get("slot"))
+        run = self._boss_run
+        if run is not None and run["key"] == key:
+            if now - run["since"] <= BOSS_RETREAT_S:
+                pass                                          # the back-off under way
+            elif now - run["since"] <= BOSS_RETREAT_S + BOSS_RETREAT_GAP_S:
+                self.stats["boss"] = f"{key:#x} hp {boss.get('hp')}/{boss.get('hp_max')} {dist:.0f} away: firing"
+                return None                                   # his turn to take shots, from here
+            else:
+                run = None
+        else:
+            run = None
+        if run is None:
+            if mesh is None:
+                return None                                   # no measured floor: never a blind run into a wall
+            self._boss_run = run = {"key": key, "since": now}
+            self.route, self.route_at = None, -math.inf       # a fresh retreat route, not the chase's
+            self.stats["boss_retreats"] = self.stats.get("boss_retreats", 0) + 1
+        px, py, pz = p["pos"]
+        bx, _, bz = boss["pos"]
+        d = max(dist, 1.0)
+        away = (px + (px - bx) / d * 600.0, py, pz + (pz - bz) / d * 600.0)
+        try:
+            route = mesh.retreat(p["pos"], boss["pos"], 600.0, blocked_links=self.blocked_links,
+                                 link_penalties=self.nav_learning.link_penalties(mesh))
+            straight = not route and bool(mesh.floor_segment(p["pos"], away))   # open floor behind him: straight back
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+            route, straight = None, False
+        if not route and not straight:
+            self._boss_run = None
+            self.stats["boss"] = f"{key:#x} hp {boss.get('hp')}/{boss.get('hp_max')} {dist:.0f} away: no way back, firing"
+            return None                                       # walls behind: the fight here
+        self.stats["phase"] = "boss_range"
+        self.stats["boss"] = f"{key:#x} hp {boss.get('hp')}/{boss.get('hp_max')} {dist:.0f} away: backing off"
+        self.plan_target = {"kind": "boss_range", "id": key, "pos": away}
+        self.aiming_since = None
+        if straight:
+            return {"hold": self._walk(p, heading(px - bx, pz - bz), now)}
+        return self._follow(p, {"ptr": "boss_range", "pos": away}, mesh, snap.get("stage_prompt"), now,
+                            retreat_from=tuple(boss["pos"]))
+
+    def _stage_spawns(self) -> list:
+        """This stage's spawn points: every Majini's first-seen position, this round's and the rounds' before
+        (SPAWNS_FILE under the learn dir), SPAWN_CLUSTER_CM apart."""
+        stage = self._spawn_seen_stage or str(self.stats.get("stage") or "stage")
+        if stage not in self._spawn_points:
+            points = []
+            try:
+                data = json.loads((self._learn_root / SPAWNS_FILE).read_text(encoding="utf-8"))
+                points = [tuple(float(v) for v in pt) for pt in data.get(stage, []) if len(pt) == 3]
+            except (OSError, ValueError, TypeError):
+                pass
+            self._spawn_points[stage] = points
+        points = self._spawn_points[stage]
+        for pos in self._spawn_seen.values():
+            if all(math.hypot(pos[0] - q[0], pos[2] - q[2]) >= SPAWN_CLUSTER_CM for q in points):
+                points.append(tuple(pos))
+        return points
+
+    def _spawn_remember(self) -> None:
+        """The round's spawn points into SPAWNS_FILE for the next round on this stage."""
+        if not self._spawn_seen:
+            return
+        stage, points = self._spawn_seen_stage or "stage", self._stage_spawns()
+        path = self._learn_root / SPAWNS_FILE
+        try:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            data[stage] = [[round(v, 1) for v in pt] for pt in points]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data), encoding="utf-8")
+        except (OSError, TypeError, ValueError):
+            pass                                             # a lost memory never stops the round
+
+    def _hunt_spawns(self, p, mesh, snap, now) -> dict | None:
+        """The stand gone quiet (LULL_S with no living Majini; operator 2026-10-26: "there is supposed to be a certain
+        amount dispatched for level completion and they are getting 78 enemies by the end and having long swaths of
+        time where enemies are not spawning"): the game spawns around the player, so he walks to the spawn points this
+        stage has shown, the farthest one not visited within HUNT_REVISIT_S first, until a Majini shows (the fight
+        takes over at once). None: no spawn point is known for this stage yet (the first round there)."""
+        px, _, pz = p["pos"]
+        hunt = self._hunt
+        if hunt is not None and (math.hypot(hunt["pos"][0] - px, hunt["pos"][2] - pz) <= HUNT_REACH
+                                 or now - hunt["since"] > HUNT_GIVE_UP_S):
+            self._hunt_visited[hunt["key"]] = now
+            hunt = self._hunt = None
+        if hunt is None:
+            points = self._stage_spawns()
+            fresh = [(k, pt) for k, pt in enumerate(points) if now - self._hunt_visited.get(k, -math.inf) > HUNT_REVISIT_S]
+            if not fresh and points:
+                self._hunt_visited.clear()                   # the whole tour done: again
+                fresh = list(enumerate(points))
+            if not fresh:
+                self.stats["hunt"] = "no spawn point known for this stage yet"
+                return None
+            key, pt = max(fresh, key=lambda kp: math.hypot(kp[1][0] - px, kp[1][2] - pz))
+            hunt = self._hunt = {"key": key, "pos": tuple(pt), "since": now}
+            self.stats["spawn_hunts"] = self.stats.get("spawn_hunts", 0) + 1
+        self.stats["phase"] = "hunt_spawns"
+        self.stats["hunt"] = f"spawn point {hunt['key']} {math.hypot(hunt['pos'][0] - px, hunt['pos'][2] - pz):.0f} away"
+        self.plan_target = {"kind": "hunt", "id": hunt["key"], "pos": hunt["pos"]}
+        self.aiming_since = None
+        return self._follow(p, {"ptr": "hunt", "pos": hunt["pos"]}, mesh, snap.get("stage_prompt"), now)
 
     def _stage_loop(self, p, now) -> bool:
         """The same ladder / ledge (ground distance: a ladder's top and foot) taken STAGE_LOOP_N times in STAGE_LOOP_S:

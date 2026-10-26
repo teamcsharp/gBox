@@ -1088,7 +1088,9 @@ class Hub:
                 return self._rows
         try:
             sessions = self.store.running_sessions()
-            workers = {w["id"]: w for w in self.store.all("worker")}
+            # name / os / last_seen are all this hub reads of a registration: not the 2.1 MB of build_sources behind
+            # the 23 stored ones (0.18 s of GIL per decode on the Spark, once a second, 2026-10-26)
+            workers = {w["id"]: w for w in self.store.fields("worker", ("id", "name", "os", "last_seen"))}
         except Exception as e:                                   # noqa: BLE001 - keep the last good picture of things
             self.log(f"gBox broadcast: session read failed: {type(e).__name__}: {e}")
             return self._rows

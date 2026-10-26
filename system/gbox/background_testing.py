@@ -10,8 +10,9 @@ RESOURCE_MAX_AGE_S = 30
 IDLE_MIN_S = 300
 
 
-def policy(store, name):
-    row = (store.get('setting', SETTING) or {}).get('policies', {}).get(name) or {}
+def policy(store, name, setting=None):
+    """`setting` is the stored SETTING document when the caller already read it (server.workers reads it once for all PCs)."""
+    row = ((store.get('setting', SETTING) or {}) if setting is None else setting).get('policies', {}).get(name) or {}
     return {'budget_percent': row.get('budget_percent', DEFAULT_BUDGET)}
 
 
@@ -76,21 +77,23 @@ def requires_gpu(job):
     return job.get('tool') not in {'smb1_sprite_build','photo_sprite_build'}
 
 
-def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=True):
-    """Controller play may not update input-idle time. Ownership is authoritative."""
+def guarded_reason(store, worker, *, now=None, allow_active=False, require_gpu=True, running=None, setting=None):
+    """Controller play may not update input-idle time. Ownership is authoritative.
+    `running` (store.running_sessions()) and `setting` (the SETTING document) may be passed by a caller that checks
+    every PC at once (server.workers): the same answer from one read instead of three per worker."""
     from .operator_guard import operator_sessions
-    owned = operator_sessions(store.running_sessions(), lambda sid: store.get('slabel', sid),
+    owned = operator_sessions(store.running_sessions() if running is None else running, lambda sid: store.get('slabel', sid),
                               lambda jid: store.get('job', jid), [worker['id']])
     from .screensaver import telemetry_get
     owned = [s for s in owned if not telemetry_get(s['session_id'], now=now).get('running')]
     if owned:
         return 'Human gameplay is active on this PC; background compute is waiting.'
-    return admission_reason(worker, excluded(store), policy(store, worker['name'])['budget_percent'], now=now,
-                            allow_active=allow_active, require_gpu=require_gpu)
+    return admission_reason(worker, excluded(store, setting=setting), policy(store, worker['name'], setting=setting)['budget_percent'],
+                            now=now, allow_active=allow_active, require_gpu=require_gpu)
 
 
-def excluded(store) -> set[str]:
-    rec = store.get("setting", SETTING) or {}
+def excluded(store, setting=None) -> set[str]:
+    rec = (store.get("setting", SETTING) or {}) if setting is None else setting
     return {str(n) for n in rec.get("excluded") or []}
 
 

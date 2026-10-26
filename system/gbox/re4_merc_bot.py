@@ -57,6 +57,29 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
     quick turn when the way out is behind him; away from walls and other Ganados on the level map) or across a
     thrown weapon's line; two or more on top of him, or one there as he gets up from a hit: out first, then one by
     one. While he is hit or held (his routine 1) the game has him: play() presses SHAKE OFF / the QTE from RAM;
+  * the stage bosses first (operator 2026-10-26, watching Leon die: "so i just watched leon just eat a chainsaw ...
+    Does he not see these bosses? because they are high level threats that have to be dispatched. I see leon not
+    taking them seriously ... letting them gang up near him is detrimental"): gbox.re4_threats.boss names them from
+    RAM by their full health (BOSS_HP; the Village's Dr. Salvador 6500, the Waterworld's sisters 3500 / 5000 against
+    400-1800 for the crowd - the ESLs, see re4_threats) - a boss in sight is the target before any ordinary Ganado
+    unless an ordinary attack lands sooner than a shot at him can leave; the chainsaw man (one hit kills) is never
+    allowed inside CHAINSAW_KEEP without an answer: in there and not in front of Leon he gets the run-out (_way_out:
+    away from walls and the other Ganados; the quick turn first when the way out is behind), once per
+    CHAINSAW_REEVADE_S, and the quick turn + fire after it; in front, or outside the keep-out, he is shot continuously
+    (RE4 roots Leon while he aims: there is no firing while running or backing off - the shots come after the turn).
+    The gun is whatever the round's loadout gave (one gun a round: random_loadout guns=1, so there is nothing stronger
+    in the case to switch to; re_mods equip_item could swap through the dispatcher but the bot plays with the pad);
+    the stats "combat" / "boss" lines name every boss target ("boss chainsaw 0x16 hp 6500/6500 dist 1840") and
+    "bosses" lists every boss seen as {id, type, hp_max, room} so the next round proves the classifier;
+  * crowd control (operator 2026-10-26: "he carries a shotgun for crowd control so he cant just be letting these guys
+    crowd. Thats a combo wasting"): CROWD_N Ganados inside CROWD_R get the run-out as before - but with a shotgun in
+    his hands (SHOTGUNS; the weapon in hand is read from the item manager) and two or more of them inside its cone
+    (SHOTGUN_CONE) within SHOTGUN_R, one blast goes into the group first (it knocks them down together) and the run-out
+    follows the moment the gun has fired (or BLAST_S later), at most once per BLAST_EVERY - the evades stay EVADE_S
+    short, so the combo's kill cadence keeps up (the package freezes the combo window anyway);
+  * when Leon dies the stats say why: "last_hit_by" is the threat that was landing when his routine went to 1 (the
+    Tracker's hit record: kind, slot, em id / type, health, distance), "death_cause" repeats it on the death screen and
+    the round map gets a death event - the next "why did he die" is traceable from round_maps/G4BE08/r<room>/;
   * blocked while running (moved < STUCK_MOVE in STUCK_S, up and down included: a ladder moves him up, not along):
     taps A ("JUMP OVER" / "CLIMB" prompts), then detours; still blocked after that, backs off for BACK_S and tries the
     other side (no teleports: a position write mid-climb crashed the game with "Invalid read" in its area-event code,
@@ -143,6 +166,21 @@ FACING_ERR = 0.6                                 # an attacker this close to his
 PROMPT_GUARD_S = 0.8                             # an action prompt (A) waits while an attack lands within this
 RECOVER_S = 1.2                                  # just up from a hit, a Ganado within CROWD_R: out of reach first
                                                  # (operator: "getting slapped on by these people over and over")
+CHAINSAW_KEEP = 2000.0                           # the chainsaw man is never allowed this close unanswered (operator
+                                                 # 2026-10-26): inside it, not in front of Leon, the run-out; in front,
+                                                 # or outside it, he is shot continuously (SHOOT_RANGE > CHAINSAW_KEEP)
+CHAINSAW_PAD = 300.0                             # inside his reach + this his saw is about to land: out of its arc, unless
+                                                 # he is in front (the quick turn away is slower than the shot)
+CHAINSAW_REEVADE_S = 2.5                         # one run-out per this long: he runs as fast as Leon, so running never
+                                                 # ends it - after the run-out he is turned to and shot (a hit staggers him)
+SHOTGUNS = frozenset({0x2C, 0x2D, 0x94})         # Shotgun, Striker, Riot Gun (re_games.ITEMS): the crowd-control guns
+MAGNUMS, HANDCANNON = frozenset({0x29, 0x2A, 0x2B}), 0x37   # Broken Butterfly, Killer7 (x2); the Hand Cannon
+SHOTGUN_CONE, SHOTGUN_R = 0.3, 900.0             # a shotgun blast knocks down what is inside this half-angle (radians,
+                                                 # ~17 degrees of the aim) and this close: two or more there = one blast
+BLAST_S, BLAST_EVERY = 0.7, 2.0                  # the blast is one trigger press: the run-out follows when the gun has
+                                                 # fired or this long has passed; at most one blast per BLAST_EVERY
+ITEM_MGR = 0x802138E0                            # re_games.ITEM_MGR; +0x10 u16: the weapon in the player's hands (what
+                                                 # re_mods_tool.equip_item reads back to verify an equip; 0 = none)
 ELEV_DY = 600.0                                  # a target this far above / below: raise or lower the aim; else level
 BODY_LO, CHEST_H, BODY_HI = 700.0, 1150.0, 1650.0   # a Ganado's body above his feet: a shot anywhere in it lands
 HEAD_LO, HEAD_AIM_H = 1300.0, 1520.0             # operator 2026-10-22: "never shooting at the ground ... aiming at heads": a shot
@@ -304,11 +342,13 @@ def aim_of(m, pl: int, rot: float, r: tuple) -> tuple:
 def snapshot(m) -> dict:
     """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot (his facing), aim_rot (where the gun points:
     facing + the aim's offset), aim_off, pitch (the aim's, radians), r (his routine bytes), stick (the game's pad x,
-    y)}, live Ganados [{slot, pos, hp, hp_max} + gbox.re4_threats.em_fields: r (routine bytes), motion events, frame,
-    ...], the thrown weapons in the air [{slot, pos}]."""
+    y)}, weapon (the item id in his hands, ITEM_MGR +0x10), live Ganados [{slot, pos, hp, hp_max} +
+    gbox.re4_threats.em_fields: r (routine bytes), id, type, motion events, frame, ...], the thrown weapons in the
+    air [{slot, pos}]."""
     pg = u32(m, P_GLOBAL)
     room = struct.unpack(">H", m.rd(pg + G_ROOM, 2))[0] if ptr_ok(pg) else None
     hp = struct.unpack(">h", m.rd(pg + G_HP, 2))[0] if ptr_ok(pg) else None
+    weapon = struct.unpack(">H", m.rd(ITEM_MGR + 0x10, 2))[0]
     pl = u32(m, P_PLAYER)
     player = None
     if ptr_ok(pl):
@@ -333,7 +373,7 @@ def snapshot(m) -> dict:
                             **threats_ram.em_fields(d, o)})
         thrown = threats_ram.thrown(d, n, stride)
     return {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
-            "player": player, "enemies": enemies, "thrown": thrown}
+            "player": player, "weapon": weapon, "enemies": enemies, "thrown": thrown}
 
 
 def in_mercenaries(snap: dict) -> bool:
@@ -366,6 +406,44 @@ def fire_tol(dist: float) -> float:
     """How far off his facing a Ganado at dist can be and still take the shot: his body's half width (live
     2026-10-20: the 2-degree tolerance kept Leon aiming, not firing, at a Ganado 4 degrees off at 2000)."""
     return max(FIRE_TOL, math.atan2(BODY_HALF_W, max(dist, 1.0)))
+
+
+def weapon_name(iid: int | None) -> str:
+    """'Shotgun (0x2c)' for the stats / round map; re_games names it (the RE4 item table), 'none' for 0."""
+    if not iid:
+        return "none"
+    try:
+        from . import re_games
+        name = re_games.item_name(iid)
+    except Exception:                                # noqa: BLE001 - a tree without the table
+        name = f"item {iid:#x}"
+    return f"{name} ({iid:#x})"
+
+
+def shotgun(iid: int | None) -> bool:
+    """A shotgun family gun in his hands: the crowd-control blast is on."""
+    return iid in SHOTGUNS
+
+
+def boss_tag(e: dict, dist: float) -> str:
+    """'boss chainsaw 0x16 hp 6500/6500 dist 1840': the stats line for a boss target (the round map keeps it)."""
+    eid = e.get("id")
+    return (f"boss {e.get('boss') or 'boss'} {eid:#x} hp {e.get('hp')}/{e.get('hp_max')} dist {dist:.0f}"
+            if isinstance(eid, int) else f"boss {e.get('boss') or 'boss'} hp {e.get('hp')}/{e.get('hp_max')} dist {dist:.0f}")
+
+
+def hit_tag(h: dict | None) -> str:
+    """The Tracker's hit record in words: 'swing slot 12 id 0x16 type 0x3 hp 1800/1800 at 640 (eta 0.0)' - with
+    'boss chainsaw' in front when it was one ('boss chainsaw swing slot ..' mid-swing, 'boss chainsaw slot ..' when
+    the saw itself was what the Tracker saw coming)."""
+    if not h:
+        return ""
+    eid, et = h.get("id"), h.get("type")
+    ids = (f" id {eid:#x}" if isinstance(eid, int) else "") + (f" type {et:#x}" if isinstance(et, int) else "")
+    eta = f" (eta {h['eta']})" if h.get("eta") is not None else ""
+    kind = h.get("kind")
+    head = f"boss {h['boss']} " + (f"{kind} " if kind != h["boss"] else "") if h.get("boss") else f"{kind} "
+    return f"{head}slot {h.get('slot')}{ids} hp {h.get('hp')}/{h.get('hp_max')} at {h.get('dist')}{eta}"
 
 
 def _navmap():
@@ -492,10 +570,13 @@ class Bot:
     """One decision per tick; the caller sends what it returns ({'hold': keys} / {'tap': key}) and sleeps. Pad only:
     the stick turns Leon, R aims, A fires / vaults, B runs."""
 
-    def __init__(self, m, clock=time.time, nav=None, learn_dir: Path | None = None):
+    def __init__(self, m, clock=time.time, nav=None, learn_dir: Path | None = None, round_maps_dir: Path | None = None):
         self.m, self.clock = m, clock
         self.nav = nav if nav is not None else _navmap()
         self.learn_dir = learn_dir
+        # every round's route map lands here (<dir>/r<room>/; round_maps_dir_for: gbox-data/mercs/round_maps/G4BE08 in
+        # a deployment, RE5's layout) - with no learn_dir the maps were dropped before (2026-10-26)
+        self.round_maps_dir = round_maps_dir if round_maps_dir is not None else round_maps_dir_for(None, learn_dir)
         self.learned: LearnedMap | None = None
         self.r_since = None                           # since when the bot has held R (the aim pose is up after a moment)
         self.miss_run, self.pitch_i = 0, 0
@@ -532,6 +613,11 @@ class Bot:
         self.pitch_rate = PITCH_RATE
         self._last_enemies: list = []
         self._threats: list = []
+        self.blast = None                             # {"since", "shots"}: a shotgun blast into a crowd under way
+        self.blast_at = float("-inf")                 # when the last one was fired (BLAST_EVERY)
+        self.boss_evaded_at = float("-inf")           # the last run-out from the chainsaw man (CHAINSAW_REEVADE_S)
+        self._keepout = None                          # (slot, at): the chainsaw man inside CHAINSAW_KEEP, counted once
+        self._death_logged = False                    # this death's cause is in the stats already
         self.stats = {"prompts": 0, "max_combo": 0, "vaults": 0, "detours": 0, "backoffs": 0, "time_bonus": 0,
                       "shots_s": 0.0, "learned_walls": 0, "replans": 0, "hits": 0, "misses": 0, "accuracy": 0.0,
                       "pitch_offset": 0.0, "shots": 0, "kills": 0, "hits_taken": 0, "evades": 0,
@@ -539,7 +625,11 @@ class Bot:
                       "thrown_seen": 0, "thrown_shot": 0, "quick_turns": 0,
                       "stuck_events": 0, "stuck_reason": "", "wall_detours": 0,   # the obstruction database at work
                       "learned_map": None, "learned_floor_cells": 0,
-                      "rays_cast": 0, "ray_hits": 0}
+                      "rays_cast": 0, "ray_hits": 0,
+                      # the bosses (operator 2026-10-26): every one seen, the one targeted, the chainsaw's keep-out
+                      # answers, the shotgun blasts into crowds, and what hit / killed Leon
+                      "bosses": [], "bosses_seen": 0, "boss": "", "boss_shots": 0, "chainsaw_keepouts": 0,
+                      "chainsaw_evades": 0, "crowd_blasts": 0, "weapon": "", "last_hit_by": "", "death_cause": ""}
 
     # -- the round's time bonuses --
     def _round(self, room):
@@ -686,12 +776,17 @@ class Bot:
         tx, _, tz = tgt["pos"]
         err = wrap(heading(tx - px, tz - pz) - p.get("aim_rot", p["rot"]))   # from where the gun points
         if tgt["slot"] != self.aim["slot"] or s["combo"] != self.aim["combo"]:
-            self.aim = {"slot": tgt["slot"], "since": now, "combo": s["combo"]}
-        elif now - self.aim["since"] > 6:                              # soaked 6 s of fire: out of reach
-            self.skip[tgt["slot"]] = now + 10
+            self.aim = {"slot": tgt["slot"], "since": now, "combo": s["combo"], "hp": tgt.get("hp")}
+        elif tgt.get("hp") is not None and self.aim.get("hp") is not None and tgt["hp"] < self.aim["hp"]:
+            self.aim["since"], self.aim["hp"] = now, tgt["hp"]      # his health is falling: the shots reach him (a boss
+        elif now - self.aim["since"] > 6:                              # takes many) - soaked 6 s of fire with nothing
+            self.skip[tgt["slot"]] = now + 10                          # moving: out of reach
             self.aim = {"slot": None, "since": now, "combo": s["combo"]}
             return {"hold": set()}
         dist = math.hypot(tx - px, tz - pz)
+        tag = (boss_tag(tgt, dist) + " ") if tgt.get("boss") else ""
+        if tag:
+            self.stats["boss"] = tag.strip()
         band = body_band(tgt)
         if band is not BODY_BAND:
             self.stats["low_target_shots"] = self.stats.get("low_target_shots", 0) + (self.r_since is None)
@@ -716,7 +811,7 @@ class Bot:
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
         if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
             self.r_since = None                                         # far round - lowering it to turn and raising
-            self.stats["combat"] = f"turning to slot {tgt['slot']} d {dist:.0f} yaw {math.degrees(err):+.0f} (gun down)"
+            self.stats["combat"] = f"{tag}turning to slot {tgt['slot']} d {dist:.0f} yaw {math.degrees(err):+.0f} (gun down)"
             self.stats["fire_gate"] = "turning: hold"
             if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # it again cost 0.6 s and a swing
                 self.qturn_at = now                                             # landed meanwhile, live 2026-10-21)
@@ -731,13 +826,17 @@ class Bot:
         deg = math.degrees(err)
         if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
-            self.stats["combat"] = f"aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
+            self.stats["combat"] = f"{tag}aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
             self.stats["fire_gate"] = "off target: hold" if abs(err) > fire_tol(dist) else "aim height: hold"
             return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
-        self.stats["combat"] = f"on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
+        self.stats["combat"] = f"{tag}on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
         self.stats["fire_gate"] = "on him"
-        return {"hold": {"r"} | self._pull(now, tgt)}                    # on target: fire
+        was_down = self.trigger["down"]
+        keys = self._pull(now, tgt)
+        if tag and "a" in keys and not was_down:                         # a fresh trigger press at a boss
+            self.stats["boss_shots"] += 1
+        return {"hold": {"r"} | keys}                                    # on target: fire
 
     def _pull(self, now, tgt) -> set:
         """The trigger: pressed for a moment, then let go, every PRESS_GAP while on target (a press while the gun is
@@ -825,6 +924,8 @@ class Bot:
         e = dict(t.enemy) if t.kind != "thrown" else {"thrown": True}
         pos = tuple(t.pos[i] + t.vel[i] * lead_s for i in range(3))
         e.update(slot=t.slot if t.kind != "thrown" else -t.slot, pos=pos)
+        if t.boss:
+            e["boss"] = t.boss                                       # _fight names him in the stats (boss_tag)
         return e
 
     def _watch(self, p, s, threats, now):
@@ -833,13 +934,28 @@ class Bot:
         r0 = (p.get("r") or (0,))[0]
         if r0 == 1 and self.leon_r0 != 1:
             self.stats["hits_taken"] += 1
+            self.stats["last_hit_by"] = hit_tag(self.tracker.last_hit) or "unknown: no attack seen landing"
+            if getattr(self, "trace", None) is not None:
+                self.trace.event(now, "hit", p["pos"][0], p["pos"][2], by=self.stats["last_hit_by"][:120])
         if r0 != 1 and self.leon_r0 == 1:
             self.recovered_at = now                                 # on his feet again: out before the next one
         self.leon_r0 = r0
-        for k in ("attacks_seen", "thrown_seen"):
+        for k in ("attacks_seen", "thrown_seen", "bosses_seen"):
             self.stats[k] = self.tracker.stats[k]
         for k in ("prevented", "avoided", "landed"):                # how each attack ended (re4_threats.Tracker)
             self.stats[f"attacks_{k}"] = self.tracker.stats.get(k, 0)
+        if len(self.tracker.bosses) != getattr(self, "_bosses_n", 0):   # every boss seen, once per id / type / health
+            self._bosses_n = len(self.tracker.bosses)                   # / room (the slots change; the table is the proof)
+            seen, rows = set(), []
+            for b in self.tracker.bosses.values():
+                key = (b["id"], b["type"], b["hp_max"], b["room"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append({"id": f"{b['id']:#x}" if isinstance(b["id"], int) else b["id"],
+                                 "type": f"{b['type']:#x}" if isinstance(b["type"], int) else b["type"],
+                                 "hp_max": b["hp_max"], "kind": b["kind"],
+                                 "room": f"r{b['room']:03x}" if isinstance(b["room"], int) else b["room"]})
+            self.stats["bosses"] = rows[:12]
 
     def _way_out(self, p, t) -> float:
         """The heading to run: away from the attacker, turned up to 60 degrees towards open ground - no wall in the
@@ -864,7 +980,10 @@ class Bot:
 
     def _evade(self, p, t, now, side: bool = False) -> dict:
         self.stats["phase"] = "evade"
-        self.stats["combat"] = f"evade {t.kind} {t.dist:.0f} away (eta {t.eta:.1f} s)" 
+        tag = (boss_tag(dict(t.enemy, boss=t.boss), t.dist) + ": ") if t.boss else ""
+        if tag:
+            self.stats["boss"] = tag.rstrip(": ")
+        self.stats["combat"] = f"{tag}evade {t.kind} {t.dist:.0f} away (eta {t.eta:.1f} s)"
         """Out of the way of an attack he can't stop in time: away from the attacker at a run (the quick turn first
         when the way out is behind him), for EVADE_S; side: across a thrown weapon's line (the side it passes on)."""
         px, _, pz = p["pos"]
@@ -910,8 +1029,18 @@ class Bot:
         self._shot_seen(p, now)
         self._watch(p, s, threats, now)
         self._score(s, now)
+        if s.get("hp") is not None and s["hp"] <= 0:                 # dead: say what did it, once per death (after the
+            if not self._death_logged:                               # tracker saw this tick: the killing blow puts his
+                self._death_logged = True                            # routine at 1 and his health at 0 together)
+                self._death(p, now)
+        else:
+            self._death_logged = False
+        self.stats["boss"] = ""                                     # set again below when a boss is the target
+        if self.stats.get("weapon") != weapon_name(s.get("weapon")):
+            self.stats["weapon"] = weapon_name(s.get("weapon"))
         if (p.get("r") or (0,))[0] == 1:                             # hit or held: the game has him (play() presses
             self.r_since, self.trigger["down"] = None, False       # SHAKE OFF / the QTE from RAM)
+            self.blast = None
             return {"hold": set()}
         if self.evade and now < self.evade["until"]:                # an evade under way: through, unless the attacker
             t = next((x for x in threats if x.slot == self.evade["slot"] and x.kind != "thrown"), None)   # is gone
@@ -920,7 +1049,18 @@ class Bot:
                 return self._run_out(p, now)
         live = [t for t in threats if self.skip.get(t.slot, float("-inf")) < now or t.kind not in ("near", "down")]
         urgent = [t for t in live if t.kind not in ("near", "down") and t.eta < URGENT_S]
+        # a stage boss in sight is the target before any ordinary Ganado (operator 2026-10-26: "high level threats
+        # that have to be dispatched") - unless an ordinary attack lands sooner than a shot at him can leave
+        boss_t = self._boss_target(p, live)
+        if boss_t is not None:
+            ready = self._ready_in(p, boss_t, now)
+            if not any(not u.boss and u.eta + EVADE_MARGIN < ready for u in urgent):
+                return self._boss_act(p, s, boss_t, now)
         for t in urgent:
+            if t.boss:                                             # the boss's own swing / hold / closing in: his rules
+                if t.dist < ENGAGE and self._sight(p, (t.pos[0], t.pos[1] + HEAD_H, t.pos[2])):   # (out of view or
+                    return self._boss_act(p, s, t, now)            # far: the next threat; the route finds him like
+                continue                                           # any Ganado)
             ready = self._ready_in(p, t, now)
             late = t.eta + EVADE_MARGIN < ready
             if t.kind == "thrown" and late:                       # can't shoot it in time: out of its line
@@ -932,17 +1072,76 @@ class Bot:
             return self._fight(p, self._as_target(t, lead), now, s)   # staggers him)
         close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
         if len(close) >= CROWD_N or (close and now - self.recovered_at < RECOVER_S):
+            blast = self._crowd_blast(p, s, close, now)            # the shotgun into the group first (operator
+            if blast is not None:                                   # 2026-10-26: "he carries a shotgun for crowd
+                return blast                                        # control"), then out
             return self._evade(p, close[0], now)                    # on top of him / just hit: out, then one by one
+        self.blast = None
         px, _, pz = p["pos"]
 
         def cost(t):                                           # near, and little to turn: a radian ~ TURN_COST units
             return t.dist + TURN_COST * abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
         small = lambda t: 0 < (t.enemy.get("hp_max") or 0) <= SMALL_HP           # a chicken: after every Ganado
         near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R), key=lambda t: (small(t), cost(t)))
-        near += sorted((t for t in live if t.kind == "down" and t.dist < THREAT_R), key=cost)   # knocked down: last
+        near += sorted((t for t in live if t.kind == "down" and t.dist < THREAT_R),   # knocked down: last - a downed
+                       key=lambda t: (not t.boss, cost(t)))                            # boss before a downed Ganado
         if near:
             return self._fight(p, self._as_target(near[0]), now, s)
         return None
+
+    def _boss_target(self, p, live):
+        """The boss to fight now: the nearest one on his feet (kind chainsaw / boss, or in a known attack / hold) in
+        view within ENGAGE; None when none is. A knocked-down boss waits his turn in the near list (he is hit low)."""
+        px, _, pz = p["pos"]
+        bosses = [t for t in live if t.boss and t.kind not in ("down", "thrown") and t.dist < ENGAGE
+                  and self._sight(p, (t.pos[0], t.pos[1] + HEAD_H, t.pos[2]))]
+        return min(bosses, key=lambda t: t.dist) if bosses else None
+
+    def _boss_act(self, p, s, t, now) -> dict:
+        """A boss as the target. The chainsaw man inside CHAINSAW_KEEP and not in front of Leon: the run-out first
+        (his saw is one hit; the quick turn into him is slower than it), once per CHAINSAW_REEVADE_S - running from a
+        chaser as fast as Leon never ends, so after it he is turned to (the quick turn) and shot. In front of Leon, or
+        outside the keep-out, or any other boss (a Garrador, J.J.): shot continuously (_fight closes in past
+        SHOOT_RANGE, fires with a line of sight)."""
+        tag = boss_tag(dict(t.enemy, boss=t.boss), t.dist)
+        self.stats["boss"] = tag
+        if t.boss == "chainsaw" and t.dist < CHAINSAW_KEEP:
+            if self._keepout is None or self._keepout[0] != t.slot or now - self._keepout[1] > 5.0:
+                self.stats["chainsaw_keepouts"] += 1                # he came inside: counted once per approach
+            self._keepout = (t.slot, now)
+            late = t.eta + EVADE_MARGIN < self._ready_in(p, t, now)
+            if not self._facing(p, t) and (late or t.dist < threats_ram.CHAINSAW_REACH + CHAINSAW_PAD) \
+                    and now - self.boss_evaded_at > CHAINSAW_REEVADE_S:
+                self.boss_evaded_at = now
+                self.stats["chainsaw_evades"] += 1
+                return self._evade(p, t, now)
+        return self._fight(p, self._as_target(t), now, s)
+
+    def _crowd_blast(self, p, s, close, now):
+        """Shotgun crowd control: with a shotgun in his hands and CROWD_N of the close Ganados inside its cone
+        (SHOTGUN_CONE of where the gun points) within SHOTGUN_R, aim at the nearest of them and fire once - the blast
+        knocks the group down - then the caller's run-out. None: no blast (no shotgun, the group not in the cone, one
+        fired within BLAST_EVERY, or this one is done: the gun fired / BLAST_S passed)."""
+        if not shotgun(s.get("weapon")) or now - self.blast_at < BLAST_EVERY:
+            return None
+        b = self.blast
+        if b is not None and (self.shots.stats["shots"] > b["shots"] or now - b["since"] > BLAST_S):
+            self.blast, self.blast_at = None, now               # fired (or the moment passed): out now
+            key = "crowd_blasts" if self.shots.stats["shots"] > b["shots"] else "crowd_blast_timeouts"
+            self.stats[key] = self.stats.get(key, 0) + 1
+            return None
+        px, _, pz = p["pos"]
+        aim = p.get("aim_rot", p["rot"])
+        cone = [t for t in close if t.dist < SHOTGUN_R and abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - aim)) < SHOTGUN_CONE]
+        if len(cone) < CROWD_N:
+            self.blast = None                                   # the group is not in the cone (any more): the run-out
+            return None
+        if b is None:
+            self.blast = {"since": now, "shots": self.shots.stats["shots"]}
+        tgt = self._as_target(min(cone, key=lambda t: t.dist))
+        act = self._fight(p, tgt, now, s)
+        self.stats["combat"] = f"shotgun blast at {len(cone)} in the cone: " + str(self.stats.get("combat"))
+        return act
 
     def _score(self, s, now):
         """What the shots did (gbox.re4_threats.Shots: a shot hit when a Ganado's health fell or one started dying
@@ -1290,12 +1489,26 @@ class Bot:
                 marked.append(k)
         return marked
 
+    def _death(self, p, now) -> None:
+        """Leon's health hit 0: the cause for the round's report (operator 2026-10-26, "i just watched leon just eat
+        a chainsaw"): the last threat that landed on him (stats last_hit_by), the bosses on the field, into the stats
+        and the round map's events."""
+        cause = self.stats.get("last_hit_by") or "unknown: no attack was seen landing"
+        bosses = [t for t in self._threats if t.boss and not threats_ram.dying(t.enemy)]
+        field = (f"; {len(bosses)} boss(es) on the field, nearest {boss_tag(dict(bosses[0].enemy, boss=bosses[0].boss), bosses[0].dist)}"
+                 if bosses else "")
+        self.stats["death_cause"] = f"killed by {cause}{field}; hits taken this run {self.stats.get('hits_taken', 0)}"
+        if cause.startswith("boss"):
+            self.stats["deaths_by_boss"] = self.stats.get("deaths_by_boss", 0) + 1
+        if getattr(self, "trace", None) is not None:
+            self.trace.event(now, "death", p["pos"][0], p["pos"][2], cause=self.stats["death_cause"][:200])
+
     def trace_start(self, round_id: str) -> None:
-        """This round's route map (gbox.mercs.round_map): finishes the last one first."""
+        """This round's route map (gbox.mercs.round_map) under round_maps_dir/r<room>/: finishes the last one first."""
         from .mercs.round_map import RoundTrace
         self.trace_finish()
         room = f"r{self.room:03x}" if self.room is not None else "room"
-        out = self.learn_dir.parent / "round_maps" / room if self.learn_dir else None
+        out = Path(self.round_maps_dir) / room if self.round_maps_dir is not None else None
         self.trace = RoundTrace(out, "G4BE08", room, round_id, CELL)
 
     def trace_finish(self) -> None:
@@ -1591,6 +1804,21 @@ def learn_dir_for(ad) -> Path:
     return (Path(rt) if rt else Path.home() / ".gbox") / "re4_learned"
 
 
+def round_maps_dir_for(ad=None, learn_dir: Path | None = None) -> Path:
+    """Where every round's route map lands, RE5's layout (gbox-data/mercs/round_maps/BLUS30491 beside it): the
+    adapter's <data_dir>/mercs/round_maps/G4BE08; with no adapter but a learn_dir of one's own (tests, a private
+    run) its neighbour <learn_dir>/../round_maps/G4BE08; else the lessons' gbox-data (gbox.mercs.lessons.ROOT, the
+    configured data dir). 2026-10-26: the Spark's RE4 maps had been going to <runtime>/round_maps/r4xx/ (the learned
+    map's folder), where nobody looked for them, and a Bot without a learn_dir wrote none at all."""
+    data = getattr(getattr(ad, "config", None), "data_dir", None)
+    if data:
+        return Path(data) / "mercs" / "round_maps" / "G4BE08"
+    if learn_dir is not None:
+        return Path(learn_dir).parent / "round_maps" / "G4BE08"
+    from .mercs import lessons
+    return Path(lessons.ROOT).parent / "round_maps" / "G4BE08"
+
+
 def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stats: dict | None = None,
          clock=time.time, learn_dir: Path | None = None, rerun=None, prompt=None, ram_prompt=None, game=None,
          hooks=None, round_boundary=None, record_dir=None, session_id=None, source_job_id=None,
@@ -1615,7 +1843,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     only when RAM fails or can't tell (operator 2026-10-20: "Vision analysis to me should be the last level that we
     have to fall back to"). stats["prompt_source"] says which one answered last."""
     m = m or memory(ad)
-    bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad)), set()
+    bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad),
+                    round_maps_dir=round_maps_dir_for(ad, learn_dir)), set()
     if stats is not None:
         stats.update(bot.stats)
         bot.stats = stats

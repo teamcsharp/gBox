@@ -1,6 +1,7 @@
 """RE4 Mercenaries playbook (gbox.re4_merc_bot): RAM reading, targeting, the aim by stick, prompts, autoplay picking it."""
 import math
 import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1304,3 +1305,176 @@ def test_run_forwards_the_round_loadouts_weapon_and_chance():
     finally:
         RM.random_loadout = orig
     assert seen.get("weapon") == "handcannon" and seen.get("weapon_chance") == 0.5
+
+
+# -- the stage bosses and the crowd (operator 2026-10-26: "so i just watched leon just eat a chainsaw") -----------------
+def boss(m, slot, hp=6500, em=0x16, typ=0xb):
+    """A Village chainsaw man in the fake EmMgr: the ESL's 6500 health, em 0x16 type 0xb (re4_r400_navmap.json)."""
+    m.put(EM + slot * STRIDE + B.EM_HP, ">hh", hp, hp)
+    m.put(EM + slot * STRIDE + 0x100, ">BB", em, typ)
+
+
+def test_the_chainsaw_man_in_sight_is_shot_before_a_nearer_ganado_and_named_in_the_stats():
+    # "Does he not see these bosses? because they are high level threats that have to be dispatched"
+    now = [0.0]
+    m = world([((0, 0, 900), True), ((0, 0, 2200), True)], room=0x400)      # a Ganado walking close, Dr. Salvador behind him
+    boss(m, 2)
+    act_state(m, 1, (1, 0x03, 0, 0))
+    act_state(m, 2, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    assert run(bot, m, now, 0.0)[0] == {"hold": {"r"}}                        # the gun up at him, not at the near one
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 3)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 2 and bot.stats["boss_shots"] >= 1
+    assert bot.stats["combat"].startswith("boss chainsaw 0x16 hp 6500/6500 dist 2200")
+    assert bot.stats["boss"] == "boss chainsaw 0x16 hp 6500/6500 dist 2200"
+    assert bot.stats["bosses"] == [{"id": "0x16", "type": "0xb", "hp_max": 6500, "kind": "chainsaw", "room": "r400"}]
+    assert bot.stats["bosses_seen"] == 1 and bot.stats["chainsaw_keepouts"] == 0   # outside the keep-out: shot from here
+
+
+def test_an_ordinary_swing_about_to_land_comes_before_the_boss_in_the_distance():
+    now = [0.0]
+    m = world([((0, 0, 1000), True), ((0, 0, 2300), True)], room=0x400)
+    boss(m, 2)
+    act_state(m, 1, (1, 0x26, 1, 0))                                           # the near one mid-swing
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.tracker.update(B.snapshot(m), -0.6)                                   # 0.6 s into it: lands before a shot at the boss
+    act = run(bot, m, now, 0.0)[0]
+    assert "r" in act["hold"] and bot.aim["slot"] == 1 and bot.stats["evades"] == 0   # the swinger first (in front: shot)
+    assert bot.stats["boss"] == ""                                              # the boss was not the target this tick
+
+
+def test_the_chainsaw_man_behind_him_inside_the_keep_out_is_run_from_then_turned_on_and_shot():
+    # "letting them gang up near him is detrimental": inside CHAINSAW_KEEP, not in front - out of his arc, then the quick
+    # turn and the shots; never a second run while the first one's CHAINSAW_REEVADE_S runs (he is as fast as Leon)
+    now = [0.0]
+    m = world([((0, 0, -1700), True)], room=0x400)                              # Dr. Salvador 1700 behind Leon
+    boss(m, 1)
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    first = run(bot, m, now, 0.0)[0]
+    assert first["hold"] >= {"up", "b"} and bot.stats["chainsaw_evades"] == 1 and bot.stats["chainsaw_keepouts"] == 1
+    assert bot.stats["combat"].startswith("boss chainsaw 0x16 hp 6500/6500 dist 1700: evade chainsaw 1700 away")
+    assert bot.stats["boss"] == "boss chainsaw 0x16 hp 6500/6500 dist 1700" and bot.stats["phase"] == "run_out"
+    acts = run(bot, m, now, 0.05, 15)                                           # the run-out, EVADE_S long
+    assert all(a["hold"] >= {"up", "b"} for a in acts)
+    turn = run(bot, m, now, B.EVADE_S, 1)[0]
+    assert turn == {"hold": {"down", "b"}} and bot.stats["quick_turns"] == 1 and bot.stats["chainsaw_evades"] == 1
+    facing(m, math.pi)                                                          # turned round: he is in front now
+    acts = run(bot, m, now, B.EVADE_S + 0.05, 8)
+    assert any("a" in a["hold"] for a in acts) and bot.target_slot == 1 and bot.stats["boss_shots"] >= 1
+    assert bot.stats["chainsaw_evades"] == 1 and bot.stats["chainsaw_keepouts"] == 1
+
+
+def test_the_chainsaw_man_in_front_inside_the_keep_out_is_shot_not_run_from():
+    now = [0.0]
+    m = world([((0, 0, 1300), True)], room=0x400)                               # inside his reach, right in front
+    boss(m, 1)
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, 8)
+    assert "r" in acts[0]["hold"] and any("a" in a["hold"] for a in acts) and bot.target_slot == 1
+    assert bot.stats["chainsaw_evades"] == 0 and bot.stats["chainsaw_keepouts"] == 1 and bot.stats["evades"] == 0
+
+
+def test_a_shotgun_blasts_the_crowd_in_its_cone_before_the_run_out():
+    # "he carries a shotgun for crowd control so he cant just be letting these guys crowd. Thats a combo wasting"
+    now = [0.0]
+    m = world([((120, 0, 600), True), ((-150, 0, 700), True)], room=0x400)      # two on top of him, both in the cone
+    for k in (1, 2):
+        act_state(m, k, (1, 0x03, 0, 0))
+    m.put(B.ITEM_MGR + 0x10, ">H", 0x2C)                                        # the Shotgun in his hands
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, 8)
+    assert acts[0] == {"hold": {"r"}} and bot.stats["weapon"] == "Shotgun (0x2c)"   # the gun up into the group first
+    fired = next(i for i, a in enumerate(acts) if "a" in a["hold"])             # the blast ...
+    after = acts[fired + 1]["hold"]
+    assert "b" in after and "r" not in after and bot.stats["evades"] == 1        # ... then out (a run or the quick turn)
+    assert bot.stats["crowd_blasts"] == 1 and bot.stats["shots"] == 1
+    assert sum("a" in a["hold"] for a in acts[:fired + 1]) == 1                 # one press, not a volley
+    # the Hand Cannon is no crowd gun: the run-out at once, as before
+    m2 = world([((120, 0, 600), True), ((-150, 0, 700), True)], room=0x400)
+    for k in (1, 2):
+        act_state(m2, k, (1, 0x03, 0, 0))
+    m2.put(B.ITEM_MGR + 0x10, ">H", B.HANDCANNON)
+    facing(m2, 0.0)
+    now2 = [0.0]
+    bot2 = B.Bot(m2, clock=lambda: now2[0], nav=False)
+    act = run(bot2, m2, now2, 0.0)[0]
+    assert "b" in act["hold"] and bot2.stats["evades"] == 1 and bot2.stats["crowd_blasts"] == 0
+    assert bot2.stats["weapon"] == "Handcannon (0x37)"
+    # two close to him but one of them out of the cone: no blast either
+    m3 = world([((120, 0, 600), True), ((-700, 0, 100), True)], room=0x400)
+    for k in (1, 2):
+        act_state(m3, k, (1, 0x03, 0, 0))
+    m3.put(B.ITEM_MGR + 0x10, ">H", 0x94)                                       # the Riot Gun
+    facing(m3, 0.0)
+    now3 = [0.0]
+    bot3 = B.Bot(m3, clock=lambda: now3[0], nav=False)
+    assert "b" in run(bot3, m3, now3, 0.0)[0]["hold"] and bot3.stats["evades"] == 1 and bot3.blast is None
+
+
+def test_leons_death_names_the_attack_that_landed_and_marks_the_round_map(tmp_path):
+    now = [0.0]
+    m = world([((0, 0, 700), True)], room=0x400)
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_HIT)                   # mid-swing, the hit frames on
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, round_maps_dir=tmp_path / "round_maps" / "G4BE08")
+    run(bot, m, now, 0.0)
+    bot.trace_start("deadbeef00")
+    m.put(PL + 0xFC, ">4B", 1, 0, 1, 0)                                         # Leon hit
+    run(bot, m, now, 0.05)
+    assert bot.stats["last_hit_by"] == "swing slot 1 id 0x0 type 0x0 hp 1000/1000 at 700 (eta 0.0)"
+    assert bot.stats["hits_taken"] == 1 and bot.stats["death_cause"] == ""
+    m.put(PG + B.G_HP, ">h", 0)                                                 # ... and dead
+    run(bot, m, now, 0.1, 3)
+    assert bot.stats["death_cause"].startswith("killed by swing slot 1 id 0x0 type 0x0 hp 1000/1000 at 700")
+    assert bot.stats["death_cause"].endswith("hits taken this run 1") and bot.stats.get("deaths_by_boss") is None
+    assert [e["kind"] for e in bot.trace.events] == ["hit", "death"]            # once per death, on the round map
+    assert bot.trace.events[1]["cause"].startswith("killed by swing slot 1") and bot.trace.room == "r400"
+
+
+def test_a_chainsaw_death_is_blamed_on_the_boss():
+    now = [0.0]
+    m = world([((0, 0, 900), True)], room=0x400)
+    boss(m, 1)
+    act_state(m, 1, (1, 0x03, 0, 0))
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0)
+    m.put(PL + 0xFC, ">4B", 1, 0, 1, 0)                                         # the saw: hit and dead in one frame
+    m.put(PG + B.G_HP, ">h", 0)
+    run(bot, m, now, 0.05)
+    assert bot.stats["last_hit_by"] == "boss chainsaw slot 1 id 0x16 type 0xb hp 6500/6500 at 900 (eta 0.4)"
+    assert bot.stats["death_cause"].startswith("killed by boss chainsaw") and bot.stats["deaths_by_boss"] == 1
+    assert "1 boss(es) on the field, nearest boss chainsaw 0x16 hp 6500/6500 dist 900" in bot.stats["death_cause"]
+
+
+def test_round_maps_land_in_the_re5_style_folder_with_or_without_a_learn_dir(tmp_path):
+    # operator 2026-10-26: every round traceable - gbox-data/mercs/round_maps/G4BE08/r<room>/ like RE5's BLUS30491 (the
+    # Spark's RE4 maps had been going to <runtime>/round_maps/r4xx/, and a Bot without a learn_dir wrote none)
+    from gbox.mercs import lessons
+    assert B.round_maps_dir_for(None, None) == Path(lessons.ROOT).parent / "round_maps" / "G4BE08"
+    assert B.round_maps_dir_for(None, tmp_path / "re4_learned") == tmp_path / "round_maps" / "G4BE08"
+    ad = SimpleNamespace(config=SimpleNamespace(data_dir=tmp_path / "gbox-data", runtime=tmp_path / "rt"))
+    assert B.round_maps_dir_for(ad, None) == tmp_path / "gbox-data" / "mercs" / "round_maps" / "G4BE08"
+    assert B.round_maps_dir_for(ad, tmp_path / "x") == tmp_path / "gbox-data" / "mercs" / "round_maps" / "G4BE08"
+    assert B.Bot(world([]), nav=False).round_maps_dir == B.round_maps_dir_for(None, None)      # no learn_dir: a folder still
+    assert B.Bot(world([]), nav=False, learn_dir=tmp_path / "l").round_maps_dir == tmp_path / "round_maps" / "G4BE08"
+    now = [0.0]
+    m = world([], room=0x400)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, round_maps_dir=B.round_maps_dir_for(ad))
+    bot.tick(B.snapshot(m))
+    bot.trace_start("cafebabe00")
+    for k in range(6):
+        now[0] = k * 0.3
+        bot.trace.add(now[0], 100.0 * k, 50.0, 0.0, bot.stats)
+    bot.trace_finish()
+    out = tmp_path / "gbox-data" / "mercs" / "round_maps" / "G4BE08" / "r400"
+    files = sorted(out.glob("*.json"))
+    assert len(files) == 1 and files[0].name.endswith("-cafebabe.json") and len(list(out.glob("*.svg"))) == 1
+    assert bot.stats["last_round_map"] == str(files[0].with_suffix(".svg"))
