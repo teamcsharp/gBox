@@ -261,3 +261,8 @@ paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1
 
 [rewind]
 checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)
+
+[builds]
+# operator 2026-10-26: a build reaches a PC only when the operator downloads it there (Builds > download icon).
+# Agent, Hermes, background-testing, screensaver/MercMode/roulette and launch-failure work never copies one over.
+auto_send = false

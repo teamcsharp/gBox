@@ -1678,3 +1678,16 @@ def test_a_hurt_ganado_on_the_ground_is_aimed_low_and_never_shot_over_from_the_p
     keys, level = bot._aim_body(B.snapshot(m)["player"], tgt["pos"][1], 1900.0, 0.5, B.LOW_BODY)
     assert level is False                                                 # never "on him" over him at the limit
 
+
+
+def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
+    # gbox.pad_takeover: the operator picks up the pad - the bot yields and resumes from a clean hand
+    now = [0.0]
+    m = world([((0.0, 0.0, 2000.0), True)])
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.stats["operator_control"] = True
+    walls = len(bot.learned.blocked) if bot.learned else 0
+    assert bot.tick(B.snapshot(m)) == {"hold": set()}
+    assert (len(bot.learned.blocked) if bot.learned else 0) == walls and bot.goal is None
+    bot.stats["operator_control"] = False
+    assert bot.tick(B.snapshot(m)) != {"hold": set()}                     # the Ganado ahead: the bot plays again

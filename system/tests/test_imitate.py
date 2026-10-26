@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gbox import imitate, padstate
+from gbox import imitate, pad_takeover, padstate
 
 
 def pad(at, events=(), stick=None, i=[0]):
@@ -266,6 +266,7 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
         many += [pad(i * 0.01, [("x", True)], {"x": 0.9, "y": 0}), pad(i * 0.01 + 0.005, [("x", False)])]
     monkeypatch.setattr(t, "_run_events", lambda ctx, rid: many)
     monkeypatch.setattr(imitate, "BURST_GAP", 0.003)          # the recording is compressed 40x for the test
+    monkeypatch.setattr(t, "_cursor", lambda: (100, 100))      # the mouse rests (this PC's real one may move meanwhile)
     stop = threading.Event()
     monkeypatch.setattr(t.time, "sleep", lambda s: stop.wait(0.0005))
     r = t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="replay", screensaver=True), ap.ctx)["result"]
@@ -275,13 +276,26 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
             break
         stop.wait(0.01)
     assert run["mission"].startswith("learned: your style")    # the replay finished: the screensaver keeps playing
-    padstate.PLAYER_TOUCH["s1"] = t.time.time() + 1            # the operator grabs the pad
-    run["thread"].join(5)
-    assert run["took_over"]
-    kinds = [k for k, _ in posts]
-    assert "yield" in kinds and "result" in kinds
-    assert dict(posts)["yield"] == {"session_id": "s1", "reason": "pad"}
-    padstate.PLAYER_TOUCH.pop("s1", None)
+    # the operator grabs the pad (gbox/pad_takeover.py, 2026-10-26): the bot lets go for a moment and plays on after - a
+    # takeover is no hand-over (the screensaver keeps its run) and never marks the run taken over
+    try:
+        assert pad_takeover.local("s1", {"b"}) and pad_takeover.active("s1")
+        n = len(ap.sent)
+        stop.wait(0.05)
+        assert len(ap.sent) == n and run["thread"].is_alive() and not run.get("took_over")
+        assert run["live"]["operator_control"] is True and ("yield", {"session_id": "s1", "reason": "pad"}) not in posts
+        pad_takeover.local("s1", set())                         # the pad put down: the idle time passes
+        pad_takeover.LEASES["s1"].clock = lambda: t.time.time() + 60
+        for _ in range(500):
+            if len(ap.sent) > n:
+                break
+            stop.wait(0.01)
+        assert not pad_takeover.active("s1") and len(ap.sent) > n and run["live"]["operator_control"] is False
+        t.autoplay(t.AutoplayIn(session_id="s1", op="stop"), ap.ctx)    # Stop still stops it
+        run["thread"].join(5)
+        assert not run["thread"].is_alive() and "result" in [k for k, _ in posts]
+    finally:
+        pad_takeover.forget("s1")
 
 
 def test_a_mouse_move_hands_the_screensaver_game_over_and_autoplay_plays_on(ap, monkeypatch):
@@ -313,10 +327,15 @@ def test_a_mouse_move_hands_the_screensaver_game_over_and_autoplay_plays_on(ap, 
     assert run.get("handed_over") and not run.get("took_over")
     assert run["mission"].startswith("learned") and run["thread"].is_alive()   # it plays on, in your style
     assert ("yield", {"session_id": "s1", "reason": "mouse"}) in posts
-    padstate.PLAYER_TOUCH["s1"] = t.time.time() + 1            # then the pad: they play, autoplay lets go
-    run["thread"].join(5)
-    assert run["took_over"]
-    padstate.PLAYER_TOUCH.pop("s1", None)
+    try:
+        assert pad_takeover.local("s1", {"a"})                 # then the pad: autoplay lets go while they play...
+        stop.wait(0.05)
+        assert run["thread"].is_alive() and not run.get("took_over") and pad_takeover.active("s1")
+        t.autoplay(t.AutoplayIn(session_id="s1", op="stop"), ap.ctx)    # ...and only Stop ends it
+        run["thread"].join(5)
+        assert not run["thread"].is_alive() and not pad_takeover.active("s1")
+    finally:
+        pad_takeover.forget("s1")
 
 
 # --- getting to gameplay ---

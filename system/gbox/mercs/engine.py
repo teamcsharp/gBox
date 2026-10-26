@@ -106,6 +106,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
 
     def hold(keys):
         nonlocal held
+        if stats.get("operator_control") is True:     # the operator has the pad (gbox/pad_takeover.py): the bot holds
+            held = set()                              # nothing, so its first decision after they put it down presses
+            return                                    # what it wants then - nothing held from before comes back
         rows = [{"key": k, "down": False} for k in sorted(held - keys)] + \
                [{"key": k, "down": True} for k in sorted(keys - held)]
         if rows:

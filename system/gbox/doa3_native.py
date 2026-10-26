@@ -239,6 +239,13 @@ def _changed_disc_files(source: Path, game_id: str, mod: str) -> set[str] | None
     return changed
 
 
+def play_root(config) -> Path:
+    """runtime/xbox/doa3-native-play (the play-disc copy of each build, with its saves), never on a Windows system
+    drive (gbox/storage_policy.py: moved under the cache, or refused when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.game_dir(config, Path(config.runtime) / "xbox" / "doa3-native-play", "doa3-native-play")
+
+
 def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None) -> Path:
     """Share unchanged build assets, preserve saves, and reject mismatched disc views."""
     if not supports_game(game):
@@ -246,7 +253,7 @@ def prepare_play_disc(source: Path, config, game: dict, progress=lambda *_: None
     source = source.absolute()
     original = _original_xbe(source)
     game_id = game["game_id"]  # supports_game restricts this to reviewed catalog identities.
-    base_parent = (config.runtime / "xbox" / "doa3-native-play" / game_id).absolute()
+    base_parent = (play_root(config) / game_id).absolute()
     mod = game.get('mod') or ''
     if not isinstance(mod, str) or len(mod) > 160 or any(c in mod for c in '\x00\r\n'):
         raise ToolUnavailable('Native DOA3 needs a bounded build identity')

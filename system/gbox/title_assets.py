@@ -55,7 +55,7 @@ def source_directory(game, config, *, allow_unpack=False, progress=lambda *_: No
         raise ValueError('No native raw reader registered for this exact catalog title')
     # This app-created view is tied to the curated title and checked against its
     # receipt. Only the two required files are read; .recomp-storage is untouched.
-    home = Path(config.runtime) / 'xbox' / 'doa3-native-play' / game['game_id']
+    home = native.play_root(config) / game['game_id']
     marker, disc = home / 'disc-receipt.json', home / 'disc'
     if marker.exists():
         native._plain_path(marker)

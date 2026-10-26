@@ -1051,3 +1051,17 @@ def test_client_broadcast_controls_cjs():
     r = subprocess.run([NODE, "--test", str(Path(__file__).with_name("test_broadcast_control.cjs"))],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-2000:]
+
+
+def test_a_pinned_pc_puts_its_mercmode_turn_on_air_never_a_warm_paused_game():
+    # 2026-10-26: "the pine agent has been showing the game loading for more than an hour" - the program pinned to lilspark
+    # showed the warm (paused, prelaunched) RE5, the newest session with a picture, while RE4 played
+    rs = rows(("re4", "lilspark", True, True, 1), ("re5warm", "lilspark", True, True, 2))
+    rs[0]["mercmode"], rs[1]["mercmode"] = "run", "warm"
+    pin = {"mode": "pc", "target": "lilspark"}
+    match = lambda r, t: r["pc"] == t
+    assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60, pc_match=match) == \
+        ("re4", "pinned to lilspark (its MercMode turn)")
+    rs[0]["mercmode"] = None                                   # no run marked (between turns): still never the warm one
+    assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60, pc_match=match)[0] == "re4"
+    assert B.choose({"mode": "auto"}, None, rs, current=None, now=0, watch_ttl_s=60)[0] == "re4"

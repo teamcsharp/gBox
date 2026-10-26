@@ -1316,6 +1316,11 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
             except Exception as e:                               # noqa: BLE001 - one PC never stops the rest
                 skipped.append({"node": h["node"], "reason": str(getattr(e, "detail", "") or e)[:200]})
         cleared = []
+        from . import storage_policy                             # a deleted copy takes its download receipt along
+        gone = storage_policy.forget_receipts(store, game_id, name, None if scope == "all" else
+                                              (selected if scope == "pcs" else [node]))
+        if gone:
+            cleared.append("download receipts: " + ", ".join(sorted(gone)))
         if scope == "all":
             for kind in (BM.NAME_KIND, BM.FAV_KIND, REPORT_KIND):
                 if store.get(kind, key) is not None:
@@ -1433,7 +1438,16 @@ def routes(app, store, config, auth, *, submit, workers, file_report=None):
         if op != "locate":
             store.audit(actor, f"build.{op}", key, {"node": w.get("name"), "job": j.get("id"),
                                                      **({"dest": inp["dest"], "format": inp["format"]} if op == "export" else {})})
-        return {"job_id": j.get("id"), "state": j.get("state"), "node": w.get("name"), "op": op, "key": key}
+        receipt = False
+        if op == "download" and j.get("state") != "rejected":
+            # the operator opts this build into that PC: automatic work may use (and refresh) it there; an agent's
+            # call to this route is no opt-in (gbox/storage_policy.py, [builds] auto_send = false)
+            from . import storage_policy
+            if storage_policy.operator_job({"actor": actor, "agent_use": j.get("agent_use")}):
+                storage_policy.record_receipt(store, w.get("name") or "", game_id, name, by=actor, job=j.get("id") or "")
+                receipt = True
+        return {"job_id": j.get("id"), "state": j.get("state"), "node": w.get("name"), "op": op, "key": key,
+                "receipt": receipt}
 
     @app.get("/api/builds/deleted")
     def builds_deleted(limit: int = 50, actor=Depends(auth)):
