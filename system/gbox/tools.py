@@ -880,6 +880,12 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ad.serial = ad.serial or catalog.ps3_title_id(eboot)    # per-game RPCS3 config (Sessions -> Graphics)
             ctx.progress(8, f"PS3 game: {eboot}")
             src = eboot
+        if g.platform == "switch" and local_mod is None and src.is_file():
+            from . import switch_nsp
+            ok, why = switch_nsp.launchable(src)         # a title update NSP is content for its base game, not a game
+            if not ok:
+                raise ToolUnavailable(why)
+            ad.serial = ad.serial or switch_nsp.title_id(src)     # the title id (gbox.re_switch capabilities)
         from . import game_unlocks
         unlock_result = game_unlocks.pre_launch(g.model_dump(), ctx, inp.mod)
         if unlock_result.get('applied'):

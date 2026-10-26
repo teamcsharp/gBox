@@ -25,6 +25,11 @@ granted_permissions = ["read", "execute", "stage", "network", "install", "memory
 blender_search = ["C:/Users/maste/Desktop/Blender Builds/Builds"]
 ghidra_home = "/home/ehm_eckx/reverse/ghidra_12.1.4_PUBLIC"   # the operator's own Ghidra on the Spark (JDK 21 pinned per run)
 
+# Switch on the Spark (Linux aarch64) runs in Eden (docs/research/switch-emulator-spark.md); per node, in
+# gbox.local-lilspark.toml, because [emulators.switch].executable is the Windows nodes' portable Yuzu:
+# switch_appimage = "/home/ehm_eckx/gBox_alt/switch/Eden-Linux-v0.2.1-aarch64-gcc-standard.AppImage"   # extracted once
+# switch_keys = "/mnt/gbox/quickswap2/Emulation/_switch/prod.keys"   # default: a prod.keys at the Switch library's root
+
 # PS4 setup belongs in each node's gbox.local-<hostname>.toml; point at the standalone shadPS4 core.
 # [emulators.ps4]
 # adapter = "shadps4"

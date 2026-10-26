@@ -13,9 +13,10 @@ import struct
 import time
 from pathlib import Path
 
-from . import provision
+from . import eden_memory, provision
 from .config import HOST_OS, Config, EmulatorConfig
 from .registry import ToolUnavailable, Unsupported
+from .yuzu_runtime import SWITCH_KEYS
 
 if HOST_OS == "linux" and "/usr/games" not in os.environ.get("PATH", ""):
     os.environ["PATH"] += ":/usr/games"                  # apt puts mame / mgba-qt there; systemd services don't have it
@@ -4317,6 +4318,271 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         return {'sent':len(rows),'player':2}
 
 
+# --- Switch on a Linux node: Eden (yuzu's continuation) --------------------------------------------------------------------
+# Eden's Qt settings gBox owns (src/common/settings.h, src/qt_common/config/uisettings.h; a section is
+# Settings::TranslateCategory of the Category). Each key is written with its "\default=false" twin: that flag is how the
+# frontend knows to read the stored value instead of the built-in default. Enum values: RendererBackend OpenGL 0 /
+# Vulkan 1, CpuBackend Dynarmic 0 / Nce 1, ConfirmStop Ask_Always 0 / Ask_Based_On_Game 1 / Ask_Never 2.
+EDEN_SETTINGS = {
+    "UI": {"firstStart": "false",                        # no first-start callouts on a headless display
+           "confirmStop": "2",                           # an unattended Stop never waits on a question
+           "check_for_updates": "false", "pauseWhenInBackground": "false"},
+    "Renderer": {"backend": "1"},                        # Vulkan on the GB10 (Eden's default too; pinned)
+    "Core": {"use_multi_core": "true"},
+}
+EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)
+
+
+class SwitchLinuxAdapter(StandaloneAdapter):
+    """Linux node (the Spark, aarch64): Switch games in Eden (provision.ensure_switch_linux) on the session's own Xvfb
+    display, streamed like every other Linux session. Player 1 is Eden's default keyboard layout for its Pro
+    Controller (yuzu's: A=C, B=X, X=V, Y=Z, L=Q, R=E, ZL=R, ZR=T, Plus=M, Minus=N, sticks WASD / IJKL, d-pad = arrows,
+    the table the Windows adapter types through gbox.yuzu_runtime.SWITCH_KEYS), so send_input is xdotool keys on that
+    display with the pointer parked on the game (no window manager: keys go to the window under the pointer). Guest
+    memory is read and written through /proc/<pid>/mem at the addresses gbox.eden_memory derives from Eden's
+    HostMemory arena (a guest address is the host address under NCE). A debug launch adds Eden's GDB stub (arm64)
+    and runs on Dynarmic, because Eden's NCE backend has no breakpoints or watchpoints and its single-step is a stub
+    (src/core/arm/nce/arm_nce.cpp). Eden has no save states. Built from Eden's sources 2026-10-26
+    (docs/research/switch-emulator-spark.md); not yet run live on the Spark."""
+    name = "eden"
+    supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
+                 "get_frame", "send_input", "stream_session"}
+    checkpoint_state, checkpoint_reason = False, "Eden (yuzu) has no save states"
+    screen = (1280, 720)                                  # docked Switch output at 1x
+    keys = dict(SWITCH_KEYS)                              # letters and arrow keysyms: xdotool names as they are
+    hotkeys: dict[str, str] = {}
+    MAPS, MEM = "/proc/{pid}/maps", "/proc/{pid}/mem"
+    BOOT_S = 180.0                                        # first boots build shader caches before the guest shows
+
+    def __init__(self, config: Config, platform: str = "switch"):
+        super().__init__(config, platform)
+        self.env = provision.switch_linux_env(config)
+        self.home = provision.switch_linux_dir(config)   # keys/, nand/, sdmc/, log/eden_log.txt
+        self.debug, self.paused, self.rom = False, False, None
+        self.nce = eden_memory.nce_capable()              # this host can run NCE (ARM64, 4 KiB pages)
+        self.address_mode = eden_memory.mode_for(self.nce)
+        self._mem, self._mem_checked_at = None, -1e9
+
+    @property
+    def use_nce(self) -> bool:
+        """NCE for play; Dynarmic for a debug launch (NCE has no breakpoints) or a host that cannot run NCE."""
+        return self.nce and not self.debug
+
+    def _ensure(self):
+        self.write_settings()                             # before the first start: no callouts, Vulkan, the stub
+        provision.ensure_switch_linux(self.config, getattr(self, "progress", None))
+
+    def write_settings(self) -> Path:
+        """qt-config.ini: EDEN_SETTINGS, the CPU backend (use_nce) and the GDB stub for a debug launch; every other line
+        in the file is kept. Also fixes the address mode the guest-memory reads use for this launch."""
+        path = provision.switch_linux_config(self.config)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        self.address_mode = eden_memory.mode_for(self.use_nce)
+        values = {s: dict(kv) for s, kv in EDEN_SETTINGS.items()}
+        values["Cpu"] = {"cpu_backend": "1" if self.use_nce else "0"}
+        values["Debugging"] = {"use_gdbstub": "true" if self.debug else "false", "gdbstub_port": str(self.port)}
+        for section, kv in values.items():
+            for k, v in kv.items():
+                text = ini_set(text, section, k, v)
+                text = ini_set(text, section, f"{k}\\default", "false")
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _argv(self, rom: str) -> list[str]:
+        self.rom = rom
+        return [str(provision.switch_linux_exe(self.config)), "-f", "-g", rom]   # src/core/launch_params.cpp
+
+    def _debugger(self):
+        if not self.debug:
+            return None
+        from .debug import GdbDebugger
+        # Eden holds the game at its first instruction until a client attaches; GdbDebugger resumes on attach
+        return GdbDebugger("127.0.0.1", self.port, "arm64", connect_timeout=120)
+
+    def launch_game(self, rom: str) -> dict:
+        if HOST_OS != "linux":
+            raise ToolUnavailable("eden (linux) sessions run on the linux node")
+        from . import switch_nsp
+        ok, why = switch_nsp.launchable(rom)
+        if not ok:
+            raise ToolUnavailable(why)
+        self._mem = None
+        try:
+            d = super().launch_game(rom)
+            if self.dbg:
+                self.supported = self.supported | {"set_breakpoint", "remove_breakpoint"}
+            arena = self._wait_guest_ready()
+            self._park_pointer()
+            return d | {"emulator": "eden (linux)", "ready": "guest_memory", "address_mode": self.address_mode,
+                        "cpu_backend": "nce" if self.use_nce else "dynarmic",
+                        "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": switch_nsp.title_id(rom),
+                        "eden_log": str(self.eden_log()),
+                        "validation": "guest memory mapped; gameplay not yet verified"}
+        except BaseException:
+            self.stop_game()                              # only this session's process and display
+            raise
+
+    def eden_log(self) -> Path:
+        return self.home.joinpath(*EDEN_LOG)
+
+    def log_tail(self, n: int = 60000) -> str:
+        try:
+            return self.eden_log().read_text(errors="replace")[-n:]
+        except OSError:
+            return super().log_tail(n)
+
+    def _maps(self, pid: int) -> list[str]:
+        return open(self.MAPS.format(pid=pid)).read().splitlines()
+
+    def _wait_guest_ready(self) -> dict:
+        """A window or an error dialog is not a booted game (#3688, #3769 on Windows): require this process's
+        HostMemory arena, which Eden creates when the game boots."""
+        deadline = time.monotonic() + float(getattr(self, "boot_timeout_s", None) or self.BOOT_S)
+        self._p(85, "Waiting for Eden to map the Switch guest memory")
+        error = None
+        while time.monotonic() < deadline:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError(f"Eden exited before booting the game: {self.log_tail(2000)}")
+            try:
+                return self._guest()[1]
+            except (RuntimeError, OSError) as exc:
+                error = exc
+            time.sleep(0.25)
+        raise RuntimeError(f"Eden did not map guest memory before the boot deadline ({error}); its window or a dialog "
+                           f"alone does not confirm a booted game. Log tail: {self.log_tail(1500)}")
+
+    def _park_pointer(self):
+        try:                                              # keys go to the window under the pointer (no window manager)
+            self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
+        except Exception:                                 # noqa: BLE001 - the display may still be starting
+            pass
+
+    def stop_game(self) -> dict:
+        if self.paused:                                   # a SIGSTOPped process would not act on SIGTERM
+            self._signal("SIGCONT")
+            self.paused = False
+        self._signal("SIGTERM")                           # AppRun and the eden binary under it
+        result = super().stop_game()
+        self._mem = None
+        return result
+
+    def query_runtime(self) -> dict:
+        d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": "eden", "paused": self.paused,
+             "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
+             "debugger": self.dbg is not None}
+        try:
+            arena = self._guest()[1]
+            d["guest_arena"] = [hex(arena["lo"]), hex(arena["hi"])]
+        except Exception:                                 # noqa: BLE001 - still booting
+            pass
+        return d
+
+    # --- guest memory ---
+    def _guest(self):
+        """(pid, arena) of the process in this session's tree whose maps hold Eden's HostMemory arena; re-read once a
+        second (the arena's rows change as the guest maps pages)."""
+        now = time.monotonic()
+        if self._mem is not None and now - self._mem_checked_at >= 1.0:
+            pid, _ = self._mem
+            try:
+                arena = eden_memory.guest_arena(self._maps(pid))
+                self._mem = (pid, arena) if arena else None
+            except OSError:
+                self._mem = None
+            self._mem_checked_at = now
+        if self._mem is None:
+            if not self.proc or self.proc.poll() is not None:
+                raise RuntimeError("Eden is not running")
+            for pid in _proc_tree(self.proc.pid):
+                try:
+                    arena = eden_memory.guest_arena(self._maps(pid))
+                except OSError:
+                    continue
+                if arena:
+                    self._mem, self._mem_checked_at = (pid, arena), now
+                    break
+            if self._mem is None:
+                raise RuntimeError("Switch guest memory not mapped yet (Eden still loading the game?)")
+        return self._mem
+
+    def _host(self, address: int, length: int, perm: str | None) -> tuple[int, int]:
+        pid, arena = self._guest()
+        host = eden_memory.host_address(arena, address, self.address_mode)
+        if not eden_memory.mapped(arena, host, length, perm):
+            raise ValueError(f"Switch address {address:#x} ({length} bytes) is not mapped guest memory")
+        return pid, host
+
+    def _read_host(self, pid: int, host: int, length: int) -> bytes:
+        with open(self.MEM.format(pid=pid), "rb", 0) as f:
+            f.seek(host)
+            return f.read(length)
+
+    def _write_host(self, pid: int, host: int, data: bytes) -> None:
+        with open(self.MEM.format(pid=pid), "r+b", 0) as f:
+            f.seek(host)
+            f.write(data)
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        pid, host = self._host(address, length, "r")
+        try:
+            data = self._read_host(pid, host, length)
+        except OSError:
+            data = b""
+        if len(data) != length:
+            raise ValueError(f"Switch address {address:#x} is not mapped")
+        return data
+
+    def write_memory(self, address: int, data: bytes) -> dict:
+        data = bytes(data)
+        pid, host = self._host(address, len(data), None)   # /proc/<pid>/mem writes through the guest's protections
+        try:
+            self._write_host(pid, host, data)
+        except OSError as e:
+            raise ValueError(f"Switch address {address:#x} is not writable: {e}") from None
+        if self.read_memory(address, len(data)) != data:
+            raise RuntimeError("memory write not confirmed by read-back")
+        return {"address": address, "written": len(data), "verified": True, "address_mode": self.address_mode}
+
+    def regions(self) -> list[tuple[int, int]]:
+        """Readable guest ranges [(address, size)] (the RAM inspector's search, ram_dump)."""
+        return eden_memory.regions(self._guest()[1], self.address_mode)
+
+    # --- run control ---
+    def _signal(self, sig: str) -> int:
+        import signal
+        n = 0
+        for pid in (_proc_tree(self.proc.pid) if self.proc and self.proc.poll() is None else []):
+            try:
+                os.kill(pid, getattr(signal, sig))
+                n += 1
+            except OSError:
+                pass
+        return n
+
+    def pause(self) -> dict:
+        if self.dbg:
+            return self.dbg.halt()
+        self._signal("SIGSTOP")
+        self.paused = True
+        return {"paused": True, "via": "SIGSTOP"}
+
+    def resume(self) -> dict:
+        if self.dbg:
+            return self.dbg.resume()
+        self._signal("SIGCONT")
+        self.paused = False
+        return {"paused": False}
+
+    def send_input(self, events: list[dict]) -> dict:
+        """Switch pad names only (self.keys: Eden's keyboard layout); anything else is left out."""
+        known = [{**ev, "key": str(ev.get("key", "")).casefold()} for ev in events
+                 if str(ev.get("key", "")).casefold() in self.keys]
+        out = super().send_input(known)
+        skipped = sorted({str(ev.get("key")) for ev in events if str(ev.get("key", "")).casefold() not in self.keys})
+        return out | ({"skipped": skipped} if skipped else {})
+
+
 class SteamAdapter(Adapter):
     """Launch installed Steam apps through the Steam client (Steam's own launch path: DRM, overlay and EULA untouched).
     With the install folder known, the game's process is found by its exe living there: the session then knows when
@@ -4477,6 +4743,10 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
     if plat == "xbox360" and HOST_OS == "windows":
         from .xenia import XeniaAdapter
         return XeniaAdapter(config, plat)
+    if plat == "switch" and HOST_OS == "linux":
+        ad = SwitchLinuxAdapter(config, plat)              # Eden's AppImage on the session's Xvfb display (streamed)
+        ad.debug = bool(debug)
+        return ad
     if plat == "switch" and HOST_OS == "windows":
         ad = YuzuAdapter(config)
         ad.debug = bool(debug)

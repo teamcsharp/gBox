@@ -457,6 +457,12 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 by_hash[gid].source_paths.append(str(f))
                 continue
             core, _ = systems.core_for(platform_)
+            nsp_launch = {}
+            if ext == ".nsp":                             # the title id from the ticket's name, no keys needed
+                from . import switch_nsp
+                serial_, nsp_launch = switch_nsp.catalog_fields(f)
+                if serial_:
+                    meta = {**meta, "serial": serial_}
             by_hash[gid] = CatalogEntry(
                 game_id=gid, title=title, alt_title=meta.get("title") if meta.get("title", "").lower() != title.lower() else None,
                 platform=platform_, platform_confidence=conf,
@@ -466,7 +472,7 @@ def scan(roots: list[Path], runtimes: dict[str, str], hash_cache: dict | None = 
                 runtimes={platform_: runtimes[platform_]} if platform_ in runtimes else
                          ({f"retroarch/{core}": "auto-install"} if core else {}),
                 launch={"kind": "emulator", "platform": platform_, "path": str(f),
-                        **({"archive_member": archive} if archive else {})}, profile_id=gid)
+                        **({"archive_member": archive} if archive else {}), **nsp_launch}, profile_id=gid)
         except OSError as e:
             problems.append(f"{f}: {e}")
     return list(by_hash.values()), problems

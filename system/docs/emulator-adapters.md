@@ -8,6 +8,8 @@ Interface: `gbox/adapters.py`. The ops list in `OPS` mirrors plan §6. `get_capa
 | CommandAdapter | any emulator CLI | launch, stop, query | tested |
 | ShadPS4Adapter | PS4 on Windows x64 | launch/stop, native frame, default keyboard input, 64-bit process RAM/read-write/disassembly; pause/resume when IPC advertises it | core CLI verified; game validation pending; [setup and limits](shadps4.md) |
 | SteamAdapter | pc_steam | launch | uses the real Steam client's URI; not run in tests |
+| YuzuAdapter | Switch on Windows | launch/stop, window frame, pause/resume, keyboard pad via the XInput bridge, GDB stub (arm64) on a private debug launch | the operator's portable Yuzu; readiness = a visible game window (#3688/#3769 open) |
+| SwitchLinuxAdapter (`eden`) | Switch on Linux (the Spark, aarch64) | launch/stop, stream, frame, xdotool pad (Eden's keyboard layout), pause/resume (SIGSTOP), read/write memory through /proc/<pid>/mem at Eden's HostMemory arena (direct addressing under NCE), GDB stub on debug launches | built from Eden's sources, unit-tested with fakes, not yet run live: [decision and caveats](research/switch-emulator-spark.md) |
 
 Configure one per platform:
 
