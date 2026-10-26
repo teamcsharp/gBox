@@ -2336,7 +2336,14 @@ def create_app(config: Config) -> FastAPI:
         from . import background_testing
         ex = background_testing.excluded(store)
         rows = []
+        # one row per PC name: the online worker, else the newest record (every restart registers a new worker id;
+        # 2026-10-26 the panel listed eleven dead i9-NUC rows and a tick on one of them changed nothing visible)
+        by_name: dict = {}
         for w in workers():
+            cur = by_name.get(w['name'])
+            if cur is None or (w.get('online') and not cur.get('online'))                     or (bool(w.get('online')) == bool(cur.get('online')) and (w.get('last_seen') or 0) > (cur.get('last_seen') or 0)):
+                by_name[w['name']] = w
+        for w in sorted(by_name.values(), key=lambda w: (not w.get('online'), w['name'].lower())):
             policy = background_testing.policy(store, w['name'])
             reason = background_testing.guarded_reason(store, w)
             if not w.get('online'):
