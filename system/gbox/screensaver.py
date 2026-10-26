@@ -1089,12 +1089,21 @@ class Screensaver:
             if receipt is None:
                 return {'saved': True, 'duplicate': True, 'rotate_requested': bool(run.get('mercmode_rotate_requested'))}
             ids = (run.get('mercmode_round_ids',[])+[receipt['round_id']])[-256:]
-            count = run.get('mercmode_rounds',0)+1
+            # a death early in an attempt is a retry, not a round played (operator 2026-10-26: "are sure it is playing 5
+            # rounds of mercenaries in each game before moving onto the next one?" - RE4 went back to RE5 after one stage
+            # each turn: every death + retry sent a boundary, five quick deaths were five "rounds"). A death within
+            # ROUND_MIN_S of the attempt's start counts a round only every QUICK_DEATHS_PER_ROUND (never stuck in a title)
+            began = max(run.get('playing_since') or run.get('started') or 0,
+                        (run.get('mercmode_last_round') or {}).get('at') or 0)
+            quick = (receipt.get('witness') or {}).get('screen') == 'dead'                 and (receipt.get('at') or now) - began < mercmode.ROUND_MIN_S
+            quick_deaths = run.get('mercmode_quick_deaths', 0) + (1 if quick else 0)
+            count = run.get('mercmode_rounds',0) + (0 if quick else 1)
+            played = count + quick_deaths // mercmode.QUICK_DEATHS_PER_ROUND
             worker = next((w for w in self.workers() if w.get('id')==run['worker_id']),None)
             cfg = mercmode.settings(self.store,run['worker'])
             alternatives = [r for r in mercmode.inventory(self.store,worker,cfg) if r['playable']
                             and r['title'] in cfg['titles'] and r['game_id']!=run['game_id']] if worker else []
-            rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and count>=cfg['rounds_per_title'])
+            rotate = bool(cfg['enabled'] and not run.get('mercmode_pinned') and alternatives and played>=cfg['rounds_per_title'])
             head = (cfg.get('queue') or [None])[0] if cfg['enabled'] and not run.get('mercmode_pinned') else None
             ahead = self.store.get(mercmode.NEXT, run['worker']) if cfg['enabled'] and not run.get('mercmode_pinned') else None
             playable = lambda title: worker is not None and any(
@@ -1152,7 +1161,8 @@ class Screensaver:
                 'last_round':receipt,'at':now})
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
             self.store.put(STATE,run['worker'],run | {'mercmode_round_ids':ids,'autoplay_job':parent_job['id'],
-                'mercmode_rounds':count,'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
+                'mercmode_rounds':count,'mercmode_quick_deaths':quick_deaths,'mercmode_rounds_played':played,
+                'mercmode_last_round':receipt,'mercmode_rotate_requested':rotate})
         if rotate:
             self.nudge('native round boundary: the next title is ready')      # park and swap now, not at the next tick
         return {'saved': True, 'rotate_requested': rotate}

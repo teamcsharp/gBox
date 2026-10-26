@@ -1455,3 +1455,31 @@ def test_nudge_wakes_the_installed_schedule_loop_only():
     saver.nudge('a job landed')                                              # without the installed loop (tests): nothing
     saver.wake=threading.Event();saver.nudge('a job landed')
     assert saver.wake.is_set() and saver.nudged=='a job landed'
+
+
+def test_a_quick_death_is_a_retry_not_a_round_and_three_of_them_count_as_one():
+    # operator 2026-10-26: "are sure it is playing 5 rounds of mercenaries in each game before moving onto the next one?"
+    # - RE4 left after one stage per turn: each death + retry was a boundary, five quick deaths were five "rounds"
+    store,w,saver,calls,now,tick,run,job=playing()
+    t0=run.get('playing_since') or run['started']
+    def death(n,at):
+        now[0]=at
+        S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+        body=boundary(run,at,screen='dead',hp=0,tally_ready=False,timer=60)|{'round_id':f'{n:x}'*32}
+        return saver.round_boundary(body,job,now[0])
+    assert death(1,t0+30)=={'saved':True,'rotate_requested':False}       # 30 s in: a retry
+    cur=store.get(S.STATE,w['name'])
+    assert cur['mercmode_rounds']==0 and cur['mercmode_quick_deaths']==1
+    assert death(2,t0+50)['rotate_requested'] is False                    # 20 s into the second attempt
+    assert death(3,t0+60)['rotate_requested'] is True                     # the third quick death counts one round
+    assert store.get(S.STATE,w['name'])['mercmode_rounds_played']==1
+
+
+def test_a_death_after_a_real_attempt_is_a_round_played():
+    store,w,saver,calls,now,tick,run,job=playing()
+    t0=run.get('playing_since') or run['started']
+    now[0]=t0+M.ROUND_MIN_S+5
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+    body=boundary(run,now[0],screen='dead',hp=0,tally_ready=False,timer=40)|{'round_id':'e'*32}
+    assert saver.round_boundary(body,job,now[0])['rotate_requested'] is True
+    assert store.get(S.STATE,w['name'])['mercmode_rounds']==1
