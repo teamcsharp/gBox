@@ -923,6 +923,8 @@ def stage_begin(src: Path, game_id: str, config: Config) -> "dict | StageCopy":
     if inside:              # a built file mod (or anything already on the local disk): use it in place. Copying it to
         return _reuse(src, config, in_cache=True)   # <cache>/<game>/<name> made every mod of a game collide with the game
     dst = cache / game_id / src.name
+    from . import storage_policy                    # never a staged game copy on a Windows system drive
+    storage_policy.require_off_system(config, dst, f"the cache copy of {src.name}")
     with _STAGE_LOCK:
         running = _COPIES.get(str(dst))
         if running is not None:
@@ -955,7 +957,10 @@ def stage(src: Path, game_id: str, config: Config, progress=None) -> dict:
 
 # never evicted: built mods and their base copies (mods hard-link onto modbase; not a cache of anything), the character
 # and environment libraries, and the two-tier cache's own state (gbox/cache_tiers.py)
-EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers", ".broken-builds")
+# ... and game data moved off a Windows system drive (gbox/storage_policy.py: exports, recordings, extracts, temp files)
+# and the storage purge's trash (gbox/storage_purge.py)
+EVICT_KEEP = ("mods", "modbase", "characters", "environments", "characters_mirror", ".gbox-tiers", ".broken-builds",
+              ".gbox-redirected", ".gbox-purging")
 
 
 def _evictable(cache: Path):

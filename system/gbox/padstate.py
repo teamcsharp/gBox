@@ -155,8 +155,30 @@ def chord_step(sid: str, before: set, now: set, moved: bool, chording: bool) -> 
     fire = CHORD_KEYS <= now and "b" not in before
     chording = (chording or fire) and bool(now) and now <= CHORD_KEYS and not moved
     if not chording and (now or moved):
-        PLAYER_TOUCH[sid] = time.time()                  # the operator is playing: autoplay hands control back
+        PLAYER_TOUCH[sid] = time.time()                  # the operator is playing (a playing bot yields: pad_lease)
     return fire, chording
+
+
+STICK_KEY_AT = 0.3                                       # the same push that counts as a touch (watch_xinput's moved)
+
+
+def stick_keys(stick) -> set:
+    """(lx, ly, rx, ry) as watch_xinput reads them (y down) -> the pushed directions as RetroPad analog names."""
+    out = set()
+    for side, x, y in (("l", stick[0], stick[1]), ("r", stick[2], stick[3])):
+        out |= ({side + "left"} if x < -STICK_KEY_AT else set()) | ({side + "right"} if x > STICK_KEY_AT else set())
+        out |= ({side + "up"} if y < -STICK_KEY_AT else set()) | ({side + "down"} if y > STICK_KEY_AT else set())
+    return out
+
+
+def pad_lease(sid: str, keys: set) -> None:
+    """This PC's controller as it is now, for the session's pad takeover (gbox/pad_takeover.py): a press makes a playing
+    bot let go for a moment, a key still held keeps it off, and it takes the pad back after the idle time."""
+    try:
+        from . import pad_takeover
+        pad_takeover.local(sid, keys)
+    except Exception:                                    # noqa: BLE001 - the controller mirror never stops over it
+        pass
 
 
 def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
@@ -173,8 +195,12 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
     with httpx.Client(base_url=server, headers=headers, timeout=3) as c:
         while alive():
             time.sleep(1 / 30)
-            if xinput.read(get_state, 0, st) is None or st.packet == last_pkt:
+            if xinput.read(get_state, 0, st) is None:
                 continue                                    # empty slot or a failed call: keep mirroring
+            if st.packet == last_pkt:                       # unchanged: a button or stick still held is still input
+                if (held or any(abs(v) > 0.3 for v in last_stick)) and not chording:
+                    pad_lease(sid, held | stick_keys(last_stick))
+                continue
             last_pkt, g = st.packet, st.gamepad
             now = {name for bit, name in _XI.items() if g.buttons & bit} | ({"l2"} if g.lt > 30 else set()) | ({"r2"} if g.rt > 30 else set())
             stick = (ax(g.lx), -ax(g.ly), ax(g.rx), -ax(g.ry))
@@ -184,6 +210,8 @@ def watch_xinput(server: str, headers: dict, sid: str, alive) -> None:
             before, held, last_stick = held, now, stick
             moved = any(abs(v) > 0.3 for v in stick)
             fire, chording = chord_step(sid, before, now, moved, chording)
+            if not chording:                                 # the autoplay chord itself is never a takeover
+                pad_lease(sid, now | stick_keys(stick))
             if fire and CHORD.get(sid):
                 threading.Thread(target=CHORD[sid], daemon=True).start()
             if now or moved:                                 # a press after a pause: keep the screen it answered

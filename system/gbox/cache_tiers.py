@@ -1452,6 +1452,10 @@ class Tiers:
             # This reader resolves an already available source and streams only
             # selected members. Do not move the entire ROM/mod unit first.
             return []
+        if tool == 'storage_purge':
+            # The purge lists / deletes units where they are (gbox/storage_purge.py): the game ids in its facts and
+            # paths must neither move a unit up nor count as a use of it.
+            return []
         out, keys = [], sorted(self.keys_in(raw_input))
         for key in keys:
             self.touch(key)
