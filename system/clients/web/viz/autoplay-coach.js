@@ -266,8 +266,11 @@
     };
     const ctl = create({ sid, api, render, ...opts });
     const cmdButton = box.querySelector("[data-coach-cmds]");
-    let menu = null;
-    const closeMenu = () => { if (menu) { menu.remove(); menu = null; cmdButton?.setAttribute("aria-expanded", "false"); } };
+    let menu = null, unlisten = null;
+    const closeMenu = () => {
+      if (unlisten) { unlisten(); unlisten = null; }
+      if (menu) { menu.remove(); menu = null; cmdButton?.setAttribute("aria-expanded", "false"); }
+    };
     async function command(id) {
       closeMenu();
       const label = (COMMANDS.find(c => c[0] === id) || [])[1] || id;
@@ -282,6 +285,8 @@
         e.preventDefault(); e.stopPropagation();
         if (menu) { closeMenu(); return; }
         const doc = box.ownerDocument, r = cmdButton.getBoundingClientRect();
+        // a menu left by an earlier mount (the PiP re-mounts the box on a stream reconnect) never stays on screen
+        if (doc.querySelectorAll) doc.querySelectorAll(".coach-menu").forEach(old => old.remove());
         menu = doc.createElement("div"); menu.className = "coach-menu"; menu.setAttribute("role", "menu");
         menu.innerHTML = COMMANDS.map(([id, label, hint]) =>
           `<button type="button" role="menuitem" data-cmd="${ESC(id)}">${ESC(label)}<small>${ESC(hint)}</small></button>`).join("");
@@ -289,8 +294,19 @@
         menu.addEventListener("click", ev => { const b = ev.target.closest("[data-cmd]"); if (b) { ev.stopPropagation(); command(b.dataset.cmd); } });
         menu.addEventListener("keydown", ev => { ev.stopPropagation(); if (ev.key === "Escape") { closeMenu(); cmdButton.focus(); } });
         doc.body.append(menu); cmdButton.setAttribute("aria-expanded", "true"); menu.querySelector("button")?.focus();
-        const away = ev => { if (menu && !menu.contains(ev.target) && ev.target !== cmdButton) { closeMenu(); doc.removeEventListener("mousedown", away, true); } };
-        doc.addEventListener("mousedown", away, true);
+        // closes on a click anywhere else, on the pointer going to the native game surface (the document loses focus:
+        // no DOM click ever arrives from it - operator 2026-10-26: "close dropdowns when i click away. I cant close this
+        // now"), on the view being hidden, and on Escape; every path removes its listeners
+        const away = ev => { if (menu && !menu.contains(ev.target) && ev.target !== cmdButton) closeMenu(); };
+        const win = doc.defaultView;
+        doc.addEventListener("mousedown", away, true); doc.addEventListener("pointerdown", away, true);
+        if (win && win.addEventListener) win.addEventListener("blur", closeMenu);
+        doc.addEventListener("visibilitychange", closeMenu);
+        unlisten = () => {
+          doc.removeEventListener("mousedown", away, true); doc.removeEventListener("pointerdown", away, true);
+          if (win && win.removeEventListener) win.removeEventListener("blur", closeMenu);
+          doc.removeEventListener("visibilitychange", closeMenu);
+        };
       });
     }
     if (drafts.has(sid)) input.value = drafts.get(sid);

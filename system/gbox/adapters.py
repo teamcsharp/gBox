@@ -3932,6 +3932,10 @@ def _proc_tree(pid: int) -> list[int]:
     return out
 
 
+FOCUS_RECHECK_S, FOCUS_RETRY_S = 3.0, 5.0   # RPCS3 on Linux: the focus made once is checked this often; a renderer
+                                           # still missing after the launch budget is looked for this often
+
+
 class RPCS3LinuxAdapter(StandaloneAdapter):
     """Linux node (the Spark, aarch64): PS3 games in RPCS3's AppImage (provision.ensure_rpcs3_linux) on the session's
     own Xvfb display, streamed like every other Linux session. Player 1 is RPCS3's keyboard pad (input_configs/global/
@@ -4092,16 +4096,36 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             pass
 
     def _maybe_focus_game_window(self):
-        """Launch and early pad input may precede RPCS3's renderer window. Retry off the input thread, at most 1/s."""
+        """Launch and early pad input may precede RPCS3's renderer window. Retry off the input thread, at most 1/s.
+        2026-10-26: a warm-pool RE5 (nice 10, load 25) showed its window after the 60 s budget and was never focused;
+        after the swap XGetInputFocus on its Xvfb was None and every key the bot sent went nowhere (two rounds standing
+        still "turning toward a front candidate", eaten alive; operator: "turning around nonsensically ignoring
+        threats"). So the budget never ends while the process lives (a look every FOCUS_RETRY_S after it), and a focus
+        once made is checked every FOCUS_RECHECK_S and made again when the display shows another window or none."""
         now = time.monotonic()
         with self._focus_lock:
-            if (self._focus_done or self._focus_pending or now >= self._focus_deadline or now < self._focus_next
-                    or self.proc is None or self.display is None or self.proc.poll() is not None):
+            if (self._focus_pending or now < self._focus_next or self.proc is None or self.display is None
+                    or self.proc.poll() is not None):
                 return
-            self._focus_pending, self._focus_next = True, now+1.
-            proc, display = self.proc, self.display
+            proc, display, window, verify = self.proc, self.display, self._focus_window, self._focus_done
+            if verify:
+                self._focus_next = now + FOCUS_RECHECK_S
+            elif now >= self._focus_deadline:
+                self._focus_deadline = self._focus_next = now + FOCUS_RETRY_S   # never a final give-up while it runs
+            else:
+                self._focus_next = now + 1.
+            self._focus_pending = True
         def run():
             try:
+                if verify:
+                    if self._focus_held(display, window):
+                        return
+                    with self._focus_lock:
+                        if self.proc is not proc or self.display is not display:
+                            return
+                        self._focus_done, self._focus_window = False, None
+                        self._focus_deadline = max(self._focus_deadline, time.monotonic() + 1.)
+                        self.focus_restores = getattr(self, 'focus_restores', 0) + 1
                 self._focus_game_window(proc, display)
             finally:
                 with self._focus_lock:
@@ -4111,6 +4135,15 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
         except RuntimeError:
             with self._focus_lock:
                 self._focus_pending = False
+
+    def _focus_held(self, display, window) -> bool:
+        """The display's keyboard focus is still our renderer window (xdotool getwindowfocus; none or another window
+        = lost). xdotool failing: assumed held, nothing is redone on a guess."""
+        try:
+            result = self._focus_command(display, ('getwindowfocus',), .25)
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            return True
+        return result.returncode != 0 or result.stdout.strip() == str(window)
 
     @staticmethod
     def _focus_command(display, args, timeout):
