@@ -144,7 +144,7 @@ SIGHT_R = 2200.0                       # open-floor Majini within this are fough
 IN_VIEW_CONE = math.radians(60)        # ...and any Majini within ENGAGE this close to his heading (Bot._in_view)
 # round maps: which code runs each stats["phase"] (gbox.mercs.round_map.code_map resolves file:line)
 PHASE_CODE = {"leave_proximity_bomb": "Bot._mine_retreat", "gather_time": "Bot._bonus", "break_for_time": "Bot._bonus",
-              "pursue": "Bot._pursue", "fight": "Combat.tick", "clear_nearby": "Combat.tick", "keep_combo": "Bot._tick",
+              "pursue": "Bot._pursue", "fight": "Combat._decide", "clear_nearby": "Combat._decide", "keep_combo": "Bot._tick",
               "stand": "Bot._tick", "idle": "Bot._tick", "healing": "Bot._heal", "recover_navigation": "Bot._recover_nav",
               "obstacle_detour": "Bot._follow", "waiting_round_start": "Bot.tick", "egg_inventory": "Bot._egg_action",
               "hunt_spawns": "Bot._hunt_spawns", "boss_range": "Bot._boss_range"}
@@ -1178,6 +1178,8 @@ class Bot:
         self.stats = stats if stats is not None else {}
         self.combat = re5_combat.Combat(m, self.stats, clock=clock, learn_dir=learn_dir, lessons=lessons) \
             if m is not None and re5_combat.ENABLED else None
+        if self.combat is not None:
+            self.combat.shot_sink = self._trace_shot   # every resolved shot record into this round's map
         for k in ("shots_s", "hits", "kills_seen", "max_combo", "turns", "backoffs", "stuck"):
             self.stats.setdefault(k, 0)
         self.target = None
@@ -1843,6 +1845,11 @@ class Bot:
                      if isinstance(row, dict) and row.get("pos")]
             self._trace.add(self.clock(), p["pos"][0], p["pos"][2], p["pos"][1], self.stats, mines)
 
+    def _trace_shot(self, record) -> None:
+        """A resolved shot record from the combat layer: this round's map keeps it (the ballistic report)."""
+        if self._trace is not None:
+            self._trace.shot(record)
+
     def trace_finish(self) -> None:
         self._spawn_remember()                               # the round's spawn points outlive the bot (a stop, too)
         trace, self._trace = self._trace, None
@@ -1856,6 +1863,10 @@ class Bot:
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
             self.stats["last_round_verdict"] = summary.get("verdict")
+            report = summary.get("ballistics") or {}
+            if report.get("shots"):                          # the round's ballistic report (with the hits he took)
+                self.stats["ballistics"] = report.get("line")
+                self.stats["last_ballistics"] = (summary.get("ballistics_files") or [None])[-1]
 
     def tick(self, snap: dict) -> dict:
         self.stats['mine_departure_yielded'] = False
@@ -2161,9 +2172,10 @@ class Bot:
         self.at_stand = self.spawn is not None and math.hypot(self.spawn[0] - px, self.spawn[2] - pz) < STAND_R \
             and abs(self.spawn[1] - py) < WP_CLIMB
         # only Majini in sight are fought from here (open floor between, or right on him); the rest are walked to
+        reach = self._longshot_reach(eq)                    # ENGAGE, or further for a rifle / magnum that showed its laser
         sightable = [e for e in live if (self._laser_view(snap, e) == "on" or
                      (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)) or
-                     self._in_view(p, e)) and getattr(self, "_stalled_until", {}).get(e.get("ptr", e.get("slot")), 0) <= now] \
+                     self._in_view(p, e, reach)) and getattr(self, "_stalled_until", {}).get(e.get("ptr", e.get("slot")), 0) <= now] \
             if self.combat is not None else live
         laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
             and (eq.get("item") in (0x0F,0x36) or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
@@ -2172,7 +2184,11 @@ class Bot:
         if laserless:
             # No laser: do not use the generic near-enemy / barely-bending-route visibility shortcuts.
             # This is only a known-wall veto. Actual projectile cover remains unconfirmed in combat telemetry.
-            sightable = [e for e in sightable if self.combat.firing_corridor(snap,p,e,eq["item"])]
+            # A longshot weapon with its gun still down keeps the far Majini in view: the gun comes up and its laser
+            # decides (the combat layer fires beyond ENGAGE only with the dot on him).
+            sightable = [e for e in sightable if self.combat.firing_corridor(snap,p,e,eq["item"])
+                         or (reach > ENGAGE and math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) > ENGAGE
+                             and self._in_view(p, e, reach))]
         checkpoint_lease = self._checkpoint_walk_allowed(snap,close_foes,now)
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
@@ -2334,7 +2350,9 @@ class Bot:
             if tgt.get("walk"):
                 return self._follow(p, tgt, snap.get("nav"), snap.get("stage_prompt"), now)
             return self._take(p, tgt, snap.get("stage_prompt"), now)
-        if dist > ENGAGE and self._laser_view(snap, tgt) != "on":  # a current first hit confirms distant shots
+        if dist > ENGAGE and self._laser_view(snap, tgt) != "on" \
+                and not (dist <= reach and self._in_view(p, tgt, reach)):   # a current first hit confirms distant shots;
+            # a longshot weapon raises its gun at a far Majini in view (the dot on him then fires)
             self.aiming_since = None
             if self.at_stand and not self._combo_running(snap):   # ...unless this is the stand: they come to him
                 return {"hold": set()}                      # (not while a combo window is open: go and keep it)
@@ -2788,15 +2806,24 @@ class Bot:
                 "kind": b.get("kind", "time"), "walk": walk}
 
     @staticmethod
-    def _in_view(p, e) -> bool:
+    def _in_view(p, e, reach=None) -> bool:
         """A Majini in front of him within ENGAGE (a walkway, a roof, a rocket launcher across the yard): taken on while
         navigating, the laser confirming the shot (operator 2026-10-24: "why is she afraid to take on these opponents that
         are long distance but shooting rocket launchers at her? ... if the enemy is open and in their sight. They need to
-        take shots to dispatch them while navigating"). Open floor between them is not required; known walls still veto."""
+        take shots to dispatch them while navigating"). Open floor between them is not required; known walls still veto.
+        reach: a longshot weapon's (Bot._longshot_reach) instead of ENGAGE."""
         px, _, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-        return d <= ENGAGE and off <= IN_VIEW_CONE
+        return d <= (reach or ENGAGE) and off <= IN_VIEW_CONE
+
+    def _longshot_reach(self, eq) -> float:
+        """How far a Majini in view is taken on with the weapon in hand: ENGAGE, or a rifle's / magnum's longshot reach
+        once that weapon has shown its laser (the combat layer fires those only with the dot on him; operator
+        2026-10-26: "I want the characters able to longshot foes from across the stage")."""
+        if self.combat is None or eq is None or eq.get("type") != 1 or eq.get("item") not in self.combat.laser_weapons:
+            return ENGAGE
+        return max(ENGAGE, re5_weapons.longshot_reach(eq.get("item")))
 
     @staticmethod
     def _threat(p, e) -> bool:

@@ -42,10 +42,21 @@ _group("melee", 150, [(0x01, "knife"), (0x0E, "knife (Sheva)"), (0x14, "knife (E
                        (0x23, "knife (Wesker)"), (0x22, "stun rod")])
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 DIRECT = frozenset({"handgun", "automatic", "shotgun", "rifle", "magnum"})
+# Longshots (operator 2026-10-26: "I want the characters able to longshot foes from across the stage"): a Majini this far
+# is aimed at with a weapon of these families once it has shown its laser, and fired on only with the dot on him
+# (re5_combat). Bot tuning, not decoded projectile ranges. The longbow and scoped guns without a laser ray stay on the
+# laserless controller and its own corridor range.
+LONGSHOT_CM = {"rifle": 8000.0, "magnum": 5000.0}
 ROUND_EFFECTS = {
     "explosive": "area damage", "flame": "burning area damage", "acid": "armor damage and stagger",
     "electric": "area stun", "flash": "blind stun / exposed parasite kill", "nitrogen": "freeze / stagger",
 }
+
+
+def longshot_reach(wid) -> float:
+    """How far a laser-sighted shot with the dot on him is taken with this weapon (cm); 0 for weapons without one."""
+    weapon = WEAPONS.get(wid)
+    return LONGSHOT_CM.get(weapon.family, 0.0) if weapon is not None else 0.0
 
 
 def quick_key(item):

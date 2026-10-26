@@ -7,6 +7,8 @@ A RoundTrace samples the player's ground position through one round, with the ro
 whether that cell is a learned wall or touches one) and a matching .svg: learned floor (grey), learned walls (red), the
 route (blue, fading in with time), time-spent heat (orange discs) and stuck events (black crosses). Title-agnostic: the
 caller passes its learned map's cells (walked / blocked, cell size). The newest MAX_KEEP rounds per folder are kept.
+The combat layer's shot records (shot()) are kept for the whole round ("shots") and become the round's ballistic report
+(gbox.mercs.ballistics: "ballistics" in the JSON, ballistics/<stem>.json / .md beside it, two lines under the map).
 
     python -m gbox.mercs.round_map <folder>     # the newest round's hotspots
 """
@@ -27,10 +29,14 @@ MINE_R = 250.0            # a ground mine this near a standstill: he stood on / 
 STATE_KEYS = ("phase", "fire_gate", "weapon_policy", "mine_status", "mine_retreat_status", "combat", "weapon",
               "bonus_target", "route", "stuck_reason", "shots", "hits", "misses", "kills", "last_shot", "target_evidence",
               "aim_feedback", "qte_presses", "hits_taken", "combo", "enemies", "spawns", "hunt", "aim_guard", "boss",
-              "last_hit_by", "death_cause")
+              "last_hit_by", "death_cause", "player_damage_events")   # the engine's HP-loss count: hits he took, and
+                          # in which decision (gbox.mercs.ballistics.turning: the hits taken while turning, gun down)
 SHOTS_KEPT = 20           # the last shots of a round, each with the aim and gate the bot had when it fired (operator
                           # 2026-10-26: "see ... the aiming of the last 20 shots in a run ... how the aimbot will aim at a
                           # person then aim away and begin firing which misses")
+SHOT_RECORDS_KEPT = 3000  # the combat layer's structured shot records: the whole round (the "shots" list)
+BALLISTICS = "ballistics"    # <folder>/ballistics/<stem>.json / .md beside the round maps: each one's ballistic report
+                             # (a subfolder: a round-map folder keeps one .json per round for whoever lists them)
 
 
 class RoundTrace:
@@ -41,8 +47,17 @@ class RoundTrace:
         self.states: list[dict] = []            # the bot's decision state at each sample (STATE_KEYS)
         self.mines: list[list] = []             # ground mine positions [x, z] at each sample
         self.events: list[dict] = []            # stuck / kill / death markers
+        self.shot_records: list[dict] = []      # every resolved shot the combat layer reported (shot())
+        self.shot_records_dropped = 0
         self.started = None
         self.last = -math.inf
+
+    def shot(self, record: dict) -> None:
+        """A resolved shot record from the combat layer (gbox.mercs.ballistics): the round keeps them all."""
+        if len(self.shot_records) < SHOT_RECORDS_KEPT:
+            self.shot_records.append(dict(record))
+        else:
+            self.shot_records_dropped += 1
 
     def add(self, now: float, x: float, z: float, y: float = 0.0, state: dict | None = None, mines=()) -> None:
         if now - self.last < SAMPLE_S:
@@ -142,12 +157,18 @@ class RoundTrace:
             verdict = (f"stood still {still_s:g} s ({still_s / total:.0%}) in {len(still)} stretch(es); worst "
                        f"{worst['seconds']:g} s in phase {worst['phase']}" + (" ON A MINE" if worst["on_mine"] else "")
                        + (f" ({worst['code']})" if worst.get("code") else "") + (f"; {verdict}" if verdict else ""))
+        from . import ballistics
+        meta = {"title": self.title, "room": self.room, "round_id": self.round_id, "seconds": round(total, 1)}
+        report = ballistics.report(self.shot_records, states=self.states, samples=self.samples, started=self.started,
+                                   meta=meta)
+        if self.shot_records_dropped:
+            report["records_dropped"] = self.shot_records_dropped
         return {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
                 "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
                 "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
                 "stuck_events": sum(e["kind"] == "stuck" for e in self.events),
                 "standstills": still, "standing_still_s": still_s, "time_by_phase": self.time_by_phase(),
-                "last_shots": self.shots(), "code": self.code}
+                "last_shots": self.shots(), "shots": self.shot_records, "ballistics": report, "code": self.code}
 
     def finish(self, walked=(), blocked=()) -> dict | None:
         """Write the round's JSON + SVG (when it has an out_dir and enough samples); the summary either way."""
@@ -162,10 +183,16 @@ class RoundTrace:
             (self.out_dir / f"{stem}.json").write_text(json.dumps(s | {"route": self.samples, "states": self.states,
                                                                           "events": self.events}))
             (self.out_dir / f"{stem}.svg").write_text(svg(self, s, walked, blocked))
+            report, reports = s["ballistics"], self.out_dir / BALLISTICS
+            reports.mkdir(exist_ok=True)
+            (reports / f"{stem}.json").write_text(json.dumps({k: v for k, v in report.items() if k != "markdown"},
+                                                             indent=1))
+            (reports / f"{stem}.md").write_text(report["markdown"] + "\n", encoding="utf-8")
             s["files"] = [str(self.out_dir / f"{stem}.json"), str(self.out_dir / f"{stem}.svg")]
-            for old in sorted(self.out_dir.glob("*.json"))[:-MAX_KEEP]:
-                old.unlink(missing_ok=True)
-                old.with_suffix(".svg").unlink(missing_ok=True)
+            s["ballistics_files"] = [str(reports / f"{stem}.json"), str(reports / f"{stem}.md")]
+            for old in rounds(self.out_dir)[:-MAX_KEEP]:
+                for f in (old, old.with_suffix(".svg"), reports / old.name, reports / (old.stem + ".md")):
+                    f.unlink(missing_ok=True)
         except OSError as exc:
             s["write_error"] = str(exc)[:160]
         return s
@@ -180,8 +207,10 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
     W, H = (x1 - x0) * scale, (z1 - z0) * scale
     X = lambda x: (x - x0) * scale
     Z = lambda z: (z1 - z) * scale                       # +z up the page
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + 60:.0f}" '
-           f'viewBox="0 0 {W:.0f} {H + 60:.0f}" font-family="sans-serif" font-size="13">',
+    shots = (s.get("ballistics") or {}).get("svg_lines") or []   # the round's ballistic report, under the legend
+    foot = 60 + 22 * len(shots)
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + foot:.0f}" '
+           f'viewBox="0 0 {W:.0f} {H + foot:.0f}" font-family="sans-serif" font-size="13">',
            f'<rect width="100%" height="100%" fill="#0e1116"/>']
     for k in walked:
         out.append(f'<rect x="{X(k[0] * c):.1f}" y="{Z((k[1] + 1) * c):.1f}" width="{c * scale:.1f}" height="{c * scale:.1f}" fill="#2a2f38"/>')
@@ -213,6 +242,8 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
              f'{s["cells_visited"]} cells, {s["stuck_events"]} stuck' + (f' - {s["verdict"]}' if s["verdict"] else ""))
     out.append(f'<text x="8" y="{H + 22:.0f}" fill="#e6e6e6">{_esc(label)}</text>')
     out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck, yellow ring standing still (red: on a mine)</text>')
+    for i, text in enumerate(shots):
+        out.append(f'<text x="8" y="{H + 66 + 22 * i:.0f}" fill="#7fd1b9">{_esc(text)}</text>')
     return "".join(out) + "</svg>"
 
 
@@ -236,12 +267,17 @@ def code_map(phases: dict, *classes) -> dict:
     return out
 
 
+def rounds(folder: Path) -> list:
+    """The round maps in a folder, oldest first (their ballistic reports live in the BALLISTICS subfolder)."""
+    return sorted(Path(folder).glob("*.json"))
+
+
 def latest(folder: Path) -> dict | None:
-    files = sorted(Path(folder).glob("*.json"))
+    files = rounds(folder)
     return json.loads(files[-1].read_text()) if files else None
 
 
 if __name__ == "__main__":
     import sys
     r = latest(Path(sys.argv[1]))
-    print(json.dumps({k: v for k, v in (r or {}).items() if k not in ("route", "events")}, indent=2))
+    print(json.dumps({k: v for k, v in (r or {}).items() if k not in ("route", "events", "shots")}, indent=2))
