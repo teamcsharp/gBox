@@ -17,6 +17,15 @@
 # to any older main version is a stale copy and is overwritten (with the usual backup). A deferred restart is remembered in
 # gbox-data/deploy-restart-pending and retried on the next explicit deployment even without further file changes.
 #
+# Bot-only deploys never restart the service (docs/hot-update.md; operator 2026-10-26: "Every time I look at the system,
+# it's loading the game"): when every changed runtime file is a Mercenaries bot module (python -m gbox.hot_reload
+# classify: gbox/mercs/*, mercs_bot, re4_merc_bot, re4_threats, re4_menus, ...), the script asks this host's worker to
+# reload them in place (POST /api/workers/<host>/bot-reload): the games, streams and MercMode's warm pool keep running,
+# each autobot restarts in its session within seconds. A busy worker (a MercMode round preparation running) is retried,
+# then remembered in gbox-data/deploy-reload-pending for the next --deploy; new bot code that does not import or dies at
+# once is refused there with the old modules still running (exit 1, no restart: it would load the same code); any other
+# failure falls back to the service restart below.
+#
 # Replace any installed old copy and remove its cron entry. Do not schedule --deploy.
 set -euo pipefail
 usage() {
@@ -49,6 +58,9 @@ SRC="${GBOX_SRC:-$HOME/gBox_alt/gBox-src}"         # the deploy clone lives in ~
 DST="${GBOX_DST:-$HOME/gBox/system}"
 STATE="$DST/gbox-data/deployed-main.txt"
 PENDING="$DST/gbox-data/deploy-restart-pending"    # runtime code was deployed but the service has not been refreshed yet
+RELOAD_PENDING="$DST/gbox-data/deploy-reload-pending"   # bot modules were deployed but not reloaded in the worker yet
+PY="${GBOX_PY:-$DST/.venv-linux-$(uname -m)/bin/python}"
+API_BASE="${GBOX_API:-http://127.0.0.1:8765}"
 LOCK="${GBOX_DEPLOY_LOCK:-/tmp/gbox-deploy.lock}"
 MIN_RESTART_GAP=$((2 * 3600))           # seconds between service restarts caused by deploys
 IDLE_WAIT=$((45 * 60))                  # how long to wait for an idle window before giving up this round
@@ -56,6 +68,36 @@ IDLE_WAIT=$((45 * 60))                  # how long to wait for an idle window be
 exec 9>"$LOCK"
 flock -n 9 || { echo "$(date -u +%FT%TZ) another deploy is running"; exit 0; }
 log() { echo "$(date -u +%FT%TZ) $*"; }
+activation_for() {                                 # $@ = runtime files deployed now -> ACTIVATION none|reload|restart
+  ACTIVATION=none
+  if [ -f "$PENDING" ]; then
+    ACTIVATION=restart                             # a deferred restart covers everything since
+    return 0
+  fi
+  if [ "$#" -gt 0 ]; then
+    ACTIVATION="$(cd "$DST" && "$PY" -m gbox.hot_reload classify "$@" 2>/dev/null)" || ACTIVATION=restart
+    case "$ACTIVATION" in reload|restart) ;; *) ACTIVATION=restart ;; esac
+  fi
+  if [ "$ACTIVATION" = none ] && [ -f "$RELOAD_PENDING" ]; then
+    ACTIVATION=reload
+  fi
+  return 0
+}
+bot_reload() {                                     # -> RELOAD_RESULT reloaded|busy|refused|failed, RELOAD_WHY
+  local token answer verdict attempt worker="${GBOX_WORKER:-$(hostname)}"
+  RELOAD_RESULT=failed RELOAD_WHY="no API token in $DST/gbox-data/api_token"
+  token="$(cat "$DST/gbox-data/api_token" 2>/dev/null)" || return 0
+  for attempt in 1 2 3 4; do
+    answer="$(curl -s -m 260 -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" \
+      -H "x-gbox-actor: deploy" -d '{"wait_s": 230}' "$API_BASE/api/workers/$worker/bot-reload" || true)"
+    verdict="$(printf '%s' "$answer" | (cd "$DST" && "$PY" -m gbox.hot_reload verdict) 2>/dev/null || true)"
+    RELOAD_RESULT="${verdict%% *}" RELOAD_WHY="${verdict#* }"
+    case "$RELOAD_RESULT" in reloaded|busy|refused) ;; *) RELOAD_RESULT=failed ;; esac
+    [ "$RELOAD_RESULT" = busy ] && [ "$attempt" -lt 4 ] || return 0
+    log "bot reload on $worker waits: $RELOAD_WHY"
+    sleep "${GBOX_RELOAD_RETRY_S:-30}"
+  done
+}
 
 if [ ! -d "$SRC/.git" ]; then
   git clone -q "$REPO_URL" "$SRC"
@@ -64,14 +106,11 @@ git -C "$SRC" fetch -q origin main
 git -C "$SRC" reset -q --hard origin/main
 HEAD="$(git -C "$SRC" rev-parse HEAD)"
 PREV="$(cat "$STATE" 2>/dev/null || true)"
-if [ "$HEAD" = "$PREV" ] && [ ! -f "$PENDING" ]; then
+if [ "$HEAD" = "$PREV" ] && [ ! -f "$PENDING" ] && [ ! -f "$RELOAD_PENDING" ]; then
   exit 0
 fi
 
-runtime=0
-if [ -f "$PENDING" ]; then
-  runtime=1
-fi
+runtime_files=()                                   # runtime code deployed now (activation_for decides reload / restart)
 
 # Files to deploy: everything tracked under system/ that differs from the share (ignoring line endings).
 # A differing share file is a genuine share-side edit only when its CR-stripped content matches NO version of that
@@ -147,7 +186,7 @@ if [ "${#changed[@]}" -gt 0 ]; then
         if [ -f "$dst" ] && ! grep -q $'\r' "$dst"; then cp "$src" "$dst"; else sed 's/\r$//; s/$/\r/' "$src" > "$dst"; fi ;;
       *) cp "$src" "$dst" ;;
     esac
-    case "$rel" in gbox/*|adapters/*|hermes/*|profiles/*|gbox.toml|pyproject.toml) runtime=1 ;; esac
+    case "$rel" in gbox/*|adapters/*|hermes/*|profiles/*|gbox.toml|pyproject.toml) runtime_files+=("$rel") ;; esac
   done
   log "main $HEAD: deployed ${#changed[@]} file(s) (backup $BACKUP): ${changed[*]}"
 elif [ "$HEAD" != "$PREV" ]; then
@@ -155,11 +194,35 @@ elif [ "$HEAD" != "$PREV" ]; then
 fi
 echo "$HEAD" > "$STATE"
 
-[ "$runtime" -eq 1 ] || { log "no runtime code changed; no restart needed"; exit 0; }
+activation_for ${runtime_files[@]+"${runtime_files[@]}"}
+[ "$ACTIVATION" != none ] || { log "no runtime code changed; no restart needed"; exit 0; }
 if [ "$RESTART" = "--no-restart" ]; then
-  touch "$PENDING"
-  log "runtime code changed; restart skipped (--no-restart), waiting for the next explicit --deploy"
+  if [ "$ACTIVATION" = reload ]; then
+    touch "$RELOAD_PENDING"
+    log "bot modules changed; reload skipped (--no-restart), waiting for the next explicit --deploy"
+  else
+    touch "$PENDING"
+    log "runtime code changed; restart skipped (--no-restart), waiting for the next explicit --deploy"
+  fi
   exit 0
+fi
+if [ "$ACTIVATION" = reload ]; then
+  bot_reload
+  case "$RELOAD_RESULT" in
+    reloaded)
+      rm -f "$RELOAD_PENDING"
+      log "bot modules reloaded in place on main $HEAD, no service restart: $RELOAD_WHY"
+      exit 0 ;;
+    busy)
+      touch "$RELOAD_PENDING"
+      log "bot reload deferred ($RELOAD_WHY); the next explicit --deploy retries it (no restart)"
+      exit 0 ;;
+    refused)
+      touch "$RELOAD_PENDING"
+      log "bot reload refused, the old bot modules keep running: $RELOAD_WHY. No restart (it would load the same code): fix main and deploy again"
+      exit 1 ;;
+  esac
+  log "bot reload unavailable ($RELOAD_WHY); restarting the service instead"
 fi
 
 LAST_RESTART="$(systemctl show gbox.service -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)"
@@ -171,7 +234,6 @@ if [ -n "$LAST_RESTART" ] && [ "$LAST_RESTART" -gt 0 ] && [ $(( (UP_NOW - LAST_R
 fi
 
 cd "$DST"
-PY="$DST/.venv-linux-$(uname -m)/bin/python"
 T="$(cat "$DST/gbox-data/api_token")"; H="Authorization: Bearer $T"; C="Content-Type: application/json"
 API="http://127.0.0.1:8765/api/hermes/task-mode"
 was_enabled="$(curl -s -H "$H" "$API" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("enabled"))' 2>/dev/null || echo unknown)"
@@ -192,7 +254,7 @@ done
 sudo -n systemctl restart gbox.service
 sleep 6
 if curl -sf http://127.0.0.1:8765/api/health >/dev/null; then
-  rm -f "$PENDING"
+  rm -f "$PENDING" "$RELOAD_PENDING"
   log "gbox.service restarted on main $HEAD; healthy"
 else
   log "gbox.service restarted but /api/health did not answer; check journalctl -u gbox"

@@ -2199,8 +2199,12 @@ class StandaloneAdapter(Adapter):
                 raise RuntimeError(f"{self.name} exited {self.proc.returncode}: {self.log_tail()}")
             self.dbg = None
             self._p(95, f"running without debugger: {e}")
-        return {"pid": self.proc.pid, "display": self.display.name, "debug_port": self.port, "debugger": bool(self.dbg),
-                "worker_name": __import__("platform").node(), "emulator": self.name, "log": str(self.log_path)}
+        # pid, display (+ its Xvfb pid) and debug port: what re-adopting this game after a service restart needs
+        # (docs/hot-update.md, part 2)
+        return {"pid": self.proc.pid, "display": self.display.name,
+                "display_pid": getattr(getattr(self.display, "proc", None), "pid", None), "debug_port": self.port,
+                "debugger": bool(self.dbg), "worker_name": __import__("platform").node(), "emulator": self.name,
+                "log": str(self.log_path)}
 
     def log_tail(self, n: int = 1500) -> str:
         try:

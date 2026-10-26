@@ -2563,11 +2563,24 @@ def _missions(game_id=None):
     return [m for m in out if not game_id or m.get("game_id") == game_id]
 
 
+_AUTOPLAY_STOPS: dict[str, float] = {}     # session_id -> when autoplay op=stop last came (a bot reload never undoes it)
+
+
 @tool("autoplay", "1.0", AutoplayIn, AutoplayOut, capabilities=["runtime"], timeout_s=60)
 def autoplay(inp: AutoplayIn, ctx: Ctx):
     """Let gBox play the live game (take control): runs a scripted mission (navigate / interact / fight) through the
     session's debugger. op=start | stop (hand control back) | status | list | prepare (MercMode: drive a warm game's
     menus to the start of a round and pause it there, _prepare_round)."""
+    from . import hot_reload
+    if inp.op == 'stop':
+        _AUTOPLAY_STOPS[inp.session_id] = time.time()
+    if inp.op in ('start', 'prepare'):
+        with hot_reload.GATE.start():                          # never in the middle of a bot hot reload (bot_reload)
+            return _autoplay(inp, ctx)
+    return _autoplay(inp, ctx)
+
+
+def _autoplay(inp: AutoplayIn, ctx: Ctx):
     from .autoplay import Driver
     if inp.op == 'prepare':
         return {"result": _prepare_round(inp, ctx)}
@@ -2785,7 +2798,8 @@ def _telemetry(run, ctx, title: str = "") -> None:
         while run.get("thread") is not None and run["thread"].is_alive():
             post(True)
             time.sleep(5)
-        post(False)
+        if not run.get("reloading"):                           # a bot hot reload: the restarted bot reports on its own
+            post(False)
     threading.Thread(target=loop, daemon=True, name=f"autoplay-telemetry-{run['sid']}").start()
     from .mercs import directives            # the chat's instant commands, read twice a second into the bot's live stats
     threading.Thread(target=directives.poll_loop, daemon=True, name=f"autoplay-directives-{run['sid']}",
@@ -3005,7 +3019,7 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
     sid = inp.session_id
     name = pb.__name__.rsplit(".", 1)[-1]
     run = AUTOPLAY[sid] = {"driver": d, "sid": sid, "since": since, "mode": "playbook", "mission": f"playbook: {name}",
-                           "ctx": ctx, "inp": inp, "live": {}}
+                           "playbook_module": pb.__name__, "ctx": ctx, "inp": inp, "live": {}}
 
     def go():
         try:
@@ -3213,6 +3227,139 @@ def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
     run["thread"].join(PREPARE_WAIT_S)
     return {"started": run["mission"], "mode": "prepare", **rp.snapshot(),
             **({"selection": dict(inp.selection)} if inp.selection else {})}
+
+
+# --- bot hot reload (gbox/hot_reload.py, docs/hot-update.md): a bot-only deploy without a service restart ---------------
+class BotReloadIn(BaseModel):
+    modules: list[str] = []                # bot modules to reload (dotted); empty: every loaded one changed on disk
+    settle_s: float = Field(default=5.0, ge=0, le=30)   # a restarted bot dying with an error this soon: old modules back
+
+
+class BotReloadOut(BaseModel):
+    result: dict
+
+
+def _telemetry_stopped(run) -> None:
+    """The final "not running" report a reloading run's telemetry loop skipped, for a bot the reload did not restart."""
+    ctx = run.get("ctx")
+    if ctx is None or not getattr(ctx, "server", None) or not run.get("sid"):
+        return
+    try:
+        httpx.post(f"{ctx.server}/api/autoplay/telemetry/{run['sid']}", headers=_ap_headers(ctx), timeout=10,
+                   json={"running": False, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
+                         "source_autoplay_job_id": run.get("source_autoplay_job_id") or getattr(ctx, "job_id", None) or ""})
+    except httpx.HTTPError:
+        pass
+
+
+class _ReloadHost:
+    """gbox.hot_reload's view of this worker's autobots (AUTOPLAY / SESSIONS): which run a bot playbook, stopping and
+    joining them, and starting each again exactly as it was started."""
+
+    @staticmethod
+    def playbook_of(run) -> str | None:
+        """The module a run plays with ("gbox.mercs_bot") when it is a bot module that reloads in place, else None."""
+        from . import hot_reload
+        mission = str(run.get("mission") or "")
+        name = run.get("playbook_module") or (f"{__package__}.{mission.split(': ', 1)[1]}"
+                                              if mission.startswith("playbook: ") else "")
+        return name if run.get("mode") == "playbook" and name and hot_reload.allowed(name) else None
+
+    def bots(self) -> list:
+        out = []
+        for sid, run in list(AUTOPLAY.items()):
+            th = run.get("thread")
+            if th is None or not th.is_alive() or run.get("prepare") is not None or run.get("took_over") \
+                    or getattr(run.get("driver"), "stopped", False) or run.get("inp") is None or run.get("ctx") is None:
+                continue
+            if self.playbook_of(run):
+                out.append((sid, run))
+        return out
+
+    def busy(self) -> str | None:
+        for sid, run in list(AUTOPLAY.items()):
+            th = run.get("thread")
+            if th is None or not th.is_alive():
+                continue
+            if run.get("prepare") is not None:
+                return f"a MercMode round preparation is running on {sid}"
+            if (run.get("took_over") or getattr(run.get("driver"), "stopped", False)) and self.playbook_of(run):
+                return f"the autobot on {sid} is still stopping"
+        return None
+
+    def stop(self, sid, run) -> None:
+        run["reloading"] = True                                # its telemetry's last word is the restarted bot's
+        run["driver"].stopped = True                           # the playbook ends at its next tick, releasing its input
+
+    def join(self, run, timeout) -> bool:
+        run["thread"].join(timeout)
+        return not run["thread"].is_alive()
+
+    def release(self, sid) -> None:
+        _release_all(sid)
+
+    def playbook(self, sid) -> str | None:
+        try:
+            ad, g = SESSIONS[sid]
+        except KeyError:
+            return None
+        return getattr(_playbook(ad, g), "__name__", None)
+
+    def start(self, sid, run, since) -> dict:
+        """The bot again in its session with its own AutoplayIn and job context (the same x-gbox-parent-job: MercMode's
+        round boundaries stay this run's), unless autoplay was stopped or the player took the pad meanwhile."""
+        from . import padstate
+        base = {"session_id": sid, "restarted": False}
+        why = ("autoplay was stopped during the reload" if _AUTOPLAY_STOPS.get(sid, 0) >= since else
+               "the game ended" if sid not in SESSIONS else
+               "the player took the controller during the reload"
+               if padstate.touched_after(sid, since) and not _mercs_human_controls(sid) else None)
+        if why:
+            _telemetry_stopped(run)
+            return base | {"reason": why}
+        try:
+            res = autoplay(run["inp"], run["ctx"])["result"]
+        except Exception as exc:                               # noqa: BLE001 - the control plane retries it (F5's path)
+            _telemetry_stopped(run)
+            return base | {"recover": True, "error": f"{type(exc).__name__}: {exc}"[:300]}
+        new = AUTOPLAY.get(sid)
+        if new is not None and new is not run and run.get("source_autoplay_job_id"):
+            new["source_autoplay_job_id"] = run["source_autoplay_job_id"]
+        ok = bool(res.get("started") or res.get("already_running"))
+        return base | {"restarted": ok, "mission": res.get("started") or res.get("already_running"),
+                       "mode": res.get("mode"), "job_id": getattr(run["ctx"], "job_id", None),
+                       **({} if ok else {"recover": True, "error": str(res.get("error") or res)[:300]})}
+
+    def start_later(self, sid, run, since) -> None:
+        """A bot that did not stop in time gets its bot back (unchanged code) once its thread has ended."""
+        from . import hot_reload
+
+        def wait():
+            run["thread"].join(hot_reload.STOP_S * 3)
+            if not run["thread"].is_alive():
+                self.start(sid, run, since)
+        threading.Thread(target=wait, daemon=True, name=f"bot-reload-restart-{sid}").start()
+
+    def crashed(self, sid) -> str | None:
+        run = AUTOPLAY.get(sid) or {}
+        th, res = run.get("thread"), run.get("result") or {}
+        if th is not None and not th.is_alive() and res.get("ok") is False:
+            return str(res.get("error") or "no result")[:200]
+        return None
+
+
+_RELOAD_HOST = _ReloadHost()
+
+
+@tool("bot_reload", "1.0", BotReloadIn, BotReloadOut, capabilities=["runtime"], timeout_s=180)
+def bot_reload(inp: BotReloadIn, ctx: Ctx):
+    """Hot-reload the Mercenaries bot modules in this worker without restarting it (gbox/hot_reload.py,
+    docs/hot-update.md): the games keep running; each autobot on a bot playbook stops at its next tick (inputs
+    released), the changed bot modules reload in dependency order, and each bot starts again in its session with the
+    same input and job (MercMode keeps its run and round count). A module that does not import, or a bot that dies on
+    the new code within settle_s, keeps or brings back the old modules."""
+    from . import hot_reload
+    return {"result": hot_reload.reload_bots(_RELOAD_HOST, modules=inp.modules, settle_s=inp.settle_s)}
 
 
 def _recorded_play(ctx, game_id) -> list[dict]:
