@@ -29,6 +29,27 @@ GHIDRA_JOB_ID = 'b1879e1439af406e'
 GHIDRA_RECEIPT_ID = 'bbe94a42906f4a5c'
 GHIDRA_WORKER_ID = '7b23bff397df4e2e'
 
+# Strings trace of the pinned revision (job 7fdb3e1b2701445c, receipt
+# b891463a8d154249, worker 7b23bff397df4e2e): character-select, team-manager
+# and save-namespace references. These prove the *locations* the character/mode
+# eligibility checks live, not the lock decision itself, so every derived
+# unlock target stays unproven until the branch is read and the save flag
+# layout is mapped.
+STRINGS_JOB_ID = '7fdb3e1b2701445c'
+STRINGS_RECEIPT_ID = 'b891463a8d154249'
+CHARACTER_STRINGS = {
+    # value: (address, referencing_function, referencing_function_address)
+    'Tsonic.str': (0x80240a80, 'FUN_80015df4', 0x80015df4),
+    'TSonic HEAP         %10d': (0x80255678, 'FUN_800cd6a0', 0x800cd6a0),
+}
+MODE_STRINGS = {
+    'SONIC HEROES : %02d': (0x80289e58, ('FUN_801250e8', 'FUN_80124938')),
+}
+SAVE_NAMESPACE_STRINGS = {
+    'SONICHEROES': (0x80289eb8, 'FUN_80126008', 0x80126178),
+    'SONICHEROES_': (0x80289ec4, 'FUN_80126008', 0x80126184),
+}
+
 CATEGORIES = ('characters', 'hidden_characters', 'modes', 'levels', 'stages',
               'costumes', 'items', 'extras')
 
@@ -90,6 +111,42 @@ def stage_names(data=None, path=None):
     return dict(sorted(names.items()))
 
 
+def reference_evidence():
+    """Proven *location* evidence for the character/mode/save references.
+
+    Returned as a structured, verifiable mapping. It proves where the
+    character-select, team-manager and save-namespace references live in this
+    exact revision; it does NOT prove a lock decision or a save flag layout,
+    so it feeds the 'next' acceptance step, not an unlock write.
+    """
+    return {
+        'strings_job': STRINGS_JOB_ID,
+        'strings_receipt': STRINGS_RECEIPT_ID,
+        'worker': GHIDRA_WORKER_ID,
+        'character_select': {
+            'strings': {k: {'address': hex(v[0]), 'function': v[1],
+                            'function_address': hex(v[2])}
+                        for k, v in CHARACTER_STRINGS.items()},
+            'note': 'TSonic character string and its heap-allocation format; the '
+                    'select/team-manager routines reference the character roster.',
+        },
+        'mode': {
+            'strings': {k: {'address': hex(v[0]), 'functions': v[1]}
+                        for k, v in MODE_STRINGS.items()},
+            'note': 'Mode/round format string referenced by two routines; the '
+                    'mode-eligibility check branches on these.',
+        },
+        'save_namespace': {
+            'strings': {k: {'address': hex(v[0]), 'function': v[1],
+                            'function_address': hex(v[2])}
+                        for k, v in SAVE_NAMESPACE_STRINGS.items()},
+            'note': 'SONICHEROES save namespace built by FUN_80126008; the save '
+                    'flag layout to map before any write.',
+        },
+        'status': 'locations_proved_locks_unproven',
+    }
+
+
 def stage_roster(data=None, path=None):
     """Grouped stage identifiers of the owned revision."""
     names = sorted(set(stage_names(data, path).values()))
@@ -121,6 +178,7 @@ def content_inventory(data=None, path=None):
         },
         'unlock_targets': [],
         'unlock_targets_note': 'Empty on purpose: no lock check or save flag is proved for this revision yet.',
+        'reference_evidence': reference_evidence(),
         'runtime_hooks': 'none (evidence only; see gbox.game_unlocks.profile_for)',
     }
 
@@ -128,9 +186,11 @@ def content_inventory(data=None, path=None):
 def profile_gate():
     """Fields merged into gbox.game_unlocks.profile_for for this exact game."""
     return {
-        'reason': ('Sonic Heroes (USA) revision is pinned and its stage identifier table is '
-                   'inventoried, but no character, mode, costume or save-flag lock check is '
-                   'proved for this owned build, so no unlock write is published yet.'),
+        'reason': ('Sonic Heroes (USA) revision is pinned; its stage identifier table is '
+                   'inventoried and the character-select, team-manager and save-namespace '
+                   'reference locations are proven, but no character, mode, costume or '
+                   'save-flag lock check is proved for this owned build, so no unlock '
+                   'write is published yet.'),
         'scope': list(CATEGORIES),
         'executable_sha256': EXECUTABLE_SHA256,
         'evidence': {
@@ -141,9 +201,12 @@ def profile_gate():
                        'worker_id': GHIDRA_WORKER_ID, 'language': LANGUAGE,
                        'functions': GHIDRA_FUNCTIONS, 'image_base': hex(IMAGE_BASE)},
             'stage_table': '46 stage identifiers at 0x802545d0-0x80254aec in the owned revision',
+            'reference_evidence': reference_evidence(),
         },
-        'next': ('Trace the character-select and mode eligibility checks in the pinned Ghidra '
-                 'project, then prove the save/flag layout before any write.'),
+        'next': ('Read the character-select / team-manager branch (FUN_80015df4, '
+                 'FUN_800cd6a0) and the mode-eligibility branch to prove the lock '
+                 'decision, then map the SONICHEROES save flag layout (FUN_80126008) '
+                 'before any unlock write.'),
     }
 
 

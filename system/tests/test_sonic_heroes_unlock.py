@@ -85,3 +85,31 @@ def test_game_unlocks_routes_this_game_to_pending_research():
     hook = game_unlocks.pre_launch(game, None)
     assert hook['applied'] is False
     assert hook['state'] == 'research_pending'
+
+
+def test_reference_evidence_records_proven_locations():
+    ev = sh.reference_evidence()
+    assert ev['status'] == 'locations_proved_locks_unproven'
+    assert ev['strings_job'] == sh.STRINGS_JOB_ID == '7fdb3e1b2701445c'
+    assert ev['strings_receipt'] == sh.STRINGS_RECEIPT_ID == 'b891463a8d154249'
+    # Character-select references point at the team-manager routines.
+    char = ev['character_select']['strings']
+    assert char['Tsonic.str']['function'] == 'FUN_80015df4'
+    assert char['Tsonic.str']['function_address'] == '0x80015df4'
+    assert char['TSonic HEAP         %10d']['function'] == 'FUN_800cd6a0'
+    # Mode-eligibility format string is referenced by two routines.
+    mode = ev['mode']['strings']['SONIC HEROES : %02d']
+    assert mode['address'] == '0x80289e58'
+    assert mode['functions'] == ('FUN_801250e8', 'FUN_80124938')
+    # Save namespace is built by FUN_80126008.
+    save = ev['save_namespace']['strings']
+    assert save['SONICHEROES']['function'] == 'FUN_80126008'
+    assert save['SONICHEROES_']['function'] == 'FUN_80126008'
+
+
+def test_inventory_includes_reference_evidence():
+    inv = sh.content_inventory(_elf())
+    assert inv['reference_evidence']['status'] == 'locations_proved_locks_unproven'
+    assert inv['reference_evidence']['strings_receipt'] == sh.STRINGS_RECEIPT_ID
+    # Still no unlock write: locations proved, locks unproven.
+    assert inv['unlock_targets'] == []
