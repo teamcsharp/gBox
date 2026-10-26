@@ -873,13 +873,13 @@ def test_a_wild_ray_error_faces_him_levels_the_gun_and_holds_the_trigger():
     assert "r1" in act and "aim_guard" not in bot.stats, act
 
 
-def test_a_majini_at_the_muzzle_is_faced_by_the_body_not_the_short_ray_and_still_blasted():
-    m = world(laser_dot=(60.0, 100.0, 140.0))        # the dot a hand's width beside him: a 1 m ray, 30 deg off
+def test_a_moderate_error_at_the_muzzle_is_steered_like_any_other_and_still_blasted():
+    # 13:05 live: a "close" guard that skipped the steering left yaw +14 / pitch +24 uncorrected through 149 ticks of fire
+    m = world(laser_dot=(40.0, 100.0, 140.0))        # the dot a hand beside him: 23 deg of yaw to take out
     bot = C.Combat(m, {}, clock=lambda: 0.0)
-    s = snap(m, enemy=(0.0, 0.0, 150.0))             # inside CLOSE_STEER_R, outside point blank
+    s = snap(m, enemy=(0.0, 0.0, 150.0))
     s["player"]["pitch"] = 0.0
     act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
     assert {"l1", "r1"} <= act, act                  # the threat blast goes on (operator 2026-10-22)
-    assert not act & {"rleft", "rright", "rup", "rdown"}, act   # level, facing him: nothing to correct by the ray
-    assert bot.stats["aim_guard"].startswith("close")
-    assert bot.stats["fire_gate"] == "threat: blasting"
+    assert act & {"rleft", "rright"}, act            # ...while the stick takes the error out
+    assert "aim_guard" not in bot.stats and bot.stats["fire_gate"] == "threat: blasting"

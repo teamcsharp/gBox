@@ -112,9 +112,8 @@ FIRE_CONE, FIRE_SLACK = math.radians(4), 60.0   # the ray this close in angle, e
 SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
 POINT_BLANK = 110.0                   # a Majini this near on the player's level needs no ray (hit recovery, the gun
                                        # coming up): nothing fits between them
-CLOSE_STEER_R = 180.0                 # a Majini this near the muzzle: the ray's angles are the gun's offset from his
-                                       # body, the body heading steers (operator 2026-10-26: "looking down and to the side")
 WILD_YAW, WILD_PITCH = math.radians(30), math.radians(25)   # a ray error past this is not a turn to make: a torn read
+                                       # (operator 2026-10-26: "looking down and to the side while dispatching the foes")
 LEVEL_PITCH = math.radians(15)         # the guard levels a gun pitched further than this
 BOW_RANGE = 2000.0                    # controller tuning, not a decoded projectile range
 BOW_YAW, BOW_PITCH = math.radians(6), math.radians(7)
@@ -997,15 +996,13 @@ class Combat:
         self.stats["aim_feedback"] = "ray direction" if steer else "near-origin ray; correction paused"
         # Operator 2026-10-26, watching: "the bot will do a thing while aiming where they begin looking down and to the
         # side while dispatching the foes" - round map Ship_Deck 11:37: yaw -5 / pitch +1 with the dot on his body,
-        # 0.26 s later yaw -55 / pitch -56 with the trigger held and the dot on nothing. A Majini inside CLOSE_STEER_R
-        # of the muzzle, or an error past WILD_YAW / WILD_PITCH, is the gun's offset from his body or a torn read, not
-        # a turn to make: the body faces him (the game's own heading), the gun is levelled, and a wild aim at a Majini
-        # further off holds the trigger (those rounds went into the deck) until the dot is back on him.
-        guard = None
-        if steer and where is None:
-            close = math.hypot(foot[0] - lz[0][0], foot[2] - lz[0][2]) < CLOSE_STEER_R
-            wild = abs(yaw_err) > WILD_YAW or abs(pitch_err) > WILD_PITCH
-            guard = "close" if close else "wild" if wild else None
+        # 0.26 s later yaw -55 / pitch -56 with the trigger held and the dot on nothing. An error past WILD_YAW /
+        # WILD_PITCH is a torn read or the dot on something else (the aim cannot move 55 deg in 0.26 s), not a turn to
+        # make: the body faces him (the game's own heading), the gun is levelled, and a wild aim at a Majini further
+        # off holds the trigger (those rounds went into the deck) until the dot is back on him. A moderate error at the
+        # muzzle is steered like any other (13:05 live: a "close" guard that skipped the steering left yaw +14 / pitch
+        # +24 uncorrected through 149 ticks of fire, 28 % hits).
+        guard = "wild" if steer and where is None and (abs(yaw_err) > WILD_YAW or abs(pitch_err) > WILD_PITCH) else None
         if guard:
             steer = False
             self.stats["aim_guard"] = (f"{guard}: yaw {math.degrees(yaw_err):+.0f} pitch {math.degrees(pitch_err):+.0f}: "
