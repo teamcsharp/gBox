@@ -17,6 +17,15 @@ PREFIX = 'gBox queue '
 STAGES = ('inventory', 'analysis', 'reader', 'writer', 'runtime')
 ACTIVE = ('claimed', 'running')
 BLOCKED_RUN = '[blocked_config'   # execution error of a run Hermes's pre-dispatch validation refused to start
+TRANSIENT_RUN = ('GatewayUnavailableError', 'RuntimeError: HTTP 429', 'TimeoutError', 'Cron admission missing',
+                 'Upstream rate limited')   # the run never did agent work: the gateway restarting, a rate limit, a timeout
+                                            # (2026-10-26: 43 RE6 / aim tickets sat in review holds and hour-long backoffs
+                                            # after Kimi's 429s; none of those runs had executed anything)
+
+
+def never_ran(run) -> bool:
+    err = str(run.get('error') or '')
+    return err.startswith(BLOCKED_RUN) or any(t in err[:160] for t in TRANSIENT_RUN)
 HASH = re.compile(r'^[0-9a-f]{64}$')
 ID = re.compile(r'^[0-9a-f]{16}$')
 
@@ -316,7 +325,7 @@ def reconcile(data, jobs, latest, active, *, now):
         from . import hermes_result_review
         # Hermes refused to start it (2026-10-24: "[blocked_config:silent] ... Unknown provider 'gbox-deepseek'"):
         # no agent work happened, so it is neither a failed attempt nor a result to review
-        blocked = str(run.get('error') or '').startswith(BLOCKED_RUN)
+        blocked = never_ran(run)
         if not blocked:
             hermes_result_review.record_result(item, run)
         if run['id'] == item.get('last_run_id'):

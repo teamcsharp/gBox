@@ -899,3 +899,22 @@ def test_a_cooling_primary_route_does_not_halt_the_pool(env, monkeypatch):
     (q.delivery.state_dir() / 'feedback.json').write_text(_json.dumps({'cooldowns': {'spark-local/gpt-oss:20b': 9e12}}))
     result = q.tick(now=1000)
     assert result['status'] != 'waiting_for_route_supervisor'
+
+
+@pytest.mark.parametrize('error', ["GatewayUnavailableError: Gateway starting: deadline",
+                                   "RuntimeError: HTTP 429: Local inference: {'message': \"You've reached your limit\"}",
+                                   "RuntimeError: HTTP 429: Upstream rate limited: holding calls for 54 s",
+                                   "TimeoutError: timed out"])
+def test_a_run_that_never_did_agent_work_is_neither_a_failure_nor_a_review(env, monkeypatch, error):
+    # 2026-10-26: Kimi 429s and gateway restarts put 43 tickets into review holds and hour-long backoffs
+    from gbox import hermes_result_review
+    recorded = []
+    monkeypatch.setattr(hermes_result_review, 'record_result', lambda item, run: recorded.append(run['id']))
+    monkeypatch.setattr(hermes_result_review, 'config', lambda: {'enabled': True})
+    q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=10)
+    item = env['items']['favorite:' + G]
+    item.update(job_id='job', dispatch_state='queued', last_dispatched=100, no_progress_runs=2)
+    run = {'id': 'run', 'started_at': '1970-01-01T00:01:40+00:00', 'status': 'failed', 'error': error}
+    q.reconcile(env, [{'id': 'job', 'enabled': False}], {'job': run}, set(), now=200)
+    assert item['no_progress_runs'] == 2 and item['retry_at'] == 320 and recorded == []
+    assert hermes_result_review.gate(item) is None
