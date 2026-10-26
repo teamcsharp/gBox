@@ -183,3 +183,27 @@ def test_a_majini_fought_in_place_without_a_shot_is_left_for_the_route(tmp_path)
     assert bot._combat_stalled(p, foe, 18.1)                                 # 4 s over 40 ticks, standing: left alone
     assert bot._stalled_until[0x30800000] > 18.1 and bot.combat.blocked_until[0x30800000] > 18.1 and bot.stats['combat_stalls_broken'] == 1
     assert not bot._combat_stalled({'pos':(400.,0.,0.),'rot':0.}, foe, 19.)   # moved: a fresh start
+
+
+def test_no_heal_starts_with_a_majini_near_unless_health_is_critical(tmp_path):
+    # operator 2026-10-26: "Im watching the bot sit idle and be attacked and fail to even dispatch these foes who are 1
+    # foot away" (live 13:05: phase healing_inventory with 9 Majini on the field)
+    bot = R.Bot(learn_dir=tmp_path)
+    ui = {'pointer':0x30800000,'player':PLAYER,'state':2,'open':False,'cursor':0,'owner':0,
+          'fade':1.,'input_delay':0.,'context_open':False}
+    bot.inventory_heal = InventoryHealth(bot.stats,reader=lambda *a:dict(ui))
+    spray = {'slot':6,'id':0x304,'type':3,'item':4,'grid':4,'rounds':1,'hand':False}
+    gun = {'slot':0,'id':0x10B,'type':1,'item':0x0B,'grid':3,'rounds':6,'hand':True}
+    player = {'ptr':PLAYER,'pos':(0.,0.,0.),'hp':300,'hp_max':1000,'action':0}
+    near = {'ptr':0x30700000,'slot':0,'pos':(0.,0.,300.),'hp':800,'hp_max':800}
+    snap = {'player':player,'inventory':[gun,spray],'enemies':[near]}
+    assert bot._heal(player,snap,10.) is None                       # 30 %: a Majini 3 m away, the fight first
+    assert bot.stats['heal_deferred'].startswith('1 Majini within 5 m at 30%')
+    assert bot._seek_health(player,snap | {'health_items':[{'ptr':3,'id':0x305,'pos':(800.,0.,0.),'evidence':'native item table'}]},10.) is None
+    snap['enemies'] = []
+    assert bot._heal(player,snap,10.) == {'tap':'triangle'}        # nobody near: the heal
+    assert 'heal_deferred' not in bot.stats
+    player['hp'] = 100
+    bot2 = R.Bot(learn_dir=tmp_path)
+    bot2.inventory_heal = InventoryHealth(bot2.stats,reader=lambda *a:dict(ui))
+    assert bot2._heal(player,{'player':player,'inventory':[gun,spray],'enemies':[near]},10.) == {'tap':'triangle'}   # critical: heal anyway

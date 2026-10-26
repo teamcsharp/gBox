@@ -69,6 +69,8 @@ TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a m
 HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
+HEAL_SAFE_R, HEAL_CRITICAL = 500.0, 0.15   # no heal started with a Majini this near unless health is this low: RE5's
+                                       # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26)
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, re5_combat.ENGAGE_R, 110.0   # long shots across the yard (operator 2026-10-24)
 CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
@@ -1863,7 +1865,8 @@ class Bot:
                 if egg_mode:
                     placement_safe,snap['mine_placement_safe']=False,False
                 hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
-                heal_needed = self.healing is not None or self.inventory_heal.active or hp_max>0 and 1<hp<=HEAL_AT*hp_max
+                heal_needed = self.healing is not None or self.inventory_heal.active \
+                    or hp_max>0 and 1<hp<=HEAL_AT*hp_max and self._heal_safe(p,snap,hp,hp_max)
                 if heal_needed:
                     placement_safe,snap['mine_placement_safe'] = False,False
                 mine_action = self.mines.tick(snap, self.clock())
@@ -2773,6 +2776,22 @@ class Bot:
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
         return d < FIGHT_R and off < FIGHT_CONE
 
+    def _heal_safe(self, p, snap, hp, hp_max) -> bool:
+        """Start a heal (or a walk to a health item) now? Not with a Majini within HEAL_SAFE_R unless health is under
+        HEAL_CRITICAL (operator 2026-10-26: "Im watching the bot sit idle and be attacked and fail to even dispatch these
+        foes who are 1 foot away" - live 13:05, phase healing_inventory with 9 Majini on the field, 2 heals, 24 hits of
+        86): the fight clears them first, the heal follows."""
+        if hp_max <= 0 or hp <= HEAL_CRITICAL * hp_max:
+            return True
+        near = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
+                   and math.dist(p["pos"], e["pos"]) < HEAL_SAFE_R)
+        if not near:
+            self.stats.pop("heal_deferred", None)
+            return True
+        self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}: fight first"
+        self.stats["heal_deferred_ticks"] = self.stats.get("heal_deferred_ticks", 0) + 1
+        return False
+
     def _heal(self, p, snap, now):
         """D-pad equips; Square uses the confirmed recovery item (Capcom PS3 manual, Actions pp16–17).
 
@@ -2845,7 +2864,7 @@ class Bot:
                     return {"tap": key}
             self.stats["heal_status"] = "awaiting recovery item in hand"
             return {"hold": set()}
-        if hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+        if hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S or not self._heal_safe(p, snap, hp, hp_max):
             return None
         heals = [s for s in items if s["id"] in HEAL_IDS and s.get("rounds", 0) > 0]
         if not heals:
@@ -2883,7 +2902,8 @@ class Bot:
     def _seek_health(self,p,snap,now,requested=None):
         """Pause the held checkpoint to reach a verified recovery item using existing safe floor paths."""
         hp,hp_max = p.get('hp') or 0,p.get('hp_max') or 0
-        if hp_max<=0 or hp<=1 or requested is None and hp>HEAL_AT*hp_max or snap.get('recovery_active'):
+        if hp_max<=0 or hp<=1 or requested is None and hp>HEAL_AT*hp_max or snap.get('recovery_active') \
+                or requested is None and not self._heal_safe(p,snap,hp,hp_max):
             return None
         from . import re5_health
         rows = [row for row in snap.get('health_items') or [] if row.get('id') in HEAL_IDS and row.get('evidence')]
