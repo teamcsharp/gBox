@@ -234,3 +234,19 @@ test('the automatic poll backs off from 5 s to a minute, resets on success, and 
   assert.match(html, /health: sid => compactApi\(`\/api\/sessions\/\$\{encodeURIComponent\(sid\)\}\/stream\/health`, undefined, 'GET'\)/);
   assert.match(html, /recall: k => \{ try \{ return sessionStorage\.getItem\(k\); \} catch \{ return null; \} \}/);
 });
+
+test('a run whose picture never comes back is asked again and the new session is shown (right after a restart)', async () => {
+  // operator 2026-10-26: "gbox reloaded to this" - the status still named Resident Evil 5's dead session; RE4 already played
+  const r = rig({ healthBy: { 'w1-s1': { state: 'running', age_s: 99 } } });
+  r.io.api = (inner => async (path, body) => {
+    if (path === '/api/jobs') { r.calls.push([path, body]); return { id: 'j' }; }          // a new encoder: still no picture
+    const out = await inner(path, body);
+    if (path === '/api/mercmode' && r.calls.filter(c => c[0] === '/api/mercmode').length > 1)
+      out.hosts[0].current_run = { phase: 'playing', session_id: 'w2-re4', title: 'Resident Evil 4' };
+    return out;
+  })(r.io.api);
+  const out = await r.ctl.run();
+  assert.equal(r.pip, 'w2-re4');
+  assert.equal(out.steps.find(s => s.id === 'mercmode').detail, 'Resident Evil 4 on lilspark');
+  assert.equal(out.steps.find(s => s.id === 'stream').status, 'ok');
+});
