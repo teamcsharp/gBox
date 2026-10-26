@@ -165,6 +165,67 @@ test('missing start confirmation is shown as an error without claiming connectio
   assert.match(messages.join('\n'), /did not start.*not confirmed/);
 });
 
+// operator 2026-10-26: i9-NUC's worker had been offline for 43 h while the app ran, watching MercMode. After a minute offline a
+// quiet badge says so and one click relaunches the worker through the app's own local gBox service; the view is never changed.
+test('the offline badge appears after a minute offline, names the cause, and offers one click to relaunch', () => {
+  const badge = vm.createContext({ esc, S: { workerName: 'i9-NUC' } });
+  vm.runInContext(grab(page, 'workerOfflineBadge'), badge);
+  const now = 1_800_000_000, w = { name: 'i9-NUC', online: false, last_seen: now - 156038 };
+  assert.equal(badge.workerOfflineBadge({ name: 'i9-NUC', online: true }, null, now), null);
+  assert.equal(badge.workerOfflineBadge({ ...w, last_seen: now - 30 }, null, now), null, 'a heartbeat 30 s late is not news');
+  assert.equal(badge.workerOfflineBadge(null, null, now), null);
+  const html = badge.workerOfflineBadge(w, { running: false, lastExit: { code: 1, reason: 'RuntimeError: Worker activation held' } }, now);
+  assert.match(html, /i9-NUC's worker is offline \(43 h\)\./);
+  assert.match(html, /RuntimeError: Worker activation held/);
+  assert.match(html, /<button class="act" type="button" data-worker-relaunch="1" title="[^"]*games keep running">Relaunch worker<\/button>/);
+  const busy = badge.workerOfflineBadge(w, { running: true, reason: 'Another worker still owns a live game' }, now, { busy: true, note: 'Relaunching: the worker checks in…' });
+  assert.match(busy, /its process runs but hasn't checked in/); assert.match(busy, /data-worker-relaunch="1" disabled/); assert.match(busy, /Relaunching…/);
+  assert.match(busy, /Another worker still owns a live game/); assert.match(busy, /Relaunching: the worker checks in…/);
+  assert.doesNotMatch(badge.workerOfflineBadge({ ...w, name: '<b>' }, null, now), /<b>/);
+  // the PC's status-bar panel offers it too, the shell wires the click, and a docked game is cut out under the badge
+  assert.match(ctx.workerReconnectNote({ name: 'i9-NUC', online: false }, { running: true }), /data-relaunch-worker="1"[^>]*>Relaunch worker</);
+  assert.doesNotMatch(ctx.workerReconnectNote({ name: 'i9-NUC', online: true }, { running: true }), /data-relaunch-worker/);
+  assert.match(page, /closest\("\[data-relaunch-worker\]"\)\) workerRelaunch\(\);/);
+  assert.match(page, /gbox\.winWorker\('relaunch'\)/);
+  assert.match(page, /const EMB_HOLES = "\.piprz, #worker-offline\.on,/);
+  const watch = page.slice(page.indexOf('async function workerOfflineWatch()'), page.indexOf('async function workerRelaunch()'));
+  assert.doesNotMatch(watch, /compactRestore|location\.reload|show\("Sessions"|reconnectRun/, 'the badge never changes the view');
+  assert.match(watch, /S\.autoStartWorker === false\) \{ workerOfflineRender\(null\); return; \}/, 'no badge when the worker is off by choice');
+});
+
+function relaunchHarness({ standalone = false, process: localProcess = {}, channel = null, startLocal, busy = false } = {}) {
+  const context = vm.createContext({ STANDALONE: standalone, clientHandoffBusy: busy, localControlProcess: localProcess, localControlChannel: channel,
+    localControlError: '', startLocalControl: startLocal || (async () => ({ running: true })), restartWorker: async () => ({ standalone: true }) });
+  const start = mainJs.indexOf('async function relaunchLocalWorker');
+  vm.runInContext(mainJs.slice(start, mainJs.indexOf('ipcMain.handle("win:worker"', start)), context);
+  return context;
+}
+test('Relaunch worker asks the local service for an idle stop and lets the exit watchdog start it again; nothing is killed', async () => {
+  const stops = [];
+  const h = relaunchHarness({ channel: { stop: async () => { stops.push('stop_if_idle'); } } });
+  assert.deepEqual(await h.relaunchLocalWorker(), { running: false, started: true, relaunching: true });
+  assert.deepEqual(stops, ['stop_if_idle']); assert.match(h.localControlError, /Relaunching/);
+  // busy (a game or job runs here): the service refuses and the answer says so
+  const refused = relaunchHarness({ channel: { stop: async () => { throw Error('The local worker is busy.'); } } });
+  const busy = await refused.relaunchLocalWorker();
+  assert.deepEqual([busy.running, busy.started], [true, false]);
+  assert.match(busy.error, /^The local worker is busy\. Nothing was stopped\. Quit gBox and start it again to relaunch this PC's worker \(games on this PC stop with it\)\.$/);
+  // a service whose worker never came up cannot confirm the idle stop: the same instruction, nothing killed
+  const silent = relaunchHarness({ channel: { stop: async () => { throw Error('The running local worker does not support safe desktop refresh yet.'); } } });
+  assert.match((await silent.relaunchLocalWorker()).error, /does not support safe desktop refresh yet\. Nothing was stopped\. Quit gBox and start it again/);
+  // no verified channel: no kill, a clear instruction instead
+  assert.match((await relaunchHarness().relaunchLocalWorker()).error, /no verified idle shutdown channel\. Nothing was stopped\. Quit gBox and start it again/);
+  // the service is not running at all: it is started
+  const started = [];
+  const down = relaunchHarness({ process: null, startLocal: async () => { started.push(1); return { running: true }; } });
+  assert.deepEqual(await down.relaunchLocalWorker(), { running: true, started: true, relaunching: true }); assert.equal(started.length, 1);
+  assert.match((await relaunchHarness({ busy: true }).relaunchLocalWorker()).error, /refresh/);
+  assert.deepEqual(await relaunchHarness({ standalone: true }).relaunchLocalWorker(), { standalone: true });
+  assert.match(mainJs, /if \(op === "relaunch"\) return relaunchLocalWorker\(\);/);
+  const body = mainJs.slice(mainJs.indexOf('async function relaunchLocalWorker'), mainJs.indexOf('ipcMain.handle("win:worker"'));
+  assert.doesNotMatch(body, /taskkill|\.kill\(/, 'never a kill: games and the service are stopped only by their own idle rule');
+});
+
 test('a fresh worker ID reconnects by this configured PC identity, not the stale ID', async () => {
   const begin = page.indexOf('async function svcReconnect(key)');
   const finish = page.indexOf('$("#svc-refresh").onclick', begin);

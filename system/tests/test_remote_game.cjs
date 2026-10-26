@@ -88,7 +88,7 @@ test('the Sessions view shows the other PC\'s game live where the card was, watc
   const view = web.slice(web.indexOf('async function sessionsView('), web.indexOf('// ---- smart search'));
   assert.doesNotMatch(view, /Running natively on/, 'the card asking about the game is gone');
   assert.match(view, /const elsewhere = local && s\.detail\.worker_name !== window\.GBOX_LOCAL\?\.worker, here = local && !elsewhere;/);
-  assert.match(view, /const workers = here \? null : await api\("\/api\/workers"\)\.catch\(\(\) => null\);/, 'a game on this PC asks no PC list');
+  assert.match(view, /const workers = here && !offline \? null : await api\("\/api\/workers"\)\.catch\(\(\) => null\);/, 'a game on this PC asks no PC list (unless its own worker is offline, #2870)');
   assert.match(view, /GBoxRemoteGame\.html\(\{ sid, wid: sid\.split\("-"\)\[0\], worker: s\.detail\.worker_name \|\| "another PC", title: s\.title, auth: tq\(\),\r?\n\s*crop: !!hostPC\?\.features\?\.includes\("desktop_game_crop"\), pull: !!window\.GBOX_LOCAL\?\.worker \}\)/);
   assert.match(view, /`<div id="nativeslot" data-sid="\$\{esc\(sid\)\}" class="screen" style="background:#000"><\/div>`/, 'a game on this PC still docks');
   const after = web.slice(web.indexOf('sessionsView.after = (sid, mode) => {'), web.indexOf('// ---------------- workbench under the game'));

@@ -57,6 +57,18 @@ test('recovery commands follow the current same-game replacement and reject stal
   assert.equal(C.commandSession(old.session_id,[replaced,{...fresh,worker_online:false}]),null);
 });
 
+test('a game on a PC that is offline is not running for a viewer: never selected, followed or recovered (#2870)',async()=>{
+  const dead={...fresh,worker_online:false};
+  assert.equal(C.resolve(dead.session_id,[dead]),null);
+  assert.equal(C.resolve(old.session_id,[{...old,replaced_by:dead.session_id},dead]),null,'a replacement on an offline PC is not followed');
+  assert.equal(C.resolve(old.session_id,[old,dead]),null,'nor is a same-game relaunch there');
+  const followed=[];
+  const ctl=C.create({current:()=>old,read:async()=>[old,dead],follow:async next=>followed.push(next.session_id)});
+  await ctl.poll();assert.deepEqual(followed,[]);
+  assert.equal(C.commandSession(dead.session_id,[dead]),null);
+  assert.equal(C.resolve(fresh.session_id,[fresh]),fresh,'a PC that answers is unchanged');
+});
+
 test('a warm MercMode view follows both turns while commands keep their selected game',()=>{
   const a={...fresh,session_id:'worker-a',game_id:'re5'};
   const b={...fresh,session_id:'worker-b',game_id:'re4'};

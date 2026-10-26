@@ -61,3 +61,7 @@ def test_running_session_on_an_offline_pc_is_flagged(cfg):
     client = TestClient(app, headers={"Authorization": f"Bearer {cfg.token()}"})
     rows = {r["session_id"]: r for r in client.get("/api/sessions").json()}
     assert rows["ghostpc-s1"].get("worker_online") is False
+    # the desktop shell's live list (PiP, docking, saved-view restore) and the view's banner carry it too (2026-10-26)
+    live = {r["session_id"]: r for r in client.get("/api/sessions", params={"include_ended": "false"}).json()}
+    assert live["ghostpc-s1"].get("worker_online") is False
+    assert client.get("/api/sessions/ghostpc-s1/stream/health").json().get("worker_online") is False

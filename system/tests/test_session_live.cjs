@@ -50,6 +50,15 @@ test('not live: says which PC and why, as the header, the list and the view show
   assert.equal(SL.judge(streamed({ last_frame_age: SL.STALE_S }), [SPARK], NOW).live, true, 'the threshold itself is still live');
 });
 
+test('a row the server flagged worker_online false is offline even before the PC list is loaded (#2870)', () => {
+  const dead = native({ worker_online: false });
+  assert.deepEqual([kind(dead, null), kind(dead, []), kind(dead)], ['offline', 'offline', 'offline']);
+  const v = SL.judge(dead, null, NOW);
+  assert.equal(v.text, 'JAYBUILTFINALE is offline'); assert.match(v.why, /stopped answering/); assert.equal(v.live, false);
+  assert.equal(kind(native({ worker_online: true }), [{ ...JAY, online: false }]), 'offline', 'a stale flag never overrides an offline PC');
+  assert.equal(kind(native({ worker_online: true })), 'live');
+});
+
 test('the view for a game with no picture: why where the picture goes, Retry / Stop / Relaunch under it', () => {
   const verdict = SL.judge(native({ last_frame_age: 95.4 }), [JAY], NOW);
   const html = SL.html({ sid: native().session_id, verdict, title: 'SoulCalibur (USA)', auth: 'token=t', online: true });
@@ -67,9 +76,9 @@ test('the view for a game with no picture: why where the picture goes, Retry / S
 test('the shell asks the rule everywhere a game elsewhere is offered', () => {
   const web = fs.readFileSync(path.join(__dirname, '../clients/web/index.html'), 'utf8');
   assert.match(web, /<script src="\/viz\/session-live\.js"><\/script>/);
-  assert.match(web, /pics = new Map\(run\.map\(x => \[x\.session_id, sessionIsLocal\(x\) \? \{ live: true \} : GBoxSessionLive\.judge\(x, ws, nowS\)\]\)\)/, 'header icons');
+  assert.match(web, /pics = new Map\(run\.map\(x => \[x\.session_id, sessionIsLocal\(x\) && x\.worker_online !== false \? \{ live: true \} : GBoxSessionLive\.judge\(x, ws, nowS\)\]\)\)/, 'header icons (a game here on an offline worker too, #2870)');
   assert.match(web, /\$\{v\.live \? "" : '<i class="np">no picture<\/i>'\}/);
-  assert.match(web, /const pic = s => s\.state === "running" && !sessionIsLocal\(s\) \? GBoxSessionLive\.judge\(s, ws, nowS\) : \{ live: true \};/, 'the list');
+  assert.match(web, /const pic = s => s\.state === "running" && \(!sessionIsLocal\(s\) \|\| s\.worker_online === false\) \? GBoxSessionLive\.judge\(s, ws, nowS\) : \{ live: true \};/, 'the list (a game here on an offline worker too, #2870)');
   assert.match(web, /\$\{verdict && !verdict\.live \? GBoxSessionLive\.html\(\{ sid, verdict, title: s\.title, auth: tq\(\), online: !!hostPC\?\.online \}\)/, 'the view');
   assert.match(web, /if \(\$\("#no-picture"\)\) GBoxSessionLive\.mount\(document, \{ sid, api, stop, relaunch, onLive: \(\) => show\("Sessions", sid, mode\) \}\);/);
   const relaunch = web.slice(web.indexOf('async function relaunchSession('), web.indexOf('async function runJob('));

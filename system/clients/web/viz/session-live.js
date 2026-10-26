@@ -23,11 +23,13 @@
     const pc = s?.detail?.worker_name || w?.name || "the other PC";
     const out = (live, kind, text = "", why = "", age = null) => ({ live, kind, pc, text, why, age });
     if (!s || s.state !== "running") return out(false, "ended", "ended", "This session has ended.");
+    const offline = () => out(false, "offline", `${pc} is offline`,
+      `${pc}'s gBox worker stopped answering, so there is no picture of this game. It shows here again as soon as ${pc} is back.`);
+    if (s.worker_online === false) return offline();           // the server flagged its PC offline (#2870), whatever the PC list says
     if (!Array.isArray(workers) || !workers.length) return out(true, "unknown");
     if (!w) return out(false, "gone", `${pc} is no longer connected`,
       `The gBox worker that started this game on ${pc} is gone (it restarted or was removed), so there is nothing to show. Relaunch the game to play it again.`);
-    if (!w.online) return out(false, "offline", `${pc} is offline`,
-      `${pc}'s gBox worker stopped answering, so there is no picture of this game. It shows here again as soon as ${pc} is back.`);
+    if (!w.online) return offline();
     const native = !!s.detail?.local_window, features = w.features || [];
     if (native && !features.includes("session_stills"))
       return features.includes("desktop_stream") ? out(true, "screen") : out(false, "noscreen", `${pc} can't share its screen`,
