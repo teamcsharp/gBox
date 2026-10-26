@@ -374,6 +374,9 @@ class LaunchIn(BaseModel):
                                            # one input device per player (PS3 in RPCS3 on Windows: player 1 = gBox's
                                            # keyboard pad, not the operator's controller). jump (a demo) implies it there.
                                            # "" = the operator's controller (normal Play)
+    local_build_ok: bool = False           # a demo (the screensaver): when the collection has a newer `mod` this job may
+                                           # not copy here (gbox/storage_policy.py), the copy already on this PC plays.
+                                           # Never set for tests: they must run the current build or fail.
 
 class LaunchOut(BaseModel):
     session_id: str
@@ -895,7 +898,16 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             from . import filemods
             if local_mod is None and ctx.server:            # not here yet, or the local copies are an older build
                 ctx.progress(20, f"Fetching mod {inp.mod} from the central collection (Spark)")
-                launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
+                from .storage_policy import BuildNotOptedIn
+                try:
+                    launch_mod = filemods.stage(ctx.config, ctx.server, ctx.headers, g.game_id, inp.mod, ctx.progress)
+                except BuildNotOptedIn:
+                    # a demo may play the older copy this PC already has; a test must not (it would test the wrong build)
+                    if not (inp.local_build_ok and (filemods.mod_dir(ctx.config, g.game_id, inp.mod) / ".gbox-mod.json").is_file()):
+                        raise
+                    ctx.progress(20, f"Playing the copy of {inp.mod} on this PC: the newer build reaches this PC only "
+                                     "when the operator downloads it")
+                    launch_mod = inp.mod
             src = local_mod or filemods.launch_path(ctx.config, g.game_id, src, launch_mod)
             if g.platform == "n64" and src.is_file() and src.suffix.lower() in (".z64", ".n64", ".v64"):
                 from . import n64_mod_finalize           # verified copy for recognized stale header CRC

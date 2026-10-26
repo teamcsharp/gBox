@@ -329,3 +329,44 @@ def test_sendable_builds_for_automatic_work():
     assert SP.sendable(s, c, w, "g1", "elsewhere")
     assert SP.sendable(s, c, {"name": "spark", "os": "linux"}, "g1", "anything"), "the collection host has them all"
     assert SP.sendable(s, Config(builds={"auto_send": True}), w, "g1", "zz")
+
+
+def test_a_demo_plays_the_older_copy_on_this_pc_but_a_test_does_not(monkeypatch, tmp_path):
+    """The collection rebuilt a build this PC has; this job may not copy the new one: the screensaver's demo
+    (local_build_ok) plays the copy here, any other automatic launch fails with the refusal."""
+    import sys
+    from gbox import tools as T
+    from gbox.config import EmulatorConfig, Library
+    from gbox.models import CatalogEntry
+    from gbox.registry import Ctx
+    c = Config(data_dir=tmp_path / "d", cache_dir=tmp_path / "c")
+    c.libraries.append(Library(id="lib", paths={"windows": str(tmp_path / "share"), "linux": str(tmp_path / "share")}))
+    c.emulators["dreamcast"] = EmulatorConfig(adapter="command", executable=sys.executable,
+                                              args=["-c", "import time; time.sleep(30)", "{rom}"])
+    write = lambda p, b: (p.parent.mkdir(parents=True, exist_ok=True), p.write_bytes(b))   # noqa: E731
+    write(tmp_path / "share" / "base.gdi", b"base")
+    game = CatalogEntry(game_id="g", title="Demo game", platform="dreamcast", library="lib", rel_path="base.gdi",
+                        source_paths=[], hashes={}, size=4, format="gdi", runtimes={}, profile_id="g")
+    folder = filemods.mod_dir(c, "g", "cast_a")
+    write(folder / "cast.gdi", b"old build")
+    (folder / ".gbox-mod.json").write_text(json.dumps({"image": "cast.gdi"}))
+    monkeypatch.setattr(filemods, "current_local_copy", lambda *a, **k: None)          # the collection has a newer one
+
+    def refuse(*a, **k):
+        raise SP.BuildNotOptedIn("build cast_a would have to be copied onto PC, but the operator has not downloaded it there")
+    monkeypatch.setattr(filemods, "stage", refuse)
+    monkeypatch.setattr(T, "SESSIONS", {})
+    monkeypatch.setattr(T, "track_emulator", lambda *a, **k: None)
+    ctx = Ctx(c, job_id="j1", worker="w1")
+    ctx.server = "http://spark"
+    with pytest.raises(SP.BuildNotOptedIn):
+        T._launch_game(T.LaunchIn(game=game, mod="cast_a"), ctx)
+    try:
+        demo = Ctx(c, job_id="j2", worker="w1")
+        demo.server = "http://spark"
+        out = T._launch_game(T.LaunchIn(game=game, mod="cast_a", local_build_ok=True), demo)
+        assert T.SESSIONS[out["session_id"]][1]["_rom_path"] == str(folder / "cast.gdi")
+        assert any("Playing the copy of cast_a on this PC" in line for line in demo.log)
+    finally:
+        for sid in list(T.SESSIONS):
+            T.session_op(T.SessionIn(session_id=sid, op="stop_game"), Ctx(c, job_id="s", worker="w1"))

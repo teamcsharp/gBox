@@ -416,7 +416,8 @@ class Screensaver:
                 'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'))}}
             if merc_pick.get('selection'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
-        inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
+        inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
+            {"mod": build["name"], "local_build_ok": True} if build else {})    # a stale copy here still demos
         if warm_ok and not mercmode.memory_reason(w, now):
             # a cold launch of a title with nothing warm keeps the pool's paused games (with too little memory the
             # worker's one-game rule closes them, without a save: nothing was played in them)
