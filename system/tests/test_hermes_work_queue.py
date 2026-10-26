@@ -950,3 +950,38 @@ def test_a_priority_only_node_is_not_starved_by_the_lane_balance(env, monkeypatc
                                                              'max_parallel_jobs': 16}})
     result = q.tick(now=1000)
     assert '7' * 16 in [d['request_id'] for d in result['dispatched']]
+
+
+def test_a_paid_node_skips_a_ticket_that_keeps_making_no_progress(env, monkeypatch):
+    # operator 2026-10-26: "Make sure that kimi isn't being burnt on requests that are failing" - #1440 (62 attempts, 11
+    # no-progress runs), #1813 (22 / 21), #1915 (25 / 25) were still going to Kimi / Z.AI every 6 h
+    from gbox import hermes_pool
+    calls, jobs = _required_node_tick(monkeypatch, [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
+                                                    request('7' * 16, title='RE6 driver'),
+                                                    request('8' * 16, title='RE6 textures')])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    inner = q._api
+
+    def api(path, body=None):
+        if path == '/api/hermes/local/nodes':
+            r = inner(path, body)
+            return r | {'capacity': 8, 'nodes': [n | {'capable': n['name'] == 'sparkDeux'} for n in r['nodes']]}
+        return inner(path, body)
+    monkeypatch.setattr(q, '_api', api)
+    data = q._read()
+    data['priority'] = ['7' * 16, '8' * 16]
+    data['items']['inbox:' + '7' * 16] = {'lane': 'inbox', 'request_id': '7' * 16, 'attempts': 22, 'last_dispatched': 0,
+                                          'created': 1, 'no_progress_runs': q.PAID_NO_PROGRESS_MAX}
+    data['items']['inbox:' + '8' * 16] = {'lane': 'inbox', 'request_id': '8' * 16, 'attempts': 2, 'last_dispatched': 0,
+                                          'created': 1, 'no_progress_runs': q.PAID_NO_PROGRESS_MAX - 1}
+    q._save(data)
+    nodes = hermes_pool.node_settings()
+    nodes['sparkDeux'] = nodes['sparkDeux'].model_copy(update={'priority_only': True, 'max_parallel_jobs': 8})
+    monkeypatch.setattr(hermes_pool, 'node_settings', lambda base=None: nodes)
+    import gbox.hermes_pool as HP
+    monkeypatch.setattr(HP, 'pool_limit', lambda: 16)
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'spark-local', 'model': 'gpt-oss:20b',
+                                                             'max_parallel_jobs': 16}})
+    result = q.tick(now=1000)
+    dispatched = [d['request_id'] for d in result['dispatched']]
+    assert '8' * 16 in dispatched and '7' * 16 not in dispatched, dispatched   # the failing one is not the paid node's
