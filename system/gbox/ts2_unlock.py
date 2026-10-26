@@ -130,13 +130,14 @@ DATA_SPAN = "0x802A1DA0-0x8046F9A0"
 LOADED_TEXT_BASE = "0x80003100"
 
 BLOCKERS = [
-    "Ghidra MCP bridge (127.0.0.1:8080) refused connections this run: list_segments, get_function_by_address, get_xrefs_to and decompile_function_by_address all failed with HTTPConnectionError [Errno 111] Connection refused.",
-    "Community TS2 code list (RC24 GTSE4F) addresses the NTSC-U retail image; the owned revision's loaded text base is 0x80003100, so those addresses do not resolve inside the owned DOL and are recorded as candidates only, not write targets.",
+    "Ghidra MCP bridge (127.0.0.1:8080) refused connections this run; ghidra_bridge job on JAYBUILTFINALE reports PyGhidra missing (gbox ghidra-bridge-install required offline). i9-NUC unavailable. No xref/lock-check analysis completed.",
+    "Community unlock-block addresses (0x8061435C-0x80614398) fall 6.07 MB beyond the owned DOL text base and 1.68 MB beyond BSS end - they do NOT resolve inside the owned DOL's loaded image (0x80003100-0x8046F9A0, 4.42 MB). The community list targets a different image base (NTSC-U retail DOL loads at a shifted base). The equivalent runtime block on the owned revision must be re-derived, not reused.",
+    "Mission-complete flag samples (0x802CB0DF/0x802F68F7/0x802C0D57) DO resolve inside owned DOL data segment d3 (file-backed, file offsets 0x2C80DF/0x2F38F7/0x2BDD57) - confirming the community list matches this build's mission layout, but the unlock block location differs.",
     "No lock-check xref analysis, menu-eligibility trace or runtime save inspection completed, so no category can be marked 'unlocked' and no writer is published."
 ]
 NEXT_STEPS = [
-    "Bring the Ghidra bridge back up (or re-open the owned DOL through the Spark gbox ghidra_bridge) and run get_xrefs_to on the owned build's own progress/save flag bytes.",
-    "Locate the owned revision's mission/level-select table and per-mission 'completed' flag array in the measured data segments 0x802A1DA0-0x8046F9A0 and derive the equivalent of the community 0x04614360 block.",
+    "Bring the Ghidra bridge back up (install PyGhidra offline on JAYBUILTFINALE via `gbox ghidra-bridge-install`, or re-open on Spark) and run get_xrefs_to on the owned DOL's mission-flag bytes in data segment d3 (0x2C80DF, 0x2F38F7, 0x2BDD57) to find the code that reads/writes the mission-complete table and the equivalent runtime unlock block.",
+    "Trace from the d3 mission-flag table to locate the owned revision's per-character/mode unlock block - the community 0x04614360 equivalent is at a different runtime address on this build (the community list's 0x806143xx block is out-of-DOL at a shifted image base).",
     "Determine whether TS2 stores progress in the memory-card save or in SRAM/EEPROM, then implement the monotonic progress writer behind verified=True.",
     "Re-run runtime acceptance on an idle authorised worker (i9-NUC or Spark) with an isolated save overlay: boot, select each discovered character and mode, second launch, then rollback."
 ]
@@ -885,8 +886,11 @@ def profile():
             "loaded_data_span": DATA_SPAN,
             "community_code_candidates": COMMUNITY_CODE_CANDIDATES,
             "community_code_caveat": (
-                "addresses come from the NTSC-U retail code list; they do not "
-                "resolve inside the owned revision and are hypotheses only"),
+                "unlock-block addresses (0x8061435C-0x80614398) are out-of-DOL on the "
+                "owned revision (6.07 MB beyond text base); mission-flag samples "
+                "(0x802CBxxx) resolve inside owned data segment d3 - the community "
+                "list matches this build's mission layout but the unlock block is at a "
+                "different runtime address"),
             "blockers": list(BLOCKERS),
             "next_steps": list(NEXT_STEPS),
         },
