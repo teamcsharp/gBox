@@ -26,7 +26,8 @@ STILL_R, STILL_S = 120.0, 3.0   # within this radius for this long: standing sti
 MINE_R = 250.0            # a ground mine this near a standstill: he stood on / by a bomb
 STATE_KEYS = ("phase", "fire_gate", "weapon_policy", "mine_status", "mine_retreat_status", "combat", "weapon",
               "bonus_target", "route", "stuck_reason", "shots", "hits", "misses", "kills", "last_shot", "target_evidence",
-              "aim_feedback", "qte_presses", "hits_taken", "combo", "enemies", "spawns", "hunt", "aim_guard", "boss")
+              "aim_feedback", "qte_presses", "hits_taken", "combo", "enemies", "spawns", "hunt", "aim_guard", "boss",
+              "last_hit_by", "death_cause")
 SHOTS_KEPT = 20           # the last shots of a round, each with the aim and gate the bot had when it fired (operator
                           # 2026-10-26: "see ... the aiming of the last 20 shots in a run ... how the aimbot will aim at a
                           # person then aim away and begin firing which misses")

@@ -31,6 +31,23 @@ main.dol):
                   0x28 frames 50-72, 0x29 frames 29-42.
   em id 0x42      a thrown weapon (hand axe, sickle, dynamite): an EmMgr slot of its own, position +0x94; dynamite
                   hurts within 800 (0x800CE1BC: radius 500 + 300, 1200 damage and a knock-down).
+
+The stage bosses (operator 2026-10-26, watching Leon die: "so i just watched leon just eat a chainsaw ... Does he not see
+these bosses? because they are high level threats that have to be dispatched"): boss() names them from RAM. Nothing in the
+em id or type byte sets them apart from the crowd - the disc's enemy set lists (etc/omake01.esl for r400, omake02.esl for
+r404; gbox.re4_navmap esl_read, profiles/gamedata/re4_r400_navmap.json 2026-10-20 / re4_r404_navmap.json 2026-10-23,
+room sha256 ca1ece99... / b07fc360...) give every Village Ganado em 0x16 with types 0x3 / 0x4 / 0xb / 0xc and every
+Waterworld soldier em 0x20 with types 0xe-0x16 - but their full health does: the Village holds six em 0x16 entries at
+hp 6500 (types 0xb / 0xc, Dr. Salvador) against 1200-1800 for the rest, the Waterworld three at 3500 and two at 5000
+(type 0x16: the Bella sisters / Super Salvador) against 400-1000 (hp_max +0x322 is that ESL health: live slot 32 of
+tests/fixtures/re4_threats.json carries 1800 = its ESL entry). So: hp_max >= BOSS_HP is a boss; in the chainsaw stages
+(CHAINSAW_ROOMS: r400 Village, r404 Waterworld) he is the chainsaw man - one hit kills (the melee table at module
++0x45B48: 9999 for the chainsaw), reach CHAINSAW_REACH; elsewhere (r402 Castle: Garrador, r403 Base: J.J.'s Gatling)
+a "boss": the target before any ordinary Ganado, no keep-out. profiles/gamedata/G4BE08-ram.json notes em type 0x18 as
+"the chainsaw man's checks in the attack routines" - no Mercenaries ESL entry has it, so it is not used here; the
+Tracker keeps every boss it sees ({id, type, hp_max, room} - Bot.stats "bosses") so the next round proves the table.
+The chainsaw man's own attack routine ids are not in ATTACKS yet: he is a threat from the moment he is live, eta =
+his swing's wind-up plus the time he needs to close to his reach.
 """
 from __future__ import annotations
 
@@ -72,6 +89,24 @@ APPROACH, CLOSE_SPEED = 2000.0, 2500.0  # a melee attack this far beyond its rea
 THROWN_HIT_R = 900.0                    # a thrown weapon passing this close to Leon is coming for him
 THROWN_MIN_SPEED = 800.0                # slower than this (units a second, on the ground plane): not flying
 DYNAMITE_R = 800.0                      # 0x800CE1BC: 500 + 300
+BOSS_HP = 3000                          # full health (+0x322) from here up: a stage boss. The ESLs put every ordinary
+                                        # Ganado at 400-1800 and the bosses at 3500-6500 (see the module docstring);
+                                        # conservative: 1.6x the strongest ordinary one, half the weakest boss
+CHAINSAW_ROOMS = frozenset({0x400, 0x404})   # Village (Dr. Salvador), Waterworld (Super Salvador, the Bella sisters)
+CHAINSAW_REACH = 1500.0                 # the saw lands from this far (a lunge + the blade; the 1200 swings' arc and more)
+CHAINSAW_SWING_S = 0.4                  # inside his reach the saw can land this soon (his attack ids are not known yet)
+BOSS_KINDS = ("chainsaw", "boss")       # Threat.kind of a boss that is on his feet and not in a known attack / hold
+REACH["chainsaw"] = CHAINSAW_REACH
+SEEN_MAX = 24                           # bosses kept in Tracker.bosses (one line each, for the stats)
+
+
+def boss(e: dict, room: int | None = None) -> str:
+    """The boss kind of a Ganado dict: "chainsaw" (one hit kills; the Village / Waterworld), "boss" (a Garrador, J.J.),
+    "" for an ordinary Ganado. By full health (BOSS_HP; the em id / type bytes do not tell them apart, see above). An
+    unknown room is taken as a chainsaw stage: the lethal reading is the safe one."""
+    if (e.get("hp_max") or 0) < BOSS_HP:
+        return ""
+    return "chainsaw" if room is None or room in CHAINSAW_ROOMS else "boss"
 
 
 def em_fields(d: bytes, o: int) -> dict:
@@ -131,7 +166,8 @@ def dying(e: dict) -> bool:
 @dataclass
 class Threat:
     slot: int
-    kind: str                       # an attack kind (swing, grab, throw, dynamite, rush, hold), "thrown" or "near"
+    kind: str                       # an attack kind (swing, grab, throw, dynamite, rush, hold), "thrown", "near", "down",
+                                    # or a boss on his feet: "chainsaw" / "boss" (BOSS_KINDS)
     eta: float                      # seconds until it can land (math.inf: not coming)
     pos: tuple                      # where to shoot (predicted at the shot), world units
     dist: float                     # ground distance from Leon now
@@ -140,6 +176,16 @@ class Threat:
     vel: tuple = (0.0, 0.0, 0.0)
     why: str = ""
     enemy: dict = field(default_factory=dict, repr=False)
+    boss: str = ""                  # boss(): "chainsaw" / "boss" / "" - whatever the kind (a boss mid-swing is "swing")
+    lethal: bool = False            # one hit kills Leon (the chainsaw)
+
+
+def hit_record(t: "Threat", now: float) -> dict:
+    """What hit Leon, kept for the round's report: the threat that was landing when his routine went to 1."""
+    e = t.enemy or {}
+    return {"slot": t.slot, "kind": t.kind, "boss": t.boss, "id": e.get("id"), "type": e.get("type"),
+            "hp": e.get("hp"), "hp_max": e.get("hp_max"), "dist": round(t.dist), "eta": round(t.eta, 2) if t.eta != math.inf else None,
+            "at": round(now, 2)}
 
 
 class Shots:
@@ -202,7 +248,10 @@ class Tracker:
         self.track: dict[int, tuple] = {}         # slot -> (t, pos, vel)
         self.flights: dict[int, dict] = {}        # thrown slot -> {"t0", "p0", "last", "vel"}
         self.leon_r0, self.leon_hit_at = 0, -math.inf
-        self.stats = {"attacks_seen": 0, "thrown_seen": 0, "prevented": 0, "avoided": 0, "landed": 0}
+        self.bosses: dict[tuple, dict] = {}       # (slot, id, type, hp_max) -> {slot, id, type, hp_max, kind, room, at}:
+                                                  # every boss seen this run (operator 2026-10-26: prove he sees them)
+        self.last_hit: dict | None = None         # hit_record of the threat landing when Leon was last hit / held
+        self.stats = {"attacks_seen": 0, "thrown_seen": 0, "prevented": 0, "avoided": 0, "landed": 0, "bosses_seen": 0}
 
     def _vel(self, slot: int, pos: tuple, now: float) -> tuple:
         prev = self.track.get(slot)
@@ -228,7 +277,9 @@ class Tracker:
         if not p:
             return []
         px, py, pz = p["pos"]
-        if (p.get("r") or (0,))[0] == 1 and self.leon_r0 != 1:
+        room = s.get("room")
+        hit_now = (p.get("r") or (0,))[0] == 1 and self.leon_r0 != 1
+        if hit_now:
             self.leon_hit_at = now                             # hit or held this tick
         self.leon_r0 = (p.get("r") or (0,))[0]
         out = []
@@ -237,6 +288,14 @@ class Tracker:
             k = e["slot"]
             live.add(k)
             vel = self._vel(k, e["pos"], now)
+            b = boss(e, room)
+            if b:
+                key = (k, e.get("id"), e.get("type"), e.get("hp_max"))
+                if key not in self.bosses and len(self.bosses) < SEEN_MAX:
+                    self.bosses[key] = {"slot": k, "id": e.get("id"), "type": e.get("type"), "hp_max": e.get("hp_max"),
+                                        "kind": b, "room": room, "at": round(now, 1)}
+                    self.stats["bosses_seen"] = len(self.bosses)
+            lethal = b == "chainsaw"
             if dying(e) or "r" not in e:
                 was = self.acts.pop(k, None)
                 if was is not None and was[0][0] == R_ACT and was[0][1] in ATTACKS:
@@ -255,7 +314,7 @@ class Tracker:
             d = math.hypot(ex - px, ez - pz)
             lead = (ex + vel[0] * self.lead_s, ey, ez + vel[2] * self.lead_s)
             if st[0] == R_ACT and st[1] in HOLDS:
-                out.append(Threat(k, "hold", 0.0, lead, d, st, since, vel, "holding Leon", e))
+                out.append(Threat(k, "hold", 0.0, lead, d, st, since, vel, "holding Leon", e, boss=b, lethal=lethal))
                 continue
             if st[0] == R_ACT and st[1] in ATTACKS:
                 kind, reach, lands = ATTACKS[st[1]]
@@ -267,9 +326,17 @@ class Tracker:
                     if kind in MELEE and d > reach:
                         eta = max(eta, (d - reach) / CLOSE_SPEED)   # still has to close in
                 if d <= reach + APPROACH or kind not in MELEE:
-                    out.append(Threat(k, kind, eta, lead, d, st, since, vel, f"r_no_1 {st[1]:#x}", e))
+                    out.append(Threat(k, kind, eta, lead, d, st, since, vel, f"r_no_1 {st[1]:#x}", e, boss=b, lethal=lethal))
                     continue
-            out.append(Threat(k, "down" if st[0] == R_HURT else "near", math.inf, lead, d, st, since, vel, "", e))
+            if b and st[0] != R_HURT:
+                # a boss on his feet is coming whatever his routine says (his attack ids are not in ATTACKS): the chainsaw
+                # lands CHAINSAW_SWING_S after he is within his reach, closing in at CLOSE_SPEED; a Garrador / J.J. has
+                # no eta - he is the target by rank (Bot._combat), not by time
+                eta = CHAINSAW_SWING_S + max(0.0, d - CHAINSAW_REACH) / CLOSE_SPEED if lethal else math.inf
+                out.append(Threat(k, b, eta, lead, d, st, since, vel, f"hp_max {e.get('hp_max')}", e, boss=b, lethal=lethal))
+                continue
+            out.append(Threat(k, "down" if st[0] == R_HURT else "near", math.inf, lead, d, st, since, vel, "", e,
+                              boss=b, lethal=lethal))
         for k in list(self.acts):
             if k not in live:
                 self.acts.pop(k, None)
@@ -277,7 +344,10 @@ class Tracker:
             if k >= 0 and k not in live:                      # (thrown weapons: negative keys, kept by _thrown)
                 self.track.pop(k, None)
         out += self._thrown(s.get("thrown", []), (px, py, pz), now)
-        return sorted(out, key=lambda t: (t.eta, t.dist))
+        out.sort(key=lambda t: (t.eta, t.dist))
+        if hit_now and out:
+            self.last_hit = hit_record(out[0], now)            # what landed: the threat closest to landing right now
+        return out
 
     def _thrown(self, items: list[dict], leon: tuple, now: float) -> list[Threat]:
         out, seen = [], set()
