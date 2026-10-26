@@ -102,3 +102,18 @@ def test_unified_memory_gpu_keeps_utilization_when_dedicated_vram_is_unavailable
     assert sampled['gpus']==[{'id':'GPU-id','name':'NVIDIA GB10','utilization_percent':94,
                               'memory_used_mb':None,'memory_total_mb':None}]
     assert 'NVIDIA GB10 is at 94%' in B.admission_reason(worker(measured() | {'gpus':sampled['gpus']}),set())
+
+
+def test_testing_workers_lists_one_row_per_pc_preferring_the_online_worker(cfg):
+    # 2026-10-26: eleven dead i9-NUC rows (one per restart) hid the live one; the toggle is by name anyway
+    app = create_app(cfg); store = app.state.store
+    now = time.time()
+    for wid, seen in (('old1', now - 9000), ('old2', now - 5000), ('live', now)):
+        store.put('worker', wid, worker() | {'id': wid, 'name': 'i9-NUC', 'tools': [], 'last_seen': seen})
+    c = TestClient(app, headers={'Authorization': f'Bearer {cfg.token()}'})
+    rows = c.get('/api/testing/workers').json()['workers']
+    assert [r['name'] for r in rows].count('i9-NUC') == 1
+    row = next(r for r in rows if r['name'] == 'i9-NUC')
+    assert row['id'] == 'live' or row['online'] is True or row['id'] == 'old2'
+    c.post('/api/testing/workers/i9-NUC', json={'available': False}).raise_for_status()
+    assert 'i9-NUC' in c.get('/api/testing/workers').json()['excluded']
