@@ -24,6 +24,7 @@ from . import adapters, catalog, ghost_runs, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
 from .node_rebuild import RebuildIn, RebuildOut
 from .registry import HOST_OS, Cancelled, Ctx, ToolUnavailable, Unsupported, tool
+from .storage_purge import StoragePurgeIn, StoragePurgeOut
 from .store import sha256
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -915,11 +916,20 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         if g.platform not in ("ps3", "ps4", "switch") and not (g.launch.get("archive_member") and not inp.mod) and ((emu and emu.stage_local) or (big and g.library and _stageable(src))):   # Folder games need sibling assets; Switch containers stream from the share.
             mb = src.stat().st_size / 2**20
             ctx.progress(30, f"Staging {src.name} ({mb:,.0f} MB) to the fast local cache")
-            receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
+            from .storage_policy import SystemDriveRefused
+            try:
+                receipt = _stage_for_launch(src, g, ctx, must_wait=bool(emu and emu.stage_local))
+            except SystemDriveRefused as e:              # the cache is on C:: no copy there, play from the share
+                if emu and emu.stage_local:
+                    raise
+                ctx.progress(30, f"Not staging {src.name}: {e} Playing it from the library share.")
+                receipt = {"background": True, "refused": str(e)[:300], "src": str(src), "dst": None, "copied": False}
             staging = {k: receipt[k] for k in ("copied", "hashed", "seconds", "mb_s", "resumed_from", "background",
-                                                "eta_s", "size") if k in receipt}
+                                                "eta_s", "size", "refused") if k in receipt}
             diag["staging"] = staging
-            if receipt.get("background"):
+            if receipt.get("refused"):
+                pass                                     # src stays the library share's file
+            elif receipt.get("background"):
                 left = f"~{receipt['eta_s'] / 60:,.0f} min at {receipt['mb_s']} MB/s" if receipt.get("eta_s") else "share not answering yet"
                 ctx.progress(70, f"Playing {src.name} from the library share; the cache copy continues in the background "
                                  f"({left}), so the next launch is local")
@@ -4665,8 +4675,15 @@ def build_local(inp: BuildLocalIn, ctx: Ctx):
     filemods._LOCAL_CACHE.clear()                                   # the next heartbeat lists it as on this PC
     info = BX.summary(folder)
     if inp.op == "download":
+        from . import storage_policy                                # the operator chose this build for this PC:
+        permit = getattr(ctx, "build_permit", None)                 # automatic work may use and refresh it here
+        mine = (permit or {}).get("operator") if isinstance(permit, dict) else storage_policy.operator_job(
+            {"actor": getattr(ctx, "actor", None), "agent_use": getattr(ctx, "agent_use", False)})
+        if mine:
+            storage_policy.write_local_receipt(ctx.config, inp.game_id, inp.name, job=str(getattr(ctx, "job_id", "")),
+                                               by=getattr(ctx, "actor", None) or "operator")
         ctx.progress(100, f"{inp.name} is on this PC ({info['size'] >> 20} MB): it plays offline")
-        return {"result": {"here": True, "already": bool(have and have == folder), **info}}
+        return {"result": {"here": True, "already": bool(have and have == folder), "receipt": bool(mine), **info}}
     r = httpx.get(f"{ctx.server}/api/catalog/{inp.game_id}", headers=ctx.headers, timeout=30)
     r.raise_for_status()
     g = CatalogEntry.model_validate(r.json())
@@ -5467,6 +5484,25 @@ def rebuild_node(inp: RebuildIn, ctx: Ctx):
     desktop app. Every console line streams through the job's progress (GET /api/jobs/{jid}/console)."""
     from . import node_rebuild
     return node_rebuild.run(inp, ctx)
+
+
+# --- free this PC's disk: unplayed games and automatically sent builds (gbox/storage_purge.py; operator 2026-10-26) ---
+
+@tool("storage_purge", "1.0", StoragePurgeIn, StoragePurgeOut, capabilities=["storage"], permissions=[P.STAGE],
+      timeout_s=3600,
+      side_effects=["dry_run=false: deletes this PC's cached game copies and builds named in `paths` (a reviewed dry "
+                    "run) that are still eligible; never saves, memory cards, states, runtime, data_dir or a running "
+                    "game's files"],
+      validate=lambda o, a: (["a dry run reported a deletion"] if o.dry_run and any(r.get("deleted") for r in o.items)
+                             else [] if o.dry_run or all(r.get("deleted") for r in o.items)
+                             else ["a deletion listed an item it did not remove"]),
+      validation="a dry run deletes nothing; a deletion lists only what it removed")
+def storage_purge(inp: StoragePurgeIn, ctx: Ctx):
+    """This PC's cache: games that are not favorites and not played here within unplayed_days, and builds sent here
+    automatically (no operator download, not a favorite, not played here, still in the Spark collection). dry_run
+    (the default) lists them with sizes and reasons; dry_run=false deletes the reviewed `paths` of a dry run."""
+    from . import storage_purge as SPG
+    return SPG.run(inp, ctx, sessions=SESSIONS)
 
 
 # --- Ghidra: run any installed Ghidra script headlessly (every script in the Tools table is dispatchable) ---

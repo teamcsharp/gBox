@@ -614,7 +614,10 @@ def write_cheats(plat: str, disc_id: str, stem: str, cheats: list[dict], code_pa
 # ================================================================ export
 
 def exports_root(cfg) -> Path:
-    return Path(cfg.data_dir) / "exports"
+    """data_dir/exports, never on a Windows system drive (gbox/storage_policy.py: moved under the cache, or refused
+    when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.game_dir(cfg, Path(cfg.data_dir) / "exports", "exports")
 
 
 def _link_or_copy(src: Path, dst: Path, write: bool):

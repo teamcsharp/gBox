@@ -2404,10 +2404,12 @@ def create_app(config: Config) -> FastAPI:
             reason = background_testing.guarded_reason(store, w)
             if not w.get('online'):
                 reason = 'Worker is offline; queued work is preserved.'
+            from . import storage_purge as storage_purge_mod      # "Free space: N GB unplayed" (the newest dry run)
             rows.append({k: w.get(k) for k in ('id','name','os','online','background_testing','resources',
                                                'idle_seconds','active_jobs')} | policy |
                         {'admission': {'allowed': reason is None, 'reason': reason},
-                         'budget_kind': 'admission', 'hard_throttle': False})
+                         'budget_kind': 'admission', 'hard_throttle': False,
+                         'storage': storage_purge_mod.summary(storage_purge_mod.latest(store, w['name']))})
         return {'excluded': sorted(ex), 'workers': rows}
 
     @app.post("/api/testing/workers/{wid}")
@@ -2472,6 +2474,12 @@ def create_app(config: Config) -> FastAPI:
                                                       "stopped": [x["session_id"] for x in stops]})
         return {"job_id": job.id, "worker": {"id": w["id"], "name": w["name"], "os": w.get("os")}, "stopped": stops,
                 "force": body.force}
+
+    # --- free a PC's disk: unplayed games and automatically sent builds (operator 2026-10-26; gbox/storage_purge.py) ---
+    from . import storage_purge as storage_purge_mod
+    storage_purge_mod.routes(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                             workers=lambda: workers(), wid=lambda x: _wid(x), origin_dep=request_origin,
+                             job_request=JobRequest, rejected_state=JobState.REJECTED)
 
     background_coordinator_cache = {'at': 0, 'runs': []}
     background_coordinator_lock = threading.Lock()
@@ -2749,7 +2757,9 @@ def create_app(config: Config) -> FastAPI:
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
                     store.put("job", j["id"], j)
                     store.audit(actor, "job.claim", j["id"], {"worker": wid})
-                    return j
+                    # what this job may copy onto that PC (gbox/storage_policy.py): handed over, never stored
+                    from . import storage_policy
+                    return j | {"build_permit": storage_policy.permit(store, config, j, w)}
         return Response(status_code=204)
 
     @app.post("/api/workers/{wid}/result")
@@ -3159,6 +3169,10 @@ def create_app(config: Config) -> FastAPI:
             from .job_routing import conflict
             if why := conflict(job.require_os, store.get("worker", job.require_worker)):
                 raise HTTPException(422, why)
+        if t.name == "storage_purge":                 # the facts about that PC (gbox/storage_purge.py), never a client's
+            from . import storage_purge as storage_purge_mod
+            job.input = storage_purge_mod.prepare_input(
+                app, store, job.input, store.get("worker", job.require_worker) if job.require_worker else None, origin)
         if t.name == "launch_game" and job.state == JobState.QUEUED:
             online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
             candidates = [w for w in online if (not job.require_worker or w["id"] == job.require_worker)

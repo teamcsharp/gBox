@@ -1030,6 +1030,13 @@ def win_resume_threads(tids: list[int]) -> int:
     return n
 
 
+def _extract_root(config, strict: bool = True):
+    """The extract cache (archives unpacked, CHDs converted, list sets staged): runtime/extract, never on a Windows
+    system drive (gbox/storage_policy.py: moved under the cache, or refused when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.extract_root(config, strict=strict)
+
+
 def _audio_prefetch(ad):
     """Start (once) the output-device choice + warm-up for a Windows launch (game_audio.Prefetch)."""
     if HOST_OS != "windows" or getattr(ad, "config", None) is None:
@@ -1164,6 +1171,7 @@ class RetroArchAdapter(CommandAdapter):
     def _write_cfg(self) -> Path:
         rt = self.config.runtime
         d = {k: rt / k for k in ("system", "saves", "states", "screenshots", "logs", "retroarch", "extract")}
+        d["extract"] = _extract_root(self.config, strict=False)   # archived content unpacks off the system drive
         for p in d.values():
             p.mkdir(parents=True, exist_ok=True)
         cfg = d["retroarch"] / f"session-{self.addr[1]}.cfg"
@@ -1388,7 +1396,7 @@ class RetroArchAdapter(CommandAdapter):
         if not rom.lower().endswith(".7z") or not z or not Path(z).exists() and not shutil.which(z):
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("7z-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("7z-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         if not out.exists() or not any(out.iterdir()):
             out.mkdir(parents=True, exist_ok=True)
             self._p(30, f"Extracting {Path(rom).name}")
@@ -1419,7 +1427,7 @@ class RetroArchAdapter(CommandAdapter):
                 lst = next((n for n in names if n.lower().endswith(".lst")), None)
                 if not lst:
                     return rom                                   # a normal MAME-style ROM set: Flycast reads the zip
-                out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+                out = _extract_root(self.config) / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
                 if not (out / lst).exists():
                     out.mkdir(parents=True, exist_ok=True)
                     self._p(30, f"Unpacking {Path(rom).name}")
@@ -1450,7 +1458,7 @@ class RetroArchAdapter(CommandAdapter):
         if len(bins) != 1:
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         staged = out / path.name
         if not staged.exists():
             out.mkdir(parents=True, exist_ok=True)
@@ -1469,7 +1477,7 @@ class RetroArchAdapter(CommandAdapter):
         if head[:8] != b"MComprHD" or int.from_bytes(head[12:16], "big") >= 5:
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("chd-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("chd-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         cue = out / (Path(rom).stem + ".cue")
         if not cue.exists():
             out.mkdir(parents=True, exist_ok=True)
@@ -1482,7 +1490,7 @@ class RetroArchAdapter(CommandAdapter):
         if self.platform != "pocketstation" or not rom.lower().endswith(".gme"):
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("gme-" + hashlib.sha1(rom.encode()).hexdigest()[:16]) / (Path(rom).stem + ".min")
+        out = _extract_root(self.config) / ("gme-" + hashlib.sha1(rom.encode()).hexdigest()[:16]) / (Path(rom).stem + ".min")
         if not out.exists():
             data = Path(rom).read_bytes()
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -2166,7 +2174,7 @@ class StandaloneAdapter(Adapter):
         if not rom.lower().endswith(".zip"):
             return rom
         import zipfile
-        out = self.config.runtime / "extract" / Path(rom).stem
+        out = _extract_root(self.config) / Path(rom).stem
         with zipfile.ZipFile(rom) as z:
             m = max(z.infolist(), key=lambda i: i.file_size)
             dst = out / Path(m.filename).name

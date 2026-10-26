@@ -430,6 +430,9 @@ class Ledger:
         err = str(job.get("error") or "")
         if job.get("cancel") or job.get("cancel_requested") or CANCELLED_RX.search(err):
             return "cancelled by the operator"
+        from .storage_policy import POLICY_RX
+        if POLICY_RX.search(err):
+            return "refused by the storage policy (a build not downloaded to that PC, or game data on its system drive)"
         if job.get("agent_use"):
             return "agent test launch (evidence capture / investigation): reported by its own task"
         if job.get("parent_request_id"):

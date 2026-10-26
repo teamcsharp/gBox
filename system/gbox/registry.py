@@ -36,6 +36,8 @@ class Ctx:
         self.config, self.job_id, self.worker = config, job_id, worker
         self.server: str | None = None       # control plane URL + auth headers (set by the worker; used by live sessions)
         self.headers: dict = {}
+        self.actor: str | None = None        # who asked for the job (worker._run_job), and what it may copy onto this PC:
+        self.build_permit: dict | None = None   # {operator, auto_send, receipts} stamped at claim (gbox/storage_policy.py)
         self.artifacts: list[tuple[str, bytes, str, dict]] = []
         self.log: list[str] = []
 
@@ -218,13 +220,15 @@ def _run_with_fitting(fn, inp, ctx: "Ctx", execution_deadline=None):
     stream, and their snapshot files are removed once the job has uploaded them."""
     import shutil
     from pathlib import Path
-    from . import fit_events
+    from . import fit_events, storage_policy
     work = Path(getattr(ctx.config, "cache", None) or ".") / "fitting" / str(ctx.job_id)
     deadline_token = _execution_deadline.set((ctx, execution_deadline))
+    job_token = storage_policy.JOB.set(ctx)      # filemods reads the job's build permit before copying a build here
     try:
         with fit_events.job(ctx.progress, work):
             return fn(inp, ctx)
     finally:
+        storage_policy.JOB.reset(job_token)
         _execution_deadline.reset(deadline_token)
         if ctx.server:
             shutil.rmtree(work, ignore_errors=True)
