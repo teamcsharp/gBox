@@ -22,6 +22,7 @@ from .agent_contracts import validate_cheat_call
 
 from . import adapters, catalog, ghost_runs, provision, rewind, ring_record, uap
 from .models import CatalogEntry, Permission as P
+from .node_rebuild import RebuildIn, RebuildOut
 from .registry import HOST_OS, Cancelled, Ctx, ToolUnavailable, Unsupported, tool
 from .store import sha256
 
@@ -5303,6 +5304,23 @@ def provision_node(inp: ProvisionIn, ctx: Ctx):
 def provision_archives(inp: ProvisionIn, ctx: Ctx):
     """Install/verify only this worker's archive backend. Older workers cannot accidentally run full setup."""
     return provision_node(ProvisionIn(archives_only=True), ctx)
+
+
+# --- rebuild & relaunch this node from another gBox instance (gbox/node_rebuild.py; operator 2026-10-26) -------------
+
+@tool("rebuild_node", "1.0", RebuildIn, RebuildOut, capabilities=["provision"], permissions=[P.INSTALL], timeout_s=3600,
+      side_effects=["git pull in a checkout with .git (never the share; the Spark's deploy gate stays the operator's)",
+                    "pip installs this node's Python packages into the worker's own interpreter",
+                    "npm installs the desktop app's packages when clients/desktop/package.json changed",
+                    "runs gbox setup as a self-check",
+                    "restarts this node's worker and desktop app (the Spark: gbox.service, after the deploy's idle check)"],
+      artifacts=["rebuild.log"], validate=lambda o, a: [f"step failed: {s}" for s in o.failed],
+      validation="every rebuild step reports ok/skipped/warn")
+def rebuild_node(inp: RebuildIn, ctx: Ctx):
+    """Rebuild & relaunch this node: update its code, reinstall its packages, self-check, then restart its worker and
+    desktop app. Every console line streams through the job's progress (GET /api/jobs/{jid}/console)."""
+    from . import node_rebuild
+    return node_rebuild.run(inp, ctx)
 
 
 # --- Ghidra: run any installed Ghidra script headlessly (every script in the Tools table is dispatchable) ---

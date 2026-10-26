@@ -844,8 +844,9 @@ class SessionObservers:
 
     def tick(self):
         now = self.clock()
-        # Avoid fetching years of archived sessions from older API versions when idle.
-        live_sessions = [s for s in self.store.all('session') if s.get('state') == 'running']
+        # Avoid fetching years of archived sessions from older API versions when idle. Every 5 s on the Spark: the
+        # indexed running rows, not a decode of the whole session archive beside the games and their encoders.
+        live_sessions = self.store.running_sessions()
         sessions = self.api('/api/sessions?include_ended=false') if live_sessions else []
         workers = {w['id']: w for w in self.api('/api/workers')}
         active = {s['session_id']: s for s in sessions if s.get('state') == 'running' and s.get('game_id')

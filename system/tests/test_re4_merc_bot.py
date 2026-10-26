@@ -1160,3 +1160,33 @@ def test_you_are_dead_answers_no_so_the_next_round_draws_a_new_character():
 
 def test_the_trigger_taps_about_ten_times_a_second():
     assert B.PRESS_HOLD <= 0.05 and B.PRESS_GAP <= 0.1
+
+
+def test_the_rocket_launcher_never_enters_a_random_loadout():
+    # operator 2026-10-26: "the rocket launcher needs to always be replaced with a magnum of a random type"
+    from gbox import re_mods_tool as RM
+    assert 0x35 in RM.RANDOM_SKIP and all(m in (0x29, 0x2A, 0x2B) for m in RM.MAGNUMS)
+
+
+def test_fight_stamps_phase_and_combat_state_for_the_round_map():
+    now = [0.0]
+    m = world([((0, 0, 1500), True)])
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0, n=3)
+    assert bot.stats.get("phase") == "fight" and "slot" in str(bot.stats.get("combat"))
+    assert bot.stats.get("fire_gate") in ("on him", "off target: hold", "aim height: hold", "turning: hold")
+
+
+def test_run_forwards_the_round_loadouts_weapon_and_chance():
+    # 2026-10-26: "no handcannon in their inventory" - run() never passed ROUND_OP's weapon to random_loadout
+    from unittest.mock import MagicMock
+    from gbox import re_mods_tool as RM
+    seen = {}
+    orig = RM.random_loadout
+    RM.random_loadout = lambda ad, g, *a, **kw: seen.update(kw) or {"verified": True}
+    try:
+        RM.run(None, "random_loadout", g=MagicMock(), **B.ROUND_OP[1])
+    finally:
+        RM.random_loadout = orig
+    assert seen.get("weapon") == "handcannon" and seen.get("weapon_chance") == 0.5

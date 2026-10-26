@@ -865,7 +865,11 @@ class Combat:
         from .re5_weapons import DIRECT, WEAPONS
         weapon = WEAPONS.get(wid)
         self.needs_firing_position = False
-        if wid in (0x0F,0x36) or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None):
+        # a direct gun with no laser ray is laserless only once the gun is up and still shows none (the ray exists only
+        # while aiming: with the gun down every gun looked laserless, and that path lowers the gun and turns in place -
+        # round map 2026-10-26: 42 s standing still in 'fight', "laserless gun: lower weapon and turn toward target")
+        if wid in (0x0F,0x36) or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None
+                                  and self._ready(p)):
             return self._laserless_tick(snap, p, tgt, now, pl, wid, rounds, shot)
         self.laserless_feedback_since = None
         self.laserless_progress = None

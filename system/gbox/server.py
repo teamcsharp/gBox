@@ -35,6 +35,10 @@ from .worker_results import result_digest
 
 WORKER_TTL = 30.0
 MOMENT_WAIT_S = 240.0            # a report's moment snapshot: state_transfer's own limit is 180 s, a queued job gets the rest
+# tools whose progress reports are console lines (several per report, newest last) that the desktop's rebuild panel shows:
+# the job doc keeps the last CONSOLE_KEEP of them (GET /api/jobs/{jid}/console; gbox/node_rebuild.py)
+CONSOLE_TOOLS = {"rebuild_node"}
+CONSOLE_KEEP = 200
 WEB = Path(__file__).resolve().parent.parent / "clients" / "web" / "index.html"
 BRAND = Path(__file__).resolve().parent.parent / "assets" / "brand"
 # adapters whose second copy can't run beside the first on one PC (mGBA's GDB stub port is fixed): a relaunch closes
@@ -108,6 +112,10 @@ def create_app(config: Config) -> FastAPI:
     from . import cache_tiers                     # two-tier cache: recover + migrate before anything reads the cache
     cache_tiers.install(config)
     app = FastAPI(title="gBox", version="0.1.0")
+    # Before any route: a def endpoint's JSON answer is encoded in its threadpool thread, not on the event loop that
+    # carries every game stream (a polled 1.9 MB answer froze the app's view and Pine Box's feed: gbox/thread_json.py)
+    from .thread_json import ThreadJSONRoute
+    app.router.route_class = ThreadJSONRoute
     app.add_middleware(cache_tiers.TouchMiddleware)   # API traffic naming a game keeps it off the demotion list
     app.state.store = store
     from .character_collection import AutoCollection
@@ -2293,9 +2301,11 @@ def create_app(config: Config) -> FastAPI:
         # running_jobs is the Spark's own count. A worker reporting busy slots with none running here
         # has leaked them and will never claim the queued launch (#1294); the loader says so.
         running = store.running_job_counts()
-        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer
-        return [{k: v for k, v in w.items() if k != "local_builds"} | {"running_jobs": running.get(w["id"], 0)}
-                for w in workers()]
+        # local_builds (a PC's own build list, for GET /api/builds) stays out of this often-polled answer, and so do the
+        # build_sources of offline rows: ~75 KB of source hashes per stale registration that no check can use (they
+        # all need an online worker). 21 such rows made this 5-second poll 1.9 MB on 2026-10-26.
+        return [{k: v for k, v in w.items() if k != "local_builds" and (k != "build_sources" or w["online"])}
+                | {"running_jobs": running.get(w["id"], 0)} for w in workers()]
 
     def idle_worker(tool: str = "launch_game") -> dict:
         """Choose the other Windows PC, using recent user input and live-game ownership."""
@@ -2338,7 +2348,14 @@ def create_app(config: Config) -> FastAPI:
         from . import background_testing
         ex = background_testing.excluded(store)
         rows = []
+        # one row per PC name: the online worker, else the newest record (every restart registers a new worker id;
+        # 2026-10-26 the panel listed eleven dead i9-NUC rows and a tick on one of them changed nothing visible)
+        by_name: dict = {}
         for w in workers():
+            cur = by_name.get(w['name'])
+            if cur is None or (w.get('online') and not cur.get('online'))                     or (bool(w.get('online')) == bool(cur.get('online')) and (w.get('last_seen') or 0) > (cur.get('last_seen') or 0)):
+                by_name[w['name']] = w
+        for w in sorted(by_name.values(), key=lambda w: (not w.get('online'), w['name'].lower())):
             policy = background_testing.policy(store, w['name'])
             reason = background_testing.guarded_reason(store, w)
             if not w.get('online'):
@@ -2365,6 +2382,52 @@ def create_app(config: Config) -> FastAPI:
                 store.put('setting', background_testing.SETTING, setting | {'policies': policies})
         store.audit(actor, "worker.background_testing", w["id"], body.model_dump(exclude_none=True) | {'name': w['name']})
         return testing_workers(actor)
+
+    # --- rebuild & relaunch a PC from any gBox instance (operator 2026-10-26; gbox/node_rebuild.py) ------------------
+    class RebuildRequest(BaseModel):
+        force: bool = False      # also while the operator plays there (their game is saved and closed first)
+        restart: bool = True     # False: update and self-check only
+
+    @app.post("/api/workers/{name}/rebuild")
+    def worker_rebuild(name: str, body: RebuildRequest | None = None, actor=Depends(auth), origin=Depends(request_origin)):
+        """Queue `rebuild_node` on that PC (worker name or id) and answer its job id; the desktop follows the job's
+        console (GET /api/jobs/{jid}/console) and the PC's return (GET /api/workers). Refused while the operator plays a
+        non-bot game there unless force; agent/bot sessions (with force the operator's too) are saved and closed through
+        the normal stop path first. The operator's call only, never an agent's."""
+        body = body or RebuildRequest()
+        if operator_guard.is_agent(actor):
+            raise HTTPException(403, "Only the operator rebuilds a PC.")
+        w = next((x for x in workers() if x["name"] == name or x["id"] == _wid(name)), None)
+        if not w:
+            raise HTTPException(404, f"no gBox worker '{name}'")
+        if not w["online"]:
+            raise HTTPException(409, f"{w['name']} is offline: nothing can rebuild it until its worker is back.")
+        running = [s for s in store.running_sessions() if operator_guard.worker_of(s["session_id"]) == w["id"]]
+        mine = {s["session_id"] for s in _operator_busy(w["id"])}
+        title = lambda s: s.get("title") or s.get("game_id") or s["session_id"]   # noqa: E731
+        if mine and not body.force:
+            titles = ", ".join(sorted(title(s) for s in running if s["session_id"] in mine))
+            raise HTTPException(409, f"The operator is playing {titles} on {w['name']}. A rebuild saves and closes that "
+                                     "game and restarts the PC's worker and app; use force to do it anyway.")
+        origin = {**(origin if isinstance(origin, dict) else {}), "via": "worker_rebuild"}
+        stops = []
+        for s in running:
+            j = submit(JobRequest(tool="session_op", require_worker=w["id"],
+                                  input={"session_id": s["session_id"], "op": "stop_game", "args": {"moment": True}}),
+                       actor, origin)
+            stops.append({"session_id": s["session_id"], "job_id": j.id, "title": title(s),
+                          "operator": s["session_id"] in mine})
+        job = submit(JobRequest(tool="rebuild_node", require_worker=w["id"],
+                                input={"force": body.force, "restart": body.restart,
+                                       "stop_jobs": [x["job_id"] for x in stops]}), actor, origin)
+        if job.state == JobState.REJECTED:
+            hint = (" Its worker runs older code without the rebuild tool: restart that worker once (the app's Update & "
+                    "relaunch on that PC) and try again.") if "rebuild_node" in (job.error or "") else ""
+            raise HTTPException(409, (job.error or "the rebuild job was rejected") + hint)
+        store.audit(actor, "worker.rebuild", w["id"], {"name": w["name"], "job": job.id, "force": body.force,
+                                                      "stopped": [x["session_id"] for x in stops]})
+        return {"job_id": job.id, "worker": {"id": w["id"], "name": w["name"], "os": w.get("os")}, "stopped": stops,
+                "force": body.force}
 
     background_coordinator_cache = {'at': 0, 'runs': []}
     background_coordinator_lock = threading.Lock()
@@ -2408,10 +2471,17 @@ def create_app(config: Config) -> FastAPI:
                 "frames": frame.get("seq", 0), "app_available": frame.get("app_rect") is not None,
                 "games": sorted(frame.get("game_rects") or {})}      # sessions whose game window that screen shows (#2858)
 
+    def _known_worker(wid: str) -> tuple[str, bool]:
+        wid = _wid(wid)
+        return wid, store.get("worker", wid) is not None
+
     @app.post("/api/workers/{wid}/desktop/frame")
     async def desktop_frame_upload(wid: str, request: Request, actor=Depends(auth)):
-        wid = _wid(wid)
-        if not store.get("worker", wid):
+        # Up to 8 frames a second while a PC's screen is watched (the Other PC view, a broadcast's desktop crop). The
+        # store reads wait on the store lock, which a job claim holds for a whole admission pass: in a thread, so the
+        # event loop that carries every game stream never waits with them.
+        wid, known = await asyncio.to_thread(_known_worker, wid)
+        if not known:
             raise HTTPException(404, "worker not found")
         image = await request.body()
         if not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9") or len(image) > 8_000_000:
@@ -2965,8 +3035,8 @@ def create_app(config: Config) -> FastAPI:
             inp = t.In.model_validate(req.input).model_dump(mode="json")
         except Exception as e:
             raise HTTPException(422, f"input invalid: {e}")
-        if t.name == "mercmode" and inp.get("keep_warm") is None:
-            inp.pop("keep_warm", None)                 # an older worker's mercmode tool forbids the field, even as null
+        if t.name == "mercmode":                       # an older worker's mercmode tool forbids unknown fields, even as null
+            inp = {k: v for k, v in inp.items() if v is not None}
         if t.name == "evidence_capture":              # PR evidence: an in-server job driving agent test sessions
             return evidence_job(inp, actor)
         if t.name == "scene_capture":
@@ -3116,8 +3186,15 @@ def create_app(config: Config) -> FastAPI:
             if event is not None:
                 j["fitting"] = fit_events.fold(j.get("fitting"), event)
                 _keep_goals(jid, j["fitting"], event)
+            # a console tool batches several console lines in one report, newest last: the loading screen shows the
+            # newest, the job's console keeps the last CONSOLE_KEEP (other tools' reports are one line, unchanged)
+            lines = ([ln for ln in msg.split("\n") if ln.strip()] if j["tool"] in CONSOLE_TOOLS else [msg]) or [msg]
+            msg = lines[-1]
             j["progress"] = {"pct": max(0.0, min(100.0, p.pct)), "msg": msg, "ts": time.time()}
-            j["progress_log"] = (j.get("progress_log") or [])[-49:] + [msg]
+            j["progress_log"] = ((j.get("progress_log") or []) + lines)[-50:]
+            if j["tool"] in CONSOLE_TOOLS:
+                j["console"] = ((j.get("console") or []) + lines)[-CONSOLE_KEEP:]
+                j["console_seq"] = int(j.get("console_seq") or 0) + len(lines)
             store.put("job", jid, j)
         return {"ok": True, "cancel": bool(j.get("cancel"))}
 
@@ -3261,6 +3338,25 @@ def create_app(config: Config) -> FastAPI:
         job = store.get("job", jid) or _404()
         data = store.read_artifact(job["log_sha"]) if job.get("log_sha") else None
         return {"log": data.decode("utf-8", "replace")[-50000:] if data else ""}
+
+    @app.get("/api/jobs/{jid}/console")
+    def get_job_console(jid: str, after: int = 0, actor=Depends(auth)):
+        """The last CONSOLE_KEEP console lines of a console tool's job (rebuild_node) with a running line count, so a
+        poller fetches only what is new (?after=<seq> of its previous answer); other jobs give their progress log."""
+        j = store.get("job", jid) or _404()
+        lines = list(j.get("console") or j.get("progress_log") or [])
+        seq = int(j.get("console_seq") or len(lines))
+        if after > 0:
+            new = max(0, min(len(lines), seq - after))
+            lines = lines[len(lines) - new:] if new else []
+        wid = j.get("worker_id") or j.get("require_worker") or ""
+        w = store.get("worker", _wid(wid)) if wid else None
+        out = j.get("output") if isinstance(j.get("output"), dict) else {}
+        return {"id": jid, "tool": j["tool"], "state": j["state"], "seq": seq, "lines": lines,
+                "pct": float((j.get("progress") or {}).get("pct") or 0.0), "error": j.get("error"),
+                "finished": j.get("finished"), "cancel": bool(j.get("cancel")),
+                "worker": {"id": w["id"], "name": w.get("name"), "os": w.get("os")} if w else None,
+                "restart": out.get("restart"), "steps": out.get("steps"), "failed": out.get("failed")}
 
     @app.get("/api/receipts/{rid}")
     def get_receipt(rid: str, actor=Depends(auth)):

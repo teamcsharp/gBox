@@ -1286,7 +1286,8 @@ def install(app, store, config, auth, submit, workers, archive):
                     and old_job.get('state') not in ('failed','invalid','cancelled','rejected')):
                 # an older worker's mercmode tool forbids unknown fields and cannot warm-launch anyway
                 relay={k:v for k,v in desired.items()
-                       if k!='keep_warm' or mercmode.WARM_FEATURE in (worker.get('features') or [])}
+                       if (k!='keep_warm' or mercmode.WARM_FEATURE in (worker.get('features') or []))
+                       and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':body.host,**relay},
                     require_worker=worker['id']),actor=actor,
                     origin={'via':'MercMode local scheduler settings','worker':body.host})

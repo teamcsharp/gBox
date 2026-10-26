@@ -189,3 +189,26 @@ def test_deepseek_upstream_gets_its_own_thinking_switch(tmp_path, upstream):
     proxy = P.LocalLLM(lambda: D, gate=lambda: None, log_path=tmp_path/'calls.jsonl', transport=httpx.MockTransport(handle))
     asyncio.run(proxy.complete(dict(BODY)))
     assert seen[0]['thinking'] == {'type': 'disabled'} and 'chat_template_kwargs' not in seen[0]
+
+
+def test_an_upstream_429_holds_every_call_locally_until_it_cools(tmp_path):
+    # 2026-10-26: Kimi answered 429 page after page while 16 runs kept retrying it
+    seen, now = [], [1000.0]
+    K = S.model_copy(update={'upstream': 'https://api.kimi.com/coding/v1', 'model': 'kimi-for-coding', 'host_name': 'kimi'})
+
+    def handle(req):
+        seen.append(1)
+        return httpx.Response(429, json={'error': {'message': 'rate limited'}}, headers={'Retry-After': '5'})
+    proxy = P.LocalLLM(lambda: K, gate=lambda: None, log_path=tmp_path/'calls.jsonl',
+                       transport=httpx.MockTransport(handle), clock=lambda: now[0])
+    with pytest.raises(P.Busy) as first:
+        asyncio.run(proxy.complete(dict(BODY)))
+    assert first.value.status == 429 and len(seen) == 1
+    now[0] += 30                                              # still inside the 60 s minimum hold
+    with pytest.raises(P.Busy) as held:
+        asyncio.run(proxy.complete(dict(BODY)))
+    assert held.value.status == 429 and len(seen) == 1 and 'holding calls' in held.value.message
+    now[0] += 31
+    with pytest.raises(P.Busy):
+        asyncio.run(proxy.complete(dict(BODY)))
+    assert len(seen) == 2                                     # after the hold, one call goes out again

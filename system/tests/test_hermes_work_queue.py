@@ -899,3 +899,54 @@ def test_a_cooling_primary_route_does_not_halt_the_pool(env, monkeypatch):
     (q.delivery.state_dir() / 'feedback.json').write_text(_json.dumps({'cooldowns': {'spark-local/gpt-oss:20b': 9e12}}))
     result = q.tick(now=1000)
     assert result['status'] != 'waiting_for_route_supervisor'
+
+
+@pytest.mark.parametrize('error', ["GatewayUnavailableError: Gateway starting: deadline",
+                                   "RuntimeError: HTTP 429: Local inference: {'message': \"You've reached your limit\"}",
+                                   "RuntimeError: HTTP 429: Upstream rate limited: holding calls for 54 s",
+                                   "TimeoutError: timed out"])
+def test_a_run_that_never_did_agent_work_is_neither_a_failure_nor_a_review(env, monkeypatch, error):
+    # 2026-10-26: Kimi 429s and gateway restarts put 43 tickets into review holds and hour-long backoffs
+    from gbox import hermes_result_review
+    recorded = []
+    monkeypatch.setattr(hermes_result_review, 'record_result', lambda item, run: recorded.append(run['id']))
+    monkeypatch.setattr(hermes_result_review, 'config', lambda: {'enabled': True})
+    q.sync(env, {'count': 1, 'items': [favorite()]}, [], now=10)
+    item = env['items']['favorite:' + G]
+    item.update(job_id='job', dispatch_state='queued', last_dispatched=100, no_progress_runs=2)
+    run = {'id': 'run', 'started_at': '1970-01-01T00:01:40+00:00', 'status': 'failed', 'error': error}
+    q.reconcile(env, [{'id': 'job', 'enabled': False}], {'job': run}, set(), now=200)
+    assert item['no_progress_runs'] == 2 and item['retry_at'] == 320 and recorded == []
+    assert hermes_result_review.gate(item) is None
+
+
+def test_a_priority_only_node_is_not_starved_by_the_lane_balance(env, monkeypatch):
+    # 2026-10-26: 23 inbox runs against 2 favorites - the lane balance offered the paid node only favorites, and its
+    # priority-list filter then emptied the choice: Kimi / Z.AI idle for hours with 16 listed RE6 tickets eligible
+    from gbox import hermes_pool
+    calls, jobs = _required_node_tick(monkeypatch, [{'id': P, 'number': 1, 'title': 'parent', 'status': 'open'},
+                                                    request('7' * 16, title='RE6 driver')])
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    inner = q._api
+
+    def api(path, body=None):
+        if path == '/api/favorites':
+            return {'count': 2, 'items': [favorite('a' * 16), favorite('b' * 16)]}   # the least-loaded lane
+        if path == '/api/hermes/local/nodes':
+            r = inner(path, body)                                               # only the priority-only node seats work
+            return r | {'capacity': 8, 'nodes': [n | {'capable': n['name'] == 'sparkDeux'} for n in r['nodes']]}
+        return inner(path, body)
+    monkeypatch.setattr(q, '_api', api)
+    data = q._read(); data['priority'] = ['7' * 16]; q._save(data)
+    for n in range(3):                                     # three running inbox jobs: inbox is the busier lane
+        jobs.append({'id': f'busy{n}', 'name': q.PREFIX + 'inbox ' + ('9' * 15) + str(n), 'enabled': True,
+                     'schedule': {'kind': 'once'}})
+    nodes = hermes_pool.node_settings()
+    nodes['sparkDeux'] = nodes['sparkDeux'].model_copy(update={'priority_only': True, 'max_parallel_jobs': 8})
+    monkeypatch.setattr(hermes_pool, 'node_settings', lambda base=None: nodes)
+    import gbox.hermes_pool as HP
+    monkeypatch.setattr(HP, 'pool_limit', lambda: 16)                      # the fixture's pool (5) would seat the primary only
+    monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'spark-local', 'model': 'gpt-oss:20b',
+                                                             'max_parallel_jobs': 16}})
+    result = q.tick(now=1000)
+    assert '7' * 16 in [d['request_id'] for d in result['dispatched']]

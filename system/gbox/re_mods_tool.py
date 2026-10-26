@@ -863,7 +863,9 @@ def merc_loadout_list(g) -> dict:
             "note": "records run right after the game's own Merc loadout routine (0x80018CC4) when a run starts"}
 
 
-RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72}      # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to shoot Ganados with
+RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72, 0x35}   # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to
+                                                  # shoot Ganados with; the Rocket Launcher (operator 2026-10-26: "always be replaced
+MAGNUMS = (0x29, 0x2A, 0x2B)                      # with a magnum of a random type"): Broken Butterfly, Killer7, Killer7 w/ Silencer
 
 
 def random_pool(g) -> list[tuple[int, int | None]]:
@@ -883,15 +885,21 @@ def random_pool(g) -> list[tuple[int, int | None]]:
 
 
 def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, ammo: int = 200, on: bool = True,
-                   damage=None, fire_x=None, equip_now: bool = False, weapon: str = "") -> dict:
+                   damage=None, fire_x=None, equip_now: bool = False, weapon: str = "",
+                   weapon_chance: float = 1.0) -> dict:
     """The per-round randomizer (like re5 random_cheats / loadout): `guns` random distinct guns from the weapon table
     with their ammo, written as this character's Merc loadout records (the first is equipped); seed repeats a draw.
     damage (a firepower multiplier) is applied to every drawn gun's class so a weak pick still kills."""
     import random
     rng = random.Random(seed)
     pool = random_pool(g)
-    if weapon:                          # a fixed gun instead of a draw (operator 2026-10-24: "give Leon a rapid fire handcannon")
+    if weapon and (weapon_chance >= 1.0 or rng.random() < weapon_chance):
+        # a fixed gun instead of a draw (operator 2026-10-24: "give Leon a rapid fire handcannon"), weapon_chance of
+        # the time; otherwise the draw (operator 2026-10-26: "randomly assign weapons sometimes giving them random
+        # weapons from the campaign")
         wanted = str(weapon).lower().replace(" ", "")
+        if wanted in ("rocketlauncher", "rocket", "0x35"):      # never the rocket: a random magnum instead
+            wanted = R.item_name(rng.choice(MAGNUMS)).lower().replace(" ", "")
         pool = [p for p in pool if R.item_name(p[0]).lower().replace(" ", "") == wanted] or pool
     if not pool:
         raise RuntimeError("no givable weapons in the weapon table")
@@ -1039,7 +1047,9 @@ def _run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool
         res.update(grenade_safe(g, on))
     elif op == "random_loadout":
         res.update(random_loadout(ad, g, character or "leon", extra.get("seed"), extra.get("guns") or 1,
-                                  count or 200, on, damage, extra.get("fire_x"), bool(extra.get("equip_now"))))
+                                  count or 200, on, damage, extra.get("fire_x"), bool(extra.get("equip_now")),
+                                  weapon=str(extra.get("weapon") or ""),            # was never forwarded: the
+                                  weapon_chance=float(extra.get("weapon_chance", 1.0))))   # Hand Cannon never came
     elif op == "merc_loadout_list":
         res.update(merc_loadout_list(g))
     elif op == "item_ids":

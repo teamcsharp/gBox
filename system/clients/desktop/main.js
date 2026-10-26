@@ -179,7 +179,7 @@ async function startLocalControl() {
       '--port','18765','--name',s.workerName,...(!s.autoStartWorker?['--no-worker']:[])],
       {env,cwd:s.repoLocal,windowsHide:true});
     localControlProcess=child;let buffer='';localControlError='';
-    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid)});
+    const channel=clientHandoff.workerChannel(child,controlSecret,{verifyPid:pid=>verifyWorkerPeer(child,pid),onRelaunch:rebuildRelaunch});
     localControlChannel=channel;
     child.stdout.on('data',chunk=>{buffer+=String(channel.feed(chunk));let split;
       while((split=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,split);buffer=buffer.slice(split+1);
@@ -501,7 +501,7 @@ async function startWorkerInner(options) {
   }
   const thisWorker = worker;
   const control = STANDALONE ? null : clientHandoff.workerChannel(thisWorker, controlSecret,
-    { verifyPid: pid => verifyWorkerPeer(thisWorker, pid) });
+    { verifyPid: pid => verifyWorkerPeer(thisWorker, pid), onRelaunch: rebuildRelaunch });
   workerControl = control;
   workerTail = "";
   const out = d => { const t = d.toString(); workerTail = (workerTail + t).slice(-8000); send("task", "win-worker", t); };
@@ -1243,6 +1243,24 @@ ipcMain.handle("app:relaunch", async () => {
   setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 800);
   return true;
 });
+// Rebuild & relaunch from another gBox instance (gbox/node_rebuild.py, operator 2026-10-26): this PC's worker, once it
+// has updated its code and packages, asks over its authenticated parent pipe (client-handoff.cjs workerChannel) for the
+// app to relaunch; the worker restarts with the app. The delay lets the worker's job result reach the control plane,
+// where the requesting instance follows the console and waits for this PC to come back online.
+let rebuildRelaunching = false;
+async function rebuildRelaunch(v) {
+  if (rebuildRelaunching || quitting) return;
+  rebuildRelaunching = true;
+  const log = t => send("task", "rebuild", t);
+  const wait = Math.min(30000, Math.max(1000, Math.round((+v.delay_s || 5) * 1000)));
+  log(`rebuild job ${String(v.job || "").slice(0, 8)}: this PC's worker asked for a relaunch (${v.reason || "code updated"}); relaunching in ${wait / 1000} s\n`);
+  await new Promise(r => setTimeout(r, wait));
+  log("keeping the moment of this PC's running games…\n");
+  await keepMoments();
+  log("relaunching gBox…\n");
+  workerStopRequested = true;
+  setTimeout(() => { shutdownSessions(); app.relaunch(); app.exit(0); }, 500);
+}
 
 // ---------------- File > Decant… (gbox/decant.py): a zip someone else installs as a standalone gBox ----------------
 // The manifest (what goes in, what is left out and why) is shown before saving. Code from the canonical tree when it's
