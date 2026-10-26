@@ -76,6 +76,17 @@ def test_a_shot_long_after_the_last_aim_decision_is_recorded_as_stale(tmp_path):
     assert bot.round_shots[-1]["state"] == "stale" and "yaw_err" not in bot.round_shots[-1]
 
 
+def test_the_quick_turn_for_a_majini_behind_is_recorded_as_a_gun_down_turn(tmp_path):
+    behind = (0.0, 0.0, -400.0)
+    m = world(aiming=False, act_vt=0, enemy=behind)
+    bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
+    s = snap(m, enemy=behind)
+    s["laser"] = None
+    assert bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"] == {"ldown", "cross"}   # #1205's quick turn
+    assert bot.last_aim["state"] == "swing" and abs(bot.last_aim["facing"]) == 180.0
+    assert B.causes(bot.last_aim)[0] == "gun down / turning"
+
+
 def test_unattributed_impacts_are_recorded_but_never_train_the_calibration(tmp_path):
     bot = C.Combat(world(), {}, learn_dir=tmp_path, lessons=lambda row: None)
     bot.start_round(0.0)
@@ -147,6 +158,7 @@ def test_miss_causes_come_in_their_order_and_the_gun_down_turn_is_first():
     assert B.causes({"state": "readying"}) == ["no ray at the trigger"]
     assert B.aim_state("laserless gun: lower weapon and turn toward target") == "swing"
     assert B.aim_state("turning toward a front candidate") == "swing"
+    assert B.aim_state("quick turn: +150 deg behind") == B.aim_state("quick turn: 40 deg so far") == "swing"
     assert B.parse_combat(AIM_LINE) == {"state": "aim", "character": "barry", "zone": "body", "yaw_err": 1.0,
                                         "pitch_err": -0.5, "where": "body", "fire": True, "wid": 0x12}
     assert B.parse_combat("swinging round to him (gun down): +119 deg")["facing"] == 119.0

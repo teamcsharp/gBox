@@ -1129,11 +1129,11 @@ class Combat:
             # A ready weapon's measured first hit on him is stronger than body heading: the upper-body aim can
             # already be on target. Keep that shot instead of lowering the gun and restarting acquisition.
             self.near_ray_since = None
+            aim["state"] = "swing"                     # the quick turn too: the gun is down while the body turns
             quick = self._quick_turn(p, facing, now)
             if quick is not None:
                 return quick
             self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
-            aim["state"] = "swing"
             return {"hold": self._face(p, foot)}
         steer = lz is not None and steering_ray(lz, aim_at)
         feedback_key = (p.get("ptr"), key)

@@ -99,12 +99,12 @@ _LASERLESS = re.compile(r"yaw (?P<yaw>[-+]?\d+(?:\.\d+)?) pitch (?P<pitch>[-+]?\
 
 def aim_state(combat) -> str | None:
     """The aim state a combat line names: aim (steering the laser ray), readying (the gun coming up, no ray), swing
-    (the gun down while the body turns to him: the laser path's swing, the laserless / longbow turn, the front-candidate
-    turn), laserless, reacquire, out of range, other."""
+    (the gun down while the body turns to him: the laser path's swing and quick turn, the laserless / longbow turn,
+    the front-candidate turn), laserless, reacquire, out of range, other."""
     c = str(combat or "")
     if not c:
         return None
-    if c.startswith(("swinging round", "turning toward")) or "lower weapon and turn" in c \
+    if c.startswith(("swinging round", "turning toward", "quick turn")) or "lower weapon and turn" in c \
             or "finish committed body turn" in c:
         return "swing"
     if c.startswith("readying"):
