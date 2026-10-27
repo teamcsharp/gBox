@@ -370,13 +370,14 @@ def test_bot_raises_the_gun_again_and_waits_out_a_reload():
 
 def test_bot_quick_turns_for_one_behind():
     b, clock = brain()
-    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ("ldown",)
+    behind = (0.0, 0.0, -280.0)                                          # (the calm camera: only one close behind)
+    assert b.tick(bot_snap(behind))["hold"] == ("ldown",)
     clock[0] = 0.05
-    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ("ldown", "b")
+    assert b.tick(bot_snap(behind))["hold"] == ("ldown", "b")
     clock[0] = 0.1
-    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ()
+    assert b.tick(bot_snap(behind))["hold"] == ()
     clock[0] = 0.2
-    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ()            # it swings round by itself
+    assert b.tick(bot_snap(behind))["hold"] == ()                        # it swings round by itself
     assert b.stats["quick_turns"] == 1
 
 

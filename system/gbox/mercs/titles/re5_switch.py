@@ -288,6 +288,14 @@ RAMPAGE_FAMILIES = ("shotgun", "magnum")
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
                     "offscreen_aim_s", "whips", "rampage_swaps")
+# The calm camera (operator 16:47: "smoothly looking around so it's like organic and it doesn't cause any sort of
+# motion sickness because there's motion blur on the game"), shaped on the right stick every tick, whatever decided it
+# (the RAM aim lock waits: +0x3F5C is computed, a write does not stick - 16:55): a stick direction is never reversed
+# within CALM_REVERSE_S of the last press the other way (it coasts a moment first: calm_coasts); the body's turn with
+# the gun down (about TURN_SPEED_DEG_S held) is held to CALM_TURN_DEG_S on average by a turn budget (calm_caps); the
+# quick turn only for one within CALM_QUICK_R behind. spin_deg_s / spin_max_deg_s: his heading's mean and peak speed.
+CALM, CALM_REVERSE_S, CALM_TURN_DEG_S, TURN_SPEED_DEG_S, CALM_QUICK_R = True, 0.25, 110.0, 160.0, 300.0
+CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # Time bonuses first (operator 16:45: "the most important thing is capturing every time bonus and then maintaining the
 # combo"; 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... In Resident Evil Five, the only way
 # to grab a time bonus is to walk up to it and melee it ... after grabbing all the time bonuses, that's when the match
@@ -306,7 +314,7 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -1045,6 +1053,7 @@ class Bot:
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
         self._first_check, self._raise_is_reroll, self._reroll_next, self._close_sky_since = False, False, False, None
         self._ramp = None                                # the rampage: {"since", "main", "kills0", "retarget_at"}
+        self._calm = {"h": (0, -1e9), "v": (0, -1e9), "budget": 0.0, "t": None, "rot": None, "spin": [0.0, 0.0]}
         self._bonus_known, self._bonus_block, self._bonus = {}, {}, None   # statues seen; given up; the run under way
         self._timer_prev = None
         self._ramp_t, self._swap_at, self._restore = None, -1e9, None
@@ -1653,6 +1662,45 @@ class Bot:
         d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
         return abs(math.atan2(e["pos"][1] + CHEST_H - (p["pos"][1] + MUZZLE_H), max(d, 1.0)))
 
+    def _calm_sticks(self, act, snap, now) -> dict:
+        """The right stick shaped (CALM): no reversal within CALM_REVERSE_S, the gun-down turn held to CALM_TURN_DEG_S
+        on average; his heading's speed measured (spin_deg_s, spin_max_deg_s). A grab's mashing is left alone."""
+        c = self._calm
+        dt = 0.0 if c["t"] is None else max(0.0, min(now - c["t"], LOOK_STEP_MAX_S))
+        c["t"] = now
+        p = snap.get("player") or {}
+        rot = p.get("rot")
+        if rot is not None and c["rot"] is not None and dt > 0:
+            speed = abs(math.degrees(wrap(rot - c["rot"]))) / dt
+            c["spin"][0] += speed * dt
+            c["spin"][1] += dt
+            self.stats["spin_deg_s"] = round(c["spin"][0] / c["spin"][1], 1) if c["spin"][1] else 0.0
+            if speed < 2000:
+                self.stats["spin_max_deg_s"] = round(max(self.stats.get("spin_max_deg_s") or 0.0, speed), 1)
+        c["rot"] = rot
+        hold = act.get("hold")
+        if not CALM or hold is None or self.doing in ("held", "escape", "quick_turn"):
+            return act
+        keys = list(hold)
+        for axis, pair in (("h", ("rleft", "rright")), ("v", ("rup", "rdown"))):
+            d = 1 if pair[0] in keys else -1 if pair[1] in keys else 0
+            last_d, last_t = c[axis]
+            if d and last_d and d != last_d and now - last_t < CALM_REVERSE_S:
+                keys = [k for k in keys if k not in pair]    # a reversal: coast first
+                self.stats["calm_coasts"] += 1
+                continue
+            if d:
+                c[axis] = (d, now)
+        c["budget"] = min(c["budget"] + CALM_TURN_DEG_S * dt, 0.15 * TURN_SPEED_DEG_S)
+        if "zl" not in keys and any(k in keys for k in ("rleft", "rright")):
+            cost = TURN_SPEED_DEG_S * dt
+            if c["budget"] >= cost:
+                c["budget"] -= cost
+            else:
+                keys = [k for k in keys if k not in ("rleft", "rright")]   # over the turn rate: this tick coasts
+                self.stats["calm_caps"] += 1
+        return {**act, "hold": tuple(keys)}
+
     def _count_sticks(self, act, now) -> None:
         """The right stick's motion this tick: a key newly down (stick_onsets: the pulses), and the yaw turned the other
         way within 0.4 s of the last (aim_reversals: the camera swinging back)."""
@@ -2004,6 +2052,7 @@ class Bot:
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
+        act = self._calm_sticks(act, snap, now)
         self._count_sticks(act, now)
         try:
             self._look_tick(snap, now)
@@ -2229,7 +2278,7 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
-            if abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+            if abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and (not CALM or dist <= CALM_QUICK_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
