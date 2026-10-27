@@ -335,6 +335,60 @@ def test_while_the_operator_has_the_pad_a_round_end_loads_nothing(tmp_path, monk
     assert len(rows) == 1 and ad.load_keys == 0 and "instant_loads" not in stats
 
 
+def _death(m, sim, at):
+    """Leon dies `at` seconds in (health 0 with time on the clock): the round ends on "You Are Dead"."""
+    base, done = sim.sleep, []
+
+    def sleep(dt):
+        base(dt)
+        if sim.t >= at and not done:
+            done.append(sim.t)
+            m.put(PG + B.G_HP, ">h", 0)
+    return sleep
+
+
+def test_a_death_loads_the_next_round_and_never_answers_continue(tmp_path, monkeypatch):
+    monkeypatch.setattr(RS, "GROW_P", 0.0)
+    m = merc_world(room=0x400, timer_s=60.0)
+    ad = FakeDolphin(m, tmp_path)
+    store_state(library_for(ad, m), tmp_path, 0x402, "Ada")
+    sim = Sim(m, speed=0.0)
+    sim.sleep = _death(m, sim, 1.0)
+    sent = []
+    stats, rows, _ = run_play(ad, m, sim, lambda: sim.t > 3.0, tmp_path, monkeypatch, send=sent.append)
+    assert [r["witness"]["screen"] for r in rows] == ["dead"] and stats["instant_loads"] == 1
+    assert "continue_answer" not in stats and not any(e.get("key") == "dright" for rows_ in sent for e in rows_)
+
+
+def test_a_death_in_the_djs_round_keeps_continue_yes_or_replays_it_from_the_library(tmp_path, monkeypatch):
+    monkeypatch.setattr(RS, "GROW_P", 0.0)
+    for stored in (False, True):
+        root = tmp_path / ("stored" if stored else "none")
+        root.mkdir()
+        m = merc_world(room=0x402, timer_s=60.0)
+        ad = FakeDolphin(m, root)
+        lib = library_for(ad, m)
+        store_state(lib, root, 0x404, "Wesker")                      # another combination is always there
+        if stored:
+            store_state(lib, root, 0x402, "Ada")                     # ... and the DJ's own, in the second run
+        RM.ASKED[id(ad)] = {"player": 1, "stage": 1}                 # this round is the DJ's: Ada on the Castle
+        sim = Sim(m, speed=0.0)
+        sim.sleep = _death(m, sim, 1.0)
+        try:
+            stats, rows, _ = run_play(ad, m, sim, lambda: sim.t > 6.0, tmp_path, monkeypatch,
+                                      stats={"character": "Ada"})
+            if stored:                                               # an instant Continue: the DJ's round again
+                assert stats["instant_loads"] == 1 and stats["character"] == "Ada" and stats["stage"] == "Castle"
+                assert id(ad) in RM.ASKED                            # still the DJ's round (a death again: Yes)
+            else:                                                    # not stored: the native Continue Yes, no load
+                assert "instant_loads" not in stats and ad.load_keys == 0
+                assert stats["continue_answer"] == "yes: an asked-for round"
+            assert len(rows) == 1 and rows[0]["witness"]["screen"] == "dead"
+        finally:
+            RM.ASKED.pop(id(ad), None)
+            RM.REQUESTS.pop(id(ad), None)
+
+
 def test_a_state_without_the_package_gets_it_in_its_round_and_ops_follow_the_package_rule(tmp_path, monkeypatch):
     monkeypatch.setattr(RS, "GROW_P", 0.0)
     m = merc_world(room=0x400, timer_s=1.0)
@@ -346,7 +400,7 @@ def test_a_state_without_the_package_gets_it_in_its_round_and_ops_follow_the_pac
     applied = []                                                      # arm_round itself: the package only when missing
     monkeypatch.undo()
     monkeypatch.setattr(B, "apply_package", lambda ad_, skip=(): applied.append("package") or [])
-    monkeypatch.setattr(B, "apply_round", lambda ad_, equip_now=False: applied.append(("gun", equip_now)) or [])
+    monkeypatch.setattr(B, "apply_round", lambda ad_, equip_now=False, stats=None: applied.append(("gun", equip_now)) or [])
     st = {"hooks": "not in the loaded state", "rounds_hooked": 3, "rounds_hooked_seen": 3}
     B.arm_round(object(), st)
     assert applied == ["package", ("gun", True)] and st["hooks"] == "applied in round"

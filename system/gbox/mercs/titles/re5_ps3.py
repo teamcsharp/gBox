@@ -71,8 +71,13 @@ TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a m
 HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
-HEAL_SAFE_R, HEAL_CRITICAL = 500.0, 0.15   # no heal started with a Majini this near unless health is this low: RE5's
-                                       # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26)
+HEAL_SAFE_R, HEAL_CRITICAL = 400.0, 0.25   # no heal started with a Majini this near unless health is this low: RE5's
+                                       # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26). Was
+                                       # 500 / 0.15: 23 of today's 30 deaths came with a heal deferred, 14 from 1-3 HP -
+                                       # one more ordinary hit (84-196 HP, 91 % under 200) killed at 15 %. The stage's own
+                                       # heal_critical (impact_lessons: its largest single hit x HEAL_COVER) can raise it
+IMPACT_MELEE_R, IMPACT_CLOSE_R, IMPACT_BOSS_R = 250.0, 450.0, 700.0   # the nearest Majini at a hit: melee / close / boss
+                                       # kinds of attacker in the round map's hit events and the impact lessons
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}
 ENGAGE, SHOOT_RANGE, TOO_CLOSE = re5_combat.ENGAGE_R, re5_combat.ENGAGE_R, 110.0   # long shots across the yard (operator 2026-10-24)
 CLOSE_ESCAPE_S, CLOSE_ACQUIRE_S = 0.25, 1.0  # escape briefly, then give the gun time to become ready
@@ -296,6 +301,13 @@ def inventory(m, player: int) -> list:
 
 
 _LASER: dict = {}                      # id(memory) -> (the uLaserSight unit, memory): found once a round
+_LASER_MISS: dict = {}                 # id(memory) -> monotonic time of the last walk that did not find it
+# The FX line holds every effect unit (muzzle flashes, blood, sparks, smoke) and grows through a round: the laser sight
+# can sit hundreds of units in. The walk stopped at UI_MAX (64) and then cached and read the unit it stopped on - not a
+# laser - as the ray (2026-10-26: the same gun 2 % "laserless" in one round and 100 % in the next; after 16:13 the
+# Lightning Hawk 76 % and the AK-74 96 %, 1 hit in 25 shots, "no ray at the trigger" the top miss cause). Now: up to
+# LASER_WALK_MAX units, the vtable checked before anything is cached, a failed walk repeated at most every LASER_RESCAN_S.
+LASER_WALK_MAX, LASER_RESCAN_S = 1024, 0.3
 
 
 def laser(m) -> dict | None:
@@ -305,12 +317,20 @@ def laser(m) -> dict | None:
     hit = _LASER.get(id(m))
     u = hit[0] if hit and hit[1] is m else 0
     if not (ptr_ok(u) and u32(m, u) == LASER_VT):
+        now = time.monotonic()
+        missed = _LASER_MISS.get(id(m))
+        if missed is not None and missed[1] is m and now - missed[0] < LASER_RESCAN_S:
+            return None                     # walked a moment ago without finding it: not every tick
         su = u32(m, S_UNIT)
         u, n = (u32(m, su + UNIT_LINES + LINE_STRIDE * FX_LINE + LINE_FIRST) if ptr_ok(su) else 0), 0
-        while ptr_ok(u) and n < UI_MAX and u32(m, u) != LASER_VT:
+        while ptr_ok(u) and n < LASER_WALK_MAX and u32(m, u) != LASER_VT:
             u, n = u32(m, u + UNIT_NEXT), n + 1
-        if not ptr_ok(u):
-            return None
+        if not ptr_ok(u) or u32(m, u) != LASER_VT:
+            if len(_LASER_MISS) > 16:
+                _LASER_MISS.clear()
+            _LASER_MISS[id(m)] = (now, m)
+            return None                     # the walk ended without the laser: no ray (never another unit's fields)
+        _LASER_MISS.pop(id(m), None)
         if len(_LASER) > 16:
             _LASER.clear()
         _LASER[id(m)] = (u, m)
@@ -1299,6 +1319,13 @@ class Bot:
         # the operator's stalemate rule (gbox.mercs.stalemate): settings in stats (stalemate_cut_enabled / _s) from the
         # launch's MercMode block; the cut itself goes through re5_mods_tool.set_clock (the verified aGame owner write)
         self.stalemate = stalemate_rule.Rule(lambda: self.stats)
+        # every hit he takes, learned per stage (operator 2026-10-26: "I want the autobot trained from every impact") and
+        # each round's own verdict (gbox.mercs.round_audit: stats round_audit, the round map's "audit")
+        from ..impact_lessons import ImpactLessons
+        from ..round_audit import RoundAudit
+        self.impacts = ImpactLessons(self._learn_root / "impact_lessons.json")
+        self.audit = RoundAudit("BLUS30491")
+        self._hp_seen = None                    # (player ptr, hp) at the last tick: a fall is a hit taken
 
     def _can_hunt(self) -> bool:
         """The spawn hunt (LULL_S / _hunt_spawns: after a lull he walks to the spawn points this stage has shown) has
@@ -1853,7 +1880,14 @@ class Bot:
             if self.round_active:                           # the round's own gap (observe_round started it)
                 self._trace.meta.update(round_gap_s=self.stats.get("round_gap_s"),
                                         round_start_via=self.stats.get("round_start_via"))
+            audit = getattr(self, "audit", None)
+            if audit is not None:
+                audit.start(self.stats)
+                self._trace.auditor = lambda summary, trace: audit.finish(summary, trace, self.stats)
         p = snap.get("player")
+        if self._trace is not None and p and own_screen(snap) == "playing":
+            # the round's own character and weapon (the next round's menus change the stats before this map is written)
+            self._trace.annex.update(character=self.stats.get("character"), weapon=self.stats.get("weapon"))
         if self._trace is not None and p:
             mines = [row["pos"] for row in (snap.get("ground_mines") or {}).values()
                      if isinstance(row, dict) and row.get("pos")]
@@ -1873,7 +1907,13 @@ class Bot:
         trace.room = stage
         if trace.out_dir is not None:
             trace.out_dir = trace.out_dir.parent / stage
+        impacts = getattr(self, "impacts", None)
+        if impacts is not None:
+            trace.annex["impact_lessons"] = impacts.summary(self._stage_key())
+            trace.annex["heal_critical"] = round(self._heal_critical(), 3)
         summary = trace.finish()
+        if impacts is not None:
+            impacts.save()
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
             self.stats["last_round_verdict"] = summary.get("verdict")
@@ -1881,6 +1921,10 @@ class Bot:
             if report.get("shots"):                          # the round's ballistic report (with the hits he took)
                 self.stats["ballistics"] = report.get("line")
                 self.stats["last_ballistics"] = (summary.get("ballistics_files") or [None])[-1]
+            audit = summary.get("audit")
+            if isinstance(audit, dict):
+                self.stats["round_audit"] = {"verdict": audit.get("verdict"), "problems": audit.get("problems"),
+                                             "room": trace.room, "round_id": trace.round_id[:8]}
 
     def tick(self, snap: dict) -> dict:
         self.stats['mine_departure_yielded'] = False
@@ -1888,6 +1932,10 @@ class Bot:
             self._round_trace(snap)
         except Exception as exc:                                  # noqa: BLE001 - the map never stops the bot
             self.stats["round_map_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        try:
+            self._impact_watch(snap)                              # before this tick's decision: the stats name the
+        except Exception as exc:                                  # decision the hit landed in
+            self.stats["impact_error"] = f"{type(exc).__name__}: {exc}"[:160]
         self.map_goals.defer('Waiting for mandatory action, healing, mine retreat or nearby threats to clear')
         self._following_route = False
         p = snap.get("player")
@@ -2400,14 +2448,16 @@ class Bot:
                 if chase is not None:
                     return self._pursue(p, chase, mesh, snap.get("stage_prompt"), now)
             from . import re5_controls
+            laserless_gun = eq is not None and eq.get("type") == 1 and self.combat.laserless_now(eq.get("item"))
             if self.switch_pending is None and now - self.switch_at > SWITCH_EVERY_S \
                     and not snap.get('rotten_egg_only') \
-                    and (not close_foes or eq is None or not re5_controls.eligible(eq)) \
+                    and (not close_foes or eq is None or not re5_controls.eligible(eq) or laserless_gun) \
                     and not re5_controls.pinned(self._control_state or {}, snap, now):
                 blocked = {key for key, until in self.switch_blocked.items() if until > now}
-                other = re5_weapons.best_quick_slot(snap, tgt, blocked)
+                other = re5_weapons.best_quick_slot(snap, tgt, blocked, laserless=laserless_gun)
                 if other is not None:
-                    change = self._switch_weapon(other, now, "range/crowd/boss fit")
+                    change = self._switch_weapon(other, now, "no laser ray at close range: a laser gun"
+                                                 if laserless_gun else "range/crowd/boss fit")
                     if change:
                         return change
             self.target = tgt["slot"]
@@ -2856,16 +2906,79 @@ class Bot:
         HEAL_CRITICAL (operator 2026-10-26: "Im watching the bot sit idle and be attacked and fail to even dispatch these
         foes who are 1 foot away" - live 13:05, phase healing_inventory with 9 Majini on the field, 2 heals, 24 hits of
         86): the fight clears them first, the heal follows."""
-        if hp_max <= 0 or hp <= HEAL_CRITICAL * hp_max:
+        critical = self._heal_critical()
+        if hp_max <= 0 or hp <= critical * hp_max:
             return True
         near = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
                    and math.dist(p["pos"], e["pos"]) < HEAL_SAFE_R)
         if not near:
             self.stats.pop("heal_deferred", None)
             return True
-        self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}: fight first"
+        self.stats["heal_deferred"] = (f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}: fight first "
+                                       f"(heals anyway under {critical:.0%})")
         self.stats["heal_deferred_ticks"] = self.stats.get("heal_deferred_ticks", 0) + 1
         return False
+
+    def _stage_key(self) -> str:
+        return str(self.stats.get("stage") or "stage")
+
+    def _heal_critical(self) -> float:
+        """The share of health under which a heal starts even with Majini near: HEAL_CRITICAL, or this stage's own
+        (impact_lessons heal_critical: its largest single hit x HEAL_COVER - one more such hit must not kill)."""
+        from ..impact_lessons import HEAL_CRITICAL_MAX
+        impacts = getattr(self, "impacts", None)
+        if impacts is None:
+            return HEAL_CRITICAL
+        return impacts.value(self._stage_key(), "any", "heal_critical", HEAL_CRITICAL, HEAL_CRITICAL, HEAL_CRITICAL_MAX)
+
+    def _impact_watch(self, snap) -> None:
+        """A fall in his health since the last tick is a hit taken (operator 2026-10-26: "times the character was damaged"
+        - the round map had no record of them): the round map's "hit" event with the loss, the nearest Majini (its
+        distance, height, the angle off his facing, a boss or not: the attacker kind melee / close / boss / ranged), how
+        many stood within 4 m, what the bot was doing (phase, combat line, fire gate of the decision the hit landed in),
+        a heal deferred or under way; one lesson for the stage (impact_lessons), and the stage's heal_critical raised to
+        cover the largest hit seen there. Heals and a new player just move the baseline."""
+        p = snap.get("player") or {}
+        hp, ptr, hp_max = p.get("hp"), p.get("ptr"), p.get("hp_max")
+        last, self._hp_seen = self._hp_seen, (ptr, hp)
+        if (last is None or last[0] != ptr or not isinstance(hp, (int, float)) or not isinstance(last[1], (int, float))
+                or not 0 <= hp < last[1] or not p.get("pos")):
+            return
+        loss = last[1] - hp
+        pos, rot = p["pos"], p.get("rot")
+        foes = []
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0 or (e.get("hp_max") or 0) <= 1:
+                continue
+            dx, dz = e["pos"][0] - pos[0], e["pos"][2] - pos[2]
+            foes.append((math.hypot(dx, dz), e, math.degrees(wrap(heading(dx, dz) - rot)) if rot is not None else None))
+        foes.sort(key=lambda f: f[0])
+        near = foes[0] if foes else None
+        if near is None:
+            kind = "unseen"
+        elif self._boss(near[1]) and near[0] < IMPACT_BOSS_R:
+            kind = "boss"
+        else:
+            kind = "melee" if near[0] < IMPACT_MELEE_R else "close" if near[0] < IMPACT_CLOSE_R else "ranged"
+        st = self.stats
+        doing = f"{st.get('phase')}: {st.get('combat') or ''}"[:80]
+        stage = self._stage_key()
+        row = self.impacts.record(stage, kind, dist=near[0] if near else None, facing_deg=near[2] if near else None,
+                                  doing=doing, loss=loss, hp_max=hp_max)
+        if isinstance(hp_max, (int, float)) and hp_max > 0:
+            from ..impact_lessons import HEAL_COVER, HEAL_CRITICAL_MAX
+            row["heal_critical"] = round(self.impacts.set_at_least(stage, "any", "heal_critical",
+                                                                   loss / hp_max * HEAL_COVER, HEAL_CRITICAL,
+                                                                   HEAL_CRITICAL, HEAL_CRITICAL_MAX), 3)
+        crowd = sum(1 for d, _, _ in foes if d < 400.0)
+        st["last_impact"] = {k: v for k, v in row.items() if v is not None} | {"crowd_4m": crowd}
+        st["impacts"] = st.get("impacts", 0) + 1
+        if self._trace is not None:
+            self._trace.event(self.clock(), "hit", pos[0], pos[2], loss=loss, hp=hp, attack=kind, crowd_4m=crowd,
+                              **{k: row[k] for k in ("dist", "facing_deg", "facing", "doing", "heal_critical")
+                                 if row.get(k) is not None},
+                              gate=st.get("fire_gate"), heal=st.get("heal_deferred") or st.get("heal_status"),
+                              weapon=st.get("weapon"), boss=bool(near and self._boss(near[1])))
 
     def _heal(self, p, snap, now):
         """D-pad equips; Square uses the confirmed recovery item (Capcom PS3 manual, Actions pp16–17).

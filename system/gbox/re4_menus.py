@@ -299,6 +299,11 @@ def step(scr: dict) -> str | None:
 # The next round someone asked for (the MercMode DJ queue, re_mods mercs_select): adapter key -> {"player", "stage"}
 # (indexes into PLAYERS / STAGES, None = random). RandomSelections takes it at the next Select Player / Select Stage.
 REQUESTS: dict = {}
+# The request the round now playing fulfils (moved out of REQUESTS when that round starts, RandomSelections.round_up /
+# the instant rounds' load): a death in it keeps Continue Yes (re4_merc_bot.Bot._continue_answer) - the DJ's round is
+# replayed - until a round that is not the DJ's starts. Survives a bot hot reload like REQUESTS.
+ASKED: dict = {}
+RELOAD_KEEP = ("ASKED",)
 
 
 def request(key, character=None, stage=None) -> dict:
@@ -333,12 +338,16 @@ class RandomSelections:
         character the round-state library lacks, so it is captured there. A DJ request still comes first."""
         self.planned={'player':player,'stage':stage}
 
-    def round_up(self,player=None,stage=None):
+    def round_up(self,player=None,stage=None,keep_asked=False):
         """A round started. The playbook never asks screen() in a round, so this is where a DJ request taken at the
-        selects is done with (it stayed in REQUESTS and replayed every round before) and a plan is spent; player /
-        stage: a round that started from a save state names its own (the next draw avoids them)."""
+        selects is done with (it stayed in REQUESTS and replayed every round before: now it moves to ASKED for the round
+        it started, whose deaths keep Continue Yes) and a plan is spent; player / stage: a round that started from a save
+        state names its own (the next draw avoids them). keep_asked: the round is the DJ's still (a Continue Yes reload,
+        an instant retry of the DJ's round); any other round ends the DJ's."""
         if self.key is not None and REQUESTS.get(self.key) and self.player is not None:
-            REQUESTS.pop(self.key,None)
+            ASKED[self.key]=REQUESTS.pop(self.key)
+        elif self.key is not None and not keep_asked:
+            ASKED.pop(self.key,None)
         self.planned=None
         player=self.player if player is None else player
         stage=self.stage if stage is None else stage
@@ -386,7 +395,7 @@ class RandomSelections:
         with the same character, so every death kept him; No goes back through Select Player, where a different one is
         drawn (operator 2026-10-26: "why dont the character change between rounds? Stop picking the same character").
         A round someone asked for (REQUESTS) keeps Continue Yes."""
-        if scr.get('where')=='dead' and not (self.key is not None and REQUESTS.get(self.key)):
+        if scr.get('where')=='dead' and not (self.key is not None and (REQUESTS.get(self.key) or ASKED.get(self.key))):
             if not self.no_selected:
                 self.no_selected=True
                 return DPAD['right']

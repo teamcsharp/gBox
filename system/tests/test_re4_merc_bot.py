@@ -87,6 +87,19 @@ def facing(m, rot):
     m.put(PL + 0xA4, ">f", rot)
 
 
+def turn_done(bot, m, act, step=0.6):
+    """The fake Leon never moves, but a turn on the spot does turn him (the game would): up to `step` rad a tick towards
+    where the bot steers (Bot.go_target). A stuck is a run that does not move, never a turn (2026-10-26)."""
+    keys = act.get("hold") or set()
+    target = getattr(bot, "go_target", None)
+    if not (keys & {"left", "right"}) or keys & {"up", "r"} or target is None:
+        return
+    x, _, z = struct.unpack(">3f", m.rd(PL + 0x94, 12))
+    rot = struct.unpack(">f", m.rd(PL + 0xA4, 4))[0]
+    err = B.wrap(B.heading(target[0] - x, target[1] - z) - rot)
+    facing(m, rot + max(-step, min(step, err)))
+
+
 def set_pitch(m, rad):
     m.put(B.AIM_PITCH, ">f", rad / B.PITCH_SCALE)                       # the game's aim blend (-1 .. 1)
 
@@ -148,10 +161,11 @@ def test_blocked_while_running_vaults_then_detours():
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     facing(m, B.heading(5592.0 - 100.0, 16384.0 - 200.0))   # towards the nearest hourglass
     acts = []
-    for t in range(1, 60):                             # Leon never moves: a fence
+    for t in range(1, 60):                             # Leon never moves: a fence (his turns on the spot do turn him)
         now[0] = t * 0.1
         m.put(B.MERC_TIMER, ">I", int((100 - now[0]) * 30))
         acts.append(bot.tick(B.snapshot(m)))
+        turn_done(bot, m, acts[-1])
     assert {"tap": "a"} in acts and bot.stats["vaults"] >= 1           # JUMP OVER first
     assert bot.stats["detours"] >= 1                                     # then around it
     assert bot.stats["backoffs"] >= 1 and {"hold": {"down"}} in acts    # still blocked: back off, then the other side
@@ -245,9 +259,11 @@ def test_no_line_of_sight_means_move_not_shoot():
     assert bot.tick(B.snapshot(m)) == {"hold": {"up", "b"}}               # behind a wall: go round to him
 
 
-def test_raycast_fan_marks_walls_and_reports_stats(tmp_path):
-    """The lookahead fan casts rays ahead every tick, marks hit cells into the learned map,
-    and reports rays_cast / ray_hits in stats (request #3299)."""
+def test_raycast_fan_reports_stats_and_never_learns_the_discs_walls(tmp_path):
+    """The lookahead fan casts rays ahead every tick and reports rays_cast / ray_hits / ray_ahead_mm (request #3299) -
+    but its hits are the disc's own walls, which the planner already knows: written into the learned map's 40 cm cells
+    20 times a second they turned the floor beside every wall into "walls" (r400 2026-10-26: 1814, 524 of them cells
+    Leon had walked), and runs took detours round floor into the real walls."""
     now = [0.0]
     m = world([], room=0x400, leon=(0.0, 0.0, 0.0), timer_s=100.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
@@ -255,11 +271,27 @@ def test_raycast_fan_marks_walls_and_reports_stats(tmp_path):
     bot._round(0x400)                          # sets up self.learned and self.room
     # Manually set up a stage with a wall directly ahead (+z)
     bot.st = {"walls": [[-500.0, 800.0, 500.0, 800.0, 0.0, 2000.0, 0.0]]}
-    bot._raycast_fan({"pos": [0.0, 0.0, 0.0], "rot": 0.0, "aim_rot": 0.0}, now[0])
-    assert bot.stats["rays_cast"] == B.RAY_FAN_N
-    assert bot.stats["ray_hits"] >= 1
-    # The hit cell should be marked in the learned map
-    assert len(bot.learned.blocked) >= 1
+    for _ in range(40):
+        bot._raycast_fan({"pos": [0.0, 0.0, 0.0], "rot": 0.0, "aim_rot": 0.0}, now[0])
+    assert bot.stats["rays_cast"] == 40 * B.RAY_FAN_N
+    assert bot.stats["ray_hits"] >= 40
+    assert bot.stats["ray_ahead_mm"] == 800                                # the wall straight ahead, 0.8 m
+    assert bot.learned.blocked == {}                                       # the disc's walls stay the planner's
+
+
+def test_a_learned_map_polluted_by_the_old_ray_fan_is_cleaned_on_load(tmp_path):
+    """A map saved before LEARNED_VERSION: a blocked cell he walked FLOOR_WALKED times is floor again, the others keep at
+    most LEGACY_BLOCK_CAP blocks; the next save carries the version, so it is cleaned once."""
+    import json
+    f = tmp_path / "r400.json"
+    f.write_text(json.dumps({"cell": B.CELL, "walked": [[0, 1, 400], [2, 2, 2], [5, 5, 1]],
+                             "blocked": [[0, 1, 3777], [2, 2, 40], [5, 5, 900], [7, 7, 2]]}))
+    lm = B.LearnedMap(f)
+    assert lm.migrated == 2 and (0, 1) not in lm.blocked and (2, 2) not in lm.blocked   # he stood there: floor
+    assert lm.blocked == {(5, 5): 3, (7, 7): 2} and lm.wall((5, 5)) and lm.wall((7, 7))
+    lm.save()
+    again = B.LearnedMap(f)
+    assert again.migrated == 0 and again.blocked == lm.blocked and json.loads(f.read_text())["v"] == B.LEARNED_VERSION
 
 
 def test_raycast_fan_is_safe_without_stage_or_learned_map():
@@ -648,18 +680,45 @@ def test_a_tripled_time_bonus_still_counts():
     assert bot.stats["time_bonus"] == 1
 
 
-def test_you_are_dead_is_answered_yes_and_counted_once():
+def test_you_are_dead_is_answered_no_so_a_new_character_is_drawn_and_counted_once():
+    """Operator 2026-10-26 16:40: "why does the character never change in RE4?" - the in-round tick answered "You Are
+    Dead" with A (Continue Yes: the same stage, the same character) before the menus' own No could. Now: D-pad right
+    (No), then A - back through Select Player, where a new character is drawn. Never B."""
+    from gbox import re4_menus as Mn
     now = [0.0]
     m = world([], room=0x400, timer_s=60.0)
     m.put(PG + B.G_HP, ">h", 1200)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.menu_key = "test-dead-in-round"
+    Mn.REQUESTS.pop("test-dead-in-round", None)
     bot.tick(B.snapshot(m))
     m.put(PG + B.G_HP, ">h", 0)                       # dead: the clock stops on "Continue Yes / No"
     taps = []
     for k in range(1, 120):                           # a minute on that screen
         now[0] = k * 0.5
         taps.append(bot.tick(B.snapshot(m)).get("tap"))
-    assert set(t for t in taps if t) == {"a"} and bot.stats["deaths"] == 1   # Yes, never B
+    taps = [t for t in taps if t]
+    assert taps[0] == "dright" and set(taps[1:]) == {"a"} and bot.stats["deaths"] == 1
+    assert bot.stats["continue_declined"] == 1 and "new character" in bot.stats["continue_answer"]
+
+
+def test_you_are_dead_keeps_continue_yes_for_an_asked_for_round():
+    from gbox import re4_menus as Mn
+    now = [0.0]
+    m = world([], room=0x400, timer_s=60.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    bot.menu_key = "test-dead-asked"
+    Mn.REQUESTS["test-dead-asked"] = {"player": 2, "stage": None}           # the MercMode DJ asked for this round
+    try:
+        bot.tick(B.snapshot(m))
+        m.put(PG + B.G_HP, ">h", 0)
+        taps = []
+        for k in range(1, 20):
+            now[0] = k * 0.5
+            taps.append(bot.tick(B.snapshot(m)).get("tap"))
+        assert set(t for t in taps if t) == {"a"} and bot.stats["continue_answer"].startswith("yes")
+    finally:
+        Mn.REQUESTS.pop("test-dead-asked", None)
 
 
 def test_a_session_reads_its_own_dolphin_only(monkeypatch):

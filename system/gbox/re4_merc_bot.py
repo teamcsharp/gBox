@@ -116,6 +116,7 @@ try:
 except ImportError:                              # a tree without it: vision only
     re4_ram_prompts = None
 from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
+from .mercs.impact_lessons import DECAY_EVADE, EVADE_MAX, STEP_EVADE   # the evade margin learned from every hit
 from .mercs import directives as operator_commands   # the chat's instant commands (fight, next area, explore ...)
 from .mercs import stalemate as stalemate_rule   # no Ganados for 15 s with time on the clock: the clock is cut
 from .mercs import round_map as roundmap         # round_gap_s: the seconds between two rounds (gap_end / gap_start)
@@ -152,6 +153,25 @@ THREAT_R = 1600.0                                # a Ganado this close is about 
 PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick down, one up - ~10 presses a second, the loop's
                                                  # limit (operator 2026-10-26: "leon needs to fire about 20x faster"; the gun's
                                                  # own interval is already /20, so presses were the cap at 0.30/0.40 = 1.4 a second)
+# Rapid fire (operator 2026-10-26 16:40: "Why isnt leon shooting with 80x fire speed?"; 50 shots in 3 rounds live): with the
+# round's gun verified in his hands at the x80 class interval (round_loadout), A is HELD on target - the game repeats the
+# shot at the gun's own, now ~1-frame, interval - instead of ~6 presses a second. Held for RAPID_PROOF_S with no shot and
+# no Ganado's health falling: this gun wants presses after all, and the round taps (stats trigger_mode says so).
+RAPID_FIRE, RAPID_PROOF_S = True, 0.8
+URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing this soon this close: any shot into his
+                                                 # body leaves (BODY_LO..BODY_HI, aimed at the chest), not only the head
+                                                 # band - 27 % of today's hits landed while he was still aiming at the head
+# "You Are Dead": No, not Continue Yes (operator 2026-10-26 16:40: "why does the character never change in RE4?"): Yes
+# replays the stage with the same character - the in-round tick answered it before the menus' own No could - so every
+# death kept him. No goes back through Select Player, where the menus draw another character and the round its own gun.
+DEATH_NEW_CHARACTER = True
+# The round's loadout, verified in the round (operator 2026-10-26: "every round is a random character with the round's gun
+# at 80x, verified"): the merc loadout records equip the drawn gun ~5 s into the run, so LOADOUT_CHECK_S in the gun in his
+# hands (ITEM_MGR +0x10) and its class's fire interval are read back; a wrong gun is equipped, a slow class re-applied,
+# at most LOADOUT_FIXES times a round, every LOADOUT_EVERY_S. stats round_loadout / the round map say what was verified.
+LOADOUT_CHECK_S, LOADOUT_EVERY_S, LOADOUT_FIXES = 6.0, 4.0, 2
+NO_GUN = 0x800                                   # ITEM_MGR +0x10 with no weapon in his hands (13:00 r400: a whole round
+                                                 # of it, 0 shots, 25 hits taken)
 QUICK_TURN_ERR, QUICK_TURN_S = 2.3, 0.9          # a target this far round (radians): the quick turn (back + B), at
                                                  # most once in QUICK_TURN_S
 TURN_RATE = 3.0                                  # radians a second, the stick turning him (not aiming): the start;
@@ -165,7 +185,10 @@ AIM_SPEED_X = 1.0                                # the game's own aim speed (re_
                                                  # (~90 deg/s) until operator 2026-10-22: the camera spun "so spastically",
                                                  # the bot overshot and circled - back to regular
 AIM_FINE = 0.12                                  # aiming, this close to the target (radians): the stick in pulses
-AIM_KEEP_ERR = 0.8                               # aiming already: the gun stays up and aim-turns within this (radians)
+AIM_KEEP_ERR = 0.55                              # aiming already: the gun stays up and aim-turns within this (radians). Was
+                                                 # 0.8: the aim turns ~30 deg/s, so a 45 deg correction took 1.5 s with the gun
+                                                 # up; down, the body turns ~170 deg/s and the pose is back in ~0.6 s: past
+                                                 # ~0.55 rad lowering it is the faster answer
 EVADE_LOOK = 1500.0                              # a way out is clear this far ahead (the level map, other Ganados)
 TURN_COST = 350.0                                # choosing among near ones: a radian to turn costs this many units
 FACING_ERR = 0.6                                 # an attacker this close to his facing (radians) is shot, not run from
@@ -230,7 +253,18 @@ ORBIT_R, ORBIT_ERR = 2500.0, 0.6                 # a goal this near and this far
 CIRCLE_TURN, CIRCLE_BOX, CIRCLE_S = 2 * math.pi, 3000.0, 8.0   # a whole turn inside this box in this long: circling
                                                  # (operator 2026-10-24: "Leon is running into a circle")
 BONUS_MAX = 400.0                                # the clock jumps up to this much for one bonus (time pickups x3: 270 s)
-ARRIVE = 650.0                                   # a waypoint this close is reached
+ARRIVE = 650.0                                   # a waypoint this close (mm) is passed; with the disc's map one is also
+                                                 # skipped as soon as the run to the next is clear (operator 2026-10-26:
+                                                 # "Normally when people play Resident Evil, they run linearly in a straight
+                                                 # path"): no corner run round that the open floor does not need
+RUN_CLEAR, RUN_KNEE = 350.0, 500.0               # a clear run: three rays (his middle and his shoulders, this far to either
+                                                 # side) at this height above his feet cross no wall of the disc's map,
+                                                 # fences included (mm)
+LEARNED_VERSION = 2                              # learned maps before it took the per-tick ray fan's hits as walls (r400:
+FLOOR_WALKED = 2                                 # 1814 "walls", 524 of them cells he walked): on load, a blocked cell he
+LEGACY_BLOCK_CAP = 3                             # stood in this often is floor again (a 40 cm cell crossed at a run holds
+                                                 # 2-3 samples; nobody stands inside a crate), the rest keep at most this
+                                                 # count - a bump there again relearns it at once
 # Ladders: never climbed (operator 2026-10-26: "Leon has climbed the clock tower and is unable to turn around and go back
 # down the ladder. Make sure he is mapping this level so he knows not to climb the ladder"): routes avoid them, the CLIMB
 # UP prompt is not pressed, a goal only a ladder reaches is left; up one anyway (the start, an old route), he walks back
@@ -406,6 +440,11 @@ def snapshot(m) -> dict:
         aim_rot, aim_off, pitch = aim_of(m, pl, rot, r)
         player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)), "rot": rot, "aim_rot": aim_rot,
                   "aim_off": aim_off, "pitch": pitch, "r": r, "stick": struct.unpack(">bb", m.rd(GAME_PAD, 2))}
+        # his main motion's frame (the cEm MOTION_INFO the Ganados have at the same offsets): each shot restarts the fire
+        # motion, so with A held a frame running backwards in 00 06 02 is the next shot (Bot._shot_seen)
+        frame, frames = struct.unpack(">fH", m.rd(pl + threats_ram.EM_FRAME, 6))
+        if math.isfinite(frame) and 0.0 <= frame <= 600.0 and 0 < frames <= 600:
+            player["mframe"] = frame
     base, n, stride = u32(m, EMMGR), u32(m, EMMGR + 4), u32(m, EMMGR + 8)
     enemies, thrown = [], []
     # Spawn multipliers expand the native table beyond 128 (150 live slots on
@@ -438,6 +477,7 @@ def wrap(a: float) -> float:
 
 
 BODY_BAND = (HEAD_LO, BODY_HI, HEAD_AIM_H)        # a standing Ganado: the head band (lo, hi, aim) above his feet
+URGENT_BAND = (BODY_LO, BODY_HI, CHEST_H)         # one whose swing lands within URGENT_BODY_S: anywhere in his body
 
 
 def body_band(tgt: dict) -> tuple:
@@ -513,13 +553,29 @@ class LearnedMap:
         self.path_file = path
         self.walked: dict[tuple, int] = {}
         self.blocked: dict[tuple, int] = {}
+        self.migrated = 0                             # legacy blocked cells dropped as floor on load (LEARNED_VERSION)
         if path is not None and path.is_file():
             try:
                 d = json.loads(path.read_text())
                 self.walked = {(i, j): n for i, j, n in d.get("walked", [])}
                 self.blocked = {(i, j): n for i, j, n in d.get("blocked", [])}
+                if d.get("v") != LEARNED_VERSION:
+                    self._migrate()
             except (OSError, ValueError, TypeError):
                 pass
+
+    def _migrate(self) -> None:
+        """A map saved before LEARNED_VERSION: the per-tick ray fan counted every disc wall it saw into the 40 cm cell of
+        its hit point (thousands of blocks), so the floor beside walls became walls and runs took detours round them.
+        A blocked cell he has stood in FLOOR_WALKED times is floor again; the others keep at most LEGACY_BLOCK_CAP blocks
+        (a stuck there still counts, a ray's thousands do not)."""
+        kept = {}
+        for k, n in self.blocked.items():
+            if self.walked.get(k, 0) >= FLOOR_WALKED:
+                self.migrated += 1
+                continue
+            kept[k] = min(n, LEGACY_BLOCK_CAP)
+        self.blocked = kept
 
     @staticmethod
     def cell(x: float, z: float) -> tuple:
@@ -608,7 +664,8 @@ class LearnedMap:
         try:
             self.path_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self.path_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"cell": CELL, "walked": [[i, j, n] for (i, j), n in self.walked.items()],
+            tmp.write_text(json.dumps({"v": LEARNED_VERSION, "cell": CELL,
+                                       "walked": [[i, j, n] for (i, j), n in self.walked.items()],
                                        "blocked": [[i, j, n] for (i, j), n in self.blocked.items()]}))
             tmp.replace(self.path_file)
         except OSError:
@@ -682,6 +739,13 @@ class Bot:
         # the operator's stalemate rule (gbox.mercs.stalemate): settings in stats (stalemate_cut_enabled / _s) from the
         # launch's MercMode block (play() / mercs_bot.play put them there); the write is cut_clock on this memory
         self.stalemate = stalemate_rule.Rule(lambda: self.stats)     # play() / the engine rebind bot.stats
+        self.menu_key = None                          # the menus' request key (play(): id(ad)); an asked-for round keeps Yes
+        self.dead_no = False                          # "You Are Dead": No highlighted already this death
+        self.rapid = {"mode": "hold", "since": None, "shots": 0, "hits": 0, "frame": None}   # the held trigger (RAPID_FIRE)
+        from .mercs.impact_lessons import ImpactLessons
+        from .mercs.round_audit import RoundAudit
+        self.impacts = ImpactLessons(learn_dir / "impact_lessons.json" if learn_dir else None)   # learned per stage / attacker
+        self.audit = RoundAudit("G4BE08")             # each round's own verdict (stats round_audit, the round map "audit")
 
     def new_round(self) -> None:
         """A new round begins (play(): its first in-round frame): what the last round learned is saved, and everything
@@ -714,6 +778,9 @@ class Bot:
         self.blast, self.blast_at, self.boss_evaded_at = None, float("-inf"), float("-inf")
         self._keepout = None
         self._death_logged = False
+        self.dead_no = False                          # this round's death gets its own Continue answer
+        self._ran, self._fire_frame = False, None     # no run or fire motion carried over (_go's stuck, _shot_seen)
+        # the held trigger (self.rapid), the round's audit and its loadout check start with its trace (trace_start)
 
     def _stalemate_watch(self, s: dict, p: dict, now: float) -> None:
         """No living Ganado for STALEMATE_S while the clock shows more than STALEMATE_CLOCK_S: the clock is cut to the
@@ -731,7 +798,17 @@ class Bot:
             self.save()                               # the last room's map and stuck log
             self.room = room
             self.stalemate.new_round()
+            trace = getattr(self, "trace", None)
+            if trace is not None and trace.room != f"r{room:03x}" and len(trace.samples) < 40:
+                # the round map was started before the room was read (trace_start runs on the round's first frame, the
+                # room is taken here): it belongs to this room, not the last one (2026-10-26: an r404 round filed as r403)
+                trace.room = f"r{room:03x}"
+                if trace.out_dir is not None:
+                    trace.out_dir = trace.out_dir.parent / trace.room
             self.learned = LearnedMap(self.learn_dir / f"r{room:03x}.json" if self.learn_dir else None)
+            if self.learned.migrated:
+                self.stats["learned_walls_migrated"] = self.learned.migrated
+                self._new_walls += 1                  # saved in its new form with the next save
             self.stats["learned_walls"] = len(self.learned.blocked)
             self.stats["learned_floor_cells"] = len(self.learned.walked)
             self.stats["learned_map"] = str(self.learned.path_file) if self.learned.path_file else None
@@ -801,12 +878,15 @@ class Bot:
 
     # -- lookahead raycast fan (request #3299) --
     def _raycast_fan(self, p, now) -> None:
-        """Cast a fan of lookahead rays ahead of Leon every tick and mark hits into the learned map.
+        """Cast a fan of lookahead rays ahead of Leon every tick (stats rays_cast / ray_hits, ray_ahead_mm: the
+        nearest wall straight ahead).
 
-        Uses the disc's collision walls via gbox.re4_collision.raycast (a Python reimplementation
-        of the native BVH line-test documented in that module).  Each hit marks a wall cell into
-        LearnedMap so the bot steers before contact, not after a stuck.  Stats report rays_cast
-        and ray_hits per round.
+        Uses the disc's collision walls via gbox.re4_collision.raycast (a Python reimplementation of the native BVH
+        line-test documented in that module). The hits are NOT written into the learned map any more: those walls are
+        the disc's own, which the planner already routes round, and a hit counted into its 40 cm cell 20 times a second
+        made the floor beside every wall "walls" (r400 2026-10-26: 1814 learned walls, 524 of them cells Leon had
+        walked, blocks up to 3777), so straight runs took detours round floor into the real walls. The learned map keeps
+        what the disc does not know: the cells he actually ran into (_learn_wall).
         """
         if self.st is None or self.learned is None:
             return
@@ -822,12 +902,13 @@ class Bot:
             hits = rc.fan(walls, origin, heading, n=RAY_FAN_N, spread=RAY_FAN_SPREAD,
                           length=RAY_FAN_LEN, height=0.0, see_through=True)
             self.stats["rays_cast"] += len(hits)
-            for h in hits:
+            ahead = None
+            for i, h in enumerate(hits):
                 if h.blocked and h.point is not None:
                     self.stats["ray_hits"] += 1
-                    # Mark the hit cell as a wall in the learned map (obstruction database)
-                    self.learned.block(h.point[0], h.point[2])
-                    self._new_walls += 1
+                    if i == len(hits) // 2:
+                        ahead = round(h.distance * RAY_FAN_LEN)
+            self.stats["ray_ahead_mm"] = ahead
         except Exception:                             # noqa: BLE001
             pass
 
@@ -883,10 +964,14 @@ class Bot:
         if tag:
             self.stats["boss"] = tag.strip()
         band = body_band(tgt)
-        if band is not BODY_BAND:
+        low = band is not BODY_BAND                                    # on the ground / a chicken: aimed low
+        if not low and tgt.get("urgent"):
+            band = URGENT_BAND                                         # his swing lands first: any shot into his body
+            self.stats["urgent_body_aims"] = self.stats.get("urgent_body_aims", 0) + (self.r_since is None)
+        if low:
             self.stats["low_target_shots"] = self.stats.get("low_target_shots", 0) + (self.r_since is None)
         down = math.atan2(tgt["pos"][1] + HEAD_H - (p["pos"][1] + GUN_H), max(dist, 1.0))
-        if band is not BODY_BAND and not tgt.get("thrown"):
+        if low and not tgt.get("thrown"):
             # one on the ground at Leon's feet is below the lowest aim: a step back brings him into it
             reach = (p["pos"][1] + GUN_H - (tgt["pos"][1] + band[1])) / math.tan(PITCH_MAX)
             if dist < reach and abs(err) < QUICK_TURN_ERR:
@@ -906,6 +991,7 @@ class Bot:
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
         if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
             self.r_since = None                                         # far round - lowering it to turn and raising
+            self.rapid["since"] = None
             self.stats["combat"] = f"{tag}turning to slot {tgt['slot']} d {dist:.0f} yaw {math.degrees(err):+.0f} (gun down)"
             self.stats["fire_gate"] = "turning: hold"
             if abs(err) > QUICK_TURN_ERR and now - self.qturn_at > QUICK_TURN_S:   # it again cost 0.6 s and a swing
@@ -918,7 +1004,7 @@ class Bot:
             height, level = self._aim_height(p, tgt["pos"][1], dist, now)
         else:                                                           # a body: any pitch that lands on it
             height, level = self._aim_body(p, tgt["pos"][1], dist, now, band)
-            if band is not BODY_BAND and not level and now - self.r_since > LOW_AIM_BACK_S:
+            if low and not level and now - self.r_since > LOW_AIM_BACK_S:
                 # one on the ground the aim cannot get down to from here (the game's own pitch limit is short of
                 # PITCH_MAX): a step back brings him into it, never shots into the ground in front of him
                 self.stats["low_target_backsteps"] = self.stats.get("low_target_backsteps", 0) + 1
@@ -928,6 +1014,7 @@ class Bot:
         deg = math.degrees(err)
         if abs(err) > fire_tol(dist) or not level:
             self.trigger["down"] = False
+            self.rapid["since"] = None                                   # off him: the held trigger's proof starts over
             self.stats["combat"] = f"{tag}aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
             self.stats["fire_gate"] = "off target: hold" if abs(err) > fire_tol(dist) else "aim height: hold"
             return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
@@ -948,6 +1035,22 @@ class Bot:
         tr = self.trigger
         self.target_slot = tgt["slot"]
         self.target_thrown = bool(tgt.get("thrown"))
+        if self._rapid_ok():
+            ra = self.rapid
+            if ra["since"] is None:
+                ra.update(since=now, shots=self.shots.stats["shots"], hits=self.shots.stats["hits"])
+            elif now - ra["since"] >= RAPID_PROOF_S:
+                fired = self.shots.stats["shots"] > ra["shots"] or self.shots.stats["hits"] > ra["hits"] \
+                    or getattr(self, "_hurt_at", -math.inf) >= ra["since"]
+                if not fired:                              # held and nothing left the gun: it wants presses
+                    ra["mode"] = "tap"
+                    self.stats["trigger_mode"] = "tap: A held for %.1f s fired nothing" % (now - ra["since"])
+                    tr["down"] = False
+                    return set()
+                ra.update(since=now, shots=self.shots.stats["shots"], hits=self.shots.stats["hits"])
+            tr["down"], tr["at"] = True, now
+            self.stats["trigger_mode"] = "hold: the round gun at x80"
+            return {"a"}
         if tr["down"]:
             if now - tr["at"] < PRESS_HOLD:
                 return {"a"}
@@ -960,19 +1063,32 @@ class Bot:
             self.stats["thrown_shot"] += 1
         return {"a"}
 
+    def _rapid_ok(self) -> bool:
+        """Hold A on target: the round's gun is verified in his hands at the x80 class interval (round_loadout) and
+        holding has not been shown to fire nothing this round (RAPID_PROOF_S)."""
+        lo = self.stats.get("round_loadout")
+        return (RAPID_FIRE and self.rapid.get("mode") == "hold" and isinstance(lo, dict)
+                and lo.get("verified") is True and lo.get("round") == self.stats.get("rounds"))
+
     def _shot_seen(self, p, now):
-        """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20)."""
+        """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20), or - A held at
+        the x80 interval keeps him in it - the fire motion's frame running backwards there (the motion restarted)."""
         r = p.get("r")
         if not r or len(r) < 3:
             return
         if r[0] == 0 and r[1] == AIM_R1:
             self.shot_ram = True                            # this RAM shows the aim states: count shots from it
         firing = r[0] == 0 and r[1] == AIM_R1 and r[2] == 2
-        if firing and not self._was_firing:
+        frame, last = p.get("mframe"), getattr(self, "_fire_frame", None)
+        restarted = firing and self._was_firing and frame is not None and last is not None and frame < last - 0.5
+        if (firing and not self._was_firing) or restarted:
             self.shots.fired(now)
+            if restarted:
+                self.stats["shots_held"] = self.stats.get("shots_held", 0) + 1
             if getattr(self, "target_thrown", False):
                 self.stats["thrown_shot"] += 1
         self._was_firing = firing
+        self._fire_frame = frame if firing else None
 
     # -- combat: the threats first --
     def _ready_in(self, p, t, now) -> float:
@@ -1040,11 +1156,16 @@ class Bot:
         if r0 == 1 and self.leon_r0 != 1:
             self.stats["hits_taken"] += 1
             self.stats["last_hit_by"] = hit_tag(self.tracker.last_hit) or "unknown: no attack seen landing"
-            if getattr(self, "trace", None) is not None:
-                self.trace.event(now, "hit", p["pos"][0], p["pos"][2], by=self.stats["last_hit_by"][:120])
+            self._impact(p, s, now)
         if r0 != 1 and self.leon_r0 == 1:
             self.recovered_at = now                                 # on his feet again: out before the next one
         self.leon_r0 = r0
+        prevented = self.tracker.stats.get("prevented", 0)
+        if prevented > getattr(self, "_prevented_seen", prevented) and self.room is not None:
+            # an attack killed in its wind-up: the shot won the race - the learned run-out margin eases back
+            self.impacts.adjust(f"r{self.room:03x}", "swing", "evade_margin", -DECAY_EVADE * (prevented - self._prevented_seen),
+                                EVADE_MARGIN, EVADE_MARGIN, EVADE_MAX)
+        self._prevented_seen = prevented
         for k in ("attacks_seen", "thrown_seen", "bosses_seen"):
             self.stats[k] = self.tracker.stats[k]
         for k in ("prevented", "avoided", "landed"):                # how each attack ended (re4_threats.Tracker)
@@ -1061,6 +1182,43 @@ class Bot:
                                  "hp_max": b["hp_max"], "kind": b["kind"],
                                  "room": f"r{b['room']:03x}" if isinstance(b["room"], int) else b["room"]})
             self.stats["bosses"] = rows[:12]
+
+    def _evade_margin(self, kind) -> float:
+        """How much sooner than the shot an attack must land to be run out of: EVADE_MARGIN, raised in this room for this
+        kind of attack by the hits it landed while he stood shooting its attacker (impact_lessons), at most EVADE_MAX."""
+        if self.room is None:
+            return EVADE_MARGIN
+        return self.impacts.value(f"r{self.room:03x}", kind, "evade_margin", EVADE_MARGIN, EVADE_MARGIN, EVADE_MAX)
+
+    def _impact(self, p, s, now) -> None:
+        """Leon was just hit or grabbed (his routine went to 1): the round map's hit event says by what (the tracker's
+        landing threat: kind, slot, distance, the angle off his facing - a pick over 3000 away or 2 s from landing is
+        "unattributed", it cannot have landed) and what he was doing; the room / kind lesson counts it, and a melee hit
+        while he stood shooting that very attacker moves the room's evade margin for it (the next one is run out of)."""
+        h = self.tracker.last_hit or {}
+        kind = h.get("boss") if h.get("boss") and h.get("kind") in threats_ram.BOSS_KINDS else (h.get("kind") or "unknown")
+        room = f"r{self.room:03x}" if self.room is not None else "?"
+        e = next((x for x in s.get("enemies") or () if x.get("slot") == h.get("slot")), None)
+        dist = facing = None
+        if e is not None:
+            dx, dz = e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]
+            dist = math.hypot(dx, dz)
+            facing = math.degrees(wrap(heading(dx, dz) - p["rot"]))
+        elif isinstance(h.get("dist"), (int, float)):
+            dist = float(h["dist"])
+        if (dist is not None and dist > 3000.0) or (h.get("eta") or 0.0) > 2.0:
+            kind = "unattributed"
+        doing = getattr(self, "_doing", None) or self.stats.get("phase")
+        row = self.impacts.record(room, kind, dist=dist, facing_deg=facing, doing=doing)
+        if kind in threats_ram.MELEE and h.get("slot") is not None and h.get("slot") == self.aim.get("slot") \
+                and str(doing).startswith("fight"):
+            row["evade_margin"] = round(self.impacts.adjust(room, kind, "evade_margin", STEP_EVADE, EVADE_MARGIN,
+                                                            EVADE_MARGIN, EVADE_MAX), 3)
+        self.stats["last_impact"] = {k: v for k, v in row.items() if v is not None}
+        if getattr(self, "trace", None) is not None:
+            self.trace.event(now, "hit", p["pos"][0], p["pos"][2], by=self.stats["last_hit_by"][:120], attack=row["kind"],
+                             **{k: row[k] for k in ("dist", "facing_deg", "facing", "doing") if row.get(k) is not None},
+                             **({"evade_margin": row["evade_margin"]} if "evade_margin" in row else {}))
 
     def _way_out(self, p, t) -> float:
         """The heading to run: away from the attacker, turned up to 60 degrees towards open ground - no wall in the
@@ -1167,14 +1325,17 @@ class Bot:
                     return self._boss_act(p, s, t, now)            # far: the next threat; the route finds him like
                 continue                                           # any Ganado)
             ready = self._ready_in(p, t, now)
-            late = t.eta + EVADE_MARGIN < ready
+            late = t.eta + self._evade_margin(t.kind) < ready     # the margin is learned from the hits (impact_lessons)
             if t.kind == "thrown" and late:                       # can't shoot it in time: out of its line
                 return self._evade(p, t, now, side=True)
             if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late \
                     and not self._facing(p, t):                    # it lands first: out of its way - but one in
                 return self._evade(p, t, now)                      # front is still shot (running from him takes the
             lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # quick turn: slower than the shot; a hit
-            return self._fight(p, self._as_target(t, lead), now, s)   # staggers him)
+            tgt = self._as_target(t, lead)                         # staggers him)
+            if t.kind in threats_ram.MELEE and t.eta < URGENT_BODY_S and t.dist < URGENT_BODY_R:
+                tgt["urgent"] = True                               # his swing lands first: any shot into his body
+            return self._fight(p, tgt, now, s)
         close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
         if len(close) >= CROWD_N or (close and now - self.recovered_at < RECOVER_S):
             blast = self._crowd_blast(p, s, close, now)            # the shotgun into the group first (operator
@@ -1255,7 +1416,8 @@ class Bot:
         Ganado that is not attacking: something stands between (live 2026-10-21: a water tank the level map's line of
         sight let through took a clip) - he is left for BLOCKED_SKIP_S, the next one taken."""
         before = self.shots.stats["misses"], self.shots.stats["hits"]
-        self.shots.update(s["enemies"], now)
+        if self.shots.update(s["enemies"], now):
+            self._hurt_at = now                               # a Ganado's health fell (the held trigger's proof)
         misses = self.shots.stats["misses"] - before[0]
         if self.shots.stats["hits"] > before[1]:
             self.miss_run = 0
@@ -1443,7 +1605,7 @@ class Bot:
                 way[0] = (w[0], w[1], "vaulted")
                 self.stats["vaults"] += 1
                 return {"tap": "a"}
-            if len(way) > 1 and d < ARRIVE:
+            if len(way) > 1 and self._passed(p, way, d):
                 way.pop(0)
                 continue
             break
@@ -1451,14 +1613,63 @@ class Bot:
         self.r_since = None
         return self._go(p, (w[0], w[1]), now)
 
+    def _passed(self, p, way, d) -> bool:
+        """Is way[0] behind him: within ARRIVE, or - with the disc's map, looking ahead - the run to way[1] is already
+        clear (_clear_run): the waypoint is skipped and he runs straight for the next one (stats waypoints_skipped). A
+        vault / ladder waypoint is never skipped (its own press comes first)."""
+        if d < ARRIVE:
+            return True
+        w0 = way[0]
+        if len(w0) > 2 and w0[2] in ("vault", "ladder") or not self._has_walls():
+            return False
+        if self._clear_run(p, (way[1][0], way[1][1])):
+            self.stats["waypoints_skipped"] = self.stats.get("waypoints_skipped", 0) + 1
+            return True
+        return False
+
+    def _has_walls(self) -> bool:
+        return isinstance(self.st, dict) and "walls" in self.st
+
+    def _clear_run(self, p, xz) -> bool:
+        """A straight run from Leon to xz crosses no learned wall and no wall of the disc's map (fences and windows
+        included: he runs, he does not vault) - three rays, his middle and his shoulders (RUN_CLEAR to either side),
+        RUN_KNEE above his feet. Without the disc's map only the learned walls decide."""
+        px, py, pz = p["pos"]
+        if self.learned is not None and self.learned.crosses((px, pz), tuple(xz)) is not None:
+            return False
+        if not self._has_walls():
+            return True
+        try:
+            from . import re4_collision as rc
+            walls = self.st.get("_walls")
+            if walls is None:
+                walls = np.asarray(self.st["walls"], np.float64).reshape(-1, 7)
+                self.st["_walls"] = walls
+            dx, dz = xz[0] - px, xz[1] - pz
+            d = math.hypot(dx, dz)
+            if d < 1.0:
+                return True
+            ox, oz, y = -dz / d * RUN_CLEAR, dx / d * RUN_CLEAR, py + RUN_KNEE
+            return not any(rc.raycast(walls, [px + sx, y, pz + sz], [xz[0] + sx, y, xz[1] + sz], see_through=False).blocked
+                           for sx, sz in ((0.0, 0.0), (ox, oz), (-ox, -oz)))
+        except Exception:                             # noqa: BLE001 - a bad read is no reason to hold a waypoint
+            return True
+
     def _go(self, p, goal_xz, now) -> dict:
         px, py, pz = p["pos"]
         if self.unstick and now < self.unstick["until"]:
+            self._go_at, self._ran = now, self.unstick["stage"] == "detour"
             if self.unstick["stage"] == "detour":
                 return {"hold": {"up", "b", "left" if self.unstick["dir"] > 0 else "right"}}
             if self.unstick["stage"] == "back":
                 return {"hold": {"down"}}
         self.unstick = None
+        if not getattr(self, "_ran", False) or now - getattr(self, "_go_at", -math.inf) > 0.3:
+            # only a run that does not move is blocked: turning on the spot (the goal behind him), a fight, a vault or a
+            # step back in between are not runs (2026-10-26: 24 % of the stucks had the goal behind him - turns, not
+            # walls - each one a vault tap, a detour and a "wall" learned in front of him)
+            self.hist = []
+        self._go_at = now
         self.hist = [h for h in self.hist if now - h[0] < STUCK_S + 0.3] + [(now, px, py, pz)]
         span = now - self.hist[0][0]
         moved = math.dist((px, py, pz), self.hist[0][1:])                # up a ladder counts: not blocked
@@ -1489,6 +1700,7 @@ class Bot:
             self._stuck_event(p, now, goal_xz, cells, action, replanned)
             if self.learned is not None and self._new_walls >= WALLS_PER_SAVE:   # a crash mid-round keeps what he learned
                 self.save()
+            self._ran = action == "detour"
             return act
         if span >= STUCK_S and moved > 3 * STUCK_MOVE:
             self.stuck_n = 0                                              # running freely again
@@ -1498,9 +1710,11 @@ class Bot:
             goal_xz = self._around(p, goal_xz, now)                       # a learned wall on the straight line: round it
         final = getattr(self, "_detour", None) is None                   # the goal itself, not a corner on the way
         gx, gz = goal_xz
+        self.go_target = (gx, gz)                                        # where this run steers (a corner or the goal)
         err = wrap(heading(gx - px, gz - pz) - p["rot"])
         if self._circling(p, (gx, gz), now):
             if self.goal is None:                                        # twice round the same goal: it is dropped
+                self._ran = False
                 return {"hold": set()}
         keys = {"up", "b"}
         if err > TURN_TOL / 2:
@@ -1513,6 +1727,7 @@ class Bot:
             self.turn_first = False
         if abs(err) > 1.6 or self.turn_first or inside:                  # behind him, circling, or inside his
             keys -= {"up", "b"}                                                     # turning circle: turn on the spot
+        self._ran = "up" in keys
         return {"hold": keys}
 
     def _circling(self, p, goal_xz, now) -> bool:
@@ -1664,6 +1879,10 @@ class Bot:
         room = f"r{self.room:03x}" if self.room is not None else "room"
         out = Path(self.round_maps_dir) / room if self.round_maps_dir is not None else None
         self.trace = RoundTrace(out, "G4BE08", room, round_id, CELL)
+        self.trace.auditor = lambda summary, trace: self.audit.finish(summary, trace, self.stats)
+        self.audit.start(self.stats)
+        self.rapid = {"mode": "hold", "since": None, "shots": 0, "hits": 0}   # each round proves its own trigger
+        self.stats.pop("trigger_mode", None)
 
     def trace_finish(self) -> None:
         trace, self.trace = getattr(self, "trace", None), None
@@ -1673,11 +1892,21 @@ class Bot:
             trace.room = f"r{self.room:03x}"
             if trace.out_dir is not None:
                 trace.out_dir = trace.out_dir.parent / trace.room
+        lo = self.stats.get("round_loadout")
+        trace.annex.update(character=self.stats.get("character"), character_source=self.stats.get("character_source"),
+                           round_loadout=lo if isinstance(lo, dict) else None,
+                           trigger_mode=self.stats.get("trigger_mode"),
+                           impact_lessons=self.impacts.summary(trace.room))
         lm = self.learned
         summary = trace.finish(lm.walked if lm else (), lm.blocked if lm else ())
+        self.impacts.save()
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
             self.stats["last_round_verdict"] = summary.get("verdict")
+            audit = summary.get("audit")
+            if isinstance(audit, dict):
+                self.stats["round_audit"] = {"verdict": audit.get("verdict"), "problems": audit.get("problems"),
+                                             "room": trace.room, "round_id": trace.round_id[:8]}
 
     def _stuck_event(self, p, now, goal_xz, cells: list, action: str, replanned) -> None:
         """Why he stopped, in words for the watch panel (stats stuck_reason) and as a record (stuck_log, the last
@@ -1739,7 +1968,25 @@ class Bot:
         keys = act.get("hold", set()) if isinstance(act, dict) else set()
         turning = (keys & {"left", "right"}) and not (keys & {"r", "up", "down", "b"}) and len(keys & {"left", "right"}) == 1
         self._turn_obs = (now, p["rot"], bool(turning)) if p else None
+        self._doing = f"{self.stats.get('phase')}: {self.stats.get('combat') or ''}"[:80]   # what a hit next tick interrupted
         return act
+
+    def _continue_answer(self) -> dict:
+        """'You Are Dead': No (D-pad right, then A) - back through Select Player, where the menus draw a new character
+        (re4_menus.RandomSelections) and the round its own gun - unless the round was asked for (the MercMode DJ's
+        pick: re4_menus.REQUESTS, or re4_menus.ASKED once that round started), which keeps Continue Yes. A press that
+        did not move the cursor answers Yes."""
+        asked = re4_menus is not None and self.menu_key is not None and (
+            re4_menus.REQUESTS.get(self.menu_key) or getattr(re4_menus, "ASKED", {}).get(self.menu_key))
+        if not DEATH_NEW_CHARACTER or asked:
+            self.stats["continue_answer"] = "yes: an asked-for round" if asked else "yes"
+            return {"tap": "a"}
+        if not self.dead_no:
+            self.dead_no = True
+            self.stats["continue_declined"] = self.stats.get("continue_declined", 0) + 1
+            self.stats["continue_answer"] = "no: Select Player draws a new character"
+            return {"tap": "dright"}
+        return {"tap": "a"}
 
     def _tick(self, s: dict) -> dict:
         now, p = self.clock(), s["player"]
@@ -1770,11 +2017,11 @@ class Bot:
             self.dead = False
         elif now - self.timer_since > 1.2 and s["timer"] > 0:           # the clock stopped: a prompt is up
             self.stats["prompts"] += 1
-            if s.get("hp") is not None and s["hp"] <= 0:                 # "You Are Dead - Continue Yes / No": Yes
+            if s.get("hp") is not None and s["hp"] <= 0:                 # "You Are Dead - Continue Yes / No"
                 if not self.dead:
-                    self.dead = True
+                    self.dead, self.dead_no = True, False
                     self.stats["deaths"] = self.stats.get("deaths", 0) + 1
-                return {"tap": "a"}
+                return self._continue_answer()
             return {"tap": "b" if now - self.timer_since > 6 else "a"}
         self._stalemate_watch(s, p, now)                                  # no Ganados for a while: the clock is cut
         px, _, pz = p["pos"]
@@ -1832,7 +2079,7 @@ class Bot:
                 height, _ = self._aim_height(p, p["pos"][1] + HOURGLASS_H, d, now)
                 return {"hold": {"r", "a"} | (self._turn(err, aiming=True) - {"r"}) | height}
             way = self.goal["path"]
-            while len(way) > 1 and math.hypot(way[0][0] - px, way[0][1] - pz) < ARRIVE:
+            while len(way) > 1 and self._passed(p, way, math.hypot(way[0][0] - px, way[0][1] - pz)):
                 way.pop(0)
             self.r_since = None
             return self._go(p, way[0], now)
@@ -1858,14 +2105,100 @@ def setup(ad) -> list[str]:
     return apply_package(ad, None if in_round else EARLY_OPS)
 
 
-def apply_round(ad, equip_now: bool = False) -> list[str]:
-    """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in."""
+def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[str]:
+    """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in. With stats:
+    stats["round_loadout"] records the draw for the round it arms (LoadoutCheck verifies it in that round)."""
     from . import re_mods_tool as RM
     try:
         r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1], **({"equip_now": True} if equip_now else {}))
-        return [] if r.get("verified") else [f"{ROUND_OP[0]}: not verified ({r.get('picked')})"]
     except Exception as e:                           # noqa: BLE001 - a failed draw keeps the last loadout
+        if stats is not None:
+            stats["round_loadout"] = {"round": stats.get("rounds", 0) + (0 if equip_now else 1), "gun": None,
+                                      "gun_id": None, "fire_x": ROUND_OP[1].get("fire_x"), "verified": False,
+                                      "reason": f"draw failed: {type(e).__name__}: {e}"[:160], "checks": 0, "fixes": 0}
         return [f"{ROUND_OP[0]}: {e}"]
+    if stats is not None:
+        picked = (r.get("picked") or [None])[0]
+        try:
+            gun_id = RM._item_id(picked) if picked else None
+        except ValueError:
+            gun_id = None
+        stats["round_loadout"] = {
+            "round": stats.get("rounds", 0) + (0 if equip_now else 1),   # Select Player arms the round that follows
+            "drawn": "in the round" if equip_now else "at Select Player",
+            "gun": picked, "gun_id": gun_id, "fire_x": ROUND_OP[1].get("fire_x"),
+            "records_verified": bool(r.get("verified")), "weapon_mod_verified": r.get("weapon_mod"),
+            "equipped_now": r.get("equipped_now"), "verified": False, "reason": "awaiting the in-round read-back",
+            "checks": 0, "fixes": 0}
+    return [] if r.get("verified") else [f"{ROUND_OP[0]}: not verified ({r.get('picked')})"]
+
+
+class LoadoutCheck:
+    """The round's loadout read back in the round (operator 2026-10-26: "Why isnt leon shooting with 80x fire speed?" -
+    live the weapon read 'item 0x800' and 50 shots in 3 rounds): LOADOUT_CHECK_S after the round starts (the loadout
+    records equip the drawn gun ~5 s in), every LOADOUT_EVERY_S until it holds: the gun in his hands (ITEM_MGR +0x10)
+    is the drawn one, else it is equipped (re_mods_tool.equip_item); its class's five fire intervals are at most the
+    x fire_x interval, else weapon_mod applies it again - LOADOUT_FIXES repairs a round at most. stats round_loadout:
+    gun, equipped, fire_interval_frames, fire_want_frames, fire_applied, equipped_ok, verified, reason (the round map
+    and the round audit keep it); Bot._rapid_ok holds the trigger only on a verified one."""
+
+    def __init__(self, ad, stats: dict):
+        self.ad, self.stats = ad, stats
+        self.round, self.next_at = None, math.inf
+
+    def tick(self, s: dict, now: float):
+        r = self.stats.get("rounds")
+        if r != self.round:
+            self.round, self.next_at = r, now + LOADOUT_CHECK_S
+        lo = self.stats.get("round_loadout")
+        if not isinstance(lo, dict) or lo.get("round") != r or lo.get("verified") is True or now < self.next_at:
+            return lo
+        if lo.get("checks", 0) >= LOADOUT_FIXES + 3:
+            return lo                                         # given up for this round: the audit says why
+        self.next_at = now + LOADOUT_EVERY_S
+        lo["checks"] = lo.get("checks", 0) + 1
+        lo["character"] = self.stats.get("character")          # the round's own (the draw ran before the cursor moved)
+        try:
+            self._check(s, lo)
+        except Exception as e:                            # noqa: BLE001 - a failed read-back never stops the round
+            lo["reason"] = f"read-back failed: {type(e).__name__}: {e}"[:160]
+        return lo
+
+    def _check(self, s: dict, lo: dict) -> None:
+        from . import re_mods_tool as RM
+        g = RM.RE4(self.ad)
+        classes = RM.weapon_classes(g)
+        want, held = lo.get("gun_id"), s.get("weapon")
+        lo.update(equipped_id=held, equipped=weapon_name(held), equipped_ok=want is not None and held == want)
+        if not lo["equipped_ok"] and want in classes and lo.get("fixes", 0) < LOADOUT_FIXES:
+            lo["fixes"] = lo.get("fixes", 0) + 1
+            res = RM.equip_item(g, want)                      # gives it when the case lacks it, then equips it now
+            held = g.m.u16(g.V.ITEM_MGR + 0x10)
+            lo.update(equip_fix=res.get("verified"), equipped_id=held, equipped=weapon_name(held),
+                      equipped_ok=held == want)
+        gun, fire_x = (held if held in classes else None), lo.get("fire_x")
+        if gun is not None and fire_x:
+            c = classes[gun][0]
+            orig = struct.unpack(">f", g.V.FIRE_RATE_ORIG[c * 0x14:c * 0x14 + 4])[0]
+            want_frames = max(1.0, orig / float(fire_x))
+            rate = struct.unpack(">5f", g.m.rd(g.V.FIRE_RATE_TBL + c * 0x14, 20))
+            ok = all(x <= want_frames + 1e-3 for x in rate)
+            if not ok and lo.get("fixes", 0) < LOADOUT_FIXES:
+                lo["fixes"] = lo.get("fixes", 0) + 1
+                RM.weapon_mod(g, gun, want_frames, ROUND_OP[1].get("damage"), True)
+                rate = struct.unpack(">5f", g.m.rd(g.V.FIRE_RATE_TBL + c * 0x14, 20))
+                ok = all(x <= want_frames + 1e-3 for x in rate)
+            lo.update(fire_interval_frames=[round(x, 2) for x in rate], fire_want_frames=round(want_frames, 2),
+                      fire_applied=ok)
+        elif gun is None:
+            lo["fire_applied"] = None
+        lo["verified"] = bool(lo.get("equipped_ok")) and lo.get("fire_applied") is True
+        lo["reason"] = ("verified: %s in his hands at x%s (%s frames)" % (lo.get("equipped"), fire_x,
+                                                                         lo.get("fire_interval_frames"))
+                        if lo["verified"] else
+                        "no gun in his hands" if held in (None, 0, NO_GUN) else
+                        f"in his hands {lo.get('equipped')}, drawn {lo.get('gun')}" if not lo.get("equipped_ok") else
+                        f"fire interval {lo.get('fire_interval_frames')} frames, want {lo.get('fire_want_frames')}")
 
 
 def apply_package(ad, only=None, skip=()) -> list[str]:
@@ -1907,8 +2240,10 @@ def arm_round(ad, stats: dict) -> None:
             stats['hooks_failed'] = '; '.join(failed)[:300]
     if stats.get('rounds_hooked_seen') != stats.get('rounds_hooked'):
         stats['rounds_hooked_seen'] = stats.get('rounds_hooked')         # Select Player drew this round's gun
+        if isinstance(stats.get('round_loadout'), dict) and stats['round_loadout'].get('drawn') == 'at Select Player':
+            stats['round_loadout']['round'] = stats.get('rounds')        # ... for this round (its read-back: LoadoutCheck)
         return
-    failed = apply_round(ad, equip_now=True)
+    failed = apply_round(ad, equip_now=True, stats=stats)
     stats['round_armed_in_round'] = stats.get('round_armed_in_round', 0) + 1
     if failed:
         stats['round_hooks_failed'] = '; '.join(failed)[:300]
@@ -1934,7 +2269,7 @@ class _Menus:
         rounds = None
         if hooks is None and ad is not None:         # the default: the package, and a random loadout at every Select Player
             hooks = lambda: apply_package(ad, skip=EARLY_OPS + LOADOUT_OPS)          # noqa: E731
-            rounds = lambda: apply_round(ad)                                         # noqa: E731
+            rounds = lambda: apply_round(ad, stats=stats)                            # noqa: E731
         # a random character and stage every round (operator 2026-10-24: "it keeps picking the same character"),
         # unless a launch explicitly asks for the game's own default; a MercMode launch can carry the DJ's pick
         merc = ((game or {}).get('launch') or {}).get('mercmode')
@@ -1948,6 +2283,7 @@ class _Menus:
         self.boot = Boot(selected, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
                          jump_at="select_player", round_hooks=rounds) if re4_menus is not None else None
         self.random = merc is not False
+        self.key = id(ad) if ad is not None else None   # re4_menus.REQUESTS / ASKED key (re_mods mercs_select: id(ad))
         self.selected: dict = {}                     # the selects' picks since the last round: {"player", "stage"}
 
     def tick(self, s: dict, now: float) -> str | None:
@@ -1977,14 +2313,18 @@ class _Menus:
         if callable(fn):
             fn(player, stage)
 
-    def round_up(self, player=None, stage=None) -> None:
+    def round_up(self, player=None, stage=None, keep_asked=False) -> None:
         """A round started: the menus' stuck / loading clocks start again at the next look (mercs_bot.Boot.round_played:
         they ran on through the round and ended every MercMode turn as "nothing moved in RAM for 150 s on results"), and
-        the selects' request / plan are spent (re4_menus.RandomSelections.round_up)."""
+        the selects' request / plan are spent (re4_menus.RandomSelections.round_up: a request moves to ASKED, the DJ's
+        round, whose deaths keep Continue Yes; keep_asked: this round is the DJ's still - a reload after Continue Yes, an
+        instant retry of it)."""
         self.watch_reset()
         fn = getattr(getattr(self.boot, 'menus', None), 'round_up', None)
         if callable(fn):
-            fn(player, stage)
+            fn(player, stage, keep_asked=keep_asked)
+        elif not keep_asked and re4_menus is not None and self.key is not None:   # the game's own picks: no DJ round
+            getattr(re4_menus, "ASKED", {}).pop(self.key, None)
 
     def watch_reset(self) -> None:
         """A round (or a retry of one) is playing: the menus' stuck / loading clocks start again at the next look."""
@@ -2033,6 +2373,7 @@ class InstantRounds:
         self.lib = RS.Library(RS.library_root(ad) / RS.library_key(game, disc, self.release), clock=clock, rng=rng)
         self.capture = None                          # (Capture, meta, taken in time) being written
         self.loaded = None                           # the library entry the round now playing started from
+        self.retrying_asked = self.loaded_asked = False   # the DJ's round, loaded again after its death / as asked
         self.status()
 
     @classmethod
@@ -2083,12 +2424,34 @@ class InstantRounds:
         if combo and combo[0] in re4_menus.STAGE_ROOMS and combo[1] in re4_menus.PLAYERS:
             self.menus.plan(re4_menus.PLAYERS.index(combo[1]), re4_menus.STAGE_ROOMS.index(combo[0]))
 
-    def decide(self, previous):
-        """("state", entry) | ("menus", combo) | (None, why) for the round after the one that just ended."""
+    def asked(self) -> dict | None:
+        """The DJ's round now playing (re4_menus.ASKED: its request moved there when it started) as {"room", "character"}."""
+        asked = getattr(re4_menus, "ASKED", {}).get(id(self.ad))
+        if not asked:
+            return None
+        p, st = asked.get("player"), asked.get("stage")
+        return {"character": re4_menus.PLAYERS[p] if type(p) is int and 0 <= p < len(re4_menus.PLAYERS) else None,
+                "room": re4_menus.STAGE_ROOMS[st] if type(st) is int and 0 <= st < len(re4_menus.STAGE_ROOMS) else None}
+
+    def decide(self, previous, terminal: str | None = None):
+        """("state", entry) | ("menus", combo) | (None, why) for the round after the one that just ended. A death in the
+        DJ's round keeps Continue Yes (Bot._continue_answer): the same stage and character again, from the library when
+        it holds them (an instant Continue), else (None) the bot answers the native Continue Yes."""
+        self.retrying_asked = False
         why = self.lib.tripped()
         if why:
             self.stats["instant_rounds"] = why
             return None, why
+        dj = self.asked() if terminal == "dead" else None
+        if dj is not None:
+            room, who = previous if previous else (None, None)
+            want = {"room": dj.get("room") or room, "character": dj.get("character") or who}
+            kind, what = self.lib.choose(self.combos(), previous, want)
+            if kind != "state":
+                self.stats["instant_last"] = "the DJ's round died: Continue Yes (its stage and character not stored)"
+                return None, "the DJ's round: Continue Yes"
+            self.retrying_asked = True
+            return kind, what
         kind, what = self.lib.choose(self.combos(), previous, self.request())
         if kind == "menus":
             self.plan_menus(what)
@@ -2120,8 +2483,11 @@ class InstantRounds:
         self.lib.record(entry, True)
         self.loaded = entry
         asked = self.request()
+        self.loaded_asked = bool(getattr(self, "retrying_asked", False))   # an instant Continue of the DJ's round
         if asked and asked.get("room") in (None, entry["room"]) and asked.get("character") in (None, entry["character"]):
-            re4_menus.REQUESTS.pop(id(self.ad), None)            # the DJ's round is up: later rounds are random again
+            # the DJ's round is up: its request moves to ASKED (a death in it keeps Continue Yes); later rounds random
+            getattr(re4_menus, "ASKED", {})[id(self.ad)] = re4_menus.REQUESTS.pop(id(self.ad), None) or {}
+            self.loaded_asked = True
         self.stats["instant_loads"] = self.stats.get("instant_loads", 0) + 1
         self.stats["instant_last"] = (f"r{entry['room']:03x} {entry['character']} loaded in "
                                       f"{self.clock() - t0:.1f} s ({Path(entry['file']).name})")
@@ -2340,6 +2706,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     bot.stats.update(rounds=1 if started_in else 0, menu_presses=0,
                      **({"screen": "playing"} if started_in else {}))   # a prepared swap starts in the round: say so at once
     menus = _Menus(ad, m, send, sleep, clock, bot.stats, game=game, hooks=hooks)
+    bot.menu_key = id(ad) if ad is not None else None   # the menus' request key: an asked-for round keeps Continue Yes
+    loadout = LoadoutCheck(ad, bot.stats) if ad is not None else None   # the round's gun and x80, read back in the round
     # instant rounds (InstantRounds: the next round from a save state taken at a round's first frame); None = the menus
     instant = InstantRounds.for_run(ad, m, game, bot.stats, menus, sid=session_id, clock=clock, sleep=sleep,
                                     prepare=prepare)
@@ -2452,7 +2820,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 sleep(0.1)
             if stopped():
                 break
-            kind, what = instant.decide(round_combo)
+            kind, what = instant.decide(round_combo, terminal["where"])   # a DJ round's death: Continue Yes (its own)
             if kind == "state":
                 ok, why, frozen = instant.start(what)
                 if ok:
@@ -2528,7 +2896,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 instant.after_load()                   # the package counted (or due), the state's pending equip cleared
                 round_combo = (e["room"], e["character"])
                 menus.round_up(re4_menus.PLAYERS.index(e["character"]) if e["character"] in re4_menus.PLAYERS else None,
-                               re4_menus.STAGE_ROOMS.index(e["room"]) if e["room"] in re4_menus.STAGE_ROOMS else None)
+                               re4_menus.STAGE_ROOMS.index(e["room"]) if e["room"] in re4_menus.STAGE_ROOMS else None,
+                               keep_asked=bool(getattr(instant, "loaded_asked", False)))   # the DJ's round (again)
                 if getattr(bot, "trace", None) is not None:
                     bot.trace.meta.update(instant_state=Path(e["file"]).name)
             else:
@@ -2538,7 +2907,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 who = re4_menus.PLAYERS[p_] if re4_menus is not None and type(p_) is int \
                     and 0 <= p_ < len(re4_menus.PLAYERS) else bot.stats.get("character")
                 round_combo = (s.get("room"), who)
-                menus.round_up()
+                menus.round_up(keep_asked=not sel)     # no selects visited: the stage again (Continue Yes), same round's
                 if via == "menus" and instant is not None and bot.stats.get("operator_control") is not True:
                     instant.maybe_capture(s, sel, hold)   # its first frame, before any press: into the library
         elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0 \
@@ -2563,6 +2932,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             if ad is not None and armed_round != bot.stats['rounds']:
                 arm_round(ad, bot.stats)
                 armed_round = bot.stats['rounds']
+            if loadout is not None:
+                loadout.tick(s, now)
         out_since = None
         bot.stats.update(combo=s["combo"], timer=s["timer"])
         if ad is not None:                             # the infinite First Aid Spray: hp -> full when low (auto_first_aid)
