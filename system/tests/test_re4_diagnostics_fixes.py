@@ -171,6 +171,19 @@ def test_the_rounds_loadout_is_read_back_and_repaired_in_the_round(monkeypatch):
     assert len(calls) == 2                                                # verified: read no more
 
 
+def test_the_hand_cannon_keeps_its_own_x40_and_is_not_repaired_to_x80(monkeypatch):
+    # operator 2026-10-27: "replace anyone's sniper rifle with a 40x rapid fire handcannon"
+    g, calls = FakeG(0x37, [4.0] * 5), []
+    g.V.FIRE_RATE_ORIG = struct.pack(">5f", *[160.0] * 5) * 4            # x40 = 4 frames; x80 would be 2
+    fake_rm(monkeypatch, g, calls)
+    stats = {"rounds": 1, "round_loadout": {"round": 1, "gun": "Handcannon", "gun_id": 0x37, "fire_x": 80,
+                                            "verified": False, "checks": 0, "fixes": 0}}
+    lc = B.LoadoutCheck(object(), stats)
+    lc.tick({"weapon": 0x37}, 0.0)
+    lo = lc.tick({"weapon": 0x37}, B.LOADOUT_CHECK_S + 0.1)
+    assert calls == [] and lo["verified"] and lo["fire_want_frames"] == 4.0   # read back at x40, left alone
+
+
 def test_a_loadout_that_cannot_be_repaired_says_why_and_stops_trying(monkeypatch):
     g, calls = FakeG(0x30, [3.0] * 5), []
     fake_rm(monkeypatch, g, calls)
@@ -195,7 +208,8 @@ def test_select_player_records_the_draw_for_the_round_that_follows(monkeypatch):
     assert B.apply_round(object(), stats=stats) == []
     lo = stats["round_loadout"]
     assert lo["round"] == 5 and lo["drawn"] == "at Select Player" and lo["gun_id"] == RM._item_id("Handcannon")
-    assert "character" not in lo and lo["fire_x"] == 80 and lo["verified"] is False   # the check names the round's own
+    assert "character" not in lo and lo["fire_x"] == 40 and lo["verified"] is False   # the check names the round's own
+    #                                                         (the Hand Cannon's own x40, re_mods_tool FIRE_X)
     stats["rounds"] = 5
     assert B.apply_round(object(), equip_now=True, stats=stats) == []
     assert stats["round_loadout"]["round"] == 5 and stats["round_loadout"]["equipped_now"] is True
