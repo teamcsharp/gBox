@@ -1449,7 +1449,8 @@ def test_a_shotgun_blasts_the_crowd_in_its_cone_before_the_run_out():
     facing(m, 0.0)
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     acts = run(bot, m, now, 0.0, 8)
-    assert acts[0] == {"hold": {"r"}} and bot.stats["weapon"] == "Shotgun (0x2c)"   # the gun up into the group first
+    assert "r" in acts[0]["hold"] and not ({"up", "b", "a"} & acts[0]["hold"])      # the gun up into the group first
+    assert bot.stats["weapon"] == "Shotgun (0x2c)"                                  # (the aim centring on him meanwhile)
     fired = next(i for i, a in enumerate(acts) if "a" in a["hold"])             # the blast ...
     after = acts[fired + 1]["hold"]
     assert "b" in after and "r" not in after and bot.stats["evades"] == 1        # ... then out (a run or the quick turn)
