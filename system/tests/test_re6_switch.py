@@ -643,7 +643,8 @@ def test_no_bomb_readied_with_two_within_three_metres():
 
 def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
-    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700))   # three at 3-3.8 m
+    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
+            (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))                       # five at 3-3.8 m
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
     bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
@@ -664,6 +665,9 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     acts = run(bot, snap, clock, 2)
     assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["fever_kicks"] >= 1
     assert bot.stats["bomb_drops"] == 0                                       # the fever first, no bomb drop
+    bot.nade_last = -1e9                                                      # a second flash: not within FLASH_GAP_S
+    run(bot, snap, clock, 3)
+    assert bot.nade is None or bot.nade["kind"] != "flash"
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
 
 
@@ -881,6 +885,23 @@ def test_with_quick_attacks_fast_crowd_control_presses_back_to_back_and_counts_t
         run(bot, snap, clock, 2)
     assert bot.stats["quick_attacks"] == 3 and bot.stats["quick_attack_interval"] == pytest.approx(0.2, abs=0.01)
     assert R.unit_action(g, R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)) is None and acts
+
+
+def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_pursuit():
+    upstairs = ((0.0, 800.0, 1500.0, 700), (0.0, 0.0, 6000.0, 700))          # one a floor up, one far on his floor
+    bot, clock, snap = brain(round_guest(enemies=upstairs, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap.update(combo=7, combo_timer=2.0)
+    acts = run(bot, snap, clock, 1)
+    assert acts[0]["hold"][0] == "lup"                                        # on to the far one on his floor
+    snap["enemies"] = [snap["enemies"][0]]                                    # only the one upstairs: still after him
+    acts = run(bot, snap, clock, 2)
+    assert bot.stats["act"] == "pursue" and bot.stats["pursuits"] == 1 and bot.stats["census_alive"] == 1
+    acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # not moving (stairs): a side step
+    assert bot.stats["pursuit_stuck"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    snap["kills"] = (snap.get("kills") or 0) + 1                              # the kill before the lapse
+    run(bot, snap, clock, 1)
+    assert bot.stats["pursuit_kills"] == 1
 
 
 def test_no_new_bomb_under_half_health():
