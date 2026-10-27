@@ -242,7 +242,9 @@ def test_dead_and_results_units_name_their_screens(monkeypatch):
 
 @pytest.mark.parametrize("aid,where,key", [(0x41, "alert_leaderboard", "b"), (0x09, "alert_ok", "a"),
                                            (0x08, "alert_ok", "a"), (0x0F, "alert_ok", "a"),
-                                           (0x0C, "alert_wait", None), (0x0D, "alert", None)])
+                                           (0x0C, "alert_wait", None), (0x0D, "alert_wait", None),
+                                           (0x02, "alert_ok", "a"),     # no save yet (gBox's Citron home): create it
+                                           (0x2A, "alert", "b")])       # any other dialog: declined, never confirmed
 def test_dialogs_by_their_id(aid, where, key):
     g = round_guest(player=False)
     alert = g.lines[0][0]

@@ -61,7 +61,12 @@ ALERTS = {0x41: "alert_leaderboard",    # "Connect to the Leaderboards and submi
           0x09: "alert_ok",             # "Save successful."
           0x08: "alert_ok",             # "Load successful."
           0x0F: "alert_ok",             # "This game has an autosave feature ..."
+          0x0D: "alert_wait",           # on the load path it clears itself within a second (live 2026-10-27)
+          0x02: "alert_ok",             # the first dialog after PRESS ANY BUTTON with no save (gBox's own Citron home,
+                                        # live 2026-10-27: the warm prepare stopped there 120 s): A creates the save
           0x0C: "alert_wait"}           # "Now saving." (no button)
+# Any other dialog is declined (B): on a fresh save the game asks to open its privacy policy web page, and A there opens a
+# browser on the session display (RE5 Switch on Eden ran xdg-open); B never confirms anything.
 MENU_CURSOR, PLAYER_CURSOR = 0x50, 0x1CC
 EXTRA_COUNT, EXTRA_MODES = 0x54, 0x1C4  # uIdStartUp02: how many modes, their ids (0 Agent Hunt, 1 Mercenaries, 2 No Mercy)
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, MERCS_SOLO = 0, 3, 0
@@ -89,7 +94,8 @@ def continue_target() -> int:
     return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
 
 BOOT_KEY = "a"                          # a screen RAM can't name out of a round (PRESS ANY BUTTON)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b", "press_any_button": "a"}
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b", "press_any_button": "a",
+         "alert": "b"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert_wait", "alert", "select_stage", "select_player",
                 "dead")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
