@@ -485,7 +485,14 @@ def test_a_hold_read_in_ram_is_shaken_off():
     assert {k for chord in R.WIGGLE for k in chord} == {"lup", "lright", "ldown", "lleft", "b"}   # round, B mashed
 
 
-def test_with_auto_qte_on_a_hold_gets_a_hands_off_window_then_the_shake():
+def test_auto_qte_frees_no_grab_so_he_shakes_at_once_with_it_on():
+    bot, clock, snap = brain(round_guest(state=8))
+    snap["auto_qte"] = True                                  # live 2026-10-27: the option let every bite land
+    assert R.AUTO_QTE_WAIT_S == 0.0 and run(bot, snap, clock, 1)[0]["hold"] in R.WIGGLE
+
+
+def test_with_auto_qte_on_a_hold_gets_a_hands_off_window_then_the_shake(monkeypatch):
+    monkeypatch.setattr(R, "AUTO_QTE_WAIT_S", 1.2)           # the window, when one is set
     bot, clock, snap = brain(round_guest(state=8))
     snap["auto_qte"] = True                                  # the driver's flag: re6_switch_mods.auto_qte is on
     wait = int(R.AUTO_QTE_WAIT_S / 0.05) - 1
@@ -499,7 +506,8 @@ def test_with_auto_qte_on_a_hold_gets_a_hands_off_window_then_the_shake():
     assert bot.stats["hold_log"][-1]["pressed"] is True and bot.stats["hold_log"][-1]["auto_qte"] is True
 
 
-def test_a_hold_the_game_frees_inside_the_window_counts_as_freed_with_no_press():
+def test_a_hold_the_game_frees_inside_the_window_counts_as_freed_with_no_press(monkeypatch):
+    monkeypatch.setattr(R, "AUTO_QTE_WAIT_S", 1.2)
     bot, clock, snap = brain(round_guest(state=9))
     snap["auto_qte"] = True
     run(bot, snap, clock, 8)                                 # 0.4 s held, nothing pressed
