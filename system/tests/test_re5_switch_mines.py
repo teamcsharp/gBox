@@ -202,3 +202,37 @@ def test_the_ground_bombs_are_the_uwp0a_units_of_sunits_line_11():
     put_slot(g, 1, 0x10A, 5, 1)
     assert R.snapshot(g)["ground_mines"] == [{"ptr": bomb, "pos": (1483.0, 553.0, 523.0)}]   # line 11's only
     R._CLASSES.clear()
+
+
+def test_a_blast_window_counts_the_kills_and_his_health_lost_around_the_bombs_leaving_the_line():
+    m = MN.Mines({})
+    m.new_round(0.0)
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    m.bombs = {0x77: bomb["pos"]}
+
+    def tick(t, kills, hp, down):
+        s = dict(snap(ground=[bomb] if down else []), kills=kills)
+        m.watch(dict(p(), hp=hp), s, t)
+    tick(1.0, 5, 1000, True)
+    tick(1.1, 8, 300, True)                  # live 2026-10-27: the kills and his loss a poll before the units left
+    tick(1.2, 8, 300, False)                 # gone: the window opens 0.6 s back
+    tick(1.2, 8, 300, False)                 # (the same tick again: counted once)
+    assert m.stats["mines_gone"] == 1 and m.stats["mine_blasts"] == 1 and m.stats["mine_kills"] == 0
+    tick(1.4, 9, 300, False)
+    tick(1.7, 9, 300, False)                 # past BLAST_AFTER_S: closed
+    assert m.stats["mine_kills"] == 4 and m.stats["mine_blast_hp_loss"] == 700
+    tick(5.0, 12, 200, False)                # later kills and hits are not the bombs'
+    assert m.stats["mine_kills"] == 4 and m.stats["mine_blast_hp_loss"] == 700
+
+
+def test_the_bot_watches_its_bombs_every_tick_even_while_held(switch_bot):
+    R, b, clock = switch_bot
+    b.tick(bot_snap([dict(GUN), dict(BOMB)]))                            # the round starts (its bombs reset)
+    b.mines.bombs = {0x77: (0.0, 0.0, 300.0)}
+    s = bot_snap([dict(GUN), dict(BOMB)], motion=106)
+    s["ground_mines"], s["kills"] = list(STACK), 3
+    clock[0] = 1.0
+    b.tick(s)
+    assert b.doing == "held" and b.stats["mines_gone"] == 1 and b.stats["mine_blasts"] == 1
+    for key in ("mine_blasts", "mine_kills", "mine_blast_hp_loss"):
+        assert key in R.RE5Switch.round_counters

@@ -233,7 +233,7 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
 MINES, MINE_EVERY_S = True, 9.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
-                 "mines_gone", "mine_clear_runs", "gun_backs")
+                 "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -1464,6 +1464,8 @@ class Bot:
         self._ran = (doing, bool(doing in ("turn", "unaim", "quick_turn") and p and self._front_foe(p, snap)))
         self._resolve_pulls(now)
         self._k_tick(snap, now)
+        if self.mines is not None and p:
+            self.mines.watch(p, snap, now)                   # the bombs and their blasts, whatever ran this tick
         if p and doing != "none":
             pos = p["pos"]
             moving = bool(self._look_at is not None and dt and
