@@ -310,8 +310,9 @@ def test_bot_turns_raises_the_gun_and_closes_the_laser_on_his_chest():
     clock[0] = 0.35
     on = bot_snap(laser=ray((5.0, 110.0, 590.0)))                        # the dot on his body
     first, second = b.tick(on)["hold"], b.tick(dict(on, laser=ray((5.0, 111.0, 590.0))))["hold"]
-    assert "zr" in first and "zr" not in second and "zl" in second       # ZR tapped: a tick down, a tick up
-    assert b.stats["shots"] == 1 and "on body" in b.stats["aim"]
+    assert first == second == ("zl", "zr")                              # ZR held on him (the game repeats it), no stick
+    assert b.stats["shots"] == 1 and "on body" in b.stats["aim"]         # one pull
+    assert b.tick(bot_snap(laser=ray((-100.0, 110.0, 600.0))))["hold"] == ("rleft", "zl")   # off him: let go, steer
 
 
 def test_bot_fires_through_him_but_not_into_a_wall_short_of_him():
@@ -365,12 +366,15 @@ def test_bot_backs_off_one_in_front_only():
     assert b.stats["backoffs"] == 0 and b.stats["quick_turns"] == 1
 
 
-@pytest.mark.parametrize("snap,kind", [(bot_snap(motion=106), "holds"), (bot_snap(motion=113), "holds"),
-                                       (bot_snap((0.0, 0.0, 8.0)), "holds"), (bot_snap(hp=1), "dying")])
-def test_bot_breaks_free_when_held_or_dying(snap, kind):
+@pytest.mark.parametrize("snap,kind,pattern", [(bot_snap(motion=106), "holds", R.WIGGLE),
+                                               (bot_snap(motion=113), "holds", R.WIGGLE),
+                                               (bot_snap((0.0, 0.0, 8.0)), "holds", R.WIGGLE),
+                                               (bot_snap(hp=1), "dying", R.MASH),
+                                               (bot_snap(hp=1, motion=106), "dying", R.WIGGLE)])
+def test_bot_breaks_free_when_held_and_resuscitates_when_dying(snap, kind, pattern):
     b, clock = brain()
     keys = {b.tick(snap)["hold"], b.tick(snap)["hold"]}
-    assert keys == set(R.WIGGLE) and b.stats[kind] == 1                   # the left stick shaken, A / B mashed
+    assert keys == set(pattern) and b.stats[kind] == 1    # "Break free": the stick shaken; "Resuscitate": A mashed
 
 
 def test_bot_breaks_free_when_the_stick_does_not_move_him():
@@ -388,8 +392,12 @@ def test_bot_scores_its_hits():
     clock[0] = 0.3
     b.tick(bot_snap(laser=ray((5.0, 110.0, 590.0))))
     clock[0] = 0.4
-    b.tick(bot_snap(laser=ray((5.0, 111.0, 590.0)), ehp=640))            # his health fell after the shot
-    assert b.stats["shots"] == 1 and b.stats["hits"] == 1 and b.stats["accuracy"] == 1.0
+    b.tick(bot_snap(laser=ray((5.0, 111.0, 590.0)), ehp=640))            # his health fell while the trigger is held
+    assert b.stats["shots"] == 1 and b.stats["hits"] == 1 and b.stats["trigger_s"] == 0.1
+    assert b.stats["hits_per_trigger_s"] == 10.0
+    clock[0] = 0.4 + R.HIT_S + 0.1
+    b.tick(bot_snap((0.0, 0.0, 600.0), laser=ray((-100.0, 110.0, 600.0)), ehp=500))   # long after the trigger: not his
+    assert b.stats["hits"] == 1
 
 
 def test_bot_without_a_laser_unit_aims_by_heading():
@@ -397,9 +405,29 @@ def test_bot_without_a_laser_unit_aims_by_heading():
     b.tick(snap_with((0.0, 0.0, 600.0)))
     clock[0] = 0.3
     first, second = b.tick(snap_with((0.0, 0.0, 600.0)))["hold"], b.tick(snap_with((0.0, 0.0, 600.0)))["hold"]
-    assert {first, second} == {("zl", "zr"), ("zl",)} and b.stats["laserless"] == 2
+    assert first == second == ("zl", "zr") and b.stats["laserless"] == 2
     assert b.tick(snap_with((0.0, 0.0, 5000.0)))["hold"] == ("lup",)     # nobody in range: walk to him
     assert b.tick(snap_with(None))["hold"] == ()
+
+
+def test_bot_answers_continue_no_by_the_cursor_in_ram():
+    b, clock = brain()
+    dead = lambda cursor: dict(bot_snap(hp=0), continue_cursor=cursor)
+    assert b.tick(dead(None)) == {"hold": ()}                                 # the death animation
+    clock[0] = R.DEAD_WAIT_S
+    assert b.tick(dead(None)) == {"hold": ()}                                 # "Continue?" not up yet: no press
+    assert b.tick(dead(0)) == {"tap": "dright"}                               # on Yes: to No first, never A
+    assert b.tick(dead(R.CONTINUE_NO)) == {"tap": "a"}                        # on No: confirm
+
+
+def test_the_continue_dialog_has_a_cursor_for_the_menus_walk():
+    g = round_guest(phase=R.PHASE_PLAYING, hp=0, units=((28, "uIdGameover00"),))
+    scr = R.screen(g)
+    assert (scr["where"], scr["cursor"], scr["target"]) == ("dead", 0, R.CONTINUE_NO) and R.step(scr) == "dright"
+    u = R.ui_units(g)["uIdGameover00"]
+    g.i32(u + R.CONTINUE_CURSOR, R.CONTINUE_NO)
+    assert R.step(R.screen(g)) == "a" and R.snapshot(g)["continue_cursor"] == R.CONTINUE_NO
+    assert "continue_cursor" not in R.snapshot(round_guest())                 # alive: no dialog read
 
 
 def test_bot_breaks_free_and_answers_continue_no():

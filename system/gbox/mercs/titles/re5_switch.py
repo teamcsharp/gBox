@@ -69,13 +69,16 @@ ALERTS = {0x33: "alert_leaderboard",     # "Connect to the Leaderboards and subm
           0x09: "alert_ok",              # "Save successful." (after Continue? No, and after the results): A = OK
           0x08: "alert_ok"}              # "Load successful.": A = OK
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR, MODE_CURSOR, PLAYER_CURSOR = 0x74, 0x1C4, 0x1D8, 0x1C8, 0x1D0
+CONTINUE_CURSOR, CONTINUE_NO = 0x1CC, 1   # uIdGameover00 "Continue?": +0x1CC 0 Yes / 1 No (live 2026-10-26: A on Yes
+                                         # restarts the round, so A goes in only with the cursor read on No)
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_MERCENARIES, MODE_NO_MERCY = 0, 1, 0, 3
 STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the selects' first entries
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "dead": "a", "mercs_title": "a"}
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_stage", "select_player")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
+            "dead": ("dleft", "dright"),
             "mercs_mode": ("dup", "ddown"), "select_stage": ("dleft", "dright"), "select_player": ("dleft", "dright")}
 
 # uLaserSight (sUnit move line 19, the effects line; PS3 line 18): while ZL is held, +0x60 is the laser dot, where the
@@ -117,7 +120,8 @@ GRAB_R, GRAB_S = 120.0, 0.6
 STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he neither turns nor moves: held (a Majini holds
                                          # him for another's swing; his health does not fall): break free this long
 COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
-WIGGLE = (("lleft", "a"), ("lright", "b"))   # break free: the left stick shaken, A and B mashed (the grab prompts)
+WIGGLE = (("lleft",), ("lright",))       # "Break free": the left stick shaken (the prompt's icon)
+MASH = (("a",), ())                      # dying: "Resuscitate", A mashed (the prompt's icon)
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 
@@ -291,6 +295,12 @@ def snapshot(m) -> dict:
             snap["player"] = None
         if snap["player"]:
             snap["laser"] = laser(m, base)
+            if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
+                over = ui_units(m, base).get("uIdGameover00")
+                try:
+                    snap["continue_cursor"] = _i32(m, over + CONTINUE_CURSOR) if over else None
+                except (ValueError, OSError):
+                    snap["continue_cursor"] = None
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
@@ -380,10 +390,14 @@ def screen(m, merc=None) -> dict:
         if up and aid:
             return out | {"where": ALERTS.get(aid, "alert"), "alert_id": aid,
                           "confirmation_token": ["alert", alert, aid]}
+    if "uIdGameover00" in ui and (out["where"] == "dead" or not snap.get("player")):
+        try:
+            cursor = _i32(m, ui["uIdGameover00"] + CONTINUE_CURSOR)
+        except (ValueError, OSError):
+            cursor = None
+        return out | {"where": "dead", "cursor": cursor, "target": CONTINUE_NO}
     if snap.get("player") and out["where"] in ("playing", "dead", "loading"):
         return out
-    if "uIdGameover00" in ui:
-        return out | {"where": "dead"}
     if "uIdMerceEd00" in ui:
         return out | {"where": "results"}
     if "uIdNowLoading00" in ui:
@@ -492,9 +506,10 @@ class Bot:
     answered No (right, then A), like the PS3 bot, so the round ends on its results. Without a laser unit the v1 heading
     aim stands in."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, release=None):
         self.stats = stats if stats is not None else {}
         self.clock = clock
+        self.release = release                  # the driver's: the live mods' state put back when the bot stops
         for k in ("shots", "hits", "turns", "quick_turns", "backoffs", "wiggles", "holds", "laserless", "reraise",
                   "restale"):
             self.stats.setdefault(k, 0)
@@ -510,7 +525,7 @@ class Bot:
         self.wiggle = 0
         self.hp_seen: list = []
         self.hp_prev: dict = {}
-        self.pending: list = []                 # shots not yet matched to a Majini's health falling
+        self.fire_at = None                     # the last tick ZR was held on him
         self._threats: list = []
         self.dead_since, self.dead_taps = None, 0
 
@@ -553,17 +568,14 @@ class Bot:
         return bool(falling and near <= GRAB_R)
 
     def _score_hits(self, snap, now) -> None:
-        """A Majini's health falling within HIT_S of a shot is that shot's hit (accuracy = hits / shots)."""
+        """A Majini's health falling while the trigger is held, or within HIT_S of letting it go, is a hit."""
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
         drops = sum(1 for k, h in hp.items() if h < self.hp_prev.get(k, h))
         self.hp_prev = hp
-        self.pending = [t for t in self.pending if now - t <= HIT_S]
-        while drops and self.pending:
-            self.pending.pop(0)
-            drops -= 1
-            self.stats["hits"] += 1
-        if self.stats["shots"]:
-            self.stats["accuracy"] = round(self.stats["hits"] / self.stats["shots"], 3)
+        if drops and self.fire_at is not None and now - self.fire_at <= HIT_S:
+            self.stats["hits"] += drops
+        if self.stats.get("trigger_s"):
+            self.stats["hits_per_trigger_s"] = round(self.stats["hits"] / self.stats["trigger_s"], 2)
 
     # --- the sticks and the trigger ------------------------------------------------------------------------------------
     def _turn(self, err: float, tol: float = 0.0) -> tuple:
@@ -595,15 +607,18 @@ class Bot:
         return {"rup"} if err > 0 else {"rdown"}
 
     def _trigger(self, on: bool, now) -> set:
-        """ZR tapped (a tick down, a tick up: a handgun fires once a press) while on him."""
+        """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
+        with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if not on:
             self.fire_down = False
             return set()
-        self.fire_down = not self.fire_down
         if not self.fire_down:
-            return set()
-        self.stats["shots"] += 1
-        self.pending.append(now)
+            self.stats["shots"] += 1
+        elif self.fire_at is not None:
+            self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self.fire_at, 0.2), 2)
+            if self.stats["trigger_s"]:
+                self.stats["hits_per_trigger_s"] = round(self.stats["hits"] / self.stats["trigger_s"], 2)
+        self.fire_down, self.fire_at = True, now
         return {"zr"}
 
     def _gun_down(self) -> None:
@@ -622,8 +637,13 @@ class Bot:
                 self.dead_since = now
             if now - self.dead_since < DEAD_WAIT_S:
                 return {"hold": ()}
-            self.dead_taps += 1
-            return {"tap": "dright" if self.dead_taps % 2 else "a"}
+            cursor = snap.get("continue_cursor", "unread")
+            if cursor == "unread":                           # no cursor in this snapshot (another reader): v1's taps
+                self.dead_taps += 1
+                return {"tap": "dright" if self.dead_taps % 2 else "a"}
+            if cursor is None:                               # "Continue?" not up yet
+                return {"hold": ()}
+            return {"tap": "a" if cursor == CONTINUE_NO else "dright"}   # No, never Yes (Yes restarts the round)
         self.dead_since = None
         self._score_hits(snap, now)
         if self.quick:                                       # the quick turn: the stick back, + B, let go
@@ -652,7 +672,9 @@ class Bot:
             self._gun_down()
             self.still = None
             self.wiggle += 1
-            return {"hold": WIGGLE[self.wiggle % len(WIGGLE)]}
+            dying = p.get("hp") == DYING_HP and motion not in MOTION_HELD
+            pattern = MASH if dying else WIGGLE
+            return {"hold": pattern[self.wiggle % len(pattern)]}
         self.in_hold = False
         if motion == MOTION_RELOAD and self.aim_since is not None:
             self.aim_since = now                             # reloading: the gun comes back up by itself
@@ -724,10 +746,10 @@ class Bot:
             return {"hold": self._turn(body_err)}
         where = dot_on(dot, foot)
         on = where is not None or through(origin, dot, foot)
-        keys = {"zl"}
-        if math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
-            keys |= self._yaw(yaw_err) | self._pitch(pitch_err)
-        keys |= self._trigger(on, now)
+        keys = {"zl"} | self._trigger(on, now)
+        if not on and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
+            keys |= self._yaw(yaw_err) | self._pitch(pitch_err)   # steer only off him: a raised fire rate paces the
+                                                                  # aim with the shot (re5_switch_mods)
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
@@ -737,7 +759,11 @@ class Bot:
         return True
 
     def save(self) -> None:
-        return None
+        if self.release is not None:
+            try:
+                self.release()
+            except Exception:                               # noqa: BLE001 - the round is over either way
+                pass
 
 
 class RE5Switch(Driver):
@@ -746,6 +772,7 @@ class RE5Switch(Driver):
     def __init__(self, clock=time.monotonic):
         self.clock = clock
         self._timer = (None, 0.0)
+        self.stats: dict | None = None
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -758,8 +785,23 @@ class RE5Switch(Driver):
             if t != self._timer[0]:
                 self._timer = (t, now)
             elif now - self._timer[1] > HANG_S:
-                return "loading"                            # the clock stopped: frozen (the engine calls it lost)
+                where = "loading"                           # the clock stopped: frozen (the engine calls it lost)
+        self._mods(m, snap, where == "playing")
         return where
+
+    def _mods(self, m, snap, playing: bool, stats: dict | None = None) -> None:
+        """The session's live mods (re5_switch_mods: fire_rate's time scale during shots, the no-ammo flags'
+        read-back) on every snapshot, when the engine runs with the session's adapter and modifications are allowed."""
+        ad = getattr(m, "adapter", None)
+        if ad is None or getattr(m, "mercs_no_modifications", False):
+            return
+        from . import re5_switch_mods
+        res = re5_switch_mods.maintain(ad, snap, enabled=playing)
+        if self.stats is not None:
+            self.stats["rapid_fire_active"] = bool(res.get("active"))
+            self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
+            if not res.get("verified", True):
+                self.stats["mod_reason"] = res.get("reason", "")
 
     def menu_handoff(self, m, snap, where) -> bool:
         """The engine hands a finished round back to the menus only when RAM names a native screen. That means the
@@ -774,7 +816,11 @@ class RE5Switch(Driver):
             return False
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
-        return Bot(stats=stats, clock=clock)
+        self.stats = stats
+
+        def release():                                      # the round's end or the bot stopping: the game's pace back
+            self._mods(m, snapshot(m), False)
+        return Bot(stats=stats, clock=clock, release=release)
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

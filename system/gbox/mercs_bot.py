@@ -365,6 +365,9 @@ def apply_ops(ad, ops, prof: dict | None = None, stats: dict | None = None) -> l
     if (prof or {}).get("platform") == "ps3":
         from . import re5_mods_tool as RM
         make = RM.RE5
+    elif (prof or {}).get("map_id") == "010018100CD46000":   # RE5 on Switch (Citron / Eden)
+        from .mercs.titles import re5_switch_mods as RM
+        make = RM.RE5Switch
     else:
         from . import re_mods_tool as RM
         make = RM.RE4

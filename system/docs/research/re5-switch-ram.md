@@ -145,3 +145,43 @@ frames of the private Citron session, one every 15 s) and re5-switch-break-free.
 
 Open: health (the bot never heals; the inventory is not mapped yet), the handgun's ~35 shots a minute (rapid fire and
 infinite ammo are next), the time bonuses.
+
+## Weapons, the inventory and the fire rate (2026-10-26 evening)
+
+- **The weapon definition table**: main+0x1D08680, records of 0x140 (the PS3's stride), index = weapon id, 0x2C player
+  weapons then the enemies'. A constructor fills it at boot: no relocation points at the "WPnn NAME" strings, and the
+  records were found by scanning main's data for pointers to them. Each record has +0x0 its class's vtable, +0x8 -> the
+  name, +0x10 class (2 handgun, 4 machine gun, 5 shotgun, 7 magnum), +0x18 1 = automatic, and +0x1C 1 = needs no ammo
+  (only the Gatling; the PS3's +0x14). +0x24 holds class bits (0x201 ...). +0x90 f32 is the fire interval offset (-10
+  handguns, +5 machine guns, -2 shotguns, -5 magnums).
+- **The upgrade table**: main+0x1D13B28, 0x210 a weapon (8 groups of 0x40: a pointer, then 14 values). Firepower is at
+  +0x18 (M92F 150 ... 250), firing speed at +0x58 (M92F 26 frames), reload at +0x98, capacity (s32) at +0xD8 (10 ... 100).
+- **The inventory**: in the player, slots of 0x38 from +0x30F0. Each slot has +0x8 the id word 0x0TII (T 1 weapon, 2 ammo,
+  3 recovery), +0xC rounds, +0x10 capacity, +0x1C grid position, +0x20 1 = in hand, +0x24..+0x27 its four upgrade levels.
+  Chris (BSAA) in No Mercy carries handgun ammo 50, hand grenades 5, machine-gun ammo 30, the M92F (50 / 50, firepower
+  level 5, capacity level 10), the Ithaca 20, a First Aid Spray (grid 7) and the knife.
+- **The fire action** (main 0x96E2C8-0x96E340): it takes the in-hand slot's weapon, interval = firing speed[level] + the
+  definition's +0x90, and re-arms the trigger (player +0x37B0 = 1) once the shot motion's frame (player +0x93C) reaches
+  it. Before the ammo check it tests +0x1C (0x96E22C).
+- **Measured** (round starts, the M92F, ZR held; shots counted from the in-hand rounds): 2.7 shots/s held or tapped.
+  The interval offset at -60 and the definition's other 1.0 fields (+0xA0, +0xA4, +0xAC, +0xB0, +0xB4) left it at
+  2.7: the shot motion itself sets the pace. The player's time scale (+0x1A08, 1.0, read by 966 sites) does move it:
+  4.7 at x2, 8.7 x4, 15.3 x8, 16.7 x32, 24.7 x80 (the frame rate caps it; Citron ran 40-60 fps beside other loads).
+  With +0x1C = 1 the M92F's rounds stayed at 50 while it fired.
+
+`gbox.mercs.titles.re5_switch_mods` (the profile's playing_ops, applied when a round starts) puts these to use.
+infinite_ammo sets +0x1C on every gun and grenade (33 of them, by name; the originals are kept). fire_rate x80 raises
+the time scale only while the shot motion plays (+0x8F8 = 29), so aiming, walking and turning keep the game's speed.
+The driver's snapshot maintains it and puts the game's pace back when the shot ends, the round ends or the bot stops,
+never writing into a player object its round has freed. The bot holds ZR while the laser is on a Majini and does not
+steer during the shot. Live round with both (private Citron, real damage): **29 kills, 13,540 points, max combo 24,
+alive at the end** (v2 without them: about 10 / 3,200). Frames: docs/evidence/switch-citron/re5-switch-rapid-fire.jpg.
+
+## You Are Dead - Continue? and dying
+
+uIdGameover00 +0x1CC is the cursor (0 Yes, 1 No); +0x1EC reads 2 once the dialog takes input. Yes replays the same
+round at once, and No saves ("Save successful") and goes on to the results flow. Blind presses could land on Yes
+(round m80a restarted inside one engine call, two rounds counted as one), so the bot and the menus walk now press A
+only with the cursor read on No. A forced death (health 0 in the private session) went dialog, D-pad right until the
+cursor read No, A, "Save successful". Dying (health 1) shows "Resuscitate" with A: the bot mashes A then; a hold shows
+"Break free" with the left stick, which it shakes.
