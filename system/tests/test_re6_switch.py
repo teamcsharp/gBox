@@ -485,6 +485,47 @@ def test_a_hold_read_in_ram_is_shaken_off():
     assert {k for chord in R.WIGGLE for k in chord} == {"lup", "lright", "ldown", "lleft", "b"}   # round, B mashed
 
 
+def test_with_auto_qte_on_a_hold_gets_a_hands_off_window_then_the_shake():
+    bot, clock, snap = brain(round_guest(state=8))
+    snap["auto_qte"] = True                                  # the driver's flag: re6_switch_mods.auto_qte is on
+    wait = int(R.AUTO_QTE_WAIT_S / 0.05) - 1
+    acts = run(bot, snap, clock, wait)
+    assert all(a == {"hold": ()} for a in acts) and bot.stats["acts"]["held_auto_qte"] == wait   # nothing pressed
+    acts = run(bot, snap, clock, 4)                          # still held past the window: shaken off as without it
+    assert acts[-1]["hold"] in R.WIGGLE and bot.stats["holds"] == 1
+    snap["player"]["state"] = 0
+    run(bot, snap, clock, 1)
+    assert bot.stats["holds_shaken"] == 1 and bot.stats["holds_freed_no_press"] == 0
+    assert bot.stats["hold_log"][-1]["pressed"] is True and bot.stats["hold_log"][-1]["auto_qte"] is True
+
+
+def test_a_hold_the_game_frees_inside_the_window_counts_as_freed_with_no_press():
+    bot, clock, snap = brain(round_guest(state=9))
+    snap["auto_qte"] = True
+    run(bot, snap, clock, 8)                                 # 0.4 s held, nothing pressed
+    snap["player"]["state"] = 1                              # the game let him go
+    run(bot, snap, clock, 1)
+    assert bot.stats["holds_freed_no_press"] == 1 and bot.stats["holds_shaken"] == 0
+    entry = bot.stats["hold_log"][-1]
+    assert entry["pressed"] is False and 0.3 <= entry["s"] <= 0.5
+    bot2, clock2, snap2 = brain(round_guest(state=8))        # auto QTE off: shaken off at once, as before
+    assert run(bot2, snap2, clock2, 1)[0]["hold"] in R.WIGGLE
+
+
+def test_the_driver_tells_the_bot_when_auto_qte_is_on(mods):
+    g = round_guest()
+    ad = Adapter(g)
+    g.adapter = ad
+    d = R.RE6Switch()
+    snap = R.snapshot(g)
+    d._mods(g, snap, True)
+    assert snap["auto_qte"] is False
+    mods.ORIG.setdefault(id(ad), {"base": BASE})["auto_qte"] = True
+    snap = R.snapshot(g)
+    d._mods(g, snap, True)
+    assert snap["auto_qte"] is True
+
+
 def test_dead_it_answers_continue_yes_by_the_cursor_and_counts_the_replay(monkeypatch):
     g = round_guest(hp=0)
     over = ui(g, 18, "uIdGameover00")

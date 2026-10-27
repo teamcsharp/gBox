@@ -845,6 +845,9 @@ READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
 GRAB_R, GRAB_S, STUCK_S, BREAK_S = 120.0, 0.6, 0.5, 1.2
+AUTO_QTE_WAIT_S = 1.2                   # with the game's own auto QTE on (re6_switch_mods.auto_qte), a hold read in RAM
+                                        # gets this long with nothing pressed before he shakes free as without it
+HOLD_LOG_N = 12                         # the last holds kept in stats hold_log
 WIGGLE = (("b", "lup"), ("lright", "lup"), ("b", "lright"), ("ldown", "lright"),   # break free: the prompt shows B
           ("b", "ldown"), ("ldown", "lleft"), ("b", "lleft"), ("lleft", "lup"))      # (live), mashed, the stick round
 DEAD_WAIT_S = 2.5                       # "YOU ARE DEAD - CONTINUE?" takes input ~4 s after the death
@@ -916,7 +919,7 @@ class Bot:
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
                   "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
                   "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
-                  "bomb_misses"):
+                  "bomb_misses", "holds_freed_no_press", "holds_shaken"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s"):
             self.stats.setdefault(k, 0.0)
@@ -932,6 +935,7 @@ class Bot:
         self.keeping_off = False
         self.qshot_release = False
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
+        self.hold_since, self.hold_pressed = None, False     # the RAM hold under way: since when, anything pressed
         self.wiggle = 0
         self.hp_seen: list = []
         self.hp_prev: dict = {}
@@ -1157,11 +1161,20 @@ class Bot:
         near = flat(near_e) if near_e is not None else math.inf
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
+        if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
+            self._hold_ended(now, snap)
         if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
                     self.stats["holds"] += 1
+                    self.hold_since, self.hold_pressed = now, False
                 self.in_hold = True
+                if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
+                    self._gun_down()                         # the game's auto QTE: nothing pressed for a while
+                    self.still = None
+                    return self._go("held", "held_auto_qte", {"hold": ()},
+                                    f"held (action {state}): the game's auto QTE, nothing pressed")
+                self.hold_pressed = True
             elif now >= self.break_until:
                 self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
                 self.break_until = now + BREAK_S
@@ -1175,6 +1188,17 @@ class Bot:
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
         return act
+
+    def _hold_ended(self, now, snap) -> None:
+        """A RAM hold's end: stats holds_freed_no_press (it ended before he pressed anything: the game's auto QTE) or
+        holds_shaken, and hold_log - its length, whether he pressed, whether auto QTE was on - for the last HOLD_LOG_N."""
+        self.in_hold = False
+        pressed = bool(self.hold_pressed)
+        self.stats["holds_shaken" if pressed else "holds_freed_no_press"] += 1
+        log = self.stats.setdefault("hold_log", [])
+        log.append({"s": round(now - (self.hold_since or now), 2), "pressed": pressed,
+                    "auto_qte": bool(snap.get("auto_qte"))})
+        del log[:-HOLD_LOG_N]
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
@@ -1510,7 +1534,8 @@ class RE6Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "quick_shots", "melee", "holds", "reloads", "deaths", "tablets",
                       "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
+                      "holds_shaken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -1565,6 +1590,7 @@ class RE6Switch(Driver):
             return
         from . import re6_switch_mods
         res = re6_switch_mods.maintain(ad, snap, enabled=playing)
+        snap["auto_qte"] = bool((re6_switch_mods.ORIG.get(id(ad)) or {}).get("auto_qte"))   # the bot leaves holds to it
         if self.stats is not None:
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):
