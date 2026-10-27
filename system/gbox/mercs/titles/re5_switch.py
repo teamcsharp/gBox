@@ -109,6 +109,7 @@ CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra
 LASER_LINE, LASER_DOT, LASER_FROM = 19, 0x60, 0x280
 LASER_WALK_MAX, LASER_RESCAN_S = 1024, 0.25
 _LASER: dict = {}                        # main base -> (the uLaserSight unit, its vtable), checked on every read
+_CLASSES: dict = {}                      # an enemy's vtable -> its class name (uEm10 ...), named once a boot
 _LASER_MISS: dict = {}                   # main base -> when a walk last ended without it
 _NOT_LASER: dict = {}                    # main base -> the effects line's other vtables (each named once)
 
@@ -296,6 +297,20 @@ def class_name(m, obj) -> str | None:
         return None
 
 
+def enemy_class(m, e) -> str | None:
+    """His class name (uEm10 / uEm11 Majini, uEm21 ... : the enemy knowledge's class key), one vtable read a tick; each
+    vtable named once (class_name) and remembered."""
+    try:
+        vt = u64(m, e)
+    except (ValueError, OSError, struct.error):
+        return None
+    if vt not in _CLASSES:
+        if len(_CLASSES) > 256:
+            _CLASSES.clear()
+        _CLASSES[vt] = class_name(m, e)
+    return _CLASSES[vt]
+
+
 def heading_of(q) -> float:
     return wrap(2.0 * math.atan2(q[1], q[3]))
 
@@ -425,7 +440,8 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
+                                        "class": enemy_class(m, e)})
     gs = game_sys(m, base)
     if ptr_ok(gs):
         raw = m.rd(gs + GS_PHASE, GS_SCORE + 4 - GS_PHASE)

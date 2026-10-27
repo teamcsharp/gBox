@@ -153,6 +153,17 @@ def test_classes_come_from_getdti():
     assert R.class_name(g, HEAP + 0x7FFFFF00) is None                  # unmapped: no class
 
 
+def test_each_enemy_carries_his_class_named_once_per_vtable(monkeypatch):
+    R._CLASSES.clear()
+    g = round_guest(enemies=((300.0, 0.0, 500.0, 800), (-200.0, 0.0, 900.0, 700)))
+    calls = []
+    real = R.class_name
+    monkeypatch.setattr(R, "class_name", lambda m, o: calls.append(o) or real(m, o))
+    assert [e["class"] for e in R.snapshot(g)["enemies"]] == ["uEm10", "uEm10"]
+    R.snapshot(g)
+    assert len(calls) == 1                                               # one vtable, named once
+
+
 def test_snapshot_reads_the_measured_fields():
     snap = R.snapshot(round_guest())
     p = snap["player"]
