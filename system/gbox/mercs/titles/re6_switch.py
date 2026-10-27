@@ -1180,6 +1180,14 @@ THROW_ACTS = ("bomb_place", "bomb_det", "nade_frag", "nade_fire", "nade_flash")
 NADE_KILLS_S = 3.0
 FEVER_S, FEVER_R = 2.5, 500.0           # the fever: kicks at arm's length, quick shots at the rest, at crowd control's pace
 COMBO_LOW_S = 3.0
+# The whole stage's zombies (operator 15:25: "make him aware of the locations of any and all enemies in the level, so
+# that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where enemies
+# are and is able to go and pursue them"): the snapshot's enemies are sEnemy's whole list, every floor. With nobody on
+# his floor in reach he goes after the best of them - his floor first, then the nearest - walking along the camera
+# turned to him; not PURSUE_STUCK_CM further in PURSUE_STUCK_S, a side step for PURSUE_SIDE_S (the side swapped each
+# time). With the combo running (COMBO_LOW_S) a pursuit is counted: pursuit_kills when the kill count rises, pursuit_
+# lapses when the combo lapses first; census_alive / census_floor the stage's living zombies and those on his floor.
+PURSUE_STUCK_CM, PURSUE_STUCK_S, PURSUE_SIDE_S = 30.0, 1.0, 0.8
 AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on one this near: he walks at him
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
@@ -1257,7 +1265,8 @@ class Bot:
                   "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
-                  "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots"):
+                  "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots",
+                  "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
             self.stats.setdefault(k, 0.0)
@@ -1315,7 +1324,9 @@ class Bot:
         self.surrounded = False                              # 8+ within 4 m last tick
         self._p, self._cam_yaw = None, 0.0
         self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
-        self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then                       # this tick's player and camera yaw (crowd control's way out)
+        self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then
+        self.pursuit = None                                  # the combo's pursuit under way: {since, kills}
+        self.pursue_spot, self.pursue_side_until = None, -1e9   # (since when, where) for the stuck check; a side step                       # this tick's player and camera yaw (crowd control's way out)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
         self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
@@ -1585,6 +1596,7 @@ class Bot:
         near = flat(near_e) if near_e is not None else math.inf
         self._combo_tick(snap, live, flat, now)
         self._quick_tick(p, snap, now)
+        self._census_tick(p, snap, live)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
         if within >= SURROUND_N and not self.surrounded:
@@ -1655,6 +1667,9 @@ class Bot:
             if took is not None:
                 return took
             self._gun_down()
+            chase = self._pursue(p, snap, now)                   # none on his floor: after the stage's best one
+            if chase is not None:
+                return chase
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
@@ -1863,6 +1878,49 @@ class Bot:
         if quick and isinstance(k, int) and isinstance(self.qa_kills_k, int) and k > self.qa_kills_k:
             self.stats["quick_attack_kills"] += k - self.qa_kills_k
         self.qa_in, self.qa_kills_k = quick, k
+
+    # --- the whole stage --------------------------------------------------------------------------------------------
+    def _census_tick(self, p, snap, live) -> None:
+        """The stage's living zombies (census_alive) and those on his floor (census_floor); a pursuit's end: the kill
+        count rising (pursuit_kills) or the combo lapsing first (pursuit_lapses)."""
+        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+        self.stats["census_alive"], self.stats["census_floor"] = len(alive), len(live)
+        self.stats["census_list"] = len(snap.get("enemies") or ())   # sEnemy's own list (its count +0x40), the dead too
+        pu = self.pursuit
+        if pu is not None:
+            k, combo = snap.get("kills"), snap.get("combo")
+            if isinstance(k, int) and isinstance(pu["kills"], int) and k > pu["kills"]:
+                self.stats["pursuit_kills"] += 1
+                self.pursuit = None
+            elif combo == 0:
+                self.stats["pursuit_lapses"] += 1
+                self.pursuit = None
+
+    def _pursue(self, p, snap, now) -> dict | None:
+        """After the best zombie of the whole stage (his floor first, then the nearest): along the camera turned to him,
+        a side step when the walk stalls. None: no zombie alive anywhere."""
+        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+        if not alive:
+            return None
+        px, py, pz = p["pos"]
+        e = min(alive, key=lambda z: (abs(z["pos"][1] - py) > MAX_DY,
+                                      math.hypot(z["pos"][0] - px, z["pos"][2] - pz)))
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        if self.combo_urgent and self.pursuit is None:
+            self.stats["pursuits"] += 1
+            self.pursuit = {"since": now, "kills": snap.get("kills")}
+        if self.pursue_spot is None or math.hypot(px - self.pursue_spot[1][0], pz - self.pursue_spot[1][1]) > PURSUE_STUCK_CM:
+            self.pursue_spot = (now, (px, pz))
+        elif now - self.pursue_spot[0] > PURSUE_STUCK_S and now >= self.pursue_side_until:
+            self.stats["pursuit_stuck"] += 1                     # against something: a side step
+            self.pursue_side_until = now + PURSUE_SIDE_S
+            self.detour = "lright" if self.detour == "lleft" else "lleft"
+            self.pursue_spot = (now, (px, pz))
+        cam = snap.get("camera")
+        err = wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - (cam["yaw"] if cam else p["rot"]))
+        keys = ("lup",) + ((self.detour,) if now < self.pursue_side_until else ()) + self._turn(err, TURN_TOL)
+        floor = "his floor" if abs(e["pos"][1] - py) <= MAX_DY else "another floor"
+        return self._go("walk", "pursue", {"hold": keys}, f"after the nearest of {len(alive)} ({floor}, {d:.0f} cm)")
 
     # --- the way out -------------------------------------------------------------------------------------------------
     @staticmethod
@@ -2659,7 +2717,8 @@ class RE6Switch(Driver):
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
-                      "quick_attacks", "quick_attack_kills",
+                      "quick_attacks", "quick_attack_kills", "pursuits", "pursuit_kills", "pursuit_lapses",
+                      "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
                       "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
