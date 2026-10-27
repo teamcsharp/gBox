@@ -65,6 +65,8 @@ DYING_HP = 1                             # the solo dying state keeps exactly 1 
 # +0x20 1 = in hand. Chris (BSAA) starts No Mercy with a First Aid Spray at grid 7 (the D-pad's down).
 P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 9
 INV_ID, INV_ROUNDS, INV_CAP, INV_GRID, INV_HAND = 0x08, 0x0C, 0x10, 0x1C, 0x20
+INV_OBJ = 0x30                           # -> the item's own object (heap); the game zeroes it when the slot empties (live
+                                         # 2026-10-27, the spray's slot two seconds after its last use)
 EMPTY_IDS = frozenset({0x0, 0x100})      # no item / WP00 NONE
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
 MAX_ENEMIES = 64
