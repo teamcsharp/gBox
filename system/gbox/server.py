@@ -1337,9 +1337,14 @@ def create_app(config: Config) -> FastAPI:
         launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
         jump = {"jump": True} if _bot_demo(store, sid) or launched.get("jump") else {}
         pad = {"pad": launched["pad"]} if launched.get("pad") else {}
+        # MercMode's parked titles on that PC stay up through any relaunch: 2026-10-26 17:58 a frozen RE4's bot reset
+        # (not beside, so no keep) closed every other game there, the warm RE5 included (exit via single_game, rc -9)
+        from . import mercmode as _mercmode
+        warm_keep = sorted(s for s in _mercmode.warm_sessions(store, tw.get("name") or "")
+                           if s != sid and (store.get("session", s) or {}).get("state") == "running")
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
-                                           **jump, **pad},
+                                           **({"keep_sessions": warm_keep} if warm_keep else {}), **jump, **pad},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -1434,6 +1439,11 @@ def create_app(config: Config) -> FastAPI:
                                                                store.get('job', sid.split('-', 1)[-1]))):
                 raise HTTPException(409, "That game has not enabled continuous recovery; autoplay relaunches only "
                                          "continuous runs, bot demos and agent test sessions.")
+            if _demos.mercmode_closed(store, sid, (store.get('worker', _wid(sid.split('-')[0])) or {}).get('name')):
+                # 2026-10-26 17:58: MercMode ended a frozen RE4 run and its bot reset the game 4 s later; nothing
+                # played the relaunched copy and the scheduler waited behind it for 9 minutes
+                raise HTTPException(409, "MercMode already closed this run; its scheduler starts the next title, so "
+                                         "the bot does not relaunch it.")
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):

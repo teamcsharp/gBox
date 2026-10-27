@@ -1509,3 +1509,63 @@ def test_a_frozen_game_wakes_the_scheduler_at_once():
     assert saver.report(run['session_id'],{'bad_end':'hung'}) is True
     assert woke and 'bad end (hung)' in woke[0]
     assert store.get(S.STATE,w['name'])['yield']==S.BAD_ENDS['hung']
+
+
+def orphan_rig():
+    store,w,saver,calls,now,tick=rig()
+    M.configure(store,w['name'],{'enabled':True,'keep_warm':False})
+    return store,w,saver,calls,now,tick
+
+
+def running_copy(store,sid,gid,started,actor,**extra):
+    store.put('session',sid,{'session_id':sid,'game_id':gid,'state':'running','title':'Resident Evil','started':started,**extra})
+    store.put('job',sid.split('-',1)[1],{'id':sid.split('-',1)[1],'tool':'launch_game','state':'succeeded','actor':actor})
+
+
+def test_a_copy_the_bot_relaunched_after_mercmode_closed_its_run_is_closed():
+    # 2026-10-26 17:58: RE4 froze, MercMode ended the run, the bot's reset relaunched RE4 and nothing played it; the
+    # scheduler then waited behind that copy ("a game is already running there") for 9 minutes
+    store,w,saver,calls,now,tick=orphan_rig()
+    store.put('session','w1-old',{'session_id':'w1-old','game_id':RE4,'state':'ended','replaced_by':'w1-reset'})
+    store.put('job','old',{'id':'old','tool':'launch_game','state':'succeeded','actor':S.ACTOR})
+    running_copy(store,'w1-reset',RE4,now[0]-120,S.DEMO_ACTOR)
+    assert saver._reap_orphans(w,store.running_sessions(),now[0])==['w1-reset']
+    stops=[c for c in calls if c['tool']=='session_op']
+    assert stops[0]['input']=={'session_id':'w1-reset','op':'stop_game','args':{}} and stops[0]['actor']==S.ACTOR
+    assert saver._reap_orphans(w,store.running_sessions(),now[0])==[]        # its stop is on the way: never sent twice
+    running_copy(store,'w1-stray',RE5,now[0]-120,S.ACTOR)                     # a scheduler copy nothing owns any more
+    assert saver._reap_orphans(w,store.running_sessions(),now[0])==['w1-stray']
+
+
+def test_operator_agent_young_played_and_owned_copies_are_never_closed():
+    store,w,saver,calls,now,tick=orphan_rig()
+    running_copy(store,'w1-op',RE5,now[0]-600,'operator')                    # the operator's own game
+    running_copy(store,'w1-agent',RE5,now[0]-600,'agent')                    # an agent's test session
+    running_copy(store,'w1-young',RE4,now[0]-10,S.ACTOR)                     # may still be on its way into a run
+    running_copy(store,'w1-played',RE4,now[0]-600,S.ACTOR)
+    S.telemetry_put('w1-played',{'running':True,'stats':{}},now=now[0])    # a bot plays it
+    running_copy(store,'w1-yours',RE4,now[0]-600,S.ACTOR)
+    store.put('slabel','w1-yours',{'session_id':'w1-yours','owner':'you'}) # the operator picked up the pad
+    running_copy(store,'w1-demo',RE4,now[0]-600,S.DEMO_ACTOR)                # a bot's relaunch of a game MercMode never had
+    running_copy(store,'w1-runreset',RE4,now[0]-600,S.DEMO_ACTOR)            # the current run's own game, relaunched
+    store.put('session','w1-run',{'session_id':'w1-run','game_id':RE4,'state':'ended','replaced_by':'w1-runreset'})
+    store.put('job','run',{'id':'run','tool':'launch_game','state':'succeeded','actor':S.ACTOR})
+    store.put(S.STATE,w['name'],{'session_id':'w1-run','job':'run','phase':'playing','mercmode':{'title':'re4'}})
+    running_copy(store,'w1-warm',RE5,now[0]-600,S.ACTOR)                     # a parked title
+    M.keep_warm(store,w['name'],'re5',{'session_id':'w1-warm','job':'warm'})
+    assert saver._reap_orphans(w,store.running_sessions(),now[0])==[]
+    assert not [c for c in calls if c['tool']=='session_op']
+    M.configure(store,w['name'],{'enabled':False})                          # MercMode off: nothing is closed at all
+    running_copy(store,'w1-stray',RE5,now[0]-600,S.ACTOR)
+    assert saver._reap_orphans(w,store.running_sessions(),now[0])==[]
+
+
+def test_a_bot_may_not_relaunch_a_copy_mercmode_already_closed():
+    store,w,saver,calls,now,tick=orphan_rig()
+    store.put('job','run',{'id':'run','tool':'launch_game','actor':S.ACTOR})
+    store.put('job','mine',{'id':'mine','tool':'launch_game','actor':'operator'})
+    assert S.mercmode_closed(store,'w1-run',w['name'])                       # MercMode's copy, no longer its run
+    store.put(S.STATE,w['name'],{'session_id':'w1-run','job':'run'})
+    assert not S.mercmode_closed(store,'w1-run',w['name'])                   # still the run: the bot may reset it
+    assert not S.mercmode_closed(store,'w1-mine',w['name'])                  # the operator's game is never MercMode's
+    assert not S.mercmode_closed(store,'w1-run','another-host')              # a host without MercMode

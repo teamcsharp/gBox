@@ -374,3 +374,32 @@ def test_only_cloud_card_adapters_hold_a_card():
     assert server.holds_cloud_card({'platform': 'dreamcast'}, {'adapter': 'retroarch'})
     assert not server.holds_cloud_card({'platform': 'wii'}, {'adapter': 'dolphin'})
     assert not server.holds_cloud_card({'platform': 'gamecube'}, {'adapter': 'rpcs3'})
+
+
+def test_a_frozen_games_relaunch_keeps_the_mercmode_warm_pool_up(reset_route):
+    """2026-10-26 17:58: a frozen RE4's bot reset closed the frozen copy first and launched the fresh one with no keep,
+    so the worker closed every other game on the Spark, MercMode's parked RE5 included (exit via single_game, rc -9)."""
+    from gbox import mercmode
+    _, _, store, session_reset = reset_route
+    store.put('session', 'w-warm', {'session_id': 'w-warm', 'game_id': 'ts', 'state': 'running', 'adapter': 'rpcs3'})
+    store.put('session', 'w-gone', {'session_id': 'w-gone', 'game_id': 'ts', 'state': 'ended', 'adapter': 'rpcs3'})
+    mercmode.keep_warm(store, 'JAYBUILTFINALE', 're5', {'session_id': 'w-warm', 'job': 'warm'})
+    mercmode.keep_warm(store, 'JAYBUILTFINALE', 're6', {'session_id': 'w-gone', 'job': 'gone'})
+    calls = []
+
+    def run(tool, inp, *args, **kwargs):
+        calls.append((tool, dict(inp)))
+        if tool == 'session_op' and inp['op'] == 'reset':
+            raise HTTPException(409, 'session_op failed: running')
+        if tool == 'session_op' and inp['op'] == 'stop_game':
+            store.put('session', 'w-live', store.get('session', 'w-live') | {'state': 'ended'})
+            return {'ended': True}
+        if tool == 'launch_game':
+            store.put('session', 'w-new', {'session_id': 'w-new', 'game_id': 'ts', 'state': 'running', 'adapter': 'dolphin'})
+            return {'session_id': 'w-new'}
+        pytest.fail('Unexpected tool: ' + tool)
+    enclosed(session_reset, '_run_job').cell_contents = run
+    r = post(reset_route)
+    assert r.status_code == 200, r.text
+    launch = next(i for t, i in calls if t == 'launch_game')
+    assert launch['keep_sessions'] == ['w-warm'] and 'keep_session' not in launch   # the parked title stays; no ended ids

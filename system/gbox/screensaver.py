@@ -240,6 +240,24 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
     return background.guarded_reason(store, worker, now=now, require_gpu=False)
 
 
+ORPHAN_GRACE_S = 60.0          # a copy younger than this may still be on its way into a run or the warm pool
+ORPHAN_TELEMETRY_S = 30.0      # a bot reported from it this recently: something plays it, it is not an orphan
+
+
+def mercmode_closed(store, sid: str, host: str | None) -> bool:
+    """A MercMode copy (this scheduler launched it) on a MercMode host that is no longer the host's run, its launch,
+    or a parked title: MercMode ended it (a rotation, a freeze, a black screen), so nothing should bring it back."""
+    from . import mercmode
+    if not host or not sid or '-' not in sid or not mercmode.settings(store, host)['enabled']:
+        return False
+    if (store.get('job', sid.split('-', 1)[1]) or {}).get('actor') != ACTOR:
+        return False
+    run = store.get(STATE, host) or {}
+    if sid == run.get('session_id') or sid.split('-', 1)[1] == run.get('job'):
+        return False
+    return sid not in mercmode.warm_sessions(store, host)
+
+
 def playbook_games() -> set[str]:
     """Catalog games a playbook plays without recorded play (gbox.doa2_bot, gbox.doa3_bot)."""
     out: set[str] = set()
@@ -295,6 +313,8 @@ class Screensaver:
                 host_cfg = self._worker_settings(w, cfg)
                 if not _local_scheduler(w):
                     self._tend_warm(w, running, now)
+                    if self._reap_orphans(w, running, now):
+                        out.setdefault('orphans_closed', []).append(w['name'])
                 run = self.store.get(STATE, w["name"])
                 if run:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
@@ -321,6 +341,56 @@ class Screensaver:
         if wake is not None:
             self.nudged = why
             wake.set()
+
+    def _reap_orphans(self, w, running, now) -> list[str]:
+        """MercMode hosts: close a copy that this scheduler or its bot started and that no run, launch or parked title
+        owns any more, once nothing has played it for a while. 2026-10-26 17:58: RE4 froze on its results, MercMode
+        ended the run while the bot's own reset relaunched RE4; nothing played that copy, and the scheduler waited
+        behind it ("a game is already running there") for 9 minutes. Operator and agent launches are never touched,
+        nor a copy the operator took over (label owner "you")."""
+        from . import mercmode
+        from .server import JobRequest
+        if not mercmode.settings(self.store, w['name'])['enabled']:
+            return []
+        run = self.store.get(STATE, w['name']) or {}
+        owned = set(mercmode.warm_sessions(self.store, w['name']))
+        jobs = {run.get('job')} | {(row or {}).get('job') for row in (mercmode.warm_pool(self.store, w['name']) or {}).values()}
+        jobs |= {p.get('job') for p in self.store.all(PENDING)}
+        if run.get('session_id'):
+            owned.add(run['session_id'])
+            nxt = (self.store.get('session', run['session_id']) or {}).get('replaced_by')
+            if nxt:
+                owned.add(nxt)                           # the run's own game relaunched by its bot: still the run
+        stopping = {(j.get('input') or {}).get('session_id') for j in self.store.all('job')
+                    if j.get('tool') == 'session_op' and (j.get('input') or {}).get('op') == 'stop_game'
+                    and j.get('state') in ('queued', 'assigned', 'running')}
+        closed = []
+        for s in running:
+            sid = s.get('session_id', '')
+            if not sid.startswith(w['id'] + '-') or sid in owned or sid in stopping or sid.split('-', 1)[1] in jobs:
+                continue
+            launch = self.store.get('job', sid.split('-', 1)[1]) or {}
+            actor = launch.get('actor')
+            if actor == DEMO_ACTOR:                      # a bot's relaunch: an orphan only when it replaced a MercMode copy
+                before = next((p for p in self.store.all('session') if p.get('replaced_by') == sid), None)
+                if not before or (self.store.get('job', before['session_id'].split('-', 1)[-1]) or {}).get('actor') != ACTOR:
+                    continue
+            elif actor != ACTOR:
+                continue
+            if (self.store.get('slabel', sid) or {}).get('owner') == 'you':
+                continue
+            if now - float(s.get('started') or now) < ORPHAN_GRACE_S:
+                continue
+            tel = telemetry_get(sid, now)
+            if tel and tel.get('age_s', 99) < ORPHAN_TELEMETRY_S:
+                continue
+            self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'stop_game', 'args': {}},
+                                   agent_use=True, require_worker=w['id']), actor=ACTOR,
+                        origin={'via': 'MercMode: closing an orphaned copy', 'session_id': sid})
+            self.store.audit(ACTOR, 'mercmode.orphan_closed', sid, {'worker': w['name'], 'launched_by': actor,
+                                                                     'title': s.get('title') or s.get('game_title')})
+            closed.append(sid)
+        return closed
 
     def _worker_settings(self, worker, cfg):
         from . import mercmode
