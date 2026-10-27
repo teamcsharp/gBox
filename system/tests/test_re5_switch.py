@@ -514,3 +514,17 @@ def test_menu_handoff_only_for_a_native_screen_in_ram():
     blank = round_guest(phase=R.PHASE_OVER, player=False, units=())
     assert d.menu_handoff(blank, R.snapshot(blank), "results") is False        # nothing named: the lost watch runs
     assert d.menu_handoff(save, R.snapshot(save), "loading") is False
+
+
+def test_result_ready_waits_for_a_still_tally_so_mercmode_can_count_a_completed_round():
+    d = R.RE5Switch()
+    snap = lambda score, kills=15: {"player": None, "score": score, "kills": kills, "timer": 0.0}
+    assert callable(d.result_ready)                       # the engine's terminal witness: tally_ready = callable(...)
+    assert d.result_ready(snap(5000), 0.0) is False       # the results just came up
+    assert d.result_ready(snap(5100), 1.5) is False       # the score still counting up
+    assert d.result_ready(snap(5100), 2.0) is False       # two seconds in, but changed half a second ago
+    assert d.result_ready(snap(5100), 2.6) is True        # still for a second after two: final
+    assert d.result_ready(snap(9000), 30.0) is False      # a later round's results (a gap): watched afresh
+    for k in range(1, 32):                                 # a score that never settles ...
+        last = d.result_ready(snap(9000 + k), 30.0 + 0.5 * k)
+    assert last is True                                   # ... is final after fifteen seconds
