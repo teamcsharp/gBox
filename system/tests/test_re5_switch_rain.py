@@ -117,7 +117,8 @@ def test_a_ray_ending_on_the_majini_at_the_muzzle_fires():
     assert b.stats["look"]["shots"][-1]["gate"] == "point blank"
 
 
-def test_a_far_off_aim_takes_the_majini_near_the_ray_instead_of_lowering():
+def test_a_far_off_aim_takes_the_majini_near_the_ray_instead_of_lowering(monkeypatch):
+    monkeypatch.setattr(R, "SMOOTH", True)                      # (the unaim hold is SMOOTH's)
     b, clock = bot()
     target, other = at(500, 0), at(600, 50)
     b.tick(snap([(target, 800), (other, 800)]))

@@ -14,6 +14,7 @@ from gbox.mercs.titles import re5_switch as R
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
+    monkeypatch.setattr(R, "SMOOTH", True)                      # these test the smoothing (off by default since 13:00)
 
 
 def at(dist, deg):

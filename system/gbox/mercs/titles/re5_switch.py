@@ -169,7 +169,10 @@ COMMIT_S = 1.0                           # a new target is kept this long (a cro
 # in a crowd; live 11:42-11:54 without it: 13.8 kills a round, 5 deaths in 6), the aim held where it is. Both
 # holds only with nobody within THREAT_R (live 11:42, the first turn: ringed at arm's length, two deaths in two
 # rounds): up close he turns at once, as before.
-SMOOTH = True
+# Off since 2026-10-27 13:00: with it on, deaths rose in every RE5 turn (#1322: 5 in 6; with #1323 and #1325: 3 in 6;
+# with #1327: 4 in 5, against 1-3 in 5 before), while kills came back (19.6-19.8). K_PLAN stays on. The pieces return one
+# at a time, each with its own turn of numbers.
+SMOOTH = False
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
 UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
 MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
