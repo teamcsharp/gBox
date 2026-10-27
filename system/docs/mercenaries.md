@@ -189,17 +189,39 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     | uIdStartUp01 +0x174 = 1, cursor +0x188 | EXTRA CONTENT (THE MERCENARIES REUNION = 3) | D-pad to 3, cross |
     | uIdStartUp29 | Reunion's title (START first) | cross |
     | uIdStartUp29 +0x174 = 1 | SOLO / DUO / SPLIT SCREEN (SOLO first) | cross |
-    | uIdStartUp21 | STAGE SELECT | cross (the last stage played) |
-    | uIdStartUp22 | CHARACTER SELECT | cross (the last character played) |
+    | uIdStartUp21, state +0x17 = 2, cursor +0x44 | STAGE SELECT (takes input in state 2 only) | D-pad to the planned stage, cross |
+    | uIdStartUp22, state +0x17 = 2, cursor +0x180 | CHARACTER SELECT (state 2 only) | D-pad to the planned character, cross |
     | uIdNowLoading00, uIdSaving00 | loading, saving the records | none |
     | uIdTopMenu00 / uIdTitle00 / uIdTitle02 otherwise | the title's menus in between | none |
+    | uIdMerceEd00 outer +0x17 = 10 | the results' last page (START read every frame) | START, at once |
+    | uIdMerceEd00 outer 0x1E | a results message waiting for confirm | cross |
     | none of these, the clock at 0 | the results | START |
     | uIdMerce00 (with the player) | a round (the HUD) | the bot plays |
 
-    * Health 0 in a round is "You Are Dead - Continue?": cross (Yes).
+    * Health 0 in a round is "You Are Dead - Continue?": Yes (Left) or No (Right), as `Pace` plans (below).
     * The driver presses nowhere else, so it never starts a story game.
     * `mercs.menus` in the map is the driver module (`screen` / `step` / `wandered`).
     * PLAY GAME's "?????" entry (index 6) is most likely the locked original THE MERCENARIES.
+  * Between rounds (`re5_ps3.Pace`, 2026-10-26; operator: "match to match to match without these loading screens and
+    waiting"). RE5 Gold's own flow, read from the ELF (BLUS30491 app 01.01) and timed live on the Spark:
+    * Time up: the results tally (uIdMerceEd00 outer 1-7: fade-in and timers, the records' save, the unlock pages)
+      reads no button but the unlock pages' cross, so nothing skips it (~13 s on RPCS3). Outer 10 then takes START
+      alone (offline; mode 1's menu is online), and the results always go on to STAGE SELECT: there is no Retry.
+    * Death: "Continue?" Yes replays the same stage and character at once; No saves ("Please wait a moment",
+      "Saving content", "Save successful" OK, ~8.6 s) and goes to STAGE SELECT.
+    * The selects fade in in ~0.3 s (state 0/1), take input in state 2, and leave in ~0.8 s (STAGE) / ~1.5 s
+      (CHARACTER). Leaving one with circle walks back to the mode's title and the main menu: a mode change.
+    * So inside a turn (one MercMode autoplay run; a bot hot reload keeps it) the next round is the same stage and
+      character for `SAME_ROUNDS` (3) rounds - Continue Yes after a death, cross / cross after the results - then
+      one change at a time, the character then the stage, each balanced by the coverage curriculum
+      (`Coverage.choose(mode, keep)`). The mode never changes inside a turn, only in MercMode's preparation between
+      turns. A DJ pick is taken at the next round in the turn's mode, at the next turn otherwise.
+    * Presses wait for the screen's own input state and then go at once (`input_ready`: the selects' state 2, the
+      results' outer 10, the Continue dialog's state 2; `NAV_CURSOR["ready_s"]`).
+    * Every round's stats and round map carry `round_gap_s` (the last round's end to this round's first frame),
+      `round_wait_s` (to its clock running: RPCS3 shows the player ~10 s into NOW LOADING) and `round_start_via`
+      (`dead/retry`, `results/same`, `results/character`, `results/stage`, `dead/title`, `start`); `round_gaps` and
+      `round_waits` keep the last ten.
   * The deployment: RE5's mercs block says `"ready": true`, so `mercs_bot` plays it through the engine
     (`title_engine`) while the engine's global READY still waits on RE4's A/B. A plain Autoplay on an RE5 session
     runs it in the worker: the boot / menus from `screen` / `step`, each round through `play_round`.

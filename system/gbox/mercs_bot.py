@@ -122,7 +122,12 @@ class Navigator:
         if key is None:
             return None
         fast = bool(self.cursor) and self.cursor_only
-        if now - self.sig_at < (self.cursor.get("stable_s", self.STABLE_S) if fast else self.STABLE_S):
+        stable = self.cursor.get("stable_s", self.STABLE_S) if fast else self.STABLE_S
+        if scr.get("input_ready") is True and self.cursor.get("ready_s") is not None:
+            # the title's own state machine shows this screen taking input now (RE5: a select's state 2, the results'
+            # outer 10): no settle wait for a passing moment, the press is read on the game's next frame
+            stable = min(stable, float(self.cursor["ready_s"]))
+        if now - self.sig_at < stable:
             return None                                     # RAM has only just shown this screen: it may be passing
         retry = self.cursor.get("retry_s", self.RETRY_S) if self.cursor and str(self.last_key).startswith("d") \
             and scr.get("cursor") is not None else self.RETRY_S   # RAM shows the cursor did not move: no double step
@@ -447,13 +452,15 @@ def tactical_publisher(sink, prof: dict):
 
 
 def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sleep, clock=time.time, m=None,
-         tactical=None, session_id=None, prepare: bool = False, **_kw) -> dict:
+         tactical=None, session_id=None, prepare: bool = False, source_job_id=None, **_kw) -> dict:
     """Boot to a round from RAM, hand each round to the engine, back to the menus for the next; stats is filled
     live (screen, cursor, menu_presses, rounds, ram_progress, hooks, menu_moment; hung + wandered when it ends early).
     tactical: the tactical map's sink (gbox.mercs.tactical.HttpSink): each round's frames, the screen between rounds.
     prepare (MercMode's seamless swap, gbox.tools._prepare_round): the menus only - the walk ends the moment the title's
     screen says "playing" (RE5: the round's intro, the player in the stage), before the engine gets the round, with
-    stats["prepared"] True (+ character, stage); the caller pauses the game right there and the switch resumes it."""
+    stats["prepared"] True (+ character, stage); the caller pauses the game right there and the switch resumes it.
+    source_job_id: the autoplay job (tools.autoplay): with session_id it names the turn, so a title's menus module
+    (begin_run: RE5 Pace) keeps a turn's mode when a bot hot reload restarts the run inside it."""
     stats = stats if stats is not None else {}
     from .mercs import stalemate as stalemate_rule
     stalemate_rule.configure(stats, game)        # the launch's MercMode stalemate_cut / stalemate_cut_s for the title's bot
@@ -461,6 +468,9 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     if prof is None:
         raise ValueError("this title has no Mercenaries profile (a RAM map with a mercs block)")
     menus = importlib.import_module(prof["menus"])
+    begin_run = getattr(menus, "begin_run", None)
+    if callable(begin_run):                       # the turn (session, job) or the walk between two (prepare)
+        begin_run(session_id=session_id, job=source_job_id, prepare=prepare)
     m = m or _memory(ad)
     # Keep reads fast while title-specific, verified maintenance writes use the owning adapter.
     if ad is not None:

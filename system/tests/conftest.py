@@ -28,6 +28,16 @@ def _private_character_library(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_re5_pace(monkeypatch):
+    """RE5's between-rounds plan (gbox.mercs.titles.re5_ps3.PACE: the turn's mode, the same-round streak, the path since
+    the last round ended) is module state kept across bot reloads: every test starts with a fresh one."""
+    import sys
+    mod = sys.modules.get("gbox.mercs.titles.re5_ps3")
+    if mod is not None and hasattr(mod, "Pace"):
+        monkeypatch.setattr(mod, "PACE", mod.Pace())
+
+
+@pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
     folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it

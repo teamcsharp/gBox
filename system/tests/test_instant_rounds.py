@@ -649,7 +649,8 @@ def test_re5_rounds_carry_their_gap_from_the_last_rounds_end():
     first.observe_round(R.snapshot(re5_world(timer=0.0)), "results", 100.0)
     second = R.Bot(clock=lambda: 130.0, stats=stats)                           # the engine's next round: a new brain
     second.observe_round(R.snapshot(re5_world(timer=120.0)), "playing", 130.0)
-    assert stats["round_gap_s"] == 30.0 and stats["round_start_via"] == "menus"
+    # the path (re5_ps3.Pace): the results, then no menu screen seen in between (the menus walk notes them)
+    assert stats["round_gap_s"] == 30.0 and stats["round_start_via"] == "results/unknown"
 
 
 # --- RE5: a shorter menu path ----------------------------------------------------------------------------------------------

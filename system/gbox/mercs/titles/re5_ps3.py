@@ -489,6 +489,12 @@ CONTINUE_CODE = ((0x00592E5C, bytes.fromhex("7bbb00207f63db784bffe6295463063e"))
 # 0x5CFA58 displays them in outer state6. Inner3 at 0x5CFBEC accepts sBioPad's dynamic confirm mask.
 MERCE_END_VT, MERCE_NOTICE_STATE, MERCE_FINAL_STATE = 0x015ABB20, 6, 10
 S_BIOPAD, PAD_CONFIRM = 0x0191CF38, 0x1EA0
+# Outer 0x1E: a message the results raise once at outer 10 (0x5CF240: a records/network notice, ids 0x20-0x22; never seen
+# offline so far) that waits for sBioPad's confirm mask (0x5D2734), then outer 0x1F waits out its save and goes back to
+# 10. Without a press here the results would sit until the menus' stuck limit.
+MERCE_MESSAGE_STATE = 0x1E
+MERCE_MESSAGE_CODE = ((0x005D2704, bytes.fromhex("7f63db784bffcb395463063e2f830000419e00bc3900001e")),
+                      (0x005D2734, bytes.fromhex("817e80c0812b000080091ea07fa900382c09000040820010572005ac2f800000419efd3c")))
 MERCE_NOTICE_CODE = ((0x005CFBEC, bytes.fromhex(
     "817e80c0812b000080091ea07f8900382c09000040820010546005ac2f800000419efefc")),
     (0x005CFC20, bytes.fromhex("817e80b4c1bf028cc19e800c812b0000c009002cedad002aff8d6000d1bf028c")),
@@ -514,7 +520,7 @@ def ui_units(m, lines=UI_LINES) -> dict:
 def continue_screen(m, ui=None) -> dict:
     """Observe the native Continue choice; absent, unreadable or transitional dialogs never permit a press."""
     out = {"where": "dead", "cursor": None, "target": CONTINUE_NO, "continue_unit": None,
-           "continue_state": None, "continue_ready": False}
+           "continue_state": None, "continue_ready": False, "input_ready": False, "title_step": None}
     try:
         ui = ui_units(m, range(N_LINES)) if ui is None else ui
         unit = ui.get("uIdGameover00")
@@ -524,7 +530,8 @@ def continue_screen(m, ui=None) -> dict:
         if len(raw) != 0x1D8 or struct.unpack_from(">I", raw)[0] != CONTINUE_VT:
             return out
         state, choice = raw[CONTINUE_STATE], struct.unpack_from(">I", raw, CONTINUE_CHOICE)[0]
-        out.update(continue_unit=unit, continue_state=state, cursor=choice if choice in (0, 1) else None)
+        out.update(continue_unit=unit, continue_state=state, cursor=choice if choice in (0, 1) else None,
+                   title_step=state)
         if state != CONTINUE_READY or choice not in (0, 1) or struct.unpack_from(">I", raw, CONTINUE_BLOCKED)[0]:
             return out
         main = u32(m, S_MAIN)
@@ -540,6 +547,7 @@ def continue_screen(m, ui=None) -> dict:
                                  and u32(m, unit + CONTINUE_CHOICE) == choice)
     except Exception:
         out["continue_ready"] = False
+    out["input_ready"] = out["continue_ready"] is True     # mercs_bot.Navigator: no settle wait on a ready dialog
     return out
 
 
@@ -594,6 +602,13 @@ def result_notice_screen(m, ui=None) -> dict | None:
                "unlock_mask": mask, "unlock_index": index, "unlock_ready": False,
                "result_menu_verified": False, "confirmation": False,
                "confirmation_token": ["merce_result", unit, outer, inner, mask, index]}
+        if outer == MERCE_MESSAGE_STATE:
+            confirm_pad = u32(m, S_BIOPAD)
+            if all(m.rd(address, len(code)) == code for address, code in MERCE_MESSAGE_CODE) \
+                    and ptr_ok(confirm_pad) and u32(m, confirm_pad + PAD_CONFIRM) == 0x4000 \
+                    and u32(m, unit) == MERCE_END_VT and m.rd(unit + 0x16, 2) == raw[0x16:0x18]:
+                out.update(where="results_message", result_menu_verified=True, confirmation=True, input_ready=True)
+            return out
         if outer not in (MERCE_NOTICE_STATE, MERCE_FINAL_STATE) \
                 or any(m.rd(address, len(code)) != code for address, code in MERCE_NOTICE_CODE):
             return out
@@ -605,7 +620,10 @@ def result_notice_screen(m, ui=None) -> dict | None:
             return out
         out["result_menu_verified"] = True
         if outer == MERCE_FINAL_STATE:
-            out["where"] = "results"  # retain the existing final-result Start action
+            # retain the existing final-result Start action. Outer 10 reads START every frame (0x5D2870, offline modes
+            # 2 / 5): it is taken at once, no settle wait (mercs_bot.Navigator input_ready). The tally before it (outer
+            # 1-7: timers, the records' save, the unlock pages) reads no button but the notices' cross: nothing skips it
+            out.update(where="results", input_ready=True)
             return out
         out.update(where="unlock_wait", confirmation=True)
         ready = (inner == 3 and raw[0x298] == 1 and raw[0x28C:0x290] == bytes.fromhex("3dcccccd")
@@ -631,9 +649,11 @@ def screen(m, merc=None) -> dict:
     ui = ui_units(m, range(N_LINES))
     alert = alert_screen(m, ui)
     if alert is not None:
+        PACE.note_screen(alert["where"])
         return alert | {"ui": sorted(ui)}
     notice = result_notice_screen(m, ui)
     if notice is not None:
+        PACE.note_screen(notice["where"])
         return notice | {"ui": sorted(ui)}
     if out["where"] == "dead":
         return continue_screen(m, ui)
@@ -649,27 +669,34 @@ def screen(m, merc=None) -> dict:
         return out
     if "uIdGameover00" in ui:
         return continue_screen(m, ui)
-    plan = coverage().choose() if getattr(m, "adapter", None) is not None else None
     mode = snap.get("mercenaries_mode")
+    PACE.observe_mode(mode)                         # a turn never leaves the mode it is in
+    plan = PACE.plan() if getattr(m, "adapter", None) is not None else None   # the next round (Pace: same, or one change)
     if mode in MODE_ROSTERS:
         ROSTER.set_mode(mode)
     if plan is not None:
         out.update(next_mode=plan["mode"], mode_mismatch=mode in MODE_ROSTERS and mode != plan["mode"],
-                   stage_target=STAGE_NAMES[plan["stage"]])
+                   stage_target=STAGE_NAMES[plan["stage"]], next_round=PACE.describe(plan))
+        if PACE.dj_deferred:
+            out["dj_waits_for_next_turn"] = PACE.status()["dj_waits_for_next_turn"]
     where, cursor, target = "unknown", None, None
     if "uIdStartUp22" in ui:
         if plan is not None and plan["mode"] == ROSTER.mode:
             ROSTER.pick = ROSTER.characters.index(plan["character"])
         where, cursor, target = "select_player", u32(m, ui["uIdStartUp22"] + SELECT_CURSOR), ROSTER.want()
+        state = m.rd(ui["uIdStartUp22"] + SELECT_STATE, 1)[0]
         out.update(mercenaries_mode=ROSTER.mode, character_target=ROSTER.characters[target],
                    character_cursor=ROSTER.characters[cursor] if 0 <= cursor < len(ROSTER.characters) else None,
                    character_roster=list(ROSTER.characters),
-                   character_cursor_verified=ROSTER.confirmed == target)
+                   character_cursor_verified=ROSTER.confirmed == target,
+                   select_state=state, title_step=state, input_ready=state == SELECT_READY)
     elif "uIdStartUp21" in ui:
         where = "select_stage"
         cursor = u32(m, ui["uIdStartUp21"] + MENU_CURSOR)
         if not 0 <= cursor < 8: cursor = None
         target = plan["stage"] if plan is not None else None
+        state = m.rd(ui["uIdStartUp21"] + SELECT_STATE, 1)[0]
+        out.update(select_state=state, title_step=state, input_ready=state == SELECT_READY)
     elif "uIdStartUp29" in ui:
         where = "reunion_solo" if u32(m, ui["uIdStartUp29"] + MENU_SUB) == 1 else "reunion_title"
     elif "uIdStartUp20" in ui:
@@ -694,10 +721,11 @@ def screen(m, merc=None) -> dict:
     out.update(where=where, cursor=cursor, target=target, ui=sorted(ui),
                confirmation_boundary=where in ("select_player", "mercs_title", "mercs_solo",
                                                 "reunion_title", "reunion_solo", "extra_content"))
+    PACE.note_screen(where)
     return out
 
 
-STEPS = {"results": "start", "select_stage": "cross", "title": "start",
+STEPS = {"results": "start", "select_stage": "cross", "title": "start", "results_message": "cross",
          "alert_signin": "circle", "alert_ok": "cross", "reunion_title": "cross", "reunion_solo": "cross"}
 BOOT_KEY = "cross"      # out of a round, a screen RAM can't name (the cold boot's HDD notice, logos): mercs_bot.Boot
 CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
@@ -706,8 +734,10 @@ CURSORED = ("main_menu", "play_game", "extra_content", "select_player")
 # 0.5 s of "stable" after each cursor move, polled every 0.25 s); STAGE SELECT took a median 11 s and CHARACTER SELECT
 # 4.4 s of a 39 s gap. A cursor move on the same screen now settles in 0.3 s and cursor screens are read every 0.1 s; a
 # D-pad press RAM never showed goes again after 0.6 s (the cursor did not move, so it cannot step twice). Screen changes,
-# confirm presses (cross / circle / START) and the result screens keep every original wait.
-NAV_CURSOR = {"stable_s": 0.3, "retry_s": 0.6, "poll_s": 0.1}
+# confirm presses (cross / circle / START) and the result screens keep every original wait - except on a screen whose
+# own state machine RAM shows taking input (input_ready: the selects' state 2, the results' outer 10, the Continue
+# dialog's state 2), where the press goes after ready_s instead of the 0.5 s settle.
+NAV_CURSOR = {"stable_s": 0.3, "retry_s": 0.6, "poll_s": 0.1, "ready_s": 0.05}
 CHARACTERS = ("Chris (Heavy Metal)", "Sheva (Fairy Tale)", "Josh", "Excella", "Chris (Warrior)", "Sheva (Business)",
               "Barry", "Rebecca")                   # CHARACTER SELECT's row, cursor 0..7 (uIdStartUp22 +0x180)
 ORIGINAL_CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)",
@@ -842,9 +872,182 @@ class StagePick:
 STAGE_PICK = StagePick()
 
 
+# --- between two rounds: the fastest way to the next one ----------------------------------------------------------------
+# RE5 Gold's own flow after a round (BLUS30491 app 01.01, read from the ELF and timed live on the Spark 2026-10-26):
+#   time up / quota: uIdMerceEd00's tally runs on timers and saves the records (outer states 1-7 read no button; only its
+#     notices take cross), then outer 10 takes START alone (offline; mode 1's results menu is online) -> STAGE SELECT
+#     (uIdStartUp21) -> CHARACTER SELECT (uIdStartUp22) -> NOW LOADING. No Retry: the results always go to the selects.
+#   death: "Continue?" Yes (event 5,1) replays the same stage and character at once (no save, no selects); No (event
+#     5,2) saves ("Please wait a moment" + "Saving content", ~6 s, then "Save successful" OK) and goes to STAGE SELECT.
+#   STAGE / CHARACTER SELECT: state byte +0x17 - 0/1 fade in (~0.3 s), 2 takes input (cursor and cross), then 3 and the
+#     fade out (~0.8 s / ~1.5 s). Leaving them (circle) walks back to the mode's title and the main menu: a mode change.
+# A live death with No and a new stage and character (2026-10-26 20:58): Continue up 9.0 s after the death, No and its
+# save 12.1 s, STAGE SELECT 5.5 s (4 moves), CHARACTER SELECT 3.0 s (2 moves), NOW LOADING 6.7 s to the player and
+# 11.4 s more to the clock running: 47.7 s from the death to play. Yes skips the save and both selects (~20 s).
+SAME_ROUNDS = 3                         # rounds in a row on one stage and character before one of them changes
+TITLE_SCREENS = frozenset({"title", "main_menu", "play_game", "extra_content", "reunion_title", "reunion_solo",
+                           "mercs_title", "mercs_solo", "alert_signin"})
+SELECT_STATE, SELECT_READY = 0x17, 2    # uIdStartUp21 / 22: the state byte, and the state that takes input
+
+
+class Pace:
+    """What the next round is, and how it is reached (operator 2026-10-26: "match to match to match without these loading
+    screens and waiting"). Inside a turn - one MercMode autoplay run (session, autoplay job: a bot hot reload keeps it) -
+    the next round is the same stage and character again for SAME_ROUNDS rounds: "Continue? Yes" after a death replays it
+    with no save and no selects, and after the results the cursors already rest on it (cross, cross). Then one thing
+    changes, the character and the stage in turn, balanced by the coverage curriculum and made on its own select screen.
+    The mode never changes inside a turn (that walks out to the main menu and in again, the break the operator hates
+    most): only between turns, in MercMode's unseen round preparation (prepare) or before a run's first round. A DJ pick
+    (coverage request) is taken at the next round when it is in the turn's mode; one in the other mode waits for the
+    next turn. The path each round took is told to round_map.gap_start (round_start_via, e.g. "dead/retry",
+    "results/same", "results/character"). Module state, kept across bot hot reloads (RELOAD_KEEP)."""
+    run = None                          # (session id, autoplay job id) of the run the mode is locked for
+    prepare = False                     # MercMode's round preparation: the walk between two turns
+    mode = None                         # the turn's mode, once its first round is up (None: free to change)
+    last = None                         # (mode, character, stage) of the last round started
+    streak = 0                          # rounds started in a row on `last`
+    next_change = "character"           # what the next change changes (the character, then the stage, in turn)
+    held = None                         # the plan for the coming round, held until it starts
+    path = None                         # since the last round ended: {"end", "screens", "moves", "continue"}
+    dj_deferred = None                  # a DJ pick in the other mode, waiting for the next turn
+
+    def begin_run(self, session_id=None, job=None, prepare=False) -> None:
+        """mercs_bot.play: a run starts. The same session and job again (a bot hot reload restarts the run mid-turn)
+        keeps the turn's mode and path; anything else - a new turn, the preparation between two - starts afresh (a turn
+        then takes the mode RAM shows: observe_mode)."""
+        key = (session_id, job)
+        if prepare or job is None or key != self.run:
+            self.mode, self.path = None, None
+        self.run, self.prepare, self.held = key, bool(prepare), None
+
+    def observe_mode(self, mode) -> None:
+        """The game's own mode (cGameSys +0x58) seen by a turn: a turn keeps it, whether it began in a prepared round,
+        between two rounds after a bot reload, or at its first round after a boot."""
+        if self.mode is None and not self.prepare and mode in MODE_ROSTERS:
+            self.mode, self.held = mode, None
+
+    def plan(self) -> dict:
+        """The coming round: {"mode", "character", "stage", "why"} (why: dj / turn / same / character / stage)."""
+        cov = coverage()
+        request = cov.selection_request
+        if request and request.get("state") == "queued":
+            selection = dict(request["selection"])
+            if self.mode is None or selection.get("mode") == self.mode:
+                self.dj_deferred = None
+                return selection | {"why": "dj"}
+            self.dj_deferred = selection            # the other mode: taken at the next turn's preparation
+        if self.held is not None:
+            return dict(self.held)
+        if self.mode is None:
+            plan, why = cov.choose(), "turn"        # between turns: the curriculum's balance (its modes take blocks)
+        elif self.last is not None and self.last[0] == self.mode and self.streak < SAME_ROUNDS:
+            plan, why = {"mode": self.last[0], "character": self.last[1], "stage": self.last[2]}, "same"
+        else:
+            change = self.next_change if self.last is not None and self.last[0] == self.mode else "character"
+            plan = cov.choose(mode=self.mode, keep="stage" if change == "character" else "character", last=self.last)
+            why = change
+        self.held = dict(plan, why=why)
+        return dict(self.held)
+
+    def continue_answer(self) -> str:
+        """"Continue?" after a death: yes when the coming round is the same stage and character (the fastest way back),
+        no when it changes (back to the selects through the save)."""
+        plan = self.plan()
+        same = self.last is not None and (plan.get("mode"), plan.get("character"), plan.get("stage")) == self.last
+        return "yes" if same else "no"
+
+    def round_ended(self, where) -> None:
+        self.path = {"end": where, "screens": [], "moves": {}, "continue": None}
+
+    def note_screen(self, where) -> None:
+        if self.path is not None and where and where not in ("playing", "unknown") \
+                and (not self.path["screens"] or self.path["screens"][-1] != where):
+            self.path["screens"] = (self.path["screens"] + [where])[-40:]
+
+    def note_press(self, scr: dict, key: str) -> None:
+        if self.path is not None and str(key).startswith("d") and scr.get("where") in ("select_stage", "select_player"):
+            moves = self.path["moves"]
+            moves[scr["where"]] = moves.get(scr["where"], 0) + 1
+
+    def note_continue(self, answer: str) -> None:
+        if self.path is not None:
+            self.path["continue"] = answer
+
+    def round_started(self, snap: dict, count: bool = True) -> str:
+        """A round is up (its first frame): the path it took (round_start_via); the streak, the change taken and the
+        turn's mode move on. A Continue retry never passes the selects (where screen() counts a round), so it is counted
+        in the coverage and the roster here (count: a live game; never for a test's memory without an adapter)."""
+        mode, index, stage = snap.get("mercenaries_mode"), snap.get("character_index"), snap.get("stage_index")
+        roster = MODE_ROSTERS.get(mode) or ()
+        combo = (mode, roster[index], stage) if isinstance(index, int) and 0 <= index < len(roster) \
+            and isinstance(stage, int) and 0 <= stage < len(STAGE_NAMES) else None
+        via = self.via(self.path)
+        if combo is not None:
+            if via.endswith("/retry") and combo == self.last and count:
+                try:
+                    coverage().started(*combo)
+                except (OSError, ValueError, TypeError):
+                    pass
+                ROSTER.set_mode(mode)
+                ROSTER.pick = index
+                ROSTER.started()
+            if combo == self.last:
+                self.streak += 1
+            else:
+                if self.last is not None and combo[0] == self.last[0]:
+                    if combo[1] != self.last[1] and combo[2] == self.last[2]:
+                        self.next_change = "stage"
+                    elif combo[2] != self.last[2] and combo[1] == self.last[1]:
+                        self.next_change = "character"
+                self.streak = 1
+            self.last = combo
+            self.observe_mode(mode)                 # the turn's mode from its first round on
+        else:
+            self.last, self.streak = None, 0        # an unread round is never replayed as "the same" one
+        self.path, self.held = None, None
+        return via
+
+    @staticmethod
+    def via(path) -> str:
+        if not path:
+            return "start"                          # the run began in this round (nothing seen since one ended)
+        screens = set(path.get("screens") or ())
+        end = path.get("end") or "menus"
+        if screens & TITLE_SCREENS:
+            return f"{end}/title"                   # out to the title and in again (a mode change, a boot)
+        if not screens & {"select_stage", "select_player"}:
+            return f"{end}/retry" if path.get("continue") == "yes" else f"{end}/unknown"
+        moved = [name for screen, name in (("select_stage", "stage"), ("select_player", "character"))
+                 if (path.get("moves") or {}).get(screen)]
+        return f"{end}/{'+'.join(moved) or 'same'}"
+
+    @staticmethod
+    def describe(plan) -> str | None:
+        """'same: reunion / Barry / Prison' - a plan for the watch panel and the run log."""
+        if not plan:
+            return None
+        stage = plan.get("stage")
+        name = STAGE_NAMES[stage] if isinstance(stage, int) and 0 <= stage < len(STAGE_NAMES) else stage
+        return f"{plan.get('why', 'plan')}: {plan.get('mode')} / {plan.get('character')} / {name}"
+
+    def status(self) -> dict:
+        return {"next_round": self.describe(self.held), "same_round_streak": self.streak, "turn_mode": self.mode,
+                "dj_waits_for_next_turn": self.describe(dict(self.dj_deferred, why="dj")) if self.dj_deferred else None}
+
+
+PACE = Pace()
+RELOAD_KEEP = ("PACE",)                 # gbox.hot_reload: the turn's mode, streak and path survive a bot reload
+
+
+def begin_run(session_id=None, job=None, prepare=False) -> None:
+    """mercs_bot.play: a run of the menus starts (Pace.begin_run)."""
+    PACE.begin_run(session_id=session_id, job=job, prepare=prepare)
+
+
 def pressed(scr: dict, key: str) -> None:
     """mercs_bot's Navigator: a key it sent on this screen."""
     STAGE_PICK.pressed(scr, key)
+    PACE.note_press(scr, key)
     if scr.get("where") == "select_player" and key == "cross":
         ROSTER.confirm(scr.get("cursor"))
 
@@ -852,16 +1055,24 @@ def pressed(scr: dict, key: str) -> None:
 def step(scr: dict) -> str | None:
     """The one press towards the next round. From the title: START, circle on the sign-in question, cross on "Load
     successful", then the cursor (read from RAM) moved to PLAY GAME, EXTRA CONTENT, THE MERCENARIES REUNION and taken,
-    START and SOLO on Reunion's title. Between rounds: START leaves the results, cross takes the stage and the
-    character the cursors are on (the last ones played). On the input-ready Continue dialog, Right selects No and
-    Cross is allowed only after RAM confirms No, returning through save confirmation to stage/character selection."""
+    START and SOLO on Reunion's title. Between rounds: START leaves the results, the cursors are moved to the round
+    Pace plans (the same stage and character: none) and taken, only while the select's own state takes input. On the
+    input-ready Continue dialog the answer is Pace's - Yes (Left) replays the same round, No (Right) returns through
+    the save to the selects - and Cross goes in only once RAM shows the cursor on it."""
     where = scr.get("where")
     if where == "unlock_notice":
         return "cross" if scr.get("unlock_ready") is True else None
     if where == 'dead':
-        if scr.get("continue_ready") is not True or type(scr.get("cursor")) is not int:
+        if scr.get("continue_ready") is not True or scr.get("cursor") not in (0, 1) or type(scr["cursor"]) is not int:
             return None
-        return "cross" if scr["cursor"] == CONTINUE_NO else "dright" if scr["cursor"] == 0 else None
+        want = 0 if PACE.continue_answer() == "yes" else CONTINUE_NO   # Yes: the same round again, no save or selects
+        if scr["cursor"] == want:
+            PACE.note_continue("yes" if want == 0 else "no")
+            return "cross"
+        return "dright" if scr["cursor"] < want else "dleft"
+    if where in ("select_stage", "select_player") and scr.get("select_state") is not None \
+            and scr["select_state"] != SELECT_READY:
+        return None                                      # fading in or out: the screen takes no input in this state
     if where == "extra_content" and scr.get("next_mode") == "mercenaries":
         return "circle"
     if scr.get("mode_mismatch") and where in ("select_stage", "select_player", "reunion_title", "reunion_solo", "mercs_title", "mercs_solo"):
@@ -1528,6 +1739,7 @@ class Bot:
                     self.stats["deaths"] = self.stats.get("deaths", 0) + 1
                 if self.round_active:
                     round_map.gap_end(self.stats, now)      # the next round's round_gap_s counts from here
+                    PACE.round_ended(where)                 # ...and its path (round_start_via) is recorded from here
                 if self.round_active and self.combat is not None:
                     self.combat.observe(snap, now, active=False)
                     self.combat.end_round(now)
@@ -1563,7 +1775,11 @@ class Bot:
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
                 self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
-            round_map.gap_start(self.stats, now, "menus")  # round_gap_s: since the last round ended (results / death)
+            # round_gap_s: since the last round ended (results / death), and the way it came (Pace: dead/retry,
+            # results/same, results/character ...)
+            round_map.gap_start(self.stats, now,
+                                PACE.round_started(snap, count=getattr(self.m, "adapter", None) is not None))
+            self.stats.update(same_round_streak=PACE.streak, turn_mode=PACE.mode)
             timer,start = snap.get("timer"),snap.get("timer_start")
             self.round_intro_timer = timer if isinstance(timer,(int,float)) and isinstance(start,(int,float)) \
                 and start>0 and abs(timer-start)<.02 else None
@@ -1617,6 +1833,11 @@ class Bot:
             timer = snap.get("timer")
             if isinstance(timer,(int,float)) and timer < self.round_intro_timer-.02:
                 self.round_input_ready = True
+                # round_wait_s: from the last round's end to this round's clock running (the player shows ~10 s into
+                # NOW LOADING on RPCS3: round_gap_s counts to that first frame, this to the first playable one)
+                wait = round_map.gap_play(self.stats, now)
+                if wait is not None and getattr(self, "_trace", None) is not None:
+                    self._trace.meta["round_wait_s"] = wait
         self.stats["round_input_ready"] = self.round_input_ready
         self.stats["round_intro_wait_s"] = round(now-self._round_started,2) if not self.round_input_ready else 0.
         self._expire_navigation_blocks(now)
@@ -2110,7 +2331,8 @@ class Bot:
                 key = step(scr)
                 if key:
                     self.dead_tap = now
-                    counter = "continue_declined" if key == "cross" else "continue_select_presses"
+                    counter = ("continue_retried" if scr.get("cursor") == 0 else "continue_declined") \
+                        if key == "cross" else "continue_select_presses"
                     self.stats[counter] = self.stats.get(counter, 0) + 1
                     return {"tap": key}
             return {"hold": set()}
@@ -4385,6 +4607,9 @@ class RE5PS3(Driver):
             state = self._result_tally = {"player":signature[0],"signature":signature,"started":now,"changed":now}
         elif state["signature"] != signature:
             state.update(signature=signature,changed=now)
+        observed = self._menu_observation or {}
+        if observed.get("where") == "results" and observed.get("result_menu_verified") is True:
+            return True        # the results' last page (outer 10): the tally is over, START waits - no more to observe
         return now-state["started"]>=15. or (now-state["started"]>=2. and now-state["changed"]>=1.)
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
