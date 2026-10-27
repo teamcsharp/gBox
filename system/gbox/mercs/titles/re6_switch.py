@@ -1376,7 +1376,9 @@ class Bot:
             else:
                 hit = line_hits(origin, dot, foot, ENGAGE_R + 300.0)
                 tid = e.get("ptr", e.get("slot"))
-                if hit and math.dist(origin, foot) > CAM_FIRE_R and now - self.seen.get(tid, -1e9) > SEEN_S \
+                me = self._ppos or origin                        # from him (the camera rides ~2.5 m behind)
+                far = math.hypot(foot[0] - me[0], foot[2] - me[2]) > CAM_FIRE_R
+                if hit and far and now - self.seen.get(tid, -1e9) > SEEN_S \
                         and now - self.laser_seen.get(tid, -1e9) > LASER_SEEN_S:
                     self.stats["camera_far_holds"] += 1          # far along the camera's line, never hit: not fired at
                     hit = False
