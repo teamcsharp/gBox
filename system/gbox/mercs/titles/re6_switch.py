@@ -111,6 +111,7 @@ class _Pick:
 
 
 PICK = _Pick()
+RELOAD_KEEP = ("PICK",)                 # a bot hot reload keeps this visit's draws and a queued pick (gbox.hot_reload)
 
 
 def request(character=None, stage=None) -> dict:
