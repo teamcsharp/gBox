@@ -186,6 +186,15 @@ only with the cursor read on No. A forced death (health 0 in the private session
 cursor read No, A, "Save successful". Dying (health 1) shows "Resuscitate" with A: the bot mashes A then; a hold shows
 "Break free" with the left stick, which it shakes.
 
+**The pace** (re5_switch.REPLAY_ON_DEATH, as re5_ps3.Pace does on PS3; operator: "match to match to match without
+these loading screens and waiting"): No Mercy here is always the same stage and character, so a death now answers
+**Yes**. That is the same round again at once, with no save, no selects and no loading; No would cost the save and
+both selects. The answer still goes in only with the cursor read on it, for the bot and for the menus walk alike. The
+engine publishes MercMode's round boundary at the death (terminal witness "dead") and closes that round's evidence.
+The bot counts the replay as the next round: stats rounds +1, deaths_continued, round_start_via "dead/retry", and a
+new _round_started marker for the engine, on the first tick alive with the clock within 3 s of its full time (a time
+bonus raising the clock is not a new round).
+
 ## MercMode's warm pool (2026-10-26, one private Citron run of 162 s)
 
 `gbox.mercs.warm_boot` boots the next MercMode game in the background, pauses it (SIGSTOP) at a stable native menu,
