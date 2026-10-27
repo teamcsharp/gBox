@@ -168,6 +168,7 @@ RUN = ("b", "lup")
 FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
+TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # result_ready (the PS3 driver's rule)
 
 
 def _rows(m):
@@ -1031,6 +1032,7 @@ class RE5Switch(Driver):
         self.clock = clock
         self._timer = (None, 0.0)
         self.stats: dict | None = None
+        self._tally = None                      # the results tally being watched (result_ready)
 
     def snapshot(self, m) -> dict:
         return snapshot(m)
@@ -1060,6 +1062,23 @@ class RE5Switch(Driver):
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")
+
+    def result_ready(self, snap, now) -> bool:
+        """The round's results tally is over: its score and kills unchanged for a second after at least two on the
+        results, or fifteen at most (the PS3 driver's rule). The engine then closes the round with a terminal witness
+        whose tally_ready MercMode requires to count a completed round. Without this method every completed RE5
+        Switch round was refused ("The native result tally is not complete"), and only deaths counted: once the bot
+        survived most rounds, a turn played 10 rounds in 24 minutes and MercMode had counted 2 (live 2026-10-27)."""
+        sig = ((snap.get("player") or {}).get("ptr"), snap.get("score"), snap.get("kills"))
+        st = self._tally
+        if st is None or now - st["seen"] > TALLY_GAP_S:            # a new results screen
+            st = self._tally = {"sig": sig, "started": now, "changed": now, "seen": now}
+        else:
+            if st["sig"] != sig:
+                st.update(sig=sig, changed=now)
+            st["seen"] = now
+        return now - st["started"] >= TALLY_MAX_S or (now - st["started"] >= TALLY_MIN_S
+                                                       and now - st["changed"] >= TALLY_STILL_S)
 
     def menu_handoff(self, m, snap, where) -> bool:
         """The engine hands a finished round back to the menus only when RAM names a native screen. That means the
