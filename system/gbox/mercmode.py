@@ -42,6 +42,9 @@ PRELAUNCH_S = 3600.0            # (status text) the next title starts loading in
 EXTRA_ROUNDS_MAX = 3            # failed attempts to get the next title ready (a failed / skipped preload or prepare) before
                                 # MercMode stays in the playing title; while an attempt is on its way the playing title
                                 # adds rounds without limit - never a cold switch with a loading screen while a title plays
+STAY_RETRY_ROUNDS = 5           # ... and after this many more rounds in the title it stayed in, the next title is tried again
+                                # (2026-10-27: RE5 stayed for good after three RE6 warm boots failed on a bug that a hot
+                                # reload fixed minutes later; a failed next title must never pin the rotation)
 WARM_MAX = 2                    # keep_warm upper bound (three titles at most: the playing one plus two waiting)
 WARM_FEATURE = 'mercmode_warm_launch'   # worker feature: launch_game keep_sessions/warm and session_op pause warm
 PREPARE_FEATURE = 'mercmode_prepare'    # worker feature: autoplay op=prepare drives a warm game's menus to a round start
@@ -656,6 +659,14 @@ def preparation(platform):
              'reason': 'An existing matching Dolphin menu jump may be reused; otherwise native menus boot normally.'})
 
 
+def _picked(store, worker, row):
+    """The rotation's pick counter: every title choose() hands out counts as picked now - the DJ's and a kept promise
+    too (2026-10-27: RE6 played from the queue but stayed "never picked", so it came next again while RE4 waited ready)."""
+    picks = store.get(PICKS, worker['name']) or {}
+    store.put(PICKS, worker['name'], picks | {row['title']: max(picks.values(), default=0) + 1})
+    return row
+
+
 def choose(store, worker, rng, cfg=None):
     cfg = cfg or settings(store, worker['name'])
     rows = inventory(store, worker, cfg)
@@ -664,11 +675,11 @@ def choose(store, worker, rng, cfg=None):
         store.delete(NEXT, worker['name'])
         row = next((r for r in rows if r['playable'] and r['title'] == ahead.get('title')), None)
         if row:
-            return row | ({'selection': ahead['selection']} if ahead.get('selection') else {})
+            return _picked(store, worker, row | ({'selection': ahead['selection']} if ahead.get('selection') else {}))
     head = (cfg.get('queue') or [None])[0]
     queued = next((r for r in rows if head and r['playable'] and r['title'] == head['title']), None)
     if queued:                                   # the DJ's next round comes first, even for an unchecked title
-        return queued | {'selection': resolve_selection(head, rng)}
+        return _picked(store, worker, queued | {'selection': resolve_selection(head, rng)})
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
     fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
@@ -676,9 +687,7 @@ def choose(store, worker, rng, cfg=None):
         return None
     picks = store.get(PICKS, worker['name']) or {}            # the rotation: the title picked longest ago (never = first)
     oldest = min(picks.get(r['title'], 0) for r in fresh)
-    row = rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])
-    store.put(PICKS, worker['name'], picks | {row['title']: max(picks.values(), default=0) + 1})   # a pick counter
-    return row
+    return _picked(store, worker, rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest]))
 
 
 def successor_autoplay(run, job, original):

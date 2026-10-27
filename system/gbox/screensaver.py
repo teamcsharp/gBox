@@ -52,6 +52,11 @@ BAD_ENDS = {"black": "the game showed only black: next game", "hung": "the game 
 
 
 ROTATION = "verified native round boundary: next MercMode title"   # why a MercMode run ends at its native round boundary
+NO_PROGRESS_S = 600.0       # a playing MercMode turn whose bot delivers no accepted native round boundary this long ends as
+                            # a finished turn does (2026-10-27: RE4 resumed on its last Result screen, its reader called that
+                            # a round and the bot "played" it for 24 min - MercMode frozen until a restart). A No Mercy round
+                            # with its time bonuses is 2-5 min and RE4's at most about 7, plus about a minute of menus.
+NO_PROGRESS = "no native round boundary for {minutes:g} min: next MercMode title"
 
 PENDING = "autoplay_on_launch"            # launch job id -> {game_id, at}: start autoplay when that game is up
 PENDING_TTL = 15 * 60
@@ -614,11 +619,17 @@ class Screensaver:
         if run.get("yield") or (not run.get('mercmode_pinned') and (not cfg["enabled"] or not opted_in(self.store, w, cfg))):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
+            if phase == 'playing' and not run.get('mercmode_rotate_requested'):
+                stalled = self._no_progress(w, run, now)
+                if stalled:                                    # the turn ends the way a finished one does
+                    run = run | {'mercmode_rotate_requested': True, 'mercmode_no_progress': stalled}
+                    self.store.put(STATE, w['name'], run)
             if run.get('mercmode_rotate_requested'):
                 if operator_has_pad(sid, now):                 # never switched away under the operator's pad
                     return f"{phase} {run['title']}: the operator has the pad, the switch waits"
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
-                return self._park(w, run, now, ROTATION)
+                why = NO_PROGRESS.format(minutes=NO_PROGRESS_S / 60) if run.get('mercmode_no_progress') else ROTATION
+                return self._park(w, run, now, why)
             if phase in ('starting', 'playing') and sid:
                 # the next title boots (and prepares its round) as soon as this one is up: after a service restart the
                 # pool is warm again before the first round ends, not only at the switch (operator 2026-10-26)
@@ -958,6 +969,23 @@ class Screensaver:
             return self._stop(w, run, now, why)
         return self._finish(w, run, now, why)
 
+    def _no_progress(self, w, run, now):
+        """A playing MercMode turn whose bot delivered no accepted native round boundary for NO_PROGRESS_S: {at, since,
+        idle_s} when the turn should end, else None. Only accepted boundaries count - the bot's own activity (turning,
+        prompts, menu presses) does not. Never under the operator: a handed-over, yielding or pinned run, or one whose pad
+        the operator holds, is left alone; so is a title with nothing else to rotate to."""
+        from . import mercmode
+        if run.get('mercmode_pinned') or run.get('handover') or run.get('yield') or not run.get('session_id'):
+            return None
+        since = max(run.get('playing_since') or 0, (run.get('mercmode_last_round') or {}).get('at') or 0)
+        if not since or now - since < NO_PROGRESS_S or operator_has_pad(run['session_id'], now):
+            return None
+        cfg = mercmode.settings(self.store, w['name'])
+        if not cfg['enabled'] or not any(r['playable'] and r['title'] in cfg['titles'] and r['game_id'] != run['game_id']
+                                         for r in mercmode.inventory(self.store, w, cfg)):
+            return None
+        return {'at': now, 'since': since, 'idle_s': round(now - since)}
+
     def _park(self, w, run, now, why):
         """End this title's turn without closing it: its emulator is paused (args.warm: no save when it closes later)
         and kept for its next turn. The pool stays at keep_warm titles besides the one about to play (NEXT)."""
@@ -1220,6 +1248,10 @@ class Screensaver:
             elif ahead and ahead.get('title') != run['mercmode']['title'] and playable(ahead.get('title')) \
                     and (ahead.get('queued') or ahead.get('cold')):
                 rotate = True                    # the DJ's round, picked (and preloaded) ahead: that title is next
+            if run.get('mercmode_stay') and played - run.get('mercmode_stay_round', 0) >= mercmode.STAY_RETRY_ROUNDS:
+                # stayed long enough: the next title gets its attempts again (a fix may have landed meanwhile)
+                run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_stay_round',
+                                                                  'mercmode_warm_attempts', 'mercmode_prelaunch')}
             if rotate and worker and self._warm_capable(worker, cfg):
                 # the switch waits until the next title is ready - booted, paused on the first frame of its round (a
                 # worker without op=prepare: paused at its menu) - and this title plays another round meanwhile, never a
@@ -1247,7 +1279,8 @@ class Screensaver:
                             run = {k: v for k, v in run.items() if k != 'mercmode_prelaunch'} | {'mercmode_warm_attempts': attempts}
                             if attempts >= mercmode.EXTRA_ROUNDS_MAX:
                                 name = (mercmode.TITLES.get(nxt) or {}).get('name', nxt or 'the next title')
-                                run = run | {'mercmode_stay': f"{name} could not be made ready {attempts} times: staying in this title"}
+                                run = run | {'mercmode_stay': f"{name} could not be made ready {attempts} times: staying in this title",
+                                             'mercmode_stay_round': played}
             self.store.put(mercmode.HISTORY,run['worker'],{'last_game_id':run['game_id'],
                 'last_round':receipt,'at':now})
             # a restarted autobot in this same session (the operator's F3, the hang relaunch) owns the run from here
