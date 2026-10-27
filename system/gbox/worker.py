@@ -51,7 +51,7 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
         (bad.__setitem__(t.name, reason) if reason else ok.append(t.name))
     bad.update({f"module {n}": why for n, why in _builtin.LOAD_ERRORS.items()})
     features = ['independent_heartbeat', 'durable_result_delivery', 'resource_telemetry', 'mercmode_warm_launch',
-                'mercmode_prepare', 'mercmode_stalemate_cut'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
+                'mercmode_prepare', 'mercmode_stalemate_cut', 'mercmode_coop_turns'] + (["idle_telemetry", "desktop_stream", "desktop_game_crop", "session_stills", "two_percent_audio"] if HOST_OS == "windows" else [])
     info = WorkerInfo(name=name, os=HOST_OS, tools=ok, unavailable=bad, idle_seconds=user_idle_seconds(), features=features)
     from .ollama_assist import inventory
     info.ollama = inventory()

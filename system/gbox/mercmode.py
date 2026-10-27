@@ -22,9 +22,15 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            'presentation_priority': False, 'queue': [], 'keep_warm': 1, 'preferred_editions': {},
            # the bots' stalemate rule (gbox.mercs.stalemate; operator 2026-10-26): no enemies for 15 s with time on the
            # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)
-           'stalemate_cut': True, 'stalemate_cut_s': 5}
+           'stalemate_cut': True, 'stalemate_cut_s': 5,
+           # bot+bot split screen (operator 2026-10-27: "have the bot team up with itself playing two play split screen
+           # and bots control both players"): RE5 / RE6 Switch turns play split screen with bots on both players.
+           # Off unless the operator turns it on; the other editions always play solo
+           'coop_turns': False}
 STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
+COOP_FEATURE = 'mercmode_coop_turns'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
+COOP_MAPS = frozenset({'010018100CD46000', '01002A000CD48000'})   # RE5 / RE6 Switch: split screen (switch_team)
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
 # seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
 # one playing may wait in memory, paused and off-screen (0 = off: every switch is a cold launch, as before).
@@ -100,6 +106,8 @@ def normalize(patch, current=None):
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
+    if type(out['coop_turns']) is not bool:
+        raise ValueError('MercMode coop_turns is true or false (bot+bot split screen on RE5 / RE6 Switch)')
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
@@ -261,17 +269,25 @@ def presentation_launch(store, worker, job):
         and run.get('worker_id')==worker.get('id')==job.get('require_worker')
         and game.get('game_id')==run.get('game_id') and run.get('game_id') in spec.get('game_ids',())
         and {k:v for k,v in ((game.get('launch') or {}).get('mercmode') or {}).items()
-             if k!='selection' and k not in STALEMATE_KEYS}
+             if k not in ('selection','coop') and k not in STALEMATE_KEYS}
             =={'random_characters':True,'random_stages':True})
 
 
-def launch_block(cfg, selection=None) -> dict:
+def coop_of(cfg, map_id) -> dict:
+    """{'coop': 'bots'} for a turn that plays split screen with bots on both players (coop_turns on, an RE5 / RE6
+    Switch edition), else {}. The launch carries it to the worker (gbox.switch_coop.players_requested, switch_team) and
+    the run records it, so the turn's team round boundaries count (accept_boundary)."""
+    return {'coop': 'bots'} if (cfg or {}).get('coop_turns') is True and map_id in COOP_MAPS else {}
+
+
+def launch_block(cfg, selection=None, map_id=None) -> dict:
     """The launch payload's mercmode block (game.launch.mercmode): random character and stage every round, the DJ's
-    exact selection when there is one, and the bots' stalemate rule settings (gbox.mercs.stalemate.configure reads
-    them on the worker)."""
+    exact selection when there is one, the bots' stalemate rule settings (gbox.mercs.stalemate.configure reads
+    them on the worker), and a bot+bot split-screen turn's coop (coop_of)."""
     return {'random_characters': True, 'random_stages': True,
             **({'selection': selection} if selection else {}),
-            **{k: cfg[k] for k in STALEMATE_KEYS if k in cfg}}
+            **{k: cfg[k] for k in STALEMATE_KEYS if k in cfg},
+            **coop_of(cfg, map_id)}
 
 
 def adopt_current(store, worker, session, telemetry, *, now=None):
@@ -757,7 +773,9 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
     # 010018100CD46000, not the PS3 BLUS30491, and were refused here (2026-10-26)
     expected_map = run['mercmode'].get('map_id') or spec['map_id']
     witness = body.get('witness')
-    if body.get('map_id') != expected_map or body.get('role') != 'solo_p1' \
+    # a bot+bot split-screen turn (coop_of, recorded at its start) counts its team rounds; every other run, solo ones
+    roles = ('solo_p1', 'bots_p1_p2') if run['mercmode'].get('coop') == 'bots' else ('solo_p1',)
+    if body.get('map_id') != expected_map or body.get('role') not in roles \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
             or witness.get('playing_observed') is not True or witness.get('player_verified') is not True:
         raise ValueError('A solo native terminal-round witness is required')

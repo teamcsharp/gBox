@@ -30,7 +30,7 @@ test('operator can adopt the exact displayed solo bot without submitting a new l
  panel.dispose();
 });
 test('continuous presentation saves an explicit host setting',async()=>{
- const calls=[],listeners=new Map(),fields={'[data-rounds]':{value:'1'},'[data-stalemate]':{checked:false},'[data-stalemate-s]':{value:'12'}};
+ const calls=[],listeners=new Map(),fields={'[data-rounds]':{value:'1'},'[data-stalemate]':{checked:false},'[data-stalemate-s]':{value:'12'},'[data-coop]':{checked:false}};
  const host={dataset:{host:'lilspark'},
   querySelectorAll:()=>[{dataset:{title:'re4'}},{dataset:{title:'re5'}}],
   querySelector:key=>fields[key]||{checked:true}};
@@ -39,7 +39,7 @@ test('continuous presentation saves an explicit host setting',async()=>{
  const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
  await panel.ready;await listeners.get('click')({target:{closest:()=>button}});
  assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1,
-  stalemate_cut:false,stalemate_cut_s:12}]);
+  stalemate_cut:false,stalemate_cut_s:12,coop_turns:false}]);
  panel.dispose();
 });
 test('the stalemate rule is a host setting: on by default at 5 s, saved from the panel and the PiP menu, bounded 1..60',async()=>{
@@ -145,4 +145,14 @@ test('queue actions post the whole queue for the exact host',async()=>{
  assert.match(await M.queueAction(api,host,'clear'),/random rotation/);
  assert.match(await M.queueAction(api,{name:'x',settings:{enabled:false}},'add',{title:'re4'}),/turn MercMode on/);
  await assert.rejects(M.queueAction(api,null,'add',{}),/No gBox PC/);
+});
+test('bot+bot split-screen turns on the Switch editions: off by default, saved from the panel and the PiP menu',async()=>{
+ const host={name:'lilspark',id:'w1',online:true,settings:{enabled:true,titles:['re5','re6']},titles:[]};
+ assert.match(M.render({hosts:[host]}),/<input type="checkbox" data-coop > Split-screen turns on RE5 \/ RE6 Switch/);
+ assert.match(M.render({hosts:[{...host,settings:{...host.settings,coop_turns:true}}]}),/data-coop checked/);
+ assert.match(M.menuHTML(host,true),/data-mm-coop >/);
+ const calls=[],api=async(path,body)=>{calls.push([path,body]);return {};};
+ assert.match(await M.menuAction(api,host,'coop',true),/split screen with bots on both players/);
+ assert.match(await M.menuAction(api,host,'coop',false),/play solo/);
+ assert.deepEqual(calls,[['/api/mercmode',{host:'lilspark',coop_turns:true}],['/api/mercmode',{host:'lilspark',coop_turns:false}]]);
 });

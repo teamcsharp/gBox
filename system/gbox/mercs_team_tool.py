@@ -12,10 +12,12 @@ class TeamIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
     session_id: str
     op: Literal['status', 'configure', 'prepare_player2'] = 'status'
-    role: Literal['solo_p1', 'teammate_p2', 'observe_human'] | None = None
+    role: Literal['solo_p1', 'teammate_p2', 'observe_human', 'bots_p1_p2'] | None = None
     training_profile: Literal['assisted', 'unmodified_evaluation'] | None = None
     auto_reduce_mods: StrictBool | None = None
     selected_route_id: str | None = None
+    restart: StrictBool | None = None       # prepare_player2 on Switch: restart the title in this session now
+    enabled: StrictBool | None = None       # prepare_player2: False takes Player 2 away again
 
 
 class TeamOut(BaseModel):
@@ -36,8 +38,9 @@ def mercs_team(inp: TeamIn, ctx):
     except KeyError as exc:
         raise Unsupported('This exact session has ended or is not owned by this worker.') from exc
     game_id = game.get('game_id')
-    if game_id not in (teamplay.RE5, teamplay.RE6):
+    if game_id not in teamplay.GAMES:
         raise Unsupported('Team/training controls currently cover Resident Evil 5 and 6.')
+    switch = game_id in teamplay.SWITCH
     process = getattr(adapter, 'proc', None)
     if process is not None and process.poll() is not None:
         raise Unsupported('This exact game process has ended.')
@@ -45,13 +48,16 @@ def mercs_team(inp: TeamIn, ctx):
     preparation = None
     if inp.op == 'prepare_player2':
         prepare = getattr(adapter, 'prepare_teammate_pad', None)
-        if game_id != teamplay.RE5 or not callable(prepare):
-            raise Unsupported('This runtime cannot prepare a separate RE5 Player 2 controller.')
-        preparation = prepare(player=2)
+        if game_id not in (teamplay.RE5, *teamplay.SWITCH) or not callable(prepare):
+            raise Unsupported('This runtime cannot prepare a separate Player 2 controller.')
+        if switch:      # Switch: this session's next title restart, or now (the round in progress is lost)
+            preparation = prepare(player=2, enabled=inp.enabled is not False, restart=inp.restart is True)
+        else:
+            preparation = prepare(player=2)
         if not isinstance(preparation, dict) or preparation.get('player') != 2:
             raise Unsupported('Player 2 controller preparation returned no identifiable result.')
     if inp.op == 'configure':
-        patch = inp.model_dump(exclude_unset=True, exclude={'session_id', 'op'})
+        patch = inp.model_dump(exclude_unset=True, exclude={'session_id', 'op', 'restart', 'enabled'})
         if patch:
             from .mercs.reviewer import Reviewer
             reader = Reviewer(ctx.config.data_dir)
@@ -62,7 +68,11 @@ def mercs_team(inp: TeamIn, ctx):
     if preparation is None and callable(inspector):
         preparation = inspector()
     status['player2_preparation'] = preparation
-    status['capabilities']['prepare_player2'] = {'available': game_id == teamplay.RE5 and callable(getattr(adapter, 'prepare_teammate_pad', None)),
-        'reason': 'Prepares a separate controller for the next launch; never restarts the running game.'}
+    status['capabilities']['prepare_player2'] = {
+        'available': game_id in (teamplay.RE5, *teamplay.SWITCH) and callable(getattr(adapter, 'prepare_teammate_pad', None)),
+        'restart_available': switch and callable(getattr(adapter, 'restart_title', None)),
+        'reason': ('Connects Player 2 for split screen: from the next title restart in this session, or now with a '
+                   'restart (the round in progress is lost).') if switch else
+                  'Prepares a separate controller for the next launch; never restarts the running game.'}
     return {'result': {'verified': True, 'configuration_verified': True,
                        'runtime_verified': status['phase'] == 'active', 'status': status}}

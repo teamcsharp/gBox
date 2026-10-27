@@ -6,6 +6,8 @@
   // RE5 on Switch (Citron / Eden): the same re5_mods ops, routed to its own mods on the worker; an op that edition has
   // not yet answers "not yet on Switch: why" in status.capabilities, and its control shows that reason, disabled
   const SWITCH = "52d15709be0fda1a", SWITCH_ADAPTERS = ["citron", "eden"];
+  // RE6 on Switch: no re5_mods there, only its Team and training controls (split screen with the bot, gbox/switch_coop.py)
+  const RE6_SWITCH = "115f9cdbba115432";
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   // the Mercenaries clock control (mercs-clock.js: add / take seconds, set the clock): ops add_time / set_time
   const CLOCK = root.GBoxMercsClock || (typeof require === "function" ? (() => { try { return require("./mercs-clock.js"); } catch { return null; } })() : null);
@@ -34,15 +36,17 @@
   }
   function isSwitch(session) { return session?.game_id === SWITCH; }
   function panelEligible(session) {
-    return eligible(session) || session?.game_id === RE6 && session.state === "running" && !session.stopping
-      && session.adapter === "xenia" && typeof session.session_id === "string" && session.session_id.includes("-");
+    const teamOnly = session?.game_id === RE6 && session.adapter === "xenia"
+      || session?.game_id === RE6_SWITCH && SWITCH_ADAPTERS.includes(session.adapter);
+    return eligible(session) || teamOnly && session.state === "running" && !session.stopping
+      && typeof session.session_id === "string" && session.session_id.includes("-");
   }
   function replacementSession(sid, history, anchor, resolve) {
     const rows = Array.isArray(history) ? history : [], byId = new Map(rows.map(row => [row.session_id, row]));
     const origin = byId.get(sid) || (anchor?.session_id === sid ? anchor : null);
     const pc = row => String(row?.detail?.worker_name || row?.pc || "").toLowerCase();
     const build = row => String(row?.collection_mod || row?.mod_build || row?.mod || "").split("~")[0];
-    const matches = row => [GAME, RE6, SWITCH].includes(origin?.game_id) && row?.game_id === origin.game_id && row.adapter === origin.adapter && pc(origin)
+    const matches = row => [GAME, RE6, SWITCH, RE6_SWITCH].includes(origin?.game_id) && row?.game_id === origin.game_id && row.adapter === origin.adapter && pc(origin)
       && pc(row) === pc(origin) && build(row) === build(origin);
     if (!origin || !matches(origin) || typeof resolve !== "function") return null;
     let current = origin; const seen = new Set();
@@ -99,7 +103,7 @@
   // the saved value beside the live one.
   const SAVED_LABELS = { mines: "Mines", rotten_egg_only: "Rotten eggs", weapon_override: "Next-round weapon" };
   const ROLES = { solo_p1: "Autobot Player 1 (solo)", teammate_p2: "Player 2: follow and protect human Player 1",
-    observe_human: "Observe human Player 1" };
+    observe_human: "Observe human Player 1", bots_p1_p2: "Bots on Player 1 and Player 2 (split screen)" };
   const PROFILES = { assisted: "assisted training", unmodified_evaluation: "unmodified evaluation" };
   function savedText(op, value, status) {
     if (!value || typeof value !== "object") return "";
@@ -167,15 +171,23 @@
   function html(state = {}) {
     const team = state.team, config = team?.config || {}, teamDisabled = state.busy || state.pending || state.stale || !team;
     const p2 = team?.capabilities?.teammate_p2;
+    // Switch split screen (team.split_screen): bots on both players too, and Player 2 is connected by restarting the
+    // title in this session (the emulator reads controllers at boot; the round in progress is lost)
+    const split = team?.split_screen === true, restartable = !!team?.capabilities?.prepare_player2?.restart_available;
     const teamControls = `<fieldset class="re5-team-controls" ${teamDisabled ? "disabled" : ""}><legend>Team and training</legend>`
       + `<label>Requested bot role<select data-re5-team-role aria-label="Bot player assignment">`
       + `<option value="solo_p1" ${config.role === "solo_p1" ? "selected" : ""}>Autobot Player 1 (solo)</option>`
       + `<option value="teammate_p2" ${config.role === "teammate_p2" ? "selected" : ""}>Player 2: follow and protect human Player 1</option>`
-      + `<option value="observe_human" ${config.role === "observe_human" ? "selected" : ""}>Observe human Player 1; no bot input</option></select></label>`
+      + `<option value="observe_human" ${config.role === "observe_human" ? "selected" : ""}>Observe human Player 1; no bot input</option>`
+      + (split ? `<option value="bots_p1_p2" ${config.role === "bots_p1_p2" ? "selected" : ""}>Bots on Player 1 and Player 2 (split screen)</option>` : "")
+      + `</select></label>`
       + `<p class="re5-mod-sub">${ESC(p2?.available ? "Player 2 actor and separate controller verified." : p2?.reason || state.teamError || "Team controls require an updated worker.")}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-team-saved>${ESC(teamSavedLine(state))}</p>` : "")
-      + `<button type="button" class="act" data-re5-team-prepare ${!team?.capabilities?.prepare_player2?.available ? "disabled" : ""}>Prepare Player 2 controller for next launch</button>`
-      + `<p class="re5-mod-sub">${ESC(team?.player2_preparation?.reason || "Controller preparation never restarts this game or changes Player 1 controls.")}</p>`
+      + (split
+        ? `<button type="button" class="act" data-re5-team-prepare data-restart="1" ${!team?.capabilities?.prepare_player2?.available || !restartable ? "disabled" : ""}>Connect Player 2 and restart this title now</button>`
+          + `<p class="re5-mod-sub">${ESC(team?.player2_preparation?.reason || "Split screen needs Player 2 connected when the game starts: this restarts the title in this session (the round in progress is lost; your Player 1 controls stay).")}</p>`
+        : `<button type="button" class="act" data-re5-team-prepare ${!team?.capabilities?.prepare_player2?.available ? "disabled" : ""}>Prepare Player 2 controller for next launch</button>`
+          + `<p class="re5-mod-sub">${ESC(team?.player2_preparation?.reason || "Controller preparation never restarts this game or changes Player 1 controls.")}</p>`)
       + `<label>Training profile<select data-re5-team-profile aria-label="Training profile">`
       + `<option value="assisted" ${config.training_profile === "assisted" ? "selected" : ""}>Assisted training: keep current modifiers</option>`
       + `<option value="unmodified_evaluation" ${config.training_profile === "unmodified_evaluation" ? "selected" : ""}>Unmodified evaluation: wait for verification</option></select></label>`
@@ -186,7 +198,7 @@
       + `<p class="re5-mod-sub" data-re5-team-phase>${ESC(team ? "Runtime: " + team.phase + "; controls " + (team.control_player ? "Player " + team.control_player : "paused") : "Runtime state unavailable")}</p>`
       + (team?.evaluation_pending ? `<p class="re5-mod-sub">${ESC(team.capabilities?.unmodified_evaluation?.reason || "Waiting for verified original settings. Selecting this profile does not revert current modifiers.")}</p>` : "")
       + `<button type="button" class="act" data-re5-team-save>Save team and training choices</button></fieldset>`;
-    if (state.teamOnly) return `<div class="re5-mod-heading"><b>RE6 team and training</b><button type="button" class="act" data-re5-refresh ${state.busy ? "disabled" : ""}>Refresh</button></div>`
+    if (state.teamOnly) return `<div class="re5-mod-heading"><b>RE6 team and training${state.edition === "re6_switch" ? " (Switch)" : ""}</b><button type="button" class="act" data-re5-refresh ${state.busy ? "disabled" : ""}>Refresh</button></div>`
       + teamControls + `<p class="re5-mod-status${state.error ? " re5-mod-error" : ""}" role="status">${ESC(state.message || "Read current team settings.")}</p>`;
     const controls = rows(state).map(row => {
       const raw = state.status?.[row.field];
@@ -287,7 +299,7 @@
     return `<div class="re5-mod-heading"><b>RE5 modifiers${sw ? " (Switch)" : ""}</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-saved>${ESC(savedLine(state))}</p>` : "")
-      + (sw ? "" : teamControls) + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + teamControls + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -299,9 +311,9 @@
                     savedPrefs = null }) {
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     let state = { status: null, busy: false, pending: null, weaponPending: null, stale: true, message: "Reading current settings…", error: false };
-    state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = ""; state.saved = null;
-    state.edition = isSwitch(session) ? "switch" : session?.game_id === RE6 ? "re6" : "ps3";
-    const team = teamControls && state.edition !== "switch";   // Player 2 / team training: the PS3 and RE6 editions only
+    state.team = null; state.teamOnly = session?.game_id === RE6 || session?.game_id === RE6_SWITCH; state.teamError = ""; state.saved = null;
+    state.edition = isSwitch(session) ? "switch" : session?.game_id === RE6_SWITCH ? "re6_switch" : session?.game_id === RE6 ? "re6" : "ps3";
+    const team = teamControls;   // Player 2 / team training: every edition (Switch: split screen, gbox/switch_coop.py)
     state.clock = { delta: CLOCK ? CLOCK.DELTA.default : -30, set: CLOCK ? CLOCK.SET.default : 5 };   // the clock drafts (kept across repaints)
     let disposed = false;
     // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
@@ -544,7 +556,7 @@
       if (!teamControls || !state.team || state.busy || state.pending || state.stale || disposed || !patch || typeof patch !== "object") return;
       const allowed = ["role", "training_profile", "auto_reduce_mods", "selected_route_id"];
       if (!Object.keys(patch).length || Object.keys(patch).some(k => !allowed.includes(k))
-          || "role" in patch && !["solo_p1", "teammate_p2", "observe_human"].includes(patch.role)
+          || "role" in patch && !["solo_p1", "teammate_p2", "observe_human", "bots_p1_p2"].includes(patch.role)
           || "training_profile" in patch && !["assisted", "unmodified_evaluation"].includes(patch.training_profile)
           || "auto_reduce_mods" in patch && typeof patch.auto_reduce_mods !== "boolean"
           || "selected_route_id" in patch && patch.selected_route_id !== null && !/^[a-f0-9]{32}$/.test(patch.selected_route_id)) return;
@@ -588,11 +600,13 @@
       state.clock.set = seconds;
       await clockJob("set_time", seconds, `Setting the clock to ${seconds} s…`);
     }
-    async function preparePlayer2() {
+    async function preparePlayer2(options = {}) {
       if (!teamControls || !state.team?.capabilities?.prepare_player2?.available || state.busy || state.pending || state.stale || disposed) return;
-      state.busy = true; state.error = false; state.message = "Preparing a separate Player 2 controller…"; paint();
+      const restart = options?.restart === true && state.team.capabilities.prepare_player2.restart_available === true;
+      state.busy = true; state.error = false;
+      state.message = restart ? "Connecting Player 2 and restarting the title in this session…" : "Preparing a separate Player 2 controller…"; paint();
       try {
-        await preflight(); await job("prepare_player2", {}, "mercs_team"); await readTeam();
+        await preflight(); await job("prepare_player2", restart ? { restart: true } : {}, "mercs_team"); await readTeam();
         if (!state.team.player2_preparation) throw new Error("Controller preparation was not confirmed.");
         state.message = state.team.player2_preparation.reason || "Controller preparation saved for next launch. This game continues unchanged.";
       } catch (error) { state.error = true; state.stale = true; state.message = error.message; }
@@ -665,7 +679,12 @@
       if (event.target.closest?.("[data-re5-live-bow]") && !event.target.disabled) ctl.setLiveWeapon(true);
       if (event.target.closest?.("[data-re5-live-cancel]") && !event.target.disabled) ctl.setLiveWeapon(false);
       if (event.target.closest?.("[data-re5-team-clear-route]") && !event.target.disabled) ctl.setTeam({ selected_route_id: null });
-      if (event.target.closest?.("[data-re5-team-prepare]") && !event.target.disabled) ctl.preparePlayer2();
+      const prepare = event.target.closest?.("[data-re5-team-prepare]");
+      if (prepare && !prepare.disabled) {
+        const restart = prepare.dataset.restart === "1";
+        if (!restart || typeof root.confirm !== "function" || root.confirm("Restart this title now with Player 2 connected? The round in progress is lost."))
+          ctl.preparePlayer2({ restart });
+      }
       if (event.target.closest?.("[data-re5-team-save]") && !event.target.disabled) ctl.setTeam({
         role: host.querySelector("[data-re5-team-role]").value,
         training_profile: host.querySelector("[data-re5-team-profile]").value,
@@ -687,7 +706,7 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAME, RE6, SWITCH, DEFINITIONS, eligible, isSwitch, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
+  const api = { GAME, RE6, SWITCH, RE6_SWITCH, DEFINITIONS, eligible, isSwitch, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
     savedText, savedLine, teamSavedLine,
     sectionHTML: () => `<style>${CSS}${CLOCK ? CLOCK.CSS : ""}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;

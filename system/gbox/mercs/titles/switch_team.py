@@ -452,3 +452,69 @@ class MenuPartner:
         self.presses += 1
         return True
 
+
+
+# --- mercs_bot's split-screen run ------------------------------------------------------------------------------------
+COOP_ROLES = {"teammate_p2": TEAMMATE, "bots_p1_p2": PAIR}
+TEAMMATE_MENU_WAIT_S = 4.0              # the operator picks first: the bot's Player 2 waits this long on the select
+
+
+def launch_role(game: dict) -> str | None:
+    """A MercMode bot+bot turn names its role in the launch (game.launch.mercmode.coop); None otherwise."""
+    merc = ((game or {}).get("launch") or {}).get("mercmode")
+    return "bots_p1_p2" if isinstance(merc, dict) and merc.get("coop") in ("bots", "bots_p1_p2") else None
+
+
+class Session:
+    """One split-screen run in mercs_bot: the session's SessionRuntime (the role, the input fence: Player 2's keys to
+    Player 2's pad only), the CoopDriver for the role, the menus' split-screen target on this session's memory, and
+    Player 2's own presses between rounds. start() gives None for a solo run, so MercMode's solo turns and every other
+    session play exactly as before."""
+
+    @classmethod
+    def start(cls, ad, session_id: str, game: dict, prof: dict, m, send, stats: dict, clock=time.monotonic,
+              sleep=time.sleep):
+        if (prof or {}).get("map_id") not in TITLES:
+            return None
+        from ..teamplay import TeamStore
+        forced = launch_role(game)
+        role = forced or TeamStore(ad.config.data_dir).get(session_id)["role"]
+        if role == "solo_p1":
+            return None
+        from ..session_runtime import SessionRuntime
+        runtime = SessionRuntime(ad, session_id, (game or {}).get("game_id"), prof["map_id"], send, stats, role=forced)
+        return cls(ad, prof["map_id"], runtime, m, stats, role, clock, sleep)
+
+    def __init__(self, ad, map_id: str, runtime, m, stats: dict, role: str, clock=time.monotonic, sleep=time.sleep):
+        self.ad, self.map_id, self.runtime, self.m, self.stats, self.clock = ad, map_id, runtime, m, stats, clock
+        self.partner = MenuPartner(self._send2, clock=clock, sleep=sleep)
+        self.driver = None
+        self.follow(role)
+        runtime.poll(m, self.driver)
+
+    def follow(self, role: str):
+        """The driver (and the menus' target) for a role: split screen for teammate_p2 / bots_p1_p2, the title's own
+        driver (None: the engine loads it) for observation or solo."""
+        mode = COOP_ROLES.get(role)
+        self.role, self.mode = role, mode
+        try:
+            self.m.mercs_split_screen = mode is not None
+        except AttributeError:
+            pass
+        self.partner.after_s = TEAMMATE_MENU_WAIT_S if mode == TEAMMATE else 0.0
+        self.driver = CoopDriver(self.map_id, mode, clock=self.clock) if mode else None
+        self.stats["coop_mode"] = mode or ""
+        return self.driver
+
+    def _send2(self, rows) -> None:
+        self.ad.send_input_player(rows, player=2)
+
+    def menus(self, scr: dict) -> None:
+        """Between rounds: Player 2 takes its character on its own pad (split screen roles only)."""
+        if self.mode is None:
+            return
+        try:
+            if self.partner.step(scr):
+                self.stats["p2_menu_presses"] = self.partner.presses
+        except Exception as exc:                          # noqa: BLE001 - no verified pad yet: Player 2 waits
+            self.stats["p2_menu_error"] = str(exc)[:160]

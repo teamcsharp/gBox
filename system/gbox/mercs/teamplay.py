@@ -17,7 +17,15 @@ import uuid
 
 RE5 = 'e7ca89bbeb67360d'
 RE6 = '0871eee3b68cdea3'
-ROLES = ('solo_p1', 'teammate_p2', 'observe_human')
+# Split screen on Switch (docs/research/switch-coop-bot.md): RE5 / RE6 in Citron or Eden, Player 2 a keyboard pad of its
+# own (gbox.switch_coop), both players' own RAM (gbox.mercs.titles.switch_team). bots_p1_p2 is Switch only.
+RE5_SWITCH, RE6_SWITCH = '52d15709be0fda1a', '115f9cdbba115432'
+SWITCH = (RE5_SWITCH, RE6_SWITCH)
+SWITCH_ADAPTERS = ('citron', 'eden')
+SWITCH_MAPS = {RE5_SWITCH: '010018100CD46000', RE6_SWITCH: '01002A000CD48000'}
+GAMES = (RE5, RE6, *SWITCH)
+ROLES = ('solo_p1', 'teammate_p2', 'observe_human', 'bots_p1_p2')
+HUMAN_ROLES = ('teammate_p2', 'observe_human')   # Player 1 is the human's: no pad takeover, no menus walk, no resets
 PROFILES = ('assisted', 'unmodified_evaluation')
 DEFAULT = {'role': 'solo_p1', 'training_profile': 'assisted', 'auto_reduce_mods': False,
            'assist_style': 'follow_protect', 'selected_route_id': None}
@@ -107,17 +115,19 @@ class TeamStore:
 
     def configure(self, session_id, patch, *, game_id, route_lookup=None):
         """Persist only operator intent. Never writes RAM, pads or modifier state."""
-        if game_id not in (RE5, RE6):
+        if game_id not in GAMES:
             raise ValueError('Team/training controls currently cover Resident Evil 5 and 6')
         with _LOCK:
             merged = normalize({**self.get(session_id), **patch})
+            if merged['role'] == 'bots_p1_p2' and game_id not in SWITCH:
+                raise ValueError('Bots on both players is split screen on Resident Evil 5 / 6 for Switch')
             route_id = merged['selected_route_id']
             if route_id and 'selected_route_id' in patch:
                 route = route_lookup(route_id) if route_lookup else None
                 source = route.get('source') if isinstance(route, dict) else None
                 if not isinstance(route, dict) or route.get('kind') != 'recorded_demonstration' \
                         or route.get('adopted') is not True or route.get('bot_eligible') is not True \
-                        or route.get('title') != ('BLUS30491' if game_id == RE5 else 'BH6') \
+                        or route.get('title') != {RE5: 'BLUS30491', RE6: 'BH6', **SWITCH_MAPS}[game_id] \
                         or not isinstance(source, dict) or source.get('control') != 'human' \
                         or not isinstance(route.get('mode'), str) or not 1 <= len(route['mode']) <= 64 \
                         or not isinstance(route.get('geometry'), str) or not 1 <= len(route['geometry']) <= 256 \
@@ -137,8 +147,10 @@ class TeamStore:
                 temporary.unlink(missing_ok=True)
             return deepcopy(merged)
 
-    def status(self, session_id, *, game_id, adapter, now=None):
-        config = self.get(session_id)
+    def status(self, session_id, *, game_id, adapter, now=None, config=None):
+        config = normalize(config) if config is not None else self.get(session_id)
+        if game_id in SWITCH:
+            return switch_status(config, runtime_evidence(session_id, adapter, now=now), adapter)
         evidence = runtime_evidence(session_id, adapter, now=now)
         is_re5 = game_id == RE5 and getattr(adapter, 'name', None) == 'rpcs3'
         players = evidence.get('active_players', [])
@@ -174,3 +186,54 @@ class TeamStore:
                                       'reason': 'Input observation must verify human P1 ownership before labeling a demonstration.'},
                     'unmodified_evaluation': {'available': clean, 'reason': '' if clean else 'Requires verified original gameplay settings at a round boundary; current modifiers are kept.'}},
                 'runtime': evidence}
+
+
+def _verified_pair(evidence) -> bool:
+    """Both players' native actors (slots 1 and 2, distinct, each read with its own index byte) and Player 2's pad,
+    camera and prompts proved fresh by the worker (gbox.mercs.titles.switch_team.CoopDriver.readiness)."""
+    players = evidence.get('active_players', [])
+    actors = [p.get('actor') for p in players]
+    return all(evidence.get(key) is True for key in
+               ('p2_verified', 'p2_actor_verified', 'controller2_verified', 'camera2_verified', 'prompt2_verified')) \
+        and len(players) == 2 and {p.get('slot') for p in players} == {1, 2} \
+        and all(type(actor) is int and actor > 0 for actor in actors) and len(set(actors)) == 2 \
+        and all(p.get('id') == f"p{p['slot']}" and isinstance(p.get('provenance'), dict)
+                and p['provenance'].get('native_actor_verified') is True for p in players)
+
+
+def switch_status(config, evidence, adapter) -> dict:
+    """Split screen on RE5 / RE6 Switch. teammate_p2: the bot plays Player 2 once Player 2's actor and pad are proved;
+    bots_p1_p2: the bot plays Player 1 at once (a bot's own player) and Player 2 too once proved; observe_human: no
+    input. Live modifiers stay with the assisted profile (the team driver gives them to one player, the bot's);
+    unmodified evaluation waits, as on PS3, because nothing proves original rules here yet."""
+    switch = getattr(adapter, 'name', None) in SWITCH_ADAPTERS
+    pair = switch and _verified_pair(evidence)
+    p1_present = any(p.get('slot') == 1 for p in evidence.get('active_players', []))
+    reason = evidence.get('reason') or 'Waiting for Player 2 in split screen with this launch\'s Player 2 pad.'
+    role, player, partner, phase = config['role'], 1, None, 'active'
+    if not switch:
+        player, phase = None, 'unsupported'
+    elif role == 'teammate_p2':
+        player, phase = (2, 'active') if pair else (None, 'waiting_p2')
+    elif role == 'bots_p1_p2':
+        player, partner = 1, (2 if pair else None)
+        phase = 'active' if pair else 'active_p1_waiting_p2' if p1_present else 'waiting_p2'
+    elif role == 'observe_human':
+        player, phase = None, 'observing' if evidence.get('human_observer_verified') else 'observing_unverified'
+    evaluation = config['training_profile'] == 'unmodified_evaluation'
+    if evaluation:
+        player, partner, phase = None, None, 'waiting_evaluation'
+    unavailable = '' if switch else 'Split screen needs this session in Citron or Eden.'
+    return {'config': config, 'effective_role': role if phase.startswith('active') else phase,
+            'control_player': player, 'partner_player': partner, 'phase': phase, 'split_screen': True,
+            'effective_training_profile': 'assisted', 'evaluation_pending': evaluation,
+            'modifiers_changed': False, 'adaptive_reduction_ready': False,
+            'capabilities': {'solo_p1': {'available': switch, 'reason': unavailable},
+                'teammate_p2': {'available': pair, 'reason': '' if pair else unavailable or reason},
+                'bots_p1_p2': {'available': switch, 'verified': pair,
+                               'reason': unavailable or ('' if pair else 'Player 1 plays now; Player 2 joins once ' + reason[0].lower() + reason[1:])},
+                'observe_human': {'available': switch, 'verified': evidence.get('human_observer_verified') is True,
+                                  'reason': 'Observation records positions, not the human\'s buttons.'},
+                'unmodified_evaluation': {'available': False,
+                                          'reason': 'Original gameplay rules are not verified on Switch yet; current modifiers are kept.'}},
+            'runtime': evidence}

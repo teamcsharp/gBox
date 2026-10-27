@@ -10,6 +10,7 @@
         <div>${(host.titles||[]).map(title=>`<label style="display:block"><input type="checkbox" data-title="${escape(title.title)}" ${(host.settings?.titles||[]).includes(title.title)?'checked':''}> ${escape(title.name)}${title.playable?'':' · unavailable'}</label>${!title.playable?`<p><small>${escape(title.reason)}</small></p>`:''}`).join('')}</div>
         <label>Rounds before switching <input type="number" data-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}" style="width:4em"></label>
         <label style="display:block"><input type="checkbox" data-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s with time left, the bot cuts the clock to <input type="number" data-stalemate-s min="1" max="60" value="${stalemateSeconds(host.settings)}" style="width:4em"> s</label>
+        <label style="display:block"><input type="checkbox" data-coop ${host.settings?.coop_turns?'checked':''}> Split-screen turns on RE5 / RE6 Switch: bots play both players</label>
         ${queueHTML(host,data.catalog)}
         <p><button type="button" data-save>Save this PC</button> <button type="button" data-prepare ${host.online?'':'disabled'}>Check cached assets</button>
         ${host.current_run?.mercmode?`<button type="button" data-stay="${escape(host.current_run.session_id)}">Stay in this game (autobot)</button>`:''}
@@ -47,7 +48,8 @@
           await api('/api/mercmode',{host:host.dataset.host,enabled:host.querySelector('[data-enabled]').checked,
             presentation_priority:host.querySelector('[data-presentation]').checked,
             titles,rounds_per_title:Number(host.querySelector('[data-rounds]').value),
-            ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{})});
+            ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{}),
+            ...(host.querySelector('[data-coop]')?{coop_turns:!!host.querySelector('[data-coop]').checked}:{})});
           await refresh();
         }else if(button.hasAttribute('data-stay')){
           await stay(api,button.dataset.stay);await refresh();
@@ -165,6 +167,7 @@
       `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}<label>Rounds before switching <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}"></label>`+
       `<span class="pip-mm-rounds-quick">${[5,10,20].map(n=>`<button type="button" data-mm-rounds-pick="${n}"${Number(host.settings?.rounds_per_title)===n?' aria-pressed="true"':''}>${n}</button>`).join('')}</span>`+
       `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
+      `<label class="pip-mm-coop"><input type="checkbox" data-mm-coop ${host.settings?.coop_turns?'checked':''}> Split screen on Switch RE5 / RE6: bots on both players</label>`+
       `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}</div></div>`;
   }
   async function menuAction(api,host,action,value){
@@ -192,6 +195,12 @@
       await api('/api/mercmode',{host:host.name,stalemate_cut:enabled,stalemate_cut_s:seconds});
       return enabled?`Stalemate rule on: no enemy for 15 s, the bot cuts the clock to ${seconds} s (from the next launch)`
         :'Stalemate rule off: the bot leaves the clock alone (from the next launch)';
+    }
+    if(action==='coop'){                // bot+bot split screen on the Switch editions (off by default)
+      const enabled=!!value;
+      await api('/api/mercmode',{host:host.name,coop_turns:enabled});
+      return enabled?'Switch RE5 / RE6 turns play split screen with bots on both players (from the next launch)'
+        :'Switch RE5 / RE6 turns play solo (from the next launch)';
     }
     throw Error('Unknown MercMode action');
   }

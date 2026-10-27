@@ -3,15 +3,19 @@ from __future__ import annotations
 
 import time
 
-from .teamplay import TeamStore, publish_runtime
+from .teamplay import SWITCH_MAPS, TeamStore, publish_runtime
 from .training import participant, re5_assistance
+
+P2_PREFIX = 'p2:'                       # two bots on one engine loop: Player 2's keys (gbox.mercs.titles.switch_team.Pair)
 
 
 class SessionRuntime:
-    def __init__(self, adapter, session_id, game_id, title, send, stats, *, clock=time.monotonic):
+    def __init__(self, adapter, session_id, game_id, title, send, stats, *, clock=time.monotonic, role=None):
         self.adapter, self.sid, self.game_id, self.title = adapter, session_id, game_id, title
         self.raw_send, self.stats, self.clock = send, stats, clock
         self.store = TeamStore(adapter.config.data_dir)
+        self.fixed_role = role              # a MercMode bot+bot turn: the role comes with the launch, not the operator
+        self.switch = title in SWITCH_MAPS.values()
         self.held = {1: set(), 2: set()}
         self.driver = None
         self.memory = None
@@ -22,7 +26,8 @@ class SessionRuntime:
         self.evidence = {}
 
     def refresh(self):
-        self.config = self.store.get(self.sid)
+        config = self.store.get(self.sid)
+        self.config = {**config, 'role': self.fixed_role} if self.fixed_role else config
         return self.config
 
     def poll(self, memory=None, driver=None, snap=None):
@@ -66,7 +71,8 @@ class SessionRuntime:
             # P2 driver supplies both actor identities; assignment is made here,
             # after native proof, instead of inheriting a prior bot trace's label.
             for row in rows:
-                row['control'] = ('human' if row.get('slot') == 1 else 'bot') \
+                row['control'] = 'bot' if config['role'] == 'bots_p1_p2' else \
+                    ('human' if row.get('slot') == 1 else 'bot') \
                     if config['role'] == 'teammate_p2' else \
                     ('human' if row.get('slot') == 1 else 'unknown') if config['role'] == 'observe_human' else \
                     ('bot' if row.get('slot') == 1 else 'unknown')
@@ -85,14 +91,19 @@ class SessionRuntime:
         if config['training_profile'] == 'unmodified_evaluation' and not self.evidence.get('unmodified_verified'):
             self.evidence['reason'] = self.assistance.get('reason') or 'Original gameplay rules have not been fully verified.'
         publish_runtime(self.sid, self.adapter, self.evidence)
-        status = self.store.status(self.sid, game_id=self.game_id, adapter=self.adapter)
+        status = self.store.status(self.sid, game_id=self.game_id, adapter=self.adapter, config=config)
         if status['control_player'] is None:
             self.release()
         self.stats.update(team_role=config['role'], team_phase=status['phase'], bot_player=status['control_player'],
                           team_reason=status['runtime'].get('reason', ''), training_profile=config['training_profile'],
                           selected_route_id=config['selected_route_id'] or '')
+        if config['role'] == 'bots_p1_p2' and status.get('partner_player') is None and self.held[2]:
+            self.release(ports=(2,))                # Player 2 gone (the round's end, a death): let go of its keys
         if memory is not None:
-            memory.mercs_no_modifications = config['role'] != 'solo_p1' or config['training_profile'] != 'assisted'
+            # Switch split screen keeps the session's live mods for the bot's player (the team driver gives them to one
+            # player: operator 2026-10-27 "their ... modifications to help me"); PS3 roles still play unmodified
+            memory.mercs_no_modifications = config['training_profile'] != 'assisted' or (
+                config['role'] == 'observe_human' if self.switch else config['role'] != 'solo_p1')
         return status
 
     def signature(self):
@@ -104,23 +115,31 @@ class SessionRuntime:
         # engine ticks. A missing P2 never receives a fallback to P1.
         status = self.poll()
         player = status['control_player']
+        # bots_p1_p2: the pair brain's Player 2 keys come prefixed; they reach Player 2 only while Player 2 is proved
+        pair = self.config['role'] == 'bots_p1_p2' and player == 1
         grouped = {1: [], 2: []}
         for event in events or ():
             key = event.get('key')
             if not isinstance(key, str) or 'rpc' in event:
                 continue
+            port, bare = player, key
+            if key.startswith(P2_PREFIX):
+                port, bare = 2, key[len(P2_PREFIX):]
             if event.get('down', True):
                 if player not in (1, 2):
                     continue
-                if event.get('player', player) != player:
+                if key.startswith(P2_PREFIX) and not (pair and status.get('partner_player') == 2):
                     continue
-                grouped[player].append({'key': key, 'down': True, 'player': player})
+                if not pair and event.get('player', player) != player:
+                    continue
+                grouped[port].append({'key': bare, 'down': True, 'player': port})
             else:
                 # Only release this bot's actual keys, including after a role
                 # change. Never release a human P1 button as a generic cleanup.
-                for old in (1, 2):
-                    if key in self.held[old]:
-                        grouped[old].append({'key': key, 'down': False, 'player': old})
+                ports = (2,) if key.startswith(P2_PREFIX) else (1,) if pair else (1, 2)
+                for old in ports:
+                    if bare in self.held[old]:
+                        grouped[old].append({'key': bare, 'down': False, 'player': old})
         for port, rows in grouped.items():
             if not rows:
                 continue
@@ -137,8 +156,10 @@ class SessionRuntime:
                 else:
                     self.held[port].discard(row['key'])
 
-    def release(self):
+    def release(self, ports=(1, 2)):
         for port, keys in self.held.items():
+            if port not in ports:
+                continue
             rows = [{'key': key, 'down': False, 'player': port} for key in sorted(keys)]
             if not rows:
                 continue

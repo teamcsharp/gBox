@@ -4354,6 +4354,8 @@ async function pipMercMode(m, opening, open = false) {
                                                 seconds: slot.querySelector('[data-mm-stalemate-s]')?.value });
     slot.querySelector('[data-mm-stalemate]')?.addEventListener('change', stalemate);
     slot.querySelector('[data-mm-stalemate-s]')?.addEventListener('change', stalemate);
+    // bot+bot split screen on the Switch editions (operator 2026-10-27), off unless chosen here
+    slot.querySelector('[data-mm-coop]')?.addEventListener('change', e => act('coop', e.target.checked));
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
