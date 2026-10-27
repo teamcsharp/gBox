@@ -229,6 +229,10 @@ PITCH_UP_LOG, PITCH_UP_RECENT_S, PITCH_UP_RAY = math.radians(20), 0.6, 300.0
 # ticks with the laser over PITCH_UP_LOG while the target is under SKY_LOW (the target is 0); sky_corrections: each
 # time the guard took over; sky_blind_ticks: the no-laser pushes.
 SKY_MARGIN, SKY_LOW, SKY_RAY_CM, SKY_BLIND_S, MOTION_AIMED = math.radians(12), math.radians(10), 100.0, 0.3, 26
+# Off at 15:45 (the operator at 15:38, the guard and the settle on: "look at the current aim. it is dizzying"; the live
+# round had sky_guard_ticks 377, sky_ticks 271, target_switches 707): the 14:58 turn's aim (threat first, no guard, no
+# settle: 27.2 kills, 0 deaths) is back while the guard is fixed. The counters stay on either way.
+SKY_GUARD = False
 SKY_COUNTERS = ("sky_ticks", "sky_corrections", "sky_guard_ticks", "sky_blind_ticks")
 # The pitch without overshoot (operator 15:15, the coordinator's list: after a retarget pitch to the new chest from where
 # the aim is, no overshoot; after a raise let the game's own aim pitch settle first). The aim's pitch rate is measured
@@ -237,6 +241,7 @@ SKY_COUNTERS = ("sky_ticks", "sky_corrections", "sky_guard_ticks", "sky_blind_ti
 # For RAISE_SETTLE_S after a raise's first ray the pitch stick waits (raise_settle_ticks; the sky guard still pushes
 # down). pitch_reversals: the pitch stick the other way within 0.4 s (an overshoot corrected).
 PITCH_LEAD_S, PITCH_RATE_RAY, PITCH_RATE_JUMP, RAISE_SETTLE_S = 0.15, 150.0, 1.5, 0.2
+PITCH_SETTLE = False                     # off at 15:45 with SKY_GUARD (the 14:58 aim back)
 SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
 THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
@@ -1232,6 +1237,8 @@ class Bot:
     def _pitch_settled(self, err: float, window: float | None, now: float) -> set:
         """The pitch stick, after the raise's own pitch settles (RAISE_SETTLE_S) and coasting once the measured rate
         closes the error within PITCH_LEAD_S (no overshoot after a retarget)."""
+        if not PITCH_SETTLE:
+            return self._pitch(err, window)
         if self._first_ray_at is not None and now - self._first_ray_at < RAISE_SETTLE_S:
             self.stats["raise_settle_ticks"] += 1
             return set()
@@ -1696,7 +1703,7 @@ class Bot:
             self.doing, self.why = "raise", f"the gun coming up (motion {motion})"
             if self.fire_down:
                 self._trigger(False, now)
-            if motion == MOTION_AIMED and waited > SKY_BLIND_S \
+            if SKY_GUARD and motion == MOTION_AIMED and waited > SKY_BLIND_S \
                     and (self._ray_pitch is None or self._ray_pitch > -math.radians(5)):
                 self.stats["sky_blind_ticks"] += 1           # aimed, no dot anywhere: the ray on the sky; down
                 self.why = f"aimed with no laser {waited:.2f} s: the aim down (the sky)"
@@ -1814,7 +1821,7 @@ class Bot:
         elev = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
         if have > PITCH_UP_LOG and elev < SKY_LOW:
             self.stats["sky_ticks"] += 1
-        sky = have > elev + SKY_MARGIN and not on
+        sky = SKY_GUARD and have > elev + SKY_MARGIN and not on
         if sky:
             if not self._sky:
                 self.stats["sky_corrections"] += 1
