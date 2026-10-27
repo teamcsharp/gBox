@@ -643,7 +643,8 @@ def test_no_bomb_readied_with_two_within_three_metres():
 
 def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
-    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700))   # three at 3-3.8 m
+    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
+            (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))                       # five at 3-3.8 m
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
     bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
@@ -664,6 +665,9 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     acts = run(bot, snap, clock, 2)
     assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["fever_kicks"] >= 1
     assert bot.stats["bomb_drops"] == 0                                       # the fever first, no bomb drop
+    bot.nade_last = -1e9                                                      # a second flash: not within FLASH_GAP_S
+    run(bot, snap, clock, 3)
+    assert bot.nade is None or bot.nade["kind"] != "flash"
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
 
 

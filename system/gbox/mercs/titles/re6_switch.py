@@ -1140,8 +1140,10 @@ NADES = False                           # off by default: on per profile (re6_sw
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
-FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 400.0, 200.0   # the flash when they are on him: 3+ within 4 m (live 14:31: with
-                                        # "nobody within 3 m" none was ever thrown), no call-off but a hold, no facing
+FLASH_N, FLASH_R, NADE_CLEAR_R = 5, 400.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
+FLASH_GAP_S = 12.0                      # 115 fever kicks in 12 min, kills a minute down a fifth): 5+, at most every 12 s
+# The flash when they are on him, within FLASH_R (live 14:31: with "nobody within 3 m" none was ever thrown), no call-off
+# but a hold, no facing.
 # The bomb dropped while backing out of a crowd (BOMB_DROP_N within CC_BACK_R, him above BOMB_MIN_HP, BOMB_GAP_S since
 # the last): the wheel's up (one press from a gun) to it, ZL then ZR at his feet, then out of its reach first and set
 # off from the rule's distance as they come (stats bomb_drops).
@@ -1176,7 +1178,7 @@ NADE_WHEEL_N = 6                        # stats nade_wheel: the last throws' whe
 # grenade's own; otherwise the D-pad's right brings the gun back first (stats unsafe_trigger_blocks).
 THROW_ACTS = ("bomb_place", "bomb_det", "nade_frag", "nade_fire", "nade_flash")
 NADE_KILLS_S = 3.0
-FEVER_S, FEVER_R = 4.0, 500.0
+FEVER_S, FEVER_R = 2.5, 500.0           # the fever: kicks at arm's length, quick shots at the rest, at crowd control's pace
 COMBO_LOW_S = 3.0
 AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on one this near: he walks at him
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
@@ -1255,7 +1257,7 @@ class Bot:
                   "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
-                  "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills"):
+                  "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
             self.stats.setdefault(k, 0.0)
@@ -1308,6 +1310,7 @@ class Bot:
         self.bomb_face_t, self._tick_hp, self._tick_at = 0.0, None, None   # this bomb's facing; last tick's health
         self.nade, self.nade_last, self.nade_kills = None, -1e9, None   # the throw under way; its kills (count, when)
         self.fever_until = -1e9                              # the melee fever after a flash
+        self.flash_last = -1e9                               # the last flash thrown
         self.combo_prev, self.combo_urgent = 0, False
         self.surrounded = False                              # 8+ within 4 m last tick
         self._p, self._cam_yaw = None, 0.0
@@ -1932,7 +1935,8 @@ class Bot:
             nades = p.get("nades") or {}
             group, kind = None, None
             near = [e for e in vis if flat(e) <= FLASH_R]
-            if len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0:
+            if (len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
+                    and now - self.flash_last >= FLASH_GAP_S):
                 group, kind = near, "flash"
             elif any(flat(e) < NADE_START_R for e in live):
                 return None
@@ -1990,6 +1994,7 @@ class Bot:
             self.stats[{"flash": "flashes", "frag": "frags", "fire": "fires"}[n["kind"]]] += 1
             if n["kind"] == "flash":
                 self.fever_until = now + FEVER_S + 0.6
+                self.flash_last = now
             else:
                 self.nade_kills = (snap.get("kills"), now)
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
@@ -2111,13 +2116,22 @@ class Bot:
         e = min(close, key=flat)
         d, err = flat(e), bearing(e)
         self._gun_down()
-        if fever:                                                # after a flash: in among the stunned ones, kicking
-            if d < MELEE_R and now - self.melee_at >= CC_KICK_GAP_S:
+        if fever:                                                # after a flash: in among the stunned ones
+            kick_gap = CC_FAST_GAP_S if QA_FAST else CC_KICK_GAP_S
+            if d < MELEE_R and now - self.melee_at >= kick_gap:
                 self.melee_at = now
                 self.stats["melee"] += 1
                 self.stats["fever_kicks"] += 1
                 return self._go("crowd", "fever_kick", {"hold": ("zr",) + self._turn(err, CC_ATTACK_CONE)},
                                 f"melee fever: a kick at the one at {d:.0f} cm")
+            qgap = CC_FAST_GAP_S if QA_FAST else CC_QSHOT_GAP_S
+            if d >= MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qgap:
+                self.qshot_at = now                              # the stunned ones further off: quick shots
+                self.stats["quick_shots"] += 1
+                self.stats["fever_quick_shots"] += 1
+                self.qshot_release = True
+                return self._go("crowd", "fever_quick_shot", {"hold": ("zl", "zr")},
+                                f"melee fever: a quick shot at the one at {d:.0f} cm")
             walk = ("lup",) if d >= MELEE_R * 0.8 else ()
             return self._go("crowd", "fever_close", {"hold": walk + self._turn(err, TURN_TOL)},
                             f"melee fever: in to the one at {d:.0f} cm")
