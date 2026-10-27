@@ -845,8 +845,11 @@ READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
 GRAB_R, GRAB_S, STUCK_S, BREAK_S = 120.0, 0.6, 0.5, 1.2
-AUTO_QTE_WAIT_S = 1.2                   # with the game's own auto QTE on (re6_switch_mods.auto_qte), a hold read in RAM
-                                        # gets this long with nothing pressed before he shakes free as without it
+AUTO_QTE_WAIT_S = 0.0                   # with the game's own auto QTE on (re6_switch_mods.auto_qte), a hold read in RAM
+                                        # gets this long with nothing pressed before he shakes free as without it. 0:
+                                        # MercMode's RE6 turn of 2026-10-27 09:29 with 1.2 s showed the option frees no
+                                        # grab by itself - every hold ended in a bite (450 -> 387 in 1.05 s, 359 -> 244
+                                        # in 1.76 s, 244 -> 150 in 4.2 s) and he died in round 1 - so he shakes at once
 HOLD_LOG_N = 12                         # the last holds kept in stats hold_log
 WIGGLE = (("b", "lup"), ("lright", "lup"), ("b", "lright"), ("ldown", "lright"),   # break free: the prompt shows B
           ("b", "ldown"), ("ldown", "lleft"), ("b", "lleft"), ("lleft", "lup"))      # (live), mashed, the stick round
