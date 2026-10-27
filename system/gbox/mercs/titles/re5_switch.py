@@ -154,10 +154,14 @@ HEAL_ENABLED = True                      # on (2026-10-27): watch heal_failures 
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
-# A ring: RING_N Majini within RING_R whose bearings leave no gap of RING_GAP: run out through the widest gap (the left
-# stick forward + B, Type D's run; B with the stick back is the quick turn) for ESCAPE_S, at most every ESCAPE_GAP_S.
+# A ring: Majini whose bearings leave no gap of RING_GAP, either tight (TIGHT: n within r) or, hurt (under HURT of his
+# health), RING_N within RING_R: run out through the widest gap (the left stick + B, Type D's own "Run") for ESCAPE_S,
+# at most every ESCAPE_GAP_S and ESCAPES_MAX times a round. Live 2026-10-27: 3 within 3 m at any health escaped up to 13
+# times a round (a completed round of 9 kills): the rapid fire clears a loose crowd better than running from it.
 RING_R, RING_N, RING_GAP = 300.0, 3, math.radians(150)
-ESCAPE_S, ESCAPE_GAP_S = 1.2, 4.0
+TIGHT = ((4, 250.0), (3, 180.0))
+HURT = 0.6
+ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 6
 RUN = ("b", "lup")
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
@@ -647,7 +651,9 @@ class Bot:
                                                   # engine's own: the death closed the last one's evidence)
         self.healing, self.heal_at = None, -1e9   # a heal under way / when the last one ended
         self.escape, self.escape_at = None, -1e9  # (the bearing out, until) / when the last escape began
-        self.trigger_since = None                 # when the trigger went down on this burst
+        self.round_escapes = 0                    # escapes this round (ESCAPES_MAX)
+        self.trigger_since = None                 # the burst's first pull since the gun came up (kept across the
+                                                  # targets it drops; the gun going down ends the burst)
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -730,11 +736,12 @@ class Bot:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if not on:
-            self.fire_down, self.trigger_since = False, None
+            self.fire_down = False
             return set()
         if not self.fire_down:
             self.stats["shots"] += 1
-            self.trigger_since = now
+            if self.trigger_since is None:
+                self.trigger_since = now
         elif self.fire_at is not None:
             self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self.fire_at, 0.2), 2)
             if self.stats["trigger_s"]:
@@ -754,7 +761,7 @@ class Bot:
                 self.stats["rounds"] = self.stats.get("rounds", 0) + 1
                 self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.stats["round_start_via"] = "dead/retry"
-                self.target, self.hp_prev, self.hp_seen = None, {}, []
+                self.target, self.hp_prev, self.hp_seen, self.round_escapes = None, {}, [], 0
             self.continued = None
         if self._round_started is None:
             self._round_started = now
@@ -829,11 +836,18 @@ class Bot:
             if now < until:
                 return {"hold": RUN + self._turn(wrap(out - p["rot"]), TURN_TOL)}
             self.escape = None
-        if now - self.escape_at < ESCAPE_GAP_S:
+        if now - self.escape_at < ESCAPE_GAP_S or self.round_escapes >= ESCAPES_MAX:
             return None
         px, _, pz = p["pos"]
-        ring = sorted(heading(e["pos"][0] - px, e["pos"][2] - pz) for e in live if flat(e) < RING_R)
-        if len(ring) < RING_N:
+        hurt = (p.get("hp") or 0) < HURT * (p.get("hp_max") or 0)
+        limits = TIGHT + (((RING_N, RING_R),) if hurt else ())
+        ring = None
+        for n, r in limits:
+            near = sorted(heading(e["pos"][0] - px, e["pos"][2] - pz) for e in live if flat(e) < r)
+            if len(near) >= n:
+                ring = near
+                break
+        if ring is None:
             return None
         gaps = [((ring[(i + 1) % len(ring)] - a) % (2 * math.pi) or 2 * math.pi, a) for i, a in enumerate(ring)]
         gap, start = max(gaps)
@@ -842,6 +856,7 @@ class Bot:
         out = wrap(start + gap / 2)
         self._gun_down()
         self.escape, self.escape_at = (out, now + ESCAPE_S), now
+        self.round_escapes += 1
         self.stats["escapes"] += 1
         err = wrap(out - p["rot"])
         if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:

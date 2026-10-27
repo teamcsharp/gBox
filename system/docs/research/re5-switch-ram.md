@@ -203,14 +203,21 @@ Time alive in a death round, as 120 s minus the clock left (a floor, since time 
 (mean 86 s). Kills a round 7-14 (mean 10.7), score mean 3,617; up to 7 holds and 4 dying episodes in a round; 18-28
 back-offs a round. Most deaths came swarmed.
 
-- **Crowd control** (live in the bot):
-  - A ring is 3 or more Majini within 3 m whose bearings leave no 150 deg gap. The bot runs out through the widest gap
-    for 1.2 s (left stick forward + B; B with the stick back is the quick turn), at most every 4 s, quick-turning first
-    when the gap is behind him.
-  - A crowd in front is 2 or more within 2.2 m inside 60 deg of his facing. The bot fires a 0.8 s burst, then lowers
-    the gun and backs off for 0.5 s (he cannot move while aiming), then fires the next burst; the rapid fire makes a
-    burst count.
+- **Crowd control** (live in the bot, tuned 2026-10-27):
+  - A ring leaves no gap of 150 deg between the Majini's bearings. The bot runs out through the widest gap for 1.2 s
+    (left stick + B, Type D's own "Run") only when the ring is tight: 4+ within 2.5 m or 3+ within 1.8 m. Hurt (under
+    60 % health), the looser 3+ within 3 m also counts. At most every 4 s and 6 times a round, quick-turning first when
+    the gap is behind him.
+  - The first rule, 3 within 3 m at any health, escaped up to 13 times in a round: that round completed, but with only
+    9 kills. The rapid fire clears a loose crowd better than running from it.
+  - A crowd in front is 2 or more within 2.2 m inside 60 deg of his facing. The bot fires a 0.8 s burst, then lowers the
+    gun and backs off for 0.5 s (he cannot move while aiming), then fires the next burst. The burst runs from the
+    first pull after the gun comes up, across the targets it drops. Timed per continuous pull, the rapid fire dropped
+    a target before 0.8 s, and the back-off fired 0-1 times a round.
   - A back-off under way always finishes.
+- **After** (the survival code live 23:34-23:45, heals from 23:38): 6 rounds, 3 deaths (0.50 a round, from 0.83), 3
+  completed (from 1 in 6). Time alive in the death rounds 75, 91, 94 s (mean 87 s, flat). Kills mean 13.0, score mean
+  4,718. Heals: 3 starts, 2 healed, 1 not.
 - **Healing** (`HEAL_ENABLED`, on since 2026-10-27): the PS3 bot's rules. A heal starts below 40 % health with no
   Majini within 4 m, or below 25 % anyway. The First Aid Spray (0x304) or a herb (0x305, 0x307, 0x309) comes up from
   its D-pad slot (grid 1 / 3 / 5 / 7 = up / left / right / down), and Y uses it, every 0.35 s, for at most 4 s. It
