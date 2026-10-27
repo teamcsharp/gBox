@@ -143,7 +143,9 @@ def test_a_majini_actually_high_may_take_the_aim_up():
     ledge = at(450, 0, y=290.0)                                    # 2.9 m up at 4.5 m: his chest about 31 deg up
     b.tick(snap([ledge], motion=22))
     clock[0] = 0.3
-    act = b.tick(snap([ledge], dot=(0.0, 140.0 + 150.0, 500.0), motion=26))    # the laser 17 deg up, under him
+    b.tick(snap([ledge], dot=(0.0, 140.0 + 150.0, 500.0), motion=26))          # the laser 17 deg up, under him
+    clock[0] = 0.55                                                # (past the raise's settle)
+    act = b.tick(snap([ledge], dot=(0.0, 140.0 + 152.0, 500.0), motion=26))
     assert b.stats["sky_corrections"] == 0 and "rup" in act["hold"]
 
 
@@ -156,3 +158,33 @@ def test_aimed_with_no_laser_the_aim_goes_down():
     clock[0] = 0.5
     act = b.tick(snap([ground], motion=26))                        # aimed 0.5 s, no dot anywhere: the sky
     assert act["hold"] == ("rdown", "zl") and b.stats["sky_blind_ticks"] == 1
+
+
+
+def test_after_a_raise_the_pitch_stick_waits_for_the_games_own_pitch_to_settle():
+    b, clock = bot()
+    ground = at(800, 0)
+    low = (0.0, 140.0 - 180.0, 1000.0)                             # the laser 10 deg down, his chest about level
+    b.tick(snap([ground], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([ground], dot=low, motion=26))               # the first ray: no pitch stick yet
+    assert "rup" not in act["hold"] and b.stats["raise_settle_ticks"] == 1
+    clock[0] = 0.55
+    act = b.tick(snap([ground], dot=low, motion=26))               # settled (it did not move): now up
+    assert "rup" in act["hold"]
+
+
+def test_the_pitch_coasts_when_its_rate_closes_the_error_and_a_reversal_is_counted():
+    b, clock = bot()
+    ground = at(800, 0)
+    b.tick(snap([ground], motion=22))
+    clock[0] = 0.3
+    b.tick(snap([ground], dot=(0.0, 140.0 - 360.0, 1000.0), motion=26))   # 20 deg down
+    clock[0] = 0.6
+    b.tick(snap([ground], dot=(0.0, 140.0 - 360.0, 1000.0), motion=26))   # still 20 deg down, settled: up
+    clock[0] = 0.65
+    act = b.tick(snap([ground], dot=(0.0, 140.0 - 212.0, 1000.0), motion=26))   # 12 deg down 0.05 s on: 160 deg/s
+    assert "rup" not in act["hold"] and b.stats["pitch_brakes"] == 1
+    b._count_sticks({"hold": ("rup",)}, 1.0)
+    b._count_sticks({"hold": ("rdown",)}, 1.2)
+    assert b.stats["pitch_reversals"] == 1

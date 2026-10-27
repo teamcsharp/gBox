@@ -230,9 +230,17 @@ PITCH_UP_LOG, PITCH_UP_RECENT_S, PITCH_UP_RAY = math.radians(20), 0.6, 300.0
 # time the guard took over; sky_blind_ticks: the no-laser pushes.
 SKY_MARGIN, SKY_LOW, SKY_RAY_CM, SKY_BLIND_S, MOTION_AIMED = math.radians(12), math.radians(10), 100.0, 0.3, 26
 SKY_COUNTERS = ("sky_ticks", "sky_corrections", "sky_guard_ticks", "sky_blind_ticks")
+# The pitch without overshoot (operator 15:15, the coordinator's list: after a retarget pitch to the new chest from where
+# the aim is, no overshoot; after a raise let the game's own aim pitch settle first). The aim's pitch rate is measured
+# from ray to ray (rays of PITCH_RATE_RAY or more whose dot did not jump: the distance within PITCH_RATE_JUMP x);
+# pressing toward the target, the stick coasts once that rate would close the error within PITCH_LEAD_S (pitch_brakes).
+# For RAISE_SETTLE_S after a raise's first ray the pitch stick waits (raise_settle_ticks; the sky guard still pushes
+# down). pitch_reversals: the pitch stick the other way within 0.4 s (an overshoot corrected).
+PITCH_LEAD_S, PITCH_RATE_RAY, PITCH_RATE_JUMP, RAISE_SETTLE_S = 0.15, 150.0, 1.5, 0.2
+SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
 THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
-                   "raise_first_rays") + SKY_COUNTERS
+                   "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS
 # Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
 # nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
 # those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
@@ -877,6 +885,8 @@ class Bot:
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
+        self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
+        self._pitch_dir, self._pitch_dir_at = 0, -1e9
         self._combo_prev, self._combo_window = 0, None   # the last combo count and its window (combo_breaks / lapses)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
@@ -1095,6 +1105,11 @@ class Bot:
             if self._yaw_dir and d != self._yaw_dir and now - self._yaw_dir_at <= 0.4:
                 self.stats["aim_reversals"] += 1
             self._yaw_dir, self._yaw_dir_at = d, now
+        d = 1 if "rup" in sticks else -1 if "rdown" in sticks else 0
+        if d:
+            if self._pitch_dir and d != self._pitch_dir and now - self._pitch_dir_at <= 0.4:
+                self.stats["pitch_reversals"] += 1
+            self._pitch_dir, self._pitch_dir_at = d, now
 
     def _plan(self, e, dist, item, now):
         """K's dispatch plan for this Majini (class, distance, weapon), or None (no class, K off, or no learned field)."""
@@ -1213,6 +1228,18 @@ class Bot:
             if self.yaw_pulse:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}
+
+    def _pitch_settled(self, err: float, window: float | None, now: float) -> set:
+        """The pitch stick, after the raise's own pitch settles (RAISE_SETTLE_S) and coasting once the measured rate
+        closes the error within PITCH_LEAD_S (no overshoot after a retarget)."""
+        if self._first_ray_at is not None and now - self._first_ray_at < RAISE_SETTLE_S:
+            self.stats["raise_settle_ticks"] += 1
+            return set()
+        r = self._prate
+        if r is not None and abs(err) > PITCH_DEAD and r * err > 0 and abs(r) * PITCH_LEAD_S >= abs(err):
+            self.stats["pitch_brakes"] += 1              # moving toward him fast enough: let it coast
+            return set()
+        return self._pitch(err, window)
 
     def _pitch(self, err: float, window: float | None = None) -> set:
         if abs(err) <= PITCH_DEAD:
@@ -1646,6 +1673,7 @@ class Bot:
             return {"hold": tuple(sorted(keys))}
         if lz.get("up") and now - self.aim_since >= READY_S:
             ray = (tuple(lz["from"]), tuple(lz["at"]))
+            self._track_pitch_rate(ray, now)
             self._note_ray_pitch(ray, tgt, dist)
             self.ray_seen, self.last_ray = now, ray
             if ray != self.ray_key:
@@ -1765,7 +1793,7 @@ class Bot:
             self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
         keys = {"zl"} | self._trigger(on, now)
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
-            keys |= self._yaw(yaw_err, windows[0]) | self._pitch(pitch_err, windows[1])   # steer only off him: a raised fire rate paces the
+            keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
@@ -1797,9 +1825,26 @@ class Bot:
         self._sky = sky
         return keys
 
+    def _track_pitch_rate(self, ray, now) -> None:
+        """The aim's pitch rate from this ray and the last (None across a dot that jumped, or a short ray)."""
+        origin, dot = ray
+        ln = math.dist(origin, dot)
+        if ln < PITCH_RATE_RAY:
+            self._pray, self._prate = None, None
+            return
+        pitch = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
+        last = self._pray
+        if last is not None and 0.0 < now - last[2] <= 0.3 and 1.0 / PITCH_RATE_JUMP <= ln / last[1] <= PITCH_RATE_JUMP:
+            self._prate = (pitch - last[0]) / (now - last[2])
+        elif last is None or now - last[2] > 0.3:
+            self._prate = None
+        self._pray = (pitch, ln, now)
+
     def _note_ray_pitch(self, ray, tgt, dist) -> None:
         """The aim's pitch from each live ray; the first after a raise compared with the last before it."""
         origin, dot = ray
+        if self._first_ray:
+            self._first_ray_at = self._now
         if math.dist(origin, dot) < PITCH_UP_RAY:
             return
         pitch = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
