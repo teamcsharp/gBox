@@ -195,6 +195,20 @@ The bot counts the replay as the next round: stats rounds +1, deaths_continued, 
 new _round_started marker for the engine, on the first tick alive with the clock within 3 s of its full time (a time
 bonus raising the clock is not a new round).
 
+## The RomFS: player models (for LayeredFS builds, docs/switch-mods.md)
+
+The program NCA (15af72f2..., 20.0 GB) holds the RomFS under `nativeNXx64/`. Each player costume is one MT Framework
+ARC v7 (header `ARC\0`, version 7, a count, then 0x50-byte entries: a 64-byte path, the type hash, the compressed and
+decompressed sizes (top 3 bits flags), the offset; zlib blobs packed back to back from 0x8000). The files are named
+after the player classes the RAM shows: `ImgNX/Archive/uPl00ChrisNormal.arc` (Chris BSAA, 327 entries, 43 MB),
+uPl00ChrisCos1-4 / Plain / Ep1 / ArmorA-F, uPl01ShebaNormal.arc (332 entries) and her costumes, uPl02Jill, uPl03Wesker,
+uPl04Josh, uPl05Excella, uPl06Barry and uPl07Rebecca. Inside, resources are named by path (`pawn\pl\pl00\model\pl00arm_BM`
+...), and Chris's code asks for `pl00` names, so another character's archive under his name would miss them. Of Chris's
+own costumes, Cos1 shares 323 of the 327 entries byte for byte; only the model entries differ (`pawn\pl\pl00\model\pl00`,
+`pl0000`). A texture swap of equal size (same TEX header) is safe. For the #1227 live check, Chris's shirt (`pl00Shats_BM`)
+got Sheva's arm skin (`pl0100_05Arm_BM`), and his face got hers, both 1,400,384 bytes. The files were read from the NSP with
+a scratch reader using the Spark's own prod.keys (gBox itself has no NCA decryption).
+
 ## MercMode's warm pool (2026-10-26, one private Citron run of 162 s)
 
 `gbox.mercs.warm_boot` boots the next MercMode game in the background, pauses it (SIGSTOP) at a stable native menu,
