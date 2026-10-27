@@ -74,10 +74,13 @@ TITLES = {
                            'driver': 'gbox.mercs.titles.re6_switch', 'selected_by': 'preferred_editions'},
             },
             'reason': 'RE6 PS3 (BLUS30855) has a verified native RPCS3 launch but no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
-    'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': 'CTR-ABRE', 'platform': '3ds',
+    # the catalog's '(USA)' 7z holds the EUR image (CTR-P-ABMP, title 0004000000038B00): the map and boundaries name its TID
+    'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': '0004000000038B00', 'platform': '3ds',
                'game_ids': ('0ed22ae742e1b56b',), 'playable': False, 'modes': ['mercenaries'],
-               'reason': 'The 3DS round RAM map (HP, timer, menu cursor, mission index) has no measured offsets; '
-                         'the pinned .code findings are static, not runtime addresses, so there is no verified combat driver yet.'},
+               'driver': 'gbox.mercs.titles.merc3d_3ds',
+               'reason': 'The 3DS RAM map and the native menus to a round are measured (gbox.citra_memory, '
+                         'gbox.mercs.titles.merc3d_3ds, docs/research/merc3d-ram.md); the combat bot and a full live round '
+                         'are not verified yet.'},
     're3': {'name': 'Resident Evil 3: Nemesis', 'map_id': 'SLUS-00923', 'platform': 'psx',
             'game_ids': (), 'playable': False,
             'modes': ['mercenaries'],
@@ -105,7 +108,7 @@ def normalize(patch, current=None):
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
     if not isinstance(out['titles'], list) or not out['titles'] or len(out['titles']) > 3 \
             or any(t not in TITLES for t in out['titles']) or len(set(out['titles'])) != len(out['titles']):
-        raise ValueError('Choose distinct titles from re4, re5, re6 and re3')
+        raise ValueError('Choose distinct titles from re4, re5, re6, re3 and merc3d')
     out['queue'] = [queue_entry(e) for e in (out.get('queue') or [])]
     if len(out['queue']) > QUEUE_MAX:
         raise ValueError(f'The MercMode queue holds at most {QUEUE_MAX} rounds')
