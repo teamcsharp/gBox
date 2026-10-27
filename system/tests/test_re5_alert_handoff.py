@@ -162,7 +162,7 @@ def test_distinct_native_notice_identity_gets_its_own_stability_window():
 
 
 @pytest.mark.parametrize("selector,fields,expected", [
-    ("uIdStartUp22", {R.SELECT_CURSOR: 0}, "dright"),
+    ("uIdStartUp22", {R.SELECT_CURSOR: 0, 0x14: R.SELECT_READY}, "dright"),     # state byte +0x17: 2 takes input
     ("uIdStartUp01", {R.MENU_SUB: 1, R.EXTRA_CURSOR: 0}, "ddown"),
 ])
 def test_confirmation_chain_stops_at_native_character_or_mode_selection(monkeypatch, selector, fields, expected):
