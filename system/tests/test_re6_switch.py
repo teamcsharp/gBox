@@ -649,7 +649,7 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
     snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
     acts = run(bot, snap, clock, 3)
-    assert {"tap": "ddown"} in acts and bot.nade["kind"] == "flash"          # the wheel to the flash grenade
+    assert {"tap": "dup"} in acts and bot.nade["kind"] == "flash"            # the wheel's up to the flash grenade
     snap["player"]["equipped"] = 11
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
@@ -681,6 +681,29 @@ def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(
     snap["player"]["equipped"] = 0
     run(bot, snap, clock, int(R.NADE_KILLS_S / 0.05) + 2)
     assert bot.stats["grenade_kills"] == 3
+
+
+def test_the_wheel_key_steps_toward_the_grenade():
+    assert R.Bot._wheel_key(0, 11) == "dup" and R.Bot._wheel_key(0, 9) == "ddown"   # from the gun
+    assert R.Bot._wheel_key(12, 11) == "dup" and R.Bot._wheel_key(9, 10) == "ddown"  # on an item: toward it
+
+
+def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
+    run(bot, snap, clock, 2)
+    snap["player"]["equipped"] = 9
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert bot.stats["frags"] == 1
+    snap["player"]["equipped"] = 2                                            # the game's pick after the throw: the knife
+    acts = run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    assert {"tap": "dright"} in acts and bot.nade is not None                 # not his gun yet: on to it
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, 1)
+    assert bot.nade is None and bot.stats["nade_wheel"][-1]["to"] == 9
 
 
 def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close(monkeypatch):
@@ -750,9 +773,9 @@ def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks
     assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
-def test_a_bomb_only_healthy_with_nobody_near_and_four_coming_at_most_every_thirty_seconds():
+def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_thirty_seconds():
     four = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 1100.0, 700))
-    for kw, enemies in (({"hp": 900}, four[:3]),                                       # three coming: no
+    for kw, enemies in (({"hp": 900}, four[:2]),                                       # two coming: no
                         ({"hp": 600}, four),                                           # 67 % health: no
                         ({"hp": 900}, four + ((0.0, 0.0, 350.0, 700),))):              # one at 3.5 m: no
         bot, clock, snap = brain(round_guest(enemies=enemies, **kw))

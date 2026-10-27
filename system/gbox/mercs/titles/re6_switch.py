@@ -1073,8 +1073,8 @@ BOMBS = True
 # lost there): one goes out only with him above BOMB_MIN_HP, nobody within BOMB_ROOM_R and BOMB_STAND_N coming within
 # BOMB_COMING_MIN_R..BOMB_STAND_R (it lands at his feet: he walks off it as they come over it), at most every BOMB_GAP_S;
 # clear of it, it goes off with BOMB_BLAST_N within BOMB_BLAST_R of it or anyone within BOMB_ON_R of it.
-BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 4, 1200.0, 400.0
-BOMB_COMING_MIN_R = 600.0
+BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 3, 1200.0, 400.0   # (4 at 6-12 m placed none in 150 s live 14:18: the
+BOMB_COMING_MIN_R = 500.0                                   # operator wants the mines; 3 at 5-12 m)
 BOMB_ON_R = 300.0
 BOMB_GAP_S = 30.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
@@ -1114,8 +1114,10 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 #          (else the incendiary), never nearer than its blast;
 #   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
 #          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
-NADES = False                           # off until the item wheel's steps are measured (live 13:53: the wheel moved off
-                                        # the frag by itself, and the D-pad's right landed on the knife's slot)
+NADES = True                            # the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+                                        # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
+                                        # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
+NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
 FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 600.0, 200.0
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 600.0, 1000.0, 300.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
@@ -1836,7 +1838,8 @@ class Bot:
             elif now - n["at"] >= NADE_STEP_S:
                 n["steps"] += 1
                 n["at"] = now
-                return self._go("nade", "nade_" + n["kind"], {"tap": "ddown"}, f"the item wheel to the {n['kind']} grenade")
+                key = self._wheel_key(eq, n["index"])
+                return self._go("nade", "nade_" + n["kind"], {"tap": key}, f"the item wheel to the {n['kind']} grenade")
             else:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
         if n["phase"] == "face":
@@ -1878,6 +1881,15 @@ class Bot:
                 return self._go("nade", "nade_back", {"tap": n["back_key"]}, "the gun back in hand")
             return self._go("nade", "nade_back", {"hold": ()}, "the gun coming back")
         return None
+
+    @staticmethod
+    def _wheel_key(eq, index: int) -> str:
+        """The D-pad press that steps the item wheel toward wheel index `index` (live 2026-10-27 14:17: from a gun the
+        first down only opens the wheel, then down steps 9 -> 10 -> 11 -> 12 and stops; up goes straight to 12, then
+        11, 10; on an item, down steps up the indexes and up steps down them)."""
+        if isinstance(eq, int) and eq >= WEAPON_INDEXES:
+            return "ddown" if eq < index else "dup"
+        return "dup" if index >= NADE_UP_FROM else "ddown"
 
     def _nade_done(self, n, now) -> None:
         log = self.stats.setdefault("nade_wheel", [])
