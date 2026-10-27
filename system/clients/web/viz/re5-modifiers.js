@@ -3,6 +3,9 @@
   "use strict";
   const GAME = "e7ca89bbeb67360d";
   const RE6 = "0871eee3b68cdea3";
+  // RE5 on Switch (Citron / Eden): the same re5_mods ops, routed to its own mods on the worker; an op that edition has
+  // not yet answers "not yet on Switch: why" in status.capabilities, and its control shows that reason, disabled
+  const SWITCH = "52d15709be0fda1a", SWITCH_ADAPTERS = ["citron", "eden"];
   const ESC = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   // the Mercenaries clock control (mercs-clock.js: add / take seconds, set the clock): ops add_time / set_time
   const CLOCK = root.GBoxMercsClock || (typeof require === "function" ? (() => { try { return require("./mercs-clock.js"); } catch { return null; } })() : null);
@@ -24,9 +27,12 @@
     { op: "auto_parry", label: "Auto-parry" }, { op: "knife_knockback", label: "Knife knockback" },
   ];
   function eligible(session) {
-    return session?.game_id === GAME && session.state === "running" && !session.stopping
-      && session.adapter === "rpcs3" && typeof session.session_id === "string" && session.session_id.includes("-");
+    const edition = session?.game_id === GAME && session.adapter === "rpcs3"
+      || session?.game_id === SWITCH && SWITCH_ADAPTERS.includes(session.adapter);
+    return !!edition && session.state === "running" && !session.stopping
+      && typeof session.session_id === "string" && session.session_id.includes("-");
   }
+  function isSwitch(session) { return session?.game_id === SWITCH; }
   function panelEligible(session) {
     return eligible(session) || session?.game_id === RE6 && session.state === "running" && !session.stopping
       && session.adapter === "xenia" && typeof session.session_id === "string" && session.session_id.includes("-");
@@ -36,7 +42,7 @@
     const origin = byId.get(sid) || (anchor?.session_id === sid ? anchor : null);
     const pc = row => String(row?.detail?.worker_name || row?.pc || "").toLowerCase();
     const build = row => String(row?.collection_mod || row?.mod_build || row?.mod || "").split("~")[0];
-    const matches = row => [GAME, RE6].includes(origin?.game_id) && row?.game_id === origin.game_id && row.adapter === origin.adapter && pc(origin)
+    const matches = row => [GAME, RE6, SWITCH].includes(origin?.game_id) && row?.game_id === origin.game_id && row.adapter === origin.adapter && pc(origin)
       && pc(row) === pc(origin) && build(row) === build(origin);
     if (!origin || !matches(origin) || typeof resolve !== "function") return null;
     let current = origin; const seen = new Set();
@@ -216,16 +222,21 @@
       + `</select></label><p class="re5-mod-sub">${ESC(selectedGun
         ? `${selectedGun.weapon}: ${selectedGun.equipped ? "equipped" : selectedGun.available ? "saved; waiting for gunplay" : "saved; waiting for this gun to be available"}. Kept for this session and restored after mines or egg mode.`
         : selectCap.available ? "Choose a gun or randomize. The choice stays with this session and returns after mines or egg mode."
-          : selectCap.reason || "Persistent gun selection is unavailable on this worker.")}</p>`
+          : selectCap.reason || "Persistent gun selection is unavailable on this worker.")}</p></fieldset>`
       + (() => {                                    // any weapon in the game as the main gun (or the only one), next round
         const all = Array.isArray(state.status?.all_weapons) ? state.status.all_weapons : [];
-        const ov = state.status?.weapon_override;
-        return `<label>Next-round weapon<select data-re5-any-weapon aria-label="Any weapon">`
+        const ov = state.status?.weapon_override, anyCap = capability(state.status, "weapon_override");
+        // its own fieldset: the next-round weapon is a loadout template change, available where the live gun choice is not
+        // (RE5 on Switch)
+        const anyDisabled = state.busy || state.pending || state.stale || state.status?.capabilities?.weapon_override && !anyCap.available;
+        return `<fieldset class="re5-mine-controls" ${anyDisabled ? "disabled" : ""}><legend>Next-round weapon</legend>`
+          + `<label>Next-round weapon<select data-re5-any-weapon aria-label="Any weapon">`
           + `<option value="auto" ${!ov ? "selected" : ""}>The game's loadout</option>`
           + all.map(w => `<option value="${w.item}" ${ov?.item === w.item ? "selected" : ""}>${ESC(w.weapon)}</option>`).join("")
           + `</select></label><label><input type="checkbox" data-re5-any-only ${ov?.only ? "checked" : ""}> Only weapon (every gun slot, e.g. bow-only rounds)</label>`
-          + `<p class="re5-mod-sub">${ESC(ov ? `${ov.weapon}${ov.only ? " as the only weapon" : " as the main gun"} from the next round.` : "Pick any RE5 weapon; it is given to every character from the next round.")}</p>`;
-      })() + `</fieldset>`;
+          + `<p class="re5-mod-sub">${ESC(ov ? `${ov.weapon}${ov.only ? " as the only weapon" : " as the main gun"} from the next round.` : "Pick any RE5 weapon; it is given to every character from the next round.")}</p>`
+          + `</fieldset>`;
+      })();
     const liveCap = capability(state.status, "live_weapon"), liveRequest = state.status?.live_weapon;
     const liveBusy = state.busy || state.pending || state.weaponPending || state.stale;
     const livePending = liveRequestPending(liveRequest);
@@ -245,7 +256,7 @@
       + `<input style="width:100%" type="range" min="1" max="20" step="1" value="${eggRate}" data-re5-egg-rate aria-label="Rotten egg throw speed"></label>`
       + `<small>Infinite egg stock. Mines pause; time bonuses remain a priority. Turning this off restores an existing gun.</small>`
       + `<p class="re5-mod-sub">Experimental: actual throw cadence and ballistic aim are not yet verified.</p>`
-      + `<p class="re5-mod-sub">${ESC(state.status?.egg_status || "Waiting for current egg status.")}</p></fieldset>`;
+      + `<p class="re5-mod-sub">${ESC(!eggCap.available && eggCap.reason ? eggCap.reason : state.status?.egg_status || "Waiting for current egg status.")}</p></fieldset>`;
     const mineDisabled = state.busy || state.pending || state.stale || !mineCap.available || !mine || eggOn;
     const mineControls = `<fieldset class="re5-mine-controls" ${mineDisabled ? "disabled" : ""}><legend>Proximity mines</legend>`
       + `<label><input type="checkbox" data-re5-mines-enabled ${mine?.enabled ? "checked" : ""}> Unlimited mine supply</label>`
@@ -272,10 +283,11 @@
       + `<button class="act" type="button" data-re5-merc-select>Play this selection next</button>`
       + `<p class="re5-mod-sub" data-re5-merc-queue role="status">${ESC(queueStatus)}</p></fieldset>` : "";
     const clockControls = clockHTML(state);
-    return `<div class="re5-mod-heading"><b>RE5 modifiers</b><button type="button" class="act" data-re5-refresh `
+    const sw = state.edition === "switch";
+    return `<div class="re5-mod-heading"><b>RE5 modifiers${sw ? " (Switch)" : ""}</b><button type="button" class="act" data-re5-refresh `
       + `${state.busy ? "disabled" : ""}>Refresh</button></div><p class="re5-mod-sub">This running session${weapon ? ` · ${ESC(weapon)}` : ""}</p>`
       + (state.saved ? `<p class="re5-mod-sub re5-mod-saved" data-re5-saved>${ESC(savedLine(state))}</p>` : "")
-      + teamControls + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
+      + (sw ? "" : teamControls) + controls + clockControls + rotationControls + eggControls + mineControls + liveControls + weaponControls + `<button class="act re5-mod-random" type="button" data-re5-random `
       + `${state.busy || state.pending || state.weaponPending || state.stale || !random.available ? "disabled" : ""}>Random available weapon</button>`
       + `<p class="re5-mod-sub">${ESC(random.reason || "Equips an eligible gun already in the inventory. Rockets and sniper rifles are excluded.")}</p>`
       + `<details class="re5-mod-extra"><summary>Other requested modifiers</summary>${unavailable}</details>`
@@ -288,6 +300,8 @@
     const sid = session?.session_id, worker = String(sid || "").split("-")[0];
     let state = { status: null, busy: false, pending: null, weaponPending: null, stale: true, message: "Reading current settings…", error: false };
     state.team = null; state.teamOnly = session?.game_id === RE6; state.teamError = ""; state.saved = null;
+    state.edition = isSwitch(session) ? "switch" : session?.game_id === RE6 ? "re6" : "ps3";
+    const team = teamControls && state.edition !== "switch";   // Player 2 / team training: the PS3 and RE6 editions only
     state.clock = { delta: CLOCK ? CLOCK.DELTA.default : -30, set: CLOCK ? CLOCK.SET.default : 5 };   // the clock drafts (kept across repaints)
     let disposed = false;
     // savedPrefs(): GET /api/sessions/{sid}/game-prefs (gbox/game_prefs.py); a failed read keeps the live values only
@@ -337,7 +351,7 @@
       state.status = result.status;
       state.weaponPending = result.status.random_weapon_request?.state === "pending" ? result.status.random_weapon_request.id : null;
       state.stale = false;
-      if (teamControls) {
+      if (team) {
         try { await readTeam(); }
         catch (error) { state.team = null; state.teamError = error.message; }
       }
@@ -357,7 +371,7 @@
       }
       // A panel reopened while a previous request is running must not send a second mutation.
       const active = await api("/api/jobs?state=queued,running&limit=500", undefined, "GET", 15000);
-      const pending = Array.isArray(active) && active.find(j => (j.tool === "re5_mods" || teamControls && j.tool === "mercs_team") && j.input?.session_id === sid);
+      const pending = Array.isArray(active) && active.find(j => (j.tool === "re5_mods" || team && j.tool === "mercs_team") && j.input?.session_id === sid);
       if (pending) {
         state.pending = pending.id;
         throw new Error("A modifier job is already running for this session. Refresh to check it.");
@@ -673,7 +687,7 @@
     ctl.refresh();
     return ctl;
   }
-  const api = { GAME, RE6, DEFINITIONS, eligible, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
+  const api = { GAME, RE6, SWITCH, DEFINITIONS, eligible, isSwitch, panelEligible, replacementSession, capability, rows, clockState, html, create, mount,
     savedText, savedLine, teamSavedLine,
     sectionHTML: () => `<style>${CSS}${CLOCK ? CLOCK.CSS : ""}</style><section class="re5-modifiers" aria-label="RE5 modifiers"></section>` };
   root.GBoxRE5Modifiers = api;
