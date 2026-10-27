@@ -550,6 +550,20 @@ def test_the_blasts_reach_is_learned_kept_and_respected(tmp_path):
     assert all("zr" not in a.get("hold", ()) for a in acts)                   # the learned rule holds it
 
 
+def test_a_zombie_at_his_elbow_is_not_the_blasts_and_old_records_do_not_count(tmp_path):
+    import json as _json
+    (tmp_path / R.BOMB_BOOK_FILE).write_text(_json.dumps({"blasts": [{"me_cm": 760, "hit_cm": [1024], "real": True}]}))
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)
+    assert bot.book.radius == R.BOMB_RADIUS_CM                                # the old record's outlier: ignored
+    bot.held = lambda p, now: False
+    snap = R.snapshot(round_guest(enemies=()))
+    me_z = R.BOMB_AHEAD - 760.0
+    blast(bot, clock, snap, me_z, [(300.0 + 300.0, True), (me_z + 100.0, True)])   # one by the bomb, one at his elbow
+    rec = bot.stats["bomb_blast_log"][-1]
+    assert rec["hit_cm"] == [300] and rec["v"] == R.BOMB_BOOK_V and bot.book.radius == R.BOMB_RADIUS_CM
+
+
 def test_a_blast_that_hurts_him_inside_its_reach_is_a_self_hit_and_teaches_the_reach(tmp_path):
     clock = [0.0]
     bot = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)

@@ -856,7 +856,7 @@ class BlastBook:
     def radius(self) -> float:
         reach = [BOMB_RADIUS_CM]
         for b in self.blasts:
-            if b.get("real"):
+            if b.get("real") and b.get("v", 1) >= BOMB_BOOK_V:  # (older records counted the zombies he hurt himself)
                 reach += [max(b.get("hit_cm") or [0])]
                 if b.get("self_hit"):
                     reach.append(b.get("me_cm") or 0)
@@ -981,6 +981,9 @@ BOMB_RADIUS_CM, BOMB_RADIUS_MAX = 500.0, 900.0   # before any blast is booked (l
                                         # spared from 4.85 m); a booked reach is capped here (a barrel's chain blast)
 BOMB_MARGIN_CM = 200.0
 BOMB_BOOK_FILE, BOMB_BOOK_N = "re6_bomb_blasts.json", 40
+BOMB_BOOK_V, BOMB_ME_R = 2, 300.0       # the book's record version; zombies this near him at a blast are left out of
+                                        # it (his own kicks and shots hurt them: MercMode 12:58 booked one hurt 10.2 m
+                                        # from the bomb at his elbow, and the reach went to the 9 m cap)
 BOMB_LEARN_S, BOMB_SPARE_R, BOMB_BLAME_R = 0.7, 1500.0, 200.0   # a blast's toll read this long after it; the zombies
                                         # within SPARE_R left whole are the spared; one within BLAME_R of him takes the
                                         # blame for his health instead
@@ -1698,7 +1701,7 @@ class Bot:
         if self.bomb_at is not None:                         # its toll on him and on them, read BOMB_LEARN_S
             bx, bz = self.bomb_at
             self.blast = {"t": now, "at": (bx, bz), "real": bool(self.bomb_real),
-                          "me_cm": round(math.hypot(px - bx, pz - bz)), "hp0": self._prev_hp,
+                          "me_cm": round(math.hypot(px - bx, pz - bz)), "hp0": self._prev_hp, "me": (px, pz),
                           "z0": dict(self._prev_z), "low": {}, "my_low": self._prev_hp,
                           "near": sum(1 for h, zp in self._prev_z.values()
                                       if h > 0 and math.hypot(zp[0] - px, zp[2] - pz) <= BOMB_BLAME_R),
@@ -1781,6 +1784,8 @@ class Bot:
                     if h0 <= 0:
                         continue
                     d = round(math.hypot(zp[0] - bx, zp[2] - bz))
+                    if math.hypot(zp[0] - b["me"][0], zp[2] - b["me"][1]) <= BOMB_ME_R:
+                        continue                                 # at his elbow: his own blows, not the blast
                     if b["low"].get(k, 0) < h0:                  # hurt, or gone (killed and freed)
                         hit.append(d)
                     elif d <= BOMB_SPARE_R:
@@ -1792,7 +1797,7 @@ class Bot:
                     self.stats["bomb_self_hits"] += 1
                 rec = {"me_cm": b["me_cm"], "hp_lost": lost, "hit_cm": sorted(hit), "spared_cm": sorted(spared)[:12],
                        "real": b["real"], "self_hit": self_hit, "near_him": b["near"], "held": b["held"],
-                       "at": round(time.time())}
+                       "at": round(time.time()), "v": BOMB_BOOK_V}
                 log = self.stats.setdefault("bomb_blast_log", [])
                 log.append(rec)
                 del log[:-BOMB_LOG_N]
