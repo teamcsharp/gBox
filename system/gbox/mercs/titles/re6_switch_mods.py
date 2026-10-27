@@ -254,6 +254,22 @@ def infinite_tablets(g: RE6Switch, on: bool) -> dict:
                     "back after every write): a tablet taken is back on the next snapshot" % TABLET_KEEP}
 
 
+RACE_SPENT = 3                                           # a count the game spent this much of right after the write
+STAMINA_RACE = 400.0                                     # (a shot, a throw, a melee between the write and its read-back)
+
+
+def _put_count(ad, addr: int, value: int) -> None:
+    """A count (s16) written and read back; a read-back the game's own spending explains (the value lower by at most
+    RACE_SPENT: a shot or a throw landed between the write and the read) counts as done - the next check tops it up -
+    any other mismatch raises as the adapter does."""
+    try:
+        ad.write_memory(addr, struct.pack("<h", value))
+    except RuntimeError:
+        now = struct.unpack("<h", ad.read_memory(addr, 2))[0]
+        if not 0 <= value - now <= RACE_SPENT:
+            raise
+
+
 def _keep_tablets(ad, g: RE6Switch, player: int) -> int:
     t = g.tablet_slot(player)
     if t is None:
@@ -264,7 +280,7 @@ def _keep_tablets(ad, g: RE6Switch, player: int) -> int:
     again = g.tablet_slot(player)                            # the same live slot, unchanged, right before the write
     if again != t:
         return 0
-    ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", TABLET_KEEP))
+    _put_count(ad, slot + SLOT_ROUNDS, TABLET_KEEP)
     return 1
 
 
@@ -278,7 +294,7 @@ def _keep_thrown(ad, g: RE6Switch, player: int) -> int:
         if 0 < count < THROWN_MAX:
             again = struct.unpack("<h", ad.read_memory(slot + SLOT_ROUNDS, 2))[0]
             if again == count:
-                ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", THROWN_MAX))
+                _put_count(ad, slot + SLOT_ROUNDS, THROWN_MAX)
                 writes += 1
     stacks, wheel = g.thrown_slots(player)
     totals: dict = {}
@@ -287,7 +303,7 @@ def _keep_thrown(ad, g: RE6Switch, player: int) -> int:
     for slot, kind, count, _cap in wheel:
         want = totals.get(kind)
         if want is not None and count != want and 0 < want <= 99:
-            ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", want))
+            _put_count(ad, slot + SLOT_ROUNDS, want)
             writes += 1
     return writes
 
@@ -323,7 +339,12 @@ def _keep_stamina(ad, player: int) -> int:
         return 0
     if stamina(ad, player) != s:                             # moved between the reads: the next check takes it
         return 0
-    ad.write_memory(player + P_STAMINA, struct.pack("<f", s[1]))
+    try:
+        ad.write_memory(player + P_STAMINA, struct.pack("<f", s[1]))
+    except RuntimeError:                                     # a melee spent some right after the write: done
+        now = struct.unpack("<f", ad.read_memory(player + P_STAMINA, 4))[0]
+        if not 0.0 <= s[1] - now <= STAMINA_RACE:
+            raise
     return 1
 
 
@@ -523,7 +544,7 @@ def _top_up(ad, g: RE6Switch, player: int) -> int:
     n = 0
     for slot, rounds, cap in g.slots(player):
         if 0 <= rounds < cap:
-            ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", cap))
+            _put_count(ad, slot + SLOT_ROUNDS, cap)
             n += 1
     return n
 
