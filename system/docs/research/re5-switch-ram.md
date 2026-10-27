@@ -205,9 +205,10 @@ back-offs a round. Most deaths came swarmed.
 
 - **Crowd control** (live in the bot, tuned 2026-10-27):
   - A ring leaves no gap of 150 deg between the Majini's bearings. The bot runs out through the widest gap for 1.2 s
-    (left stick + B, Type D's own "Run") only when the ring is tight: 4+ within 2.5 m or 3+ within 1.8 m. Hurt (under
-    60 % health), the looser 3+ within 3 m also counts. At most every 4 s and 6 times a round, quick-turning first when
-    the gap is behind him.
+    (left stick + B, Type D's own "Run") only when the ring is tight (4+ within 2.5 m) or when he is hurt (under 60 %
+    health), when 3+ within 3 m counts. At most every 4 s and 4 times a round, quick-turning first when the gap is
+    behind him. The previous rule (3+ within 1.8 m also tight, 6 a round) gave 0.11 deaths a round over 18 rounds, but
+    escapes ran near the cap and kills slid late in the turn.
   - The first rule, 3 within 3 m at any health, escaped up to 13 times in a round: that round completed, but with only
     9 kills. The rapid fire clears a loose crowd better than running from it.
   - A crowd in front is 2 or more within 2.2 m inside 60 deg of his facing. The bot fires a 0.8 s burst, then lowers the

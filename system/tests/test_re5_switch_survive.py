@@ -99,8 +99,8 @@ def test_a_heal_that_does_not_take_gives_up_and_rearms():
 
 def test_a_ring_is_left_through_its_widest_gap():
     b, clock = brain()
-    ring = [at(150, 10), at(150, 130), at(150, -110)]                              # 3 within 1.8 m, no gap of 150 deg
-    act = b.tick(snap(enemies=ring, inv=()))
+    ring = [at(150, 10), at(150, 130), at(150, -110)]                              # 3 within 1.5 m, no gap of 150 deg
+    act = b.tick(snap(enemies=ring, inv=(), hp=500))                               # hurt: the loose rule counts
     assert b.stats["escapes"] == 1
     out = b.escape[0]
     gaps = sorted(math.degrees(R.wrap(x)) for x in (math.radians(70), math.radians(-170), math.radians(-50)))
@@ -108,12 +108,13 @@ def test_a_ring_is_left_through_its_widest_gap():
     assert act["hold"][:2] == R.RUN or act["hold"] == ("ldown",)                   # run, or the quick turn first
     b, clock = brain()
     open_side = [at(150, 0), at(150, 30), at(150, 60)]                             # a 300 deg gap: not a ring
-    b.tick(snap(enemies=open_side, inv=()))
+    b.tick(snap(enemies=open_side, inv=(), hp=500))
     assert b.stats["escapes"] == 0
 
 
 @pytest.mark.parametrize("enemies,hp,escapes", [
     ([at(200, 10), at(200, 130), at(200, -110)], 1000, 0),                         # loose (3 within 2 m), healthy: fight
+    ([at(150, 10), at(150, 130), at(150, -110)], 1000, 0),                         # 3 within 1.5 m, healthy: fight too
     ([at(200, 10), at(200, 130), at(200, -110)], 500, 1),                          # the same ring, hurt (50 %): escape
     ([at(230, 0), at(230, 90), at(230, 180), at(230, -90)], 1000, 1)])             # 4 within 2.5 m: tight
 def test_only_a_tight_ring_or_a_hurt_player_escapes(enemies, hp, escapes):
@@ -124,7 +125,7 @@ def test_only_a_tight_ring_or_a_hurt_player_escapes(enemies, hp, escapes):
 
 def test_escapes_are_capped_each_round():
     b, clock = brain()
-    ring = [at(150, 10), at(150, 130), at(150, -110)]
+    ring = [at(150, 0), at(150, 90), at(150, 180), at(150, -90)]                   # 4 within 2.5 m
     for k in range(40):
         clock[0] = k * (R.ESCAPE_GAP_S + R.ESCAPE_S + 1)
         b.escape = None

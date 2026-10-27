@@ -157,11 +157,13 @@ KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 /
 # A ring: Majini whose bearings leave no gap of RING_GAP, either tight (TIGHT: n within r) or, hurt (under HURT of his
 # health), RING_N within RING_R: run out through the widest gap (the left stick + B, Type D's own "Run") for ESCAPE_S,
 # at most every ESCAPE_GAP_S and ESCAPES_MAX times a round. Live 2026-10-27: 3 within 3 m at any health escaped up to 13
-# times a round (a completed round of 9 kills): the rapid fire clears a loose crowd better than running from it.
+# times a round (a completed round of 9 kills): the rapid fire clears a loose crowd better than running from it. Then
+# (4+ within 2.5 m or 3+ within 1.8 m, 6 a round): 0.11 deaths a round, but escapes near the cap and kills sliding late
+# in the turn (8-15): now only 4+ within 2.5 m, or hurt, and 4 a round.
 RING_R, RING_N, RING_GAP = 300.0, 3, math.radians(150)
-TIGHT = ((4, 250.0), (3, 180.0))
+TIGHT = ((4, 250.0),)
 HURT = 0.6
-ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 6
+ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 RUN = ("b", "lup")
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
