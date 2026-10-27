@@ -31,9 +31,9 @@ def bot():
     return R.Bot(stats={}, clock=lambda: clock[0]), clock
 
 
-def test_only_the_far_and_flip_pieces_are_on_by_default():
+def test_all_pieces_but_the_dot_are_on_by_default():
     assert R.SMOOTH is False and R.piece(R.SMOOTH_FAR) and R.piece(R.SMOOTH_FLIP) and not R.piece(R.SMOOTH_DOT)
-    assert not R.piece(R.SMOOTH_LEVEL) and not R.piece(R.SMOOTH_CLOSE)
+    assert R.piece(R.SMOOTH_LEVEL) and R.piece(R.SMOOTH_CLOSE) and R.THREAT_FIRST
     b, clock = bot()
     a, near = at(600, 0), at(500, 4)
     chest = lambda f: (f[0], f[1] + R.CHEST_H, f[2])
@@ -73,7 +73,7 @@ def test_the_flip_guard_works_on_its_own_with_smooth_off(monkeypatch):
     b, clock = bot()
     pl = snap([])["player"]
     live = [{"ptr": 10, "pos": at(1500, 100), "hp": 800, "hp_max": 800},
-            {"ptr": 11, "pos": at(400, -100), "hp": 800, "hp_max": 800}]   # nobody in front: the cost decides
+            {"ptr": 11, "pos": at(500, -100), "hp": 800, "hp_max": 800}]   # nobody in front or near: the cost
     assert b._choose(pl, live, 0.0)["ptr"] == 11
     b.target_at = -10.0
     b._set_target(10, 2.0)                                         # he moved on to the far one
