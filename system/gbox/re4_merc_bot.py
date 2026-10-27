@@ -1658,7 +1658,7 @@ class Bot:
                 and lo.get("verified") is True and lo.get("round") == self.stats.get("rounds")):
             return False
         from .mercs.behavior_metrics import re4_weapon_class
-        mode, why = self.triggers.mode(re4_weapon_class(lo.get("equipped_id")))
+        mode, why = self.triggers.mode(re4_weapon_class(getattr(self, "_weapon_now", None) or lo.get("equipped_id")))
         if mode != "hold":
             self.stats["trigger_mode"] = f"tap: {why}"
         return mode == "hold"
@@ -1896,6 +1896,7 @@ class Bot:
         self.stats["boss"] = ""                                     # set again below when a boss is the target
         if self.stats.get("weapon") != weapon_name(s.get("weapon")):
             self.stats["weapon"] = weapon_name(s.get("weapon"))
+        self._weapon_now = s.get("weapon")                          # the gun in his hands (the trigger book's class)
         if (p.get("r") or (0,))[0] == 1:                             # hit or held: the game has him (play() presses
             self.r_since, self.trigger["down"] = None, False       # SHAKE OFF / the QTE from RAM)
             self.blast = None
