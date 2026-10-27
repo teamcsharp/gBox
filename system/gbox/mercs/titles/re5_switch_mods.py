@@ -47,6 +47,7 @@ P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
 FIRE_MAX = 80.0
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
+SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")                              # a bot hot reload keeps the originals and the settings
@@ -162,6 +163,42 @@ def fire_rate(g: RE5Switch, mult) -> dict:
                     "held ZR repeats about N times faster, capped by the frame rate (live: x8 15 shots/s, x80 25)"}
 
 
+def infinite_spray(g: RE5Switch, on: bool) -> dict:
+    g.state["infinite_spray"] = bool(on)
+    if not on:
+        g.state.pop("spray", None)
+    return {"infinite_spray": bool(on), "verified": True,
+            "note": "the round's own First Aid Spray record is kept and written back into its slot once the spray is "
+                    "used up (only into that emptied slot, never over another item): the bot heals with it again"}
+
+
+def _maintain_spray(ad, st, snap) -> int:
+    """infinite_spray: keep the round's spray slot record (the game's own bytes, the in-hand flag cleared); once that
+    slot holds no spray any more (empty, or a spray of count 0), write the record back. Never into a slot holding
+    something else (the inventory moved), never for another round's player."""
+    p, inv = (snap or {}).get("player"), (snap or {}).get("inventory")
+    if not p or inv is None:
+        return 0
+    spray = next((s for s in inv if s["id"] == SPRAY_ID and s["rounds"] >= 1), None)
+    saved = st.get("spray")
+    if spray is not None:
+        if not saved or saved["player"] != p.get("ptr") or saved["addr"] != spray["addr"]:
+            rec = bytearray(ad.read_memory(spray["addr"], R.INV_SLOT))
+            struct.pack_into("<i", rec, R.INV_HAND, 0)
+            st["spray"] = {"player": p.get("ptr"), "addr": spray["addr"], "record": bytes(rec)}
+        return 0
+    if not saved or saved["player"] != p.get("ptr"):
+        return 0
+    cur = ad.read_memory(saved["addr"], R.INV_SLOT)
+    idw = struct.unpack_from("<I", cur, R.INV_ID)[0]
+    count = struct.unpack_from("<i", cur, R.INV_ROUNDS)[0]
+    if idw in R.EMPTY_IDS or (idw == SPRAY_ID and count < 1):
+        ad.write_memory(saved["addr"], saved["record"])
+        st["sprays_restored"] = st.get("sprays_restored", 0) + 1
+        return 1
+    return 0
+
+
 def _restore_scale(ad, st) -> int:
     scaled = st.pop("scaled", None)
     if not scaled:
@@ -209,6 +246,11 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 if any(g.u32(g.record(w) + DEF_NOAMMO) != 1 for w in g.ammo_weapons()):
                     out["ammo_restored"] = infinite_ammo(g, True)["verified"]
                     out["writes"] += 1
+            if enabled and st.get("infinite_spray"):
+                restored = _maintain_spray(ad, st, snap)
+                out["writes"] += restored
+                if restored:
+                    out["spray_restored"] = True
         except Exception as e:                               # noqa: BLE001 - a missed update never stops a tick
             out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
         return out
@@ -219,13 +261,17 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch |
         g = g or RE5Switch(ad)
         op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")
         op = {"fire": "fire_rate", "rapid_fire": "fire_rate", "ammo": "infinite_ammo", "unlimited_ammo": "infinite_ammo",
-              "no_ammo": "infinite_ammo"}.get(op, op)
+              "no_ammo": "infinite_ammo", "auto_first_aid": "infinite_spray"}.get(op, op)
         if op == "status":
             return g.status()
         if op == "infinite_ammo":
             return infinite_ammo(g, bool(on))
         if op == "fire_rate":
             return fire_rate(g, 1.0 if on is False else multiplier)
+        if op == "infinite_spray":
+            return infinite_spray(g, bool(on))
         if op == "revert_all":
-            return {"infinite_ammo": infinite_ammo(g, False), "fire_rate": fire_rate(g, 1.0)}
-        raise ValueError(f"re5_switch_mods: unknown op {op!r} (status, infinite_ammo, fire_rate, revert_all)")
+            return {"infinite_ammo": infinite_ammo(g, False), "fire_rate": fire_rate(g, 1.0),
+                    "infinite_spray": infinite_spray(g, False)}
+        raise ValueError(f"re5_switch_mods: unknown op {op!r} (status, infinite_ammo, fire_rate, infinite_spray, "
+                         f"revert_all)")

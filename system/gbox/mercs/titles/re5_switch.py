@@ -60,6 +60,12 @@ MOTION_HELD, MOTION_RELOAD = frozenset({100, 106, 107, 113, 114}), 32
 HELD_R = 25.0                            # a Majini this near is on him: every hold measured 0-8 cm (bodies collide ~50 cm
                                          # apart otherwise), whatever the motion says
 DYING_HP = 1                             # the solo dying state keeps exactly 1 HP (the PS3's, verified; seen live here)
+# The inventory, in the player (live 2026-10-26): slots of 0x38 from +0x30F0; a slot's +0x08 u32 id word 0x0TII (T 1 a
+# weapon uWpII, 2 ammo, 3 a recovery item), +0x0C rounds (an item's count), +0x10 capacity, +0x1C the grid position,
+# +0x20 1 = in hand. Chris (BSAA) starts No Mercy with a First Aid Spray at grid 7 (the D-pad's down).
+P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 9
+INV_ID, INV_ROUNDS, INV_CAP, INV_GRID, INV_HAND = 0x08, 0x0C, 0x10, 0x1C, 0x20
+EMPTY_IDS = frozenset({0x0, 0x100})      # no item / WP00 NONE
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
 MAX_ENEMIES = 64
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
@@ -135,6 +141,26 @@ STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he n
 COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
 WIGGLE = (("lleft",), ("lright",))       # "Break free": the left stick shaken (the prompt's icon)
 MASH = (("a",), ())                      # dying: "Resuscitate", A mashed (the prompt's icon)
+# Survival (operator 2026-10-26, the first MercMode turn: 5 deaths in 6 rounds, usually swarmed).
+# Healing, the PS3 bot's rules (re5_ps3._heal / _heal_safe): under HEAL_AT of his health, with no Majini within
+# HEAL_SAFE_R, or anyway under HEAL_CRITICAL; the item comes up from its D-pad quick slot and HEAL_USE_KEY uses it (the
+# PS3's Square by position), confirmed by its count falling or his health rising, then the gun goes back up.
+HEAL_IDS = frozenset({0x304, 0x305, 0x307, 0x309})   # First Aid Spray, green herb, the mixed herbs (red alone: no)
+HEAL_AT, HEAL_CRITICAL, HEAL_SAFE_R, HEAL_GAIN = 0.4, 0.25, 400.0, 50
+HEAL_USE_KEY = "y"
+HEAL_ENABLED = False                     # off until a live run confirms the use key (a wrong key would cost 4 s a try at low
+                                         # health); the tests switch it on
+HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
+QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
+KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
+# A ring: RING_N Majini within RING_R whose bearings leave no gap of RING_GAP: run out through the widest gap (the left
+# stick forward + B, Type D's run; B with the stick back is the quick turn) for ESCAPE_S, at most every ESCAPE_GAP_S.
+RING_R, RING_N, RING_GAP = 300.0, 3, math.radians(150)
+ESCAPE_S, ESCAPE_GAP_S = 1.2, 4.0
+RUN = ("b", "lup")
+# A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
+# BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
+FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 
@@ -287,6 +313,25 @@ def laser(m, base: int) -> dict | None:
     return {"from": frm, "at": at, "up": bool(up)}
 
 
+def inventory(m, player: int) -> list:
+    """The player's inventory slots holding something: [{slot, addr, id, type, item, rounds, cap, grid, hand}]."""
+    try:
+        raw = m.rd(player + P_INV, INV_SLOT * INV_SLOTS)
+    except (ValueError, OSError):
+        return []
+    out = []
+    for k in range(INV_SLOTS):
+        o = INV_SLOT * k
+        idw = struct.unpack_from("<I", raw, o + INV_ID)[0]
+        if idw in EMPTY_IDS or idw > 0xFFFF:
+            continue
+        rounds, cap = struct.unpack_from("<ii", raw, o + INV_ROUNDS)
+        grid, hand = struct.unpack_from("<ii", raw, o + INV_GRID)
+        out.append({"slot": k, "addr": player + P_INV + o, "id": idw, "type": (idw >> 8) & 0xF, "item": idw & 0xFF,
+                    "rounds": rounds, "cap": cap, "grid": grid, "hand": hand == 1})
+    return out
+
+
 def snapshot(m) -> dict:
     """The round from RAM: the player, the live enemies and the Mercenaries counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None, "kills": None,
@@ -308,6 +353,7 @@ def snapshot(m) -> dict:
             snap["player"] = None
         if snap["player"]:
             snap["laser"] = laser(m, base)
+            snap["inventory"] = inventory(m, p)
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
@@ -578,7 +624,7 @@ class Bot:
         self.clock = clock
         self.release = release                  # the driver's: the live mods' state put back when the bot stops
         for k in ("shots", "hits", "turns", "quick_turns", "backoffs", "wiggles", "holds", "laserless", "reraise",
-                  "restale"):
+                  "restale", "heal_starts", "heals", "heal_failures", "escapes", "burst_backoffs"):
             self.stats.setdefault(k, 0)
         self.target = None
         self.aim_since = None
@@ -596,7 +642,11 @@ class Bot:
         self._threats: list = []
         self.dead_since, self.dead_taps = None, 0
         self.died, self.continued = False, None   # this round ended in a death / how "Continue?" was answered
-        self._round_started = None                # the engine's round marker (a replay starts a new round in one call)
+        self._round_started = None                # the engine's round marker: set once (a replay's new round is the
+                                                  # engine's own: the death closed the last one's evidence)
+        self.healing, self.heal_at = None, -1e9   # a heal under way / when the last one ended
+        self.escape, self.escape_at = None, -1e9  # (the bearing out, until) / when the last escape began
+        self.trigger_since = None                 # when the trigger went down on this burst
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -679,10 +729,11 @@ class Bot:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if not on:
-            self.fire_down = False
+            self.fire_down, self.trigger_since = False, None
             return set()
         if not self.fire_down:
             self.stats["shots"] += 1
+            self.trigger_since = now
         elif self.fire_at is not None:
             self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self.fire_at, 0.2), 2)
             if self.stats["trigger_s"]:
@@ -691,8 +742,9 @@ class Bot:
         return {"zr"}
 
     def _round_start(self, snap, now) -> None:
-        """The first tick alive of a round: its marker for the engine; after a death answered Yes, the replay counts as
-        the next round (mercs_bot counts only rounds the menus reach)."""
+        """The first tick alive of a round: the engine's marker, once (a marker changed again on a replay made the
+        engine close the replay's fresh evidence at once: "ended" rows at 119.9 s in the first MercMode turn); after a
+        death answered Yes, the replay counts as the next round (mercs_bot counts only rounds the menus reach)."""
         if self.died:
             self.died = False
             t, start = snap.get("timer"), snap.get("timer_start")
@@ -701,14 +753,102 @@ class Bot:
                 self.stats["rounds"] = self.stats.get("rounds", 0) + 1
                 self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.stats["round_start_via"] = "dead/retry"
-                self._round_started = now
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
             self.continued = None
         if self._round_started is None:
             self._round_started = now
 
     def _gun_down(self) -> None:
-        self.aim_since, self.fire_down, self.ray_key = None, False, None
+        self.aim_since, self.fire_down, self.ray_key, self.trigger_since = None, False, None, None
+
+    # --- survival ----------------------------------------------------------------------------------------------------
+    def _heal(self, p, snap, live, flat, now) -> dict | None:
+        """The heal (HEAL_* above): its next press, or None (no heal now)."""
+        inv = snap.get("inventory")
+        if inv is None or not HEAL_ENABLED:
+            return None                                     # off, or a snapshot without the inventory reader
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        st = self.healing
+        if st is not None:
+            if st["player"] != p.get("ptr"):
+                self.healing = None
+                return None
+            count = sum(s["rounds"] for s in inv if s["id"] == st["id"])
+            item = next((s for s in inv if s["id"] == st["id"] and s["rounds"] > 0), None)
+            done = None
+            if count < st["count"] or hp >= st["hp"] + HEAL_GAIN:
+                done = "heals"
+            elif now - st["at"] >= HEAL_ATTEMPT_S or st["uses"] >= 12 or item is None or item["grid"] not in QUICK:
+                done = "heal_failures"
+            if done:
+                self.stats[done] += 1
+                self.stats["heal_status"] = "healed" if done == "heals" else "use unconfirmed"
+                self.healing, self.heal_at = None, now
+                return self._rearm(inv, st.get("gun"))
+            self._gun_down()
+            if item["hand"]:
+                if now - st["last_use"] >= HEAL_USE_EVERY_S:
+                    st["last_use"], st["uses"] = now, st["uses"] + 1
+                    return {"tap": HEAL_USE_KEY}
+                return {"hold": ()}
+            if now - st["equip_at"] >= EQUIP_ACK_S and st["equips"] < 3:
+                st["equip_at"], st["equips"] = now, st["equips"] + 1
+                return {"tap": QUICK[item["grid"]]}
+            return {"hold": ()}
+        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+            return None
+        near = sum(1 for e in live if flat(e) < HEAL_SAFE_R)
+        if near and hp > HEAL_CRITICAL * hp_max:
+            self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}"
+            return None
+        item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
+        if item is None:
+            return None
+        gun = next((s for s in inv if s["hand"] and s["type"] == 1), None)
+        self._gun_down()
+        self.healing = {"player": p.get("ptr"), "id": item["id"], "hp": hp, "at": now, "uses": 0, "last_use": -1e9,
+                        "count": sum(s["rounds"] for s in inv if s["id"] == item["id"]), "equips": 1, "equip_at": now,
+                        "gun": gun["grid"] if gun else None}
+        self.stats["heal_starts"] += 1
+        self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
+        return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
+
+    def _rearm(self, inv, grid) -> dict | None:
+        """The gun back in his hands after a heal: the one he held (its D-pad slot), else the first gun on one."""
+        guns = [s for s in inv if s["type"] == 1 and s["grid"] in QUICK and s["item"] not in KNIVES]
+        gun = next((s for s in guns if s["grid"] == grid), None) or next(iter(guns), None)
+        if gun is None or gun["hand"]:
+            return None
+        return {"tap": QUICK[gun["grid"]]}
+
+    def _escape(self, p, live, flat, now) -> dict | None:
+        """A ring (RING_*): run out through the widest gap between their bearings; None when not ringed."""
+        if self.escape is not None:
+            out, until = self.escape
+            if now < until:
+                return {"hold": RUN + self._turn(wrap(out - p["rot"]), TURN_TOL)}
+            self.escape = None
+        if now - self.escape_at < ESCAPE_GAP_S:
+            return None
+        px, _, pz = p["pos"]
+        ring = sorted(heading(e["pos"][0] - px, e["pos"][2] - pz) for e in live if flat(e) < RING_R)
+        if len(ring) < RING_N:
+            return None
+        gaps = [((ring[(i + 1) % len(ring)] - a) % (2 * math.pi) or 2 * math.pi, a) for i, a in enumerate(ring)]
+        gap, start = max(gaps)
+        if gap >= RING_GAP:
+            return None                                     # an open side: fight on
+        out = wrap(start + gap / 2)
+        self._gun_down()
+        self.escape, self.escape_at = (out, now + ESCAPE_S), now
+        self.stats["escapes"] += 1
+        err = wrap(out - p["rot"])
+        if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+            self.stats["quick_turns"] += 1                   # the gap behind him: the quick turn first, then the run
+            self.quick = 2
+            self.escape = (out, now + ESCAPE_S + 0.6)
+            return {"hold": ("ldown",)}
+        return {"hold": RUN + self._turn(err, TURN_TOL)}
 
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
@@ -771,7 +911,8 @@ class Bot:
         if motion == MOTION_RELOAD and self.aim_since is not None:
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
-        act = self._decide(p, live, flat, near_e, near, snap, now)
+        act = self._heal(p, snap, live, flat, now) or self._escape(p, live, flat, now) \
+            or self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
@@ -790,6 +931,8 @@ class Bot:
             self._gun_down()
             return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
         if self.aim_since is None:
+            if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
+                return {"hold": ("ldown",) + self._turn(body_err)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
             if near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back first
                 if now >= self.backoff_ready:
@@ -838,6 +981,13 @@ class Bot:
             return {"hold": self._turn(body_err)}
         where = dot_on(dot, foot)
         on = where is not None or through(origin, dot, foot)
+        front = sum(1 for e in live if flat(e) < FRONT_R
+                    and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
+        if front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
+            self.stats["burst_backoffs"] += 1                # a crowd in front: the burst is done, step back, burst again
+            self._gun_down()
+            self.backoff_until = now + BACKOFF_S
+            return {"hold": ("ldown",)}
         keys = {"zl"} | self._trigger(on, now)
         if not on and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err) | self._pitch(pitch_err)   # steer only off him: a raised fire rate paces the
