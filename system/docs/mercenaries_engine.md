@@ -36,6 +36,8 @@ player's state; vision only as the last fallback (a RAM field that can't tell sa
 | `gbox/mercs/nav.py` | paths (stage grid or graph, learned map), waypoint following, stuck handling (reuses `bot_brain.NavGraph`) |
 | `gbox/mercs/stagedb.py` | stage records (nav source, bonuses, spawns, hazards, safe spots, route) |
 | `gbox/mercs/lessons.py` | the lessons log (one JSONL per run) and the analyzer that proposes candidate signatures |
+| `gbox/mercs/enemy_db.py` | the enemy knowledge database: per title and enemy class what dispatches him (aim zone and offset, range, fire mode, shots to kill) and how dangerous each of his states is, learned from RAM facts and outcomes (section 6b) |
+| `gbox/mercs/enemy_db_seed.py` | the one-off, read-only bootstrap of that database from the round maps, the run lessons and the damage ledger |
 | `gbox/mercs/engine.py` | `Engine.tick(world) -> Intent`: the engines in order; `play_round(profile, m, send, stopped, stats, lessons)` |
 | `gbox/mercs/driver.py` | the `Driver` base class every title implements |
 | `gbox/mercs/tactical.py` | the tactical map's frames and stages (`gbox.tactical/1`) and the publisher `play_round(tactical=)` feeds ([tactical_map.md](tactical_map.md)) |
@@ -277,6 +279,69 @@ event per line, `{"t": <s>, "kind": ..., ...}`; `lessons.Run(map_id)` opens one 
 have no signature (with their lead-time spread), prompts that ended in a hit, stuck spots, rates. A candidate becomes a
 signature after a check (a `ram_search` labeled search, or a live check) and goes into the map with that evidence.
 Coaching (`gbox/coaching.py`) shows the live threats, the signatures behind them, and the candidates.
+
+## 6b. The enemy knowledge database
+
+Operator, 2026-10-27: "the goal is that the aimbot learns enemy activity and builds a database of how to dispatch them
+and the aimbot improves based on the ram byte information to keep the bot aware of enemies and where and how to aim to
+dispatch them."
+
+`gbox/mercs/enemy_db.py` is bot-side (stdlib only, hot-reload safe: its state is in `_STATE`, kept by `RELOAD_KEEP`).
+The combat brain (`gbox/mercs/brain/knowledge.py`) calls it. Units are metres and seconds.
+
+```python
+from gbox.mercs import enemy_db as K
+cls = K.class_key(enemy)              # "uEm10" (the class name), "em16.0b.hp1400" (RE4 EmMgr id.type.health), "hp800"
+plan = K.dispatch_plan(title, cls, state, dist_m, weapon, hp=..., hp_max=..., defaults=None)
+K.observe(title, [{"id": ptr, "cls": cls, "state": s, "dist_m": d}, ...])   # 5-20 Hz: exposure and state onsets
+K.record_shot(title, cls, state, dist_m, weapon, (up_m, lateral_m), "hit" | "miss" | "kill", hp_delta, enemy_id=ptr)
+K.record_damage(title, cls, state, dist_m, what_hit_us, hp_loss, enemy_id=ptr)
+K.record_outcome(outcome_dict)        # the brain's own outcome dict (distance in cm)
+```
+
+* **The plan.** Each field is `Learned(value, confidence, samples, source)`:
+  - `aim`: `Aim(up_m, lateral_m, zone)`, the offset from his reported position to aim at;
+  - `range`: `(near_m, far_m)`;
+  - `fire_mode`: tap, hold or burst;
+  - `danger`: the chance he hurts the player within 1 s;
+  - `windup` and `lead_s`: whether, and how soon, an onset of this state is followed by damage;
+  - `attack`, `shots_to_kill`, `hit_rate`.
+
+  With no data every field is the title's current constants (`DEFAULTS`, copied from the drivers): chest at 1.10 m,
+  RE5 Switch rain-fire hold, the threat radius rule, and so on.
+* **Learning.** Facts are queued in memory and folded by a background thread (single flight). SQLite is written off the
+  tick.
+  - Aim: per zone, the hit rate and the damage per hit, and the centre of the hits.
+  - Range: the bands with the most damage per shot.
+  - Fire mode: damage per second.
+  - Danger: damage events per second of exposure in a class, state and band. The states that come right before a hit
+    (attack wind-ups, grabs, throws) show as a high `windup`, together with their `lead_s`.
+  - Weights halve every 21 days without new evidence, and each cell's effective count is capped.
+* **Levels.** A field falls back from the class in this title, to his family in this title, to his family in every
+  title, to every class of this title, and finally to the default.
+  - The families come from `CLASS_MAP`: Ganado ≈ Majini ≈ zombie as `humanoid`, plus `chainsaw`, `crawler` and
+    `critter`. It is an explicit table where every row carries its evidence. Drivers add rows with `extend_classes`
+    and name raw states with `extend_states`.
+  - Another title only shares where hits land on such a body, and the danger. Zone, range, fire mode, shots to kill and
+    hit rate come from the title's own shots.
+* **Storage.** `gbox-data/mercs/knowledge/<title>/enemies.sqlite` holds:
+  - the raw samples (the newest 100,000, none older than 90 days);
+  - daily exposure buckets;
+  - the learned cells.
+
+  `rebuild()` replays the samples into fresh cells. A running bot reloads the cells when their generation changes.
+* **Humans and sparkDeux.**
+  - `GET /api/mercs/enemy-knowledge[?title=&enemy_class=&recent=]` (gbox/mercs/reviewer.py, read only) shows per
+    class the plan, the danger by band, the states before damage, the sample counts and the recent outcomes.
+  - The engine's round hooks put `enemy_db_*` into stats. The round report carries them as
+    `metrics.enemy_knowledge`, plus a one-line `enemy_knowledge` summary for Spark2.
+* **Seeding.** Run `python -m gbox.mercs.enemy_db_seed --data-dir <gbox-data> [--dry-run]`. It reads, read only:
+  - the round maps (RE5 PS3 shot records, every title's hit events; RE4's name the attacker's em id, type and health);
+  - RE5 PS3's run-lesson shot rows;
+  - the player-damage ledger's receipts (the nearest living enemy at each hit, his class key and distance, a held
+    player, and the bot's `stats.look` shots inside each receipt).
+
+  It replaces only its own earlier seed samples.
 
 ## 7. The tick
 
