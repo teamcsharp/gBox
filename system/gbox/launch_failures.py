@@ -46,7 +46,7 @@ MAX_OCCURRENCES = 60
 DEFAULTS = {"auto_remedy": True, "investigate": True, "verify": True}
 
 ADAPTERS = ("retroarch", "dolphin", "flycast", "pcsx2", "duckstation", "rpcs3", "shadps4", "ppsspp", "xenia", "cemu", "mame",
-            "redream", "xemu", "cxbx", "melonds", "citra", "ryujinx", "yuzu", "eden", "mupen64plus", "mgba", "steam",
+            "redream", "xemu", "cxbx", "melonds", "citra", "ryujinx", "yuzu", "eden", "citron", "mupen64plus", "mgba", "steam",
             "rocketlauncher")
 ADAPTER_RX = re.compile(r"\b(" + "|".join(ADAPTERS) + r")\b", re.I)
 PLATFORM_ADAPTER = {"gamecube": "dolphin", "wii": "dolphin", "ps3": "rpcs3", "ps4": "shadps4", "xbox360": "xenia", "switch": "yuzu",
