@@ -6248,6 +6248,8 @@ def create_app(config: Config) -> FastAPI:
 
     lite_answers: dict[str, bytes] = {}     # ETag -> encoded lite listing; the tag embeds the store digest
     lite_lock = threading.Lock()
+    full_answers: dict[str, bytes] = {}     # the same for the full listing (47 MB on 2026-10-27)
+    full_lock = threading.Lock()
 
     @app.get("/api/requests")
     def req_list(request: Request, status: str = "", source: str = "", group: int = 0, lite: int = 0,
@@ -6262,7 +6264,7 @@ def create_app(config: Config) -> FastAPI:
         # every tick and the game streams it relays stalled. SQLite drops the threads before Python decodes, and the
         # encoded answer is kept for its ETag, so an unchanged inbox is answered from memory too.
         import hashlib
-        from fastapi.responses import JSONResponse
+        from .thread_json import json_bytes
         digest = store.digest("request")
         tag = f'"{digest}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "") + ("|lite" if lite else "")).encode()).hexdigest()[:8]}"'
         if request.headers.get("if-none-match") == tag:
@@ -6272,14 +6274,26 @@ def create_app(config: Config) -> FastAPI:
         def listing(docs):
             rs = [r for r in inbox.organize(docs) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
             return sorted(rs, key=lambda r: r["created"], reverse=True)
+        # Both listings are built once per inbox change, however many clients poll (the inbox changed ~5 times a
+        # minute on 2026-10-27, and each poller decoded, cleaned and encoded the 47 MB full list itself), and are
+        # encoded in pieces (thread_json.json_bytes): one json.dumps of it held the GIL 0.3-0.6 s and froze the streams.
         if not lite:
-            rs = listing(store.all("request"))
-            return JSONResponse(_clean(inbox.grouped(rs) if group else rs), headers={"etag": tag})
+            with full_lock:
+                body = full_answers.get(tag)
+                if body is None:
+                    rs = listing(store.all("request"))
+                    body = json_bytes(_clean(inbox.grouped(rs) if group else rs))
+                    for old in [t for t in full_answers if not t.startswith(f'"{digest}:')]:
+                        del full_answers[old]              # answers for an older inbox
+                    while len(full_answers) >= 2:          # other filters of this one (each answer is tens of MB)
+                        del full_answers[next(iter(full_answers))]
+                    full_answers[tag] = body
+            return Response(body, media_type="application/json", headers={"etag": tag})
         with lite_lock:                                    # one build per change, however many callers ask at once
             body = lite_answers.get(tag)
             if body is None:
                 rs = [inbox.lite(r) for r in listing(store.all("request", without=inbox.LITE_DROPPED))]
-                body = JSONResponse(_clean(inbox.grouped(rs) if group else rs)).body
+                body = json_bytes(_clean(inbox.grouped(rs) if group else rs))
                 for old in [t for t in lite_answers if not t.startswith(f'"{digest}:')]:
                     del lite_answers[old]                  # answers for an older inbox
                 while len(lite_answers) >= 4:              # other filters of this one
