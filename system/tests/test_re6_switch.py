@@ -1105,6 +1105,104 @@ def test_down_fire_triples_the_table_while_he_is_down_and_puts_it_back(mods):
         mods.run(ad, "down_fire", multiplier=50)
 
 
+def test_the_lock_sweeps_target_after_target_a_few_shots_each():
+    three = ((0.0, 0.0, 600.0, 700), (300.0, 0.0, 800.0, 700), (-300.0, 0.0, 1000.0, 700))
+    bot, clock, snap, writes = lock_brain(three)
+    order = []
+    for _ in range(80):                                                       # 4 s: the laser follows the lock's target
+        cur = next((e for e in snap["enemies"] if e["ptr"] == bot.target), snap["enemies"][0])
+        snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (cur["pos"][0], R.CHEST_H, cur["pos"][2]), "up": True}
+        run(bot, snap, clock, 1)
+        if not order or order[-1] != bot.target:
+            order.append(bot.target)
+    assert bot.stats["aimed_shots"] >= 2 * R.SWEEP_SHOTS and bot.stats["sweeps"] >= 2
+    assert bot.stats["targets_shot"] >= 3 and len(set(order)) == 3
+    assert order[0] == snap["enemies"][0]["ptr"]                              # the nearest first
+    assert bot.stats["cc_quick_shots"] == 0 and bot.stats["quick_shots"] == 0
+
+
+def test_a_closing_one_is_swept_before_a_standing_one_as_near():
+    bot, clock, snap, writes = lock_brain(((300.0, 0.0, 800.0, 700), (-300.0, 0.0, 800.0, 700)))
+    bot.target = None
+    run(bot, snap, clock, 1)
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS                                   # done with that one
+    other = next(e for e in snap["enemies"] if e["ptr"] != bot.target)
+    first = bot.target
+    run(bot, snap, clock, 1)
+    assert bot.target == other["ptr"]
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS
+    back = next(e for e in snap["enemies"] if e["ptr"] == first)
+    x, y, z = back["pos"]
+    back["pos"] = (x, y, z - 100.0)                                           # it comes 1 m closer in 0.05 s
+    run(bot, snap, clock, 1)
+    assert bot.target == first
+
+
+def test_point_blank_crowd_gets_aimed_fire_and_a_lone_one_the_quick_shot():
+    bot, clock, snap, writes = lock_brain(((60.0, 0.0, 170.0, 700), (-80.0, 0.0, 180.0, 700)))   # two at 1.8 m
+    acts = run(bot, snap, clock, 10)
+    assert bot.stats["cc_quick_shots"] == 0 and bot.stats["quick_shots"] == 0
+    assert any("zl" in a.get("hold", ()) for a in acts) and writes                # the gun up on the lock
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 180.0, 700),))              # a lone one
+    acts = run(bot, snap, clock, 3)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["quick_shots"] >= 1
+
+
+def test_the_flash_alone_with_five_close_and_no_fever_or_grenades(monkeypatch):
+    monkeypatch.setattr(R, "NADES", False)
+    monkeypatch.setattr(R, "FLASH", True)
+    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
+            (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 3)
+    assert bot.nade["kind"] == "flash"
+    snap["player"]["equipped"] = 11
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert bot.stats["flashes"] == 1 and bot.fever_until < clock[0]            # no fever without NADES
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
+    run(bot, snap, clock, 3)
+    assert bot.nade is None and bot.stats["frags"] == 0                       # no grenade into a cluster
+
+
+def test_magnum_speed_runs_the_magnums_fire_and_recoil_faster_only(mods, monkeypatch):
+    monkeypatch.setattr(R, "QA_FAST", False)                                  # (the quick_attack op sets it: put back)
+    g = round_guest()
+    ad = Adapter(g)
+    weapon_table(g)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.f32(p + mods.UNIT_DELTA, 1.0)
+    g.put(p + R.P_SLOTS + 8, bytes([1, 0]) + struct.pack("<H", 0x107))       # the magnum in slot 0, equipped
+    g.i32(p + R.P_EQUIPPED, 0)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
+    mods.run(ad, "fire_rate", multiplier=4, magnum=8)
+    assert mods.run(ad, "magnum_speed", multiplier=3)["magnum_speed_x"] == 3.0
+    mods.run(ad, "quick_attack", multiplier=10)
+    clock = [10.0]
+    snap = R.snapshot(g)
+    assert snap["player"]["weapon_id"] == 0x07
+    mods.maintain(ad, snap, clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 3.0                      # the magnum's shot x3
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_comn_quick_shot", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 10.0                     # a quick shot keeps x10
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0
+    g.put(p + R.P_SLOTS + 8, bytes([1, 0]) + struct.pack("<H", 0x10F))       # the rifle: its fire left alone
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0
+    assert mods.ORIG[id(ad)]["magnum_fast"] == 1
+    with pytest.raises(ValueError):
+        mods.run(ad, "magnum_speed", multiplier=20)
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
@@ -1129,8 +1227,10 @@ def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
     monkeypatch.setattr(R, "NADES", False)
     monkeypatch.setattr(R, "BOMB_DROP", False)
     monkeypatch.setattr(R, "AIM_LOCK", True)
+    monkeypatch.setattr(R, "FLASH", True)
     out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
-    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True} and R.NADES and R.BOMB_DROP
+    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True, "flash": True} and R.NADES
+    assert mods.run(Adapter(round_guest()), "bot_options", flash=False)["flash"] is False and not R.FLASH
     assert mods.run(Adapter(round_guest()), "bot_options", aim_lock=False)["aim_lock"] is False and not R.AIM_LOCK
     assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
 

@@ -120,6 +120,13 @@ THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary 
 # weapon table at DOWN_FIRE_X times fire_rate's multipliers (its magnum's too), back to them the moment he is up; only
 # once fire_rate has set the table this boot. The down_fire op sets the factor (1 = off).
 DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
+# magnum_speed (operator 17:24: "blasting the Magnum in rapid succession with the recoil animation reduced"): while his
+# action is the gun's fire (cPlAction_pl_act_weapon_fire: the shot and its recoil) with a magnum in hand (weapon records
+# MAGNUM_RECORDS), his mDeltaTime (cUnit +0x30, as quick_attack) at MAGNUM_SPEED_X, 1.0 back after; fire_rate's table
+# stays (the magnum's 8). Only once fire_rate has set the table this boot; the op sets the factor (1 = off). status
+# magnum_fast counts the fire actions sped up.
+MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 3.0, 6.0
+MAGNUM_FIRE_ACTIONS = frozenset({"cPlAction_pl_act_weapon_fire"})
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
 # The Mercenaries' starting loadouts (Ghidra, this build): main+0x38C740 copies one 0x74-byte entry into the game's
@@ -796,9 +803,23 @@ def quick_attack(g: RE6Switch, mult=10.0) -> dict:
                     "one of them, 1.0 back after)" % k}
 
 
-def _keep_quick(ad, g: RE6Switch, player: int, st: dict) -> int:
-    """mDeltaTime at the multiplier while his action is a quick attack, 1.0 otherwise (only over 1.0 or its own value)."""
+def magnum_speed(g: RE6Switch, mult) -> dict:
+    """The magnum's fire and recoil at mult (his mDeltaTime while weapon_fire runs with a magnum in hand); 1 = off."""
+    try:
+        k = float(mult if mult is not None else MAGNUM_SPEED_X)
+    except (TypeError, ValueError):
+        raise ValueError("magnum_speed multiplier: a number 1..%g (1 = off)" % MAGNUM_SPEED_MAX) from None
+    if not 1.0 <= k <= MAGNUM_SPEED_MAX:
+        raise ValueError("magnum_speed multiplier: 1..%g (1 = off)" % MAGNUM_SPEED_MAX)
+    g.state["magnum_speed"] = k
+    return {"verified": True, "magnum_speed_x": k}
+
+
+def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
+    """mDeltaTime at the multiplier while his action is a quick attack, at the magnum's while the gun's fire runs with a
+    magnum in hand, 1.0 otherwise (only over 1.0 or one of its own values)."""
     k = st.get("quick_attack") or 1.0
+    mk = (st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
     try:
         act = R.u64(g.m, player + UNIT_ACTION)
         name = None
@@ -814,9 +835,12 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict) -> int:
     quick = name in QUICK_ACTIONS
     if quick and not st.get("qa_in"):
         st["quick_attacks"] = st.get("quick_attacks", 0) + 1
-    st["qa_in"] = quick
-    want = k if quick else 1.0
-    if abs(cur - want) < 1e-4 or not (abs(cur - 1.0) < 1e-4 or abs(cur - k) < 1e-4):
+    magnum = mk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in MAGNUM_RECORDS
+    if magnum and not st.get("mag_in"):
+        st["magnum_fast"] = st.get("magnum_fast", 0) + 1
+    st["qa_in"], st["mag_in"] = quick, magnum
+    want = k if quick else mk if magnum else 1.0
+    if abs(cur - want) < 1e-4 or not (abs(cur - 1.0) < 1e-4 or abs(cur - k) < 1e-4 or abs(cur - mk) < 1e-4):
         return 0
     try:
         ad.write_memory(player + UNIT_DELTA, struct.pack("<f", want))   # read back by the adapter
@@ -825,7 +849,7 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict) -> int:
     return 1
 
 
-def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None) -> dict:
+def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None, flash=None) -> dict:
     """The bot's switches a profile turns on (playing_ops): nades - the flash at 3+ within 4 m with the melee fever after
     it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd;
     aim_lock - the RAM aim lock (the player camera's yaw / pitch written onto the target; off: the camera keys). None
@@ -837,7 +861,9 @@ def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None) -> dict
         B.BOMB_DROP = bool(bomb_drop)
     if aim_lock is not None:
         B.AIM_LOCK = bool(aim_lock)
-    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP, "aim_lock": B.AIM_LOCK}
+    if flash is not None:
+        B.FLASH = bool(flash)
+    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP, "aim_lock": B.AIM_LOCK, "flash": B.FLASH}
 
 
 def down_fire(g: RE6Switch, mult) -> dict:
@@ -980,18 +1006,21 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
                                                  "infinite_grenades", "auto_qte_ram")) or \
             st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0) or down_fire_on
+        mag_on = bool(st and st.get("fire_rate") and ((st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) > 1.0
+                                                      or st.get("mag_in")))
+        keeping = keeping or mag_on
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
             if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")
-                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on):
+                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on or mag_on):
                 g0 = RE6Switch(ad)
                 if down_fire_on:
                     out["writes"] += _keep_down_fire(ad, g0, p, st)
-                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in"):
-                    out["writes"] += _keep_quick(ad, g0, p["ptr"], st)
+                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or mag_on:
+                    out["writes"] += _keep_quick(ad, g0, p["ptr"], st, p.get("weapon_id"))
                 if (st.get("kill_time") or {}).get("on"):
                     kt = _maintain_kill_time(ad, g0, st)
                     if kt.get("applied_seconds"):
@@ -1069,7 +1098,9 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return quick_attack(g, 1.0 if on is False else (multiplier if multiplier is not None else 10.0))
         if op == "bot_options":
             return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"),
-                               aim_lock=_extra.get("aim_lock"))
+                               aim_lock=_extra.get("aim_lock"), flash=_extra.get("flash"))
+        if op == "magnum_speed":
+            return magnum_speed(g, 1.0 if on is False else multiplier)
         if op == "down_fire":
             return down_fire(g, 1.0 if on is False else multiplier)
         if op == "fire_rate":
