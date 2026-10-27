@@ -262,10 +262,18 @@ CONFIRMED_FIRE, LONG_KILL_R, LONG_KILL_S = True, 1500.0, 3.0
 WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.4, 2.5, 3
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
 FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky")
+# The close-range pitch (the 15:26 turn's pitch_up_last: targets 0.8-2.2 m wanting -23 to -38 deg with the laser at
+# +21 to +28 deg - "ray 50.0 m", the laser's limit: the sky - and the aim +56 / +57 deg just before raises, the guard's
+# rdown held: up close the pitch stick ran the aim up, not down). Within CLOSE_PITCH_R no pitch stick at all (the yaw
+# only; point blank and the ray through him fire) - close_pitch_skips; there the laser over CLOSE_SKY up for
+# CLOSE_SKY_S without a shot: the gun down and up again, never the stick (close_sky_reraises). The first ray after a
+# raise over REROLL_ERR above the wanted angle: the gun down and up again, once (raise_rerolls).
+CLOSE_PITCH_R, CLOSE_SKY, CLOSE_SKY_S, REROLL_ERR = 250.0, math.radians(15), 0.3, math.radians(15)
+CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
-                     "confirmed_shots", "long_shot_kills", "through_shots")
+                     "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -965,6 +973,7 @@ class Bot:
         self._dot_prev, self._dot_same, self._rot_prev = None, 0, None   # the frozen-dot watch
         self._wall_since, self._away_since, self._behind_on, self._fault_t = None, None, False, None
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
+        self._first_check, self._raise_is_reroll, self._reroll_next, self._close_sky_since = False, False, False, None
         self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
         self._kills_prev = None
         self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
@@ -1913,6 +1922,7 @@ class Bot:
             self.turning = False
             self.aim_since = self._raise_t = now
             self._lower_pitch, self._first_ray = self._ray_pitch, True
+            self._first_check, self._raise_is_reroll, self._reroll_next = True, self._reroll_next, False
             self.stats["raises"] += 1
             self.ray_seen = self.last_ray = None
         lz = snap.get("laser")
@@ -1987,6 +1997,17 @@ class Bot:
         chest = (foot[0], foot[1] + aim_h, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         ray_len = math.dist(origin, dot)
+        have_p = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
+        want_p = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
+        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM:
+            self._first_check = False
+            if not self._raise_is_reroll and have_p > want_p + REROLL_ERR:
+                self._reroll_next = True                 # the raise came up high: down and up again, once
+                self.stats["raise_rerolls"] += 1
+                self.doing, self.why = "reraise", (f"the first ray {math.degrees(have_p):+.0f} deg, wanted "
+                                                   f"{math.degrees(want_p):+.0f} deg: raised again")
+                self._gun_down()
+                return {"hold": ()}
         point_blank = ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
         far_off = abs(yaw_err) > UNAIM_ERR and not point_blank
         self.unaim_since = (self.unaim_since or now) if far_off else None
@@ -2046,6 +2067,19 @@ class Bot:
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
             self.stats["confirmed_shots"] += 1
+        if dist < CLOSE_PITCH_R and not on and have_p > CLOSE_SKY:
+            self._close_sky_since = self._close_sky_since or now
+            if now - self._close_sky_since >= CLOSE_SKY_S:     # up close and pointing up: down and up again
+                self.stats["close_sky_reraises"] += 1
+                self.doing, self.why = "reraise", (f"the laser {math.degrees(have_p):+.0f} deg up with him "
+                                                   f"{dist / 100:.1f} m away: raised again")
+                self._example("sky", p, now, f"close: the laser {math.degrees(have_p):+.0f} deg, wanted "
+                                             f"{math.degrees(want_p):+.0f} deg at {dist / 100:.1f} m")
+                self._close_sky_since = None
+                self._gun_down()
+                return {"hold": ()}
+        else:
+            self._close_sky_since = None
         fix = self._aim_away(p, live, flat, origin, dot, confirmed, now)
         if fix is not None:
             return fix
@@ -2109,6 +2143,9 @@ class Bot:
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
+        if dist < CLOSE_PITCH_R and keys & {"rup", "rdown"}:
+            keys -= {"rup", "rdown"}                     # up close: the yaw only
+            self.stats["close_pitch_skips"] += 1
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "

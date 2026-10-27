@@ -104,7 +104,8 @@ def test_the_combo_push_takes_the_threat_pick_when_one_is_near(monkeypatch):
     assert b.target == 10 and b.stats["combo_pushes"] == 1
 
 
-def test_an_aim_pitched_up_is_counted_with_its_cause():
+def test_an_aim_pitched_up_is_counted_with_its_cause(monkeypatch):
+    monkeypatch.setattr(R, "REROLL_ERR", math.pi)                # (the first ray's re-raise is tested on its own)
     b, clock = bot()
     roof = at(500, 0, y=280.0)                                     # 2.8 m up, nobody near: he aims up at it
     b.tick(snap([roof], motion=22))
@@ -122,6 +123,7 @@ def test_an_aim_pitched_up_is_counted_with_its_cause():
 
 
 def test_the_sky_guard_pushes_the_aim_down_and_never_up_at_a_ground_majini(monkeypatch):
+    monkeypatch.setattr(R, "REROLL_ERR", math.pi)
     monkeypatch.setattr(R, "SKY_GUARD", True)
     monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
@@ -201,8 +203,9 @@ def test_the_pitch_coasts_when_its_rate_closes_the_error_and_a_reversal_is_count
 
 
 
-def test_the_guard_and_the_settle_are_off_as_at_14_58_and_the_sky_still_counts():
+def test_the_guard_and_the_settle_are_off_as_at_14_58_and_the_sky_still_counts(monkeypatch):
     assert R.SKY_GUARD is False and R.PITCH_SETTLE is False and R.THREAT_FIRST
+    monkeypatch.setattr(R, "REROLL_ERR", math.pi)
     b, clock = bot()
     ground = at(500, 0)
     b.tick(snap([ground], motion=22))
@@ -211,3 +214,33 @@ def test_the_guard_and_the_settle_are_off_as_at_14_58_and_the_sky_still_counts()
     assert b.stats["sky_ticks"] == 1 and b.stats["sky_guard_ticks"] == 0 and "rdown" in act["hold"]
     clock[0] = 0.9
     assert b.tick(snap([ground], motion=26))["hold"] == ("zl",)    # no blind push
+
+
+
+def test_up_close_no_pitch_stick_and_pointing_up_he_raises_again():
+    b, clock = bot()
+    close = at(200, 0)
+    b.tick(snap([close], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([close], dot=(150.0, -100.0, 400.0), motion=26))  # off to the side and low: yaw only
+    assert not set(act["hold"]) & {"rup", "rdown"} and set(act["hold"]) & {"rleft", "rright"}
+    assert b.stats["close_pitch_skips"] >= 1
+    up = (40.0, 140.0 + 300.0, 600.0)                              # the laser 27 deg up, him 2 m away
+    for t in (0.35, 0.5, 0.7):
+        clock[0] = t
+        act = b.tick(snap([close], dot=up, motion=26))
+    assert b.stats["close_sky_reraises"] == 1 and act["hold"] == () and b.doing == "reraise"
+
+
+def test_a_raise_coming_up_high_is_raised_again_once():
+    b, clock = bot()
+    foe = at(600, 0)
+    high = (0.0, 140.0 + 400.0, 700.0)                             # 30 deg up, him level
+    b.tick(snap([foe], motion=22))
+    clock[0] = 0.3
+    assert b.tick(snap([foe], dot=high, motion=26))["hold"] == () and b.stats["raise_rerolls"] == 1
+    clock[0] = 0.4
+    b.tick(snap([foe], motion=22))                                 # up again
+    clock[0] = 0.7
+    act = b.tick(snap([foe], dot=high, motion=26))                 # high again: no second re-raise, the stick
+    assert b.stats["raise_rerolls"] == 1 and "rdown" in act["hold"]
