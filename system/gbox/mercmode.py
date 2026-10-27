@@ -32,6 +32,9 @@ WARM = 'mercmode_warm'          # host -> {title: {session_id, game_id, job, wor
                                 # prelaunch: booting / paused at its boot menu; parked: paused where its last round left
                                 # it (a results screen); ready: paused on the first frame of its next round (prepared)
 NEXT = 'mercmode_next'          # host -> the pick made ahead of the round's end (prelaunch), honoured at the switch
+PICKS = 'mercmode_picks'        # host -> {title: its pick number}: the least recently picked title
+                                # plays next (2026-10-27: a random pick left RE6 Switch waiting while re4 and re5
+                                # alternated, "where is RE6?")
 PRELAUNCH_S = 3600.0            # (status text) the next title starts loading in the background as soon as the playing one
                                 # is up - it loads and prepares its round while this one plays (operator 2026-10-24:
                                 # "precaching of the next rom during the playing of the current rom"; 2026-10-26: after a
@@ -668,8 +671,14 @@ def choose(store, worker, rng, cfg=None):
         return queued | {'selection': resolve_selection(head, rng)}
     pool = [r for r in rows if r['playable'] and r['title'] in cfg['titles']]
     history = store.get(HISTORY, worker['name']) or {}
-    fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')]
-    return rng.choice(fresh or pool) if pool else None
+    fresh = [r for r in pool if r['game_id'] != history.get('last_game_id')] or pool
+    if not fresh:
+        return None
+    picks = store.get(PICKS, worker['name']) or {}            # the rotation: the title picked longest ago (never = first)
+    oldest = min(picks.get(r['title'], 0) for r in fresh)
+    row = rng.choice([r for r in fresh if picks.get(r['title'], 0) == oldest])
+    store.put(PICKS, worker['name'], picks | {row['title']: max(picks.values(), default=0) + 1})   # a pick counter
+    return row
 
 
 def successor_autoplay(run, job, original):
