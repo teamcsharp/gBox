@@ -470,7 +470,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     menus = importlib.import_module(prof["menus"])
     begin_run = getattr(menus, "begin_run", None)
     if callable(begin_run):                       # the turn (session, job) or the walk between two (prepare)
-        begin_run(session_id=session_id, job=source_job_id, prepare=prepare)
+        merc = ((game or {}).get("launch") or {}).get("mercmode")
+        begin_run(session_id=session_id, job=source_job_id, prepare=prepare, turn=isinstance(merc, dict) and bool(merc))
     m = m or _memory(ad)
     # Keep reads fast while title-specific, verified maintenance writes use the owning adapter.
     if ad is not None:

@@ -215,7 +215,9 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
       character for `SAME_ROUNDS` (3) rounds - Continue Yes after a death, cross / cross after the results - then
       one change at a time, the character then the stage, each balanced by the coverage curriculum
       (`Coverage.choose(mode, keep)`). The mode never changes inside a turn, only in MercMode's preparation between
-      turns. A DJ pick is taken at the next round in the turn's mode, at the next turn otherwise.
+      turns. A DJ pick is taken at the next round in the turn's mode, at the next turn otherwise. A run that is no
+      MercMode turn (a plain Autoplay, a bot demo) takes the same fast path; its curriculum still moves to the other
+      mode in its blocks.
     * Presses wait for the screen's own input state and then go at once (`input_ready`: the selects' state 2, the
       results' outer 10, the Continue dialog's state 2; `NAV_CURSOR["ready_s"]`).
     * Every round's stats and round map carry `round_gap_s` (the last round's end to this round's first frame),

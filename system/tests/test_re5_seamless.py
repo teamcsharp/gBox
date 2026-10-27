@@ -61,7 +61,7 @@ def play(pace, plan, end="results"):
 
 # --- the plan ------------------------------------------------------------------------------------------------------------
 def test_the_same_round_comes_back_then_one_thing_changes_at_a_time(pace):
-    pace.begin_run("s1", "job1")
+    pace.begin_run("s1", "job1", turn=True)
     assert pace.round_started(snap_of("reunion", "Barry", 3), count=False) == "start"     # the turn's prepared round
     assert pace.mode == "reunion" and pace.streak == 1
     for n in (2, 3):
@@ -83,7 +83,7 @@ def test_the_same_round_comes_back_then_one_thing_changes_at_a_time(pace):
 
 
 def test_continue_yes_replays_the_round_inside_the_streak_and_no_comes_at_a_change(pace):
-    pace.begin_run("s1", "job1")
+    pace.begin_run("s1", "job1", turn=True)
     pace.round_started(snap_of("reunion", "Josh", 5), count=False)
     between(pace, "dead")
     assert pace.continue_answer() == "yes"
@@ -102,7 +102,7 @@ def test_continue_yes_replays_the_round_inside_the_streak_and_no_comes_at_a_chan
 
 def test_a_retry_round_counts_in_the_coverage_and_the_roster(pace, monkeypatch):
     monkeypatch.setattr(R, "ROSTER", R.Roster())
-    pace.begin_run("s1", "job1")
+    pace.begin_run("s1", "job1", turn=True)
     pace.round_started(snap_of("reunion", "Sheva (Business)", 2), count=False)
     between(pace, "dead", answer="yes")
     assert pace.round_started(snap_of("reunion", "Sheva (Business)", 2)) == "dead/retry"
@@ -114,26 +114,26 @@ def test_the_mode_never_changes_inside_a_turn_only_between_turns(pace):
     for who in R.CHARACTERS:                                            # Reunion played more: the balance wants the
         for stage in range(8):                                          # original Mercenaries next
             pace.cov.counts[f"reunion/{who}/{stage}"] = 2
-    pace.begin_run("s1", "job1")
+    pace.begin_run("s1", "job1", turn=True)
     pace.round_started(snap_of("reunion", "Excella", 4), count=False)
     for _ in range(4):
         plan = pace.plan()
         assert plan["mode"] == "reunion"                                # same, then a Reunion character: no title walk
         play(pace, plan)
-    pace.begin_run("s1", "job1")                                        # a bot hot reload restarts the run: same turn
+    pace.begin_run("s1", "job1", turn=True)                                        # a bot hot reload restarts the run: same turn
     assert pace.mode == "reunion" and pace.plan()["mode"] == "reunion"
-    pace.begin_run("s1", None, prepare=True)                            # MercMode's preparation between two turns
+    pace.begin_run("s1", None, prepare=True, turn=True)                            # MercMode's preparation between two turns
     plan = pace.plan()
     assert plan["why"] == "turn" and plan["mode"] == "mercenaries"      # the curriculum's balance may change it here
     pace.observe_mode("reunion")                                        # (a preparation never locks a mode)
     assert pace.mode is None
-    pace.begin_run("s1", "job2")                                        # the next turn takes the mode RAM shows
+    pace.begin_run("s1", "job2", turn=True)                                        # the next turn takes the mode RAM shows
     pace.observe_mode("mercenaries")
     assert pace.mode == "mercenaries"
 
 
 def test_the_djs_pick_comes_next_in_the_turns_mode_and_waits_for_the_next_turn_otherwise(pace):
-    pace.begin_run("s1", "job1")
+    pace.begin_run("s1", "job1", turn=True)
     pace.round_started(snap_of("reunion", "Barry", 0), count=False)
     pace.cov.request("reunion", "Rebecca", 6)
     plan = pace.plan()
@@ -145,8 +145,24 @@ def test_the_djs_pick_comes_next_in_the_turns_mode_and_waits_for_the_next_turn_o
     plan = pace.plan()
     assert plan["mode"] == "reunion" and plan["why"] == "same"
     assert pace.status()["dj_waits_for_next_turn"] == "dj: mercenaries / Wesker (Midnight) / Village"
-    pace.begin_run("s1", None, prepare=True)                            # between turns: taken
+    pace.begin_run("s1", None, prepare=True, turn=True)                            # between turns: taken
     assert combo(pace.plan()) == ("mercenaries", "Wesker (Midnight)", 2) and pace.plan()["why"] == "dj"
+
+
+def test_a_run_without_turns_keeps_the_fast_path_but_its_curriculum_may_change_mode(pace):
+    for who in R.CHARACTERS:                                            # Reunion played out: the balance wants the
+        for stage in range(8):                                          # original Mercenaries
+            pace.cov.counts[f"reunion/{who}/{stage}"] = 2
+    pace.begin_run("s1", "plain-autoplay")                              # no MercMode block: no turn
+    pace.round_started(snap_of("reunion", "Excella", 4), count=False)
+    for _ in range(2):
+        assert pace.plan()["why"] == "same"
+        play(pace, pace.plan())
+    plan = pace.plan()                                                  # one change: a character on the same stage,
+    assert plan["why"] == "character" and plan["stage"] == 4           # from the mode the balance wants
+    assert plan["mode"] == "mercenaries"
+    pace.cov.request("reunion", "Barry", 1)                             # and a DJ pick in any mode comes next
+    assert combo(pace.plan()) == ("reunion", "Barry", 1)
 
 
 def test_the_path_names_how_each_round_came(pace):
@@ -324,5 +340,8 @@ def test_play_tells_the_menus_its_session_job_and_preparation(monkeypatch):
     monkeypatch.setattr(MB, "engine", lambda: types.SimpleNamespace(play_round=lambda *a, **k: "round"))
     MB.play(None, lambda rows: None, lambda: True, m=object(), session_id="s9", source_job_id="job7")
     MB.play(None, lambda rows: None, lambda: True, m=object(), session_id="s9", prepare=True)
-    assert calls == [{"session_id": "s9", "job": "job7", "prepare": False},
-                     {"session_id": "s9", "job": None, "prepare": True}]
+    MB.play(None, lambda rows: None, lambda: True, m=object(), session_id="s9", source_job_id="job8",
+            game={"launch": {"mercmode": {"random_characters": True, "random_stages": True}}})
+    assert calls == [{"session_id": "s9", "job": "job7", "prepare": False, "turn": False},
+                     {"session_id": "s9", "job": None, "prepare": True, "turn": False},
+                     {"session_id": "s9", "job": "job8", "prepare": False, "turn": True}]   # a MercMode turn

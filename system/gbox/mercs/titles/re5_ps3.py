@@ -897,12 +897,15 @@ class Pace:
     with no save and no selects, and after the results the cursors already rest on it (cross, cross). Then one thing
     changes, the character and the stage in turn, balanced by the coverage curriculum and made on its own select screen.
     The mode never changes inside a turn (that walks out to the main menu and in again, the break the operator hates
-    most): only between turns, in MercMode's unseen round preparation (prepare) or before a run's first round. A DJ pick
-    (coverage request) is taken at the next round when it is in the turn's mode; one in the other mode waits for the
-    next turn. The path each round took is told to round_map.gap_start (round_start_via, e.g. "dead/retry",
-    "results/same", "results/character"). Module state, kept across bot hot reloads (RELOAD_KEEP)."""
+    most): only between turns, in MercMode's unseen round preparation (prepare) or before a turn's first round. A DJ
+    pick (coverage request) is taken at the next round when it is in the turn's mode; one in the other mode waits for
+    the next turn. A run that is no MercMode turn (a plain Autoplay, a bot demo) has the same fast path, and its
+    curriculum still moves to the other mode in its blocks. The path each round took is told to round_map.gap_start
+    (round_start_via, e.g. "dead/retry", "results/same", "results/character"). Module state, kept across bot hot
+    reloads (RELOAD_KEEP)."""
     run = None                          # (session id, autoplay job id) of the run the mode is locked for
     prepare = False                     # MercMode's round preparation: the walk between two turns
+    turn = False                        # a MercMode turn (its launch's mercmode block): the mode is locked for it
     mode = None                         # the turn's mode, once its first round is up (None: free to change)
     last = None                         # (mode, character, stage) of the last round started
     streak = 0                          # rounds started in a row on `last`
@@ -911,41 +914,47 @@ class Pace:
     path = None                         # since the last round ended: {"end", "screens", "moves", "continue"}
     dj_deferred = None                  # a DJ pick in the other mode, waiting for the next turn
 
-    def begin_run(self, session_id=None, job=None, prepare=False) -> None:
+    def begin_run(self, session_id=None, job=None, prepare=False, turn=False) -> None:
         """mercs_bot.play: a run starts. The same session and job again (a bot hot reload restarts the run mid-turn)
         keeps the turn's mode and path; anything else - a new turn, the preparation between two - starts afresh (a turn
-        then takes the mode RAM shows: observe_mode)."""
+        then takes the mode RAM shows: observe_mode). turn: a MercMode turn; any other run (a plain Autoplay, a bot
+        demo) has no turns, so its curriculum still changes mode in its blocks - one change at a time all the same."""
         key = (session_id, job)
         if prepare or job is None or key != self.run:
             self.mode, self.path = None, None
-        self.run, self.prepare, self.held = key, bool(prepare), None
+        self.run, self.prepare, self.turn, self.held = key, bool(prepare), bool(turn), None
 
     def observe_mode(self, mode) -> None:
         """The game's own mode (cGameSys +0x58) seen by a turn: a turn keeps it, whether it began in a prepared round,
-        between two rounds after a bot reload, or at its first round after a boot."""
+        between two rounds after a bot reload, or at its first round after a boot. Recorded for any other run too,
+        where it only seeds the plan (its changes may cross into the other mode when the curriculum says so)."""
         if self.mode is None and not self.prepare and mode in MODE_ROSTERS:
             self.mode, self.held = mode, None
 
     def plan(self) -> dict:
-        """The coming round: {"mode", "character", "stage", "why"} (why: dj / turn / same / character / stage)."""
+        """The coming round: {"mode", "character", "stage", "why"} (why: dj / turn - a free pick between turns or at a
+        run's first walk - / same / character / stage)."""
         cov = coverage()
+        locked = self.mode if self.turn else None
         request = cov.selection_request
         if request and request.get("state") == "queued":
             selection = dict(request["selection"])
-            if self.mode is None or selection.get("mode") == self.mode:
+            if locked is None or selection.get("mode") == locked:
                 self.dj_deferred = None
                 return selection | {"why": "dj"}
             self.dj_deferred = selection            # the other mode: taken at the next turn's preparation
         if self.held is not None:
             return dict(self.held)
-        if self.mode is None:
+        usable = self.last is not None and (locked is None or self.last[0] == locked)
+        if (self.turn and self.mode is None) or (not self.turn and self.last is None):
             plan, why = cov.choose(), "turn"        # between turns: the curriculum's balance (its modes take blocks)
-        elif self.last is not None and self.last[0] == self.mode and self.streak < SAME_ROUNDS:
+        elif usable and self.streak < SAME_ROUNDS:
             plan, why = {"mode": self.last[0], "character": self.last[1], "stage": self.last[2]}, "same"
         else:
-            change = self.next_change if self.last is not None and self.last[0] == self.mode else "character"
-            plan = cov.choose(mode=self.mode, keep="stage" if change == "character" else "character", last=self.last)
-            why = change
+            change = self.next_change if usable else "character"
+            plan = cov.choose(mode=locked, keep="stage" if change == "character" else "character",
+                              last=self.last if usable else None)
+            why = change if usable else "turn"
         self.held = dict(plan, why=why)
         return dict(self.held)
 
@@ -1039,9 +1048,9 @@ PACE = Pace()
 RELOAD_KEEP = ("PACE",)                 # gbox.hot_reload: the turn's mode, streak and path survive a bot reload
 
 
-def begin_run(session_id=None, job=None, prepare=False) -> None:
-    """mercs_bot.play: a run of the menus starts (Pace.begin_run)."""
-    PACE.begin_run(session_id=session_id, job=job, prepare=prepare)
+def begin_run(session_id=None, job=None, prepare=False, turn=False) -> None:
+    """mercs_bot.play: a run of the menus starts (Pace.begin_run; turn: a MercMode turn)."""
+    PACE.begin_run(session_id=session_id, job=job, prepare=prepare, turn=turn)
 
 
 def pressed(scr: dict, key: str) -> None:
