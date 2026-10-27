@@ -237,6 +237,7 @@ P_STATE, P_MOTION = 0x6E2, 0x598        # u8 the action's kind, u16 its motion (
 HELD_STATES = frozenset({8, 9, 25})
 P_TABLETS = 0x5196                      # s16: the health tablets (8 at the round start; R takes one, live 2026-10-27)
 P_WEAPON_ID = 0x507A                    # u8: slot 0's item id, the gun in hand at the start (Leon 0x03, Chris 0x0F)
+BOMB_INDEX, BOMB_TYPE, SLOT_MODE = 12, 0x116, 0xC          # the item wheel's remote bomb slot; its mode byte (1 = out)
 P_EQUIPPED, P_SLOTS, SLOT_STRIDE, N_SLOTS = 0x5064, 0x5070, 0x28, 24   # the equipped slot's index (the HUD's: uIdLife's
                                         # update reads it and finds the slot whose +0x9 holds it, main+0xB22BB0); the 24
                                         # cItem slots: +0x8 in use, +0x9 the slot's index, +0xA u16 the type (0x100 + the
@@ -363,18 +364,34 @@ def ui_units(m, base: int | None = None) -> dict:
     return out
 
 
-def equipped_id(m, p: int) -> int:
-    """The item id of the gun in hand: the equipped slot's (+0x5064 names the slot by its +0x9 index); slot 0's at the
-    round start when no live slot holds that index."""
+def inventory_state(m, p: int) -> tuple[int | None, int, dict | None]:
+    """(the equipped slot's index, the item id in hand, the remote bomb): +0x5064 names the equipped slot by its +0x9
+    index (slot 0's id when no live slot holds it); the bomb is the item wheel's remote bomb slot (index BOMB_INDEX,
+    type 0x116) - {"count", "out"}: out while its +0xC mode is 1 (a bomb thrown, the remote in his hand)."""
     try:
         idx = struct.unpack("<i", m.rd(p + P_EQUIPPED, 4))[0]
         raw = m.rd(p + P_SLOTS, SLOT_STRIDE * N_SLOTS)
-        for o in range(0, SLOT_STRIDE * N_SLOTS, SLOT_STRIDE):
-            if raw[o + 8] and raw[o + 9] == idx:
-                return raw[o + 0xA]
-        return m.rd(p + P_WEAPON_ID, 1)[0]
     except (ValueError, OSError, struct.error):
-        return 0
+        return None, 0, None
+    item, bomb = None, None
+    for o in range(0, SLOT_STRIDE * N_SLOTS, SLOT_STRIDE):
+        if not raw[o + 8]:
+            continue
+        if raw[o + 9] == idx and item is None:
+            item = raw[o + 0xA]
+        if raw[o + 9] == BOMB_INDEX and struct.unpack_from("<H", raw, o + 0xA)[0] == BOMB_TYPE:
+            bomb = {"count": struct.unpack_from("<h", raw, o + 0xE)[0], "out": raw[o + SLOT_MODE] == 1}
+    if item is None:
+        try:
+            item = m.rd(p + P_WEAPON_ID, 1)[0]
+        except (ValueError, OSError):
+            item = 0
+    return idx, item, bomb
+
+
+def equipped_id(m, p: int) -> int:
+    """The item id of the gun in hand (inventory_state)."""
+    return inventory_state(m, p)[1]
 
 
 def game_man(m, base: int) -> int:
@@ -401,9 +418,10 @@ def snapshot(m) -> dict:
             state = m.rd(p + P_STATE, 1)[0]
             motion = struct.unpack("<H", m.rd(p + P_MOTION, 2))[0]
             tablets = struct.unpack("<h", m.rd(p + P_TABLETS, 2))[0]
-            weapon_id = equipped_id(m, p)
+            equipped, weapon_id, bomb = inventory_state(m, p)
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
-                              "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id}
+                              "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
+                              "equipped": equipped, "bomb": bomb}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
                 snap["continue_cursor"] = continue_prompt(m, over)["cursor"] if over else None
@@ -840,6 +858,23 @@ AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, no
                                         # own loop fires again while the trigger stays down (Ghidra: main+0x1098470, the
                                         # weapon class 0x20 / 0x40 of main+0xF42980 or the types 0x10D / 0x128; Chris's
                                         # assault rifle 0x0F: held 2.5 s, 24 rounds); any other gun fires once a press
+# Remote bombs (operator 2026-10-27: "they should put remote mines down and detonate them as they make a stand going
+# from section to section"), the flow measured live 2026-10-27 (Chris, Liquid Fire): the D-pad's down steps the item
+# wheel (+0x5064 then names slot 12, the remote bomb; a press or two), ZL + ZR throws one about 3 m ahead along the aim
+# and that slot's mode turns 1 (the remote stays in his hand), ZL + ZR again sets it off (mode 0) and the game puts the
+# gun back in his hand by itself; one blast took 11 J'avo (000 -> 011 kills, an 11 combo, in 3 s). With the loadouts'
+# bombs (re6_switch_mods.merc_loadout) and infinite_grenades every character carries five that never run out.
+BOMBS = True
+BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 3, 1000.0, 250.0   # a stand: this many within this, the nearest beyond ROOM
+BOMB_SECTION_CM = 1500.0                # a new section: this far from where the last bomb went, a zombie within reach
+BOMB_GAP_S = 12.0                       # a bomb at most this often
+BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
+BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
+BOMB_SELF_R = 250.0                     # ... and him at least this far from it
+BOMB_HOLD_S = 8.0                       # a bomb out this long goes off anyway (the remote keeps his gun down)
+BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
+BOMB_FACE, BOMB_FACE_S = math.radians(25), 1.5        # the throw waits (this long at most) for the crowd in the aim
+BOMB_TAKE_S, BOMB_KILLS_S = 2.0, 3.0    # a throw / a blast shows in its slot within this; its kills counted this long
 REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long at most before it counts as lost
 HANG_S = 6.0
 # "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the
@@ -854,7 +889,7 @@ HANG_S = 6.0
 #   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
-          "walk", "no_foes", "dead")
+          "walk", "no_foes", "dead", "bomb")
 AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("held", "tablet", "reload")
 
@@ -879,7 +914,8 @@ class Bot:
         self.clock = clock
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
                   "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
-                  "pulls_hit", "pulls_miss", "first_pull_n"):
+                  "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
+                  "bomb_misses"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s"):
             self.stats.setdefault(k, 0.0)
@@ -917,6 +953,11 @@ class Bot:
         self._dropped: set = set()                # the zombies whose health fell this tick
         self._raise_t = None                      # when the gun went up for the pull to come (first_pull_s)
         self._aimctx: dict = {}
+        # remote bombs: the step under way (equip / face / aim / throw / thrown / wait / det_aim / det / det_wait)
+        self.bomb_phase, self.bomb_phase_at, self.bomb_steps = None, -1e9, 0
+        self.bomb_at = self.bomb_from = None                 # where it went (x, z), his spot then
+        self.bomb_since, self.bomb_last, self.bomb_why = None, -1e9, ""
+        self.bomb_kills = None                               # (the kill count at a blast, when)
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -1156,6 +1197,9 @@ class Bot:
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
+        bombed = self._bomb(p, live, flat, yaw, snap, now)
+        if bombed is not None:
+            return bombed
         if self.aim_since is None:
             near_err = bearing(near_e)
             if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
@@ -1263,6 +1307,108 @@ class Bot:
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
 
+    # --- remote bombs ----------------------------------------------------------------------------------------------
+    def _bomb(self, p, live, flat, yaw, snap, now) -> dict | None:
+        """Remote bombs (BOMBS): at a stand (BOMB_STAND_N within BOMB_STAND_R) or in a new section (BOMB_SECTION_CM from
+        the last bomb), one goes out toward them; it goes off once BOMB_BLAST_N stand on it with him clear of it, or
+        after BOMB_HOLD_S. None: nothing to do with bombs this tick (the fight goes on)."""
+        bomb = p.get("bomb")
+        if not BOMBS or not isinstance(bomb, dict):
+            self.bomb_phase = None
+            return None
+        px, _, pz = p["pos"]
+        eq = p.get("equipped")
+        if self.bomb_kills is not None and now - self.bomb_kills[1] >= BOMB_KILLS_S:
+            k = snap.get("kills")
+            if isinstance(k, int) and isinstance(self.bomb_kills[0], int):
+                self.stats["bomb_kills"] += max(0, k - self.bomb_kills[0])
+            self.bomb_kills = None
+        if bomb.get("out"):
+            if self.bomb_at is None:                         # out but untracked (a bot reload): it went ahead of him
+                self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
+                self.bomb_since, self.bomb_from = now, (px, pz)
+            if self.bomb_phase in ("thrown", "throw"):
+                self.bomb_phase = "wait"
+                self.stats["bombs_placed"] += 1
+            if self.bomb_phase in ("det_aim", "det", "det_wait"):
+                return self._bomb_press(eq, now, detonate=True)
+            bx, bz = self.bomb_at
+            on = sum(1 for e in live if math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_BLAST_R)
+            me = math.hypot(px - bx, pz - bz)
+            if me >= BOMB_SELF_R and (on >= BOMB_BLAST_N or now - (self.bomb_since or now) >= BOMB_HOLD_S):
+                self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
+                self.bomb_kills = (snap.get("kills"), now)
+                return self._bomb_press(eq, now, detonate=True)
+            self.bomb_phase = "wait"
+            self._gun_down()
+            keys = ("ldown",) if me < BOMB_SELF_R + 150.0 else ()   # back off it while they come
+            return self._go("bomb", "bomb_wait", {"hold": keys}, f"a bomb out: {on} on it, {me:.0f} cm from him")
+        if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
+            self.stats["bombs_detonated"] += 1
+            self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
+            return None
+        if self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
+            if self.bomb_phase == "thrown" and now - self.bomb_phase_at > BOMB_TAKE_S:   # the throw never showed
+                self.stats["bomb_misses"] += 1
+                self.bomb_phase, self.bomb_last = None, now
+                return None
+            return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+        if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
+            return None
+        near = min(flat(e) for e in live)
+        if near < BOMB_ROOM_R:
+            return None
+        stand = sum(1 for e in live if flat(e) <= BOMB_STAND_R) >= BOMB_STAND_N
+        section = near <= BOMB_STAND_R and (self.bomb_from is None or
+                                            math.hypot(px - self.bomb_from[0], pz - self.bomb_from[1]) >= BOMB_SECTION_CM)
+        if not (stand or section):
+            return None
+        self.bomb_why = "a stand" if stand else "a new section"
+        self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
+        return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+
+    def _bomb_press(self, eq, now, detonate: bool = False, live=None, p=None, yaw=0.0) -> dict | None:
+        """One step of a bomb's keys: the wheel stepped (D-pad down) until the remote bomb is in hand, the crowd brought
+        into the aim (placing), ZL held BOMB_AIM_S, then ZR with it: a throw, or with the bomb out, its blast."""
+        self._gun_down()
+        tag = "bomb_det" if detonate else "bomb_place"
+        if self.bomb_phase in ("equip", "det_aim") and eq != BOMB_INDEX:   # the remote bomb to hand first
+            if self.bomb_steps >= BOMB_STEPS:
+                self.stats["bomb_misses"] += 1
+                self.bomb_phase, self.bomb_last = None, now
+                return None
+            if now - self.bomb_phase_at >= BOMB_STEP_S:
+                self.bomb_steps += 1
+                self.bomb_phase_at = now
+                return self._go("bomb", tag, {"tap": "ddown"}, "the item wheel to the remote bomb")
+            return self._go("bomb", tag, {"hold": ()}, "the item wheel steps")
+        if self.bomb_phase == "equip":
+            self.bomb_phase, self.bomb_phase_at = "face", now
+        if self.bomb_phase == "face":
+            px, _, pz = p["pos"]
+            group = [e for e in live if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= BOMB_STAND_R] or live
+            cx = sum(e["pos"][0] for e in group) / len(group)
+            cz = sum(e["pos"][2] for e in group) / len(group)
+            err = wrap(heading(cx - px, cz - pz) - yaw)
+            if abs(err) > BOMB_FACE and now - self.bomb_phase_at < BOMB_FACE_S:
+                return self._go("bomb", tag, {"hold": self._turn(err)}, f"facing them for the bomb ({self.bomb_why})")
+            self.bomb_phase, self.bomb_phase_at = "aim", now
+            self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
+            self.bomb_from = (px, pz)
+        if self.bomb_phase in ("aim", "det_aim"):
+            if now - self.bomb_phase_at < BOMB_AIM_S:
+                return self._go("bomb", tag, {"hold": ("zl",)}, "the remote readied" if detonate else "the bomb readied")
+            self.bomb_phase, self.bomb_phase_at = ("det" if detonate else "throw"), now
+            return self._go("bomb", tag, {"hold": ("zl", "zr")}, "the bomb set off" if detonate else "the bomb thrown")
+        if self.bomb_phase in ("throw", "det"):
+            self.bomb_phase, self.bomb_phase_at = ("det_wait" if detonate else "thrown"), now
+            if not detonate:
+                self.bomb_since = now
+            return self._go("bomb", tag, {"hold": ()}, "the triggers let go")
+        if self.bomb_phase == "det_wait" and now - self.bomb_phase_at > BOMB_TAKE_S:   # no blast yet: once more
+            self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
+        return self._go("bomb", tag, {"hold": ()}, "waiting on the bomb")
+
     # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
     def _front_foe(self, p, snap) -> bool:
         """A living zombie in front of him within reach (inside FRONT_CONE of his facing)."""
@@ -1351,7 +1497,8 @@ class RE6Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "quick_shots", "melee", "holds", "reloads", "deaths", "tablets",
-                      "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale",
+                      "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
