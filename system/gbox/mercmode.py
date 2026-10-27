@@ -114,9 +114,10 @@ def normalize(patch, current=None):
 def catalog():
     """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages."""
     from . import re4_menus
-    from .mercs.titles import re5_ps3
+    from .mercs.titles import re5_ps3, re6_switch
     return {'re4': {'modes': {'mercenaries': list(re4_menus.PLAYERS)}, 'stages': list(re4_menus.STAGES)},
-            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)}}
+            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)},
+            're6': {'modes': {'no_mercy': list(re6_switch.CHARACTERS)}, 'stages': list(re6_switch.STAGES)}}
 
 
 def queue_entry(entry):
