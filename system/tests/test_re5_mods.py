@@ -199,7 +199,7 @@ def test_the_re5_profile_keeps_normal_health_and_ten_seconds_per_kill():
     from pathlib import Path
     prof = json.loads(Path(__file__).resolve().parents[1].joinpath("profiles/gamedata/BLUS30491-ram.json").read_text())["mercs"]
     assert [op for op, _ in prof["package"]] == ["turn_speed", "fire_rate", "infinite_ammo", "unlimited_health", "infinite_spray"] and prof["round_ops"] == [["random_cheats", {}]]
-    assert dict(prof["package"])["fire_rate"] == {"multiplier": 80} and dict(prof["package"])["turn_speed"] == {"multiplier": 1}   # regular speed (operator 2026-10-22)
+    assert dict(prof["package"])["fire_rate"] == {"multiplier": 40} and dict(prof["package"])["turn_speed"] == {"multiplier": 1}   # 40x fire (operator 2026-10-26), regular speed (2026-10-22)
     # Operator 2026-10-23: danger must cause real damage, with no HP refill or incoming-hit immunity.
     assert dict(prof["package"])["unlimited_health"] == {"on": False}
     assert dict(prof['playing_ops'])['unlimited_health'] == {'on': False}

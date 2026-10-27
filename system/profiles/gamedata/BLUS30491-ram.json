@@ -20,7 +20,7 @@
     "menus": "gbox.mercs.titles.re5_ps3",
     "ready": true,
     "jump_at": "select_player",
-    "package": [["turn_speed", {"multiplier": 1}], ["fire_rate", {"multiplier": 80}], ["infinite_ammo", {"on": true}], ["unlimited_health", {"on": false}], ["infinite_spray", {"on": true}]],
+    "package": [["turn_speed", {"multiplier": 1}], ["fire_rate", {"multiplier": 40}], ["infinite_ammo", {"on": true}], ["unlimited_health", {"on": false}], ["infinite_spray", {"on": true}]],
     "playing_ops": [["unlimited_health", {"on": false}], ["infinite_spray", {"on": true}], ["kill_time", {"on": true, "seconds": 10}], ["replace_rockets", {}]],
     "round_ops": [["random_cheats", {}]],
     "vocab": {
