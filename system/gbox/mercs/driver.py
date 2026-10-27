@@ -13,6 +13,12 @@ IN_ROUND = (PLAYING, DEAD, "paused")
 
 class Driver:
     map_id = ""
+    # True for a driver with no teamplay (one pad, no SessionRuntime): every round is the bot alone on P1, scored for
+    # P1 alone, and the engine records team_role "solo_p1" and scoring_scope "solo" for it (round_reports, MercMode).
+    solo_p1 = False
+    # Stats the driver's brain counts across a whole turn (they keep growing from round to round): the engine also
+    # records each one's amount for the round as "round_<key>" in the round's Notebook row.
+    round_counters: tuple = ()
 
     def snapshot(self, m) -> dict:
         """The round as the brain reads it (the title's own snapshot)."""
