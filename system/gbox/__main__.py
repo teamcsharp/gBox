@@ -100,7 +100,9 @@ def main():
         raise_open_files()
     if a.cmd == "serve":
         import uvicorn
+        from . import gc_policy
         from .server import create_app
+        gc_policy.apply()                                # fewer, shorter full collections (gbox/gc_policy.py)
         app = create_app(cfg)
         if a.worker:
             from . import worker
