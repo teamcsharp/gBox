@@ -252,8 +252,8 @@ Measured in short private Citron sessions on the Spark (one at a time, no other 
   hold's prompt shows **B** (a live frame); one broke after 2.3 s of the left stick turned round with A mashed (state 8
   -> 1), so the bot now mashes B with the stick going round.
 - **Dying.** Health 1 held for 8.5 s before 0 (the dying crawl); then the death animation and CONTINUE?.
-- **The inventory.** 12 cItem slots of 0x28 bytes from player +0x5070 (vtable main+0x2875848): +0x8 1 = in use, +0x9
-  the slot's index, +0xA the item id, +0xE s16 the rounds in the magazine (P_AMMO +0x507E is slot 0's, the gun in hand
+- **The inventory.** 24 cItem slots of 0x28 bytes from player +0x5070 (vtable main+0x2875848; the Ghidra map below
+  has all of them): +0x8 1 = in use, +0x9 the slot's index, +0xA the item id, +0xE s16 the rounds in the magazine (P_AMMO +0x507E is slot 0's, the gun in hand
   at the start), +0x14 the capacity (the Wing Shooter 18), +0x16 the carry limit. Slots 0-6 hold the weapons and 7-11
   the items. Slot 7's rounds (+0x5196, s16) are the health tablets (Leon 8 at the start; R took one). Chris: slot 0 his
   assault rifle (id 0x0F, 30 / 30), slot 1 id 0x07 (7 / 7), slot 2 id 0x19 (no magazine), slot 7 the tablets (id
@@ -290,8 +290,39 @@ What the driver does with it:
   driver look again.
 - **Mods** (gbox.mercs.titles.re6_switch_mods, the profile's playing_ops). infinite_ammo keeps every gun's magazine
   (the weapon slots 0-6) at its capacity, topped up from the snapshot; the items (the tablets, slots 7-11) are left
-  alone. fire_rate is honest: no game-side multiplier exists yet. With infinite
-  ammo, every bot press is a shot and none waits on a reload.
+  alone. With infinite ammo, every bot press is a shot and none waits on a reload. The game-side fire rate, the
+  stamina, the loadouts and the selects' state were found later in Ghidra (next section).
+
+## The Ghidra map for live mods (2026-10-27, main 061D2A06CD700785E987C42CE2D72231)
+
+Ghidra 12.1.4 headless on the Spark (the main ELF imported without analysis, functions decompiled where needed; a
+Ghidra address is main + 0x100000) and a full linear disassembly (capstone). Every mod below is a data write into the
+running game with a read-back; none patches code.
+
+| what | where | how the game uses it | the op |
+|---|---|---|---|
+| seconds between shots | weapon table main+0x2962170: 48 records of 0x1A0 (the lookup main+0x10ECE20: the weapon type's low byte, alternate-mode records 0x29-0x2F); +0x1C f32 | main+0xB26F90 returns it (`ldr s8, [x0, #0x1c]` at main+0xB2701C, the only reader of +0x1C) and the fire action stores it in player +0x5AEC each shot (main+0x109A8C8); the player update counts +0x5AEC down by the frame time (main+0xBD3A90); the fire action's automatic loop (main+0x10982D0, weapon classes 0x20 / 0x40 of main+0xF42980 and the types 0x10D / 0x128) fires again once it is <= 0 with the trigger held (main+0x1098508..+0x1098528); a semi-automatic takes its next press once it is below the record's +0x20 (player +0x5590) | fire_rate multiplier=N: the build's value / N for every gun, never below 0.004 s; the grenades, the remote bomb, the knife and the melee weapons keep theirs |
+| the combat gauge | player +0x42A0 f32, its maximum +0x42A4, the refill delay +0x42A8 | uIdLife's update (main+0x9FEA90) asks the player's vfunc 0x3F8 (main+0xBD9CD0) for the segments: int((gauge - 300) / 100); vfunc 0x400 gives the maximum's; the player's init (main+0xB18BF4) sets both from the character's level; every spend and refill goes through vfunc 0x3E0 (main+0xB209D0) | infinite_stamina: the gauge kept at its maximum |
+| the starting loadouts | main+0x2890088: 16 entries of 0x74 (pointer array main+0x2890008); modes 4-7 read the arrays at +0x7C8, +0x1008, +0x17C8, +0x1F88 | the round set-up main+0x38C740 copies the entry of the costume's loadout index (the costume code table main+0x222B352, 5 bytes a code: character, variant, select id, costume, loadout index; costume 0 has its own entry, 1-3 share the second) into the game's per-player buffer. An entry: u16 id, 900 / 900, 0, 0xFF, 0, 0, 0; 7 (type, rounds) weapon pairs at +0x10; 8 item-wheel pairs at +0x2C; 9 start-list pairs at +0x4C (empty: 0, 0xFFFF). Types: 0x100 + the item id for weapons and items, 0x2xx ammo boxes | merc_loadout (round_ops, at every character select): the rocket launcher (0x117, Ada's first costume) swapped for a random magnum or shotgun, the remote bomb 0x116 and the hand / incendiary / flash grenades 0x113-0x115 at 5 each where the start list has room |
+| the inventory | 24 cItem slots of 0x28 at player +0x5070; the getter main+0xB22BB0 finds a slot by its +0x9 index | indexes 0-6 the weapons, 7-14 the item wheel (the tablets 7, the spray 8, the grenades 9-11, the remote bomb 12), 15-23 the start list's items (grenade stacks, ammo boxes); +0xA u16 the type; +0xE s16 the count. The ammo consumer main+0xB25DC0 takes a throw from the smallest stack, frees a stack (and its object) at 0 and writes each wheel count back as its stacks' total. player +0x5064 is the equipped slot's index (the HUD's) | infinite_grenades: every grenade / remote bomb stack kept at 5, the wheel's count at the total |
+| the stage select | uIdStartUp31: +0x50 the cursor, +0x54 = 10 stages listed, +0x58 the stages that can start | its update main+0xAAFB20 moves the cursor with up / down over all ten; A starts only a stage whose bit is set | the menus draw a random unlocked stage each visit |
+| the character select | uIdStartUp32: +0x1CC the cursor, +0x1D0 / +0x1D4 the select ids listed; + 4 * id: +0x1F8 the costume shown, +0x21C the costumes listed; + 0x10 * id: +0x240 their costume indexes | its update main+0xAAD830: up / down the character, left / right the costume; the confirm writes the costume code to sGameMan +0x3CA4 (sGameMan +0x3C78 is the stage index, +0xCC the set-up's mode) | the menus draw a random listed costume each visit; a MercMode queue pick names the character / stage |
+| auto QTE | cSystemInfo mTempData.mExOptAutoActBtn (+0x46B0, copy B +0x9BC0) | read by the QTE sites through sInfoMan (+0x46F8 from the manager) | not written (only the character mask is written in cSystemInfo) |
+
+## The mods pass, live (2026-10-27, three private Citron NEO runs on the Spark, Chris costume 0)
+
+| what | measured |
+|---|---|
+| fire_rate | the assault rifle held 2 s: 18 rounds at x1, 55 at x4, 101 at x80 (the 0.004 s floor), 18 again at x1; the interval cell read back each time |
+| merc_loadout (at the select) | 63 pairs; Ada's rocket launcher became the Assault Shotgun (0x105); Chris started with 5 hand / incendiary / flash grenades and 5 remote bombs, game-created (their uWp objects in the slots) |
+| infinite_grenades | a thrown remote bomb took its stack 5 -> 4, kept back to 5 |
+| the remote bomb's flow | the D-pad down steps the item wheel (+0x5064 -> 12); ZL + ZR throws it about 3 m ahead and the wheel slot's mode turns 1; ZL + ZR again sets it off (mode 0) and the game puts the gun back; one blast: 11 J'avo, an 11 combo |
+| the bot's bombs (80 s of play) | 2 out, 2 set off, 10 and 8 kills; 24 kills, no death. Both blasts knocked Chris down from about 3 m: the bot now backs off to 6 m first |
+| stage and costume | the stage select listed all ten (+0x58 = 0x3FF on the gBox save); the walk drew stage 7, Liquid Fire; the character select's costume counts read 4 for the first seven, 1 for Carla and Agent; right stepped Leon to costume 2 |
+| stamina | 800 / 800 (five segments), held by the keeper |
+| auto_qte | both copies read back 1; no hold came in 30 s and 140 s standing still nor in 80 s of play, so a grab freed with nothing pressed is not yet seen |
+
+The frames are in docs/evidence/re6-switch-mods/ (real frames, cropped to the game's window).
 
 ## Live rounds (2026-10-27, a private Citron NEO session on the Spark)
 
@@ -332,9 +363,7 @@ cropped to the game's window).
 
 ## What an RE6 Switch driver still needs
 
-1. **A game-side fire rate.** Neither the motion layer speed nor the seven most-read player f32 fields at 1.0 are it
-   (above). RE5's player time scale has no measured RE6 twin yet. Next, look for the weapon resource
-   (soft\chara\wp\wpNNNN) that the in-hand uWp unit points at.
+1. **A game-side fire rate.** Found: the weapon table's seconds between shots (the Ghidra map above).
 2. **The tablet and the gun up, live.** Measure the confirm-and-retry tablet presses and the reraise cause in a
    round.
 3. **The authoritative round timer** for writes. sGameMan +0x3DF0 is good to read but is copied every frame.

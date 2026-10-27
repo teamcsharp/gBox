@@ -754,11 +754,16 @@ def test_dj_queue_validates_rounds_against_each_titles_roster():
                                               {'title':'re4','character':'HUNK'},{'title':'re4'}]})
     assert [e['title'] for e in cfg['queue']]==['re5','re4','re4'] and cfg['queue'][1]['stage'] is None
     for bad in ({'title':'re4','character':'Chris (BSAA)'},{'title':'re5','stage':8},{'title':'re5','mode':'story'},
-                {'title':'re6','character':'Leon'},{'title':'nope'},{'title':'re4','extra':1}):
+                {'title':'re6','character':'Wesker'},{'title':'re6','stage':10},{'title':'nope'},{'title':'re4','extra':1}):
         with pytest.raises(ValueError):M.configure(store,w['name'],{'queue':[bad]})
     with pytest.raises(ValueError,match='at most'):M.configure(store,w['name'],{'queue':[{'title':'re4'}]*21})
     sel=M.resolve_selection({'title':'re4','mode':None,'character':None,'stage':None},random.Random(1))
     assert sel['mode']=='mercenaries' and sel['character'] in M.catalog()['re4']['modes']['mercenaries'] and 0<=sel['stage']<4
+    cfg=M.configure(store,w['name'],{'queue':[{'title':'re6','character':'Chris','stage':3},{'title':'re6'}]})  # RE6 Switch
+    assert cfg['queue'][0]=={'title':'re6','mode':None,'character':'Chris','stage':3}
+    sel=M.resolve_selection(cfg['queue'][1],random.Random(2))
+    assert sel['mode']=='no_mercy' and sel['character'] in M.catalog()['re6']['modes']['no_mercy'] and 0<=sel['stage']<10
+    assert sel['stage_name']==M.catalog()['re6']['stages'][sel['stage']]
 
 
 def test_dj_queue_launches_the_queued_game_with_its_selection_and_pops_it():

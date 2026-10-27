@@ -289,6 +289,59 @@ def test_the_character_select_finds_chris_by_his_id_as_the_list_grows():
         assert scr["where"] == "select_player" and scr["target"] == want
 
 
+def test_the_stage_select_draws_a_random_unlocked_stage_once_a_visit(monkeypatch):
+    import random
+    monkeypatch.setattr(R, "PICK", R._Pick(random.Random(5)))
+    g = menu_guest("uIdStartUp31", R.MENU_CURSOR, 0, {R.STAGE_UNLOCKED: 0b10010010})   # stages 1, 4 and 7 can start
+    first = R.screen(g)
+    assert first["where"] == "select_stage" and first["target"] in (1, 4, 7)
+    assert first["stage"] == R.STAGES[first["target"]]
+    assert all(R.screen(g)["target"] == first["target"] for _ in range(5))         # one draw a visit
+    assert R.step(R.screen(g)) == "ddown"
+    R.request(stage=4)
+    assert R.screen(g)["target"] == 4
+    R.request(stage=5)                                                             # locked: a random one that starts
+    assert R.screen(g)["target"] in (1, 4, 7)
+    assert R.screen(round_guest())["where"] == "playing"                           # the round is up: drawn anew next
+    assert R.PICK.stage is None and R.PICK.queued == {}
+    seen = set()
+    for _ in range(40):
+        R.PICK.reset()
+        seen.add(R.screen(g)["target"])
+    assert seen == {1, 4, 7}
+    locked = menu_guest("uIdStartUp31", R.MENU_CURSOR, 0)                          # no bit readable: Urban Chaos
+    assert R.screen(locked)["target"] == R.STAGE_TARGET
+
+
+def test_the_character_select_puts_a_random_costume_on_the_character_then_confirms(monkeypatch):
+    import random
+    monkeypatch.setattr(R, "PICK", R._Pick(random.Random(3)))
+    g = menu_guest("uIdStartUp32", R.PLAYER_CURSOR, 2)                             # on Chris, every character listed
+    u = g.lines[18][-1]
+    g.i32(u + R.PLAYER_COUNT, 9)
+    for i in range(9):
+        g.i32(u + R.PLAYER_IDS + 4 * i, i)
+    g.i32(u + R.COSTUME_COUNT + 4 * 2, 4)
+    want = R.screen(g)["costume_target"]
+    assert 0 <= want < 4 and R.screen(g)["character"] == "Chris"
+    key = None
+    for _ in range(5):
+        scr = R.screen(g)
+        key = R.step(scr)
+        if key == "a":
+            break
+        assert key == ("dright" if scr["costume_cursor"] < want else "dleft")
+        g.i32(u + R.COSTUME_CURSOR + 4 * 2, scr["costume_cursor"] + (1 if key == "dright" else -1))
+    assert key == "a" and R.screen(g)["costume_cursor"] == want
+    R.request(character="Leon")                                                    # a queued round names Leon
+    scr = R.screen(g)
+    assert scr["target"] == 0 and R.step(scr) == "dup"
+    with pytest.raises(ValueError):
+        R.request(character="Wesker")
+    assert R.costume_code(9) == ("Chris", 1) and R.costume_code(28) == ("Carla", 0)
+    assert R.costume_code(29) == ("Agent", 0) and R.costume_code(30) is None
+
+
 def test_extra_content_targets_no_mercy_by_its_mode_id():
     modes = {R.EXTRA_COUNT: 7, **{R.EXTRA_MODES + 4 * i: m for i, m in enumerate((0, 1, 2, 3, 4, 5, 6))}}
     scr = R.screen(menu_guest("uIdStartUp02", R.MENU_CURSOR, 0, modes))
@@ -340,6 +393,47 @@ def run(bot, snap, clock, ticks, dt=0.05):
 def brain(snap_guest):
     clock = [0.0]
     return R.Bot(stats={}, clock=lambda: clock[0]), clock, R.snapshot(snap_guest)
+
+
+def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it():
+    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))   # three ahead, 7-8 m off
+    bot, clock, snap = brain(round_guest(enemies=crowd))
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+    first = run(bot, snap, clock, 1)[0]
+    assert first == {"tap": "ddown"} and bot.doing == "bomb"                  # the item wheel to the remote bomb
+    snap["player"]["equipped"] = R.BOMB_INDEX
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts       # ZL held, then ZR with it: the throw
+    snap["player"]["bomb"] = {"count": 5, "out": True}                         # its slot's mode turned 1
+    run(bot, snap, clock, 2)
+    assert bot.stats["bombs_placed"] == 1 and bot.bomb_phase == "wait"
+    bx, bz = bot.bomb_at
+    assert math.isclose(math.hypot(bx, bz), R.BOMB_AHEAD, rel_tol=0.01)       # 3 m ahead along the camera
+    for e in snap["enemies"]:                                                 # they walk onto it, he next to it
+        e["pos"] = (bx + 50.0, 0.0, bz + 30.0)
+    acts = run(bot, snap, clock, 4)
+    assert bot.bomb_phase == "wait" and all(a == {"hold": ("ldown",)} for a in acts)   # too near his own blast: back off
+    snap["player"]["pos"] = (-bx * 1.2, 0.0, -bz * 1.2)                        # 6.6 m clear of it
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts and bot.bomb_phase in ("det", "det_wait")
+    snap["player"].update(bomb={"count": 5, "out": False}, equipped=0)        # the blast; the game gave the gun back
+    run(bot, snap, clock, 1)
+    assert bot.stats["bombs_detonated"] == 1 and bot.bomb_phase is None
+    snap["kills"] = (snap.get("kills") or 0) + 10                             # ten of them, and nobody left standing
+    snap["enemies"] = []
+    run(bot, snap, clock, int(R.BOMB_KILLS_S / 0.05) + 2)
+    assert bot.stats["bomb_kills"] == 10
+
+
+def test_no_bomb_without_one_a_crowd_or_room():
+    for kw, enemies in (({"count": 0, "out": False}, ((0.0, 0.0, 700.0, 700),) * 3),     # none left
+                        ({"count": 5, "out": False}, ((0.0, 0.0, 1500.0, 700),)),        # one, far: no stand
+                        ({"count": 5, "out": False}, ((0.0, 0.0, 150.0, 700),) * 3)):    # on top of him: no room
+        bot, clock, snap = brain(round_guest(enemies=enemies))
+        bot.bomb_from = (0.0, 0.0)                                            # where the last one went: no new section
+        snap["player"].update(equipped=0, bomb=kw)
+        acts = run(bot, snap, clock, 3)
+        assert bot.doing != "bomb" and {"tap": "ddown"} not in acts and bot.bomb_phase is None
 
 
 def test_it_aims_along_the_laser_and_fires_when_the_dot_is_on_him():
@@ -551,6 +645,38 @@ def test_infinite_ammo_tops_every_gun_up_to_its_capacity(mods):
     assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1
 
 
+class RacingAdapter(Adapter):
+    """The game spends `spent` of a count between the write and its read-back (an automatic's shot): the adapter's own
+    read-back then fails, as CitronLinuxAdapter's does."""
+
+    def __init__(self, g, spent):
+        super().__init__(g)
+        self.spent = spent
+
+    def write_memory(self, a, data):
+        self.writes.append((a, bytes(data)))
+        if len(data) == 2:
+            data = struct.pack("<h", struct.unpack("<h", data)[0] - self.spent)
+        self.g.put(a, bytes(data))
+        if self.spent:
+            raise RuntimeError("memory write not confirmed by read-back")
+        return {"verified": True}
+
+
+def test_a_shot_between_a_top_up_and_its_read_back_is_the_games_own_spending(mods):
+    g = round_guest(guns=((20, 30),))
+    ad = RacingAdapter(g, 1)
+    assert mods.run(ad, "infinite_ammo", on=True)["topped_up"] == 1          # 30 written, 29 read back: done
+    assert R.snapshot(g)["player"]["ammo"] == 29
+    clock = [10.0]
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["verified"] and res["writes"] == 1                           # the next check tops it up again
+    ad.spent = 7                                                             # far more than a shot: a real mismatch
+    clock[0] += mods.CHECK_S
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["verified"] is False and "read-back" in res["reason"]
+
+
 def test_infinite_ammo_leaves_the_item_slots_alone(mods):
     g = round_guest(guns=((20, 30), (7, 7)), tablets=3)                    # Chris: the rifle and a 7-round gun
     p = R.snapshot(g)["player"]["ptr"]
@@ -604,6 +730,63 @@ def test_infinite_tablets_keeps_the_case_counted_only_in_its_live_slot(mods):
     assert mods.run(ad3, "tablets", on=True)["kept"] == 0 and ad3.writes == []
 
 
+def item_slots(g, rows):
+    """cItem slots in use: rows of (physical slot, +0x9 index, type, count, capacity)."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    p = R.snapshot(g)["player"]["ptr"]
+    for i in range(RM.ALL_SLOTS):
+        g.q(p + RM.SLOTS + RM.SLOT_STRIDE * i, BASE + RM.SLOT_VTABLE)
+    for phys, index, kind, count, cap in rows:
+        slot = p + RM.SLOTS + RM.SLOT_STRIDE * phys
+        g.put(slot + RM.SLOT_USED, bytes([1, index]) + struct.pack("<H", kind))
+        g.put(slot + RM.SLOT_ROUNDS, struct.pack("<h", count))
+        g.put(slot + RM.SLOT_CAP, struct.pack("<h", cap))
+    return lambda phys: struct.unpack("<h", g.rd(p + RM.SLOTS + RM.SLOT_STRIDE * phys + RM.SLOT_ROUNDS, 2))[0]
+
+
+def test_infinite_grenades_keeps_every_stack_and_the_wheels_total(mods):
+    g = round_guest(guns=((30, 30),))
+    count = item_slots(g, ((9, 9, 0x113, 2, 5), (12, 12, 0x116, 5, 5),        # the wheel: hand grenades 2, remote bombs 5
+                           (15, 15, 0x113, 2, 5), (16, 16, 0x116, 5, 5),      # their stacks
+                           (17, 17, 0x204, 59, 60), (8, 8, 0x120, 0, 3)))     # an ammo box and the spray: never written
+    ad = Adapter(g)
+    out = mods.run(ad, "grenades", on=True)
+    assert out["verified"] and out["kept"] == 2 and count(15) == 5 and count(9) == 5     # the stack, then the wheel's total
+    assert count(16) == 5 and count(12) == 5 and count(17) == 59 and count(8) == 0
+    assert len(ad.writes) == 2
+    g.put(R.snapshot(g)["player"]["ptr"] + mods.SLOTS + mods.SLOT_STRIDE * 16 + mods.SLOT_ROUNDS, struct.pack("<h", 4))
+    clock = [10.0]
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1 and count(16) == 5   # a bomb placed
+    mods.run(ad, "infinite_grenades", on=False)
+    g.put(R.snapshot(g)["player"]["ptr"] + mods.SLOTS + mods.SLOT_STRIDE * 16 + mods.SLOT_ROUNDS, struct.pack("<h", 4))
+    clock[0] += 1.0
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0 and count(16) == 4
+
+
+def test_infinite_stamina_keeps_the_combat_gauge_at_its_maximum(mods):
+    g = round_guest(guns=((30, 30),))
+    p = R.snapshot(g)["player"]["ptr"]
+    g.f32(p + mods.P_STAMINA, 420.0, 800.0)                                  # 1 of 5 segments left after two melees
+    ad = Adapter(g)
+    out = mods.run(ad, "stamina", on=True)
+    assert out["verified"] and out["kept"] == 1 and out["gauge"] == {"value": 800.0, "max": 800.0}
+    assert ad.writes == [(p + mods.P_STAMINA, struct.pack("<f", 800.0))]     # the gauge's f32, nothing else
+    g.f32(p + mods.P_STAMINA, 700.0)                                         # a quick shot
+    clock = [10.0]
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1
+    assert struct.unpack("<f", g.rd(p + mods.P_STAMINA, 4))[0] == 800.0
+    clock[0] += mods.CHECK_S
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0   # full: nothing to write
+    for top in (0.0, 1e9, float("nan")):                                     # not a gauge's maximum: never written
+        g2 = round_guest()
+        p2 = R.snapshot(g2)["player"]["ptr"]
+        g2.f32(p2 + mods.P_STAMINA, 100.0, top)
+        ad2 = Adapter(g2)
+        mods.ORIG.clear()
+        assert mods.run(ad2, "infinite_stamina", on=True)["kept"] == 0 and ad2.writes == []
+    assert mods.run(ad, "revert_all")["infinite_stamina"]["infinite_stamina"] is False
+
+
 def test_unlock_characters_writes_only_the_selects_mask_in_both_copies(mods):
     from gbox import re6_switch_unlock as U
     g = round_guest()
@@ -626,6 +809,49 @@ def test_unlock_characters_writes_only_the_selects_mask_in_both_copies(mods):
     assert out2["verified"] is False and ad2.writes == []
 
 
+def test_the_gun_in_hand_is_the_equipped_slots_and_automatics_hold_the_trigger():
+    g = round_guest(guns=((30, 30), (7, 7)))
+    p = R.snapshot(g)["player"]["ptr"]
+    for i, (index, item) in enumerate(((0, 0x0F), (1, 0x07), (15, 0x13))):  # Chris: the rifle, the magnum, a grenade stack
+        g.put(p + R.P_SLOTS + R.SLOT_STRIDE * i + 8, bytes([1, index]) + struct.pack("<H", 0x100 + item))
+    g.put(p + R.P_WEAPON_ID, bytes([0x0F]))
+    for equipped, want in ((0, 0x0F), (1, 0x07), (15, 0x13), (9, 0x0F)):     # 9: no live slot holds it - slot 0's
+        g.i32(p + R.P_EQUIPPED, equipped)
+        assert R.snapshot(g)["player"]["weapon_id"] == want
+    assert {0x0F, 0x10, 0x11, 0x0C, 0x0E} <= R.AUTO_IDS and not {0x07, 0x03, 0x04, 0x13} & R.AUTO_IDS
+
+
+def system_info_guest(mask=0x10711, stages=0x1, qte=0):
+    from gbox import re6_switch_unlock as U
+    g = round_guest()
+    im = g.alloc(U.INFO_ARRAY + U.INFO_STRIDE)
+    g.q(BASE + U.S_INFOMAN, im)
+    g.i32(im + U.INFO_INDEX, 0)
+    info = im + U.INFO_ARRAY
+    for a, b, v in ((0x974, 0x974 + 0x5510, mask), (0x970, 0x970 + 0x5510, stages), (0x46B0, 0x46B0 + 0x5510, qte)):
+        g.put(info + a, struct.pack("<I", v))
+        g.put(info + b, struct.pack("<I", v))
+    return g, info
+
+
+def test_unlock_stages_and_auto_qte_write_only_their_own_cells_in_both_copies(mods):
+    g, info = system_info_guest(stages=0x1)
+    ad = Adapter(g)
+    out = mods.run(ad, "unlock_stages", on=True)
+    assert out["verified"] and out["writes"] == 2 and out["after"] == ["0x1807", "0x1807"]   # bits 1, 2, 11, 12 ORed in
+    assert sorted(a for a, _ in ad.writes) == sorted(info + off for off in mods.STAGE_MASK)
+    assert mods.run(ad, "all_stages", on=True)["writes"] == 0                             # already there
+    ad.writes.clear()
+    out = mods.run(ad, "auto_qte", on=True)
+    assert out["verified"] and out["writes"] == 2 and out["after"] == ["0x1", "0x1"]
+    assert sorted(a for a, _ in ad.writes) == sorted(info + off for off in mods.AUTO_QTE)
+    assert all(d == struct.pack("<I", 1) for _, d in ad.writes)
+    off = mods.run(ad, "qte", on=False)
+    assert off["after"] == ["0x0", "0x0"] and off["writes"] == 2
+    for cell in (0x974, 0x974 + 0x5510):                                                   # the character mask untouched
+        assert struct.unpack("<I", g.rd(info + cell, 4))[0] == 0x10711
+
+
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
     g = round_guest(guns=((10, 18),))
     ad = Adapter(g)
@@ -635,14 +861,113 @@ def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
     assert st["infinite_ammo"] is False and st["guns"] == [{"rounds": 10, "capacity": 18}] and st["in_hand_rounds"] == 10
 
 
-def test_fire_rate_is_honest_about_no_game_side_multiplier(mods):
-    ad = Adapter(round_guest())
-    assert mods.run(ad, "fire_rate", multiplier=80)["verified"] is False
-    assert mods.run(ad, "rapid_fire", on=False)["fire_rate_x"] == 1.0
+def weapon_table(g, site=None):
+    """This build's weapon parameter table (48 records: its first word, the tag 60, the interval, a neighbour) and the
+    interval reader's ldr at main+0xB2701C."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    g.put(BASE + RM.FIRE_SITE, struct.pack("<I", RM.FIRE_SITE_WORD if site is None else site))
+    for i, v in enumerate(RM.FIRE_ORIGINAL):
+        rec = BASE + RM.FIRE_TABLE + RM.FIRE_STRIDE * i
+        g.i32(rec, -1438083120)
+        g.i32(rec + RM.FIRE_TAG, RM.FIRE_TAG_VALUE)
+        g.f32(rec + RM.FIRE_INTERVAL, v)
+        g.f32(rec + 0x30, 0.24)
+    return BASE + RM.FIRE_TABLE
+
+
+def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back(mods):
+    g = round_guest()
+    table = weapon_table(g)
+    ad = Adapter(g)
+    cell = lambda i: table + mods.FIRE_STRIDE * i + mods.FIRE_INTERVAL
+    iv = lambda i: struct.unpack("<f", g.rd(cell(i), 4))[0]
+    guns = [i for i, v in enumerate(mods.FIRE_ORIGINAL) if i not in mods.FIRE_SKIP and 0 < v < mods.FIRE_GUN_MAX]
+    out = mods.run(ad, "rapid_fire", multiplier=4)
+    assert out["verified"] and out["fire_rate_x"] == 4.0 and out["writes"] == len(guns)
+    assert sorted(a for a, _ in ad.writes) == sorted(cell(i) for i in guns)            # the interval cells, nothing else
+    assert math.isclose(iv(0x0F), 0.025, rel_tol=1e-6) and math.isclose(iv(0x07), 0.2, rel_tol=1e-6)
+    assert iv(0x13) == 2.0 and iv(0x16) == 2.0 and iv(0x00) == 10.0 and iv(0x18) == 10.0   # thrown / melee: theirs
+    assert struct.unpack("<f", g.rd(table + mods.FIRE_STRIDE * 0x0F + 0x30, 4))[0] == pytest.approx(0.24)
+    ad.writes.clear()
+    assert mods.run(ad, "fire_rate", multiplier=4)["writes"] == 0 and ad.writes == []       # already there
+    assert mods.run(ad, "fire", multiplier=80)["writes"] == len(guns)
+    assert iv(0x0F) == pytest.approx(mods.FIRE_FLOOR) and iv(0x0B) == pytest.approx(2.25 / 80)  # never below the floor
+    off = mods.run(ad, "fire_rate", on=False)
+    assert off["fire_rate_x"] == 1.0 and off["writes"] == len(guns)
+    assert all(iv(i) == pytest.approx(v) for i, v in enumerate(mods.FIRE_ORIGINAL))
+    assert mods.run(ad, "status")["fire_rate_x"] == 1.0
     with pytest.raises(ValueError):
         mods.run(ad, "fire_rate", multiplier=500)
     with pytest.raises(ValueError):
         mods.run(ad, "blast")
+
+
+def loadout_table(g):
+    """This build's Mercenaries loadouts (main+0x2890088, 16 entries of 0x74) as the game holds them."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    wheel = [(0x11D, 0), (0x120, 0), (0x113, 0), (0x114, 0), (0x115, 0), (0x116, 0), RM.EMPTY, RM.EMPTY]
+    for i, (eid, weapons, extras) in enumerate(RM.LOADOUTS):
+        at = BASE + RM.LOADOUT_BLOCK + RM.LOADOUT_SIZE * i
+        g.put(at, struct.pack("<8H", eid, 900, 900, 0, 0xFF, 0, 0, 0))
+        for off, pairs, n in ((RM.L_WEAPONS, weapons, RM.N_WEAPONS), (0x2C, wheel, 8), (RM.L_EXTRAS, extras, RM.N_EXTRAS)):
+            for k, p in enumerate(RM._padded(pairs, n)):
+                g.put(at + off + 4 * k, struct.pack("<2H", *p))
+    return BASE + RM.LOADOUT_BLOCK
+
+
+def test_merc_loadout_swaps_the_rocket_launcher_and_gives_the_remote_bomb_and_grenades(mods):
+    g = round_guest()
+    table = loadout_table(g)
+    ad = Adapter(g)
+    pairs = lambda i, off, n: [struct.unpack("<2H", g.rd(table + mods.LOADOUT_SIZE * i + off + 4 * k, 4))
+                               for k in range(n)]
+    out = mods.run(ad, "merc_loadout", seed=7)
+    assert out["verified"] and out["writes"] > 0 and out["rocket_swaps"] == [("0x6", hex(out["rocket_swaps"][0][1] and
+                                                                                      int(out["rocket_swaps"][0][1], 16)))]
+    ada = pairs(12, mods.L_WEAPONS, mods.N_WEAPONS)                          # Ada's first costume: 0x10C, the rocket
+    assert ada[0] == (0x10C, 50) and ada[1] in mods.SWAPS and all(t != mods.ROCKET for t, _ in ada)
+    chris = pairs(4, mods.L_EXTRAS, mods.N_EXTRAS)                           # Chris: 3 hand grenades -> 5, the rest given
+    assert chris[:3] == [(0x113, 5), (0x204, 60), (0x206, 7)]
+    assert chris[3:6] == [(0x116, 5), (0x114, 5), (0x115, 5)] and chris[6:] == [mods.EMPTY] * 3
+    leon = pairs(0, mods.L_EXTRAS, mods.N_EXTRAS)                            # Leon's 4 remote bombs -> 5
+    assert leon[0] == (0x116, 5)
+    full = pairs(11, mods.L_EXTRAS, mods.N_EXTRAS)                           # Sherry's second: 7 used, room for two
+    assert (0x116, 5) in full and (0x113, 5) in full and (0x115, 5) in full and (0x114, 5) not in full
+    for i in range(len(mods.LOADOUTS)):                                       # the headers and the wheel never written
+        assert g.rd(table + mods.LOADOUT_SIZE * i, 0x10)[:10] == struct.pack("<5H", mods.LOADOUTS[i][0], 900, 900, 0, 0xFF)
+    assert all((a - table) % mods.LOADOUT_SIZE >= mods.L_WEAPONS and (a - table) % mods.LOADOUT_SIZE not in
+               range(0x2C, 0x4C) and len(d) == 4 for a, d in ad.writes)
+    n = len(ad.writes)
+    assert mods.run(ad, "loadout", seed=7)["writes"] == 0 and len(ad.writes) == n       # the same draw: already there
+    off = mods.run(ad, "merc_loadout", on=False)
+    assert off["verified"] and off["writes"] == n
+    assert all(pairs(i, mods.L_WEAPONS, mods.N_WEAPONS) == mods._padded(w, mods.N_WEAPONS) and
+               pairs(i, mods.L_EXTRAS, mods.N_EXTRAS) == mods._padded(x, mods.N_EXTRAS)
+               for i, (_, w, x) in enumerate(mods.LOADOUTS))
+    with pytest.raises(ValueError):
+        mods.run(ad, "merc_loadout", thrown=9)
+
+
+def test_merc_loadout_writes_nothing_into_a_table_that_is_not_this_builds(mods):
+    g = round_guest()
+    table = loadout_table(g)
+    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x10E, 30))   # Chris's rifle: another gun
+    ad = Adapter(g)
+    out = mods.run(ad, "merc_loadout")
+    assert out["verified"] is False and out["writes"] == 0 and ad.writes == []
+
+
+@pytest.mark.parametrize("spoil", ["site", "tag", "interval"])
+def test_fire_rate_writes_nothing_into_a_table_that_is_not_this_builds(mods, spoil):
+    g = round_guest()
+    table = weapon_table(g, site=0xBD402008 if spoil == "site" else None)              # ldr s8, [x0, #0x20]
+    if spoil == "tag":
+        g.i32(table + mods.FIRE_STRIDE * 9 + mods.FIRE_TAG, 30)
+    if spoil == "interval":
+        g.f32(table + mods.FIRE_STRIDE * 15 + mods.FIRE_INTERVAL, 0.5)              # above the build's 0.1
+    ad = Adapter(g)
+    out = mods.run(ad, "fire_rate", multiplier=4)
+    assert out["verified"] is False and out["writes"] == 0 and ad.writes == []
 
 
 def test_the_driver_keeps_the_magazines_full_while_playing(mods):

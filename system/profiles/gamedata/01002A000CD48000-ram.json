@@ -18,9 +18,16 @@
     "Measured live 2026-10-26 on the Spark (Citron NEO, NCE: a guest address is the host address) in THE MERCENARIES NO MERCY, Urban Chaos, Leon: sGameMan base+0x28E9B10 (+0x54 mode, +0x3DEC phase, +0x3DF0 seconds left, +0x408C kills, +0x4094 combo, +0x4098 max combo, +0x409C combo window, +0x40B0 score); sPlayer base+0x28EAC10 +0x30 -> the player (+0x60 pos, +0x70 quaternion, +0x1368 s16 health, +0x136A maximum); sEnemy base+0x28E9AA8 (+0x40 count, +0x50 -> enemy pointers; +0x60 pos, +0x1368 health); sUnit base+0x2A60780 (an sBioUnit: line N at +0x268 + 0x30 N, next unit +0x20).",
     "The HUD agreed with sGameMan: 009/300, Score 3,890 rolling to 4,540, 002 COMBO (docs/research/re6-switch-ram.md).",
     "A fresh save opens the main menu only after gbox.re6_switch_unlock set the save's Prologue-cleared bit at the title (game_unlocks.session_start on launch); the menus press A at the title only when uIdTitle00 +0x20A = 1.",
-    "Live mods (gbox.mercs.titles.re6_switch_mods, the playing_ops): infinite_ammo keeps every gun's magazine at its capacity (the inventory's cItem slots at player +0x5070, 0x28 each: +0xA item id, +0xE rounds, +0x14 capacity; slots 0-6 the weapons, 7-11 the items, left alone: slot 7 the tablets, id 0x1D). RE6 shows no game-side fire-rate multiplier (the shot motion's layer speed leaves the pace alone); the bot presses ZR on every other tick on target and every press is a shot.",
+    "Live mods (gbox.mercs.titles.re6_switch_mods, the playing_ops): infinite_ammo keeps every gun's magazine at its capacity (the inventory: 24 cItem slots at player +0x5070, 0x28 each, found by their +0x9 index: 0-6 the weapons, 7-14 the item wheel, 15-23 the start list's stacks; +0xA u16 type, +0xE count, +0x14 capacity).",
     "infinite_tablets (a playing_op, on by default): the tablet case's cItem slot (an item slot 7-11 with id 0x1D, in use, its item object set) is kept at 6 tablets: only its s16 count is written, re-read right before and read back after; never the id or the object pointer (RE5 Switch's count-keeping of its spray).",
-    "unlock_characters (a playing_op, on by default; verified live 2026-10-27): the Mercenaries character select's unlock mask, cSystemInfo +0x974 (copy B +0x5E84), read by the select's constructor main+0xAA9158 and ORed with 0x20010101, set to 0x3FFFFFFF (all 9 characters, every costume) in both copies with read-back; nothing else in cSystemInfo is written, and the game's own next save keeps it. Live: 0x10711 -> 0x3FFFFFFF at the title, then the select listed count 9, ids 0-8."
+    "unlock_characters (a playing_op, on by default; verified live 2026-10-27): the Mercenaries character select's unlock mask, cSystemInfo +0x974 (copy B +0x5E84), read by the select's constructor main+0xAA9158 and ORed with 0x20010101, set to 0x3FFFFFFF (all 9 characters, every costume) in both copies with read-back; nothing else in cSystemInfo is written, and the game's own next save keeps it. Live: 0x10711 -> 0x3FFFFFFF at the title, then the select listed count 9, ids 0-8.",
+    "fire_rate (a playing_op, multiplier 4 by default; verified live 2026-10-27): the weapon table's seconds between shots (main+0x2962170, 48 records of 0x1A0, +0x1C; read only by main+0xB26F90 at main+0xB2701C, armed into player +0x5AEC each shot and counted down by the frame time at main+0xBD3A90) at the build's / 4 for every gun. Live, the assault rifle held 2 s: 18 rounds at x1, 55 at x4, 101 at x80 (the 0.004 s floor), 18 again at x1.",
+    "infinite_stamina (a playing_op, on): the combat gauge player +0x42A0 kept at its maximum +0x42A4 (the HUD's segments: main+0xBD9CD0, int((gauge - 300) / 100)). Live: Chris 800 / 800.",
+    "infinite_grenades (a playing_op, on): every grenade / remote bomb stack (+0x9 15-23, type 0x113-0x116) kept at 5 and the item wheel's count at the total (the game frees an empty stack, main+0xB25DC0). Live: a thrown bomb took the stack 5 -> 4, kept back to 5.",
+    "auto_qte (a playing_op, on; operator OK 2026-10-27): cSystemInfo mTempData.mExOptAutoActBtn (+0x46B0, copy B +0x9BC0) set to 1, that field only, read back: the game's own automatic action button (every QTE site tests it).",
+    "unlock_stages (a playing_op, on; operator OK 2026-10-27): the stage select's save bits (cSystemInfo +0x970, copy B +0x5E80, bits 0x1806) ORed in so all ten stages can start; the gBox save already had all ten (live mask 0x3FF), so it writes nothing there.",
+    "merc_loadout (a round_op, at every character select; verified live 2026-10-27): the Mercenaries' starting loadouts (main+0x2890088, 16 entries the round set-up main+0x38C740 copies): the rocket launcher (Ada's first costume) swapped for a random magnum or shotgun, the remote bomb and the hand / incendiary / flash grenades at 5 each. Live: 63 pairs, Chris started with 5 of each, the game's own objects.",
+    "Menus (verified live 2026-10-27): a random unlocked stage (uIdStartUp31 +0x58) and a random listed costume (uIdStartUp32 +0x1F8 / +0x21C per select id) every visit; a MercMode queue pick names the character / stage. Live: the walk took stage 7 (Liquid Fire), the costume code 8 (Chris, costume 0)."
   ],
   "mercs": {
     "driver": "gbox.mercs.titles.re6_switch",
@@ -45,6 +52,36 @@
         "unlock_characters",
         {
           "on": true
+        }
+      ],
+      [
+        "unlock_stages",
+        {
+          "on": true
+        }
+      ],
+      [
+        "auto_qte",
+        {
+          "on": true
+        }
+      ],
+      [
+        "infinite_stamina",
+        {
+          "on": true
+        }
+      ],
+      [
+        "infinite_grenades",
+        {
+          "on": true
+        }
+      ],
+      [
+        "fire_rate",
+        {
+          "multiplier": 4
         }
       ]
     ],
@@ -86,7 +123,15 @@
     "rules": {
       "mode": "no_mercy",
       "round_time_s": 120
-    }
+    },
+    "round_ops": [
+      [
+        "merc_loadout",
+        {
+          "thrown": 5
+        }
+      ]
+    ]
   },
   "groups": {},
   "fields": {}
