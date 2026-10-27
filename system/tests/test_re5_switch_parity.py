@@ -87,7 +87,7 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
 def test_an_op_this_edition_has_not_yet_says_why_and_is_never_a_silent_no_op():
     g = parity_guest()
     ad = Adapter(g)
-    for op in ("rotten_egg_only", "live_weapon", "instant_qte"):
+    for op in ("live_weapon", "instant_qte"):
         out = SM.tool_run(ad, op, 3, True)
         assert out["verified"] is False and out["reason"].startswith("not yet on Switch: ") and out["op"] == op
     assert SM.tool_run(ad, "qte_assist", None, True)["op"] == "instant_qte"               # the PS3's aliases too
@@ -330,3 +330,20 @@ def test_kill_time_adds_seconds_for_each_kill_and_the_hourglasses_scale_where_th
     out = SM.tool_run(ad, "time_bonus_multiplier", 3, True)
     assert out["verified"] and out["hourglasses"] == 1 and out["hourglass_seconds"] == [90]
     assert SM.tool_run(ad, "time_bonus_multiplier", 3, True)["scaled"] == 0    # once a unit (90 is not raw 30)
+
+
+def test_rotten_eggs_only_puts_the_egg_in_every_gun_slot_with_an_endless_stock_and_takes_it_back():
+    g = parity_guest()
+    at = BASE + 0x1900000 + 0x40 * 0x36
+    g.put(at, b"WP36 EGG_X\t\t\t\t\0")
+    g.q(BASE + SM.DEF_TABLE + SM.DEF_STRIDE * 0x36 + SM.DEF_NAME, at)
+    ad = Adapter(g)
+    flag = lambda: struct.unpack("<I", g.rd(BASE + SM.DEF_TABLE + SM.DEF_STRIDE * 0x36 + SM.DEF_NOAMMO, 4))[0]
+    out = SM.tool_run(ad, "rotten_egg_only", 20, True)
+    assert out["verified"] and out["rotten_egg_only"] and out["egg_rate_x"] == 20.0 and flag() == 1
+    assert ids(g, 14)[3] == SM.EGG_ID and ids(g, 14)[5] == SM.EGG_ID and ids(g, 14)[1] == 0x106   # guns, not grenades
+    assert out["status"]["rotten_egg_only"] and out["status"]["fire_rate_x"] == 20.0
+    out = SM.tool_run(ad, "rotten_egg_only", None, False)
+    assert out["verified"] and flag() == 0 and ids(g, 14)[3] == 0x102
+    with pytest.raises(ValueError):
+        SM.tool_run(ad, "rotten_egg_only", 50, True)

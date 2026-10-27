@@ -839,6 +839,43 @@ def time_bonus_multiplier(g: RE5Switch, mult) -> dict:
                     "constant on Switch and stays"}
 
 
+# --- rotten eggs only (the PS3 tool's rotten_egg_only) ---------------------------------------------------------------------
+# Live 2026-10-27 10:42: definition 0x36 is WP36 EGG_X here too; 0x136 in a loadout template gives the round the egg (x5
+# at its grid); a ZL tap only raises it (motions 22 / 24): it throws with ZL + ZR, as a gun fires.
+EGG_ID, EGG_ITEM = 0x136, 0x36
+EGG_RATE_DEFAULT, EGG_RATE_MAX = 20.0, 20.0
+
+
+def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
+    """Every character's guns become the rotten egg (the template, from the next round), its no-ammo flag set (the
+    stock never runs out), and its throw sped up by fire_rate's time scale (rate: 1..20). Off: the guns and the flag
+    back. Uses weapon_override's composition, so the bombs and the other template ops still compose."""
+    st = g.state.setdefault("eggs", {"rate": EGG_RATE_DEFAULT})
+    value = st["rate"] if rate is None else float(rate)
+    if not math.isfinite(value) or not 1 <= value <= EGG_RATE_MAX:
+        raise ValueError("egg rate must be 1..20")
+    name = g.name(EGG_ITEM)
+    if not name.startswith("WP36 EGG_X"):
+        raise ValueError(f"definition 0x36 is not the rotten egg on this build ({name!r})")
+    at = g.record(EGG_ITEM) + DEF_NOAMMO
+    st.setdefault("original_noammo", g.u32(at))
+    st.update(on=bool(on), rate=value)
+    if on:
+        ok = g.wr(at, struct.pack("<I", 1)) and g.u32(at) == 1
+        st["previous_override"] = g.state.get("weapon_override")
+        res = weapon_override(g, EGG_ITEM, True)
+        fire_rate(g, value)
+        st["status"] = "requested; the eggs come with the next round"
+        return {"verified": bool(ok and res["verified"]), "rotten_egg_only": True, "egg_rate_x": value,
+                "native_equipped": False, "effective_next_round": True, "records": res["records"]}
+    ok = g.wr(at, struct.pack("<I", st["original_noammo"])) and g.u32(at) == st["original_noammo"]
+    prev = st.pop("previous_override", None)
+    res = weapon_override(g, prev["item"] if prev else None, prev["only"] if prev else False)
+    st["status"] = "disabled; the guns come back with the next round"
+    return {"verified": bool(ok and res["verified"]), "rotten_egg_only": False, "egg_rate_x": value,
+            "native_equipped": False, "effective_next_round": True}
+
+
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
@@ -919,6 +956,8 @@ def revert_all(g: RE5Switch) -> dict:
            "infinite_spray": infinite_spray(g, False)["verified"],
            "unlimited_health": unlimited_health(g, False)["verified"]}
     g.state.pop("mine_settings", None)
+    if (g.state.get("eggs") or {}).get("on"):
+        out["rotten_eggs"] = rotten_egg_only(g, False)["verified"]
     if g.state.get("kill_time"):
         g.state["kill_time"]["on"] = False
     for key in ("weapon_override", "loadout", "replace", "preferred_weapon"):
@@ -968,7 +1007,6 @@ ADDRESSES = {
 # What the PS3 tool has and this edition does not yet, and why (the panel shows these on its buttons).
 NOT_YET = {
     "instant_qte": "the QTE progress fields are not mapped on Switch yet",
-    "rotten_egg_only": "the rotten egg loadout and supply are not ported to Switch yet",
     "live_weapon": "the native pickup that builds a weapon mid-round (the PS3's 1AEE90 path) is not found on Switch yet",
     "aimbot": "no verified live control for this hook",
     "auto_parry": "no verified live control for this hook",
@@ -992,6 +1030,7 @@ AVAILABLE = {
     "set_time": "Authoritative aGame countdown write, read back; a running round.",
     "kill_time": "Seconds added to the authoritative clock per kill, every snapshot.",
     "time_bonus_multiplier": "The round's standing hourglasses' seconds x N; rerun each round.",
+    "rotten_egg_only": "Every gun the rotten egg (infinite) from the next round; the throw sped up by the fire rate.",
     "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
     "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
 }
@@ -1020,7 +1059,10 @@ def full_status(g: RE5Switch) -> dict:
               kill_time_s=(g.state.get("kill_time") or {}).get("seconds", KILL_TIME_S)
               if (g.state.get("kill_time") or {}).get("on") else 0.0,
               kill_time_range=f"{(g.state.get('kill_time') or {}).get('seconds', KILL_TIME_S):g}",
-              rotten_egg_only=False,
+              rotten_egg_only=bool((g.state.get("eggs") or {}).get("on")),
+              egg_rate_x=(g.state.get("eggs") or {}).get("rate", EGG_RATE_DEFAULT),
+              egg_status=(g.state.get("eggs") or {}).get("status", "disabled"),
+              egg_native_equipped=False,
               all_weapons=[{"item": k, "weapon": w.name, "family": w.family}
                            for k, w in sorted(re5_weapons.WEAPONS.items())],
               capabilities=capabilities(), edition="switch",
@@ -1117,6 +1159,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(random_cheats(g, extra.get("seed")))
         elif op in ("select_weapon", "random_weapon"):
             res.update(select_weapon(g, extra.get("weapon"), bool(on), random_pick=op == "random_weapon"))
+        elif op == "rotten_egg_only":
+            res.update(rotten_egg_only(g, bool(on), multiplier))
         elif op == "mercs_select":
             res.update(mercs_select(g, extra.get("mode"), extra.get("character"), extra.get("stage")))
         elif op == "revert_all":
