@@ -202,7 +202,7 @@ LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # read: the next Majini not dispatched in time) is a combo_lapse, as the PS3 bot counts them. COMBO_PUSH: with a combo
 # running and its window under COMBO_URGENT_S, the target is the quickest kill (the cheapest in reach, his level first,
 # no stickiness), and with nobody within COMBO_REACH he walks to the nearest (combo_pushes counts the ticks).
-COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = False, 3.0, 0.6, 900.0
+COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
 COMBO_COUNTERS = ("combo_breaks", "combo_lapses", "combo_pushes")
 # The enemy knowledge database at work (brain step 4, operator 2026-10-27: "not utilizing any of the lessons learned";
 # Hermes #4484): the fight asks gbox.mercs.brain.knowledge.dispatch_plan (K's learned fields over the defaults) for its
