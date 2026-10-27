@@ -489,11 +489,24 @@ class Store:
             rows = db.execute(f"SELECT {cols} FROM docs WHERE kind=? ORDER BY rowid", (kind,)).fetchall()
         return [dict(zip(names, r)) for r in rows]
 
-    def all(self, kind: str, *, reverse: bool = False) -> list[dict]:
+    def all(self, kind: str, *, reverse: bool = False, without: tuple[str, ...] = ()) -> list[dict]:
+        """Every document of a kind. `without`: top-level fields SQLite drops (json_remove, off the GIL) before Python
+        decodes the rest - the request message threads are most of that kind's text (GET /api/requests?lite=1)."""
+        order = "DESC" if reverse else "ASC"
+        if without:
+            if not all(f.isidentifier() for f in without):
+                raise ValueError("without names top-level fields")
+            try:
+                with self.reading() as db:
+                    rows = db.execute(f"SELECT json_remove(body{', ?' * len(without)}) FROM docs WHERE kind=? "
+                                      f"ORDER BY rowid {order}", [f"$.{f}" for f in without] + [kind]).fetchall()
+                return [json.loads(r[0]) for r in rows]
+            except sqlite3.Error:
+                pass              # no JSON functions in this SQLite, or a body it cannot parse: drop them after decoding
         with self.reading() as db:
-            rows = db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid "
-                              + ("DESC" if reverse else "ASC"), (kind,)).fetchall()
-        return [json.loads(r[0]) for r in rows]
+            rows = db.execute("SELECT body FROM docs WHERE kind=? ORDER BY rowid " + order, (kind,)).fetchall()
+        docs = [json.loads(r[0]) for r in rows]
+        return [{k: v for k, v in d.items() if k not in without} for d in docs] if without else docs
 
     def recent(self, kind: str, limit: int) -> list[dict]:
         """The newest `limit` documents of a kind (rowid order), without decoding the whole archive."""

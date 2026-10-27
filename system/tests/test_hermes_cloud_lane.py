@@ -34,7 +34,7 @@ def lane(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
     monkeypatch.setattr(q.hermes_quota, 'routes', lambda *a: [dict(provider='zai', model='glm')])
     def api(path, body=None):
-        if path == '/api/requests': return reqs
+        if path == '/api/requests?lite=1': return reqs                  # the tick's listing (gbox.inbox.lite)
         if path == '/api/favorites': return {'count': 0, 'items': []}
         raise AssertionError(path)
     monkeypatch.setattr(q, '_api', api)

@@ -263,6 +263,7 @@ SMALL_WORDS = ('typo', 'label', 'rename', 'tooltip', 'wording', 'text ', 'docs',
                'single file', 'one file', 'one-line', 'small fix', 'config', 'setting', 'default', 'count',
                'sort', 'filter', 'message', 'error message')
 SMALL_STAGES = ('inventory',)
+LONG_TICKET = 2500   # body characters; the queue's lite listing keeps an open body this long whole (inbox.LITE_OPEN_BODY)
 
 
 def dispatch_size(item: dict, request: dict | None = None) -> dict:
@@ -271,7 +272,8 @@ def dispatch_size(item: dict, request: dict | None = None) -> dict:
     Small: favorite inventories, and inbox tickets whose text names a narrow fix (one file, labels, docs, tests,
     inventories) without naming engine/reader/writer work. Large: native character replacement, session observers,
     analysis/reader/writer/runtime stages, long or multi-system tickets, and tickets that already needed several
-    attempts. An operator can force either with request.context.hermes_size."""
+    attempts. An operator can force either with request.context.hermes_size. `request` may be a lite listing row
+    (GET /api/requests?lite=1): a body cut to its start carries body_chars, its whole length."""
     request = request or {}
     forced = str((request.get('context') or {}).get('hermes_size') or '').lower()
     if forced in ('small', 'large'):
@@ -289,7 +291,7 @@ def dispatch_size(item: dict, request: dict | None = None) -> dict:
     if item.get('attempts', 0) >= 3:
         return {'size': 'large', 'reason': f"{item['attempts']} earlier attempts"}
     text = ' '.join(str(x or '') for x in (item.get('title'), request.get('title'), request.get('body'))).lower() + ' '
-    if len(str(request.get('body') or '')) > 2500:
+    if max(len(str(request.get('body') or '')), request.get('body_chars') or 0) > LONG_TICKET:
         return {'size': 'large', 'reason': 'long ticket'}
     files = set(re.findall(r'[\w/.-]+\.(?:py|js|html|md|toml|json)\b', text))
     if len(files) > 2:
