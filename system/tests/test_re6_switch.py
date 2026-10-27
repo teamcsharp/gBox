@@ -904,6 +904,40 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     assert bot.stats["pursuit_kills"] == 1
 
 
+def test_after_a_multi_kill_with_nobody_near_he_taunts_and_the_emotion_is_counted():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["kills"] = 10
+    run(bot, snap, clock, 1)
+    snap["kills"] = 14                                                        # four at once
+    acts = run(bot, snap, clock, 2)
+    assert any(a.get("tap") == "rstick" or "rstick" in a.get("hold", ()) for a in acts)
+    assert bot.stats["taunts"] == 1 and bot.stats["taunt_multi"] == 1
+    snap["player"]["action"] = R.EMOTION_ACTION                               # the game's gesture
+    run(bot, snap, clock, 1)
+    assert bot.stats["taunts_seen"] == 1
+    snap["kills"] = 18                                                        # again at once: not within TAUNT_GAP_S
+    acts = run(bot, snap, clock, int(R.TAUNT_HOLD_S / 0.05) + 3)
+    assert bot.stats["taunts"] == 1
+
+
+def test_no_taunt_with_one_near_and_a_boss_down_triggers_one():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # one at 3 m
+    bot.held = lambda p, now: False
+    snap["kills"] = 0
+    run(bot, snap, clock, 1)
+    snap["kills"] = 5
+    run(bot, snap, clock, 2)
+    assert bot.stats["taunts"] == 0                                           # not clear: dropped
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700), (0.0, 0.0, 1800.0, 700)), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["enemies"][0]["hp_max"] = snap["enemies"][0]["hp"] = 3000           # a big one
+    run(bot, snap, clock, 1)
+    snap["enemies"] = [snap["enemies"][1]]                                    # the big one gone
+    run(bot, snap, clock, 2)
+    assert bot.stats["taunt_boss"] == 1
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import struct
 import time
 from pathlib import Path
@@ -100,7 +101,6 @@ class _Pick:
     character and / or the stage (None = random, MercMode's convention); no queue: PLAYER_ID, a random stage."""
 
     def __init__(self, rng=None):
-        import random
         self.rng = rng or random.Random()
         self.queued: dict = {}
         self.stage = self.costume = None
@@ -1188,6 +1188,16 @@ COMBO_LOW_S = 3.0
 # time). With the combo running (COMBO_LOW_S) a pursuit is counted: pursuit_kills when the kill count rises, pursuit_
 # lapses when the combo lapses first; census_alive / census_floor the stage's living zombies and those on his floor.
 PURSUE_STUCK_CM, PURSUE_STUCK_S, PURSUE_SIDE_S = 30.0, 1.0, 0.8
+# Taunts (operator 15:33: "taunts and random dances when they do damage to a large group or kill a boss"): RE6's partner
+# call on the right stick's click puts him in his emotion action (cPlAction_pl_act_emotion, the game's own gesture and
+# line; the HUD's uIdEmotion). After TAUNT_KILLS kills within TAUNT_KILLS_S, a blast (bomb / grenade) that took
+# TAUNT_BLAST, or a boss down (one of at least BOSS_HP gone), with nobody within TAUNT_CLEAR_R and not more often than
+# TAUNT_GAP_S: one click (a tap, or held TAUNT_HOLD_S for the other call, picked at random). stats taunts (by trigger:
+# taunt_multi / taunt_blast / taunt_boss), taunts_seen (his action turned emotion within TAUNT_SEEN_S of the click).
+TAUNTS = True
+TAUNT_KILLS, TAUNT_KILLS_S, TAUNT_BLAST, BOSS_HP = 4, 2.0, 3, 1500
+TAUNT_CLEAR_R, TAUNT_GAP_S, TAUNT_HOLD_S, TAUNT_SEEN_S = 400.0, 8.0, 0.6, 1.5
+EMOTION_ACTION = "cPlAction_pl_act_emotion"
 AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on one this near: he walks at him
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
@@ -1266,7 +1276,8 @@ class Bot:
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
                   "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots",
-                  "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor"):
+                  "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor",
+                  "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
             self.stats.setdefault(k, 0.0)
@@ -1326,6 +1337,11 @@ class Bot:
         self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
         self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then
         self.pursuit = None                                  # the combo's pursuit under way: {since, kills}
+        self.kill_times: list = []                           # when each recent kill came (the kill count's rises)
+        self.taunt_due, self.taunt_at, self.taunt_hold_until = None, -1e9, -1e9   # the trigger waiting; the last click
+        self._kills_prev, self._bosses = None, {}             # the kill count; the big ones alive {id: max health}
+        self._blast_kills_seen = (0, 0)                      # bomb_kills, grenade_kills already looked at
+        self._taunt_seen = False
         self.pursue_spot, self.pursue_side_until = None, -1e9   # (since when, where) for the stuck check; a side step                       # this tick's player and camera yaw (crowd control's way out)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
@@ -1597,6 +1613,7 @@ class Bot:
         self._combo_tick(snap, live, flat, now)
         self._quick_tick(p, snap, now)
         self._census_tick(p, snap, live)
+        self._taunt_watch(snap, now)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
         if within >= SURROUND_N and not self.surrounded:
@@ -1663,6 +1680,9 @@ class Bot:
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         if not live:
+            taunt = self._taunt(p, live, flat, now)
+            if taunt is not None:
+                return taunt
             took = self._bonus(p, live, flat, snap, now)
             if took is not None:
                 return took
@@ -1697,6 +1717,9 @@ class Bot:
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
+        taunt = self._taunt(p, live, flat, now)
+        if taunt is not None:
+            return taunt
         bombed = self._bomb(p, live, flat, yaw, snap, now)
         if bombed is not None:
             return bombed
@@ -1878,6 +1901,62 @@ class Bot:
         if quick and isinstance(k, int) and isinstance(self.qa_kills_k, int) and k > self.qa_kills_k:
             self.stats["quick_attack_kills"] += k - self.qa_kills_k
         self.qa_in, self.qa_kills_k = quick, k
+
+    # --- taunts -----------------------------------------------------------------------------------------------------
+    def _taunt_watch(self, snap, now) -> None:
+        """The triggers: TAUNT_KILLS kills within TAUNT_KILLS_S, a blast's TAUNT_BLAST kills (bomb_kills / grenade_kills
+        rising that much at once), a boss gone (one of BOSS_HP max health dead or freed); and a click's emotion seen."""
+        k = snap.get("kills")
+        if isinstance(k, int):
+            if isinstance(self._kills_prev, int) and k > self._kills_prev:
+                self.kill_times += [now] * min(10, k - self._kills_prev)
+            self._kills_prev = k
+        self.kill_times = [t for t in self.kill_times if now - t <= TAUNT_KILLS_S]
+        if len(self.kill_times) >= TAUNT_KILLS and self.taunt_due is None:
+            self.taunt_due = "taunt_multi"
+            self.kill_times = []
+        bk, gk = self.stats.get("bomb_kills", 0), self.stats.get("grenade_kills", 0)
+        if (bk - self._blast_kills_seen[0] >= TAUNT_BLAST or gk - self._blast_kills_seen[1] >= TAUNT_BLAST) \
+                and self.taunt_due is None:
+            self.taunt_due = "taunt_blast"
+        self._blast_kills_seen = (bk, gk)
+        alive = {e.get("ptr", e.get("slot")): e.get("hp_max") or 0 for e in snap.get("enemies") or ()
+                 if (e.get("hp") or 0) > 0}
+        for b in [b for b in self._bosses if b not in alive]:    # a big one gone: down
+            del self._bosses[b]
+            if self.taunt_due is None:
+                self.taunt_due = "taunt_boss"
+        self._bosses.update({b: h for b, h in alive.items() if h >= BOSS_HP})
+        if now - self.taunt_at <= TAUNT_SEEN_S and (snap.get("player") or {}).get("action") == EMOTION_ACTION \
+                and not self._taunt_seen:
+            self._taunt_seen = True
+            self.stats["taunts_seen"] += 1
+
+    def _taunt(self, p, live, flat, now) -> dict | None:
+        """A trigger waiting, nobody within TAUNT_CLEAR_R, TAUNT_GAP_S since the last: the right stick's click (a tap,
+        or held for the other call). None: no taunt now (a trigger is dropped when he is not clear)."""
+        clear = not any(flat(e) <= TAUNT_CLEAR_R for e in live)
+        if now < self.taunt_hold_until:                          # the held call (cut short when one comes close)
+            if clear:
+                return self._go("melee", "taunt", {"hold": ("rstick",)}, "the partner call, held")
+            self.taunt_hold_until = -1e9
+        due = self.taunt_due
+        if not TAUNTS or due is None:
+            return None
+        self.taunt_due = None
+        eq = p.get("equipped")
+        if (now - self.taunt_at < TAUNT_GAP_S or not clear or p.get("state") not in (0, None)
+                or (p.get("bomb") or {}).get("out") or self.bomb_phase is not None or self.nade is not None
+                or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or (self.combo_urgent and live)):
+            return None                                          # not now: the trigger is dropped
+        self._gun_down()
+        self.taunt_at, self._taunt_seen = now, False
+        self.stats["taunts"] += 1
+        self.stats[due] += 1
+        if random.random() < 0.5:
+            self.taunt_hold_until = now + TAUNT_HOLD_S
+            return self._go("melee", "taunt", {"hold": ("rstick",)}, f"a taunt ({due[6:]}): the partner call, held")
+        return self._go("melee", "taunt", {"tap": "rstick"}, f"a taunt ({due[6:]}): the partner call")
 
     # --- the whole stage --------------------------------------------------------------------------------------------
     def _census_tick(self, p, snap, live) -> None:
@@ -2717,7 +2796,8 @@ class RE6Switch(Driver):
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
-                      "quick_attacks", "quick_attack_kills", "pursuits", "pursuit_kills", "pursuit_lapses",
+                      "quick_attacks", "quick_attack_kills", "pursuits", "pursuit_kills", "pursuit_lapses", "taunts",
+                      "taunts_seen",
                       "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
                       "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
