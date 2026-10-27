@@ -731,9 +731,10 @@ class Screensaver:
         from . import mercmode
         pool = mercmode.warm_pool(self.store, w['name'])
         out, changed = {}, False
+        host_cfg = mercmode.settings(self.store, w['name'])
         for title, row in pool.items():
             job = self.store.get('job', row.get('job')) or {}
-            map_id = (mercmode.TITLES.get(title) or {}).get('map_id')
+            map_id = mercmode.title_spec(title, host_cfg).get('map_id')   # the edition this host plays (RE5 Switch: its TID)
             if not row.get('session_id'):
                 if job.get('state') in ('failed', 'rejected', 'invalid', 'cancelled') or now - row.get('at', now) > LAUNCH_TIMEOUT:
                     changed = True

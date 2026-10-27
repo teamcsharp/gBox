@@ -3228,10 +3228,14 @@ def _end_prepare(run, reason: str) -> None:
 
 
 def _prepare_title(g: dict) -> str:
-    """The MercMode title's map id (G4BE08 / BLUS30491) of this session's game, for its round receipt."""
+    """The MercMode title's map id (G4BE08 / BLUS30491, or a Switch edition's title id) of this session's game, for its
+    round receipt."""
     from .mercmode import TITLES
-    return next((t["map_id"] for t in TITLES.values() if (g or {}).get("game_id") in t.get("game_ids", ())),
-                (g or {}).get("title") or "")
+    from . import re_switch
+    gid = (g or {}).get("game_id")
+    if gid == re_switch.RE5_GAME_ID:                     # RE5 Switch No Mercy (gbox.re_switch.preferred_spec)
+        return re_switch.RE5_TITLE_ID
+    return next((t["map_id"] for t in TITLES.values() if gid in t.get("game_ids", ())), (g or {}).get("title") or "")
 
 
 def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
