@@ -2500,10 +2500,14 @@ D-Pad/Right = `H`
         if self.dbg or HOST_OS == "windows":
             return super().pause()
         import signal
+        # paused before the stop, playing after the continue: a reader that checks the flag (gbox.ram_dump.ShmRam, the
+        # RE4 bot's OwnShm) never starts a read of a stopped Dolphin, which can block in the kernel until it resumes
+        # (2026-10-27 05:56: the RE4 autobot sat in os.pread for 30 min, every later start "Autoplay is stopping")
+        self.paused = True
         n = self._signal_tree(signal.SIGSTOP)
         if not n:
+            self.paused = False
             raise Unsupported(f"{self.name}: no running process to pause")
-        self.paused = True
         return {"state": "PAUSED", "via": "SIGSTOP", "processes": n}
 
     def resume(self) -> dict:

@@ -103,6 +103,7 @@ from __future__ import annotations
 
 import heapq
 import json
+import errno
 import math
 import os
 import struct
@@ -319,6 +320,7 @@ LOOK_BUSY_SPEED = 500.0                          # moving faster than this (mm/s
 LOOK_BUSY_TURN = 0.6                             # ... or turning faster than this (rad/s)
 LOOK_SHOT_S = 1.0                                # a shot this recent is doing something
 LOOK_PUBLISH_S, LOOK_REFRESH_S = 0.25, 1.0       # stats["look"] refreshed at most / at least this often
+PAUSED_IDLE_S = 0.25                             # a paused session: the loop looks again this often (no reads)
 DOT_RANGE = 30000.0                              # the aim line (the laser dot) is followed this far
 FOE_H = 1800.0                                   # a standing foe's height (the aim line meets him below it)
 WALL_LINE_MARGIN = 300.0                         # a wall this much nearer than the target on the aim line: a wall shot
@@ -425,12 +427,18 @@ class ShmMem:
 
 class OwnShm:
     """The session's own Dolphin MEM1 (gbox.ram_dump.ShmRam: found only under the session's process, read-only), so two
-    RE4 sessions on one host never read each other's game."""
+    RE4 sessions on one host never read each other's game. ad: the session's adapter - while it is paused nothing is
+    read: a read of a stopped (SIGSTOP) Dolphin can block in the kernel until it resumes, and the bot thread blocked there
+    never saw its stop (2026-10-27 05:56: 30 min in os.pread under _scan_items, every later start "Autoplay is
+    stopping", the hot reloads refused)."""
 
-    def __init__(self, ram):
+    def __init__(self, ram, ad=None):
         self.ram = ram
+        self.ad = ad
 
     def rd(self, addr: int, n: int) -> bytes:
+        if self.ad is not None and getattr(self.ad, "paused", False):
+            raise OSError(errno.EAGAIN, "the emulator is paused: its memory is not read")
         return self.ram.read(0x80000000 | (addr & 0x1FFFFFF), n)
 
 
@@ -454,7 +462,7 @@ def memory(ad):
         from .ram_dump import ShmRam
         ram = ShmRam.find(ad)
         if ram is not None:
-            return OwnShm(ram)
+            return OwnShm(ram, ad)
     except Exception:                                  # noqa: BLE001 - the adapter's reads still work
         pass
     return AdMem(ad)
@@ -3795,7 +3803,18 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             send(rows)
         held = set(keys)
     while not stopped():
-        s = snapshot(m)
+        if ad is not None and getattr(ad, "paused", False):
+            # paused (the MercMode park, the pause button): no read and no press until it plays again, and a stop
+            # is seen at once (PAUSED_IDLE_S)
+            bot.stats["screen"] = "paused"
+            sleep(PAUSED_IDLE_S)
+            continue
+        try:
+            s = snapshot(m)
+        except OSError:
+            if ad is not None and getattr(ad, "paused", False):
+                continue                              # paused between the check and the read: the next pass waits
+            raise
         now = clock()
         room_on = _room_on(m)                         # a stage still loading shows the last round's clock
         if instant is not None:
