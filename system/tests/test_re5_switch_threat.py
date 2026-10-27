@@ -121,7 +121,9 @@ def test_an_aim_pitched_up_is_counted_with_its_cause():
     assert b2.stats["pitch_up_last"].split(":")[0] in ("raise", "retarget", "other")
 
 
-def test_the_sky_guard_pushes_the_aim_down_and_never_up_at_a_ground_majini():
+def test_the_sky_guard_pushes_the_aim_down_and_never_up_at_a_ground_majini(monkeypatch):
+    monkeypatch.setattr(R, "SKY_GUARD", True)
+    monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
     ground = at(500, 0)
     b.tick(snap([ground], motion=22))
@@ -138,7 +140,9 @@ def test_the_sky_guard_pushes_the_aim_down_and_never_up_at_a_ground_majini():
     assert "pitch_up_last" in b.stats and "keys" in b.stats["pitch_up_last"]
 
 
-def test_a_majini_actually_high_may_take_the_aim_up():
+def test_a_majini_actually_high_may_take_the_aim_up(monkeypatch):
+    monkeypatch.setattr(R, "SKY_GUARD", True)
+    monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
     ledge = at(450, 0, y=290.0)                                    # 2.9 m up at 4.5 m: his chest about 31 deg up
     b.tick(snap([ledge], motion=22))
@@ -149,7 +153,9 @@ def test_a_majini_actually_high_may_take_the_aim_up():
     assert b.stats["sky_corrections"] == 0 and "rup" in act["hold"]
 
 
-def test_aimed_with_no_laser_the_aim_goes_down():
+def test_aimed_with_no_laser_the_aim_goes_down(monkeypatch):
+    monkeypatch.setattr(R, "SKY_GUARD", True)
+    monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
     ground = at(500, 0)
     b.tick(snap([ground], motion=22))
@@ -161,7 +167,9 @@ def test_aimed_with_no_laser_the_aim_goes_down():
 
 
 
-def test_after_a_raise_the_pitch_stick_waits_for_the_games_own_pitch_to_settle():
+def test_after_a_raise_the_pitch_stick_waits_for_the_games_own_pitch_to_settle(monkeypatch):
+    monkeypatch.setattr(R, "SKY_GUARD", True)
+    monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
     ground = at(800, 0)
     low = (0.0, 140.0 - 180.0, 1000.0)                             # the laser 10 deg down, his chest about level
@@ -174,7 +182,9 @@ def test_after_a_raise_the_pitch_stick_waits_for_the_games_own_pitch_to_settle()
     assert "rup" in act["hold"]
 
 
-def test_the_pitch_coasts_when_its_rate_closes_the_error_and_a_reversal_is_counted():
+def test_the_pitch_coasts_when_its_rate_closes_the_error_and_a_reversal_is_counted(monkeypatch):
+    monkeypatch.setattr(R, "SKY_GUARD", True)
+    monkeypatch.setattr(R, "PITCH_SETTLE", True)
     b, clock = bot()
     ground = at(800, 0)
     b.tick(snap([ground], motion=22))
@@ -188,3 +198,16 @@ def test_the_pitch_coasts_when_its_rate_closes_the_error_and_a_reversal_is_count
     b._count_sticks({"hold": ("rup",)}, 1.0)
     b._count_sticks({"hold": ("rdown",)}, 1.2)
     assert b.stats["pitch_reversals"] == 1
+
+
+
+def test_the_guard_and_the_settle_are_off_as_at_14_58_and_the_sky_still_counts():
+    assert R.SKY_GUARD is False and R.PITCH_SETTLE is False and R.THREAT_FIRST
+    b, clock = bot()
+    ground = at(500, 0)
+    b.tick(snap([ground], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([ground], dot=(0.0, 140.0 + 400.0, 500.0), motion=26))   # the laser 38 deg up
+    assert b.stats["sky_ticks"] == 1 and b.stats["sky_guard_ticks"] == 0 and "rdown" in act["hold"]
+    clock[0] = 0.9
+    assert b.tick(snap([ground], motion=26))["hold"] == ("zl",)    # no blind push
