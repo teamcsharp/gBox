@@ -990,9 +990,14 @@ DETOUR_S = 1.5
 # gun back in his hand by itself; one blast took 11 J'avo (000 -> 011 kills, an 11 combo, in 3 s). With the loadouts'
 # bombs (re6_switch_mods.merc_loadout) and infinite_grenades every character carries five that never run out.
 BOMBS = True
-BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 3, 1000.0, 250.0   # a stand: this many within this, the nearest beyond ROOM
-BOMB_SECTION_CM = 1500.0                # a new section: this far from where the last bomb went, a zombie within reach
-BOMB_GAP_S = 12.0                       # a bomb at most this often
+# Rare and safe (operator's mine anxiety in numbers, live 2026-10-27 14:02: 48.5 s of 150 in bomb acts, 1573 health
+# lost there): one goes out only with him above BOMB_MIN_HP, nobody within BOMB_ROOM_R and BOMB_STAND_N coming within
+# BOMB_COMING_MIN_R..BOMB_STAND_R (it lands at his feet: he walks off it as they come over it), at most every BOMB_GAP_S;
+# clear of it, it goes off with BOMB_BLAST_N within BOMB_BLAST_R of it or anyone within BOMB_ON_R of it.
+BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 4, 1200.0, 400.0
+BOMB_COMING_MIN_R = 600.0
+BOMB_ON_R = 300.0
+BOMB_GAP_S = 30.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
 BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
 BOMB_SELF_R = 700.0                     # ... and him at least this far from it, never nearer: the floor of the rule
@@ -1057,8 +1062,8 @@ BOMB_HURT_HP = 50                       # a blast that takes this much of his he
 BOMB_LOG_N = 12
 BOMB_REAL_R = 3000.0                    # the placed bomb's unit (snapshot bomb_pos) within this of him: its spot is used
                                         # (stats bomb_aim_err_cm: how far it lay from 3 m ahead of the throw)
-BOMB_MIN_HP = 0.5                       # no new bomb under half health (live 12:29: a throw at low health dropped it at
-                                        # his feet and he crawled out of its reach at 1 health, too slow)
+BOMB_MIN_HP = 0.7                       # no new bomb under this much health (live 12:29: a throw at low health dropped it
+                                        # at his feet and he crawled out of its reach at 1 health, too slow)
 BOMB_RETRY_S = 4.0                      # readying one given up (one came within BOMB_ROOM_R): tried again this soon
                                         # (live 11:21: 900 -> 1 health in 5 s readying one with two at 76 cm)
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
@@ -1890,9 +1895,10 @@ class Bot:
 
     # --- remote bombs ----------------------------------------------------------------------------------------------
     def _bomb(self, p, live, flat, yaw, snap, now) -> dict | None:
-        """Remote bombs (BOMBS): at a stand (BOMB_STAND_N within BOMB_STAND_R) or in a new section (BOMB_SECTION_CM from
-        the last bomb), one goes out toward them; it goes off once BOMB_BLAST_N stand on it with him clear of it, or
-        after BOMB_HOLD_S. None: nothing to do with bombs this tick (the fight goes on)."""
+        """Remote bombs (BOMBS): healthy (BOMB_MIN_HP), nobody within BOMB_ROOM_R and BOMB_STAND_N coming 6-12 m off, at
+        most every BOMB_GAP_S, one goes out toward them; with him clear of it, it goes off once BOMB_BLAST_N stand on it,
+        one is within BOMB_ON_R of it, one comes within BOMB_DET_NEAR_R of him, or after BOMB_HOLD_S. None: nothing to
+        do with bombs this tick (the fight goes on)."""
         bomb = p.get("bomb")
         if not BOMBS or not isinstance(bomb, dict):
             self.bomb_phase = None
@@ -1911,8 +1917,9 @@ class Bot:
             out_s = now - (self.bomb_since or now)
             on_him = [e for e in live if flat(e) <= BOMB_FIGHT_R]
             coming = any(flat(e) <= BOMB_DET_NEAR_R for e in live)
-            if not on_him and me >= self.book.safe and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S or coming
-                                                        or (self.combo_urgent and on >= 1)):
+            on_close = any(math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_ON_R for e in live)
+            if not on_him and me >= self.book.safe and (on >= BOMB_BLAST_N or on_close or out_s >= BOMB_HOLD_S
+                                                        or coming or (self.combo_urgent and on >= 1)):
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
                 log = self.stats.setdefault("bomb_det_cm", [])
@@ -1947,14 +1954,12 @@ class Bot:
         if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
             return None
         near = min(flat(e) for e in live)
-        if near < BOMB_ROOM_R or sum(1 for e in live if flat(e) < BOMB_CROWD_R) >= BOMB_CROWD_N:
-            return None                                          # it lands at his feet: not among them
-        stand = sum(1 for e in live if flat(e) <= BOMB_STAND_R) >= BOMB_STAND_N
-        section = near <= BOMB_STAND_R and (self.bomb_from is None or
-                                            math.hypot(px - self.bomb_from[0], pz - self.bomb_from[1]) >= BOMB_SECTION_CM)
-        if not (stand or section):
+        if near < BOMB_ROOM_R:
+            return None                                          # it lands at his feet: never with one near
+        coming = sum(1 for e in live if BOMB_COMING_MIN_R <= flat(e) <= BOMB_STAND_R)
+        if coming < BOMB_STAND_N:
             return None
-        self.bomb_why = "a stand" if stand else "a new section"
+        self.bomb_why = f"{coming} coming at 6-12 m"
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 

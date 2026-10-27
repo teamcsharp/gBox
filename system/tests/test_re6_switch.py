@@ -396,7 +396,7 @@ def brain(snap_guest):
 
 
 def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it():
-    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))   # three ahead, 7-8 m off
+    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 900.0, 700))   # 4
     bot, clock, snap = brain(round_guest(enemies=crowd))
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
     first = run(bot, snap, clock, 1)[0]
@@ -425,7 +425,7 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
     run(bot, snap, clock, int(R.BOMB_LEARN_S / 0.05) + 2)
     assert bot.stats["bomb_self_hits"] == 0                                   # clear of it: the blast cost him nothing
     rec = bot.stats["bomb_blast_log"][-1]
-    assert rec["real"] and rec["hit_cm"] == [58, 58, 58] and rec["hp_lost"] == 0   # booked: the reach it showed
+    assert rec["real"] and rec["hit_cm"] == [58, 58, 58, 58] and rec["hp_lost"] == 0   # booked: the reach it showed
     snap["kills"] = (snap.get("kills") or 0) + 10                             # ten of them, and nobody left standing
     snap["enemies"] = []
     run(bot, snap, clock, int(R.BOMB_KILLS_S / 0.05) + 2)
@@ -600,7 +600,7 @@ def test_a_blast_that_hurts_him_inside_its_reach_is_a_self_hit_and_teaches_the_r
 
 
 def test_readying_a_bomb_is_given_up_when_one_comes_close():
-    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
+    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 900.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd))
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
     run(bot, snap, clock, 1)
@@ -745,6 +745,33 @@ def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks
     acts = run(bot, snap, clock, 12)
     attacks = [a for a in acts if "zr" in a.get("hold", ())]
     assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
+
+
+def test_a_bomb_only_healthy_with_nobody_near_and_four_coming_at_most_every_thirty_seconds():
+    four = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 1100.0, 700))
+    for kw, enemies in (({"hp": 900}, four[:3]),                                       # three coming: no
+                        ({"hp": 600}, four),                                           # 67 % health: no
+                        ({"hp": 900}, four + ((0.0, 0.0, 350.0, 700),))):              # one at 3.5 m: no
+        bot, clock, snap = brain(round_guest(enemies=enemies, **kw))
+        bot.tablet_at = clock[0] + 100
+        snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+        run(bot, snap, clock, 2)
+        assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0, kw
+    bot, clock, snap = brain(round_guest(enemies=four))
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+    bot.bomb_last = clock[0] - 20.0                                           # one 20 s ago: not yet
+    run(bot, snap, clock, 2)
+    assert bot.bomb_phase is None
+    bot.bomb_last = clock[0] - R.BOMB_GAP_S - 1                               # 31 s ago: now
+    run(bot, snap, clock, 1)
+    assert bot.bomb_phase == "equip"
+
+
+def test_clear_of_it_the_bomb_goes_off_with_one_within_three_metres_of_it():
+    far = (0.0, 0.0, R.BOMB_AHEAD - 900.0)
+    bot, clock, snap = bomb_out(((0.0, 0.0, R.BOMB_AHEAD + 250.0, 700),), me=far)   # one 2.5 m past the bomb
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts
 
 
 def test_no_new_bomb_under_half_health():
