@@ -1060,11 +1060,11 @@ class Bot:
             return {"hold": tuple(sorted(keys))}
         if not lz.get("up") or now - self.aim_since < READY_S:   # the gun is coming up (or knocked down)
             if now - self.aim_since > LASER_WAIT_S:
-                self.doing, self.why = "reraise", f"no laser after {now - self.aim_since:.2f} s"
+                self.doing, self.why = "reraise", f"no laser after {now - self.aim_since:.2f} s (motion {p.get('motion')})"
                 self.stats["reraise"] += 1                   # it did not come up: let ZL go a tick, press it again
                 self._gun_down()
                 return {"hold": ()}
-            self.doing, self.why = "raise", "the gun coming up"
+            self.doing, self.why = "raise", f"the gun coming up (motion {p.get('motion')})"
             return {"hold": ("zl",)}
         ray = (tuple(lz["from"]), tuple(lz["at"]))
         if ray != self.ray_key:
@@ -1084,7 +1084,8 @@ class Bot:
         chest = (foot[0], foot[1] + CHEST_H, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         if abs(yaw_err) > UNAIM_ERR:                         # the aim is far off him: gun down, turn the body
-            self.doing, self.why = "unaim", f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m"
+            self.doing, self.why = "unaim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m "
+                                             f"(ray {math.dist(origin, dot) / 100:.1f} m)")
             self._gun_down()
             return {"hold": self._turn(body_err)}
         where = dot_on(dot, foot)
