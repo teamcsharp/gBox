@@ -403,7 +403,7 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
     bot, clock, snap = brain(round_guest(enemies=crowd))
     snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
     first = run(bot, snap, clock, 1)[0]
-    assert first == {"tap": "ddown"} and bot.doing == "bomb"                  # the item wheel to the remote bomb
+    assert first == {"tap": "dup"} and bot.doing == "bomb"                    # the wheel's up: one press to the bomb
     snap["player"]["equipped"] = R.BOMB_INDEX
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts       # ZL held, then ZR with it: the throw
@@ -509,10 +509,10 @@ def test_a_death_is_logged_with_its_cause_and_forgets_the_bomb():
     assert bot.bomb_at is None and bot.bomb_phase is None
 
 
-def test_the_bomb_walk_turns_the_camera_to_the_bomb_and_a_blast_that_hurts_him_is_counted():
-    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-300.0, 0.0, R.BOMB_AHEAD))   # the bomb 3 m to his right
+def test_the_bomb_walk_heads_away_from_the_bomb_and_a_blast_that_hurts_him_is_counted():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-300.0, 0.0, R.BOMB_AHEAD))   # the bomb 3 m to his +x
     act = run(bot, snap, clock, 1)[0]
-    assert act["hold"][0] == "ldown" and act["hold"][1:] == bot._turn(R.heading(300.0, 0.0))  # the camera to it
+    assert act["hold"] == ("lright",)                                         # +x is the screen's left: away is right
     bot, clock, snap = bomb_out(((0.0, 0.0, 300.0, 700),) * 2, me=(0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 10.0))
     run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)                       # set off from 7.1 m
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=600)   # the blast took 300 of his health
@@ -643,13 +643,13 @@ def test_no_bomb_readied_with_two_within_three_metres():
 
 def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
-    near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))   # three at 4.5-5.2 m
+    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700))   # three at 3-3.8 m
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
     bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
     snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
     acts = run(bot, snap, clock, 3)
-    assert {"tap": "ddown"} in acts and bot.nade["kind"] == "flash"          # the wheel to the flash grenade
+    assert {"tap": "dup"} in acts and bot.nade["kind"] == "flash"            # the wheel's up to the flash grenade
     snap["player"]["equipped"] = 11
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
@@ -663,6 +663,7 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)
     acts = run(bot, snap, clock, 2)
     assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["fever_kicks"] >= 1
+    assert bot.stats["bomb_drops"] == 0                                       # the fever first, no bomb drop
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
 
 
@@ -683,14 +684,37 @@ def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(
     assert bot.stats["grenade_kills"] == 3
 
 
+def test_the_wheel_key_steps_toward_the_grenade():
+    assert R.Bot._wheel_key(0, 11) == "dup" and R.Bot._wheel_key(0, 9) == "ddown"   # from the gun
+    assert R.Bot._wheel_key(12, 11) == "dup" and R.Bot._wheel_key(9, 10) == "ddown"  # on an item: toward it
+
+
+def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
+    run(bot, snap, clock, 2)
+    snap["player"]["equipped"] = 9
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert bot.stats["frags"] == 1
+    snap["player"]["equipped"] = 2                                            # the game's pick after the throw: the knife
+    acts = run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    assert {"tap": "dright"} in acts and bot.nade is not None                 # not his gun yet: on to it
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, 1)
+    assert bot.nade is None and bot.stats["nade_wheel"][-1]["to"] == 9
+
+
 def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
-    near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))
-    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
     bot.held = lambda p, now: False
-    snap["player"].update(equipped=0, nades={0x115: (11, 5)})
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
     run(bot, snap, clock, 2)
-    snap["player"]["equipped"] = 11                                           # the flash in hand ...
+    snap["player"]["equipped"] = 9                                            # the frag in hand ...
     snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)                             # ... and one at arm's length
     acts = run(bot, snap, clock, 2)
     assert {"tap": "dright"} in acts and bot.stats["nade_aborts"] == 1        # the gun back before anything
@@ -750,9 +774,9 @@ def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks
     assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
-def test_a_bomb_only_healthy_with_nobody_near_and_four_coming_at_most_every_thirty_seconds():
+def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_thirty_seconds():
     four = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 1100.0, 700))
-    for kw, enemies in (({"hp": 900}, four[:3]),                                       # three coming: no
+    for kw, enemies in (({"hp": 900}, four[:2]),                                       # two coming: no
                         ({"hp": 600}, four),                                           # 67 % health: no
                         ({"hp": 900}, four + ((0.0, 0.0, 350.0, 700),))):              # one at 3.5 m: no
         bot, clock, snap = brain(round_guest(enemies=enemies, **kw))
@@ -777,6 +801,44 @@ def test_clear_of_it_the_bomb_goes_off_with_one_within_three_metres_of_it():
     assert {"hold": ("zl", "zr")} in acts
 
 
+def test_the_way_out_is_the_widest_gap_and_the_stick_follows_the_camera():
+    p = {"pos": (0.0, 0.0, 0.0)}
+    ahead = [{"pos": (0.0, 0.0, 300.0)}, {"pos": (150.0, 0.0, 300.0)}, {"pos": (-150.0, 0.0, 300.0)}]
+    h = R.Bot._open_heading(p, ahead)
+    assert abs(R.wrap(h - math.pi)) <= math.pi / 4                            # they are ahead (+z): out behind
+    assert R.Bot._stick(math.pi, 0.0) == ("ldown",) and R.Bot._stick(math.pi / 2, 0.0) == ("lleft",)
+    assert R.Bot._stick(-math.pi / 4, 0.0) == ("lup", "lright")
+    h = R.Bot._open_heading(p, [], avoid=(0.0, 300.0))                        # a bomb ahead, nobody: away from it
+    assert abs(R.wrap(h - math.pi)) <= math.pi / 8
+
+
+def test_three_closing_he_kites_toward_open_space_while_aiming_and_counts_a_surround():
+    three = ((0.0, 0.0, 500.0, 700), (150.0, 0.0, 520.0, 700), (-150.0, 0.0, 540.0, 700))
+    on = ((0.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.86)
+    bot, clock, snap = brain(round_guest(enemies=three, cam_yaw=0.0, laser=on))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 10)
+    aimed = [a for a in acts if "zl" in a.get("hold", ()) and "zr" not in a.get("hold", ()) or
+             set(a.get("hold", ())) >= {"zl", "zr"} and len(a["hold"]) > 2]
+    assert any("ldown" in a.get("hold", ()) for a in acts) and bot.stats["kite_s"] > 0
+    ring = tuple((330.0 * math.sin(a), 0.0, 330.0 * math.cos(a), 700) for a in [i * math.pi / 4 for i in range(8)])
+    bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))
+    run(bot, snap, clock, 2)
+    assert bot.stats["surround_events"] == 1 and bot.stats["max_within_4m"] == 8 and aimed is not None
+
+
+def test_a_long_shot_the_laser_confirms_is_fired_and_its_kill_counted():
+    far = ((0.0, 0.0, 2500.0, 700),)                                          # 25 m ahead, nobody nearer
+    on = ((0.0, R.CHEST_H, 2500.0), (20.0, 145.0, 30.0), 0.86)              # the dot on his chest
+    bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0, laser=on))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 10)
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["confirmed_shots"] >= 1   # fired, no walking
+    snap["enemies"][0]["hp"] = 0                                              # he went down
+    run(bot, snap, clock, 1)
+    assert bot.stats["long_shot_kills"] == 1
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
@@ -789,12 +851,36 @@ def test_no_new_bomb_under_half_health():
 def test_no_bomb_without_one_a_crowd_or_room():
     for kw, enemies in (({"count": 0, "out": False}, ((0.0, 0.0, 700.0, 700),) * 3),     # none left
                         ({"count": 5, "out": False}, ((0.0, 0.0, 1500.0, 700),)),        # one, far: no stand
-                        ({"count": 5, "out": False}, ((0.0, 0.0, 150.0, 700),) * 3)):    # on top of him: no room
+                        ({"count": 5, "out": False}, ((0.0, 0.0, 150.0, 700),) * 2)):    # two on him: no drop
         bot, clock, snap = brain(round_guest(enemies=enemies))
         bot.bomb_from = (0.0, 0.0)                                            # where the last one went: no new section
         snap["player"].update(equipped=0, bomb=kw)
         acts = run(bot, snap, clock, 3)
-        assert bot.doing != "bomb" and {"tap": "ddown"} not in acts and bot.bomb_phase is None
+        assert bot.doing != "bomb" and {"tap": "dup"} not in acts and bot.bomb_phase is None
+
+
+def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
+    monkeypatch.setattr(R, "NADES", False)
+    monkeypatch.setattr(R, "BOMB_DROP", False)
+    out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
+    assert out == {"verified": True, "nades": True, "bomb_drop": True} and R.NADES and R.BOMB_DROP
+    assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
+
+
+def test_backing_out_of_a_crowd_he_drops_a_bomb_at_his_feet_and_walks_out_of_its_reach(monkeypatch):
+    monkeypatch.setattr(R, "BOMB_DROP", True)
+    ring = tuple((330.0 * math.sin(a), 0.0, 330.0 * math.cos(a), 700) for a in [i * math.pi / 4 for i in range(8)])
+    bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))         # eight round him at 3.3 m: surrounded
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={})
+    first = run(bot, snap, clock, 1)[0]
+    assert first == {"tap": "dup"} and bot.bomb_drop and bot.stats["bomb_drops"] == 1   # not called off: a drop
+    snap["player"]["equipped"] = R.BOMB_INDEX
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts and not any(set(a.get("hold", ())) & {"rleft", "rright"} for a in acts)
+    snap["player"]["bomb"] = {"count": 5, "out": True}
+    act = run(bot, snap, clock, 2)[-1]
+    assert "ldown" in act["hold"] and bot.stats["act"] == "bomb_escape"     # out of its reach first
 
 
 def test_a_zombie_behind_a_wall_is_not_fired_at_and_the_next_one_is_the_target():
@@ -914,7 +1000,7 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed():
     run(bot, snap, clock, 6)
     assert bot.doing != "bonus" and bot.stats["bonus_shots"] == 0
     R._BONUS.update(base=None)                                                         # another guest at the same base
-    g = round_guest(enemies=((0.0, 0.0, 3000.0, 700),), laser=((0.0, 60.0, 500.0), (20.0, 145.0, 30.0), 0.86))
+    g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, 60.0, 500.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                       # a wall at 5 m: the dot short
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
@@ -975,7 +1061,7 @@ def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
 
 
 def test_far_away_it_walks_along_the_camera():
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 3000.0, 700),), cam_yaw=0.0))
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 4000.0, 700),), cam_yaw=0.0))   # past LONG_R
     assert run(bot, snap, clock, 1)[0]["hold"] == ("lup",)
 
 
@@ -1725,7 +1811,8 @@ def test_zombies_up_close_get_quick_shots_and_kicks_and_the_ones_further_back_th
     assert acts[0] == {"hold": ("zl", "zr")} and bot.doing == "crowd"         # the gun down: the quick shot at once
     assert bot.stats["cc_quick_shots"] == 3 and bot.stats["quick_shots"] == 3 # one every CC_QSHOT_GAP_S
     assert all("zl" not in a.get("hold", ()) or a == {"hold": ("zl", "zr")} for a in acts)   # never the gun up
-    assert {"hold": ("ldown",)} in acts                                      # stepping back between them
+    assert any(set(a.get("hold", ())) & {"lup", "ldown", "lleft", "lright"} and "zl" not in a.get("hold", ())
+               for a in acts)                                                 # toward open space between them
     snap["enemies"] = [snap["enemies"][2]]                                   # only the far one left: the bursts
     snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.CHEST_H, 900.0), "up": True}
     acts = run(bot, snap, clock, 12)

@@ -82,7 +82,8 @@
         "fire_rate",
         {
           "multiplier": 4,
-          "magnum": 8
+          "magnum": 8,
+          "throw": 16
         }
       ],
       [
@@ -90,6 +91,13 @@
         {
           "on": true,
           "seconds": 3
+        }
+      ],
+      [
+        "bot_options",
+        {
+          "nades": true,
+          "bomb_drop": true
         }
       ]
     ],

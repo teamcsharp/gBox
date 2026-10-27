@@ -1073,8 +1073,8 @@ BOMBS = True
 # lost there): one goes out only with him above BOMB_MIN_HP, nobody within BOMB_ROOM_R and BOMB_STAND_N coming within
 # BOMB_COMING_MIN_R..BOMB_STAND_R (it lands at his feet: he walks off it as they come over it), at most every BOMB_GAP_S;
 # clear of it, it goes off with BOMB_BLAST_N within BOMB_BLAST_R of it or anyone within BOMB_ON_R of it.
-BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 4, 1200.0, 400.0
-BOMB_COMING_MIN_R = 600.0
+BOMB_STAND_N, BOMB_STAND_R, BOMB_ROOM_R = 3, 1200.0, 400.0   # (4 at 6-12 m placed none in 150 s live 14:18: the
+BOMB_COMING_MIN_R = 500.0                                   # operator wants the mines; 3 at 5-12 m)
 BOMB_ON_R = 300.0
 BOMB_GAP_S = 30.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
@@ -1114,10 +1114,33 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 #          (else the incendiary), never nearer than its blast;
 #   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
 #          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
-NADES = False                           # off until the item wheel's steps are measured (live 13:53: the wheel moved off
-                                        # the frag by itself, and the D-pad's right landed on the knife's slot)
-FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 600.0, 200.0
-NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 600.0, 1000.0, 300.0
+NADES = False                           # off by default: on per profile (re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+                                        # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
+                                        # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
+NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
+FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 400.0, 200.0   # the flash when they are on him: 3+ within 4 m (live 14:31: with
+                                        # "nobody within 3 m" none was ever thrown), no call-off but a hold, no facing
+# The bomb dropped while backing out of a crowd (BOMB_DROP_N within CC_BACK_R, him above BOMB_MIN_HP, BOMB_GAP_S since
+# the last): the wheel's up (one press from a gun) to it, ZL then ZR at his feet, then out of its reach first and set
+# off from the rule's distance as they come (stats bomb_drops).
+BOMB_DROP = False                       # off by default: on per profile (re6_switch_mods bot_options bomb_drop=)
+BOMB_DROP_N = 8                         # surrounded (operator 15:18: "surrounded by eight or more enemies ... drop a
+                                        # remote mine and run away from that location"): this many within CC_BACK_R
+# Not being surrounded (operator 15:18: "avoiding letting yourself be surrounded ... using the weapons at your disposal
+# to avoid that"): with KITE_N within KITE_R he keeps moving toward open space - the heading of KITE_DIRS whose zombies
+# within KITE_SCAN_R stand least in its way (and away from a bomb out) - while he aims and fires, in crowd control and
+# walking off a bomb too, kicking one in the way. The left stick by the camera: up its heading, left +90 deg (a larger
+# yaw is to the screen's left: rleft turns it up). stats kite_s, surround_events (SURROUND_N within CC_BACK_R),
+# max_within_4m.
+KITE_N, KITE_R, KITE_SCAN_R, KITE_DIRS = 3, 600.0, 700.0, 16
+# Confirmed-hit fire (operator 15:27: "if the ghidra hook is able to tell them if the shot they are lining up will hit
+# then have them take the shot. I love seeing the long shots"): the laser's ray ending on (or running through) any
+# living zombie fires at once, at any distance; with nobody within ENGAGE_R the gun comes up for one in front out to
+# LONG_R (the laser shows whether he is in sight). stats confirmed_shots, moving_shots (the stick on as it fires),
+# long_shot_kills (one over LONG_KILL_R dying within LONG_KILL_S of the trigger on him).
+LONG_R, LONG_KILL_R, LONG_KILL_S = 3500.0, 1500.0, 1.5
+SURROUND_N = 8
+NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
                                         # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
                                         # remote bomb)
@@ -1207,9 +1230,10 @@ class Bot:
                   "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "dyings",
                   "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
-                  "bonus_shots"):
+                  "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
+                  "moving_shots", "long_shot_kills"):
             self.stats.setdefault(k, 0)
-        for k in ("trigger_s", "first_pull_s", "bomb_face_s"):
+        for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
             self.stats.setdefault(k, 0.0)
         self.target, self.target_at = None, -1e9
         self.aim_since = None
@@ -1253,6 +1277,7 @@ class Bot:
         self.bomb_at = self.bomb_from = None                 # where it went (x, z), his spot then
         self.bomb_since, self.bomb_last, self.bomb_why = None, -1e9, ""
         self.bomb_kills = None                               # (the kill count at a blast, when)
+        self.bomb_drop = False                               # this bomb dropped while backing out of a crowd
         self.bomb_walk, self.bomb_side_until = None, -1e9    # walking off it: (since when, from where); a side step
         self.bomb_walk_since = None                          # when this bomb's walk began
         self.bomb_real = False                               # this bomb's spot read from its unit
@@ -1260,6 +1285,9 @@ class Bot:
         self.nade, self.nade_last, self.nade_kills = None, -1e9, None   # the throw under way; its kills (count, when)
         self.fever_until = -1e9                              # the melee fever after a flash
         self.combo_prev, self.combo_urgent = 0, False
+        self.surrounded = False                              # 8+ within 4 m last tick
+        self._p, self._cam_yaw = None, 0.0
+        self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R                       # this tick's player and camera yaw (crowd control's way out)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
         self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
@@ -1374,6 +1402,13 @@ class Bot:
     def _score_hits(self, snap, now) -> None:
         """A zombie's health falling within HIT_S of a shot is that shot's hit (accuracy = hits / shots)."""
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
+        for k, at in list(self.long_shot.items()):               # a long shot's kill: he dies soon after the trigger
+            if hp.get(k, 0) <= 0 and self.hp_prev.get(k, 0) > 0 or (k not in hp and k in self.hp_prev):
+                if now - at <= LONG_KILL_S:
+                    self.stats["long_shot_kills"] += 1
+                del self.long_shot[k]
+            elif now - at > LONG_KILL_S:
+                del self.long_shot[k]
         self._dropped = {k for k, h in hp.items() if h < self.hp_prev.get(k, h)}
         drops = len(self._dropped)
         self.hp_prev = hp
@@ -1521,6 +1556,11 @@ class Bot:
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
         self._combo_tick(snap, live, flat, now)
+        within = sum(1 for e in live if flat(e) <= CC_BACK_R)
+        self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
+        if within >= SURROUND_N and not self.surrounded:
+            self.stats["surround_events"] += 1
+        self.surrounded = within >= SURROUND_N
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
@@ -1589,9 +1629,12 @@ class Bot:
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
+        self._p, self._cam_yaw = p, yaw
         bearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)
         vis = [e for e in live if not self.is_blocked(e, now)]              # out of sight: never the target
         front = [e for e in vis if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
+        if not front:                                            # nobody near: one in front far off - a long shot
+            front = [e for e in vis if flat(e) <= LONG_R and abs(bearing(e)) <= FRONT_CONE]
         tgt = self._choose(p, yaw, front or vis or live, now)
         foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         self.stats["target_dist"] = round(dist)
@@ -1663,6 +1706,9 @@ class Bot:
             self.stats["backoffs"] += 1
         self.keeping_off = keep_off
         back = ("ldown",) if keep_off else ()
+        if sum(1 for e in live if flat(e) < KITE_R) >= KITE_N:  # 3+ closing: toward open space as he fires
+            back = self._stick(self._open_heading(p, live), yaw)
+            self.stats["kite_s"] = round(self.stats["kite_s"] + TICK_S, 2)
         if p.get("ammo") == 0 and now - self.reload_at > RELOAD_GAP_S:
             self.reload_at = now                                 # empty: reload (Y)
             self.stats["reloads"] += 1
@@ -1692,7 +1738,7 @@ class Bot:
             if cam is None or now - self.aim_since < LASER_WAIT_S:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
             origin, dot, source = cam["pos"], cam["target"], "camera"
-        on_e = self._on_line(origin, dot, source, front or vis, now)
+        on_e = self._on_line(origin, dot, source, vis if source == "laser" else (front or vis), now)
         if source == "laser" and on_e is None and self._ray_short(origin, dot, tgt):
             self._block(tgt, now, "los_blocks")                  # the ray ends on something in front of him: a wall
         if on_e is not None and on_e is not tgt:                 # the line is on another one: he is the target now
@@ -1747,6 +1793,13 @@ class Bot:
         on = on_e is not None
         auto = p.get("weapon_id") in AUTO_IDS
         trig = self._trigger(on, now, auto)
+        if trig:
+            if source == "laser":
+                self.stats["confirmed_shots"] += 1               # the ray itself on him: the hit confirmed
+            if set(back) & {"lup", "ldown", "lleft", "lright"}:
+                self.stats["moving_shots"] += 1
+            if on_e is not None and dist > LONG_KILL_R:
+                self.long_shot[on_e.get("ptr", on_e.get("slot"))] = now
         if not on and not back and dist <= AIM_WALK_R and self.aim_since is not None and now - self.aim_since > AIM_WALK_S:
             back = ("lup",)                                      # never standing among them: in at him while aiming
         if on:                                                   # the trigger on him: his health must fall (NOHIT_S)
@@ -1763,6 +1816,43 @@ class Bot:
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    # --- the way out -------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _open_heading(p, live, avoid=None) -> float:
+        """The clearest way out: of KITE_DIRS headings, the one the zombies within KITE_SCAN_R stand least in the way of
+        (each counts by how squarely it is ahead and how near), steering clear of `avoid` (x, z) - a bomb - too."""
+        px, _, pz = p["pos"]
+        near = []
+        for e in live:
+            d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            if d <= KITE_SCAN_R:
+                near.append((heading(e["pos"][0] - px, e["pos"][2] - pz), 1.2 - d / KITE_SCAN_R))
+        away = heading(avoid[0] - px, avoid[1] - pz) if avoid is not None else None
+        best, best_cost = 0.0, math.inf
+        for i in range(KITE_DIRS):
+            h = -math.pi + 2 * math.pi * i / KITE_DIRS
+            cost = sum(w * ((1.0 + math.cos(h - b)) / 2.0) ** 2 for b, w in near)
+            if away is not None:
+                cost += 3.0 * (1.0 + math.cos(h - away)) / 2.0
+            if cost < best_cost:
+                best, best_cost = h, cost
+        return best
+
+    @staticmethod
+    def _stick(h: float, yaw: float) -> tuple:
+        """The left stick toward heading h with the camera at yaw: up along it, left at +90 deg, the diagonals between."""
+        rel = wrap(h - yaw)
+        keys = []
+        if abs(rel) <= 3 * math.pi / 8:
+            keys.append("lup")
+        elif abs(rel) >= 5 * math.pi / 8:
+            keys.append("ldown")
+        if math.pi / 8 < rel < 7 * math.pi / 8:
+            keys.append("lleft")
+        elif -7 * math.pi / 8 < rel < -math.pi / 8:
+            keys.append("lright")
+        return tuple(keys)
 
     # --- grenades and the combo -------------------------------------------------------------------------------------
     def _combo_tick(self, snap, live, flat, now) -> None:
@@ -1796,12 +1886,12 @@ class Bot:
             if not NADES or now - self.nade_last < NADE_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
                 return None
             nades = p.get("nades") or {}
-            if any(flat(e) < NADE_START_R for e in live):
-                return None
             group, kind = None, None
             near = [e for e in vis if flat(e) <= FLASH_R]
             if len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0:
                 group, kind = near, "flash"
+            elif any(flat(e) < NADE_START_R for e in live):
+                return None
             else:
                 for e in vis:
                     if not NADE_MIN_R <= flat(e) <= NADE_MAX_R:
@@ -1824,7 +1914,7 @@ class Bot:
         self._gun_down()
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
-        if n["phase"] in ("equip", "face", "aim") and any(flat(e) < MELEE_R for e in live):
+        if n["kind"] != "flash" and n["phase"] in ("equip", "face", "aim") and any(flat(e) < MELEE_R for e in live):
             self.stats["nade_aborts"] += 1                       # one on him: the gun back first, then the fight
             n.update(phase="back", at=now - NADE_STEP_S, steps=0)
         if n["phase"] == "equip":
@@ -1836,12 +1926,13 @@ class Bot:
             elif now - n["at"] >= NADE_STEP_S:
                 n["steps"] += 1
                 n["at"] = now
-                return self._go("nade", "nade_" + n["kind"], {"tap": "ddown"}, f"the item wheel to the {n['kind']} grenade")
+                key = self._wheel_key(eq, n["index"])
+                return self._go("nade", "nade_" + n["kind"], {"tap": key}, f"the item wheel to the {n['kind']} grenade")
             else:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
         if n["phase"] == "face":
             err = wrap(heading(n["to"][0] - px, n["to"][1] - pz) - yaw)
-            if abs(err) > NADE_FACE_ERR and now - n["at"] < NADE_FACE_S:
+            if n["kind"] != "flash" and abs(err) > NADE_FACE_ERR and now - n["at"] < NADE_FACE_S:
                 return self._go("nade", "nade_" + n["kind"], {"hold": self._turn(err)}, f"facing them for the {n['kind']}")
             n.update(phase="aim", at=now)
         if n["phase"] == "aim":
@@ -1878,6 +1969,15 @@ class Bot:
                 return self._go("nade", "nade_back", {"tap": n["back_key"]}, "the gun back in hand")
             return self._go("nade", "nade_back", {"hold": ()}, "the gun coming back")
         return None
+
+    @staticmethod
+    def _wheel_key(eq, index: int) -> str:
+        """The D-pad press that steps the item wheel toward wheel index `index` (live 2026-10-27 14:17: from a gun the
+        first down only opens the wheel, then down steps 9 -> 10 -> 11 -> 12 and stops; up goes straight to 12, then
+        11, 10; on an item, down steps up the indexes and up steps down them)."""
+        if isinstance(eq, int) and eq >= WEAPON_INDEXES:
+            return "ddown" if eq < index else "dup"
+        return "dup" if index >= NADE_UP_FROM else "ddown"
 
     def _nade_done(self, n, now) -> None:
         log = self.stats.setdefault("nade_wheel", [])
@@ -1982,13 +2082,14 @@ class Bot:
             self.quick = 2
             return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
         backing = sum(1 for z in live if flat(z) < CC_BACK_R) >= CC_BACK_N   # a crowd: every attack backs out too
+        out = self._stick(self._open_heading(self._p, live), self._cam_yaw) if backing else ()   # toward open space
         if backing:
             self.stats["cc_backouts"] += 1
         if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= CC_KICK_GAP_S:
             self.melee_at = now
             self.stats["melee"] += 1
             self.stats["cc_kicks"] += 1
-            return self._go("crowd", "cc_kick", {"hold": ("ldown", "zr")} if backing else {"tap": "zr"},
+            return self._go("crowd", "cc_kick", {"hold": out + ("zr",)} if backing else {"tap": "zr"},
                             f"one at {d:.0f} cm: a kick (crowd control)" + (", backing out" if backing else ""))
         if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= CC_QSHOT_GAP_S:
             self.qshot_at = now
@@ -1997,12 +2098,13 @@ class Bot:
             self.qshot_release = True
             self.cc_shot = (e.get("ptr", e.get("slot")), now,
                             {z.get("ptr", z.get("slot")): z.get("hp") or 0 for z in live if flat(z) <= CC_R})
-            return self._go("crowd", "cc_quick_shot", {"hold": ("ldown", "zl", "zr") if backing else ("zl", "zr")},
+            return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
         if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
-        return self._go("crowd", "cc_space", {"hold": ("ldown",)}, f"one at {d:.0f} cm: stepping back between attacks")
+        step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)
+        return self._go("crowd", "cc_space", {"hold": step}, f"one at {d:.0f} cm: toward open space between attacks")
 
     # --- time bonuses ----------------------------------------------------------------------------------------------
     def _bonus_book(self, snap) -> None:
@@ -2149,7 +2251,7 @@ class Bot:
                 self.bomb_face_t += TICK_S
                 return self._go("bomb", "bomb_face", {"hold": self._turn(err)}, "a bomb out, nobody near: a look at it")
             return self._go("bomb", "bomb_wait", {"hold": ()}, f"a bomb out: {on} on it, {me:.0f} cm from him")
-        if self.bomb_phase in ("equip", "face", "aim") and live and (
+        if self.bomb_phase in ("equip", "face", "aim") and live and not self.bomb_drop and (
                 min(flat(e) for e in live) < BOMB_ROOM_R or sum(1 for e in live if flat(e) < BOMB_CROWD_R) >= BOMB_CROWD_N):
             self.stats["bomb_aborts"] += 1                       # one came close while it was readied: fight first
             self.bomb_phase, self.bomb_last = None, now - BOMB_GAP_S + BOMB_RETRY_S
@@ -2166,12 +2268,19 @@ class Bot:
         if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
             return None
         near = min(flat(e) for e in live)
-        if near < BOMB_ROOM_R:
+        crowd = sum(1 for e in live if flat(e) < CC_BACK_R)
+        flash_ready = (NADES and now - self.nade_last >= NADE_GAP_S
+                       and ((p.get("nades") or {}).get(NADE_TYPES["flash"]) or (0, 0))[1] > 0)
+        self.bomb_drop = (BOMB_DROP and crowd >= BOMB_DROP_N      # backing out of a crowd: dropped at his feet
+                          and not flash_ready and now >= self.fever_until)   # (the flash and its fever first)
+        if near < BOMB_ROOM_R and not self.bomb_drop:
             return None                                          # it lands at his feet: never with one near
         coming = sum(1 for e in live if BOMB_COMING_MIN_R <= flat(e) <= BOMB_STAND_R)
-        if coming < BOMB_STAND_N:
+        if coming < BOMB_STAND_N and not self.bomb_drop:
             return None
-        self.bomb_why = f"{coming} coming at 6-12 m"
+        if self.bomb_drop:
+            self.stats["bomb_drops"] += 1
+        self.bomb_why = f"{crowd} on him: dropped as he backs out" if self.bomb_drop else f"{coming} coming at 5-12 m"
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 
@@ -2331,8 +2440,9 @@ class Bot:
             self.bomb_side_until = now + BOMB_SIDE_S
             self.detour = "lright" if self.detour == "lleft" else "lleft"
             self.bomb_walk = (now, (px, pz))
-        err = wrap(heading(at[0] - px, at[1] - pz) - yaw)
-        keys = ("ldown",) + ((self.detour,) if now < self.bomb_side_until else ()) + self._turn(err, TURN_TOL)
+        keys = self._stick(self._open_heading(p, live, avoid=at), yaw)
+        if now < self.bomb_side_until and self.detour not in keys:
+            keys = keys + (self.detour,)
         why = why or f"walking off the bomb: {me:.0f} cm from it, {on} on it"
         d_near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in live), default=math.inf)
         if d_near <= BOMB_FIGHT_R and now - self.melee_at >= CC_KICK_GAP_S:   # one on him: a kick as he goes
@@ -2367,7 +2477,7 @@ class Bot:
             if now - self.bomb_phase_at >= BOMB_STEP_S:
                 self.bomb_steps += 1
                 self.bomb_phase_at = now
-                return self._go("bomb", tag, {"tap": "ddown"}, "the item wheel to the remote bomb")
+                return self._go("bomb", tag, {"tap": self._wheel_key(eq, BOMB_INDEX)}, "the item wheel to the remote bomb")
             return self._go("bomb", tag, {"hold": ()}, "the item wheel steps")
         if self.bomb_phase == "equip":
             self.bomb_phase, self.bomb_phase_at = "face", now
@@ -2377,7 +2487,7 @@ class Bot:
             cx = sum(e["pos"][0] for e in group) / len(group)
             cz = sum(e["pos"][2] for e in group) / len(group)
             err = wrap(heading(cx - px, cz - pz) - yaw)
-            if abs(err) > BOMB_FACE and now - self.bomb_phase_at < BOMB_FACE_S:
+            if not self.bomb_drop and abs(err) > BOMB_FACE and now - self.bomb_phase_at < BOMB_FACE_S:
                 return self._go("bomb", tag, {"hold": self._turn(err)}, f"facing them for the bomb ({self.bomb_why})")
             self.bomb_phase, self.bomb_phase_at = "aim", now
             self.bomb_at = (px, pz)                              # taken to lie where he stands until it is read
@@ -2489,6 +2599,7 @@ class RE6Switch(Driver):
                       "holds_shaken", "cc_quick_shots", "cc_kicks", "los_blocks", "nohit_blocks", "cc_blocks",
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
+                      "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
                       "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
