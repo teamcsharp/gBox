@@ -632,6 +632,7 @@ def test_only_exact_paired_observations_set_actual_status_not_pending_desired():
     assert host['settings']==actual and host['desired_settings']==desired
     assert host['scheduler_owner']=='local' and host['settings_source']=='local_scheduler_observation'
     store.put(M.OBSERVED,w['name'],{'authority':'other','worker_id':w['id'],'settings':actual})
+    saver._status_cache=(0.0,None)                           # the shared status copy lasts STATUS_TTL_S
     host=saver.status()['mercmode']['hosts'][0]
     assert host['settings']['enabled'] is False and host['settings_source']=='unobserved_local_scheduler'
     assert host['desired_settings']==desired
@@ -1558,6 +1559,25 @@ def test_operator_agent_young_played_and_owned_copies_are_never_closed():
     M.configure(store,w['name'],{'enabled':False})                          # MercMode off: nothing is closed at all
     running_copy(store,'w1-stray',RE5,now[0]-600,S.ACTOR)
     assert saver._reap_orphans(w,store.running_sessions(),now[0])==[]
+
+
+def test_mercmode_status_is_computed_once_for_concurrent_callers(monkeypatch):
+    # 2026-10-26 19:25: ~54 concurrent GET /api/mercmode each read every session; they held the store's readers and the
+    # scheduler's tick stalled behind a round boundary waiting for one
+    import threading,time as clock
+    store,w,saver,calls,now,tick=rig()
+    real,runs=saver._mercmode_status,[0]
+    def slow():
+        runs[0]+=1;clock.sleep(0.2);return real()
+    saver._mercmode_status=slow
+    out=[]
+    threads=[threading.Thread(target=lambda:out.append(saver.mercmode_status())) for _ in range(8)]
+    for t in threads:t.start()
+    for t in threads:t.join()
+    assert runs[0]==1 and len(out)==8 and all(o is out[0] for o in out)
+    assert saver.mercmode_status() is out[0]                                # within the TTL: the shared copy
+    saver.mercmode_status(fresh=True);assert runs[0]==2                     # after a settings change: recomputed
+    monkeypatch.setattr(S,'STATUS_TTL_S',0.0);saver.mercmode_status();assert runs[0]==3
 
 
 def test_a_bot_may_not_relaunch_a_copy_mercmode_already_closed():

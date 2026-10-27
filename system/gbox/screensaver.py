@@ -240,6 +240,7 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
     return background.guarded_reason(store, worker, now=now, require_gpu=False)
 
 
+STATUS_TTL_S = 3.0             # GET /api/mercmode: callers within this window share one computation
 ORPHAN_GRACE_S = 60.0          # a copy younger than this may still be on its way into a run or the warm pool
 ORPHAN_TELEMETRY_S = 30.0      # a bot reported from it this recently: something plays it, it is not an orphan
 
@@ -280,6 +281,8 @@ class Screensaver:
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
         self.wake = None                                 # install(): the schedule loop's event; nudge() sets it
+        self._status_lock = threading.Lock()             # GET /api/mercmode: one computation at a time, shared
+        self._status_cache: tuple[float, dict | None] = (0.0, None)
 
     def games(self, cfg) -> list[dict]:
         """The games a demo may play: the operator's most played, plus (roulette) favorites with demo builds."""
@@ -361,13 +364,11 @@ class Screensaver:
             nxt = (self.store.get('session', run['session_id']) or {}).get('replaced_by')
             if nxt:
                 owned.add(nxt)                           # the run's own game relaunched by its bot: still the run
-        stopping = {(j.get('input') or {}).get('session_id') for j in self.store.all('job')
-                    if j.get('tool') == 'session_op' and (j.get('input') or {}).get('op') == 'stop_game'
-                    and j.get('state') in ('queued', 'assigned', 'running')}
+        stopping = None                                  # read only once a copy qualifies (every job: ~1 s on the Spark)
         closed = []
         for s in running:
             sid = s.get('session_id', '')
-            if not sid.startswith(w['id'] + '-') or sid in owned or sid in stopping or sid.split('-', 1)[1] in jobs:
+            if not sid.startswith(w['id'] + '-') or sid in owned or sid.split('-', 1)[1] in jobs:
                 continue
             launch = self.store.get('job', sid.split('-', 1)[1]) or {}
             actor = launch.get('actor')
@@ -384,6 +385,12 @@ class Screensaver:
             tel = telemetry_get(sid, now)
             if tel and tel.get('age_s', 99) < ORPHAN_TELEMETRY_S:
                 continue
+            if stopping is None:
+                stopping = {(j.get('input') or {}).get('session_id') for j in self.store.all('job')
+                            if j.get('tool') == 'session_op' and (j.get('input') or {}).get('op') == 'stop_game'
+                            and j.get('state') in ('queued', 'assigned', 'running')}
+            if sid in stopping:
+                continue                                 # its stop is on the way: never sent twice
             self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'stop_game', 'args': {}},
                                    agent_use=True, require_worker=w['id']), actor=ACTOR,
                         origin={'via': 'MercMode: closing an orphaned copy', 'session_id': sid})
@@ -1290,9 +1297,25 @@ class Screensaver:
             out["roulette"] = self.builder.status()
         return out
 
-    def mercmode_status(self) -> dict:
-        """GET /api/mercmode: one row per PC (its current registration, not every stale id a restart left behind) and one
-        read of the session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
+    def mercmode_status(self, fresh: bool = False) -> dict:
+        """GET /api/mercmode, computed once at a time and shared for STATUS_TTL_S. 2026-10-26 19:25: ~54 concurrent
+        requests (desktops, PiP, Pine, monitors, each retrying after its own timeout) each read every session and walked
+        the worker aliases; they took the store's readers, a round boundary waited behind them with the scheduler's lock
+        held, and MercMode's tick stalled. fresh=True (after a settings change) skips the shared copy, not the queue."""
+        cached_at, cached = self._status_cache
+        if not fresh and cached is not None and time.monotonic() - cached_at < STATUS_TTL_S:
+            return cached
+        with self._status_lock:
+            cached_at, cached = self._status_cache
+            if not fresh and cached is not None and time.monotonic() - cached_at < STATUS_TTL_S:
+                return cached                            # computed while this caller waited
+            out = self._mercmode_status()
+            self._status_cache = (time.monotonic(), out)
+            return out
+
+    def _mercmode_status(self) -> dict:
+        """One row per PC (its current registration, not every stale id a restart left behind) and one read of the
+        session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
         from . import mercmode
         sessions = self.store.all('session')
         running = self.store.running_sessions()
@@ -1560,7 +1583,7 @@ def install(app, store, config, auth, submit, workers, archive):
                     origin={'via':'MercMode local scheduler settings','worker':body.host})
                 store.put(mercmode.COMMAND,body.host,{'job':_jid(job),'settings':desired,'at':time.time(),
                     'worker_id':worker['id'],'state':'queued'})
-        return saver.mercmode_status()
+        return saver.mercmode_status(fresh=True)
 
     @app.post('/api/mercmode/prepare')
     def mercmode_prepare(body: MercModePrepare,actor=Depends(auth)):
