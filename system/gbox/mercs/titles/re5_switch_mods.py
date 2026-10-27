@@ -92,6 +92,10 @@ REC_ID, REC_COUNT, REC_GRID, REC_HAND, REC_UPG = 0x0, 0x4, 0x14, 0x18, 0x1C
 KNIFE_IDS = frozenset({0x100, 0x101, 0x10E, 0x114, 0x123, 0x124})   # the knives and WP00 (never a gun to replace)
 POWERFUL = (0x11B, 0x11A, 0x119, 0x115, 0x10D, 0x11C, 0x11D, 0x116, 0x10C, 0x120, 0x10B)   # the PS3 tool's draw
 MAGNUMS = (0x10B, 0x11A, 0x11B)
+# rampage_loadout (the 5 m rampage, operator 16:05: "blasting endless magnums or shotguns"): a block with no shotgun or
+# magnum on a D-pad slot gets RAMPAGE_GUN in its first such gun slot that is not the gun in hand (its own full
+# magazine). Chris (BSAA) already carries the Ithaca M37 on the D-pad's right: his block stays as it is.
+RAMPAGE_GUN, QUICK_GRIDS = 0x119, frozenset({1, 3, 5, 7})   # WP19 Hydra
 ROCKETS, LONG_GUNS = frozenset({0x10D}), frozenset({0x10D, 0x105, 0x11C, 0x120})   # rocket launcher; and the snipers
 HEALTH_MAX = 30000                                           # unlimited_health's boosted maximum (the PS3's)
 MINE_EVERY_DEFAULT = 9.0                                     # the Switch bot's cadence unless `mines` sets one
@@ -354,6 +358,8 @@ def compose_templates(g: RE5Switch) -> dict:
                 struct.pack_into("<I", t, o + REC_ID, new)
                 struct.pack_into("<I", t, o + REC_UPG, 0)
                 records += 1
+        if g.state.get("rampage_loadout"):
+            records += int(_rampage_block(t))
         if g.state.get("mine_loadout") and ptr - g.base in CHRIS_TEMPLATES \
                 and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == GRENADE_ID:
             struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, MINE_ID)
@@ -364,6 +370,38 @@ def compose_templates(g: RE5Switch) -> dict:
     return {"verified": bool(ok), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
             "effective_next_round": True,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def _rampage_block(t: bytearray) -> bool:
+    """One block: a shotgun or magnum on a D-pad slot (RAMPAGE_GUN in the first other gun slot there if none)."""
+    from . import re5_weapons
+    quick = []
+    for k in range(TEMPLATE_RECS):
+        o = k * TEMPLATE_REC
+        idw, = struct.unpack_from("<I", t, o + REC_ID)
+        grid, = struct.unpack_from("<I", t, o + REC_GRID)
+        hand, = struct.unpack_from("<I", t, o + REC_HAND)
+        if _is_gun(idw) and (idw & 0xFF) not in THROWN_ITEMS and grid in QUICK_GRIDS:
+            quick.append((o, idw, hand))
+    fam = lambda idw: getattr(re5_weapons.WEAPONS.get(idw & 0xFF), "family", None)
+    if any(fam(idw) in ("shotgun", "magnum") for _o, idw, _h in quick):
+        return False
+    spare = next((o for o, idw, hand in quick if hand != 1), None)
+    if spare is None:
+        return False
+    struct.pack_into("<I", t, spare + REC_ID, RAMPAGE_GUN)
+    struct.pack_into("<I", t, spare + REC_UPG, 0)
+    struct.pack_into("<i", t, spare + REC_COUNT, -1)
+    return True
+
+
+def rampage_loadout(g: RE5Switch, on: bool = True) -> dict:
+    """Every Mercenaries loadout with a shotgun or a magnum on a D-pad slot (the 5 m rampage's gun), from the next
+    round; off: the blocks composed without it."""
+    g.state["rampage_loadout"] = bool(on)
+    res = compose_templates(g)
+    return {"rampage_loadout": bool(on), **res,
+            "note": "a shotgun or magnum on a D-pad slot in every loadout from the next round (the Hydra where none)"}
 
 
 def _item(weapon) -> int:
@@ -965,7 +1003,7 @@ def revert_all(g: RE5Switch) -> dict:
         out["rotten_eggs"] = rotten_egg_only(g, False)["verified"]
     if g.state.get("kill_time"):
         g.state["kill_time"]["on"] = False
-    for key in ("weapon_override", "loadout", "replace", "preferred_weapon"):
+    for key in ("weapon_override", "loadout", "replace", "preferred_weapon", "rampage_loadout"):
         g.state.pop(key, None)
     req = g.state.get("weapon_request")
     if req and req.get("state") == "pending":
@@ -1136,6 +1174,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(run(ad, op, multiplier, on, g=g))
         elif op == "unlimited_health":
             res.update(unlimited_health(g, bool(on)))
+        elif op == "rampage_loadout":
+            res.update(rampage_loadout(g, bool(on)))
         elif op == "add_time":
             secs = extra.get("seconds")
             res.update(add_time(g, (multiplier if multiplier is not None else 60) if secs is None else secs))

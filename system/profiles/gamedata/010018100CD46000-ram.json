@@ -45,6 +45,12 @@
         {
           "on": true
         }
+      ],
+      [
+        "rampage_loadout",
+        {
+          "on": true
+        }
       ]
     ],
     "vocab": {

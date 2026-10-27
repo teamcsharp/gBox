@@ -71,6 +71,17 @@ def _no_system_drive_rule(monkeypatch):
     monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: None)
 
 
+@pytest.fixture(autouse=True)
+def _re5_switch_rampage_off(request, monkeypatch):
+    """The 5 m rampage (re5_switch.RAMPAGE) takes every fight with a Majini within 5 m; the older Switch fight tests
+    drive the aim paths it skips there (which still run past 5 m), so they run with it off;
+    tests/test_re5_switch_rampage.py runs with it on."""
+    mod = request.module.__name__
+    if "re5_switch" in mod and "rampage" not in mod:
+        from gbox.mercs.titles import re5_switch
+        monkeypatch.setattr(re5_switch, "RAMPAGE", False)
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache", api_port=free_port())
