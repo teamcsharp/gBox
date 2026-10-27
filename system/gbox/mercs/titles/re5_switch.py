@@ -216,9 +216,23 @@ APPROACH_LEAD_S, APPROACH_EMA, TURN_W, THREAT_KEEP, THREAT_KEEP_CM = 0.6, 0.5, 0
 # than PITCH_UP_LOG above level is counted with its cause - the target itself that high (pitch_up_target_high), the gun
 # just raised (pitch_up_raise: the camera's old pitch), the target just changed (pitch_up_retarget), else
 # pitch_up_other; stats pitch_up_last holds the last one's numbers.
-PITCH_UP_LOG, PITCH_UP_RECENT_S = math.radians(20), 0.6
+# Only a ray at least PITCH_UP_RAY long counts (a dot on something at the muzzle reads steep at any height). The first
+# ray after each raise is read too: raise_up_first counts those over PITCH_UP_LOG, with the last aim's pitch before the
+# gun came down (does the raise keep the old pitch?) in stats raise_up_last; pitch_up_last is a string (the notebook
+# keeps strings, not dicts).
+PITCH_UP_LOG, PITCH_UP_RECENT_S, PITCH_UP_RAY = math.radians(20), 0.6, 300.0
+# The sky guard (operator 2026-10-27 15:15, a frame of Chris aiming at the sky with a combo of 13 and 10 s left: "its a
+# major malfunction of the aimbot. It shouldnt be doing that"): every aimed tick, a laser more than SKY_MARGIN above
+# the target's own elevation (from the muzzle to his chest) is pushed down at once - the pitch-up stick never pressed in
+# that state - so only a Majini actually high takes the aim up. Aimed (motion 26) with no laser at all past SKY_BLIND_S
+# (the ray on nothing: the sky), the aim goes down too unless the last ray was already below level. sky_ticks: aimed
+# ticks with the laser over PITCH_UP_LOG while the target is under SKY_LOW (the target is 0); sky_corrections: each
+# time the guard took over; sky_blind_ticks: the no-laser pushes.
+SKY_MARGIN, SKY_LOW, SKY_RAY_CM, SKY_BLIND_S, MOTION_AIMED = math.radians(12), math.radians(10), 100.0, 0.3, 26
+SKY_COUNTERS = ("sky_ticks", "sky_corrections", "sky_guard_ticks", "sky_blind_ticks")
 THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
-                   "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other")
+                   "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
+                   "raise_first_rays") + SKY_COUNTERS
 # Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
 # nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
 # those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
@@ -861,6 +875,8 @@ class Bot:
         for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS + THREAT_COUNTERS:
             self.stats.setdefault(k, 0)
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
+        self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
+        self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._combo_prev, self._combo_window = 0, None   # the last combo count and its window (combo_breaks / lapses)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
@@ -1610,6 +1626,7 @@ class Bot:
                 return {"hold": self._turn(body_err)}
             self.turning = False
             self.aim_since = self._raise_t = now
+            self._lower_pitch, self._first_ray = self._ray_pitch, True
             self.stats["raises"] += 1
             self.ray_seen = self.last_ray = None
         lz = snap.get("laser")
@@ -1629,6 +1646,7 @@ class Bot:
             return {"hold": tuple(sorted(keys))}
         if lz.get("up") and now - self.aim_since >= READY_S:
             ray = (tuple(lz["from"]), tuple(lz["at"]))
+            self._note_ray_pitch(ray, tgt, dist)
             self.ray_seen, self.last_ray = now, ray
             if ray != self.ray_key:
                 self.ray_key, self.ray_since = ray, now
@@ -1650,6 +1668,11 @@ class Bot:
             self.doing, self.why = "raise", f"the gun coming up (motion {motion})"
             if self.fire_down:
                 self._trigger(False, now)
+            if motion == MOTION_AIMED and waited > SKY_BLIND_S \
+                    and (self._ray_pitch is None or self._ray_pitch > -math.radians(5)):
+                self.stats["sky_blind_ticks"] += 1           # aimed, no dot anywhere: the ray on the sky; down
+                self.why = f"aimed with no laser {waited:.2f} s: the aim down (the sky)"
+                return {"hold": ("rdown", "zl")}
             return {"hold": ("zl",)}
         origin, dot = ray
         on_e = next((e for e in live if dot_on(dot, e["pos"])
@@ -1744,13 +1767,59 @@ class Bot:
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch(pitch_err, windows[1])   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
+        keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
+        if self._pu_detail is not None:
+            self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "
+                                           f"keys {','.join(sorted(keys))}")
+            self._pu_detail = None
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
 
+    def _sky_guard(self, origin, dot, chest, on, point_blank, keys) -> set:
+        """The laser more than SKY_MARGIN above the target's elevation: the pitch-up stick out, the pitch-down in."""
+        if point_blank or math.dist(origin, dot) < SKY_RAY_CM:
+            self._sky = False
+            return keys
+        have = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
+        elev = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
+        if have > PITCH_UP_LOG and elev < SKY_LOW:
+            self.stats["sky_ticks"] += 1
+        sky = have > elev + SKY_MARGIN and not on
+        if sky:
+            if not self._sky:
+                self.stats["sky_corrections"] += 1
+            self.stats["sky_guard_ticks"] += 1
+            keys = (set(keys) - {"rup"}) | {"rdown"}
+            self.why = (f"sky guard: the laser {math.degrees(have):+.0f} deg, the target {math.degrees(elev):+.0f} deg; "
+                        + self.why)
+        self._sky = sky
+        return keys
+
+    def _note_ray_pitch(self, ray, tgt, dist) -> None:
+        """The aim's pitch from each live ray; the first after a raise compared with the last before it."""
+        origin, dot = ray
+        if math.dist(origin, dot) < PITCH_UP_RAY:
+            return
+        pitch = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
+        if self._first_ray:
+            self._first_ray = False
+            self.stats["raise_first_rays"] += 1
+            if pitch > PITCH_UP_LOG:
+                self.stats["raise_up_first"] += 1
+                want = math.atan2(tgt["pos"][1] + CHEST_H - origin[1], max(dist, 1.0))
+                low = self._lower_pitch
+                self.stats["raise_up_last"] = (f"first ray {math.degrees(pitch):+.0f} deg, the last aim before "
+                                               + (f"{math.degrees(low):+.0f}" if low is not None else "none")
+                                               + f" deg, wanted {math.degrees(want):+.0f} deg at {dist / 100:.1f} m")
+        self._ray_pitch = pitch
+
     def _pitch_up(self, origin, dot, chest, tgt, dist, now) -> None:
-        """An aimed tick with the laser over PITCH_UP_LOG above level: counted, with its cause."""
+        """An aimed tick with the laser over PITCH_UP_LOG above level (a ray PITCH_UP_RAY or longer): counted, with
+        its cause."""
+        if math.dist(origin, dot) < PITCH_UP_RAY:
+            return
         have = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
         if have <= PITCH_UP_LOG:
             return
@@ -1760,10 +1829,11 @@ class Bot:
                  "retarget" if now - self.target_at < PITCH_UP_RECENT_S else "other")
         self.stats["pitch_up_ticks"] += 1
         self.stats["pitch_up_" + cause] += 1
-        self.stats["pitch_up_last"] = {"cause": cause, "have_deg": round(math.degrees(have), 1),
-                                       "want_deg": round(math.degrees(want), 1), "dist_m": round(dist / 100, 1),
-                                       "dy_cm": round(tgt["pos"][1] - origin[1] + MUZZLE_H), "class": tgt.get("class"),
-                                       "up_s": round(now - self.aim_since, 2) if self.aim_since is not None else None}
+        self._pu_detail = (
+            f"{cause}: the laser {math.degrees(have):+.0f} deg, wanted {math.degrees(want):+.0f} deg, {dist / 100:.1f} m, "
+            f"dy {tgt['pos'][1] - origin[1] + MUZZLE_H:+.0f} cm, ray {math.dist(origin, dot) / 100:.1f} m, up "
+            + (f"{now - self.aim_since:.2f}" if self.aim_since is not None else "-")
+            + f" s, the target {now - self.target_at:.2f} s, {tgt.get('class') or '?'}")
 
     @staticmethod
     def _near_aim(origin, dot, live, flat):
