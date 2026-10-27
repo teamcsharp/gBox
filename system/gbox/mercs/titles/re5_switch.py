@@ -270,10 +270,28 @@ FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_aw
 # raise over REROLL_ERR above the wanted angle: the gun down and up again, once (raise_rerolls).
 CLOSE_PITCH_R, CLOSE_SKY, CLOSE_SKY_S, REROLL_ERR = 250.0, math.radians(15), 0.3, math.radians(15)
 CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
+# The 5 m rampage (operator 16:05: "if the bot is surrounded by enemies. They need to be blasting continuously until the
+# threat is resolved. I dont want them raising the gun and putting it down ... until the threats within 5 meters of
+# their circle are gone ... i dont care about inaccuracy"; 16:12: "whipping their view around unreasonably while
+# they're getting attacked from behind pointing the gun at threats that aren't even on screen"). With a living Majini
+# on his level within RAMPAGE_R, every other path waits (no dot switch, ray pick, pursuit, combo push, crowd move, wall
+# gate, unaim): the target is the nearest inside the circle, held until it dies or leaves it (one within GRAB_THREAT_R
+# takes over; at most one change every RAMPAGE_RETARGET_S); one within BEHIND_R and over RAMPAGE_BEHIND off his facing
+# gets one decisive quick turn (the gun down for it, behind_turns), the gun comes up at once (no body turn first) and
+# the trigger stays down from the first tick, the aim turning by yaw (pitch only past CLOSE_PITCH_R). The gun: a
+# shotgun, else a magnum, on a D-pad slot (one press while the gun is down; the main gun back after: rampage_swaps).
+# Counters: rampage_s, rampage_shots (pulls), rampage_kills, idle_in_5m_s (no trigger with one inside: target 0),
+# unaims_in_5m (target 0), behind_turns, offscreen_aim_s (the aim over OFFSCREEN_ERR off the nearest inside, target 0),
+# whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
+RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = True, 500.0, 0.6, math.radians(100)
+RAMPAGE_FAMILIES = ("shotgun", "magnum")
+OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
+RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
+                    "offscreen_aim_s", "whips", "rampage_swaps")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
-                     "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS
+                     "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -974,6 +992,9 @@ class Bot:
         self._wall_since, self._away_since, self._behind_on, self._fault_t = None, None, False, None
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
         self._first_check, self._raise_is_reroll, self._reroll_next, self._close_sky_since = False, False, False, None
+        self._ramp = None                                # the rampage: {"since", "main", "kills0", "retarget_at"}
+        self._ramp_t, self._swap_at, self._restore = None, -1e9, None
+        self._whip = {"dir": 0, "amount": 0.0, "end": -1e9, "last_big": None, "rot": None}
         self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
         self._kills_prev = None
         self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
@@ -1089,6 +1110,7 @@ class Bot:
         self._fault_t = now
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
+        self._watch_whips(p, now)
         self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
         if snap.get("unit_enemies_alive") is not None:
             self.stats["census_units"] = snap["unit_enemies_alive"]
@@ -1180,6 +1202,150 @@ class Bot:
                    (180, ("ldown",)), (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)),
                    (-45, ("lright", "lup")))
         return min(options, key=lambda o: abs(o[0] - a))[1]
+
+    def _watch_whips(self, p, now) -> None:
+        """A turn of WHIP_DEG or more one way, then WHIP_BACK_DEG back within WHIP_S of its end: a whip."""
+        w, rot = self._whip, p.get("rot")
+        if rot is None:
+            return
+        if w["rot"] is None:
+            w["rot"] = rot
+            return
+        d = math.degrees(wrap(rot - w["rot"]))
+        w["rot"] = rot
+        if abs(d) < 0.5:
+            return
+        sign = 1 if d > 0 else -1
+        if sign != w["dir"]:
+            if w["amount"] >= WHIP_DEG:
+                w["last_big"] = (w["dir"], w["end"])     # a big turn ended at its last tick
+            w["dir"], w["amount"] = sign, 0.0
+        w["amount"] += abs(d)
+        w["end"] = now
+        big = w["last_big"]
+        if big is not None and sign != big[0] and w["amount"] >= WHIP_BACK_DEG:
+            if now - big[1] <= WHIP_S:
+                self.stats["whips"] += 1
+            w["last_big"] = None
+
+    def _rampage_gun(self, inv):
+        """The shotgun, else the magnum, on a D-pad slot: (its inventory slot, family) or (None, None)."""
+        from . import re5_weapons
+        best = (None, None)
+        for fam in RAMPAGE_FAMILIES:
+            for s_ in inv or ():
+                spec = re5_weapons.WEAPONS.get(s_.get("item"))
+                if s_.get("type") == 1 and s_.get("grid") in QUICK and spec is not None and spec.family == fam:
+                    return s_, fam
+        return best
+
+    def _rampage(self, p, live, flat, snap, now):
+        """Anyone on his level within RAMPAGE_R: the gun up, the trigger down, the nearest inside held (above)."""
+        px, py, pz = p["pos"]
+        dt = 0.0 if self._ramp_t is None else max(0.0, min(now - self._ramp_t, LOOK_STEP_MAX_S))
+        self._ramp_t = now
+        ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY] if RAMPAGE else []
+        inv = snap.get("inventory") or ()
+        held = next((s_ for s_ in inv if s_.get("hand")), None)
+        if not ring:
+            if self._ramp is not None:                   # the circle is clear: the main gun back when the gun is down
+                self._restore, self._ramp = self._ramp.get("main"), None
+            if self._restore is not None and self.aim_since is None and held is not None \
+                    and held.get("item") != self._restore and now - self._swap_at >= SWAP_GAP_S:
+                back = next((s_ for s_ in inv if s_.get("item") == self._restore and s_.get("grid") in QUICK), None)
+                self._swap_at = now
+                if back is None:
+                    self._restore = None
+                    return None
+                self.stats["rampage_swaps"] += 1
+                self.doing, self.why = "raise", "the circle clear: the main gun back"
+                return {"hold": (QUICK[back["grid"]],)}
+            if held is not None and held.get("item") == self._restore:
+                self._restore = None
+            return None
+        kills = snap.get("kills")
+        if self._ramp is None:
+            self._ramp = {"since": now, "main": held.get("item") if held and held.get("type") == 1 else None,
+                          "kills0": kills if type(kills) is int else None, "retarget_at": -1e9}
+            self._restore = None
+        r = self._ramp
+        self.stats["rampage_s"] = round(self.stats["rampage_s"] + dt, 2)
+        if type(kills) is int and type(r["kills0"]) is int and kills > r["kills0"]:
+            self.stats["rampage_kills"] += kills - r["kills0"]
+            r["kills0"] = kills
+        elif type(kills) is int and r["kills0"] is None:
+            r["kills0"] = kills
+        # the target: the one held while inside and alive; a grab-range one takes over; one change per RAMPAGE_RETARGET_S
+        cur = next((e for e in ring if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        nearest = min(ring, key=flat)
+        tgt = cur
+        if cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
+            if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
+                tgt = nearest
+                r["retarget_at"] = now
+        key = tgt.get("ptr", tgt.get("slot"))
+        if key != self.target:
+            self._set_target(key, now)
+            self.target_at = now
+        dist = flat(tgt)
+        body_err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
+        gun, fam = self._rampage_gun(inv)
+        self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
+        # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
+        if dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S:
+            if self.aim_since is not None:
+                self._gun_down()
+            self.stats["behind_turns"] += 1
+            self.stats["quick_turns"] += 1
+            self.quick = 2
+            self.doing, self.why = "quick_turn", (f"rampage: one {dist / 100:.1f} m behind "
+                                                  f"({math.degrees(body_err):+.0f} deg): the quick turn")
+            self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
+            return {"hold": ("ldown",)}
+        if self.aim_since is None:
+            if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
+                self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
+                self.stats["rampage_swaps"] += 1
+                self.doing, self.why = "raise", f"rampage: the {fam} up first"
+                self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
+                return {"hold": (QUICK[gun["grid"]],)}
+            self.aim_since = self._raise_t = now         # up at once, no body turn first
+            self.stats["raises"] += 1
+            self.ray_seen = self.last_ray = None
+            self._lower_pitch, self._first_ray = self._ray_pitch, True
+            self._first_check, self._raise_is_reroll, self._reroll_next = False, True, False
+        lz = snap.get("laser") or {}
+        keys = {"zl"}
+        aim_off = abs(body_err)
+        weapon = f"0x{held['item']:03x}" if held else "gun"
+        if lz.get("up") and lz.get("from") and lz.get("at"):
+            origin, dot = tuple(lz["from"]), tuple(lz["at"])
+            chest = (tgt["pos"][0], tgt["pos"][1] + CHEST_H, tgt["pos"][2])
+            yaw_err, pitch_err = ray_error(origin, dot, chest)
+            aim_off = abs(yaw_err)
+            where = dot_on(dot, tgt["pos"])
+            self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": yaw_err, "where": where,
+                            "laserless": False, "weapon": weapon, "origin": origin, "dot": dot, "py": py,
+                            "class": tgt.get("class"), "foot": tuple(tgt["pos"]), "hp_max": tgt.get("hp_max"),
+                            "item": held.get("item") if held else None, "shooter": tuple(p["pos"]),
+                            "gate": "rampage" + (f": dot on {where}" if where else "")}
+            keys |= self._yaw(yaw_err)
+            if dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
+                keys |= self._pitch(pitch_err)
+        else:
+            self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": body_err, "where": None,
+                            "laserless": True, "weapon": weapon, "gate": "rampage: the gun coming up"}
+            keys |= self._yaw(body_err)
+        if not self.fire_down:
+            self.stats["rampage_shots"] += 1
+        keys |= self._trigger(True, now)                 # blasting from the first tick, whatever the dot is on
+        if aim_off > OFFSCREEN_ERR:
+            self.stats["offscreen_aim_s"] = round(self.stats["offscreen_aim_s"] + dt, 2)
+        self.doing = "fire"
+        self.why = (f"rampage: {len(ring)} within {RAMPAGE_R / 100:.0f} m, the nearest {flat(nearest) / 100:.1f} m; "
+                    f"on the one {dist / 100:.1f} m away ({math.degrees(body_err):+.0f} deg)")
+        self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
+        return {"hold": tuple(sorted(keys))}
 
     def _frozen_dot(self, p, dot, fresh) -> bool:
         """The live dot unchanged FROZEN_TICKS aimed ticks while the right stick was held or his heading changed."""
@@ -1845,6 +2011,9 @@ class Bot:
             live = rest or live
         self._fault_tick(p, live, flat, snap, now)
         if not live:
+            act = self._rampage(p, live, flat, snap, now)   # (the circle clear: the main gun back)
+            if act is not None:
+                return act
             act = self._pursue(p, live, flat, snap, now)
             if act is not None:
                 return act
@@ -1866,6 +2035,9 @@ class Bot:
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         act = self._pursue(p, live, flat, snap, now)
+        if act is not None:
+            return act
+        act = self._rampage(p, live, flat, snap, now)
         if act is not None:
             return act
         urgent = self._combo_urgent(snap)
@@ -2021,6 +2193,8 @@ class Bot:
         if far_off:
             if alt is None:                                  # nobody near the aim: gun down, turn the body
                 self.stats["unaims"] += 1
+                if near <= RAMPAGE_R:
+                    self.stats["unaims_in_5m"] += 1
                 self.doing, self.why = "unaim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m "
                                                  f"(ray {ray_len / 100:.1f} m)")
                 self._gun_down()

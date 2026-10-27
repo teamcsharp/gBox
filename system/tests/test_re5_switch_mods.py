@@ -169,7 +169,7 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
     assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}],
-                                               ["mine_loadout", {"on": True}]]
+                                               ["mine_loadout", {"on": True}], ["rampage_loadout", {"on": True}]]
 
 
 def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):
