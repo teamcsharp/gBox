@@ -185,6 +185,17 @@ POINT_BLANK_RAY, POINT_BLANK_R = 60.0, 150.0   # a ray this short with him this 
 SWITCH_ERR = math.radians(20)            # the aim far off the target: a Majini this near the ray is taken instead
 GRAB_THREAT_R = 120.0                    # one this near, not in front, is turned to before the ones in front
 CLOSE_BACKOFF, BURST_BACKOFF, HEALTHY_ESCAPES = False, False, False   # no back-offs, no bursts cut short; escapes hurt only
+# Long shots with care (operator 2026-10-27: "raining fire ... with the aimbot improving allowing them to fire with great
+# distance and precision if the opportunity allows"). Live 04:00-04:13 (rain fire): 27 pulls at Majini 8-22 m hit 16; the
+# misses' yaw was under 1.3 deg, most of them pulls that ended within 0.1-0.4 s, the dot swept across him; and aiming
+# began 15+ deg off in pitch for 88 of 149 s, the stick pulsed a tick on, a tick off inside FINE (about 2 deg a pulse,
+# wider than a far Majini: he is 1-2 deg across at 15-20 m). Now, with nobody within LONG_CLEAR_R and him past LONG_R:
+#   * the stick inside FINE pulses one tick in PULSE_N (2 when the error is over twice his window, 3 over it, 4 inside),
+#     so the dot creeps onto him instead of jumping across;
+#   * the first pull waits for SETTLE_TICKS ticks on him in a row (a dot that sweeps across never pulls);
+#   * once firing, the trigger stays down while the dot stays on him (the rapid fire does the rest).
+LONG_R, LONG_CLEAR_R, SETTLE_TICKS = 800.0, 400.0, 2
+PULSE_N = (2, 3, 4)
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # result_ready (the PS3 driver's rule)
@@ -684,6 +695,7 @@ class Bot:
         self.aim_since = None
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
+        self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
         self.ray_key, self.ray_since = None, 0.0
         self.backoff_until = self.backoff_ready = 0.0
         self.quick, self.quick_at = 0, -1e9      # the quick turn's step (1 stick back, 2 + B, 3 let go), its B press
@@ -803,23 +815,34 @@ class Bot:
                 return ()
         return ("rleft",) if err > 0 else ("rright",)
 
-    def _yaw(self, err: float) -> set:
+    def _yaw(self, err: float, window: float | None = None) -> set:
         if abs(err) <= YAW_DEAD:
             return set()
         if abs(err) < FINE:
-            self.yaw_pulse ^= 1
-            if not self.yaw_pulse:
+            n = self._pulse_n(err, window)
+            self.yaw_pulse = (self.yaw_pulse + 1) % n
+            if self.yaw_pulse:
                 return set()
         return {"rleft"} if err > 0 else {"rright"}
 
-    def _pitch(self, err: float) -> set:
+    def _pitch(self, err: float, window: float | None = None) -> set:
         if abs(err) <= PITCH_DEAD:
             return set()
         if abs(err) < FINE:
-            self.pitch_pulse ^= 1
-            if not self.pitch_pulse:
+            n = self._pulse_n(err, window)
+            self.pitch_pulse = (self.pitch_pulse + 1) % n
+            if self.pitch_pulse:
                 return set()
         return {"rup"} if err > 0 else {"rdown"}
+
+    @staticmethod
+    def _pulse_n(err: float, window: float | None) -> int:
+        """Inside FINE: a pulse every n ticks - 2 (a tick on, a tick off) without a window (close up), else from how the
+        error compares with his window (a long shot: PULSE_N)."""
+        if not window:
+            return 2
+        a = abs(err)
+        return PULSE_N[0] if a > 2 * window else PULSE_N[1] if a > window else PULSE_N[2]
 
     def _trigger(self, on: bool, now) -> set:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
@@ -1164,6 +1187,15 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
+        key = tgt.get("ptr", tgt.get("slot"))
+        self.on_ticks = self.on_ticks + 1 if on and key == self.on_key else (1 if on else 0)
+        self.on_key = key if on else None
+        long_shot = dist > LONG_R and near > LONG_CLEAR_R    # a far Majini, nobody close: with care
+        settling = long_shot and on and not self.fire_down and self.on_ticks < SETTLE_TICKS
+        if settling:
+            on = False                                       # the dot on him a tick: wait for it to stay
+        windows = (math.atan2(BODY_R, max(dist, 1.0)), math.atan2((SHOULDER_H - KNEE_H) / 2, max(dist, 1.0))) \
+            if long_shot else (None, None)
         front = sum(1 for e in live if flat(e) < FRONT_R
                     and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
         if BURST_BACKOFF and front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
@@ -1177,8 +1209,13 @@ class Bot:
                         "dot": dot, "py": py,
                         "gate": f"dot on {where}" if where else "point blank" if point_blank else "ray through him"}
         self.doing = "fire" if on else "aim"
-        self.why = (f"{where or ('point blank' if point_blank else 'ray')} at {dist / 100:.1f} m" if on else
-                    f"yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} at {dist / 100:.1f} m")
+        self.why = (f"{where or ('point blank' if point_blank else 'ray')} at {dist / 100:.1f} m"
+                    + (" (long shot)" if long_shot else "") if on else
+                    f"settling on him at {dist / 100:.1f} m" if settling else
+                    f"yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} at {dist / 100:.1f} m"
+                    + (" (long shot)" if long_shot else ""))
+        if long_shot:
+            self.stats["long_shot_ticks"] = self.stats.get("long_shot_ticks", 0) + 1
         held = next((x for x in reversed(self._pulls) if x["end"] is None), None) if self.fire_down else None
         if held is not None and held["target"] != self._aimctx["target"] \
                 and (self.hp_prev.get(held["target"]) or 0) > 0:     # a living target left with the trigger held
@@ -1186,8 +1223,8 @@ class Bot:
             self._pull_end(now)
             self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
         keys = {"zl"} | self._trigger(on, now)
-        if not on and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
-            keys |= self._yaw(yaw_err) | self._pitch(pitch_err)   # steer only off him: a raised fire rate paces the
+        if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
+            keys |= self._yaw(yaw_err, windows[0]) | self._pitch(pitch_err, windows[1])   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
