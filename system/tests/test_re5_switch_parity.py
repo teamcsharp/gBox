@@ -328,14 +328,14 @@ def test_kill_time_adds_seconds_for_each_kill_and_the_hourglasses_scale_where_th
     g.put(hg + SM.HG_SECONDS, struct.pack("<h", 30))
     g.q(su + R.UNIT_LINES + R.LINE_STRIDE * 12, hg)
     parent, other = g.alloc(0x2000), g.alloc(0x2000)                           # uOmHourGlass's own, and not one
-    for u, vt, sec in ((parent, SM.HOURGLASS_PARENT_VT, 60), (other, 0x1BD6D48, 30)):
+    for u, vt, sec in ((parent, SM.HOURGLASS_PARENT_VT, 90), (other, 0x1BD6D48, 30)):
         g.put(u, bytes(0x2000))
         g.q(u, BASE + vt)
         g.put(u + SM.HG_SECONDS, struct.pack("<h", sec))
     g.q(su + R.UNIT_LINES + R.LINE_STRIDE * 13, parent)
     g.q(parent + R.UNIT_NEXT, other)
     out = SM.tool_run(ad, "time_bonus_multiplier", 3, True)
-    assert out["verified"] and out["hourglasses"] == 2 and out["hourglass_seconds"] == [90, 180]
+    assert out["verified"] and out["hourglasses"] == 2 and out["hourglass_seconds"] == [90, 270]
     assert struct.unpack("<h", g.rd(other + SM.HG_SECONDS, 2))[0] == 30         # another unit is left alone
     assert SM.tool_run(ad, "time_bonus_multiplier", 3, True)["scaled"] == 0    # once a unit (90 is not raw 30)
 
