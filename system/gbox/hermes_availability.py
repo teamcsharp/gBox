@@ -177,8 +177,18 @@ def tick(now=None):
             state.update(probe_http=None, probe_error_code=None, probe_usage={}, probe_checked_at=None)
             key = _credential()
             http, quota = _zai('quota', key)
-            observed = quota_status(quota, now) if http == 200 else {
-                'status': 'unknown', 'next_check_at': now + 300, 'windows': [], 'quota_balance_known': False}
+            if http == 200:
+                observed = quota_status(quota, now)
+            else:
+                # Non-200 from the quota endpoint: transient 5xx or a non-quota 4xx.
+                # Do NOT probe the model — a transient error is not a signal that
+                # inference will succeed, and burning tokens on a broken backend is
+                # exactly what the ticket forbids. Wait a short recheck instead.
+                # quota_balance_known=False so the route supervisor knows the
+                # balance is unverified, not exhausted.
+                observed = {'status': 'quota_wait', 'next_check_at': now + 300,
+                            'windows': [], 'quota_balance_known': False,
+                            'error_http': http}
             state.update(observed, checked_at=now, next_quota_check_at=min(observed['next_check_at'], now + 300))
             state.pop('error_type', None)
             if observed['status'] == 'quota_wait' and not supervision_only:

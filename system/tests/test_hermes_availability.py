@@ -299,3 +299,80 @@ def test_public_quota_probe_is_preserved_but_private_zai_resume_is_denied(lane, 
     assert probes[1][1]['messages'] == [{'role': 'user', 'content': 'Reply OK.'}]
     assert 'public-source' in result['scope_reason']
     assert 'dispatched_at' not in json.loads(path.read_text())
+
+
+def test_transient_503_quota_error_never_calls_model_probe(lane, monkeypatch):
+    """A transient 503 from the quota endpoint must not fall through to a model probe."""
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 503, {}
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'quota_wait'
+    # Only the quota call happened; no model probe.
+    assert kinds == ['quota']
+
+
+def test_502_gateway_error_never_calls_model_probe(lane, monkeypatch):
+    """A transient 502 from the quota endpoint must not fall through to a model probe."""
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 502, {}
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'quota_wait'
+    assert kinds == ['quota']
+
+
+def test_500_server_error_never_calls_model_probe(lane, monkeypatch):
+    """A transient 500 from the quota endpoint must not fall through to a model probe."""
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 500, {'error': {'message': 'internal server error'}}
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'quota_wait'
+    assert kinds == ['quota']
+
+
+def test_transient_5xx_sets_short_recheck_not_five_hour_wait(lane, monkeypatch):
+    """A transient 5xx should set a short recheck (~5 min), not a long exhaustion wait."""
+    path, _, _ = lane
+    def respond(kind, *args):
+        return 503, {}
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    state = json.loads(path.read_text())
+    # next_check_at should be ~now + 300 (short), not a multi-hour exhaustion wait.
+    assert state['next_check_at'] - 1000 <= 600, f"expected short recheck, got {state['next_check_at'] - 1000}s"
+    # quota_balance_known should be False — we don't know the balance on a 5xx.
+    assert not state['quota_balance_known']
+
+
+def test_quota_available_still_calls_model_probe(lane, monkeypatch):
+    """When the quota endpoint reports available credits, the probe should still run."""
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        if kind == 'quota':
+            return 200, quota({'type': 'CREDIT_LIMIT', 'remaining': 5000})
+        return 200, {'choices': [{'message': {'content': 'OK'}}], 'usage': {'prompt_tokens': 8}}
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'work_dispatched'
+    assert kinds == ['quota', 'probe']
+
+
+def test_quota_wait_with_reset_still_no_probe(lane, monkeypatch):
+    """When the quota endpoint reports exhausted credits with a reset time, no probe should run."""
+    kinds = []
+    def respond(kind, *args):
+        kinds.append(kind)
+        return 200, quota({'type': 'CREDIT_LIMIT', 'remaining': 0, 'nextResetTime': 5000000})
+    monkeypatch.setattr(availability, '_zai', respond)
+    result = availability.tick(1000)
+    assert result['status'] == 'quota_wait'
+    assert kinds == ['quota']
