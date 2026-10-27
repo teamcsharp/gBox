@@ -195,6 +195,7 @@ TIGHT = ((4, 250.0),)
 HURT = 0.6
 ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 RUN = ("b", "lup")
+HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
 FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
@@ -809,6 +810,9 @@ class Bot:
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
+        self.commands = None                      # the operator's instant commands (gbox.mercs.directives.Reader)
+        self.blocked: dict = {}                   # target -> until: "repetitive" drops the one he kept at
+        self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
         from .re5_switch_mines import Mines
         self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
         self._gun_back_at = -1e9                  # the last D-pad tap for the gun with a throwable in hand
@@ -1182,6 +1186,7 @@ class Bot:
             return {"hold": ("zl",)}
         if self.mines is not None and snap.get("mine_settings"):
             self.mines.configure(snap["mine_settings"])          # the operator's `mines` op (re5_switch_mods.mines)
+        self.mode = self._operator_command(p, snap, live, now)
         act = self._heal(p, snap, live, flat, now)
         if act is not None:
             self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
@@ -1204,13 +1209,70 @@ class Bot:
             self.move_at = now
         return act
 
+    def _operator_command(self, p, snap, live, now) -> str | None:
+        """The operator's instant commands (gbox.mercs.directives, the PS3 bot's set): one-shots act on the tick they
+        arrive, the standing modes (fight / hunt / score) are returned for the fight to apply. A command never presses
+        a key itself: the fight, the heal, the escape and the bombs' rules still decide every press."""
+        from ..directives import Reader
+        if self.commands is None:
+            self.commands = Reader()
+        cmd, fresh = self.commands.current(self.stats, time.time())
+        if cmd is None:
+            return None
+        self.stats["directive_active"] = cmd
+        if fresh:
+            self.stats["directive_status"] = "acting: " + cmd
+        if cmd == "mine" and fresh:
+            self.stats["directive_status"] = self._mine_now("mine due now: placed at the next safe moment, then out of "
+                                                            "its blast")
+        elif cmd == "mine_trail":
+            busy = self.mines is not None and self.mines.state != "idle"
+            self.stats["directive_status"] = "mine trail: placing or leaving the last bomb" if busy else                 self._mine_now("mine trail: due now, placed at the next safe spot, then moving on")
+        elif cmd == "repetitive" and fresh:
+            if self.target is not None:
+                self.blocked[self.target] = now + 15.0
+            self.target, self.aim_since = None, None
+            self.stats["directive_status"] = "dropped the target he kept at; choosing another for 15 s"
+        elif cmd in ("next_area", "explore") and fresh:
+            self.stats["directive_status"] = "not yet on Switch: no level map to route by; fighting on where he stands"
+        elif cmd == "missing" and fresh:
+            self.stats["directive_status"] = ("the Switch fight closes the laser dot on him before every shot: no learned "
+                                              "aim offset to reset")
+        return cmd if cmd in ("fight", "hunt", "score") else None
+
+    def _mine_now(self, ok: str) -> str:
+        m = self.mines
+        if m is None or not m.enabled:
+            return "mine placement is switched off (the mines setting)"
+        if m.state == "idle":
+            m.last_at = self._now - m.every_s - 1.0 if self._now is not None else None   # due now: its checks still apply
+        return ok
+
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        if self.blocked:
+            self.blocked = {k: t for k, t in self.blocked.items() if t > now}
+            rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
+            live = rest or live
         if not live:
+            others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+            if self.mode in ("fight", "hunt") and others:     # nobody on his level: go to the nearest one anywhere
+                tgt = min(others, key=lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz))
+                err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
+                self.doing, self.why = "walk", f"{self.mode}: the nearest Majini off his level"
+                self._gun_down()
+                return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
             self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
-        tgt = self._choose(p, live, now)
+        if self.mode == "hunt" and near > HUNT_R and self.aim_since is None:   # hunt: close in on the nearest
+            err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+            self.doing, self.why = "walk", f"hunt: the nearest {near / 100:.1f} m"
+            self._gun_down()
+            return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+        tgt = self._choose(p, live, now) if self.mode != "score" else min(live, key=flat)   # score: the nearest, fast
+        if self.mode == "score":
+            self.target = tgt.get("ptr", tgt.get("slot"))
         foot = tgt["pos"]
         dist = flat(tgt)
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
