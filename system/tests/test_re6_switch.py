@@ -565,6 +565,45 @@ def test_infinite_ammo_leaves_the_item_slots_alone(mods):
     assert R.snapshot(g)["player"]["tablets"] == 3 and struct.unpack("<h", g.rd(item(9) + mods.SLOT_ROUNDS, 2))[0] == 3
 
 
+def tablet_case(g, count, obj=0x5D612FC0F0, cid=0x1D, used=1, index=7):
+    """The tablet case's cItem slot (Chris: slot 7, id 0x1D, 0 / 12, its item object set)."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    p = R.snapshot(g)["player"]["ptr"]
+    for i in range(RM.N_SLOTS):                                             # every slot a cItem, as in the game
+        g.q(p + RM.SLOTS + RM.SLOT_STRIDE * i, BASE + RM.SLOT_VTABLE)
+    slot = p + RM.SLOTS + RM.SLOT_STRIDE * index
+    g.put(slot + RM.SLOT_USED, bytes([used, index, cid]))
+    g.put(slot + RM.SLOT_ROUNDS, struct.pack("<h", count))
+    g.put(slot + RM.SLOT_CAP, struct.pack("<h", 12))
+    g.q(slot + RM.SLOT_OBJ, obj)
+    return slot
+
+
+def test_infinite_tablets_keeps_the_case_counted_only_in_its_live_slot(mods):
+    g = round_guest(guns=((30, 30),))
+    slot = tablet_case(g, 0)                                                # Chris starts with none
+    ad = Adapter(g)
+    out = mods.run(ad, "infinite_tablets", on=True)
+    assert out["verified"] and out["kept"] == 1 and R.snapshot(g)["player"]["tablets"] == mods.TABLET_KEEP
+    assert ad.writes == [(slot + mods.SLOT_ROUNDS, struct.pack("<h", mods.TABLET_KEEP))]   # the count's s16, nothing else
+    g.put(slot + mods.SLOT_ROUNDS, struct.pack("<h", mods.TABLET_KEEP - 1))            # a tablet taken
+    clock = [10.0]
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1
+    assert R.snapshot(g)["player"]["tablets"] == mods.TABLET_KEEP
+    assert mods.run(ad, "status")["tablets"] == {"count": mods.TABLET_KEEP, "capacity": 12}
+    for kw in ({"obj": 0}, {"cid": 0x20}, {"used": 0}):                      # no live tablet slot: nothing written
+        g2 = round_guest()
+        tablet_case(g2, 2, **kw)
+        ad2 = Adapter(g2)
+        mods.ORIG.clear()
+        assert mods.run(ad2, "infinite_tablets", on=True)["kept"] == 0 and ad2.writes == []
+    g3 = round_guest()
+    tablet_case(g3, 8)                                                      # Leon's 8: above the keep, left alone
+    ad3 = Adapter(g3)
+    mods.ORIG.clear()
+    assert mods.run(ad3, "tablets", on=True)["kept"] == 0 and ad3.writes == []
+
+
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
     g = round_guest(guns=((10, 18),))
     ad = Adapter(g)
