@@ -276,6 +276,19 @@ def test_menus_walk_to_no_mercy(name, offset, value, where, target, key):
     assert (scr["where"], scr["cursor"], scr["target"]) == (where, value, target) and R.step(scr) == key
 
 
+def test_the_character_select_finds_chris_by_his_id_as_the_list_grows():
+    # a fresh save lists Leon 0, Chris 2, Jake 4, Agent 8 (index 1 = Chris); once Helena (1) unlocks she takes index 1
+    # (live 2026-10-27: the second walk picked uPl01HelenaAsia at index 1) and Chris moves to index 2
+    for ids, want in (((0, 2, 4, 8), 1), ((0, 1, 2, 4, 8), 2), ((0, 1, 2, 3, 4, 5, 6, 8), 2), ((0, 4, 8), R.PLAYER_TARGET)):
+        g = menu_guest("uIdStartUp32", R.PLAYER_CURSOR, 0)
+        u = g.lines[18][-1]
+        g.i32(u + R.PLAYER_COUNT, len(ids))
+        for i, cid in enumerate(ids):
+            g.i32(u + R.PLAYER_IDS + 4 * i, cid)
+        scr = R.screen(g)
+        assert scr["where"] == "select_player" and scr["target"] == want
+
+
 def test_extra_content_targets_no_mercy_by_its_mode_id():
     modes = {R.EXTRA_COUNT: 7, **{R.EXTRA_MODES + 4 * i: m for i, m in enumerate((0, 1, 2, 3, 4, 5, 6))}}
     scr = R.screen(menu_guest("uIdStartUp02", R.MENU_CURSOR, 0, modes))

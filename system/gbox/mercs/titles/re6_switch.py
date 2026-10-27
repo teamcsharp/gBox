@@ -68,13 +68,18 @@ ALERTS = {0x41: "alert_leaderboard",    # "Connect to the Leaderboards and submi
 # Any other dialog is declined (B): on a fresh save the game asks to open its privacy policy web page, and A there opens a
 # browser on the session display (RE5 Switch on Eden ran xdg-open); B never confirms anything.
 MENU_CURSOR, PLAYER_CURSOR = 0x50, 0x1CC
+PLAYER_COUNT, PLAYER_IDS = 0x1D0, 0x1D4 # uIdStartUp32: how many characters it lists, their ids (a fresh save: 4 - Leon
+                                        # 0, Chris 2, Jake 4, Agent 8; the partners join the list as they unlock: after
+                                        # a 147,040 round Helena (1) sat at the cursor's index 1, live 2026-10-27)
 EXTRA_COUNT, EXTRA_MODES = 0x54, 0x1C4  # uIdStartUp02: how many modes, their ids (0 Agent Hunt, 1 Mercenaries, 2 No Mercy)
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, MERCS_SOLO = 0, 3, 0
 STAGES = ("Urban Chaos", "Steel Beast", "Mining the Depths", "Rail Yard", "High Seas Fortress", "The Catacombs",
           "Requiem for War", "Liquid Fire", "Rooftop Mission", "Creature Workshop")
 CHARACTERS = ("Leon", "Chris", "Jake", "Agent")
-STAGE_TARGET, PLAYER_TARGET = 0, 1      # Urban Chaos, Chris: his assault rifle is automatic (ZR held fires 9.6 rounds
-                                        # a second; with infinite ammo it never stops: "rain fire", operator 2026-10-27)
+STAGE_TARGET, PLAYER_TARGET = 0, 1      # Urban Chaos, Chris (the cursor's index on a fresh save's list, the fallback)
+PLAYER_ID = 2                           # Chris by his id in the select's list: his assault rifle is automatic (ZR held
+                                        # fires 9.6 rounds a second; with infinite ammo it never stops: "rain fire",
+                                        # operator 2026-10-27)
 
 CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO, CONTINUE_MENU = 0x50, 0, 1, 0x248   # uIdGameover00 "YOU ARE DEAD -
                                         # CONTINUE? YES / NO": +0x50 the cursor (0 YES, 1 NO), +0x248 -> its YES / NO
@@ -88,6 +93,20 @@ CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO, CONTINUE_MENU = 0x50, 0, 1, 0x248   
 # start (_round_started) on its first tick alive with a full clock. REPLAY_ON_DEATH False answers NO instead.
 REPLAY_ON_DEATH = True
 ROUND_TIME_S, FRESH_ROUND_S = 120.0, 3.0   # No Mercy's clock; within this of it on the first tick alive: a new round
+
+
+def player_target(m, unit: int) -> int:
+    """The character select's cursor index for PLAYER_ID: its place in the select's own list of ids, which grows as
+    characters unlock; PLAYER_TARGET when the list can't be read or lacks him."""
+    try:
+        n = _i32(m, unit + PLAYER_COUNT)
+        if 0 < n <= 16:
+            ids = struct.unpack(f"<{n}i", m.rd(unit + PLAYER_IDS, 4 * n))
+            if PLAYER_ID in ids:
+                return ids.index(PLAYER_ID)
+    except (ValueError, OSError, struct.error):
+        pass
+    return PLAYER_TARGET
 
 
 def continue_target() -> int:
@@ -354,7 +373,8 @@ def screen(m, merc=None, now: float | None = None) -> dict:
     where, cursor, target = "unknown", None, None
     try:
         if "uIdStartUp32" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp32"] + PLAYER_CURSOR), PLAYER_TARGET
+            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp32"] + PLAYER_CURSOR), player_target(
+                m, ui["uIdStartUp32"])
         elif "uIdStartUp31" in ui:
             where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp31"] + MENU_CURSOR), STAGE_TARGET
         elif "uIdStartUp30" in ui:
