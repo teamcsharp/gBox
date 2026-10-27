@@ -1392,6 +1392,9 @@ class MercModeSettings(BaseModel):
     keep_warm: int | None = None                # titles waiting paused beside the playing one (0 = cold switches)
     stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
+    # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
+    # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
+    preferred_editions: dict | None = None
 
 
 class MercModeAdopt(BaseModel):
