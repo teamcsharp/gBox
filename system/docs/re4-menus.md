@@ -105,10 +105,49 @@ There is no `paused` yet: the pause menu is not read.
   MERCENARIES.
 - At Select Player, before any code hook, the playbook saves the menu moment: this game and build's jump state
   (gbox.jumpstate, Dolphin's demo slot 10; the operator's slots are never written).
-- Then it applies the rest of the hack package (`merc_loadout` and the code hooks), once per boot. A Dolphin state
-  saved after the hooks restores into a hang. The same Dolphin taking the package a second time, plus the operator's
-  kept mods from the desktop app, ended in a stage load that never finished (2026-10-20).
+- Then it applies the rest of the hack package (`merc_loadout` and the code hooks), once per boot. On 2026-10-20 a
+  Dolphin state saved after the hooks restored into a hang, and the same Dolphin taking the package a second time, plus
+  the operator's kept mods from the desktop app, ended in a stage load that never finished. The package's ops now check
+  the bytes they patch and write the same code again (idempotent); instant rounds (below) load states taken after the
+  hooks and verify every load in RAM.
 - A bot-demo launch, and the relaunch of a frozen one, boots straight into the menu moment.
+
+## Instant rounds (no menus between rounds)
+
+Operator 2026-10-26: "consistently playing without breaks in between rounds ... Even if we have to use save states".
+`re4_merc_bot.InstantRounds` over `gbox.mercs.round_states` (Linux Dolphin only):
+
+- **Capture.** At the first in-round frame of a round the menus started, the bot holds still and Dolphin's demo slot
+  (`jump_save`, slot 10) takes a state. That happens only when the selects named the character and stage, the package's
+  hooks are in RAM, and the library holds fewer than two states for that combination. The state goes to
+  `<runtime>/round_states/<game id>-<build>-<disc id>r<rev>/` with a JSON receipt: room, stage, character, the clock,
+  sha256, loads and failures. The library keeps at most 2 per combination, 40 per folder and 768 MB.
+- **Load.** At a round's end (results, or Leon dead), MercMode gets the boundary first. After a 0.6 s beat, a state is
+  copied over this game's slot-8 file and Dolphin's slot-8 load key is pressed (`checkpoint_load`, already bound in
+  every gBox Dolphin). The file that was there is put back afterwards. The state is the DJ's pick, or a random stage and
+  character that are neither the round just played nor its character. While combinations are missing, a share of the
+  rounds walks the menus to one so that it gets captured.
+- **Verify.** Within 6 s, RAM must show the state's room with the room routine on, Leon alive, the clock at the state's
+  start and the VI count (`0x802B2D2C`) moving. The round then starts as a new round with its own boundary id, route
+  map, `rounds` count and `round_gap_s`. The package found in the state counts as applied, so `arm_round` never stacks
+  it on itself; a state without the package gets it now. The state's pending equip (`0x80002F24`) is cleared, so the
+  round's own random gun stays in hand.
+- **Fallback.** If RAM never shows the loaded round, the menus walk on from the results screen, and the walk heads for
+  that combination so a fresh state replaces it. After 2 failures a state is dropped; after 3 failed loads in a row,
+  instant rounds go off for 6 h. If a load freezes the game (the VI count stops), the run ends as hung (relaunch), the
+  state is dropped and instant rounds go off for 6 h.
+- **Off.** Set `INSTANT_ROUNDS = False` (a bot hot reload) or launch with `mercmode.instant_rounds: false`.
+
+## Between rounds: the menus' watch and phantom rounds (2026-10-26)
+
+- The menus' "nothing moved in RAM" and loading clocks (`mercs_bot.Boot`, `Navigator`) start again whenever a round
+  starts (`Boot.round_played`). Before, they ran on through the round. A stage's first frames run the room with the
+  clock still at 0 and read as results, so a round that began on that frame and ended on the results screen showed no
+  change at all. The round's whole length counted as "nothing moved in RAM for 154 s on results", and every RE4
+  MercMode turn on the Spark that day ended there as hung (ten runs).
+- A results screen ends a round only after the clock was last seen at 5 s or less (it ran down to 0). A retry without a
+  load the bot saw counts only once the clock is back up. Continue restores Leon's health on the death screen first,
+  and then the reload's first frames read as results: together that made an 11 s phantom round that MercMode counted.
 - re_mods calls that run game code (`equip`, give items: `RE4.call` through the dispatcher at `0x80122610`, which runs
   every frame, loads included) wait for a running room (pG+0x20 = 3 and a player); during a load or a menu they
   refuse with "the game is loading a room or showing a menu".

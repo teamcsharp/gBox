@@ -24,7 +24,9 @@ PROFILE = {"menus": "gbox.re4_menus", "early_ops": ["mercenaries_unlock"], "jump
 def lessons(monkeypatch):
     """gbox.mercs.lessons (the engine's) as a recorder: [(map_id, entry, run)]."""
     rows = []
+    import gbox.mercs as real
     pkg = types.ModuleType("gbox.mercs")
+    pkg.__path__ = list(real.__path__)          # still a package: its other modules (read_retry, reviewer ...) import
     pkg.lessons = SimpleNamespace(append=lambda map_id, entry, run=None: rows.append((map_id, entry, run)))
     monkeypatch.setitem(sys.modules, "gbox.mercs", pkg)
     return rows

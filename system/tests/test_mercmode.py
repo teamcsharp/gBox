@@ -356,7 +356,7 @@ def test_re4_random_targets_are_instance_local_and_stable_until_round():
 def test_legacy_re4_emits_only_native_terminal_after_playing(tmp_path):
     from gbox import re4_merc_bot as B
     from tests.test_re4_merc_bot import world,PG
-    game=world([]);now=[0.];rows=[];stats={}
+    game=world([],timer_s=2.0);now=[0.];rows=[];stats={}   # the round's last seconds: the clock runs down to 0
     def sleep(dt):
         now[0]+=dt
         if now[0]>.1:game.put(B.MERC_TIMER,'>I',0)

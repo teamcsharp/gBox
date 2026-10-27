@@ -88,7 +88,11 @@ reads Leon and never writes him - no facing, aim pitch or position writes:
   * the Mercenaries clock stops while a prompt is up ("Take the Handgun Ammo?", a time pillar): answer Yes (A);
   * between rounds (results, the Mercenaries title, character / stage select, the briefing) it presses A until the
     next round starts: GAME START, Leon, the first stage, go - the hack package stays in RAM, so every round is
-    played the same way and no menu stays on screen.
+    played the same way and no menu stays on screen;
+  * instant rounds (InstantRounds, operator 2026-10-26: "without breaks in between rounds ... even if we have to use
+    save states"): at a round's end the next round starts from a Dolphin save state taken at a round's first frame
+    (a per stage x character library), verified in RAM, instead of the results -> menus -> stage load walk (~22 s);
+    the walk stays the fallback and fills the library.
 v1 (2026-10-20, facing writes + teleports): 19 in a row, 24,500 points on the Village; the operator saw Leon stuck at a
 fence and aiming with his arm behind him.
 
@@ -115,6 +119,7 @@ from . import re4_threats as threats_ram         # who is attacking right now, w
 from .mercs.impact_lessons import DECAY_EVADE, EVADE_MAX, STEP_EVADE   # the evade margin learned from every hit
 from .mercs import directives as operator_commands   # the chat's instant commands (fight, next area, explore ...)
 from .mercs import stalemate as stalemate_rule   # no Ganados for 15 s with time on the clock: the clock is cut
+from .mercs import round_map as roundmap         # round_gap_s: the seconds between two rounds (gap_end / gap_start)
 try:
     from . import re4_menus                       # the title and the menus from RAM: boot -> a Mercenaries round
 except ImportError:                              # a tree without it: no presses out of a round
@@ -273,6 +278,9 @@ COLLECT_R, COLLECT_TRY_S = 1500.0, 4.0           # shoot an hourglass from this 
 HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0), (5592.0, 16384.0)]}
 MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 TRANSIENT_MAX = 20.0                             # a gap in a live Mercenaries room (grabbed, a pickup) waits this long
+RESULTS_FROM_S = 5.0                             # a results screen ends a round only when the clock was last seen running
+                                                 # this low (it ran down to 0; a stage's first frames show 0 straight away)
+RETRY_JUMP_S = 3.0                               # a retry without a load seen: the clock is back up this much over its end
 PROMPT_EVERY, PROMPT_BURST, PROMPT_REST = 0.6, 3, 5.0   # press a prompt this often; still up after this many presses
                                                        # within 3 s (a TAKE he can't carry): leave it alone this long
 MENU_KEYS = ("up", "a")                          # each menu step: up (GAME START, the top stage row), then confirm; no
@@ -738,6 +746,41 @@ class Bot:
         from .mercs.round_audit import RoundAudit
         self.impacts = ImpactLessons(learn_dir / "impact_lessons.json" if learn_dir else None)   # learned per stage / attacker
         self.audit = RoundAudit("G4BE08")             # each round's own verdict (stats round_audit, the round map "audit")
+
+    def new_round(self) -> None:
+        """A new round begins (play(): its first in-round frame): what the last round learned is saved, and everything
+        that belonged to it is let go - the stage is read afresh (its time bonuses, hourglass order, learned map) even
+        when the stage is the same one again (an instant round from a save state, a retry), the goal, detours, aim,
+        threat tracking and evasions start clean. The learned rates (turn, pitch) and the stats carry on."""
+        self.save()
+        self.room = None                              # _round() reads the stage again on the next tick
+        self.r_since = None
+        self.miss_run = 0
+        self.hist = []
+        self.last_timer, self.timer_since = None, self.clock()
+        self.skip = {}
+        self.aim = {"slot": None, "since": 0.0, "combo": 0}
+        self.goal = self.unstick = self.explore = self._detour = None
+        self.turns, self.circles, self.turn_first = [], {}, False
+        self.stuck_n = 0
+        self.dead = False
+        t = self.tracker                              # the Ganados' slots are another round's now; the run's tallies
+        t.acts, t.track, t.flights = {}, {}, {}       # (attacks seen, bosses seen, shots / hits) carry on
+        t.leon_r0, t.leon_hit_at, t.last_hit = 0, float("-inf"), None
+        self.shots.hp, self.shots.pending, self.shots.last_shot = {}, [], float("-inf")
+        self.trigger = {"down": False, "at": float("-inf")}
+        self.evade = None
+        self.leon_r0 = 0
+        self.target_slot = None
+        self.qturn_at = self.recovered_at = float("-inf")
+        self.shot_ram, self._was_firing, self.target_thrown = False, False, False
+        self._last_enemies, self._threats = [], []
+        self.blast, self.blast_at, self.boss_evaded_at = None, float("-inf"), float("-inf")
+        self._keepout = None
+        self._death_logged = False
+        self.dead_no = False                          # this round's death gets its own Continue answer
+        self._ran, self._fire_frame = False, None     # no run or fire motion carried over (_go's stuck, _shot_seen)
+        # the held trigger (self.rapid), the round's audit and its loadout check start with its trace (trace_start)
 
     def _stalemate_watch(self, s: dict, p: dict, now: float) -> None:
         """No living Ganado for STALEMATE_S while the clock shows more than STALEMATE_CLOCK_S: the clock is cut to the
@@ -1931,8 +1974,10 @@ class Bot:
     def _continue_answer(self) -> dict:
         """'You Are Dead': No (D-pad right, then A) - back through Select Player, where the menus draw a new character
         (re4_menus.RandomSelections) and the round its own gun - unless the round was asked for (the MercMode DJ's
-        pick: re4_menus.REQUESTS), which keeps Continue Yes. A press that did not move the cursor answers Yes."""
-        asked = re4_menus is not None and self.menu_key is not None and re4_menus.REQUESTS.get(self.menu_key)
+        pick: re4_menus.REQUESTS, or re4_menus.ASKED once that round started), which keeps Continue Yes. A press that
+        did not move the cursor answers Yes."""
+        asked = re4_menus is not None and self.menu_key is not None and (
+            re4_menus.REQUESTS.get(self.menu_key) or getattr(re4_menus, "ASKED", {}).get(self.menu_key))
         if not DEATH_NEW_CHARACTER or asked:
             self.stats["continue_answer"] = "yes: an asked-for round" if asked else "yes"
             return {"tap": "a"}
@@ -2237,6 +2282,9 @@ class _Menus:
                 pass
         self.boot = Boot(selected, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game, hooks=hooks,
                          jump_at="select_player", round_hooks=rounds) if re4_menus is not None else None
+        self.random = merc is not False
+        self.key = id(ad) if ad is not None else None   # re4_menus.REQUESTS / ASKED key (re_mods mercs_select: id(ad))
+        self.selected: dict = {}                     # the selects' picks since the last round: {"player", "stage"}
 
     def tick(self, s: dict, now: float) -> str | None:
         """One look at the screen; returns why the run must end (stats["hung"] is set), else None."""
@@ -2246,11 +2294,356 @@ class _Menus:
                 and type(scr.get('cursor')) is int and 0<=scr['cursor']<len(re4_menus.PLAYERS):
             self.boot.stats['character']=re4_menus.PLAYERS[scr['cursor']]
             self.boot.stats['character_source']='native_menu_cursor'
+            self.selected['player']=scr['cursor']
         elif scr.get('where')=='select_stage' and scr.get('cursor')==scr.get('target') \
                 and type(scr.get('cursor')) is int and 0<=scr['cursor']<len(re4_menus.STAGES):
             self.boot.stats['stage']=re4_menus.STAGES[scr['cursor']]      # the round's stage (MercMode's prepare receipt)
             self.boot.stats['stage_index']=scr['cursor']
+            self.selected['stage']=scr['cursor']
         return self.boot.tick(now, scr=scr)
+
+    def take_selection(self) -> dict:
+        """The character / stage the selects took for the round now starting (instant rounds' capture key); cleared."""
+        out, self.selected = self.selected, {}
+        return out
+
+    def plan(self, player=None, stage=None) -> None:
+        """The next menu walk's targets (a combination the round-state library lacks)."""
+        fn = getattr(getattr(self.boot, 'menus', None), 'plan_next', None)
+        if callable(fn):
+            fn(player, stage)
+
+    def round_up(self, player=None, stage=None, keep_asked=False) -> None:
+        """A round started: the menus' stuck / loading clocks start again at the next look (mercs_bot.Boot.round_played:
+        they ran on through the round and ended every MercMode turn as "nothing moved in RAM for 150 s on results"), and
+        the selects' request / plan are spent (re4_menus.RandomSelections.round_up: a request moves to ASKED, the DJ's
+        round, whose deaths keep Continue Yes; keep_asked: this round is the DJ's still - a reload after Continue Yes, an
+        instant retry of it)."""
+        self.watch_reset()
+        fn = getattr(getattr(self.boot, 'menus', None), 'round_up', None)
+        if callable(fn):
+            fn(player, stage, keep_asked=keep_asked)
+        elif not keep_asked and re4_menus is not None and self.key is not None:   # the game's own picks: no DJ round
+            getattr(re4_menus, "ASKED", {}).pop(self.key, None)
+
+    def watch_reset(self) -> None:
+        """A round (or a retry of one) is playing: the menus' stuck / loading clocks start again at the next look."""
+        if self.boot is not None:
+            self.boot.round_played()
+
+
+INSTANT_ROUNDS = True        # instant rounds on (a bot hot reload with False turns them off without a service restart)
+INSTANT_BEAT_S = 0.6         # the round's end stays up this long before the next round's state goes in (a DJ pick sent
+                             # with the boundary has this long to arrive)
+INSTANT_VERIFY_S = 6.0       # a loaded state must show its round running in RAM within this, else the menus take over
+VI_COUNT = 0x802B2D2C        # the VI retrace count (60 a second, gbox.mercs.titles.re4_gc): moving = the game runs
+PEND_EQUIP = 0x80002F24      # re_games.PEND: the cave's pending equip {u16 item, u16 frames}, set by the loadout wrapper
+CAPTURE_MIN_TIMER_S = 30.0   # a round's first frame shows its full clock; a capture never takes a later moment
+PREPARE_CAPTURE_S = 8.0      # a round preparation waits this long for its capture's file before it pauses the game
+
+
+class InstantRounds:
+    """Instant rounds (gbox.mercs.round_states; operator 2026-10-26: "consistently playing without breaks in between
+    rounds ... seamless and able to go from match to match to match without these loading screens and waiting. Even if
+    we have to use save states"): at a round's end (its results, or Leon dead) the next round starts from a save state
+    taken at a round's first in-round frame instead of the results, the menus and the stage load (~21 s on the Spark).
+
+    The library is one per disc build (round_states.library_key: catalog game id, build, disc id + revision), states
+    per (stage room, character). Capture (maybe_capture): at the first in-round frame of a round the menus started - the
+    selects named its character and stage, the package's hooks are in RAM, the library holds fewer than MAX_PER_COMBO
+    of that combination - before the bot presses anything or arms the round, through Dolphin's demo slot; the bot holds
+    still until Dolphin has taken the snapshot (CAPTURE_WAIT_S at most). Load (decide + start): at the terminal screen,
+    after MercMode has its round boundary, a short beat, then the chosen state goes in through Dolphin's slot-8 load key
+    and RAM must show its round running (its room, Leon alive, the clock at the state's start, the VI count moving)
+    within INSTANT_VERIFY_S. play() then starts it as a new round like any other (its boundary id, round map, rounds
+    count, round_gap_s); after_load counts the package found in the state as applied (never stacked on itself; a state
+    without it gets it now) and clears the state's pending equip, so the round's own random gun (arm_round) stays in
+    his hands. A load RAM never shows: the round ends the usual way through the menus (walked to that combination, so a
+    fresh state replaces it) and the state is marked; a load that froze the game ends the run as hung (relaunch) and
+    switches instant rounds off for round_states.TRIP_S."""
+
+    def __init__(self, ad, m, game, stats, menus, sid=None, clock=time.time, sleep=time.sleep, rng=None):
+        from .mercs import round_states as RS
+        self.RS, self.ad, self.m, self.stats, self.menus, self.sid = RS, ad, m, stats, menus, sid
+        self.clock, self.sleep = clock, sleep
+        disc = bytes(m.rd(0x80000000, 8))
+        self.disc_id, self.disc_rev = disc[:6].decode("ascii", "replace"), disc[7] if len(disc) > 7 else 0
+        self.game = dict(game or {})
+        self.release = RS.emulator_release(ad)       # Dolphin's release: part of the library key (an update: a new one)
+        self.lib = RS.Library(RS.library_root(ad) / RS.library_key(game, disc, self.release), clock=clock, rng=rng)
+        self.capture = None                          # (Capture, meta, taken in time) being written
+        self.loaded = None                           # the library entry the round now playing started from
+        self.retrying_asked = self.loaded_asked = False   # the DJ's round, loaded again after its death / as asked
+        self.status()
+
+    @classmethod
+    def for_run(cls, ad, m, game, stats, menus, sid=None, clock=time.time, sleep=time.sleep, prepare=False, rng=None):
+        """The run's instant rounds, or None (stats["instant_rounds"] says why): no session adapter or not Linux
+        Dolphin (round_states.supported), a launch that turned them off (mercmode.instant_rounds false), no menus
+        reader, another disc. A round preparation (prepare) only captures: MercMode's background walk ends on a round's
+        first frame, unseen, so the library fills without menu walks on screen."""
+        from .mercs import round_states as RS
+        merc = ((game or {}).get("launch") or {}).get("mercmode")
+        why = ("INSTANT_ROUNDS is off" if not INSTANT_ROUNDS
+               else "this launch turned instant rounds off" if isinstance(merc, dict) and merc.get("instant_rounds") is False
+               else "no menus reader (re4_menus)" if re4_menus is None or getattr(menus, "boot", None) is None
+               else RS.supported(ad))
+        if why is None:
+            try:
+                if bytes(m.rd(0x80000000, 6)).decode("ascii", "replace") not in GAME_IDS:
+                    why = "not the G4BE08 disc"
+            except Exception as exc:                 # noqa: BLE001 - no disc header: no library key
+                why = f"disc header unreadable ({type(exc).__name__})"
+        if why is None:
+            try:
+                return cls(ad, m, game, stats, menus, sid, clock, sleep, rng)
+            except Exception as exc:                 # noqa: BLE001 - the menus as before
+                why = f"{type(exc).__name__}: {exc}"[:160]
+        stats["instant_rounds"] = f"off: {why}"
+        return None
+
+    # --- which round next ---
+    def combos(self) -> list:
+        """Every (room, character) a round can be: the 4 stages x 5 characters, or the game's own default (Leon, the
+        Village) for a launch that turned the random picks off."""
+        if not getattr(self.menus, "random", True):
+            return [(re4_menus.STAGE_ROOMS[re4_menus.VILLAGE], re4_menus.PLAYERS[re4_menus.LEON])]
+        return [(room, who) for room in re4_menus.STAGE_ROOMS for who in re4_menus.PLAYERS]
+
+    def request(self) -> dict | None:
+        """The DJ's pick for the next round (re4_menus.REQUESTS: re_mods mercs_select), as {"room", "character"}."""
+        asked = re4_menus.REQUESTS.get(id(self.ad))
+        if not asked:
+            return None
+        p, st = asked.get("player"), asked.get("stage")
+        return {"character": re4_menus.PLAYERS[p] if type(p) is int and 0 <= p < len(re4_menus.PLAYERS) else None,
+                "room": re4_menus.STAGE_ROOMS[st] if type(st) is int and 0 <= st < len(re4_menus.STAGE_ROOMS) else None}
+
+    def plan_menus(self, combo) -> None:
+        """The menu walk goes to this combination (the library lacks it, or its state failed: captured afresh)."""
+        if combo and combo[0] in re4_menus.STAGE_ROOMS and combo[1] in re4_menus.PLAYERS:
+            self.menus.plan(re4_menus.PLAYERS.index(combo[1]), re4_menus.STAGE_ROOMS.index(combo[0]))
+
+    def asked(self) -> dict | None:
+        """The DJ's round now playing (re4_menus.ASKED: its request moved there when it started) as {"room", "character"}."""
+        asked = getattr(re4_menus, "ASKED", {}).get(id(self.ad))
+        if not asked:
+            return None
+        p, st = asked.get("player"), asked.get("stage")
+        return {"character": re4_menus.PLAYERS[p] if type(p) is int and 0 <= p < len(re4_menus.PLAYERS) else None,
+                "room": re4_menus.STAGE_ROOMS[st] if type(st) is int and 0 <= st < len(re4_menus.STAGE_ROOMS) else None}
+
+    def decide(self, previous, terminal: str | None = None):
+        """("state", entry) | ("menus", combo) | (None, why) for the round after the one that just ended. A death in the
+        DJ's round keeps Continue Yes (Bot._continue_answer): the same stage and character again, from the library when
+        it holds them (an instant Continue), else (None) the bot answers the native Continue Yes."""
+        self.retrying_asked = False
+        why = self.lib.tripped()
+        if why:
+            self.stats["instant_rounds"] = why
+            return None, why
+        dj = self.asked() if terminal == "dead" else None
+        if dj is not None:
+            room, who = previous if previous else (None, None)
+            want = {"room": dj.get("room") or room, "character": dj.get("character") or who}
+            kind, what = self.lib.choose(self.combos(), previous, want)
+            if kind != "state":
+                self.stats["instant_last"] = "the DJ's round died: Continue Yes (its stage and character not stored)"
+                return None, "the DJ's round: Continue Yes"
+            self.retrying_asked = True
+            return kind, what
+        kind, what = self.lib.choose(self.combos(), previous, self.request())
+        if kind == "menus":
+            self.plan_menus(what)
+            if what:
+                self.stats["instant_last"] = f"menus to r{what[0]:03x} {what[1]}: not in the library yet"
+        return kind, what
+
+    # --- loading ---
+    def start(self, entry: dict):
+        """Load entry's state and check that RAM shows its round running: (ok, why, frozen)."""
+        why = self.lib.valid(entry)
+        if why:
+            self.lib.record(entry, False, why)
+            return self._failed(entry, why, False)
+        t0 = self.clock()
+        ok, frozen = False, False
+        try:
+            with self.RS.load(self.ad, Path(entry["file"]), self.disc_id, self.sid, sleep=self.sleep) as out:
+                ok, why, frozen = self._verify(entry, t0 + INSTANT_VERIFY_S)
+                out["verified"] = ok
+        except Exception as exc:                     # noqa: BLE001 - the menus take over
+            ok, why = False, f"load failed: {type(exc).__name__}: {exc}"[:200]
+        if not ok:
+            self.lib.record(entry, False, why)
+            if frozen:
+                self.lib.drop(entry)
+                self.lib.trip(why)
+            return self._failed(entry, why, frozen)
+        self.lib.record(entry, True)
+        self.loaded = entry
+        asked = self.request()
+        self.loaded_asked = bool(getattr(self, "retrying_asked", False))   # an instant Continue of the DJ's round
+        if asked and asked.get("room") in (None, entry["room"]) and asked.get("character") in (None, entry["character"]):
+            # the DJ's round is up: its request moves to ASKED (a death in it keeps Continue Yes); later rounds random
+            getattr(re4_menus, "ASKED", {})[id(self.ad)] = re4_menus.REQUESTS.pop(id(self.ad), None) or {}
+            self.loaded_asked = True
+        self.stats["instant_loads"] = self.stats.get("instant_loads", 0) + 1
+        self.stats["instant_last"] = (f"r{entry['room']:03x} {entry['character']} loaded in "
+                                      f"{self.clock() - t0:.1f} s ({Path(entry['file']).name})")
+        self.status()
+        return True, "", False
+
+    def _failed(self, entry, why, frozen):
+        self.stats["instant_fallbacks"] = self.stats.get("instant_fallbacks", 0) + 1
+        self.stats["instant_last"] = (f"r{entry.get('room', 0):03x} {entry.get('character')}: {why}"
+                                      + ("" if frozen else "; the menus take over"))[:240]
+        if not frozen:
+            self.plan_menus((entry.get("room"), entry.get("character")))
+        self.status()
+        return False, why, frozen
+
+    def _verify(self, entry: dict, deadline: float):
+        """RAM shows the loaded round running: its room with the room routine on, Leon alive, the clock at the state's
+        start (a little less) - and the VI count moving while it does. (ok, why, frozen)."""
+        room, start = entry["room"], float(entry.get("timer") or 0.0)
+        first_vi = last_vi = seen = None
+        reads = 0
+        while True:
+            now = self.clock()
+            try:
+                s, on, vi = snapshot(self.m), _room_on(self.m), u32(self.m, VI_COUNT)
+            except Exception:                        # noqa: BLE001 - a read during the load: the next one
+                s = None
+            if s is not None:
+                reads += 1
+                first_vi = vi if first_vi is None else first_vi
+                last_vi = vi
+                live = (on and s["room"] == room and s["player"] is not None and (s["hp"] or 0) > 0
+                        and start - INSTANT_VERIFY_S - 3.0 <= s["timer"] <= start + 1.0 and s["timer"] > 0)
+                if not live:
+                    seen = None
+                elif seen is None:
+                    seen = (now, vi)
+                elif vi != seen[1]:
+                    return True, "", False
+            if now >= deadline:
+                break
+            self.sleep(0.05)
+        if reads >= 2 and first_vi == last_vi:
+            return False, f"the game froze after the state load (VI count stuck at {last_vi:#x})", True
+        if seen is not None:
+            return False, "the loaded round showed in RAM but never ran", True
+        return False, "RAM never showed the loaded round (the load key was not taken, or Dolphin refused the state)", False
+
+    def after_load(self) -> None:
+        """The loaded round's own setup at its first frame (play(), before arm_round): its stage and character in the
+        stats; the package found in RAM counts as applied (arm_round never stacks it on itself: spawn_multiplier's re-arm
+        would clone the start's Ganados again), a state without it gets it now (arm_round); the pending equip the state
+        carries (its round's gun, ~5 s in) is cleared, so the gun arm_round draws for this round stays in his hands."""
+        e = self.loaded or {}
+        room, who = e.get("room"), e.get("character")
+        idx = re4_menus.STAGE_ROOMS.index(room) if room in re4_menus.STAGE_ROOMS else None
+        self.stats.update(character=who, character_source="round_state", instant_state=Path(e.get("file", "")).name,
+                          **({"stage": re4_menus.STAGES[idx], "stage_index": idx} if idx is not None else {}))
+        try:
+            from . import re_mods_tool as RM
+            hooked = bool(RM.RE4(self.ad).hooked())
+        except Exception:                            # noqa: BLE001 - can't tell: arm_round applies it (idempotent)
+            hooked = False
+        self.stats["hooks"] = "applied (in the loaded state)" if hooked else "not in the loaded state"
+        try:
+            self.ad.write_memory(PEND_EQUIP, bytes(4))
+            self.stats["instant_pending_equip"] = "cleared"
+        except Exception as exc:                     # noqa: BLE001 - the state's own gun comes ~5 s in instead
+            self.stats["instant_pending_equip"] = f"not cleared: {type(exc).__name__}"
+
+    # --- capturing ---
+    def _capture_refusal(self, s: dict, sel: dict) -> str | None:
+        if self.capture is not None:
+            return "the last capture is still being written"
+        if self.lib.tripped():
+            return "instant rounds are off for now"
+        p, st, room = sel.get("player"), sel.get("stage"), s.get("room")
+        if type(p) is not int or not 0 <= p < len(re4_menus.PLAYERS):
+            return "the selects did not name this round's character"
+        if room not in re4_menus.STAGE_ROOMS:
+            return f"room {room} is not a Mercenaries stage"
+        if type(st) is int and (not 0 <= st < len(re4_menus.STAGE_ROOMS) or re4_menus.STAGE_ROOMS[st] != room):
+            return "the stage the selects took is not this room"
+        if (s.get("timer") or 0) < CAPTURE_MIN_TIMER_S:
+            return "not a round's first frame (the clock is low)"
+        if self.lib.count((room, re4_menus.PLAYERS[p])) >= self.RS.MAX_PER_COMBO:
+            return "the library has this combination"
+        try:
+            from . import re_mods_tool as RM
+            if not RM.RE4(self.ad).hooked():
+                return "the package's hooks are not in RAM (a state without them would need them after every load)"
+        except Exception as exc:                     # noqa: BLE001
+            return f"hooks unreadable ({type(exc).__name__})"
+        return None
+
+    def maybe_capture(self, s: dict, sel: dict, hold=None) -> str | None:
+        """At the first in-round frame of a round the menus started: capture it when the library lacks it. The bot
+        holds still until Dolphin has taken the snapshot (CAPTURE_WAIT_S at most); a later snapshot is discarded."""
+        why = self._capture_refusal(s, sel)
+        if why:
+            self.stats["instant_capture"] = f"not captured: {why}"
+            return why
+        if hold is not None:
+            hold(set())
+        room, p = s["room"], sel["player"]
+        idx = re4_menus.STAGE_ROOMS.index(room)
+        self.lib.folder.mkdir(parents=True, exist_ok=True)
+        dest = self.lib.folder / f"capture-{os.getpid()}-{os.urandom(4).hex()}.tmp"
+        cap = self.RS.Capture(self.ad, dest)
+        taken = cap.wait_serialized(self.RS.CAPTURE_WAIT_S, sleep=self.sleep, clock=self.clock)
+        meta = {"room": room, "stage": re4_menus.STAGES[idx], "stage_index": idx, "character": re4_menus.PLAYERS[p],
+                "character_index": p, "timer": s.get("timer"), "captured_at": self.clock(),
+                "game_id": self.game.get("game_id"), "build": self.game.get("mod") or "stock",
+                "disc": f"{self.disc_id}r{self.disc_rev}", "session_id": self.sid, "hooks": True,
+                "source": "the round's first in-round frame, after the menus (re4_merc_bot.InstantRounds)"}
+        self.capture = (cap, meta, taken)
+        self.stats["instant_capture"] = (f"capturing r{room:03x} {meta['character']}" if taken
+                                         else "not captured: Dolphin took the snapshot too late")
+        return None
+
+    def poll(self) -> None:
+        """File a capture once Dolphin has written it (every tick; an Event check)."""
+        if self.capture is None or not self.capture[0].done.is_set():
+            return
+        cap, meta, taken = self.capture
+        self.capture = None
+        try:
+            if taken and cap.error is None and cap.dest.is_file() and cap.dest.stat().st_size > 0:
+                entry = self.lib.add(cap.dest, meta)
+                self.stats["instant_captures"] = self.stats.get("instant_captures", 0) + 1
+                self.stats["instant_capture"] = (f"captured r{meta['room']:03x} {meta['character']} "
+                                                 f"({entry['bytes']} bytes)")
+            else:
+                self.stats["instant_capture"] = f"not captured: {cap.error or 'Dolphin took the snapshot too late'}"
+        except OSError as exc:
+            self.stats["instant_capture"] = f"not captured: {type(exc).__name__}: {exc}"[:200]
+        finally:
+            Path(cap.dest).unlink(missing_ok=True)
+        self.status()
+
+    def finish(self, wait_s: float = 3.0) -> None:
+        """The run ends: a capture still being written is waited for (briefly) and filed."""
+        if self.capture is not None:
+            self.capture[0].done.wait(wait_s)
+            self.poll()
+
+    def status(self) -> str:
+        why = self.lib.tripped()
+        if why:
+            text = why
+        else:
+            have = self.lib.by_combo()
+            text = (f"on: {sum(len(v) for v in have.values())} states for "
+                    f"{len(have)}/{len(self.combos())} stage x character")
+        self.stats["instant_rounds"] = text
+        return text
 
 
 def learn_dir_for(ad) -> Path:
@@ -2315,6 +2708,15 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     menus = _Menus(ad, m, send, sleep, clock, bot.stats, game=game, hooks=hooks)
     bot.menu_key = id(ad) if ad is not None else None   # the menus' request key: an asked-for round keeps Continue Yes
     loadout = LoadoutCheck(ad, bot.stats) if ad is not None else None   # the round's gun and x80, read back in the round
+    # instant rounds (InstantRounds: the next round from a save state taken at a round's first frame); None = the menus
+    instant = InstantRounds.for_run(ad, m, game, bot.stats, menus, sid=session_id, clock=clock, sleep=sleep,
+                                    prepare=prepare)
+    next_via = "start" if started_in else "menus"  # how the next round starts (stats round_start_via)
+    round_combo = None                             # (room, character) of the round being played
+    instant_tried = ended = None                   # the round whose end tried an instant start / marked its end
+    clock_seen = None                              # the Mercenaries clock as last seen running (a results screen counts
+                                                   # only after it ran down: RESULTS_FROM_S)
+    terminal_clock = None                          # the clock at the last round end (a retry shows it reset: RETRY_JUMP_S)
     out_since, last_press, was_in, left_at = None, 0.0, started_in, None
     bot.stats["prompt_presses"] = 0
     prompt_taps: list = []                         # times the current prompt was pressed
@@ -2327,6 +2729,13 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     boundary_sent=False
     armed_round=None
     playing_observed=started_in
+    if started_in and not prepare:
+        # a run that begins in a round (MercMode's prepared swap): that round gets its route map too (before, only
+        # rounds the bot saw start had one, so the first round of every MercMode turn had none)
+        roundmap.gap_start(bot.stats, clock(), "start")
+        bot.trace_start(boundary_id)
+        if getattr(bot, "trace", None) is not None:
+            bot.trace.meta.update(round_start_via="start")
     recorder=None
     record_dir=record_dir or getattr(getattr(ad,'config',None),'data_dir',None)
     if record_dir is not None and not prepare:           # a prepare plays no round: nothing to record
@@ -2362,21 +2771,64 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         s = snapshot(m)
         now = clock()
         room_on = _room_on(m)                         # a stage still loading shows the last round's clock
-        if (round_boundary is not None or recorder is not None) and playing_observed and not boundary_sent and re4_menus is not None \
+        if instant is not None:
+            instant.poll()                            # a capture Dolphin has finished writing goes into the library
+        reporting = (round_boundary is not None or recorder is not None) and not boundary_sent
+        terminal = None                               # the round's end: its results, or "You Are Dead" (read once)
+        if playing_observed and re4_menus is not None and (reporting or ended != boundary_id
+                or instant is not None and instant_tried != boundary_id) \
                 and (s.get('timer')==0 or isinstance(s.get('hp'),(int,float)) and s['hp']<=0):
-            terminal=re4_menus.screen(m,merc=s)
-            if terminal.get('where') in ('results','dead') and s.get('player'):
-                hold(set())
-                witness={'screen':terminal['where'],'playing_observed':True,'player_verified':True,
-                    'tally_ready':terminal['where']=='results','timer':s.get('timer'),'hp':s.get('hp'),
-                    'game_routine':terminal.get('game_routine'),'room':s.get('room')}
-                if recorder is not None:recorder.finish(now,'completed' if terminal['where']=='results' else 'died',bot.stats)
-                boundary_sent=True
-                if round_boundary is not None:
-                    round_boundary({'round_id':boundary_id,'at':now,'map_id':'G4BE08',
-                        'role':'solo_p1','source':'native_terminal_reader','mode':'mercenaries',
-                        'stage':str(s.get('room')),'character':bot.stats.get('character'),'witness':witness},bot.stats)
-                if bot.stats.get('mercmode_rotate_requested'):
+            scr=re4_menus.screen(m,merc=s)
+            if scr.get('where') in ('results','dead') and s.get('player'):
+                # a real end only: Leon dead with time on the clock, or the clock run down to 0. A stage's first frames
+                # run the room with the clock still at 0 and read as results; after a Continue that made a phantom
+                # round and boundary (2026-10-26 16:51:21-32: 11 s, 0 m moved, counted by MercMode)
+                if scr['where']=='dead' and (s.get('timer') or 0)>0 \
+                        or clock_seen is not None and clock_seen<=RESULTS_FROM_S:
+                    terminal=scr
+                elif ended != boundary_id:
+                    bot.stats['terminal_refused']=(f"{scr['where']} with the clock last seen at {clock_seen}: "
+                                                   "not a round's end (a stage's first frames)")
+        if terminal is not None and ended != boundary_id:
+            ended = boundary_id
+            terminal_clock = s.get('timer')
+            roundmap.gap_end(bot.stats, now)          # the next round's round_gap_s counts from here
+        if room_on and s.get('room') is not None and (s['room'] >> 8) == 4 and (s.get('timer') or 0) > 0:
+            clock_seen = s['timer']
+        if terminal is not None and reporting:
+            hold(set())
+            witness={'screen':terminal['where'],'playing_observed':True,'player_verified':True,
+                'tally_ready':terminal['where']=='results','timer':s.get('timer'),'hp':s.get('hp'),
+                'game_routine':terminal.get('game_routine'),'room':s.get('room')}
+            if recorder is not None:recorder.finish(now,'completed' if terminal['where']=='results' else 'died',bot.stats)
+            boundary_sent=True
+            if round_boundary is not None:
+                round_boundary({'round_id':boundary_id,'at':now,'map_id':'G4BE08',
+                    'role':'solo_p1','source':'native_terminal_reader','mode':'mercenaries',
+                    'stage':str(s.get('room')),'character':bot.stats.get('character'),'witness':witness},bot.stats)
+            if bot.stats.get('mercmode_rotate_requested'):
+                break
+        if terminal is not None and instant is not None and instant_tried != boundary_id and not prepare \
+                and bot.stats.get("operator_control") is not True:   # the operator has the pad: their game, no load
+            # instant round: MercMode has this round's boundary; after a beat the next round goes in from the library
+            # (or the menus walk to a combination the library lacks); RAM must show it running, else the menus
+            instant_tried = boundary_id
+            hold(set())
+            bot.stats["screen"] = terminal["where"]
+            beat_end = clock() + INSTANT_BEAT_S
+            while clock() < beat_end and not stopped():
+                sleep(0.1)
+            if stopped():
+                break
+            kind, what = instant.decide(round_combo, terminal["where"])   # a DJ round's death: Continue Yes (its own)
+            if kind == "state":
+                ok, why, frozen = instant.start(what)
+                if ok:
+                    bot.trace_finish()                # the round that ended: its route map now
+                    was_in, out_since, left_at, next_via = False, None, None, "state"
+                    continue                          # the next pass starts the loaded round as a new one
+                if frozen:
+                    bot.stats.update(hung=True, wandered=f"instant round: {why}")
                     break
         if not in_mercenaries(s) or s["timer"] <= 0 or not room_on:   # results (clock at 0), the title, menus, a load
             hold(set())
@@ -2402,6 +2854,10 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             if was_in:
                 left_at = now                          # a round just ended: its results come up first
                 bot.trace_finish()                     # its route map (round_maps/r<room>/)
+                if ended != boundary_id:               # left without a terminal screen (a quit, a load): ended now
+                    ended = boundary_id
+                    roundmap.gap_end(bot.stats, now)
+                next_via = "menus"                     # the next round comes through the menus and a stage load
             if rerun is None and (left_at is None or now - left_at > MENU_AFTER):
                 # the screen from RAM and the one press towards the next round (gbox.re4_menus), never a blind one:
                 # up + A had walked from the Result screen to the main title's START, a story game with the hooks in
@@ -2415,22 +2871,59 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             continue
         if prepare:
             # MercMode prepare: the round is up (Leon in a Mercenaries room, the clock running): stop on this first
-            # in-round frame with nothing pressed; the caller pauses the game here (gbox.tools._prepare_round)
-            bot.stats.update(screen="playing", prepared=True, timer=s["timer"], room=s["room"])
+            # in-round frame with nothing pressed; the caller pauses the game here (gbox.tools._prepare_round). A
+            # combination the round-state library lacks is captured first (unseen; the file is written before the pause)
+            if instant is not None:
+                instant.maybe_capture(s, menus.take_selection(), hold)
+                instant.finish(wait_s=PREPARE_CAPTURE_S)
+            bot.stats.update(screen="playing", prepared=True, timer=snapshot(m)["timer"], room=s["room"])
             break
         if not was_in:
             boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats["rounds"] += 1
+            via, next_via = next_via or "menus", None
+            gap = roundmap.gap_start(bot.stats, now, via)   # round_gap_s: since the last round of this run ended
+            bot.new_round()                            # the last round's map saved; the stage is read afresh
             bot.trace_start(boundary_id)
+            if getattr(bot, "trace", None) is not None:
+                bot.trace.meta.update(round_gap_s=gap, round_start_via=via)
             bot.stats["screen"] = "playing"            # the menus' last screen no longer shows on the watch panel
             bot.save()                                 # what the last round taught
             was_in = True
-        elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0:
+            sel = menus.take_selection()               # the character / stage the selects took for this round
+            if via == "state" and instant is not None and instant.loaded:
+                e = instant.loaded
+                instant.after_load()                   # the package counted (or due), the state's pending equip cleared
+                round_combo = (e["room"], e["character"])
+                menus.round_up(re4_menus.PLAYERS.index(e["character"]) if e["character"] in re4_menus.PLAYERS else None,
+                               re4_menus.STAGE_ROOMS.index(e["room"]) if e["room"] in re4_menus.STAGE_ROOMS else None,
+                               keep_asked=bool(getattr(instant, "loaded_asked", False)))   # the DJ's round (again)
+                if getattr(bot, "trace", None) is not None:
+                    bot.trace.meta.update(instant_state=Path(e["file"]).name)
+            else:
+                if instant is not None:
+                    instant.loaded = None
+                p_ = sel.get("player")
+                who = re4_menus.PLAYERS[p_] if re4_menus is not None and type(p_) is int \
+                    and 0 <= p_ < len(re4_menus.PLAYERS) else bot.stats.get("character")
+                round_combo = (s.get("room"), who)
+                menus.round_up(keep_asked=not sel)     # no selects visited: the stage again (Continue Yes), same round's
+                if via == "menus" and instant is not None and bot.stats.get("operator_control") is not True:
+                    instant.maybe_capture(s, sel, hold)   # its first frame, before any press: into the library
+        elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0 \
+                and (s.get('timer') or 0) > (terminal_clock or 0) + RETRY_JUMP_S:
             # A retry can recreate the player without a sampled menu gap: an attempt of its own, with its own route map
-            # (2026-10-26: one map spanned a whole RE4 turn of deaths and retries, so no single death could be traced)
+            # (2026-10-26: one map spanned a whole RE4 turn of deaths and retries, so no single death could be traced).
+            # Only once the clock shows the stage started over: Continue restores Leon's health on the death screen
+            # first, which began a phantom attempt (2026-10-26 16:51:21)
             boundary_id,boundary_sent=uuid.uuid4().hex,False
             bot.stats['rounds']+=1
+            gap = roundmap.gap_start(bot.stats, now, "retry")
+            menus.watch_reset()                        # the menus' clocks never run through a round
+            bot.new_round()                            # the stage starts over: its time bonuses are back
             bot.trace_start(boundary_id)
+            if getattr(bot, "trace", None) is not None:
+                bot.trace.meta.update(round_gap_s=gap, round_start_via="retry")
         if room_on and s.get('player') and s.get('hp',0)>0:
             playing_observed=True
             if getattr(bot, "trace", None) is not None:
@@ -2488,6 +2981,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     if recorder is not None:recorder.finish(clock(),'interrupted',bot.stats)
     bot.trace_finish()                                 # a stopped / frozen round still leaves its route map
     bot.save()
+    if instant is not None:
+        instant.finish()                               # a capture still being written goes into the library
     return bot.stats
 
 

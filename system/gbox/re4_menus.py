@@ -53,6 +53,8 @@ MENU_NAMES = {1: "START", 2: "ASSIGNMENT ADA", 3: "THE MERCENARIES", 4: "LOAD", 
 MERC_CODE = 3
 PLAYERS = ("Leon", "Ada", "Krauser", "HUNK", "Wesker")       # the portraits, left to right (live frame)
 STAGES = ("Village", "Castle", "Base", "Waterworld")
+STAGE_ROOMS = (0x400, 0x402, 0x403, 0x404)   # each stage's room (pG+0x4FA8): r400 Village, r402 Castle (Garrador),
+                                             # r403 Base (J.J.), r404 Waterworld (the disc's omake01 / omake02 ESLs)
 LEON, VILLAGE = 0, 0
 
 # title routine 5 (main menu) steps, from the routine's switch (0x801627C4) and what a pick leads to
@@ -297,6 +299,11 @@ def step(scr: dict) -> str | None:
 # The next round someone asked for (the MercMode DJ queue, re_mods mercs_select): adapter key -> {"player", "stage"}
 # (indexes into PLAYERS / STAGES, None = random). RandomSelections takes it at the next Select Player / Select Stage.
 REQUESTS: dict = {}
+# The request the round now playing fulfils (moved out of REQUESTS when that round starts, RandomSelections.round_up /
+# the instant rounds' load): a death in it keeps Continue Yes (re4_merc_bot.Bot._continue_answer) - the DJ's round is
+# replayed - until a round that is not the DJ's starts. Survives a bot hot reload like REQUESTS.
+ASKED: dict = {}
+RELOAD_KEEP = ("ASKED",)
 
 
 def request(key, character=None, stage=None) -> dict:
@@ -323,26 +330,58 @@ class RandomSelections:
         self.previous_player=self.previous_stage=None
         self.where=None
         self.no_selected=False                   # "You Are Dead": No already highlighted (step pressed right)
+        self.planned=None                        # the next round's targets (plan_next), {"player", "stage"}
+
+    def plan_next(self,player=None,stage=None):
+        """The next round's targets, taken at the next Select Player / Select Stage like a request (None = random)
+        but without a request's Continue Yes: gbox.re4_merc_bot's instant rounds walk the menus to a stage and
+        character the round-state library lacks, so it is captured there. A DJ request still comes first."""
+        self.planned={'player':player,'stage':stage}
+
+    def round_up(self,player=None,stage=None,keep_asked=False):
+        """A round started. The playbook never asks screen() in a round, so this is where a DJ request taken at the
+        selects is done with (it stayed in REQUESTS and replayed every round before: now it moves to ASKED for the round
+        it started, whose deaths keep Continue Yes) and a plan is spent; player / stage: a round that started from a save
+        state names its own (the next draw avoids them). keep_asked: the round is the DJ's still (a Continue Yes reload,
+        an instant retry of the DJ's round); any other round ends the DJ's."""
+        if self.key is not None and REQUESTS.get(self.key) and self.player is not None:
+            ASKED[self.key]=REQUESTS.pop(self.key)
+        elif self.key is not None and not keep_asked:
+            ASKED.pop(self.key,None)
+        self.planned=None
+        player=self.player if player is None else player
+        stage=self.stage if stage is None else stage
+        if player is not None:self.previous_player=player
+        if stage is not None:self.previous_stage=stage
+        self.player=self.stage=None
 
     def screen(self,m,merc=None):
         out=screen(m,merc=merc)
         where=out.get('where')
         asked=REQUESTS.get(self.key) if self.key is not None else None
+        planned=self.planned or {}
         if where=='select_player':
             if asked and asked.get('player') is not None:
                 self.player=asked['player']
+            elif self.player is None and planned.get('player') is not None:
+                self.player=planned['player']
             if self.player is None:
                 self.player=self.rng.choice([i for i in range(5) if i!=self.previous_player])
             out['target']=self.player
         elif where=='select_stage':
             if asked and asked.get('stage') is not None:
                 self.stage=asked['stage']
+            elif self.stage is None and planned.get('stage') is not None:
+                self.stage=planned['stage']
             if self.stage is None:
                 self.stage=self.rng.choice([i for i in range(4) if i!=self.previous_stage])
             out['target']=self.stage
         elif where=='playing' and asked and self.player is not None:
             REQUESTS.pop(self.key,None)          # the requested round is up: later rounds are random again
+            self.planned=None
         elif where in ('playing','results','dead'):
+            if where=='playing':
+                self.planned=None                # the planned round is up (or another one started): random again
             if self.player is not None:self.previous_player=self.player
             if self.stage is not None:self.previous_stage=self.stage
             self.player=self.stage=None
@@ -356,7 +395,7 @@ class RandomSelections:
         with the same character, so every death kept him; No goes back through Select Player, where a different one is
         drawn (operator 2026-10-26: "why dont the character change between rounds? Stop picking the same character").
         A round someone asked for (REQUESTS) keeps Continue Yes."""
-        if scr.get('where')=='dead' and not (self.key is not None and REQUESTS.get(self.key)):
+        if scr.get('where')=='dead' and not (self.key is not None and (REQUESTS.get(self.key) or ASKED.get(self.key))):
             if not self.no_selected:
                 self.no_selected=True
                 return DPAD['right']

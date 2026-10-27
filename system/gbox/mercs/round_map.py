@@ -43,12 +43,35 @@ SHOTS_KEPT = 20           # the last shots of a round, each with the aim and gat
 SHOT_RECORDS_KEPT = 3000  # the combat layer's structured shot records: the whole round (the "shots" list)
 BALLISTICS = "ballistics"    # <folder>/ballistics/<stem>.json / .md beside the round maps: each one's ballistic report
                              # (a subfolder: a round-map folder keeps one .json per round for whoever lists them)
+GAPS_KEPT = 10               # stats round_gaps: the last rounds' gaps, newest last
+GAP_MAX_S = 3600.0           # a longer "gap" is not one between two rounds of a title (a parked game, a long pause)
+
+
+def gap_end(stats: dict, now: float) -> None:
+    """A round ended (its terminal screen, or the bot left it): the next round's gap counts from here."""
+    stats["_round_end_at"] = now
+
+
+def gap_start(stats: dict, now: float, via: str | None = None) -> float | None:
+    """A round started (its first in-round frame): stats round_gap_s = the seconds since the last round of this run
+    ended (operator 2026-10-26: "without breaks in between rounds"), None for a run's first round; round_start_via says
+    how it started (state: an instant round from the state library, menus: results -> menus -> stage load, retry:
+    Continue, start: the run began in it); round_gaps keeps the last GAPS_KEPT as text ("2.1 state, 20.8 menus")."""
+    end = stats.pop("_round_end_at", None)
+    gap = round(now - end, 1) if isinstance(end, (int, float)) and 0 <= now - end <= GAP_MAX_S else None
+    stats["round_gap_s"] = gap
+    stats["round_start_via"] = via or "unknown"
+    if gap is not None:
+        seen = [p for p in str(stats.get("round_gaps") or "").split(", ") if p]
+        stats["round_gaps"] = ", ".join((seen + [f"{gap:g} {via or 'unknown'}"])[-GAPS_KEPT:])
+    return gap
 
 
 class RoundTrace:
     def __init__(self, out_dir: Path | None, title: str, room: str, round_id: str, cell: float, code: dict | None = None):
         self.out_dir, self.title, self.room, self.round_id, self.cell = out_dir, title, room, round_id, float(cell)
         self.code = code or {}                  # phase -> "file:line function" that runs it (the caller's own map)
+        self.meta: dict = {}                    # round facts the caller adds (round_gap_s, round_start_via, ...): the JSON
         self.samples: list[tuple] = []          # (t, x, z, y)
         self.states: list[dict] = []            # the bot's decision state at each sample (STATE_KEYS)
         self.mines: list[list] = []             # ground mine positions [x, z] at each sample
@@ -209,6 +232,7 @@ class RoundTrace:
             report["records_dropped"] = self.shot_records_dropped
         operator = self.operator_segments()
         out = {"title": self.title, "room": self.room, "round_id": self.round_id, "started": self.started,
+               **{k: v for k, v in self.meta.items() if k not in ("title", "room", "round_id", "started")},
                "seconds": round(total, 1), "samples": len(self.samples), "distance": round(moved),
                "cells_visited": len(dwell), "hotspots": hotspots, "verdict": verdict,
                "stuck_events": sum(e["kind"] == "stuck" for e in self.events),

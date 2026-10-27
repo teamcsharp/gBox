@@ -55,7 +55,7 @@ def test_invalid_or_missing_native_coordinates_do_not_fabricate_a_map(tmp_path):
 def test_legacy_play_records_before_its_native_boundary_callback(tmp_path):
     from gbox import re4_merc_bot as B
     from tests.test_re4_merc_bot import world
-    game=world([]);now=[0.];stats={};observed=[]
+    game=world([],timer_s=2.0);now=[0.];stats={};observed=[]   # the round's last seconds: the clock runs down to 0
     def sleep(dt):
         now[0]+=dt
         if now[0]>.6:game.put(B.MERC_TIMER,'>I',0)
