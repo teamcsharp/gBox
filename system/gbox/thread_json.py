@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -24,12 +25,42 @@ from fastapi.routing import APIRoute
 from starlette.responses import Response
 
 
+def _dumps(value) -> bytes:
+    # JSONResponse.render's exact settings
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode("utf-8")
+
+
+def _array(items) -> bytes:
+    return b"[" + b",".join(_dumps(x) for x in items) + b"]"
+
+
+def json_bytes(content) -> bytes:
+    """JSONResponse(content).body, byte for byte, encoded in pieces. json.dumps of a whole answer is one C call that holds
+    the GIL from its start to its end: the 47 MB inbox list took 275 ms of an idle Spark core and 577 ms of the loaded
+    one (2026-10-27), and the event loop, the frame uploads and every MJPEG view stood still meanwhile. A list is
+    encoded item by item, a dict with string keys value by value (a list value item by item), so other threads get
+    the GIL between pieces. Anything else, or a dict with other keys (json.dumps converts those), is one call."""
+    if isinstance(content, list):
+        return _array(content)
+    if isinstance(content, dict) and all(type(k) is str for k in content):
+        return b"{" + b",".join(_dumps(k) + b":" + (_array(v) if isinstance(v, list) else _dumps(v))
+                                for k, v in content.items()) + b"}"
+    return _dumps(content)
+
+
+class PiecewiseJSONResponse(JSONResponse):
+    """A JSONResponse whose body is rendered by json_bytes: the same bytes and headers, never one long GIL hold."""
+
+    def render(self, content) -> bytes:
+        return json_bytes(content)
+
+
 def encode_in_thread(call):
     """`call`, answering with a JSONResponse built where it runs (a threadpool thread) instead of a bare dict/list."""
     @functools.wraps(call)
     def answer(*args, **kwargs):
         result = call(*args, **kwargs)
-        return result if isinstance(result, Response) else JSONResponse(jsonable_encoder(result))
+        return result if isinstance(result, Response) else PiecewiseJSONResponse(jsonable_encoder(result))
     answer.gbox_thread_json = True
     return answer
 
