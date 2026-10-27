@@ -230,6 +230,25 @@ def test_actual_boundary_rotates_once_then_waits_for_owned_game_stop():
     assert calls[-1]['input']['game']['game_id']!=run['game_id']
 
 
+def test_a_switch_edition_run_accepts_round_boundaries_naming_its_own_title_id():
+    # 2026-10-26: an RE5 Switch No Mercy run's boundaries name 010018100CD46000 (its RAM profile id), and accept_boundary
+    # compared them with the PS3 BLUS30491 only: no round would have counted and the turn would never rotate
+    from gbox import re_switch
+    store,w,saver,calls,now,tick,run,job=playing()
+    run=store.get(S.STATE,w['name']);run['mercmode']=dict(run['mercmode'],title='re5',map_id=re_switch.RE5_TITLE_ID)
+    store.put(S.STATE,w['name'],run)
+    body=boundary(run,now[0])
+    assert M.accept_boundary(store,run,body,parent_job=job,now=now[0])['map_id']==re_switch.RE5_TITLE_ID
+    with pytest.raises(ValueError):                                         # the other edition's id is not this run's
+        M.accept_boundary(store,run,body|{'map_id':'BLUS30491','round_id':'b'*32},parent_job=job,now=now[0])
+
+
+def test_the_switch_round_receipt_names_the_switch_title_id():
+    from gbox import re_switch, tools
+    assert tools._prepare_title({'game_id':re_switch.RE5_GAME_ID,'title':'Resident Evil 5'})==re_switch.RE5_TITLE_ID
+    assert tools._prepare_title({'game_id':RE5,'title':'Resident Evil 5 - Gold Edition'})=='BLUS30491'
+
+
 def test_autobot_restarted_inside_the_owned_session_keeps_rotating():
     """The operator's F3 / "Take control" or the bot's hang relaunch starts autoplay again under a new job; the
     game, worker and session are the same, so its native boundaries still rotate (live 2026-10-24: 422s)."""
@@ -1156,6 +1175,33 @@ def test_preload_gets_presentation_priority_like_the_launch_it_replaces():
     assert M.presentation_launch(store,w,stored)
     assert not M.presentation_launch(store,w,stored|{'id':'other'})
     assert not M.presentation_launch(store,w,stored|{'actor':'operator'})
+
+
+def test_the_preferred_edition_gets_presentation_priority_for_its_preload_and_launch():
+    # 2026-10-26 21:55: RE5 Switch No Mercy selected, its preload sat queued behind the 70% background budget (CPU 77-92%)
+    # because only the PS3 game ids counted as MercMode foreground work; the cold launch would have waited the same way
+    from gbox import re_switch
+    store,w,saver,calls,now,tick=rig()
+    switch_pref={'re5':{'platform':'switch','mode':'no_mercy','title_id':re_switch.RE5_TITLE_ID}}
+    M.configure(store,w['name'],{'enabled':True,'presentation_priority':True,'preferred_editions':switch_pref})
+    def preload(gid):
+        return {'id':'pj','tool':'launch_game','actor':S.ACTOR,'require_worker':w['id'],
+                'input':{'warm':True,'game':{'game_id':gid}}}
+    store.put(S.STATE,w['name'],{'worker_id':w['id'],'phase':'playing','mercmode':{'title':'re4'},
+                                 'mercmode_prelaunch':{'title':'re5','job':'pj'}})
+    assert M.presentation_launch(store,w,preload(re_switch.RE5_GAME_ID))
+    assert not M.presentation_launch(store,w,preload(RE5))                       # the PS3 copy is not this host's RE5
+    cfg=M.settings(store,w['name'])
+    launch={'id':'lj','tool':'launch_game','actor':S.ACTOR,'require_worker':w['id'],
+            'input':{'game':{'game_id':re_switch.RE5_GAME_ID,'launch':{'mercmode':M.launch_block(cfg)}}}}
+    store.put(S.STATE,w['name'],{'worker_id':w['id'],'phase':'launching','job':'lj','game_id':re_switch.RE5_GAME_ID,
+                                 'mercmode':{'title':'re5'}})
+    assert M.presentation_launch(store,w,launch)                                 # the cold launch at its turn too
+    M.configure(store,w['name'],{'preferred_editions':{}})                       # back to the native edition
+    assert not M.presentation_launch(store,w,launch)
+    store.put(S.STATE,w['name'],{'worker_id':w['id'],'phase':'playing','mercmode':{'title':'re4'},
+                                 'mercmode_prelaunch':{'title':'re5','job':'pj'}})
+    assert M.presentation_launch(store,w,preload(RE5)) and not M.presentation_launch(store,w,preload(re_switch.RE5_GAME_ID))
 
 
 def test_keep_warm_setting_accepts_counts_and_legacy_booleans():

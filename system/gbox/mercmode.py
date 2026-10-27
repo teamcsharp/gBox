@@ -214,6 +214,13 @@ def settings(store, host):
     return normalize(store.get(SETTING, host) or {})
 
 
+def title_spec(title, cfg):
+    """The spec of the edition this host plays for a MercMode title (preferred_editions, e.g. RE5 Switch No Mercy; the
+    native one otherwise), {} for an unknown title. Every per-run check keys on it, not on TITLES alone."""
+    from .re_switch import preferred_spec
+    return preferred_spec(title, TITLES[title], cfg) if title in TITLES else {}
+
+
 def presentation_launch(store, worker, job):
     """Only an explicitly selected host's exact scheduler launch has priority.
 
@@ -223,12 +230,15 @@ def presentation_launch(store, worker, job):
     if job.get('tool')!='launch_game':return False
     from .screensaver import STATE,ACTOR
     cfg=settings(store,worker['name']);run=store.get(STATE,worker['name']) or {}
-    title=(run.get('mercmode') or {}).get('title');spec=TITLES.get(title) or {}
+    # the edition this host plays (preferred_editions, e.g. RE5 Switch No Mercy), not only the native one: 2026-10-26
+    # the Switch preload and launch were held by the 70% background budget while the PS3 ids alone counted as foreground
+    edition=lambda t:title_spec(t,cfg)
+    title=(run.get('mercmode') or {}).get('title');spec=edition(title)
     game=(job.get('input') or {}).get('game') or {}
     ahead=run.get('mercmode_prelaunch') or {}
     if job.get('id') and job.get('id')==ahead.get('job'):
         # the next title's warm preload during this run's last seconds: the same foreground priority as its launch
-        nxt=TITLES.get(ahead.get('title')) or {}
+        nxt=edition(ahead.get('title'))
         return bool(cfg['enabled'] and cfg['presentation_priority'] and ahead.get('title') in cfg['titles']
             and nxt.get('playable') and job.get('actor')==ACTOR and (job.get('input') or {}).get('warm') is True
             and run.get('phase') in ('starting','playing') and run.get('worker_id')==worker.get('id')==job.get('require_worker')
@@ -690,8 +700,11 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
             or not run.get('playing_since', now) <= at <= now+5 or now-at > 120:
         raise ValueError('The native round identity or timestamp is stale')
     spec = TITLES[run['mercmode']['title']]
+    # the run's own edition (recorded at its start from the host's preferred edition): RE5 Switch No Mercy rounds name
+    # 010018100CD46000, not the PS3 BLUS30491, and were refused here (2026-10-26)
+    expected_map = run['mercmode'].get('map_id') or spec['map_id']
     witness = body.get('witness')
-    if body.get('map_id') != spec['map_id'] or body.get('role') != 'solo_p1' \
+    if body.get('map_id') != expected_map or body.get('role') != 'solo_p1' \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
             or witness.get('playing_observed') is not True or witness.get('player_verified') is not True:
         raise ValueError('A solo native terminal-round witness is required')
