@@ -135,3 +135,41 @@ def test_the_dot_on_another_majini_fires_at_him_at_once_without_taking_him_as_th
     act = b.tick(snap(chest(other)))                               # one tick under the dot: shot, not yet the target
     assert "zr" in act["hold"] and b.target == 10 and b.stats["dot_shots"] == 1
     assert not set(act["hold"]) & {"rleft", "rright", "rup", "rdown"}   # the aim held still
+
+
+def test_his_own_level_comes_first_no_pitching_up_at_a_roof_while_ground_majini_come():
+    b, clock = bot()
+    roof = {"ptr": 10, "pos": (0.0, 280.0, 700.0), "hp": 800}     # in front, on a roof 2.8 m up
+    ground = {"ptr": 11, "pos": (60.0, 0.0, 900.0), "hp": 800}    # in front too, farther, on his level
+    assert b._choose(p(), [roof, ground], 0.0)["ptr"] == 11
+    side_roof = {"ptr": 12, "pos": (500.0, 280.0, 0.0), "hp": 800}
+    side_ground = {"ptr": 13, "pos": (-700.0, 0.0, -100.0), "hp": 800}
+    b2, _ = bot()
+    assert b2._choose(p(), [side_roof, side_ground], 0.0)["ptr"] == 13   # nobody in front: the roof costs more
+
+
+def test_no_pitch_swing_to_a_steep_majini_while_one_on_his_level_is_within_six_metres():
+    b, clock = bot()
+    roof = {"ptr": 10, "pos": (0.0, 300.0, 400.0), "hp": 800}     # in front, 34 deg up to his chest
+    ground = {"ptr": 11, "pos": (550.0, 0.0, 0.0), "hp": 800}     # 5.5 m to the side, on his level
+    assert b._choose(p(), [roof, ground], 0.0)["ptr"] == 11
+    far_ground = {"ptr": 12, "pos": (900.0, 0.0, 0.0), "hp": 800}
+    b2, _ = bot()
+    assert b2._choose(p(), [roof, far_ground], 0.0)["ptr"] == 10   # nobody on his level within 6 m: the roof is fine
+    b3, _ = bot()
+    b3._set_target(12, 0.0)
+    b3._choose(p(), [roof, far_ground], 5.0)
+    assert b3.stats["off_level_picks"] == 1 and b3.stats["pitch_swings"] == 1
+
+
+def test_up_close_he_keeps_his_target_until_it_dies_or_leaves_unless_a_grab_comes_nearer():
+    b, clock = bot()
+    cur = {"ptr": 10, "pos": at(200, 150), "hp": 800}              # within THREAT_R, behind-ish
+    other = {"ptr": 11, "pos": at(180, 0), "hp": 800}              # in front, as close: no re-pick
+    b._set_target(10, 0.0)
+    b.target_at = -10.0
+    assert b._choose(p(), [cur, other], 1.0)["ptr"] == 10 and b.stats["close_keeps"] == 1
+    grab = {"ptr": 12, "pos": at(100, -20), "hp": 800}             # within GRAB_THREAT_R and much nearer: him
+    assert b._choose(p(), [cur, other, grab], 1.1)["ptr"] == 12
+    for k in R.LEVEL_COUNTERS:
+        assert k in R.RE5Switch.round_counters
