@@ -22,6 +22,7 @@ Measured live on the Spark (docs/research/re6-switch-ram.md; this driver's own m
 """
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import random
@@ -500,6 +501,153 @@ def own_laser(m, p: int, index: int) -> dict | None:
     return {"at": at, "from": frm, "up": bool(math.isfinite(up) and up >= LASER_UP_MIN), "alpha": round(up, 3)}
 
 
+# --- the stage's nav mesh -----------------------------------------------------------------------------------------------
+# The coordinator, 17:20: "the zombies path around the stage, so RE6 has navigation data in RAM ... run A* from him to
+# each bonus." The stage's rNavigationMesh (vtable main+0x28B8F48, magic 'NAV' v0x22 at +0x80) sits among sResource's
+# resources (main+0x2A5FF98, 0x6A6F0 bytes holding their pointers). Ghidra's writer main+0x15AED40 gives its layout:
+# the vertices at +0xA0 (0x10 each: x, y, z), their count +0xB8; the triangles at +0xC0 (0x70 each), their count +0xC8:
+# a triangle's +0x48 / +0x50 its vertex indices, +0x58 / +0x60 its links (0x18 each, +0 the neighbouring triangle); the
+# lists live in one pool. Live (s1218 / Mining the Depths, MercMode 17:20): 2005 vertices, 3434 triangles, 9722 links,
+# every one symmetric and sharing an edge. navmesh() decodes it once per stage (a rescan at most every NAV_SCAN_S while
+# none is found); NavMesh.path() is A* over the triangles, its waypoints the shared edges' midpoints and the goal.
+SRES, SRES_SIZE, NAV_VT, NAV_MAGIC = 0x2A5FF98, 0x6A6F0, 0x28B8F48, 0x56414E
+NAV_SCAN_S, NAV_CELL, NAV_DY, NAV_MAX_TRIS = 10.0, 400.0, 250.0, 20000
+_NAV: dict = {"base": None, "ptr": None, "mesh": None, "at": -1e9}
+
+
+class NavMesh:
+    """A stage's walkable triangles: V vertices, T (a, b, c) indices, N neighbour lists; locate() / path()."""
+
+    def __init__(self, verts, tris, links, name=""):
+        self.V, self.T, self.N, self.name = verts, tris, links, name
+        self.C = [tuple(sum(verts[v][i] for v in t) / 3.0 for i in range(3)) for t in tris]
+        self.grid: dict = {}
+        for k, t in enumerate(tris):
+            xs, zs = [verts[v][0] for v in t], [verts[v][2] for v in t]
+            for gx in range(int(min(xs) // NAV_CELL), int(max(xs) // NAV_CELL) + 1):
+                for gz in range(int(min(zs) // NAV_CELL), int(max(zs) // NAV_CELL) + 1):
+                    self.grid.setdefault((gx, gz), []).append(k)
+
+    def _inside(self, k, x, z) -> bool:
+        (ax, _, az), (bx, _, bz), (cx, _, cz) = (self.V[v] for v in self.T[k])
+        d1 = (x - bx) * (az - bz) - (ax - bx) * (z - bz)
+        d2 = (x - cx) * (bz - cz) - (bx - cx) * (z - cz)
+        d3 = (x - ax) * (cz - az) - (cx - ax) * (z - az)
+        return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+
+    def locate(self, pt) -> int | None:
+        """The triangle under pt (within NAV_DY of its height), else the nearest centre within two cells."""
+        x, y, z = pt
+        gx, gz = int(x // NAV_CELL), int(z // NAV_CELL)
+        cand = self.grid.get((gx, gz), [])
+        inside = [k for k in cand if abs(self.C[k][1] - y) <= NAV_DY and self._inside(k, x, z)]
+        if inside:
+            return min(inside, key=lambda k: abs(self.C[k][1] - y))
+        near = [k for dx in (-2, -1, 0, 1, 2) for dz in (-2, -1, 0, 1, 2) for k in self.grid.get((gx + dx, gz + dz), ())]
+        if not near:
+            return None
+        return min(near, key=lambda k: (abs(self.C[k][1] - y) > NAV_DY, math.hypot(self.C[k][0] - x, self.C[k][2] - z)))
+
+    def path(self, a, b) -> list | None:
+        """A* from a's triangle to b's: the shared edges' midpoints, then b. None: off the mesh or no way there."""
+        s0, g0 = self.locate(a), self.locate(b)
+        if s0 is None or g0 is None:
+            return None
+        if s0 == g0:
+            return [tuple(b)]
+        openq, came, cost = [(0.0, s0)], {s0: None}, {s0: 0.0}
+        while openq:
+            _f, k = heapq.heappop(openq)
+            if k == g0:
+                break
+            for nb in self.N[k]:
+                c = cost[k] + math.dist(self.C[k], self.C[nb])
+                if c < cost.get(nb, 1e18):
+                    cost[nb], came[nb] = c, k
+                    heapq.heappush(openq, (c + math.dist(self.C[nb], self.C[g0]), nb))
+        if g0 not in came:
+            return None
+        chain, k = [], g0
+        while k is not None:
+            chain.append(k)
+            k = came[k]
+        chain.reverse()
+        out = []
+        for u, w in zip(chain, chain[1:]):
+            shared = [v for v in self.T[u] if v in self.T[w]]
+            if len(shared) == 2:
+                out.append(tuple((self.V[shared[0]][i] + self.V[shared[1]][i]) / 2.0 for i in range(3)))
+            else:
+                out.append(self.C[w])
+        out.append(tuple(b))
+        return out
+
+
+def navmesh(m, base: int, now: float | None = None) -> NavMesh | None:
+    """The stage's NavMesh (cached while its resource stays; None when none is loaded or it does not decode)."""
+    now = time.monotonic() if now is None else now
+    c = _NAV
+    if c["base"] != base:
+        c.update(base=base, ptr=None, mesh=None, at=-1e9)
+    try:
+        if c["ptr"] is not None and u64(m, c["ptr"]) == base + NAV_VT:
+            return c["mesh"]
+    except (ValueError, OSError):
+        pass
+    c.update(ptr=None, mesh=None)
+    if now - c["at"] < NAV_SCAN_S:
+        return None
+    c["at"] = now
+    try:
+        blk = m.rd(u64(m, base + SRES), SRES_SIZE)
+        seen = set()
+        for o in range(0, len(blk), 8):
+            v = struct.unpack_from("<Q", blk, o)[0]
+            if v in seen or not ptr_ok(v) or base <= v < base + 0x3000000:
+                continue
+            seen.add(v)
+            try:
+                if u64(m, v) == base + NAV_VT and _i32(m, v + 0x80) == NAV_MAGIC:
+                    mesh = _decode_nav(m, v)
+                    if mesh is not None:
+                        c.update(ptr=v, mesh=mesh)
+                        return mesh
+            except (ValueError, OSError):
+                continue
+    except (ValueError, OSError, struct.error):
+        return None
+    return None
+
+
+def _decode_nav(m, nav: int) -> NavMesh | None:
+    hdr = m.rd(nav, 0xE8)
+    nv, nt = struct.unpack_from("<I", hdr, 0xB8)[0], struct.unpack_from("<I", hdr, 0xC8)[0]
+    va, ta = struct.unpack_from("<Q", hdr, 0xA0)[0], struct.unpack_from("<Q", hdr, 0xC0)[0]
+    if not (0 < nv <= 3 * NAV_MAX_TRIS and 0 < nt <= NAV_MAX_TRIS and ptr_ok(va) and ptr_ok(ta)):
+        return None
+    vraw = m.rd(va, 0x10 * nv)
+    verts = [struct.unpack_from("<3f", vraw, 0x10 * i) for i in range(nv)]
+    traw = m.rd(ta, 0x70 * nt)
+    heads = [struct.unpack_from("<QI4xQI", traw, 0x70 * k + 0x48) for k in range(nt)]
+    lo = min(min(h[0] for h in heads), min(h[2] for h in heads))
+    hi = max(max(h[0] + 4 * h[1] for h in heads), max(h[2] + 0x18 * h[3] for h in heads))
+    if not (ptr_ok(lo) and 0 < hi - lo <= 0x200000):
+        return None
+    pool = m.rd(lo, hi - lo)
+    tris, links = [], []
+    for vp, vc, lp, lc in heads:
+        if vc != 3:
+            return None
+        t = struct.unpack_from("<3i", pool, vp - lo)
+        if not all(0 <= v < nv for v in t):
+            return None
+        tris.append(t)
+        links.append([n for n in (struct.unpack_from("<i", pool, lp - lo + 0x18 * j)[0] for j in range(lc))
+                      if 0 <= n < nt])
+    name = hdr[0xC:0x48].split(b"\0")[0].decode("ascii", "replace")
+    return NavMesh(verts, tris, links, name)
+
+
 def game_man(m, base: int) -> int:
     gm = u64(m, base + S_GAMEMAN)
     return gm if ptr_ok(gm) else 0
@@ -543,7 +691,8 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["camera"] = own_camera(m, p) if coop else camera(m, base, snap["player"]["pos"])
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base, snap["player"]["pos"])
-            snap["aim_cam"] = aim_cam(m, base, p)                # this player's own camera state (the aim lock)
+            snap["aim_cam"] = aim_cam(m, base, p)
+            snap["navmesh"] = navmesh(m, base)                # this player's own camera state (the aim lock)
             if (snap["player"].get("bomb") or {}).get("out"):
                 snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
@@ -1415,6 +1564,11 @@ BONUS_H, BONUS_HIT_R = 40.0, 45.0
 BONUS_TRY_S, BONUS_SKIP_S = 2.5, 30.0   # (5 s a try wasted 20 s on 4 out of sight live 14:41)
 BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
 BONUS_LOG_N = 12
+# Walking by the nav mesh (snapshot navmesh): the bonus run and the combo pursuit walk its path - toward the next
+# waypoint, the ones within NAV_REACH_R dropped, replanned every NAV_REPLAN_S, on a new goal or after a stall; with the
+# aim lock's writer the camera's yaw is written onto the way (no turning keys). stats nav_paths, nav_fails (no path:
+# straight at it as before).
+NAV_WALK, NAV_REACH_R, NAV_REPLAN_S = True, 90.0, 1.5
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
 # and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
 # grabbing all the time bonuses, that's when the match truly begins and they can begin to make a stand"; 16:55: a round
@@ -1485,6 +1639,9 @@ class Bot:
                   "cc_vs_aimed"):
             self.stats.setdefault(k, 0.0)
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
+        for k in ("nav_paths", "nav_fails"):
+            self.stats.setdefault(k, 0)
+        self.nav_path, self.nav_goal, self.nav_at = None, None, -1e9   # the walk's waypoints; toward what; planned when
         self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
         self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
         self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
@@ -2440,6 +2597,34 @@ class Bot:
                 self.stats["pursuit_lapses"] += 1
                 self.pursuit = None
 
+    def _nav_heading(self, p, goal, snap, now) -> float | None:
+        """The heading of the next nav-mesh waypoint toward goal (None: no mesh, or no path - straight at it)."""
+        mesh = snap.get("navmesh")
+        if not NAV_WALK or mesh is None:
+            return None
+        key = (round(goal[0] / 50.0), round(goal[1] / 50.0), round(goal[2] / 50.0))
+        if key != self.nav_goal or now - self.nav_at >= NAV_REPLAN_S or not self.nav_path:
+            self.nav_goal, self.nav_at = key, now
+            self.nav_path = mesh.path(p["pos"], goal)
+            self.stats["nav_paths" if self.nav_path else "nav_fails"] += 1
+        px, _, pz = p["pos"]
+        while self.nav_path and len(self.nav_path) > 1 and math.hypot(self.nav_path[0][0] - px,
+                                                                      self.nav_path[0][2] - pz) <= NAV_REACH_R:
+            self.nav_path.pop(0)
+        if not self.nav_path:
+            return None
+        w = self.nav_path[0]
+        return heading(w[0] - px, w[2] - pz)
+
+    def _walk_keys(self, p, want: float, snap, side=()) -> tuple:
+        """Walking toward heading want: the camera's yaw written onto it when the lock's writer can (the stick up), else
+        the camera turned with the right stick as he walks."""
+        cam, ac = snap.get("camera"), snap.get("aim_cam")
+        if self.ram is not None and AIM_LOCK and ac and cam and self.ram(ac["addr"], ac["pitch"], want):
+            return ("lup",) + tuple(side)
+        err = wrap(want - (cam["yaw"] if cam else p["rot"]))
+        return ("lup",) + tuple(side) + self._turn(err, TURN_TOL)
+
     def _pursue(self, p, snap, now) -> dict | None:
         """After the best zombie of the whole stage (his floor first, then the nearest): along the camera turned to him,
         a side step when the walk stalls. None: no zombie alive anywhere."""
@@ -2460,9 +2645,11 @@ class Bot:
             self.pursue_side_until = now + PURSUE_SIDE_S
             self.detour = "lright" if self.detour == "lleft" else "lleft"
             self.pursue_spot = (now, (px, pz))
-        cam = snap.get("camera")
-        err = wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - (cam["yaw"] if cam else p["rot"]))
-        keys = ("lup",) + ((self.detour,) if now < self.pursue_side_until else ()) + self._turn(err, TURN_TOL)
+        side = (self.detour,) if now < self.pursue_side_until else ()
+        if side:
+            self.nav_path = None                                 # a stall: plan again after the side step
+        want = self._nav_heading(p, e["pos"], snap, now)
+        keys = self._walk_keys(p, heading(e["pos"][0] - px, e["pos"][2] - pz) if want is None else want, snap, side)
         floor = "his floor" if abs(e["pos"][1] - py) <= MAX_DY else "another floor"
         return self._go("walk", "pursue", {"hold": keys}, f"after the nearest of {len(alive)} ({floor}, {d:.0f} cm)")
 
@@ -2841,7 +3028,17 @@ class Bot:
                 self.run_target = None
                 return None
         if b is None:
-            b = min(cands, key=lambda c: (abs(c["pos"][1] - py) > BONUS_DY, reach(c)))
+            mesh = snap.get("navmesh") if NAV_WALK else None
+            walk = {}
+            if mesh is not None:                                 # the nearest by the way there (stairs, ramps)
+                for c in cands:
+                    way = mesh.path(p["pos"], c["pos"])
+                    if way:
+                        walk[c["ptr"]] = sum(math.dist(u, w) for u, w in zip([p["pos"]] + way[:-1], way))
+            if walk:
+                b = min(cands, key=lambda c: walk.get(c["ptr"], 1e9 + reach(c)))
+            else:
+                b = min(cands, key=lambda c: (abs(c["pos"][1] - py) > BONUS_DY, reach(c)))
             self.run_target, self.run_since, self.run_hit_since = b["ptr"], now, None
             self.pursue_spot = None
         self._gun_down()
@@ -2868,6 +3065,12 @@ class Bot:
             self.detour = "lright" if self.detour == "lleft" else "lleft"
             self.pursue_spot = (now, (px, pz))
         side = (self.detour,) if now < self.pursue_side_until else ()
+        if side:
+            self.nav_path = None                                 # a stall: plan again after the side step
+        want = self._nav_heading(p, b["pos"], snap, now) if d > 2 * BONUS_MELEE_R else None
+        if want is not None:                                     # along the nav mesh's way to it
+            return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, want, snap, side)},
+                            f"the bonus run: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
         walk = ("lup",) if abs(err) < math.radians(60) or d > 3 * BONUS_MELEE_R else ()
         return self._go("bonus", "bonus_run", {"hold": walk + side + self._turn(err, TURN_TOL)},
                         f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")

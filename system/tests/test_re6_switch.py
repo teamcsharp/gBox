@@ -1201,6 +1201,103 @@ def test_magnum_speed_runs_the_magnums_fire_and_recoil_faster_only(mods, monkeyp
     assert mods.ORIG[id(ad)]["magnum_fast"] == 1
     with pytest.raises(ValueError):
         mods.run(ad, "magnum_speed", multiplier=20)
+def u_mesh(cells=((0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2)), size=100.0):
+    """A walkable U of 1 m squares (two triangles each) around a hole at (0..1, 1): vertices, triangles, links."""
+    verts, index, tris = [], {}, []
+
+    def vid(x, z):
+        if (x, z) not in index:
+            index[(x, z)] = len(verts)
+            verts.append((x * size, 0.0, z * size))
+        return index[(x, z)]
+    for cx, cz in cells:
+        a, b, c, d = vid(cx, cz), vid(cx + 1, cz), vid(cx + 1, cz + 1), vid(cx, cz + 1)
+        tris += [(a, b, c), (a, c, d)]
+    links = [[j for j, u in enumerate(tris) if j != k and len(set(t) & set(u)) == 2] for k, t in enumerate(tris)]
+    return verts, tris, links
+
+
+def test_the_nav_mesh_path_goes_round_the_hole_not_through_it():
+    mesh = R.NavMesh(*u_mesh())
+    path = mesh.path((50.0, 0.0, 50.0), (50.0, 0.0, 250.0))                  # straight north crosses the hole
+    assert path and path[-1] == (50.0, 0.0, 250.0) and max(w[0] for w in path) >= 200.0
+    assert all(not (0 <= w[0] < 200 and 100 < w[2] < 200) for w in path)     # never over the hole
+    assert mesh.locate((150.0, 0.0, 150.0)) is not None                       # off the mesh: the nearest triangle
+    assert mesh.path((50.0, 0.0, 50.0), (60.0, 0.0, 60.0)) == [(60.0, 0.0, 60.0)]
+    far = R.NavMesh(*u_mesh(cells=((0, 0), (5, 5))))                          # two islands
+    assert far.path((50.0, 0.0, 50.0), (550.0, 0.0, 550.0)) is None
+
+
+def test_the_nav_mesh_is_decoded_from_the_resource_in_ram():
+    g = round_guest()
+    verts, tris, links = u_mesh()
+    nav = g.alloc(0x200)
+    g.q(nav, BASE + R.NAV_VT)
+    g.i32(nav + 0x80, R.NAV_MAGIC)
+    g.put(nav + 0xC, b"soft\\stage\\s9999\0")
+    va = g.alloc(0x10 * len(verts))
+    for i, v in enumerate(verts):
+        g.f32(va + 0x10 * i, *v)
+    ta = g.alloc(0x70 * len(tris))
+    pool = g.alloc(0x2000)
+    at = pool
+    for k, (t, ln) in enumerate(zip(tris, links)):
+        g.put(at, struct.pack("<3i", *t))
+        g.q(ta + 0x70 * k + 0x48, at)
+        g.i32(ta + 0x70 * k + 0x50, 3)
+        at += 12
+        for j, nb in enumerate(ln):
+            g.put(at + 0x18 * j, struct.pack("<6i", nb, 0, j, 0, 0, 0))
+        g.q(ta + 0x70 * k + 0x58, at)
+        g.i32(ta + 0x70 * k + 0x60, len(ln))
+        at += 0x18 * len(ln)
+    g.q(nav + 0xA0, va)
+    g.i32(nav + 0xB8, len(verts))
+    g.q(nav + 0xC0, ta)
+    g.i32(nav + 0xC8, len(tris))
+    sres = g.alloc(R.SRES_SIZE)
+    g.q(BASE + R.SRES, sres)
+    g.q(sres + 0x1000, g.obj("rTexture", 0x100))                             # another resource first
+    g.q(sres + 0x2000, nav)
+    R._NAV.update(base=None)
+    mesh = R.navmesh(g, BASE, now=100.0)
+    assert mesh is not None and len(mesh.T) == len(tris) and mesh.N == links and mesh.name.endswith("s9999")
+    assert R.navmesh(g, BASE, now=100.5) is mesh                              # cached while the resource stays
+    g.q(nav, 0)                                                               # freed: looked for again (not yet)
+    assert R.navmesh(g, BASE, now=101.0) is None
+
+
+def test_the_bonus_run_walks_the_nav_mesh_way_round():
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (100.0, 0.0, 500.0))               # beyond the hole (2 m squares)
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
+    acts = run(bot, snap, clock, 2)
+    assert bot.stats["nav_paths"] == 1 and "nav mesh" in bot.why
+    assert "rleft" in acts[0]["hold"] and "lup" in acts[0]["hold"]           # toward +x (east) first, not north
+    bot.ram = lambda addr, pitch, yaw: True                                   # with the lock's writer: the yaw written
+    snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.1, "yaw": 0.0}
+    acts = run(bot, snap, clock, 1)
+    assert acts[0]["hold"] == ("lup",)
+
+
+def test_the_bonus_run_takes_the_nearest_by_the_way_there():
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
+    across = bonus_piece(g, "cSmTimeBonusAct_Wait", (100.0, 0.0, 500.0))      # 4 m straight, 12 m round the hole
+    along = bonus_piece(g, "cSmTimeBonusAct_Wait", (500.0, 0.0, 300.0))       # 4.5 m straight, about as far walking
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    run(bot, snap, clock, 1)
+    assert bot.run_target == across                                           # without the mesh: the straight nearest
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
+    run(bot, snap, clock, 1)
+    assert bot.run_target == along
 
 
 def test_no_new_bomb_under_half_health():
