@@ -874,6 +874,24 @@ AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, no
                                         # own loop fires again while the trigger stays down (Ghidra: main+0x1098470, the
                                         # weapon class 0x20 / 0x40 of main+0xF42980 or the types 0x10D / 0x128; Chris's
                                         # assault rifle 0x0F: held 2.5 s, 24 rounds); any other gun fires once a press
+# Line of sight (operator 2026-10-27 11:12: "right now they are shooting at a wall"; MercMode's RE6 turn of 10:50-11:20:
+# of the last 30 pulls, 25 aimed along the camera's line - the laser not read - and the 12 of those at a zombie 13-20 m
+# off all missed; the laser, when read, ended 1.6 m out on a wall in front of the one at 15.9 m. The camera's line runs
+# through walls.) A zombie the laser's ray ends short of (FIRE_SLACK, the ray on him within LOS_YAW / LOS_PITCH) is out
+# of sight for BLOCK_S; so is one the trigger worked on for NOHIT_S without his health falling, and one CC_MISS_N quick
+# shots in a row left whole. Those are never fired at, never the target while another is open, and crowd control leaves
+# them; the camera's line fires only within CAM_FIRE_R, or on one whose health fell to a shot within SEEN_S. All in reach
+# out of sight: he walks at the nearest with a side step swapped every DETOUR_S (a way round). A still laser is stale
+# only once the camera turned RAY_STALE_TURN under it (standing still behind a wall freezes it too).
+BLOCK_S, NOHIT_S, SEEN_S, NOHIT_GAP_S = 2.5, 1.0, 3.0, 0.5
+BLOCK_MIN_R = 200.0                     # never out of sight this near: crowd control always works on him (live 11:37:
+                                        # quick shots that took no health marked ones at 87-92 cm, and he died twice)
+LASER_SEEN_S = 1.0                      # the laser's ray on him this recently: the camera's line may fire at him too
+CAM_FIRE_R = 1000.0
+LOS_YAW, LOS_PITCH = math.radians(3), math.radians(3)
+RAY_STALE_TURN = math.radians(5)
+CC_MISS_N = 2
+DETOUR_S = 1.5
 # Remote bombs (operator 2026-10-27: "they should put remote mines down and detonate them as they make a stand going
 # from section to section"), the flow measured live 2026-10-27 (Chris, Liquid Fire): the D-pad's down steps the item
 # wheel (+0x5064 then names slot 12, the remote bomb; a press or two), ZL + ZR throws one about 3 m ahead along the aim
@@ -886,9 +904,20 @@ BOMB_SECTION_CM = 1500.0                # a new section: this far from where the
 BOMB_GAP_S = 12.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
 BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
-BOMB_SELF_R = 600.0                     # ... and him at least this far from it (live 2026-10-27: set off from about
-                                        # 3 m, both blasts knocked Chris down and took a health block; he backs off now)
-BOMB_HOLD_S, BOMB_GIVE_S = 8.0, 20.0    # out this long: off once he is clear; this long: off from BOMB_SELF_R * 0.6
+BOMB_SELF_R = 700.0                     # ... and him at least this far from it, never nearer (live 2026-10-27: set off
+                                        # from about 3 m, both blasts knocked Chris down and took a health block; operator
+                                        # 11:12: "have the bot distance himself from the remote mines")
+BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
+BOMB_WALK_S, BOMB_MIN_R = 5.0, 550.0    # walked off it this long without getting clear: off from BOMB_MIN_R (the blast
+                                        # reached 4.9 m and spared from 4.85 m, live 2026-10-27 11:35-11:38), never nearer
+BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0   # walking off it, this many this near him: he stops and kicks (ZR alone; ZL + ZR
+                                        # would set the bomb off) instead of backing into them
+DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
+BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
+BOMB_HURT_S, BOMB_HURT_HP = 1.0, 50     # a blast that takes this much of his health this soon: stats bomb_self_hits
+BOMB_LOG_N = 12
+BOMB_RETRY_S = 4.0                      # readying one given up (one came within BOMB_ROOM_R): tried again this soon
+                                        # (live 11:21: 900 -> 1 health in 5 s readying one with two at 76 cm)
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
 BOMB_FACE, BOMB_FACE_S = math.radians(25), 1.5        # the throw waits (this long at most) for the crowd in the aim
 BOMB_TAKE_S, BOMB_KILLS_S = 2.0, 3.0    # a throw / a blast shows in its slot within this; its kills counted this long
@@ -932,7 +961,9 @@ class Bot:
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
                   "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
                   "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
-                  "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks"):
+                  "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks",
+                  "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
+                  "bomb_self_hits", "bomb_aborts"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s"):
             self.stats.setdefault(k, 0.0)
@@ -976,6 +1007,20 @@ class Bot:
         self.bomb_at = self.bomb_from = None                 # where it went (x, z), his spot then
         self.bomb_since, self.bomb_last, self.bomb_why = None, -1e9, ""
         self.bomb_kills = None                               # (the kill count at a blast, when)
+        self.bomb_walk, self.bomb_side_until = None, -1e9    # walking off it: (since when, from where); a side step
+        self.bomb_walk_since = None                          # when this bomb's walk began
+        self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
+        self.bomb_hurt = None                                # (his health, when) at the press that set it off
+        # line of sight
+        self.blocked: dict = {}                              # zombie -> until when he is out of sight (never fired at)
+        self.seen: dict = {}                                 # zombie -> when his health last fell to a shot
+        self.laser_seen: dict = {}                           # zombie -> when the laser's ray last reached him
+        self.fire_track = None                               # [zombie, since, his health then, last on the line]
+        self.ray_yaw = None                                  # the camera's yaw when the laser's ray last moved
+        self.cc_shot = None                                  # (zombie, when, {zombie: health} within CC_R)
+        self.cc_miss: dict = {}
+        self.detour, self.detour_at = "lleft", -1e9
+        self._ppos, self._pos_of = None, {}                  # his position this tick, the zombies' by id
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -1140,6 +1185,7 @@ class Bot:
             if self.dead_since is None:
                 self.dead_since = now
                 self.stats["deaths"] += 1
+                self._death(p, snap, now)
             if now - self.dead_since < DEAD_WAIT_S:
                 return self._go("dead", "dead_wait", {"hold": ()}, "dead: the Continue? screen comes up")
             cursor = snap.get("continue_cursor")
@@ -1152,8 +1198,12 @@ class Bot:
                 return self._go("dead", "continue", {"tap": "a"}, f"Continue? {self.continued}")
             return self._go("dead", "continue", {"tap": "dleft" if cursor > want else "dright"}, "Continue? cursor")
         self.dead_since = None
+        self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        self._ppos = p["pos"]
+        self._pos_of = {e.get("ptr", e.get("slot")): e["pos"] for e in snap.get("enemies") or ()}
+        self._los_tick(snap, now)
         self._tablet_check(p, now)
         self._bomb_kills_tick(snap, now)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
@@ -1221,8 +1271,9 @@ class Bot:
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
         bearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)
-        front = [e for e in live if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
-        tgt = self._choose(p, yaw, front or live, now)
+        vis = [e for e in live if not self.is_blocked(e, now)]              # out of sight: never the target
+        front = [e for e in vis if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
+        tgt = self._choose(p, yaw, front or vis or live, now)
         foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         self.stats["target_dist"] = round(dist)
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
@@ -1239,9 +1290,16 @@ class Bot:
         bombed = self._bomb(p, live, flat, yaw, snap, now)
         if bombed is not None:
             return bombed
-        crowded = self._crowd_control(live, flat, bearing, now)
+        crowded = self._crowd_control(vis, flat, bearing, now)
         if crowded is not None:
             return crowded
+        if not vis:                                              # every one in reach out of sight: a way round
+            self._gun_down()
+            if now - self.detour_at >= DETOUR_S:
+                self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
+                self.stats["detours"] += 1
+            return self._go("walk", "walk_detour", {"hold": ("lup", self.detour) + self._turn(err, TURN_TOL)},
+                            f"the nearest at {dist:.0f} cm is out of sight: walking round ({self.detour})")
         if self.aim_since is None:
             near_err = bearing(near_e)
             if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
@@ -1283,9 +1341,10 @@ class Bot:
         if lz is not None and lz.get("up"):
             ray = (tuple(lz["from"]), tuple(lz["at"]))
             if ray != self.ray_key:
-                self.ray_key, self.ray_since = ray, now
+                self.ray_key, self.ray_since, self.ray_yaw = ray, now, cam["yaw"] if cam else None
                 origin, dot = ray
-            elif now - self.ray_since > RAY_STALE_S:             # a frozen ray is another unit's: look again
+            elif (now - self.ray_since > RAY_STALE_S              # frozen while the camera turned: another unit's
+                  and (cam is None or self.ray_yaw is None or abs(wrap(cam["yaw"] - self.ray_yaw)) > RAY_STALE_TURN)):
                 self.stats["restale"] += 1
                 forget("laser")
                 self.ray_key = None
@@ -1300,23 +1359,38 @@ class Bot:
             if cam is None or now - self.aim_since < LASER_WAIT_S:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
             origin, dot, source = cam["pos"], cam["target"], "camera"
-        on_e = self._on_line(origin, dot, source, front or live)
+        on_e = self._on_line(origin, dot, source, front or vis, now)
+        if source == "laser" and on_e is None and self._ray_short(origin, dot, tgt):
+            self._block(tgt, now, "los_blocks")                  # the ray ends on something in front of him: a wall
         if on_e is not None and on_e is not tgt:                 # the line is on another one: he is the target now
             tgt, foot = on_e, on_e["pos"]
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             dist = flat(tgt)
         return self._aim(p, tgt, foot, dist, origin, dot, source, on_e, front, back, now)
 
-    def _on_line(self, origin, dot, source, cands):
+    def _on_line(self, origin, dot, source, cands, now=None):
         """The zombie the aim's line runs into first: the laser's dot on him or its ray through him, or the camera's line
-        through him within ENGAGE_R. None: nobody on the line."""
+        through him within CAM_FIRE_R (further only on one hit within SEEN_S: the camera's line runs through walls).
+        None: nobody on the line."""
+        now = self.clock() if now is None else now
         best, best_d = None, math.inf
         for e in cands:
             foot = e["pos"]
+            if self.is_blocked(e, now):
+                continue
             if source == "laser":
                 hit = dot_on(dot, foot) is not None or through(origin, dot, foot)
+                if hit:                                          # the laser reaches him: in sight (LASER_SEEN_S)
+                    self.laser_seen[e.get("ptr", e.get("slot"))] = now
             else:
                 hit = line_hits(origin, dot, foot, ENGAGE_R + 300.0)
+                tid = e.get("ptr", e.get("slot"))
+                me = self._ppos or origin                        # from him (the camera rides ~2.5 m behind)
+                far = math.hypot(foot[0] - me[0], foot[2] - me[2]) > CAM_FIRE_R
+                if hit and far and now - self.seen.get(tid, -1e9) > SEEN_S \
+                        and now - self.laser_seen.get(tid, -1e9) > LASER_SEEN_S:
+                    self.stats["camera_far_holds"] += 1          # far along the camera's line, never hit: not fired at
+                    hit = False
             if hit:
                 d = math.dist(origin, foot)
                 if d < best_d:
@@ -1340,6 +1414,11 @@ class Bot:
         on = on_e is not None
         auto = p.get("weapon_id") in AUTO_IDS
         trig = self._trigger(on, now, auto)
+        if on:                                                   # the trigger on him: his health must fall (NOHIT_S)
+            tid = on_e.get("ptr", on_e.get("slot"))
+            if self.fire_track is None or self.fire_track[0] != tid:
+                self.fire_track = [tid, now, on_e.get("hp") or 0, now]
+            self.fire_track[3] = now
         keys = {"zl"} | self._yaw(yaw_err) | self._pitch(pitch_err) | trig | set(back)
         self._aimctx = {"target": (on_e or tgt).get("ptr", (on_e or tgt).get("slot")), "dist": dist,
                         "yaw_err": yaw_err, "source": source, "where": dot_on(dot, foot) if source == "laser" else None}
@@ -1349,6 +1428,76 @@ class Bot:
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    # --- line of sight ---------------------------------------------------------------------------------------------
+    def is_blocked(self, e, now) -> bool:
+        """Out of sight: blocked within BLOCK_S and not within BLOCK_MIN_R of him (one that close is always fought)."""
+        if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) <= now:
+            return False
+        me = self._ppos
+        return me is None or math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) >= BLOCK_MIN_R
+
+    def _block(self, e, now, why: str) -> None:
+        """A zombie out of sight for BLOCK_S (stats <why>): never fired at, never the target while another is open."""
+        tid = e if not isinstance(e, dict) else e.get("ptr", e.get("slot"))
+        pos = e.get("pos") if isinstance(e, dict) else self._pos_of.get(tid)
+        me = self._ppos
+        if pos is not None and me is not None and math.hypot(pos[0] - me[0], pos[2] - me[2]) < BLOCK_MIN_R:
+            return                                               # that close: never out of sight
+        if self.blocked.get(tid, -1e9) <= now:
+            self.stats[why] += 1
+        self.blocked[tid] = now + BLOCK_S
+        if self.target == tid:
+            self.target = None
+        if self.fire_track is not None and self.fire_track[0] == tid:
+            self.fire_track = None
+
+    @staticmethod
+    def _ray_short(origin, dot, tgt) -> bool:
+        """The laser's ray pointed at him (within LOS_YAW / LOS_PITCH of his chest) ends short of him: a wall between."""
+        foot = tgt["pos"]
+        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        yaw_err, pitch_err = ray_error(origin, dot, chest)
+        if abs(yaw_err) > LOS_YAW or abs(pitch_err) > LOS_PITCH:
+            return False
+        have, want = math.dist(origin, dot), math.dist(origin, chest)
+        return 1.0 <= have < want - FIRE_SLACK and dot_on(dot, foot) is None
+
+    def _los_tick(self, snap, now) -> None:
+        """Out of sight by what the shots did: the trigger on one zombie NOHIT_S without his health falling, or
+        CC_MISS_N quick shots in a row that took nobody's health within CC_R; a hit marks him seen (SEEN_S)."""
+        hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
+        for k in [k for k, t in self.blocked.items() if t <= now]:
+            del self.blocked[k]
+        ft = self.fire_track
+        if ft is not None:
+            tid, since, h0, last = ft
+            if hp.get(tid, h0) < h0:                             # it took his health: in sight
+                self.seen[tid] = now
+                self.fire_track = [tid, now, hp[tid], last]
+            elif now - last > NOHIT_GAP_S:                       # the trigger left him
+                self.fire_track = None
+            elif now - since >= NOHIT_S:
+                self._block(tid, now, "nohit_blocks")
+        cs = self.cc_shot
+        if cs is not None:
+            tid, at, before = cs
+            fell = [z for z, h in before.items() if hp.get(z, h) < h]
+            if fell:
+                for z in fell:
+                    self.seen[z] = now
+                self.cc_miss.pop(tid, None)
+                self.cc_shot = None
+            elif now - at > HIT_S:
+                self.cc_shot = None
+                self.cc_miss[tid] = self.cc_miss.get(tid, 0) + 1
+                if self.cc_miss[tid] >= CC_MISS_N:
+                    self.cc_miss.pop(tid, None)
+                    self._block(tid, now, "cc_blocks")
+        if len(self.seen) > 256:
+            self.seen = {k: t for k, t in self.seen.items() if now - t <= SEEN_S}
+        if len(self.laser_seen) > 256:
+            self.laser_seen = {k: t for k, t in self.laser_seen.items() if now - t <= LASER_SEEN_S}
 
     # --- crowd control ---------------------------------------------------------------------------------------------
     def _crowd_control(self, live, flat, bearing, now) -> dict | None:
@@ -1371,6 +1520,8 @@ class Bot:
             self.stats["quick_shots"] += 1
             self.stats["cc_quick_shots"] += 1
             self.qshot_release = True
+            self.cc_shot = (e.get("ptr", e.get("slot")), now,
+                            {z.get("ptr", z.get("slot")): z.get("hp") or 0 for z in live if flat(z) <= CC_R})
             return self._go("crowd", "cc_quick_shot", {"hold": ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)")
         if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
@@ -1402,20 +1553,46 @@ class Bot:
             on = sum(1 for e in live if math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_BLAST_R)
             me = math.hypot(px - bx, pz - bz)
             out_s = now - (self.bomb_since or now)
-            if (me >= BOMB_SELF_R and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S)
-                    or out_s >= BOMB_GIVE_S and me >= 0.6 * BOMB_SELF_R):
+            walked = self.bomb_walk_since is not None and now - self.bomb_walk_since >= BOMB_WALK_S
+            clear = me >= BOMB_SELF_R or (walked and me >= BOMB_MIN_R)
+            if clear and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S):   # never with him near it
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
+                self.bomb_hurt = (p.get("hp"), None)
+                log = self.stats.setdefault("bomb_det_cm", [])
+                log.append(round(me))
+                del log[:-BOMB_LOG_N]
                 return self._bomb_press(eq, now, detonate=True)
             self.bomb_phase = "wait"
             self._gun_down()
-            keys = ("ldown",) if me < BOMB_SELF_R + 150.0 else ()   # back off it while they come over it
-            return self._go("bomb", "bomb_wait", {"hold": keys}, f"a bomb out: {on} on it, {me:.0f} cm from him")
+            close = [e for e in live if flat(e) < MELEE_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz)
+                                                                        - yaw)) <= MELEE_CONE]
+            if close and now - self.melee_at >= MELEE_GAP_S:     # one at arm's length: a kick (ZR alone)
+                self.melee_at = now
+                self.stats["melee"] += 1
+                return self._go("bomb", "bomb_kick", {"tap": "zr"}, f"a bomb out, one at {flat(close[0]):.0f} cm: a kick")
+            crowd = sum(1 for e in live if flat(e) < BOMB_CROWD_R)
+            if me < BOMB_SELF_R + 150.0 and crowd < BOMB_CROWD_N:   # walk off it while they come over it
+                return self._bomb_walk(p, (bx, bz), yaw, me, on, now)
+            self.bomb_walk = None
+            nearest = min((e for e in live), key=flat, default=None)
+            if crowd and nearest is not None:                    # they are on him: face the nearest for the kicks
+                err = wrap(heading(nearest["pos"][0] - px, nearest["pos"][2] - pz) - yaw)
+                return self._go("bomb", "bomb_face", {"hold": self._turn(err, MELEE_CONE / 2)},
+                                f"a bomb out, {crowd} on him: facing the nearest for a kick")
+            return self._go("bomb", "bomb_wait", {"hold": ()}, f"a bomb out: {on} on it, {me:.0f} cm from him")
         if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
             self.stats["bombs_detonated"] += 1
+            self.bomb_walk = self.bomb_walk_since = None
+            if self.bomb_hurt is not None:
+                self.bomb_hurt = (self.bomb_hurt[0], now)
             self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
             if self.bomb_kills is not None:                      # its kills counted BOMB_KILLS_S from the blast
                 self.bomb_kills = (self.bomb_kills[0], now)
+            return None
+        if self.bomb_phase in ("equip", "face", "aim") and live and min(flat(e) for e in live) < BOMB_ROOM_R:
+            self.stats["bomb_aborts"] += 1                       # one came close while it was readied: fight first
+            self.bomb_phase, self.bomb_last = None, now - BOMB_GAP_S + BOMB_RETRY_S
             return None
         if self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
             if self.bomb_phase == "thrown" and now - self.bomb_phase_at > BOMB_TAKE_S:   # the throw never showed
@@ -1437,9 +1614,59 @@ class Bot:
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 
+    def _death(self, p, snap, now) -> None:
+        """stats death_log: what he was doing over his last HP_HIST_S (the decisions while his health fell), whether a
+        zombie held him, how many stood near, a bomb out and how far, so a death names its cause."""
+        px, py, pz = p["pos"]
+        near = sorted(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in snap.get("enemies") or ()
+                      if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY)
+        falls, doing_fall = [], {}
+        for (t0, h0, d0), (t1, h1, _d1) in zip(self.hp_hist, self.hp_hist[1:]):
+            if isinstance(h0, int) and isinstance(h1, int) and h1 < h0:
+                falls.append(h0 - h1)
+                doing_fall[d0] = doing_fall.get(d0, 0) + (h0 - h1)
+        bomb = None
+        if self.bomb_at is not None:
+            bomb = round(math.hypot(px - self.bomb_at[0], pz - self.bomb_at[1]))
+        log = self.stats.setdefault("death_log", [])
+        log.append({"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
+                    "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
+                    "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
+                    "bomb_phase": self.bomb_phase, "bomb_cm": bomb})
+        del log[:-DEATH_LOG_N]
+        self.hp_hist = []
+        self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
+
+    def _bomb_walk(self, p, at, yaw, me, on, now) -> dict:
+        """Off the bomb: the camera turned to it and the stick back (he runs away from it); not 30 cm further in
+        BOMB_STUCK_S (a wall behind), a side step for BOMB_SIDE_S, the side swapped each time."""
+        px, _, pz = p["pos"]
+        if self.bomb_walk_since is None:
+            self.stats["bomb_walks"] += 1
+            self.bomb_walk_since = now
+        if self.bomb_walk is None:
+            self.bomb_walk = (now, (px, pz))
+        elif math.hypot(px - self.bomb_walk[1][0], pz - self.bomb_walk[1][1]) > 30.0:
+            self.bomb_walk = (now, (px, pz))
+        elif now - self.bomb_walk[0] > BOMB_STUCK_S and now >= self.bomb_side_until:
+            self.bomb_side_until = now + BOMB_SIDE_S
+            self.detour = "lright" if self.detour == "lleft" else "lleft"
+            self.bomb_walk = (now, (px, pz))
+        err = wrap(heading(at[0] - px, at[1] - pz) - yaw)
+        keys = ("ldown",) + ((self.detour,) if now < self.bomb_side_until else ()) + self._turn(err, TURN_TOL)
+        return self._go("bomb", "bomb_walk", {"hold": keys}, f"walking off the bomb: {me:.0f} cm from it, {on} on it")
+
     def _bomb_kills_tick(self, snap, now) -> None:
         """A blast's kills (stats bomb_kills): the kill count BOMB_KILLS_S after it less the count when it was set off;
         every tick, foes or none (a blast that clears the area leaves nobody for the decision)."""
+        p = snap.get("player") or {}
+        if self.bomb_hurt is not None:                           # the blast's toll on him (BOMB_HURT_S after the press)
+            hp0, at = self.bomb_hurt                             # at: when the blast showed (None: not yet)
+            if at is not None and isinstance(hp0, int) and isinstance(p.get("hp"), int) and p["hp"] <= hp0 - BOMB_HURT_HP:
+                self.stats["bomb_self_hits"] += 1
+                self.bomb_hurt = None
+            elif at is not None and now - at > BOMB_HURT_S:
+                self.bomb_hurt = None
         if self.bomb_kills is None or self.bomb_phase in ("det_aim", "det", "det_wait"):
             return
         if now - self.bomb_kills[1] >= BOMB_KILLS_S:
@@ -1580,7 +1807,8 @@ class RE6Switch(Driver):
     round_counters = ("shots", "hits", "quick_shots", "melee", "holds", "reloads", "deaths", "tablets",
                       "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
-                      "holds_shaken", "cc_quick_shots", "cc_kicks")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "holds_shaken", "cc_quick_shots", "cc_kicks", "los_blocks", "nohit_blocks", "cc_blocks",
+                      "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
