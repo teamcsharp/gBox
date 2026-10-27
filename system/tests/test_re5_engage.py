@@ -181,9 +181,9 @@ def test_a_dot_on_a_wall_or_the_floor_short_of_him_never_fires_even_within_the_b
 
 
 def test_inside_his_window_the_stick_is_left_alone_and_outside_it_slews(tmp_path):
-    """No waving: a 2 deg error on a Majini 2 m off is inside his window's deadband; 15 deg is steered."""
+    """No waving: a 2 deg error on a Majini 2 m off is inside his window's deadband; 20 deg is steered (and held)."""
     origin = (0.0, 149.0, 46.0)
-    for deg, steer in ((2.0, False), (15.0, True)):
+    for deg, steer in ((2.0, False), (20.0, True)):
         a = math.radians(deg)
         dot = (300.0 * math.sin(-a), 110.0, 46.0 + 300.0 * math.cos(a))    # past him, deg to his right
         m = world(laser_dot=dot)

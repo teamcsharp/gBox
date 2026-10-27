@@ -1089,7 +1089,7 @@ class Combat:
             kind = "boss" if (tgt.get("hp_max") or 0) > BOSS_HP else "Majini"
             k = tgt.get("ptr", tgt.get("slot"))
             who = (f"{kind} {k:#x}" if isinstance(k, int) else f"{kind} {k}") + \
-                f" {E.flat(p['pos'], tgt['pos']) / 100.0:.1f} m {E.bearing_right_deg(p, tgt['pos']):+.0f} deg; "
+                f" {E.flat(p['pos'], tgt['pos']) / 100.0:.1f} m {round(E.bearing_right_deg(p, tgt['pos'])):+d} deg; "
         gate = str(self.stats.get("fire_gate") or "")
         self.look_decision = (what, (who + (gate + "; " if gate and what in ("fire", "aim", "raise the gun") else "")
                                      + c)[:160])
@@ -1277,25 +1277,32 @@ class Combat:
         point_blank = dist < POINT_BLANK and level   # nothing fits between
         close = dist <= E.CLOSE_R and level            # the fire window rules here (the laser line gate beyond)
         facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
-        win_y, win_p = E.window(dist)
         est = self._aim_estimate(snap, p, lz, aim_at, ready)
         if est is not None and est[0] in ("camera", "body") and est[1] is not None:
             aim.update(est=est[0], est_yaw=round(math.degrees(est[1]), 2),
                        est_pitch=round(math.degrees(est[2]), 2) if est[2] is not None else None)
+        laser_est = est is not None and est[0] == "laser"
+        win_y, win_p = E.window(max(50.0, dist - E.MUZZLE_CM),   # seen from the gun, half a metre ahead of his feet
+                                pad=E.LASER_PAD_CM if laser_est else E.WINDOW_PAD_CM)
         on_window = (est is not None and est[1] is not None and abs(est[1]) <= win_y
                      and (abs(est[2]) <= win_p if est[2] is not None else point_blank))
+        if laser_est and not on_window:
+            on_window = E.through_body(lz, foot)            # the ray runs through his torso / head on its way
         short = (lz is not None and where is None and other is None
                  and math.dist(lz[0], lz[1]) < math.dist(lz[0], aim_at) - FIRE_SLACK)
-        # a torn read: the ray's error jumped further in one tick than the stick can move the aim (Ship_Deck 11:37: yaw -5
-        # / pitch +1, 0.26 s later -55 / -56): no steering and no line-only shot on it until it holds a second tick
+        # a torn read: the ray's own direction jumped further in one tick than the stick can turn the aim (Ship_Deck
+        # 11:37: yaw -5 / pitch +1, 0.26 s later -55 / -56): no steering and no line-only shot on it until it holds a
+        # second tick (the dot leaving his shoulder for the wall behind him moves the dot, not the direction: no jump)
         jump = None
-        if lz is not None and est is not None and est[0] == "laser" and est[1] is not None:
+        if lz is not None and steering_ray(lz, aim_at):
+            ray_yaw = heading(lz[1][0] - lz[0][0], lz[1][2] - lz[0][2])
+            ray_pitch = math.atan2(lz[1][1] - lz[0][1], max(math.hypot(lz[1][0] - lz[0][0], lz[1][2] - lz[0][2]), 1.0))
             last = getattr(self, "_err_seen", None)
             if last is not None and last[0] == key and 0 < now - last[1] <= 0.5 and \
-                    (abs(wrap(est[1] - last[2])) > WILD_YAW or abs(est[2] - last[3]) > WILD_PITCH):
-                jump = f"jump: yaw {math.degrees(last[2]):+.0f} -> {math.degrees(est[1]):+.0f}, pitch " \
-                       f"{math.degrees(last[3]):+.0f} -> {math.degrees(est[2]):+.0f} in {now - last[1]:.2f} s"
-            self._err_seen = (key, now, est[1], est[2])
+                    (abs(wrap(ray_yaw - last[2])) > WILD_YAW or abs(ray_pitch - last[3]) > WILD_PITCH):
+                jump = f"jump: ray yaw {math.degrees(last[2]):+.0f} -> {math.degrees(ray_yaw):+.0f}, pitch " \
+                       f"{math.degrees(last[3]):+.0f} -> {math.degrees(ray_pitch):+.0f} in {now - last[1]:.2f} s"
+            self._err_seen = (key, now, ray_yaw, ray_pitch)
         mode, window_rate = self.cal.mode(self.character, wid or 0, dist)
         widen = CAL_WIDEN if mode == "wide" else 1.0
         dot_required = mode == "strict" or longshot
@@ -1316,6 +1323,10 @@ class Combat:
             fire, gate = True, "on another Majini"
         elif point_blank and (on_window or ((lz is None or short or not steering_ray(lz, aim_at))
                                             and abs(facing) <= READY_FIRE_FACING)):
+            fire, gate = True, "point blank"
+        elif not ready and level and dist < READY_FIRE_R and abs(facing) <= READY_FIRE_FACING:
+            # a Majini at arm's length in front while the gun comes up (or through hit recovery): the trigger is queued -
+            # waiting for the pose to clear perpetuates the stunlock
             fire, gate = True, "point blank"
         elif short and jump is None:
             fire, gate = False, ("floor short of him: hold fire"
@@ -1376,7 +1387,7 @@ class Combat:
         # threat stands within FRONT_CLEAR_R in front: then that one is fought now, the gun up.
         aimed = ready and (where is not None or other is not None or (on_window and jump is None))
         swinging = self.swing_key == key and abs(facing) > E.SWING_DONE
-        if (abs(facing) > SWING_TURN or swinging) and not aimed:
+        if (abs(facing) > E.SWING_TURN or swinging) and not aimed:
             threat = E.front_threat(p, enemies, exclude=key) if depth == 0 else None
             if threat is not None:
                 self.target_key = E.key(threat)
@@ -1664,7 +1675,7 @@ class Combat:
             swing = self.bow_turning
             self.stats['bow_aim_phase'] = 'turning to target' if swing else 'tracking with aim held'
         else:
-            swing = abs(facing) > SWING_TURN and not aligned
+            swing = abs(facing) > E.SWING_TURN and not aligned
             threat = E.front_threat(p, snap.get("enemies") or (), exclude=tgt.get("ptr", tgt.get("slot")))                 if swing and depth == 0 and p.get("action") != 4 else None
             if threat is not None:            # a threat in front: he is fought now, the gun stays up
                 self.target_key = E.key(threat)
@@ -1920,7 +1931,8 @@ class Combat:
         if isinstance(self.wid, int):
             name = f"{name} ({self.wid:#x})"
         entry = self.look.record_shot(name, rec.get("gate") or self.stats.get("fire_gate"), target,
-                                      aim_err_deg=-yaw if isinstance(yaw, (int, float)) else None, dot_on=dot, t=now)
+                                      aim_err_deg=0.0 - yaw if isinstance(yaw, (int, float)) else None, dot_on=dot,
+                                      t=now)
         if len(self._look_pending) > 64:
             self._look_pending.pop(next(iter(self._look_pending)))
         self._look_pending[id(rec)] = (entry, ptr, dict(self._enemy_hp))

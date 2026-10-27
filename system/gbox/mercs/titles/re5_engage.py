@@ -10,13 +10,16 @@ hits he took while turning with the gun down, a Majini stood within 4 m and 35 d
 another one, off to the side or behind); the shots fired while the gun was still coming up hit 13 of 141; half of the
 time with a Majini within 3.5 m went on neither shooting nor moving. So:
 
-  * pick(): the Majini under the laser dot first (the gun is on him: shoot him, whoever was the target); then the
-    nearest threat inside the gun's own sector (FRONT_CONE) within FRONT_CLEAR_R; then one at arm's length anywhere
-    (CONTACT_R: turn to him); then the nearest in front within FRONT_R; then the cheapest by distance and bearing. The
-    held target stays while he is still the right kind of choice (KEEP_RATIO / SWITCH_COST): no swinging between two;
-  * front_threat(): the gun comes down to turn only when nothing threatening stands within FRONT_CLEAR_R in front;
-  * window(): how far off his chest a shot still lands (his half width plus WINDOW_PAD_CM, seen from the gun): the
-    trigger is down inside it, up outside it, and the stick slews with a deadband inside it (no waving);
+  * pick(): the Majini under the laser dot within FRONT_CLEAR_R first (the gun is on him: shoot him, whoever was the
+    target); then the nearest threat inside the gun's own sector (FRONT_CONE) within FRONT_CLEAR_R; then one at arm's
+    length anywhere (CONTACT_R: turn to him); then a farther one under the dot; then the nearest in front within
+    FRONT_R; then the cheapest by distance and bearing. The held target stays while he is still the right kind of
+    choice (KEEP_RATIO / SWITCH_COST): no swinging between two;
+  * front_threat(): the gun comes down to turn (outside SWING_TURN, until SWING_DONE) only when nothing threatening
+    stands within FRONT_CLEAR_R in front;
+  * window() / through_body(): how far off his chest a shot still lands (his half width plus a pad, seen from the gun;
+    the laser's own ray: through his torso or head): the trigger is down inside it, up outside it, and the stick slews
+    with a deadband inside it (no waving);
   * plausible(): a laser read is the shot's ray only when it starts at his gun and points roughly where he faces
     (a torn read - an origin metres away, a ray pointing behind him or straight into the ground - never steers or fires);
   * dot_class(): what the dot is on, for "look at the bot": a Majini ("target"), a wall or the floor short of him,
@@ -38,12 +41,18 @@ KEEP_RATIO = 1.5                    # in front: the held target stays while with
 SWITCH_COST = 0.75                  # elsewhere: a new target must cost under this share of the held one's cost
 BEARING_WEIGHT = 2.0                # cost = distance * (1 + BEARING_WEIGHT * |bearing| / pi): one behind costs 3x
 BODY_R = 36.0                       # re5_combat.BODY_R: a Majini's half width
-WINDOW_PAD_CM = 15.0                # the fire window: his half width plus this, seen from the gun
+WINDOW_PAD_CM = 15.0                # the fire window: his half width plus this, seen from the gun (an estimated aim)
+LASER_PAD_CM = 5.0                  # ... plus this for the laser's own ray (it is measured: little to forgive)
+BODY_LO, BODY_HI = 50.0, 185.0      # through_body: his torso and head, above the knees
 WINDOW_MIN = math.radians(3.0)      # never narrower than this (far Majini: the laser line gate decides there)
 PITCH_PAD_CM = 55.0                 # vertically: chest height to shoulder / knee is about 35-65 cm, plus the pad
 DEADBAND_SHARE = 0.35               # inside the window the stick waits until the error is over this share of it
-SWING_TURN = math.radians(45)       # re5_combat.SWING_TURN: further off than this, the gun comes down to turn
-SWING_DONE = math.radians(15)       # a gun-down swing goes on until he is this close to the heading, then the gun rises
+SWING_TURN = FRONT_CONE             # outside the gun's sector the gun comes down to turn (with the front clear): the
+                                    # body turns ~150 deg/s gun down, ~30 aiming - a swing beats aiming past ~11 deg even
+                                    # with the 0.3 s raise (re5_combat.SWING_TURN, 45 deg, stays the longbow's)
+SWING_DONE = math.radians(12)       # a gun-down swing goes on until he is this close to the heading (the hysteresis:
+                                    # it starts at SWING_TURN); the rest is aimed in while the gun comes up
+MUZZLE_CM = 40.0                    # the muzzle is this far ahead of his feet: the window is seen from there
 CLOSE_R = 500.0                     # within this the fire window rules (the laser line gate beyond)
 RAY_ORIGIN_R = 160.0                # a laser origin further than this from his feet (on the ground) is not his gun
 RAY_ORIGIN_DY = (0.0, 250.0)        # ... or outside these heights above his feet
@@ -152,10 +161,27 @@ def pick(p: dict, enemies, *, held=None, dotted=None, extra_ok=None):
     return best, "near and in front first"
 
 
-def window(dist: float) -> tuple[float, float]:
-    """(yaw, pitch) half windows (radians) around his chest within which a shot from the gun still lands on him."""
+def window(dist: float, pad: float = WINDOW_PAD_CM) -> tuple[float, float]:
+    """(yaw, pitch) half windows (radians) around his chest within which a shot from the gun still lands on him: his half
+    width plus pad (WINDOW_PAD_CM for an estimated aim - the camera, his heading; LASER_PAD_CM for the laser's own ray)."""
     d = max(float(dist), 1.0)
-    return max(WINDOW_MIN, math.atan2(BODY_R + WINDOW_PAD_CM, d)), max(WINDOW_MIN, math.atan2(PITCH_PAD_CM, d))
+    return max(WINDOW_MIN, math.atan2(BODY_R + pad, d)), max(WINDOW_MIN, math.atan2(PITCH_PAD_CM, d))
+
+
+def through_body(ray, foot) -> bool:
+    """The laser ray (origin, dot) passes through his torso or head - between BODY_LO and BODY_HI above his feet, within
+    BODY_R of his axis - before its dot (a dot on past him: a frame-old dot of a Majini on the move). Shins and feet are
+    not his body here: a ray down at his feet is the floor."""
+    origin, dot = ray
+    dx, dz = dot[0] - origin[0], dot[2] - origin[2]
+    run2 = dx * dx + dz * dz
+    if run2 < 1.0:
+        return False
+    t = ((foot[0] - origin[0]) * dx + (foot[2] - origin[2]) * dz) / run2      # the closest approach to his axis
+    if not 0.0 < t <= 1.0 + BODY_R / math.sqrt(run2):
+        return False
+    x, y, z = origin[0] + t * dx, origin[1] + t * (dot[1] - origin[1]), origin[2] + t * dz
+    return math.hypot(x - foot[0], z - foot[2]) <= BODY_R and BODY_LO <= y - foot[1] <= BODY_HI
 
 
 def deadband(dist: float) -> tuple[float, float]:
@@ -219,4 +245,4 @@ def dot_class(ray, foot, p: dict, enemies, dot_on) -> str:
 
 def bearing_right_deg(p: dict, pos) -> float:
     """The shared look's bearing: degrees, + = to his right."""
-    return -math.degrees(bearing(p, pos))
+    return 0.0 - math.degrees(bearing(p, pos))

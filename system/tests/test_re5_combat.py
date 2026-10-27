@@ -864,7 +864,7 @@ def test_a_direct_gun_with_the_gun_down_is_raised_not_treated_as_laserless():
     # the laser ray only exists while aiming, so every gun looked laserless with the gun down and never came up
     m = world(aiming=False, act_vt=0)
     bot = C.Combat(m, {}, clock=lambda: 0.0)
-    s = supported_laserless(snap(m, enemy=(700.0, 0.0, 900.0)))        # a Majini off to the side, in range
+    s = supported_laserless(snap(m, enemy=(500.0, 0.0, 900.0)))        # a Majini 29 deg off, in the gun's sector
     s["laser"] = None                                                   # the gun is down: no ray
     act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
     assert "l1" in act                                                  # raise the gun (the ray comes with it)
