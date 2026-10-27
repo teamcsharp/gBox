@@ -96,7 +96,7 @@
       [
         "bot_options",
         {
-          "nades": true,
+          "nades": false,
           "bomb_drop": true
         }
       ]
