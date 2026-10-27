@@ -386,6 +386,29 @@ def test_random_loadout_draws_guns_with_their_ammo_and_repeats_by_seed(monkeypat
     assert len(seen) > 1                                                    # not one fixed gun
 
 
+def test_a_drawn_sniper_rifle_becomes_a_x40_hand_cannon(monkeypatch):
+    # operator 2026-10-27: "replace anyone's sniper rifle with a 40x rapid fire handcannon. I want these people
+    # dispatching foes"
+    ad, g = gc_game()
+    tbl = [(0x2E, 0x07), (0x2F, 0x07)]                                      # nothing to draw but sniper rifles
+    blob = b"".join(struct.pack(">HBBBBH", i, 0, k, 0, 0, a) + bytes(14) for k, (i, a) in enumerate(tbl))
+    ad.put(g.V.WEAPON_TBL, blob)
+    monkeypatch.setattr(g.V, "WEAPON_N", len(tbl), raising=False)
+    monkeypatch.setattr(g.V, "WEAPON_SZ", 22, raising=False)
+    ad.put(R.RECS, b"\xfe" + bytes(5))
+    monkeypatch.setattr(T, "install_weapon_code", lambda g: None)
+    monkeypatch.setattr(T, "weapon_classes", lambda g: {0x2E: (0, 0), 0x2F: (1, 0), 0x37: (2, 0)})
+    monkeypatch.setattr(g.V, "FIRE_RATE_ORIG", bytes(0x28) + struct.pack(">f", 160.0) + bytes(0x10), raising=False)
+    mods = []
+    monkeypatch.setattr(T, "weapon_mod", lambda gg, iid, rate, dmg, on: mods.append((iid, rate)) or {"verified": True})
+    for seed in range(6):
+        mods.clear()
+        r = T.run(ad, "random_loadout", character="leon", seed=seed, fire_x=80, damage="99.9", g=g)
+        recs = T.read_recs(g)
+        assert r["picked"] == ["Handcannon"] and mods == [(0x37, 4.0)]      # x40: 160 frames / 40
+        assert any(rec[2] == 0x37 for rec in recs) and not any(rec[2] in T.SNIPERS for rec in recs)
+
+
 # --- the stalemate controls (operator 2026-10-26): the Mercenaries clock set / moved, a wave re-armed ---
 def merc_stage(ad, seconds=95.0, room=0x400):
     pg = 0x80300000

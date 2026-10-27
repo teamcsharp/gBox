@@ -927,6 +927,9 @@ def merc_loadout_list(g) -> dict:
 RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72, 0x35}   # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to
                                                   # shoot Ganados with; the Rocket Launcher (operator 2026-10-26: "always be replaced
 MAGNUMS = (0x29, 0x2A, 0x2B)                      # with a magnum of a random type"): Broken Butterfly, Killer7, Killer7 w/ Silencer
+SNIPERS = (0x2E, 0x2F)                            # Rifle, Rifle (semi-auto): drawn, they become the Hand Cannon (operator
+HANDCANNON, HANDCANNON_AMMO = 0x37, 0x1A          # 2026-10-27: "replace anyone's sniper rifle with a 40x rapid fire
+FIRE_X = {HANDCANNON: 40}                         # handcannon. I want these people dispatching foes") at its own fire_x
 
 
 def random_pool(g) -> list[tuple[int, int | None]]:
@@ -965,6 +968,9 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
     if not pool:
         raise RuntimeError("no givable weapons in the weapon table")
     picks = rng.sample(pool, min(max(1, int(guns)), len(pool)))
+    if any(i in SNIPERS for i, _ in picks):                    # never a sniper rifle: the Hand Cannon in its place
+        cannon = (HANDCANNON, HANDCANNON_AMMO if HANDCANNON_AMMO in R.ITEMS else None)
+        picks = list(dict.fromkeys(cannon if i in SNIPERS else (i, am) for i, am in picks))
     items = []
     for iid, am in picks:
         items.append(R.item_name(iid))
@@ -979,7 +985,7 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
             if fire_x:                  # x N fire rate: the class's own shot interval / N (operator 2026-10-24: 20x)
                 c = weapon_classes(g)[i][0]
                 orig = struct.unpack(">f", g.V.FIRE_RATE_ORIG[c * 0x14:c * 0x14 + 4])[0]
-                rate = max(1.0, orig / float(fire_x))
+                rate = max(1.0, orig / float(FIRE_X.get(i, fire_x)))
             mods.append(weapon_mod(g, i, rate, damage if damage not in (None, "") else None, True)["verified"])
         res["weapon_mod"] = mods
         res["verified"] = bool(res.get("verified")) and all(mods)
