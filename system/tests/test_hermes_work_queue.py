@@ -985,3 +985,53 @@ def test_a_paid_node_skips_a_ticket_that_keeps_making_no_progress(env, monkeypat
     result = q.tick(now=1000)
     dispatched = [d['request_id'] for d in result['dispatched']]
     assert '8' * 16 in dispatched and '7' * 16 not in dispatched, dispatched   # the failing one is not the paid node's
+
+
+def test_spark2_takes_the_waiting_re_reports_before_other_work_newest_first(env, monkeypatch):
+    # operator 2026-10-27: "make sure that spark2 and all it has is put toward processing any auto report tickets from RE"
+    reports = [request(str(i) * 16, created=c) for i, c in ((1, 10), (2, 30), (3, 20))]
+    other = request('9' * 16, title='Fix typo', created=40)
+    reqs = [other, *reports]
+    calls, _ = _required_node_tick(monkeypatch, reqs)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    monkeypatch.setattr(q, '_executions', lambda: ({}, set()))         # every slot free: lilspark 1, sparkDeux 2
+    api = q._api
+    _verified_round_analysis(monkeypatch, reports)
+    saved = q._api
+    monkeypatch.setattr(q, '_api', lambda path, body=None:
+                        saved(path, body) if path.startswith('/api/mercs/round-reports/') else api(path, body))
+    result = q.tick(now=1000)
+    spark2 = [d['request_id'] for d in result['dispatched'] if d.get('inference_node') == 'sparkDeux']
+    assert spark2 == ['2' * 16, '3' * 16]                      # both of its slots, one game, the newest rounds first
+    assert q._read()['items']['inbox:' + '1' * 16].get('dispatch_state') is None
+
+
+def test_spark2_takes_other_work_when_no_re_report_waits(env, monkeypatch):
+    reqs = [request('9' * 16, title='Fix typo', created=1), request('8' * 16, title='Fix the other typo', created=2)]
+    _required_node_tick(monkeypatch, reqs)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    result = q.tick(now=1000)
+    assert 'sparkDeux' in [d.get('inference_node') for d in result['dispatched']]
+
+
+def test_re_reports_are_the_verified_open_reports_of_re_games():
+    games = q.re_games()
+    assert {'78ab9efa2e310db4', 'e7ca89bbeb67360d', '52d15709be0fda1a', '115f9cdbba115432'} <= games
+    analysis = {'lane': 'inbox', 'round_analysis_verified': True, 'game_id': 'e7ca89bbeb67360d'}
+    damage = {'lane': 'inbox', 'damage_batch_verified': True, 'game_id': '52d15709be0fda1a'}
+    assert q.re_report(analysis, request(), games) and q.re_report(damage, request(status='open'), games)
+    assert not q.re_report(analysis, request(status='done'), games)
+    assert not q.re_report(dict(damage, game_id=G), request(), games)                  # not an RE game
+    assert not q.re_report(dict(damage, damage_batch_verified=False), request(), games)
+
+
+def test_an_unacknowledged_creation_stops_holding_its_game_once_its_request_is_closed(env):
+    # 2026-10-27: twelve RE5 analyses from 10-24 sat 'uncertain' with their requests done and filled RE5's analysis cap
+    q.sync(env, {'count': 0, 'items': []}, [request('1' * 16, context={'game_id': G}),
+                                             request('2' * 16, context={'game_id': G})], now=1)
+    for rid in ('1' * 16, '2' * 16):
+        env['items']['inbox:' + rid].update(dispatch_state='uncertain', job_name='never-acknowledged-' + rid)
+    q.reconcile(env, [], {}, set(), now=2, closed={'1' * 16})
+    closed, still_open = env['items']['inbox:' + '1' * 16], env['items']['inbox:' + '2' * 16]
+    assert closed['dispatch_state'] == 'finished' and closed['settled']
+    assert still_open['dispatch_state'] == 'uncertain'                                  # held for inspection as before

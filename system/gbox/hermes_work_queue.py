@@ -160,6 +160,29 @@ def _prioritized_handoff(data, request) -> bool:
     return request['id'] in selected or str(request.get('number')) in selected
 
 
+REPORT_NODE = 'sparkDeux'       # gbox.mercs.round_reports.TARGET: Spark2 works the RE auto-reports before other work
+
+
+def re_games() -> set:
+    """Every RE Mercenaries game MercMode plays: the discs, the backend editions and the Switch No Mercy editions."""
+    from .mercmode import TITLES
+    from .re_switch import RE5_GAME_ID, RE6_GAME_ID
+    games = {RE5_GAME_ID, RE6_GAME_ID}
+    for spec in TITLES.values():
+        games.update(spec.get('game_ids') or ())
+        games.update(b['game_id'] for b in (spec.get('backends') or {}).values() if b.get('game_id'))
+    return games
+
+
+def re_report(item, request, games) -> bool:
+    """An RE auto-report: a verified round analysis (damage, missed shots, aim) or a verified player-damage batch of
+    an RE Mercenaries game, still open. Spark2 takes these before anything else (operator 2026-10-27: "make sure that
+    spark2 and all it has is put toward processing any auto report tickets from RE")."""
+    return (item.get('lane') == 'inbox' and (request or {}).get('status') in ('open', 'in_progress')
+            and (item.get('round_analysis_verified') is True or item.get('damage_batch_verified') is True)
+            and item.get('game_id') in games)
+
+
 def sync(data, favorites, requests, *, now):
     """Inventory every durable favorite, including missing catalog entries."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
@@ -300,14 +323,21 @@ def _preserve_report(item, run):
         item['report_error'] = type(exc).__name__
 
 
-def reconcile(data, jobs, latest, active, *, now):
-    """One completed occurrence advances the queue exactly once, even after a crash."""
+def reconcile(data, jobs, latest, active, *, now, closed=frozenset()):
+    """One completed occurrence advances the queue exactly once, even after a crash. `closed`: the ids of done or
+    blocked requests."""
     by_name = {j.get('name'): j for j in jobs}
     for item in data['items'].values():
         if item.get('dispatch_state') == 'uncertain':
             job = by_name.get(item.get('job_name'))
             if job:
                 item.update(job_id=job['id'], dispatch_state='queued')
+            elif item.get('request_id') in closed:
+                # Its request was closed meanwhile, so nothing is left to duplicate: it stops holding its game's slots
+                # (2026-10-27: twelve RE5 analyses from 10-24, their requests done, filled RE5's analysis cap for three
+                # days and 369 newer reports never ran).
+                item.update(dispatch_state='finished', last_finished=now, settled='request closed, creation unacknowledged')
+                continue
             else:
                 continue  # An unacknowledged creation stays held for inspection.
         jid = item.get('job_id')
@@ -738,7 +768,8 @@ def tick(*, now=None):
         latest, active = _executions()
         requests = _api('/api/requests')
         sync(data, _api('/api/favorites'), requests, now=now)
-        reconcile(data, jobs, latest, active, now=now)
+        reconcile(data, jobs, latest, active, now=now,
+                  closed={r['id'] for r in requests if r.get('status') in ('done', 'blocked')})
         _save(data)
         config = mode._config()
         from . import hermes_provider_scope as scope
@@ -822,6 +853,7 @@ def tick(*, now=None):
         slots = hermes_pool.assignments(pool_state['nodes'], data['items'], reserved)[0] if pooled else [None] * free
         slots = slots[:free]
         by_id = {r['id']: r for r in requests}
+        games = re_games()
         for node in slots:
             # Required nodes are admission constraints, including while the
             # controller uses an unpooled/cloud route. Unknown targets wait.
@@ -842,6 +874,8 @@ def tick(*, now=None):
             if node and node.get('primary'):
                 narrow = [v for v in node_options if hermes_local.dispatch_size(v[1], by_id.get(v[1].get('request_id')))['size'] == 'small']
                 choices = narrow or (choices if node.get('allow_large_tasks') else [])
+            reports = [v for v in node_options if re_report(v[1], by_id.get(v[1].get('request_id')), games)] \
+                if node and node['name'] == REPORT_NODE else []
             # read from this tick's own node settings (the toml), so the switch needs no gBox restart
             if priority_only:
                 # the paid node works the operator's list only (operator 2026-10-22: "make sure that my claude credit is
@@ -849,7 +883,10 @@ def tick(*, now=None):
                 listed = len(data.get('priority') or [])
                 choices = [v for v in choices if priority_rank(v[1], data) < listed
                            and (v[1].get('no_progress_runs') or 0) < PAID_NO_PROGRESS_MAX]   # not the ones that keep failing
-            chosen = choose(choices, data)
+            # Spark2: every waiting RE auto-report before other work, the newest round first (the bot that played it is
+            # the one running now), past the lane balance; with none waiting it takes other work, so it never idles
+            chosen = min(reports, key=lambda v: (priority_rank(v[1], data), -(v[1].get('created') or 0), v[0])) \
+                if reports else choose(choices, data)
             if not chosen:
                 continue
             key, item = chosen
@@ -858,7 +895,8 @@ def tick(*, now=None):
                 # one run per game per tick, except operator-prioritized work that starts no emulator: it fills up to
                 # PRIORITY_PER_GAME in the same tick (operator 2026-10-24: "more RE6 tasks pumped into it")
                 game, listed = item['game_id'], {str(x) for x in data.get('priority') or []}
-                shared = lambda i: i.get('lane') == 'inbox' and i.get('request_id') in listed and not launches_emulator(i)
+                shared = lambda i: i.get('lane') == 'inbox' and not launches_emulator(i) and (
+                    i.get('request_id') in listed or i.get('round_analysis_verified') is True and i.get('game_id') in games)
                 running = sum(i.get('game_id') == game and i.get('dispatch_state') in ('queued', 'uncertain')
                               for i in data['items'].values())
                 options = [v for v in options if v[1].get('game_id') != game
