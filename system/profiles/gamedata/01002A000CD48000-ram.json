@@ -98,7 +98,8 @@
         {
           "nades": false,
           "bomb_drop": true,
-          "aim_lock": true
+          "aim_lock": true,
+          "flash": true
         }
       ],
       [
@@ -109,6 +110,12 @@
       ],
       [
         "down_fire",
+        {
+          "multiplier": 3
+        }
+      ],
+      [
+        "magnum_speed",
         {
           "multiplier": 3
         }

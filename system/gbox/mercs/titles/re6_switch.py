@@ -1353,6 +1353,17 @@ LOCK_FAIL_N, LOCK_FAIL_S, LOCK_OFF_S, LOCK_HIT_S, LOCK_TOL = 5, 2.0, 3.0, 0.6, 0
 # census, the hordes 100-500) first. One off his floor is aimed at its own position (OFF_FLOOR_AIM_H up) and counted
 # on the line within OFF_FLOOR_HIT_R of it.
 AIM_LOCK_R, BIG_HP, OFF_FLOOR_AIM_H, OFF_FLOOR_HIT_R = 1500.0, 900, 60.0, 90.0
+# Aimed fire is the default (operator 17:24-17:28: "the bot is relying too much on quick attack ... blasting the Magnum
+# in rapid succession ... The quick shot is kind of a singular shot, so it basically locks him into just one enemy while
+# other enemies continue to close in ... use quick shot sparingly and in the right situations ... aiming and actually
+# hitting these targets generally in rapid succession"): with the lock he sweeps - the nearest first (one closing in
+# before one standing), SWEEP_SHOTS aimed shots each (fewer once his health is gone), then the next; the quick shot
+# only for a lone one at point blank (nobody else within CC_CROWD_R), a kick for one at arm's length (a grab threat);
+# into a crowd the lock sweeps while he backs out. stats sweeps (targets left after SWEEP_SHOTS), targets_shot,
+# targets_per_min (targets shot at a minute since the first aimed shot).
+SWEEP_SHOTS, CC_CROWD_R, CLOSING_W = 3, 400.0, 0.5
+FLASH = True                            # the flash alone at FLASH_N within FLASH_R (NADES adds the hand / incendiary
+                                        # grenades and the melee fever after a flash)
 # Down (operator 16:22: "when the character is down, They need to raise their weapon and blast like mad, nailing each
 # and every target nearby to clear the area ... fire rate tripled ... so they can rise again"). MercMode 16:30, read
 # only (player +0x13F0): knocked to 1 health he went buttobi_damage_common -> dying_loop, and from there RE6 fires -
@@ -1468,7 +1479,7 @@ class Bot:
                   "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee",
                   "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "aimed_shots",
                   "aimed_hits", "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths",
-                  "hazard_marks"):
+                  "hazard_marks", "sweeps", "targets_shot"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s", "down_s", "hazard_s",
                   "cc_vs_aimed"):
@@ -1483,6 +1494,9 @@ class Bot:
         self.hazards: list = []                              # [(x, z, until)]
         self.hazard = None                                   # the mark he stands in (x, z), or None
         self._hz_hp, self._big_hp = None, {}
+        self.sweep_n: dict = {}                              # aimed shots at each target this sweep
+        self.sweep_seen: set = set()                         # the targets shot at (targets_per_min)
+        self.sweep_t0, self._edist = None, {}                # the first aimed shot; each one's last distance (closing)
         self.target, self.target_at = None, -1e9
         self.aim_since = None
         self.reraised = False                     # this raise already looked for the laser unit again
@@ -1593,12 +1607,15 @@ class Bot:
 
     def _choose(self, p, yaw, live, now):
         big = [e for e in live if (e.get("hp_max") or 0) >= BIG_HP and math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R]
-        if big and self._lock_ready(getattr(self, "_snap", {}) or {}, now):   # priority focus fire on the big ones
+        locking = self._lock_ready(getattr(self, "_snap", {}) or {}, now)
+        if big and locking:                                      # priority focus fire on the big ones
             best = min(big, key=lambda e: math.dist(p["pos"], e["pos"]))
             if self.target != best.get("ptr", best.get("slot")):
                 self.target_at = now
             self.target = best.get("ptr", best.get("slot"))
             return best
+        if locking:                                              # the sweep: target after target
+            return self._sweep(p, live, now)
         best = min(live, key=lambda e: self._cost(p, yaw, e))
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         px, _, pz = p["pos"]
@@ -1994,7 +2011,8 @@ class Bot:
                 self.stats["turns"] += 1                         # the camera turns to him (fast, the gun down)
                 return self._go("turn", "turn", {"hold": self._turn(err)},
                                 f"nobody in front: turning {math.degrees(err):+.0f} deg to him")
-            if dist < QSHOT_R and abs(err) <= QSHOT_CONE and now - self.qshot_at >= QSHOT_GAP_S:
+            lone = not self._lock_ready(snap, now) or sum(1 for e in live if flat(e) <= CC_CROWD_R) < 2
+            if lone and dist < QSHOT_R and abs(err) <= QSHOT_CONE and now - self.qshot_at >= QSHOT_GAP_S:
                 self.qshot_at = now                              # close in front: the game's own quick shot
                 self.stats["quick_shots"] += 1
                 self.qshot_release = True
@@ -2209,7 +2227,41 @@ class Bot:
         self.lock_w = (pitch, want_yaw, want_pitch)
         return True
 
+    def _sweep(self, p, live, now):
+        """The lock's sweep: the current target until SWEEP_SHOTS aimed shots (or his health is gone), then the nearest
+        other one, one closing in first (CLOSING_W of its approach in cm/s off its distance)."""
+        me = p["pos"]
+        dist = {e.get("ptr", e.get("slot")): math.dist(me, e["pos"]) for e in live}
+        closing = {}
+        for tid, d in dist.items():
+            last = self._edist.get(tid)
+            closing[tid] = (last[0] - d) / max(now - last[1], 1e-3) if last and now - last[1] < 1.0 else 0.0
+        self._edist = {tid: (d, now) for tid, d in dist.items()}
+        cur = next((e for e in live if e.get("ptr", e.get("slot")) == self.target), None)
+        if cur is not None and (self.sweep_n.get(self.target, 0) < SWEEP_SHOTS or len(live) == 1):
+            return cur
+        rest = [e for e in live if e is not cur] or live
+        best = min(rest, key=lambda e: dist[e.get("ptr", e.get("slot"))]
+                   - CLOSING_W * max(0.0, closing[e.get("ptr", e.get("slot"))]))
+        if cur is not None and best is not cur:
+            self.stats["sweeps"] += 1
+        tid = best.get("ptr", best.get("slot"))
+        if tid != self.target:
+            self.target_at = now
+            self.sweep_n[tid] = 0
+        self.target = tid
+        return best
+
     def _aimed_shot(self, tgt, now) -> None:
+        tid = tgt.get("ptr", tgt.get("slot"))
+        self.sweep_n[tid] = self.sweep_n.get(tid, 0) + 1
+        if tid not in self.sweep_seen:
+            self.sweep_seen.add(tid)
+            self.stats["targets_shot"] += 1
+        if self.sweep_t0 is None:
+            self.sweep_t0 = now
+        if now - self.sweep_t0 >= 10.0:
+            self.stats["targets_per_min"] = round(self.stats["targets_shot"] * 60.0 / (now - self.sweep_t0), 1)
         self.stats["aimed_shots"] += 1
         self.lock_shots.append((tgt.get("ptr", tgt.get("slot")), now, tgt.get("hp") or 0))
         self.stats["cc_vs_aimed"] = round(self.stats.get("cc_quick_shots", 0) / max(1, self.stats["aimed_shots"]), 2)
@@ -2480,7 +2532,7 @@ class Bot:
         eq = p.get("equipped")
         px, _, pz = p["pos"]
         if n is None:
-            if not NADES or now - self.nade_last < NADE_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
+            if not (NADES or FLASH) or now - self.nade_last < NADE_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
                 return None
             nades = p.get("nades") or {}
             group, kind = None, None
@@ -2488,7 +2540,7 @@ class Bot:
             if (len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
                     and now - self.flash_last >= FLASH_GAP_S):
                 group, kind = near, "flash"
-            elif any(flat(e) < NADE_START_R for e in live):
+            elif not NADES or any(flat(e) < NADE_START_R for e in live):   # (FLASH alone: no grenades)
                 return None
             else:
                 for e in vis:
@@ -2543,7 +2595,8 @@ class Bot:
             n.update(phase="thrown", at=now)
             self.stats[{"flash": "flashes", "frag": "frags", "fire": "fires"}[n["kind"]]] += 1
             if n["kind"] == "flash":
-                self.fever_until = now + FEVER_S + 0.6
+                if NADES:                                        # the fever only with the full grenade set
+                    self.fever_until = now + FEVER_S + 0.6
                 self.flash_last = now
             else:
                 self.nade_kills = (snap.get("kills"), now)
@@ -2665,6 +2718,10 @@ class Bot:
             return None
         e = min(close, key=flat)
         d, err = flat(e), bearing(e)
+        crowd = (not fever and self._lock_ready(getattr(self, "_snap", {}) or {}, now)
+                 and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 2)
+        if crowd and d >= MELEE_R:                               # a crowd: the lock's aimed fire sweeps them
+            return None
         self._gun_down()
         if fever:                                                # after a flash: in among the stunned ones
             kick_gap = CC_FAST_GAP_S if QA_FAST else CC_KICK_GAP_S
@@ -2700,8 +2757,8 @@ class Bot:
             self.stats["cc_kicks"] += 1
             return self._go("crowd", "cc_kick", {"hold": out + ("zr",)} if backing else {"tap": "zr"},
                             f"one at {d:.0f} cm: a kick (crowd control)" + (", backing out" if backing else ""))
-        if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap:
-            self.qshot_at = now
+        if not crowd and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap:
+            self.qshot_at = now                                  # a lone one at point blank: the quick shot
             self.stats["quick_shots"] += 1
             self.stats["cc_quick_shots"] += 1
             self.qshot_release = True
@@ -3333,6 +3390,9 @@ class RE6Switch(Driver):
         snap["auto_qte"] = bool((re6_switch_mods.ORIG.get(id(ad)) or {}).get("auto_qte"))   # the bot leaves holds to it
         if self.stats is not None:
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
+            st = re6_switch_mods.ORIG.get(id(ad)) or {}
+            self.stats["recoil_x"] = st.get("magnum_speed", re6_switch_mods.MAGNUM_SPEED_X) if st.get("fire_rate") else 1.0
+            self.stats["magnum_fast"] = st.get("magnum_fast", 0)
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")
 
