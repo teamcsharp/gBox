@@ -134,7 +134,8 @@ def test_the_dot_on_another_majini_fires_at_him_at_once_without_taking_him_as_th
     assert b.target == 10
     clock[0] = 0.3
     act = b.tick(snap(chest(other)))                               # one tick under the dot: shot, not yet the target
-    assert "zr" in act["hold"] and b.target == 10 and b.stats["dot_shots"] == 1
+    assert "zr" in act["hold"] and b.target == 10
+    assert b.stats.get("dot_shots", 0) + b.stats["confirmed_shots"] == 1    # (the confirmed-hit fire takes it first)
     assert not set(act["hold"]) & {"rleft", "rright", "rup", "rdown"}   # the aim held still
 
 

@@ -242,10 +242,32 @@ SKY_COUNTERS = ("sky_ticks", "sky_corrections", "sky_guard_ticks", "sky_blind_ti
 # down). pitch_reversals: the pitch stick the other way within 0.4 s (an overshoot corrected).
 PITCH_LEAD_S, PITCH_RATE_RAY, PITCH_RATE_JUMP, RAISE_SETTLE_S = 0.15, 150.0, 1.5, 0.2
 PITCH_SETTLE = False                     # off at 15:45 with SKY_GUARD (the 14:58 aim back)
+# Aim faults (operator 15:33-15:38, watching RE5: "aiming into the distance while all of the enemies congregate behind
+# him ... he'll randomly point the aim somewhere up in the sky or away from the enemies"; a frame of a shot into a wall:
+# "take a moment to point a gun at a wall and just shoot at a wall and waste time"):
+#  * the trigger only on a confirmed ray: the dot on a living Majini (any one, any distance: CONFIRMED_FIRE - threat
+#    first turns him, never holds a shot the ray confirms; only another within GRAB_THREAT_R does), the ray running on
+#    through the target to a dot at or past his chest (WALL_SLACK), or point blank. A ray the old gate fired on that
+#    ends short of him on geometry is a wall shot (wall_shots, not fired); the dot short of him WALL_DROP_S: the target
+#    left for WALL_BLOCK_S (wall_blocks);
+#  * a dot frozen FROZEN_TICKS aimed ticks while the stick or his heading moved is no live aim (the sky, or a stale
+#    laser): no shot, the gun down to raise it again (frozen_dots);
+#  * a Majini within BEHIND_R costs no turn in the threat pick (one 3 m behind beats one 4 m ahead); behind_threat_s:
+#    the seconds one within BEHIND_R stands over 90 deg off his facing while he aims at another;
+#  * an aim over AWAY_ERR off the nearest threat within THREAT_NEAR_R for AWAY_S (no confirmed shot): a fault,
+#    corrected at once - that one the target, the gun down to turn (aim_away_s, aim_away_fixes);
+#  * crowd_max: the most within 4 m at once in the round; ex_<fault>: the first EXAMPLES of each in the round, readable.
+# long_shot_kills: a Majini fired on past LONG_KILL_R found dead within LONG_KILL_S.
+CONFIRMED_FIRE, LONG_KILL_R, LONG_KILL_S = True, 1500.0, 3.0
+WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.4, 2.5, 3
+BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
+FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky")
+AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
+                     "confirmed_shots", "long_shot_kills")
 SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
 THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
-                   "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS
+                   "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS + AIMFAULT_COUNTERS
 # Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
 # nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
 # those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
@@ -892,6 +914,12 @@ class Bot:
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
+        self._dot_prev, self._dot_same, self._rot_prev = None, 0, None   # the frozen-dot watch
+        self._wall_since, self._away_since, self._behind_on, self._fault_t = None, None, False, None
+        self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
+        self.stats.setdefault("crowd_max", 0)
+        for kind in FAULT_KINDS:
+            self.stats.setdefault("ex_" + kind, "")
         self._combo_prev, self._combo_window = 0, None   # the last combo count and its window (combo_breaks / lapses)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
@@ -981,6 +1009,93 @@ class Bot:
             return c * K_RANGE_PREF
         return c
 
+    def _example(self, kind, p, now, detail) -> None:
+        """The first EXAMPLES of a fault in the round, readable: round time, his position and heading, the detail, the
+        decision."""
+        key = "ex_" + kind
+        cur = self.stats.get(key) or ""
+        if cur and cur.count(" | ") + 1 >= EXAMPLES:
+            return
+        t = now - self._round_started if self._round_started is not None else now
+        x, y, z = p["pos"]
+        line = (f"{t:.1f} s: Chris ({x:.0f},{y:.0f},{z:.0f}) heading {math.degrees(p.get('rot') or 0.0):.0f}; {detail}; "
+                f"{self.doing}: {self.why}")
+        self.stats[key] = f"{cur} | {line}" if cur else line
+
+    def _fault_tick(self, p, live, flat, snap, now) -> None:
+        """Every tick: crowd_max, the seconds a Majini stands close behind him while he aims at another, the far
+        Majini fired on that died (long_shot_kills)."""
+        dt = 0.0 if self._fault_t is None else max(0.0, min(now - self._fault_t, LOOK_STEP_MAX_S))
+        self._fault_t = now
+        px, py, pz = p["pos"]
+        self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
+        behind = [e for e in live if flat(e) <= BEHIND_R and e.get("ptr", e.get("slot")) != self.target
+                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2]
+        on = bool(behind) and self.aim_since is not None
+        if on:
+            self.stats["behind_threat_s"] = round(self.stats["behind_threat_s"] + dt, 2)
+            if not self._behind_on:
+                e = min(behind, key=flat)
+                self._example("behind_threat", p, now, f"one {flat(e) / 100:.1f} m behind "
+                                                       f"({math.degrees(wrap(heading(e['pos'][0] - px, e['pos'][2] - pz) - p['rot'])):+.0f} deg) "
+                                                       f"while aiming at another")
+        self._behind_on = on
+        if self._long_marks:
+            by = {e.get("ptr", e.get("slot")): e for e in snap.get("enemies") or ()}
+            for key, t in list(self._long_marks.items()):
+                e = by.get(key)
+                if e is not None and (e.get("hp") or 0) <= 0:
+                    self.stats["long_shot_kills"] += 1
+                    del self._long_marks[key]
+                elif e is None or now - t > LONG_KILL_S:
+                    del self._long_marks[key]
+
+    def _frozen_dot(self, p, dot, fresh) -> bool:
+        """The live dot unchanged FROZEN_TICKS aimed ticks while the right stick was held or his heading changed."""
+        moved = bool(self._sticks & {"rleft", "rright", "rup", "rdown"}) or (
+            self._rot_prev is not None and abs(wrap(p["rot"] - self._rot_prev)) > 0.01)
+        self._rot_prev = p["rot"]
+        if not fresh:
+            return False
+        same = self._dot_prev is not None and math.dist(dot, self._dot_prev) < 0.01   # the very same floats: stale
+        self._dot_same = self._dot_same + 1 if same and moved else (self._dot_same if same else 0)
+        self._dot_prev = dot
+        if self._dot_same >= FROZEN_TICKS:
+            self._dot_same, self._dot_prev = 0, None
+            return True
+        return False
+
+    def _aim_away(self, p, live, flat, origin, dot, confirmed, now):
+        """The aim over AWAY_ERR off the nearest threat within THREAT_NEAR_R for AWAY_S: that one, at once."""
+        px, py, pz = p["pos"]
+        near = [e for e in live if flat(e) <= THREAT_NEAR_R and abs(e["pos"][1] - py) <= LEVEL_DY]
+        if not near or math.hypot(dot[0] - origin[0], dot[2] - origin[2]) < 1.0:
+            self._away_since = None
+            return None
+        e = min(near, key=flat)
+        aim = heading(dot[0] - origin[0], dot[2] - origin[2])
+        off = abs(wrap(heading(e["pos"][0] - origin[0], e["pos"][2] - origin[2]) - aim))
+        if off <= AWAY_ERR or confirmed:
+            self._away_since = None
+            return None
+        dt = min(now - self._away_since, LOOK_STEP_MAX_S) if self._away_since is not None else 0.0
+        self.stats["aim_away_s"] = round(self.stats["aim_away_s"] + dt, 2)
+        self._away_since = self._away_since or now
+        if now - self._away_since < AWAY_S:
+            self._away_t = now
+            return None
+        self.stats["aim_away_fixes"] += 1
+        key = e.get("ptr", e.get("slot"))
+        self._set_target(key, now)
+        self.target_at = now
+        err = wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])
+        self.doing, self.why = "unaim", (f"aim {math.degrees(off):.0f} deg off the nearest ({flat(e) / 100:.1f} m) "
+                                         f"for {now - self._away_since:.1f} s: to him")
+        self._example("aim_away", p, now, f"aim {math.degrees(off):.0f} deg off the one {flat(e) / 100:.1f} m away")
+        self._away_since = None
+        self._gun_down()
+        return {"hold": self._turn(err)}
+
     def _track_approach(self, p, live, now) -> None:
         """Each Majini's closing speed on him (cm/s, + = coming), smoothed (APPROACH_EMA), from tick to tick."""
         px, _, pz = p["pos"]
@@ -1001,7 +1116,7 @@ class Bot:
         px, _, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         v = (self._appr.get(e.get("ptr", e.get("slot"))) or (0.0, 0.0, 0.0))[2]
-        turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) if d > BEHIND_R else 0.0
         return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
 
     @staticmethod
@@ -1305,6 +1420,9 @@ class Bot:
         if self._round_started is None:
             self._round_started = now
             self.look.new_round()
+            self.stats["crowd_max"] = 0
+            for kind in FAULT_KINDS:
+                self.stats["ex_" + kind] = ""
             if self.mines is not None:
                 self.mines.new_round(now)
 
@@ -1592,6 +1710,7 @@ class Bot:
             self.blocked = {k: t for k, t in self.blocked.items() if t > now}
             rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
             live = rest or live
+        self._fault_tick(p, live, flat, snap, now)
         if not live:
             others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
             if self.mode in ("fight", "hunt") and others:     # nobody on his level: go to the nearest one anywhere
@@ -1678,7 +1797,9 @@ class Bot:
             self.doing, self.why = ("fire", "laserless heading") if fire else ("aim", "laserless heading")
             keys = {"zl"} | (self._trigger(True, now) if fire else self._yaw(body_err))
             return {"hold": tuple(sorted(keys))}
+        fresh_ray = False
         if lz.get("up") and now - self.aim_since >= READY_S:
+            fresh_ray = True
             ray = (tuple(lz["from"]), tuple(lz["at"]))
             self._track_pitch_rate(ray, now)
             self._note_ray_pitch(ray, tgt, dist)
@@ -1710,6 +1831,14 @@ class Bot:
                 return {"hold": ("rdown", "zl")}
             return {"hold": ("zl",)}
         origin, dot = ray
+        frozen = self._frozen_dot(p, dot, fresh_ray)
+        if frozen:                                       # the dot stood still while the aim moved: no live aim
+            self.stats["frozen_dots"] += 1
+            self.doing, self.why = "restale", f"the dot frozen {FROZEN_TICKS} ticks while the aim moved"
+            self._example("frozen_dot", p, now, f"dot ({dot[0]:.0f},{dot[1]:.0f},{dot[2]:.0f}) "
+                                                f"ray {math.dist(origin, dot) / 100:.1f} m")
+            self._gun_down()
+            return {"hold": ()}
         on_e = next((e for e in live if dot_on(dot, e["pos"])
                      and not (self._threat_now and flat(e) > THREAT_CAP_R)), None)   # threat first: none far off
         other = on_e.get("ptr", on_e.get("slot")) if on_e is not None and on_e is not tgt else None
@@ -1755,6 +1884,38 @@ class Bot:
         self._pitch_up(origin, dot, chest, tgt, dist, now)
         if self._threat_now and dist > THREAT_CAP_R:
             self.stats["far_aim_ticks"] += 1                 # (none expected: every path above is capped)
+        ray_len, chest_len = math.dist(origin, dot), math.dist(origin, chest)
+        dot_e = next((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                      and dot_on(dot, e["pos"])), None)
+        if on and where is None and not point_blank and ray_len < chest_len - WALL_SLACK and dot_e is None:
+            on = False                                   # the ray ends on something short of him: no shot
+            if self._wall_since is None:
+                self.stats["wall_shots"] += 1
+                self._example("wall_shot", p, now, f"target {dist / 100:.1f} m, the ray {ray_len / 100:.1f} m, "
+                                                   f"dot ({dot[0]:.0f},{dot[1]:.0f},{dot[2]:.0f})")
+        if not on and dot_e is None and ray_len > POINT_BLANK_R and ray_len < chest_len - FIRE_SLACK:
+            self._wall_since = self._wall_since or now   # the dot short of him on geometry
+            if now - self._wall_since >= WALL_DROP_S:
+                key0 = tgt.get("ptr", tgt.get("slot"))
+                self.blocked[key0] = now + WALL_BLOCK_S  # leave him a moment: another one
+                self.stats["wall_blocks"] += 1
+                self._example("wall_block", p, now, f"target {dist / 100:.1f} m behind geometry at "
+                                                    f"{ray_len / 100:.1f} m")
+                self._wall_since = None
+                self.target = None
+        elif on or dot_e is not None:
+            self._wall_since = None
+        confirmed = False
+        if CONFIRMED_FIRE and not on and dot_e is not None and dot_e is not tgt \
+                and not any(flat(e) < GRAB_THREAT_R and e is not dot_e for e in live):
+            tgt, foot = dot_e, dot_e["pos"]              # the dot on a living Majini: the shot, whoever he is
+            where, on, confirmed = dot_on(dot, foot), True, True
+            dist = flat(tgt)
+            body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
+            self.stats["confirmed_shots"] += 1
+        fix = self._aim_away(p, live, flat, origin, dot, confirmed, now)
+        if fix is not None:
+            return fix
         if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
             other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
             if other_where is not None:                      # now (the trigger), the aim kept where it is (no swing)
@@ -1766,13 +1927,15 @@ class Bot:
         self.on_ticks = self.on_ticks + 1 if on and key == self.on_key else (1 if on else 0)
         self.on_key = key if on else None
         long_shot = dist > LONG_R and near > LONG_CLEAR_R    # a far Majini, nobody close: with care
-        settling = long_shot and on and not self.fire_down and self.on_ticks < SETTLE_TICKS
+        settling = long_shot and on and not confirmed and not self.fire_down and self.on_ticks < SETTLE_TICKS
         if settling:
             on = False                                       # the dot on him a tick: wait for it to stay
         windows = (math.atan2(BODY_R, max(dist, 1.0)), math.atan2((SHOULDER_H - KNEE_H) / 2, max(dist, 1.0))) \
             if long_shot else (None, None)
         front = sum(1 for e in live if flat(e) < FRONT_R
                     and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
+        if on and dist > LONG_KILL_R:
+            self._long_marks[tgt.get("ptr", tgt.get("slot"))] = now
         if BURST_BACKOFF and front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
             self.doing, self.why = "burst_backoff", f"{front} in front after a {now - self.trigger_since:.1f} s burst"
             self.stats["burst_backoffs"] += 1                # a crowd in front: the burst is done, step back, burst again
@@ -1821,6 +1984,11 @@ class Bot:
         elev = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
         if have > PITCH_UP_LOG and elev < SKY_LOW:
             self.stats["sky_ticks"] += 1
+            if self._now is not None and self.stats.get("_sky_ex_at", -1e9) < self._now - 1.0:
+                self.stats["_sky_ex_at"] = self._now
+                self._example("sky", {"pos": (origin[0], origin[1] - MUZZLE_H, origin[2]), "rot": 0.0}, self._now,
+                              f"the laser {math.degrees(have):+.0f} deg, the target {math.degrees(elev):+.0f} deg, "
+                              f"ray {math.dist(origin, dot) / 100:.1f} m, keys {','.join(sorted(keys))}")
         sky = SKY_GUARD and have > elev + SKY_MARGIN and not on
         if sky:
             if not self._sky:
