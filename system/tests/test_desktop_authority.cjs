@@ -96,3 +96,18 @@ test('viewing remote gameplay still starts only the locally owned worker',async(
   assert.equal(calls[0].url,local+'/api/desktop-local/worker');
   assert.equal(calls[0].opts.headers.authorization,'Bearer local-only');
 });
+
+// operator 2026-10-27 (JAYBUILTFINALE on Wi-Fi): the Spark's /api/health answered in up to ~1.3 s while streams filled
+// the link (p95 1.14 s); one probe over 1.2 s marked the Spark offline for 5 s, every request failing meanwhile
+test('the remote connection probe waits up to 3 s; the local one stays quick',async()=>{
+  const fs=require('node:fs'),vm=require('node:vm');
+  const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
+  const start=main.indexOf('probe:async(url,kind)=>{'),source=main.slice(start,main.indexOf('onChange:state=>',start));
+  const budgets=[];
+  const context=vm.createContext({STANDALONE:false,localControlInfo:{installation:'i'},localControlError:'',
+    AbortSignal:{timeout:ms=>{budgets.push(ms);return null;}},
+    fetch:async url=>({ok:true,json:async()=>url.includes('desktop-local')?{ok:true,kind:'gbox.desktop-local/1',installation:'i'}:{ok:true}})});
+  const probe=vm.runInContext('({'+source.replace(/,\s*$/,'')+'})',context).probe;
+  await probe(remote,'remote'); await probe(local,'local');
+  assert.deepEqual(budgets,[3000,1200]);
+});

@@ -213,7 +213,9 @@ function initConnection(mode) {
     probe:async(url,kind)=>{
       if(kind==='local'&&!STANDALONE&&!localControlInfo)return {ok:false,reason:localControlError||'This PC\'s gBox is starting.'};
       const route=kind==='local'&&!STANDALONE?'/api/desktop-local':'/api/health';
-      const response=await fetch(url+route,{signal:AbortSignal.timeout(1200)});
+      // the Spark over Wi-Fi answers its health in up to ~1.3 s while a stream fills the link (operator 2026-10-27);
+      // a miss marks it offline for 5 s, every request failing meanwhile, so the remote probe waits up to 3 s
+      const response=await fetch(url+route,{signal:AbortSignal.timeout(kind==='remote'?3000:1200)});
       if(!response.ok)throw Error('Connection unavailable');
       const result=await response.json();
       if(kind==='local'&&!STANDALONE&&(result.kind!=='gbox.desktop-local/1'||result.installation!==localControlInfo?.installation))
@@ -1217,7 +1219,7 @@ async function openMini(sid, title, savedBounds, expectedOrigin = clientViews.or
   mini = new BrowserWindow({ width: 480, height: 360, frame: false, alwaysOnTop: true, resizable: true, backgroundColor: "#000",
     title: "gBox · " + (title || "game"), icon: path.join(__dirname, "..", "..", "assets", "brand", "gbox.ico"),
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true } });
-  mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}`, title: title || "" } });
+  mini.loadFile(path.join(__dirname, "mini.html"), { query: { src: `${s.apiUrl}/api/sessions/${encodeURIComponent(sid)}/mjpeg?token=${encodeURIComponent(t)}&fps=30`, title: title || "" } });
   miniSession = { sid, title, origin: expectedOrigin };
   const miniWindow = mini;
   miniWindow.on('system-context-menu', (event, point) => {

@@ -102,17 +102,22 @@ def notify_frame(lv: dict) -> None:
 
 async def async_mjpeg_parts(lv: dict, *, keepalive: float = KEEPALIVE_S, idle_limit: float = IDLE_LIMIT_S,
                             first_frame_limit: float = FIRST_FRAME_LIMIT_S, alive=lambda: True,
-                            clock=time.monotonic, wait: float = 1.0):
+                            clock=time.monotonic, wait: float = 1.0, max_fps: float = 0.0, sleep=asyncio.sleep):
     """Stream the newest available frame without dispatching a thread for every JPEG.
 
     HTTP backpressure suspends this generator. On resumption it reads the shared newest frame, dropping any
     intermediate pictures rather than replaying a backlog. Cancellation unregisters the viewer immediately.
     ``alive`` may be async so a session lookup never blocks the serving event loop.
+
+    ``max_fps`` caps this viewer's frame rate: the newest frame at most that often, the frames in between skipped
+    (operator 2026-10-27: the PiP over Wi-Fi played for seconds, then stopped - a 57 fps source of 32 KB JPEGs needs
+    ~15 Mbps per viewer; at 30 a viewer needs half of that).
     """
     event, loop = asyncio.Event(), asyncio.get_running_loop()
     waiter = (loop, event)
     seq, last_new = -1, clock()
     last_sent, check_at = last_new, last_new
+    gap = 1.0 / max_fps if max_fps and max_fps > 0 else 0.0
     with lv["cond"]:
         lv.setdefault("async_waiters", set()).add(waiter)
     try:
@@ -129,6 +134,9 @@ async def async_mjpeg_parts(lv: dict, *, keepalive: float = KEEPALIVE_S, idle_li
                 frame, current = lv["frame"], lv["seq"]
             now = clock()
             if frame is not None and current != seq:
+                if gap and seq >= 0 and now - last_sent < gap:
+                    await sleep(gap - (now - last_sent))     # the cap: then the newest frame, not this one
+                    continue
                 with lv["cond"]:
                     lv["viewer_frames"] = lv.get("viewer_frames", 0) + 1
                     if seq >= 0:

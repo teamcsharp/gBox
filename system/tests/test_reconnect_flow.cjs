@@ -556,7 +556,8 @@ test('F5 moves the PiP at once (no wait for a first frame); the continuity follo
   assert.deepEqual(follows, [['w1-old', 'w1-next']]); follows.length = 0; image.style.backgroundImage = 'url("old")';
   await ctx.compactFollow({ session_id: 'w1-s1', title: 'RE5' }, 'w1-old', { force: true });
   assert.deepEqual(follows, [['w1-old', 'w1-s1']]); assert.equal(image.style.backgroundImage, '');
-  assert.match(vm.runInContext('compactStreamUrl', ctx), /\/api\/sessions\/w1-s1\/mjpeg\?token=t$/);
+  // at most 30 fps (gbox/live_stream.py max_fps): half a 57 fps source's bitrate on this PC's Wi-Fi (operator 2026-10-27)
+  assert.match(vm.runInContext('compactStreamUrl', ctx), /\/api\/sessions\/w1-s1\/mjpeg\?token=t&fps=30$/);
 });
 
 test('the shell wires the F5 steps: update through main.js, the F5 key carried over a reload, the main window following', () => {

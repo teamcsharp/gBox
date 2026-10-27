@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const w = require('../clients/web/viz/stream-watchdog.js');
 
-function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), preloadOk = true, pixels = true, mini = false, captureFrame } = {}) {
+function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), preloadOk = true, pixels = true, mini = false, captureFrame, misses } = {}) {
   let t = 0, nextTimer = 0; const timers = new Map(); const logs = [], preloaded = [], changes = [];
   const setTimer = (fn, ms) => { const id = ++nextTimer; timers.set(id, [t + ms, fn]); return id; };
   const clearTimer = id => timers.delete(id);
@@ -26,7 +26,8 @@ function harness({ health = async () => ({ state: 'running', age_s: 0.1 }), prel
     readPicture: im => pixels && im?.naturalWidth ? im.picture : null,
     preload: (url, opts) => { preloaded.push(url); return state.preload ? state.preload(url, opts) : preloadOk
       ? Promise.resolve({ url, image: { naturalWidth: 640, picture: state.picture } }) : Promise.reject(new Error('x')); },
-    fetchHealth: mini ? null : (src, opts) => state.health(src, opts),...(captureFrame?{captureFrame}:{} ) });
+    fetchHealth: mini ? null : (src, opts) => state.health(src, opts),...(captureFrame?{captureFrame}:{} ),
+    ...(misses ? { healthMisses: misses } : {}) });
   const flush = () => new Promise(r => setImmediate(r));
   return { dog, doc, img, run, logs, preloaded, body, state, flush, changes, timers, now: () => t };
 }
@@ -112,8 +113,32 @@ test('a long source stall reattaches and verifies fresh rendered pictures', asyn
 
 test('unreachable server retries without waiting for a successful health response', async () => {
   const h = harness({ health: async () => { throw new Error('offline'); } }), el = h.img('/api/sessions/w-s/mjpeg');
-  await h.dog.checkHealth(el); assert.equal(el.a['data-stream-state'], 'reconnecting');
+  for (let i = 0; i < 3; i++) await h.dog.checkHealth(el);   // three reads in a row: the server is gone, not slow
+  assert.equal(el.a['data-stream-state'], 'reconnecting');
   h.run(1100); assert.match(el.a.src, /reconnect=1$/);
+  const blank = harness({ health: async () => { throw new Error('offline'); } }), none = blank.img('/api/sessions/w-s/mjpeg');
+  none.naturalWidth = 0;                                      // nothing on screen to keep: the first miss retries
+  await blank.dog.checkHealth(none); assert.equal(none.a['data-stream-state'], 'reconnecting');
+});
+
+// operator 2026-10-27, JAYBUILTFINALE on Wi-Fi: "it plays for three seconds and then it stops" - the app's health reads
+// failed now and then while its own downloads filled the link, and each miss tore down the PiP's working stream
+test('a slow or failed health read alone never stops a picture that is playing', async () => {
+  let fail = false;
+  const h = harness({ health: async () => { if (fail) throw new Error('Remote gBox is offline.'); return { state: 'running', age_s: 0.1 }; } });
+  const el = h.img('/api/sessions/w-s/mjpeg?token=t&fps=30'); h.doc.imgs.push(el);
+  await h.dog.checkHealth(el); assert.equal(el.a['data-stream-state'], 'connected');
+  for (let round = 0; round < 5; round++) {                  // a miss, then an answer, over and over
+    fail = true; await h.dog.checkHealth(el); fail = false; await h.dog.checkHealth(el);
+    fail = true; await h.dog.checkHealth(el); fail = false; await h.dog.checkHealth(el);
+  }
+  h.run(60000);
+  assert.equal(el.a.src, '/api/sessions/w-s/mjpeg?token=t&fps=30', 'the stream was never reconnected');
+  assert.equal(el.a['data-stream-state'], 'connected'); assert.equal(h.dog.state(el).pending, false);
+  const slow = harness(), view = slow.img('/api/sessions/w-s/mjpeg');
+  slow.state.health = () => new Promise(() => {});           // a read that never answers times out: one miss
+  const pending = slow.dog.checkHealth(view); slow.run(5000); await pending;
+  slow.run(20000); assert.equal(view.a.src, '/api/sessions/w-s/mjpeg');
 });
 
 test('fresh server frames reconnect a frozen image, but identical quiet pictures stay connected', async () => {
@@ -130,7 +155,8 @@ test('hanging health times out and aborts, permits another poll, and ignores lat
   h.state.health = (src, opts) => { calls++; signal = opts.signal; return new Promise(r => { resolve = r; }); };
   const checking = h.dog.checkHealth(el); await h.flush(); await h.dog.checkHealth(el); assert.equal(calls, 1);
   h.run(5000); await checking;
-  assert.equal(signal.aborted, true); assert.equal(h.dog.state(el).checking, false); assert.equal(el.a['data-stream-state'], 'reconnecting');
+  assert.equal(signal.aborted, true); assert.equal(h.dog.state(el).checking, false);
+  assert.equal(h.dog.state(el).misses, 1); assert.equal(h.dog.state(el).pending, false, 'one slow read never reconnects the picture');
   h.state.health = async () => ({ state: 'running', age_s: .1 }); await h.dog.checkHealth(el);
   resolve({ state: 'ended' }); await h.flush();
   assert.equal(h.dog.state(el).ended, false); assert.equal(el.a['data-stream-state'], 'connected');
@@ -154,7 +180,7 @@ test('auth changes invalidate old requests even for the same session', async () 
 });
 
 test('a retained decoded image does not reset retry backoff', async () => {
-  const h = harness({ health: async () => { throw new Error('offline'); } }), el = h.img('/api/sessions/w-s/mjpeg'); h.doc.imgs.push(el);
+  const h = harness({ health: async () => { throw new Error('offline'); }, misses: 1 }), el = h.img('/api/sessions/w-s/mjpeg'); h.doc.imgs.push(el);
   await h.dog.checkHealth(el); h.run(1000); h.dog.sweep(); await h.dog.checkHealth(el); await h.flush();
   h.run(2999); assert.match(el.a.src, /reconnect=1$/); h.run(3000); assert.match(el.a.src, /reconnect=2$/);
   h.dog.sweep(); await h.dog.checkHealth(el); await h.flush(); h.run(6999); assert.match(el.a.src, /reconnect=2$/); h.run(7000); assert.match(el.a.src, /reconnect=3$/);
