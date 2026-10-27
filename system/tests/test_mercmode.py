@@ -211,7 +211,11 @@ def test_mode_launches_without_recorded_play_and_never_changes_modifiers():
                                                   'stalemate_cut':True,'stalemate_cut_s':5}
     assert set(launch)=={'game','jump','memory_cards'}
     assert run['mercmode']['title'] in ('re4','re5')
-    tick(60*60)
+    M.configure(store,w['name'],{'rounds_per_title':20})    # an hour of rounds, a boundary every 5 min (without any,
+    for i in range(12):                                      # the no-progress watchdog would end the turn after 10)
+        tick(5*60)
+        S.telemetry_put(run['session_id'],{'running':True,'stats':{}},now=now[0])
+        assert saver.round_boundary(boundary(run,now[0])|{'round_id':f'{i+1:032x}'},job,now[0])['saved'] is True
     assert len(calls)==2                        # no session_minutes interruption mid-round
 
 
@@ -228,6 +232,44 @@ def test_actual_boundary_rotates_once_then_waits_for_owned_game_stop():
     tick(1)
     assert calls[-1]['tool']=='launch_game'
     assert calls[-1]['input']['game']['game_id']!=run['game_id']
+
+
+def test_a_turn_without_a_round_boundary_for_ten_minutes_ends_like_a_finished_turn():
+    # 2026-10-27: RE4 resumed on its last Result screen, its reader called that a round and the bot "played" it for 24
+    # minutes; nothing rotated MercMode until a service restart. Only accepted boundaries count as progress.
+    store,w,saver,calls,now,tick,run,job=playing()
+    sid=run['session_id']
+    for _ in range(3):                                           # the bot is busy (turning, prompts): not progress
+        tick(S.NO_PROGRESS_S/4)
+        S.telemetry_put(sid,{'running':True,'stats':{'act':'turn','prompts':1499}},now=now[0])
+    assert store.get(S.STATE,w['name'])['phase']=='playing' and calls[-1]['tool']=='autoplay'
+    tick(S.NO_PROGRESS_S/4+1)
+    assert calls[-1]['tool']=='session_op' and calls[-1]['input']=={'session_id':sid,'op':'stop_game','args':{}}
+    assert store.get(S.STATE,w['name']) is None
+    ended=[r for r in store.all(S.LOG) if r.get('session_id')==sid][-1]
+    assert ended['why']==S.NO_PROGRESS.format(minutes=S.NO_PROGRESS_S/60)
+    assert ended['mercmode_no_progress']['idle_s']>=S.NO_PROGRESS_S
+    store.put('session',sid,{'session_id':sid,'state':'ended'})
+    tick(1)
+    assert calls[-1]['tool']=='launch_game' and calls[-1]['input']['game']['game_id']!=run['game_id']   # the next title
+
+
+def test_the_no_progress_watchdog_counts_boundaries_and_never_cuts_the_operator():
+    store,w,saver,calls,now,tick,run,job=playing()
+    M.configure(store,w['name'],{'rounds_per_title':5})         # one round does not end the turn here
+    sid=run['session_id']
+    tick(S.NO_PROGRESS_S-60)
+    S.telemetry_put(sid,{'running':True,'stats':{}},now=now[0])
+    assert saver.round_boundary(boundary(run,now[0])|{'round_id':'c'*32},job,now[0])['saved'] is True
+    tick(S.NO_PROGRESS_S-60)                                     # a boundary 9 min ago: still progressing
+    assert store.get(S.STATE,w['name'])['phase']=='playing' and calls[-1]['tool']!='session_op'
+    S.telemetry_put(sid,{'running':True,'stats':{'operator_control':True}},now=now[0]+120)
+    tick(120)                                                    # 11 min, but the operator holds the pad
+    assert store.get(S.STATE,w['name'])['phase']=='playing' and calls[-1]['tool']!='session_op'
+    for flag in ({'handover':'mouse'},{'mercmode_pinned':True}):
+        store2,w2,saver2,calls2,now2,tick2,run2,job2=playing()
+        store2.put(S.STATE,w2['name'],store2.get(S.STATE,w2['name'])|flag)
+        assert saver2._no_progress(w2,store2.get(S.STATE,w2['name']),now2[0]+S.NO_PROGRESS_S+1) is None
 
 
 def test_a_switch_edition_run_accepts_round_boundaries_naming_its_own_title_id():
@@ -1483,6 +1525,37 @@ def test_the_dj_queueing_the_prepared_title_keeps_it_next_and_plays_it():
     M.configure(store,w['name'],{'queue':[{'title':nxt}]})
     assert saver.round_boundary(boundary(run,now[0])|{'round_id':'b'*32},job,now[0])['rotate_requested'] is True
     assert store.get(M.NEXT,w['name'])['title']==nxt
+
+
+def test_a_title_mercmode_stayed_in_tries_the_next_one_again_after_a_few_more_rounds():
+    # 2026-10-27 on lilspark: RE6's warm boot failed three times on a bug a hot reload fixed minutes later, and RE5 stayed
+    # for good ("could not be made ready 3 times: staying in this title") - 15 rounds and counting
+    store,w,saver,calls,now,tick,run,job,pre=preloaded()
+    nxt=store.get(M.NEXT,w['name'])['title']
+    store.put('job',pre['id'],pre|{'state':'failed','error':'boot failed'})
+    for attempt in range(1,M.EXTRA_ROUNDS_MAX+1):
+        saver.round_boundary(boundary(run,now[0])|{'round_id':f'{attempt:032x}'},job,now[0])
+        tick(1)
+        again=preloads(calls)[-1]
+        store.put('job',again['id'],again|{'state':'failed','error':'boot failed'})
+    cur=store.get(S.STATE,w['name'])
+    assert 'staying in this title' in cur['mercmode_stay'] and cur['mercmode_stay_round']==cur['mercmode_rounds_played']
+    tries=len(preloads(calls))
+    for k in range(1,M.STAY_RETRY_ROUNDS+1):
+        saver.round_boundary(boundary(run,now[0])|{'round_id':f'{100+k:032x}'},job,now[0])
+        cur=store.get(S.STATE,w['name'])
+        if k<M.STAY_RETRY_ROUNDS:
+            assert cur.get('mercmode_stay') and len(preloads(calls))==tries          # still staying, no new attempt
+            tick(1)
+    assert 'mercmode_stay' not in cur and cur['mercmode_warm_attempts']==1 and 'mercmode_prelaunch' not in cur
+    tick(1)
+    retry=preloads(calls)[-1]
+    assert len(preloads(calls))==tries+1 and retry['input']['game']['game_id'] in M.TITLES[nxt]['game_ids']
+    old=store.get(S.STATE,w['name'])|{'mercmode_stay':'gave up','mercmode_warm_attempts':3}
+    old.pop('mercmode_stay_round',None)
+    store.put(S.STATE,w['name'],old)                             # a stay set before this rule: tried again at once
+    saver.round_boundary(boundary(run,now[0])|{'round_id':'f'*32},job,now[0])
+    assert 'mercmode_stay' not in store.get(S.STATE,w['name'])
 
 
 def test_the_dj_asking_for_a_title_mercmode_gave_up_on_tries_it_again():

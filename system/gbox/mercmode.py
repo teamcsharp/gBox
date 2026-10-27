@@ -42,6 +42,9 @@ PRELAUNCH_S = 3600.0            # (status text) the next title starts loading in
 EXTRA_ROUNDS_MAX = 3            # failed attempts to get the next title ready (a failed / skipped preload or prepare) before
                                 # MercMode stays in the playing title; while an attempt is on its way the playing title
                                 # adds rounds without limit - never a cold switch with a loading screen while a title plays
+STAY_RETRY_ROUNDS = 5           # ... and after this many more rounds in the title it stayed in, the next title is tried again
+                                # (2026-10-27: RE5 stayed for good after three RE6 warm boots failed on a bug that a hot
+                                # reload fixed minutes later; a failed next title must never pin the rotation)
 WARM_MAX = 2                    # keep_warm upper bound (three titles at most: the playing one plus two waiting)
 WARM_FEATURE = 'mercmode_warm_launch'   # worker feature: launch_game keep_sessions/warm and session_op pause warm
 PREPARE_FEATURE = 'mercmode_prepare'    # worker feature: autoplay op=prepare drives a warm game's menus to a round start
