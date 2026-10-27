@@ -58,6 +58,7 @@ rate caps it; Citron ran 40-60 fps). With the no-ammo flag its rounds stayed at 
 """
 from __future__ import annotations
 
+import math
 import struct
 import threading
 import time
@@ -688,6 +689,156 @@ def bullet_damage_x(g: RE5Switch):
         return None
 
 
+# --- the Mercenaries clock: add_time / set_time / kill_time / time_bonus_multiplier (the PS3 tool's) ---------------------
+# Found in main's code 2026-10-27 (the RE6 lesson: the HUD clock is a copy): aGame's update (vtable main+0x1A9B9B8 slot 8,
+# 0xD9080 -> 0xEADD0) counts the authoritative clock down at aGame +0x7C0 (its end flag +0x7B8) and copies it into
+# cGameSys +0x948 every frame (unless cGameSys +0x82C); a write to the copy alone is overwritten. The hourglass pickup
+# (uOmHourGlass 0x6C5824) reaches aGame through the sArea pointer (main+0x26A1460) +0x7040, adds the hourglass unit's
+# own s16 at +0x1EB8 (30 / 60 s) to +0x7C0, and shows "+NN Sec." through cGameSys +0x950 (seconds) / +0x954 (on).
+# The melee finisher's +5 is an FP immediate in the code (0xF89BC): not data, not scaled here.
+S_AREA_PTR, AREA_GAME, GAME_CLOCK, GAME_CLOCK_END = 0x26A1460, 0x7040, 0x7C0, 0x7B8
+GS_LAST_BONUS, GS_SHOW_BONUS = 0x950, 0x954
+HOURGLASS_VT, HG_SECONDS, HOURGLASS_VALUES = 0x1BD71D8, 0x1EB8, (30, 60)
+MIN_CLOCK_S = 1.0                 # no write leaves the countdown at or under this: 0 is the round's end
+ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
+KILL_TIME_S, KILL_TIME_MAX_S = 10.0, 30.0
+
+
+def _u64(g: RE5Switch, a: int) -> int:
+    return struct.unpack("<Q", g.rd(a, 8))[0]
+
+
+def _clock_owner(g: RE5Switch) -> tuple:
+    """(cGameSys, aGame, HUD seconds, authoritative seconds) of a running round, each link checked."""
+    main = _u64(g, g.base + R.S_MAIN)
+    gs = _u64(g, main + R.MAIN_GAMESYS) if R.ptr_ok(main) else 0
+    if not R.ptr_ok(gs) or struct.unpack("<i", g.rd(gs + R.GS_PHASE, 4))[0] != R.PHASE_PLAYING:
+        raise RuntimeError("no Mercenaries round is running (cGameSys or its phase)")
+    area = _u64(g, g.base + S_AREA_PTR)
+    owner = _u64(g, area + AREA_GAME) if R.ptr_ok(area) else 0
+    if not R.ptr_ok(owner) or struct.unpack("<I", g.rd(owner + GAME_CLOCK_END, 4))[0] != 0:
+        raise RuntimeError("the round's clock owner (sArea -> aGame) is not running")
+    hud = struct.unpack("<f", g.rd(gs + R.GS_TIMER, 4))[0]
+    master = struct.unpack("<f", g.rd(owner + GAME_CLOCK, 4))[0]
+    if not all(math.isfinite(v) and 0 < v < 86400 for v in (hud, master)) or abs(hud - master) > 2:
+        raise RuntimeError(f"the authoritative countdown ({master}) disagrees with the HUD ({hud}), or the round is over")
+    return gs, owner, hud, master
+
+
+def _add_clock(g: RE5Switch, seconds: float = 0.0, absolute=None) -> dict:
+    """The authoritative countdown += seconds (or = absolute), never under MIN_CLOCK_S, read back; a rise also shows
+    the game's own "+NN Sec." (cGameSys +0x950 / +0x954), a cut shows nothing."""
+    gs, owner, hud, before = _clock_owner(g)
+    wanted = float(absolute) if absolute is not None else before + float(seconds)
+    target = max(MIN_CLOCK_S, wanted)
+    delta = target - before
+    g.wr(owner + GAME_CLOCK, struct.pack("<f", target))
+    after = struct.unpack("<f", g.rd(owner + GAME_CLOCK, 4))[0]
+    ok = math.isfinite(after) and target - 0.5 <= after <= target + 0.01
+    if ok and delta >= 1:
+        g.wr(gs + GS_LAST_BONUS, struct.pack("<i", int(round(delta))))
+        g.wr(gs + GS_SHOW_BONUS, b"\x01")
+    return {"verified": bool(ok), "clock_before": round(hud, 2), "clock_after": round(after, 2),
+            "clock_owner": hex(owner), "applied_seconds": round(delta, 2), "clamped": target != wanted,
+            **({} if ok else {"reason": "authoritative countdown write not confirmed"})}
+
+
+def _seconds(value, what: str) -> int:
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} seconds: a number") from None
+
+
+def add_time(g: RE5Switch, seconds=60.0) -> dict:
+    n = _seconds(60 if seconds is None else seconds, "add_time")
+    if n == 0 or not ADD_TIME_RANGE[0] <= n <= ADD_TIME_RANGE[1]:
+        raise ValueError("add_time seconds: -3600 .. 3600, not 0 (negative takes time away)")
+    res = _add_clock(g, n)
+    return {**res, "requested_seconds": n, "added_seconds": int(round(res["applied_seconds"])) if res["verified"] else 0,
+            "note": "the HUD shows +NN Sec. like an hourglass" if n > 0 else
+            "time taken from the authoritative countdown; the HUD follows next frame, no bonus notice"
+            + (f"; stopped at {MIN_CLOCK_S:g} s" if res.get("clamped") else "")}
+
+
+def set_time(g: RE5Switch, seconds) -> dict:
+    n = _seconds(seconds, "set_time")
+    if not SET_TIME_RANGE[0] <= n <= SET_TIME_RANGE[1]:
+        raise ValueError("set_time seconds: 1 .. 3600")
+    return {**_add_clock(g, absolute=n), "set_seconds": n,
+            "note": "the authoritative countdown set; the HUD follows next frame"}
+
+
+def kill_time(g: RE5Switch, on: bool, seconds=None) -> dict:
+    """Seconds added to the authoritative clock for each kill (maintain: cGameSys kills, every snapshot)."""
+    kt = g.state.setdefault("kill_time", {"seconds": KILL_TIME_S})
+    if seconds is not None:
+        s = float(seconds)
+        if not 0.1 <= s <= KILL_TIME_MAX_S:
+            raise ValueError("kill_time seconds: 0.1 .. 30")
+        kt["seconds"] = s
+    kt["on"] = bool(on)
+    kt.pop("kills", None)
+    return {"kill_time": bool(on), "seconds": kt["seconds"], "seconds_max": kt["seconds"], "verified": True,
+            "note": "each kill adds this many seconds to the authoritative Mercenaries clock (every driver snapshot)"}
+
+
+def _maintain_kill_time(g: RE5Switch, kt: dict, snap) -> int:
+    kills = (snap or {}).get("kills")
+    if not isinstance(kills, int) or not (snap or {}).get("player"):
+        return 0
+    last = kt.get("kills")
+    kt["kills"] = kills
+    if last is None or kills <= last:
+        return 0                                         # the first look, or a new round (its kills start again)
+    try:
+        res = _add_clock(g, (kills - last) * kt["seconds"])
+    except RuntimeError:
+        return 0
+    kt["added"] = kt.get("added", 0) + (1 if res["verified"] else 0)
+    return 1 if res["verified"] else 0
+
+
+def hourglasses(g: RE5Switch) -> list:
+    """The round's standing hourglasses (uOmHourGlass units, by vtable) on sUnit's move lines."""
+    out = []
+    su = _u64(g, g.base + R.S_UNIT)
+    if not R.ptr_ok(su):
+        return out
+    vt = g.base + HOURGLASS_VT
+    for line in range(R.N_LINES):
+        u, n = _u64(g, su + R.UNIT_LINES + R.LINE_STRIDE * line), 0
+        while R.ptr_ok(u) and n < 1024:
+            if _u64(g, u) == vt:
+                out.append(u)
+            u, n = _u64(g, u + R.UNIT_NEXT), n + 1
+    return out
+
+
+def time_bonus_multiplier(g: RE5Switch, mult) -> dict:
+    """Every standing hourglass's own seconds (+0x1EB8: 30 / 60) x N, once a unit (the PS3 tool's; rerun each round)."""
+    k = float(mult if mult is not None else 1)
+    if not 1 <= k <= 20:
+        raise ValueError("time_bonus_multiplier: 1 .. 20")
+    written = g.state.setdefault("hourglass_scaled", {})
+    done, seen, wanted = [], 0, 0
+    for u in hourglasses(g):
+        v = struct.unpack("<h", g.rd(u + HG_SECONDS, 2))[0]
+        seen += 1
+        if written.get(u) == v:
+            continue
+        if v in HOURGLASS_VALUES:
+            wanted += 1
+            want = min(32000, int(v * k))
+            if g.wr(u + HG_SECONDS, struct.pack("<h", want)) and struct.unpack("<h", g.rd(u + HG_SECONDS, 2))[0] == want:
+                written[u] = want
+                done.append((v, want))
+    return {"time_bonus_x": k, "hourglasses": seen, "scaled": len(done), "hourglass_seconds": sorted({w for _, w in done}),
+            "melee_bonus_x": None, "verified": len(done) == wanted,
+            "note": "hourglasses are scaled where they stand (a round's own; rerun each round); the melee +5 s is a code "
+                    "constant on Switch and stays"}
+
+
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
@@ -747,6 +898,9 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 if kept:
                     out["spray_kept"] = True
             _confirm_weapon(st, snap)
+            kt = st.get("kill_time")
+            if enabled and kt and kt.get("on"):
+                out["writes"] += _maintain_kill_time(RE5Switch(ad), kt, snap)
             hs = st.get("health")
             if enabled and hs and hs.get("on"):
                 hs["last"] = res = _maintain_health(ad, hs, snap)
@@ -765,6 +919,8 @@ def revert_all(g: RE5Switch) -> dict:
            "infinite_spray": infinite_spray(g, False)["verified"],
            "unlimited_health": unlimited_health(g, False)["verified"]}
     g.state.pop("mine_settings", None)
+    if g.state.get("kill_time"):
+        g.state["kill_time"]["on"] = False
     for key in ("weapon_override", "loadout", "replace", "preferred_weapon"):
         g.state.pop(key, None)
     req = g.state.get("weapon_request")
@@ -811,10 +967,6 @@ ADDRESSES = {
 
 # What the PS3 tool has and this edition does not yet, and why (the panel shows these on its buttons).
 NOT_YET = {
-    "kill_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
-    "add_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
-    "set_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
-    "time_bonus_multiplier": "the hourglass's seconds (uOmHourGlass) are not mapped on Switch yet",
     "instant_qte": "the QTE progress fields are not mapped on Switch yet",
     "rotten_egg_only": "the rotten egg loadout and supply are not ported to Switch yet",
     "live_weapon": "the native pickup that builds a weapon mid-round (the PS3's 1AEE90 path) is not found on Switch yet",
@@ -836,6 +988,10 @@ AVAILABLE = {
     "mercs_select": "Choose the next Mercenaries round (No Mercy's original roster; Reunion not yet on Switch).",
     "select_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
     "turn_speed": "sParameter's turn and aim rates (main+0x1CF1C30), read back",
+    "add_time": "Authoritative aGame countdown write, read back; a running round.",
+    "set_time": "Authoritative aGame countdown write, read back; a running round.",
+    "kill_time": "Seconds added to the authoritative clock per kill, every snapshot.",
+    "time_bonus_multiplier": "The round's standing hourglasses' seconds x N; rerun each round.",
     "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
     "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
 }
@@ -860,7 +1016,11 @@ def full_status(g: RE5Switch) -> dict:
               weapon_override=g.state.get("weapon_override"),
               loadout=bool(g.state.get("loadout")),
               weapon_replacements=sorted(f"{w:#x}" for w in (g.state.get("replace") or {}).get("unwanted", ())),
-              kill_time_on=False, kill_time_s=0.0, rotten_egg_only=False,
+              kill_time_on=bool((g.state.get("kill_time") or {}).get("on")),
+              kill_time_s=(g.state.get("kill_time") or {}).get("seconds", KILL_TIME_S)
+              if (g.state.get("kill_time") or {}).get("on") else 0.0,
+              kill_time_range=f"{(g.state.get('kill_time') or {}).get('seconds', KILL_TIME_S):g}",
+              rotten_egg_only=False,
               all_weapons=[{"item": k, "weapon": w.name, "family": w.family}
                            for k, w in sorted(re5_weapons.WEAPONS.items())],
               capabilities=capabilities(), edition="switch",
@@ -929,6 +1089,16 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(run(ad, op, multiplier, on, g=g))
         elif op == "unlimited_health":
             res.update(unlimited_health(g, bool(on)))
+        elif op == "add_time":
+            secs = extra.get("seconds")
+            res.update(add_time(g, (multiplier if multiplier is not None else 60) if secs is None else secs))
+        elif op == "set_time":
+            secs = extra.get("seconds")
+            res.update(set_time(g, multiplier if secs is None else secs))
+        elif op == "kill_time":
+            res.update(kill_time(g, bool(on), extra.get("seconds") if extra.get("seconds") is not None else multiplier))
+        elif op == "time_bonus_multiplier":
+            res.update(time_bonus_multiplier(g, multiplier if multiplier is not None else extra.get("x", 1)))
         elif op == "turn_speed":
             res.update(turn_speed(g, multiplier if on else 1.0))
         elif op == "bullet_damage":
