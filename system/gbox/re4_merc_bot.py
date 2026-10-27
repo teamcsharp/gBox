@@ -3117,6 +3117,13 @@ def setup(ad) -> list[str]:
     return apply_package(ad, None if in_round else EARLY_OPS)
 
 
+def _fire_x(RM, gun, default):
+    """The gun's own fire_x (re_mods_tool FIRE_X) or the round's. re_mods_tool is a tool module the bot hot reload never
+    refreshes (gbox.hot_reload BOT_MODULES): a reloaded bot can meet an older copy without FIRE_X (live 2026-10-27, after
+    #1288), so a missing table means the round's own rate, never an AttributeError that unverifies every round."""
+    return (getattr(RM, "FIRE_X", None) or {}).get(gun, default)
+
+
 def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[str]:
     """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in. With stats:
     stats["round_loadout"] records the draw for the round it arms (LoadoutCheck verifies it in that round)."""
@@ -3138,7 +3145,7 @@ def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[
         stats["round_loadout"] = {
             "round": stats.get("rounds", 0) + (0 if equip_now else 1),   # Select Player arms the round that follows
             "drawn": "in the round" if equip_now else "at Select Player",
-            "gun": picked, "gun_id": gun_id, "fire_x": RM.FIRE_X.get(gun_id, ROUND_OP[1].get("fire_x")),
+            "gun": picked, "gun_id": gun_id, "fire_x": _fire_x(RM, gun_id, ROUND_OP[1].get("fire_x")),
             "records_verified": bool(r.get("verified")), "weapon_mod_verified": r.get("weapon_mod"),
             "equipped_now": r.get("equipped_now"), "verified": False, "reason": "awaiting the in-round read-back",
             "checks": 0, "fixes": 0}
@@ -3194,7 +3201,7 @@ class LoadoutCheck:
             lo.update(equip_fix=res.get("verified"), equipped_id=held, equipped=weapon_name(held),
                       equipped_ok=held == want)
         gun = held if held in classes else None
-        fire_x = RM.FIRE_X.get(gun, lo.get("fire_x"))         # a gun with its own rate (the Hand Cannon x40)
+        fire_x = _fire_x(RM, gun, lo.get("fire_x"))           # a gun with its own rate (the Hand Cannon x40)
         if gun is not None and fire_x:
             c = classes[gun][0]
             orig = struct.unpack(">f", g.V.FIRE_RATE_ORIG[c * 0x14:c * 0x14 + 4])[0]

@@ -184,6 +184,21 @@ def test_the_hand_cannon_keeps_its_own_x40_and_is_not_repaired_to_x80(monkeypatc
     assert calls == [] and lo["verified"] and lo["fire_want_frames"] == 4.0   # read back at x40, left alone
 
 
+def test_a_reloaded_bot_with_an_older_re_mods_tool_still_checks_the_round(monkeypatch):
+    # live 2026-10-27: the bot hot-reloaded with #1288 met the running re_mods_tool without FIRE_X (a tool module the
+    # reload never refreshes), and every loadout check would have raised AttributeError
+    from gbox import re_mods_tool as RM
+    g, calls = FakeG(0x37, [1.0] * 5), []
+    fake_rm(monkeypatch, g, calls)
+    monkeypatch.delattr(RM, "FIRE_X")
+    stats = {"rounds": 1, "round_loadout": {"round": 1, "gun": "Handcannon", "gun_id": 0x37, "fire_x": 80,
+                                            "verified": False, "checks": 0, "fixes": 0}}
+    lc = B.LoadoutCheck(object(), stats)
+    lc.tick({"weapon": 0x37}, 0.0)
+    lo = lc.tick({"weapon": 0x37}, B.LOADOUT_CHECK_S + 0.1)
+    assert lo["verified"] and "read-back failed" not in lo["reason"]
+
+
 def test_a_loadout_that_cannot_be_repaired_says_why_and_stops_trying(monkeypatch):
     g, calls = FakeG(0x30, [3.0] * 5), []
     fake_rm(monkeypatch, g, calls)
