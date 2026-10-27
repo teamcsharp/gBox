@@ -10,6 +10,7 @@ import hmac
 import json
 import math
 import re
+import sqlite3
 import threading
 import time
 
@@ -51,6 +52,17 @@ def foreground_session_job(store, job, worker_id, *, require_live=True):
     session = store.get('session',sid)
     return bool(session and session.get('state') == 'running'
                 and session.get('worker_id',worker_id) == worker_id)
+
+
+def _worker_names(store):
+    """{'id', 'name'} of every registered worker, extracted by SQLite when the store can (Store.fields)."""
+    fields = getattr(store, 'fields', None)
+    if fields is not None:
+        try:
+            return fields('worker', ('id', 'name'))
+        except sqlite3.Error:
+            pass
+    return store.all('worker')
 
 
 def _bounded(value, maximum):
@@ -162,7 +174,9 @@ class Federation:
             if registered and (registered.get('federation') or {}).get('authority')!=authority:
                 raise HTTPException(409,'This worker identity already has another owner')
             # Do not retire/adopt an older remote worker's still-owned emulator.
-            others={w['id'] for w in self.store.all('worker') if w['name']==worker['name'] and w['id']!=wid}
+            # id and name only: the worker kind is 32 rows / 3 MB on the Spark (source hashes, tool lists) and every
+            # PC's snapshot decoded all of it while holding the store lock (2026-10-27).
+            others={w['id'] for w in _worker_names(self.store) if w['name']==worker['name'] and w['id']!=wid}
             self._end_stale_owned(authority,others,wid)
             if any(s['session_id'].split('-',1)[0] in others for s in self.store.running_sessions()):
                 raise HTTPException(409,'An existing worker still owns a native game; it was preserved')

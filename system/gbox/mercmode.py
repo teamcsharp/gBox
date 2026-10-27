@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import json
 import re
+import sqlite3
 import time
 import uuid
 
@@ -591,8 +592,24 @@ def host_preparation(store, worker):
     return saved | receipt | {'state':'checked','source':'accepted_worker_prepare_job','job':jid}
 
 
+SESSION_FIELDS = ('session_id', 'game_id', 'state')
+
+
+def session_rows(store):
+    """The fields inventory() matches prior launches on, for every session in rowid order. SQLite extracts them, so the
+    session archive (2,194 rows, 4.9 MB on the Spark) is not decoded for each GET /api/mercmode computation."""
+    fields = getattr(store, 'fields', None)
+    if fields is not None:
+        try:
+            return fields('session', SESSION_FIELDS)
+        except sqlite3.Error:
+            pass
+    return store.all('session')
+
+
 def inventory(store, worker, cfg=None, sessions=None):
-    """sessions: store.all('session') when the caller already read it (one read for every host, not one per game)."""
+    """sessions: session_rows(store) (or whole session documents) when the caller already read them (one read for every
+    host, not one per game)."""
     cfg = cfg or settings(store, worker['name'])
     from .re_switch import preferred_spec
     rows = []
@@ -613,14 +630,14 @@ def inventory(store, worker, cfg=None, sessions=None):
         selected_game=games[0] if games else None
         if backend_ready:
             prepared=host_preparation(store,worker)
-            known=sessions if sessions is not None else store.all('session')
+            known=sessions if sessions is not None else session_rows(store)
             same=_host_matcher(store,worker)
             for game in games:
                 gid=game['game_id']
                 # a restart gives the same PC a new worker id: the registered aliases keep its launch history
                 prior=next((s for s in known if s.get('game_id')==gid
                     and s.get('state') in ('running','ended')
-                    and same(s.get('session_id','').split('-')[0])),None)
+                    and same((s.get('session_id') or '').split('-')[0])),None)
                 candidate={'verified':False,'reason':'ROM access has not been verified on this PC'}
                 probe=(prepared.get('games') or {}).get(gid) or {}
                 if prior:

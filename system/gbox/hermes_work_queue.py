@@ -5,10 +5,12 @@ claims precede cron writes and uncertain writes are reconciled, never replayed.
 """
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 import urllib.error
 
@@ -38,6 +40,39 @@ def _path():
 def _read():
     return json.loads(_path().read_text()) if _path().exists() else {
         'version': 1, 'items': {}, 'last_lane': 'inbox'}
+
+
+_shared = (None, None)            # (file identity, parsed queue) for read_shared()
+_shared_lock = threading.Lock()
+
+
+def _identity(p):
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (str(p), st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def read_shared():
+    """_read() for callers that only look at the queue (round reports, claims, readiness rows). The parsed file is kept
+    while it is unchanged: _save replaces it, so every write is a new inode and mtime. The file is 5.9 MB on the Spark
+    (2026-10-27) and one json.loads of it holds the GIL ~30-50 ms; the round-report thread read it every 15 s and the
+    session observers on every poll while it changed about once a minute. The result is shared: never mutate it."""
+    global _shared
+    p = _path()
+    before = _identity(p)
+    if before is None:
+        return _read()
+    with _shared_lock:
+        key, data = _shared
+        if key == before:
+            return data
+    data = _read()
+    if _identity(p) == before:          # not replaced while it was read
+        with _shared_lock:
+            _shared = (before, data)
+    return data
 
 
 def _save(data):
@@ -1082,7 +1117,7 @@ def _readiness_row(item):
 
 def item_state(game_id):
     """One title's readiness row (stages, next stage, ticket, fingerprint summary), or None when it is not queued."""
-    item = _read()['items'].get('favorite:' + str(game_id))
+    item = read_shared()['items'].get('favorite:' + str(game_id))
     return _readiness_row(item) if item else None
 
 
@@ -1121,7 +1156,7 @@ def snapshot(game_id=''):
     from .native_engineering import plan
     if game_id and not ID.fullmatch(str(game_id)):
         raise ValueError('Invalid game ID')
-    data = _read()
+    data = read_shared()
     games = [{k: item.get(k) for k in ('game_id', 'title', 'platform', 'in_catalog', 'request_id',
              'number', 'dispatch_state', 'job_id', 'attempts', 'retry_at', 'stages', 'favorite', 'showcase')}
              | {'next_stage': next_stage(item)} for item in data['items'].values()
@@ -1142,6 +1177,7 @@ def snapshot(game_id=''):
         result['engineering'] = plan(game_id, stage=next_stage(item) if item else 'inventory',
                                      fingerprint=(item or {}).get('fingerprint'))
         result['queued'] = item is not None
+        result = copy.deepcopy(result)  # one title's stages/fingerprint: callers get their own copy of the shared queue
     return result
 
 
@@ -1217,5 +1253,5 @@ def pause_pending():
 
 def claims():
     """Expose durable assignments before the agent's first mutation receipt."""
-    return {item['job_id']: item['request_id'] for item in _read()['items'].values()
+    return {item['job_id']: item['request_id'] for item in read_shared()['items'].values()
             if item.get('job_id') and item.get('request_id') and item.get('dispatch_state') == 'queued'}
