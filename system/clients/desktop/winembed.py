@@ -430,7 +430,10 @@ def appchrome(app: int, pid: int, on: bool, restore_bits=None):
         return {'ok': False, 'error': 'The compact gBox window has changed'}
     if on:
         if saved is None:
-            saved = {'hwnd': app, 'pid': pid, 'bits': current & bits}
+            # A helper started while gBox was already compact (the previous one stopped answering) takes the original
+            # bits from the trusted main process; the window's current bits no longer have them.
+            original = int(restore_bits) & bits if restore_bits is not None else current & bits
+            saved = {'hwnd': app, 'pid': pid, 'bits': original}
         desired = current & ~bits
     else:
         # The trusted main process retains the snapshot too, allowing recovery

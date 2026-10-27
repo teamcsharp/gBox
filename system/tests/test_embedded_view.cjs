@@ -63,6 +63,24 @@ test('DOM readiness reveals the initialized page without a reload', async () => 
   assert.match(x.scripts[0], /requestAnimationFrame/);
 });
 
+// operator 2026-10-27: the PiP hides the main window's view, and a view loaded while hidden gets no animation frames
+// (Electron 38: requestAnimationFrame never fires in a display:none webview). Its readiness waited for one: every 30 s it
+// timed out and was rebuilt (89 rebuilds in 44 minutes on JAYBUILTFINALE), and the PiP never followed MercMode's new session.
+test('a view loaded behind the PiP, which gets no animation frames, still becomes ready', async () => {
+  const x = setup(); await x.load(); const w = x.nodes.get('wv');
+  await w.events['dom-ready']();
+  const guest = vm.createContext({ document: { documentElement: { dataset: {}, style: {} } }, window: { gboxViewReady: Promise.resolve() },
+    requestAnimationFrame: () => {}, setTimeout });                            // hidden: no frame ever comes
+  const started = Date.now();
+  const ready = await Promise.race([vm.runInContext(x.scripts[0], guest).then(() => 'ready'),
+    new Promise(resolve => setTimeout(() => resolve('still waiting'), 2000))]);
+  assert.equal(ready, 'ready'); assert.ok(Date.now() - started < 1500);
+  assert.equal(guest.document.documentElement.dataset.embedded, 'true');
+  const shown = vm.createContext({ document: { documentElement: { dataset: {}, style: {} } }, window: { gboxViewReady: Promise.resolve() },
+    requestAnimationFrame: fn => fn(), setTimeout: () => {} });                // on screen: its first frame is what it waits for
+  assert.equal(await vm.runInContext(x.scripts[0], shown).then(() => 'ready'), 'ready');
+});
+
 test('renderer failures show retry and cannot be hidden by an earlier ready response', async () => {
   const x = setup(); await x.load(); const w = x.nodes.get('wv');
   let resolve; w.executeJavaScript = () => new Promise(r => { resolve = r; });

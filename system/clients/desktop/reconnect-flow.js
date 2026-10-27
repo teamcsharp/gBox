@@ -36,7 +36,8 @@
               operator's own game on this PC stays on screen; with no MercMode game the game on screen is repaired
      stream   live within F5_FIRST_LOOK_MS (3 s), else a new encoder (session_op restart_stream) and a wait for a fresh
               frame (stream/health age_s < 3); a picture that never comes back asks MercMode again
-     pip      that game in picture-in-picture: a PiP showing another game moves to it in place (same window and bounds)
+     pip      that game in picture-in-picture: a PiP showing another game moves to it in place (same window and bounds;
+              asked again from where it is when the PiP's own follower moved it meanwhile)
      bot      POST /api/sessions/{sid}/autoplay/ensure (gbox/bot_control.py), and its answer
      view     the main window's Sessions view shows the same game, never a paused warm one
    An F5 never waits behind an automatic reconnect: it takes over, and the older run stops at its next step. */
@@ -59,6 +60,7 @@
   const F5_STREAM_BUDGET_MS = 40000;                 // no further stream attempt this far into an F5 (it ends in ~45 s)
   const BOT_WAIT_MS = 15000;                         // the autobot check's answer in the dialog (a later one is toasted)
   const LINGER_MS = 2500;                            // a finished F5 leaves its results up this long
+  const SWITCH_TRIES = 3;                            // F5: in-place PiP moves, 1 s apart, before it is closed and reopened
   const BACKOFF_MS = [5000, 10000, 20000, 40000, 60000];
   // the automatic poll's delay after `failures` attempts in a row (0 = the first retry): 5 s doubling to a minute
   const backoff = failures => BACKOFF_MS[Math.max(0, Math.min(BACKOFF_MS.length - 1, Number.isFinite(failures) ? Math.trunc(failures) : 0))];
@@ -246,13 +248,25 @@
       }
       if (f5 && own) return set(ctx, 'pip', 'ok', 'Your game stays where it is');
       if (f5 && shown && io.pipSwitch) {            // the PiP moves to it in place: the same window, bounds and aspect
-        alive(ctx);
-        if (await ask(io.pipSwitch, shown, sid)) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
+        // a PiP that its own follower moved meanwhile (its MercMode or continuity poll) is moved again from where it is:
+        // closing and reopening it needs the native window helper, which may be slow or stuck (operator 2026-10-27)
+        for (let attempt = 0; attempt < SWITCH_TRIES; attempt++) {
+          alive(ctx);
+          const from = shownPip();
+          if (from === sid) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
+          if (!from) break;                          // the PiP closed meanwhile: it opens again below
+          if (await ask(io.pipSwitch, from, sid)) return set(ctx, 'pip', 'ok', 'Switched the PiP to it');
+          if (attempt + 1 < SWITCH_TRIES) await sleep(1000);
+        }
       }
       if (shown) {                                   // never closes a picture that still plays; only an ended one gives way
         if (!f5 && await pipKept(shown)) return set(ctx, 'pip', 'ok', 'Keeping the game already on screen');
         alive(ctx);
-        await io.pipRestore();
+        try { await io.pipRestore(); }
+        catch (error) {
+          if (!f5) throw error;
+          throw Object.assign(Error(`The picture-in-picture could not move to it (${error.message || error}). Press F5 again.`), { step: 'pip' });
+        }
       }
       alive(ctx);
       try { await io.pipEnter(sid); }

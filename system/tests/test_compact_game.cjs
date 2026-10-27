@@ -123,26 +123,57 @@ test('remote compact PiP remains open through a game restart',async()=>{
   assert.equal(x.seen.restores,0);assert.equal(x.compact.on,true);
 });
 
+function followRig({ready='true',look,health={state:'running',age_s:.1},timers=globalThis}={}){
+  let io;const image={style:{backgroundImage:'old-picture'}};
+  const state={on:true,sid:'old',local:false};const changes=[],reads=[];
+  const wv={dataset:{ready},executeJavaScript:async code=>{if(code.includes('.picture('))return look(state);}};
+  const context=vm.createContext({GBoxSessionContinuity:{create:value=>{io=value;return {}; }},COMPACT:state,
+    compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,closePipMenu:()=>changes.push('closed modifiers'),
+    S:{apiUrl:'http://spark'},gbox:{token:async()=> 'test'},document:{querySelector:()=>wv},$:()=>image,
+    compactApi:async(path,body,method)=>{reads.push([path,method]);if(health instanceof Error)throw health;return health;},
+    setTimeout:timers.setTimeout,clearTimeout:timers.clearTimeout,
+    compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
+  const start=html.indexOf('const compactContinuity =');
+  vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
+  return {follow:(session,from)=>io.follow(session,from),changes,reads,image,state};
+}
 test('desktop handoff waits for a visible successor frame and respects a PiP closed during the probe',async()=>{
   for(const visible of [false,true,'closed']){
-    let io;const image={style:{backgroundImage:'old-picture'}};
-    const state={on:true,sid:'old',local:false};const changes=[];
-    const wv={dataset:{ready:'true'},executeJavaScript:async code=>{
-      if(code.includes('.picture(')){
-        if(visible==='closed')state.on=false;
-        return {visible:visible!==false,poster:'data:image/jpeg;base64,frame'};
-      }
-    }};
-    const context=vm.createContext({GBoxSessionContinuity:{create:value=>{io=value;return {}; }},COMPACT:state,
-      compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,closePipMenu:()=>changes.push('closed modifiers'),
-      S:{apiUrl:'http://spark'},gbox:{token:async()=> 'test'},document:{querySelector:()=>wv},$:()=>image,
-      compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
-    const start=html.indexOf('const compactContinuity =');
-    vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
-    await io.follow({session_id:'new',title:'RE5'},'old');
-    assert.deepEqual(changes,visible===true?['closed modifiers','new']:[]);
-    if(visible!==true)assert.equal(image.style.backgroundImage,'old-picture');
+    const x=followRig({look:state=>{
+      if(visible==='closed')state.on=false;
+      return {visible:visible!==false,poster:'data:image/jpeg;base64,frame'};
+    }});
+    await x.follow({session_id:'new',title:'RE5'},'old');
+    assert.deepEqual(x.changes,visible===true?['closed modifiers','new']:[]);
+    if(visible!==true)assert.equal(x.image.style.backgroundImage,'old-picture');
+    assert.deepEqual(x.reads,[],'a view that answered decides alone');
   }
+});
+
+// operator 2026-10-27: after a Spark restart the PiP kept the ended session's last frame on "Reconnecting..." for 6+ min
+// while MercMode played: the main window's view behind the PiP was never ready, and following waited for it forever.
+test('a view behind the PiP that is not ready or silent never holds it on an ended game: a live stream is followed',async()=>{
+  for(const ready of ['false',undefined]){
+    const live=followRig({ready,look:()=>{throw Error('a view that is not ready is not asked');}});
+    await live.follow({session_id:'w2-re4',title:'RE4'},'old');
+    assert.deepEqual(live.changes,['closed modifiers','w2-re4']);
+    assert.deepEqual(live.reads,[['/api/sessions/w2-re4/stream/health','GET']]);
+    assert.equal(live.image.style.backgroundImage,'','the dead game\'s last frame never stays under the new one');
+  }
+  for(const health of [{state:'running',age_s:9},{state:'running',age_s:null},{state:'ended'},Error('offline')]){
+    const booting=followRig({ready:'false',health});                      // no fresh frame yet: asked again next poll
+    await booting.follow({session_id:'w2-re4',title:'RE4'},'old');
+    assert.deepEqual(booting.changes,[]); assert.equal(booting.image.style.backgroundImage,'old-picture');
+  }
+  // a view that never answers (a hung guest) is given 5 s, then the stream's health decides
+  const waits=[];
+  const fake={setTimeout:(fn,ms)=>{waits.push(ms);fn();return waits.length;},clearTimeout(){}};
+  const silent=followRig({look:()=>new Promise(()=>{}),timers:fake});
+  await silent.follow({session_id:'w2-re4',title:'RE4'},'old');
+  assert.deepEqual(waits,[5000]); assert.deepEqual(silent.changes,['closed modifiers','w2-re4']);
+  const failing=followRig({look:()=>{throw Error('Waiting for game picture');},health:{state:'running',age_s:40}});
+  await failing.follow({session_id:'w2-re4',title:'RE4'},'old');
+  assert.deepEqual(failing.changes,[],'a stale stream is not followed either');
 });
 
 test('replacement changes only the game stream and pad target, preserving PiP window state',async()=>{

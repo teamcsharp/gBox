@@ -336,6 +336,35 @@ test('F5 moves a PiP showing another game to MercMode\'s current game in place; 
   assert.equal((await auto.ctl.run({ automatic: true })).done, true); assert.equal(auto.pip, 'nuc-re4');
 });
 
+// operator 2026-10-27: F5 ended inert on "Error invoking remote method 'compact:view': Error: Game-window helper timed out":
+// the in-place move lost a race with the PiP's own follower, and closing and reopening the PiP needed the slow helper
+test('F5 moves the PiP again from where its own follower put it, and never closes it for that', async () => {
+  const r = f5rig({ pip: 'w1-dead' }); r.sessions = { 'w1-dead': { session_id: 'w1-dead', state: 'ended' } };
+  let restores = 0; r.io.pipRestore = async () => { restores++; r.pip = null; };
+  r.io.pipSwitch = async (from, sid) => {
+    r.switched.push([from, sid]);
+    if (r.switched.length === 1) { r.pip = 'w1-warm'; return false; }       // the continuity poll moved it meanwhile
+    r.pip = sid; return true;
+  };
+  const out = await r.ctl.run({ f5: true });
+  assert.equal(out.done, true); assert.equal(r.pip, 'w1-s1'); assert.equal(restores, 0);
+  assert.deepEqual(r.switched, [['w1-dead', 'w1-s1'], ['w1-warm', 'w1-s1']]);
+  assert.equal(detail(out, 'pip'), 'Switched the PiP to it');
+  // the follower got there first: nothing more to move
+  const first = f5rig({ pip: 'w1-dead' }); first.sessions = r.sessions;
+  first.io.pipSwitch = async (from, sid) => { first.switched.push([from, sid]); first.pip = sid; return false; };
+  assert.equal((await first.ctl.run({ f5: true })).done, true); assert.equal(first.pip, 'w1-s1');
+  assert.deepEqual(first.switched, [['w1-dead', 'w1-s1']]);
+  // a PiP that could not be moved or closed says so on its step, with what to do
+  const stuck = f5rig({ pip: 'w1-dead' }); stuck.sessions = r.sessions;
+  stuck.io.pipSwitch = async (from, sid) => { stuck.switched.push([from, sid]); return false; };
+  stuck.io.pipRestore = async () => { throw Error("Error invoking remote method 'compact:view': Error: Game-window helper timed out; the current dock was preserved"); };
+  const failed = await stuck.ctl.run({ f5: true });
+  assert.equal(stuck.switched.length, 3); assert.equal(failed.done, false);
+  assert.equal(failed.steps.find(s => s.id === 'pip').status, 'err');
+  assert.match(failed.error, /^The picture-in-picture could not move to it \(.*helper timed out.*\)\. Press F5 again\.$/);
+});
+
 test('F5 keeps the operator\'s own game on this PC: no other game, the main window untouched, its stream still repaired', async () => {
   const r = f5rig({ pip: 'jay-mine' }); r.own = { sid: 'jay-mine', native: false };
   r.healthBy = { 'jay-mine': { state: 'running', age_s: 30 } };
@@ -513,13 +542,18 @@ test('the update plan reloads once for anything new and says why it did not', ()
 test('F5 moves the PiP at once (no wait for a first frame); the continuity follower still waits for a real one', async () => {
   const src = html.slice(html.indexOf('// force (F5): the PiP moves at once'), html.indexOf('setInterval(() => compactContinuity.poll(), 2000);'));
   const follows = [], image = { style: { backgroundImage: 'url("old")' } };
+  let health = { state: 'running', age_s: 12 };
   const ctx = vm.createContext({ S: { apiUrl: 'http://spark:8765' }, COMPACT: { on: true, sid: 'w1-old' }, JSON, encodeURIComponent,
-    gbox: { token: async () => 't' }, $: () => image, sessionTitle: s => s.title, closePipMenu: () => {},
+    gbox: { token: async () => 't' }, $: () => image, sessionTitle: s => s.title, closePipMenu: () => {}, setTimeout, clearTimeout,
+    compactApi: async () => health,
     document: { querySelector: () => ({ dataset: { ready: 'false' }, executeJavaScript: async () => null }) },
     compactController: { follow: async (from, s) => { follows.push([from, s.sid]); } } });
   vm.runInContext(src, ctx);
-  await ctx.compactFollow({ session_id: 'w1-next', title: 'RE4' }, 'w1-old');             // the view is not ready: it waits
-  assert.deepEqual(follows, []);
+  await ctx.compactFollow({ session_id: 'w1-next', title: 'RE4' }, 'w1-old');   // no view to look, no live picture yet: it waits
+  assert.deepEqual(follows, []); assert.equal(image.style.backgroundImage, 'url("old")');
+  health = { state: 'running', age_s: 0.2 };                                     // the stream is live: the view is not needed
+  await ctx.compactFollow({ session_id: 'w1-next', title: 'RE4' }, 'w1-old');
+  assert.deepEqual(follows, [['w1-old', 'w1-next']]); follows.length = 0; image.style.backgroundImage = 'url("old")';
   await ctx.compactFollow({ session_id: 'w1-s1', title: 'RE5' }, 'w1-old', { force: true });
   assert.deepEqual(follows, [['w1-old', 'w1-s1']]); assert.equal(image.style.backgroundImage, '');
   assert.match(vm.runInContext('compactStreamUrl', ctx), /\/api\/sessions\/w1-s1\/mjpeg\?token=t$/);
