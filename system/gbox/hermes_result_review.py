@@ -461,8 +461,10 @@ def validate(value, row):
 
 def deliver():
     with closing(connect()) as db:
+        # A row without a request has nowhere to go; 20 such PR rows filled this window on 2026-10-27 and held every
+        # later run's guidance back.
         pending = [dict(r) for r in db.execute("SELECT * FROM reviews WHERE verdict IS NOT NULL "
-                                              "AND delivered=0 ORDER BY updated LIMIT 20")]
+                                              "AND delivered=0 AND request_id<>'' ORDER BY updated LIMIT 20")]
     for row in pending:
         if not row['request_id']:
             continue
@@ -515,13 +517,22 @@ def priority_requests(limit: int = 60) -> list[str]:
         return []
 
 
+PR_DRIFTED = "(verdict IS NULL AND json_extract(payload,'$.queuedSince') IS NOT NULL)"
+
+
 def next_review(db, kind, now, *, newest=False, first=(), ordered=()):
     """The next pending review: runs of the requests in `ordered` (the queue priority list) in that order, then
-    runs of the requests in `first` (the inbox lane), then the newest run first or the oldest row first as before."""
+    runs of the requests in `first` (the inbox lane), then the newest run first or the oldest row first as before.
+    PRs that main's moves re-keyed while still unreviewed (hermes_review_merge.carry keeps their queuedSince) come
+    first, the longest-waiting first, so the backlog drains instead of restarting behind every new main commit."""
     order = "json_extract(payload,'$.run.started_at') DESC,created,key" if newest else 'created,key'
     ordered = [x for x in ordered if isinstance(x, str) and x.isalnum()]
     first = sorted(x for x in first if isinstance(x, str) and x.isalnum())
     prefer, params = '', [kind, now]
+    if kind == 'pr':
+        prefer += (f"CASE WHEN {PR_DRIFTED} THEN 0 ELSE 1 END,"
+                   f"CASE WHEN {PR_DRIFTED} THEN json_extract(payload,'$.queuedSince') END,"
+                   f"CASE WHEN {PR_DRIFTED} THEN CAST(json_extract(payload,'$.number') AS INTEGER) END,")
     if ordered:
         prefer += 'CASE request_id ' + ' '.join('WHEN ? THEN %d' % i for i in range(len(ordered))) + ' ELSE 100000 END,'
         params += ordered
@@ -605,6 +616,7 @@ def tick():
                 merge.discover()
                 process_one('pr')
                 if state.get('auto_merge'):
+                    merge.discover()        # main often moves during that review: carry the verdict, then deliver
                     merge.deliver_one()
             for index in range(3):
                 if time.time() < config().get('next_at', 0) or not process_one('run', newest=index < 2):

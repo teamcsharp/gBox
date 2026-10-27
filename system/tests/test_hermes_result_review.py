@@ -360,6 +360,289 @@ class MergeReviewTests(ReviewFixture, unittest.TestCase):
         gh.assert_not_called()
 
 
+HEAD, OLD, NEW, NEWER = 'b' * 40, 'c' * 40, 'd' * 40, 'e' * 40
+DIFF = ('diff --git a/system/gbox/foo.py b/system/gbox/foo.py\nindex 1111111..2222222 100644\n'
+        '--- a/system/gbox/foo.py\n+++ b/system/gbox/foo.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n')
+
+
+class BaseDriftTests(ReviewFixture, unittest.TestCase):
+    """main moved, the PR head did not: a verdict is carried when main changed none of the PR's files, a carried
+    approval is integrated and tested again on the exact main before it merges, and the unreviewed backlog drains."""
+
+    def setUp(self):
+        super().setUp()
+        R.save_config({'enabled': True, 'review_prs': True, 'auto_merge': True})
+        job = patch.object(R.M, '_job', return_value={'enabled': True})
+        job.start()
+        self.addCleanup(job.stop)
+
+    def pr_key(self, number=7, head=HEAD, base=OLD):
+        return f'pr:{number}:{head}:{base}'
+
+    def evidence(self, base=OLD, **extra):
+        return {'complete': True, 'head': HEAD, 'base': base, 'changed': ['system/gbox/foo.py', 'system/tests/test_foo.py'],
+                'diff': DIFF, 'worktree': str(self.root / 'gbox-result-review-worktrees' / 'pr-7-abc'),
+                'integration': {'exit_code': 0, 'passed': 3, 'collected': 3, 'tests': ['tests/test_foo.py']}} | extra
+
+    def seed_reviewed(self, verdict='approve_merge', evidence=None):
+        key = self.pr_key()
+        R.enqueue(key, 'pr', '', {'number': 7, 'headRefOid': HEAD, 'headRefName': 'hermes/x', 'baseRefOid': OLD})
+        path = self.root / 'pr7.evidence.json'
+        path.write_text(json.dumps({'review_key': key, 'evidence': evidence or self.evidence()}))
+        with closing(R.connect()) as db, db:
+            db.execute("UPDATE reviews SET state='reviewed',verdict=?,attempts=1,delivered=1,evidence_file=?,"
+                       "response_file='r.json' WHERE key=?", (json.dumps(self.verdict(key, verdict)), str(path), key))
+        return key
+
+    def discover(self, base, files=frozenset(), heads=((7, HEAD),)):
+        listing = json.dumps([{'number': n, 'headRefOid': h, 'headRefName': f'hermes/{n}'} for n, h in heads])
+        drift = files if callable(files) else (lambda old: set(files))
+        with patch.object(G, 'gh', side_effect=[listing, base]), \
+                patch.object(G.MainDrift, 'files', side_effect=lambda old: drift(old)) as seen:
+            G.discover()
+        return [c.args[0] for c in seen.call_args_list]
+
+    def payload(self, key):
+        return json.loads(R.result(key)['payload'])
+
+    def pull(self, base=NEW, **extra):
+        return {'number': 7, 'headRefOid': HEAD, 'baseRefOid': base, 'state': 'OPEN', 'baseRefName': 'main',
+                'isCrossRepository': False, 'mergeable': 'MERGEABLE', 'mergeStateStatus': 'CLEAN', 'isDraft': False,
+                'reviewDecision': '', 'statusCheckRollup': []} | extra
+
+    def test_verdict_is_carried_when_main_changed_none_of_the_pr_files(self):
+        for verdict in ('approve_merge', 'retry'):
+            with self.subTest(verdict=verdict):
+                self.clear_rows()
+                old = self.seed_reviewed(verdict)
+                self.assertEqual(self.discover(NEW, {'system/gbox/other.py', 'system/tests/test_other.py'}), [OLD])
+                new = R.result(self.pr_key(base=NEW))
+                self.assertEqual((new['state'], json.loads(new['verdict'])['verdict'], new['delivered']),
+                                 ('reviewed', verdict, 1))
+                self.assertEqual(new['evidence_file'], R.result(old)['evidence_file'])
+                carried = self.payload(new['key'])
+                self.assertEqual((carried['baseRefOid'], carried['reviewedBaseRefOid']), (NEW, OLD))
+                self.assertEqual((carried['carry']['from'], carried['carry']['main_files']), (old, 2))
+                self.assertEqual(R.result(old)['state'], 'superseded')
+                self.assertIn('verdict carried', R.result(old)['error'])
+
+    def clear_rows(self):
+        with closing(R.connect()) as db, db:
+            db.execute('DELETE FROM reviews')
+
+    def test_overlap_head_change_unknown_history_or_missing_evidence_get_a_fresh_review(self):
+        renamed = self.evidence(diff=DIFF + 'diff --git a/system/gbox/old_name.py b/system/gbox/new_name.py\n'
+                                       'similarity index 90%\nrename from system/gbox/old_name.py\n'
+                                       'rename to system/gbox/new_name.py\n',
+                                changed=['system/gbox/foo.py', 'system/gbox/new_name.py'])
+        cases = {'main edited a PR file': (None, {'system/gbox/foo.py'}, ((7, HEAD),)),
+                 'main edited the old side of a PR rename': (renamed, {'system/gbox/old_name.py'}, ((7, HEAD),)),
+                 'main was rewritten': (None, lambda old: None, ((7, HEAD),)),
+                 'the head changed': (None, set(), ((7, 'f' * 40),)),
+                 'the evidence is truncated': (self.evidence(diff='x' * 150000), set(), ((7, HEAD),)),
+                 'the evidence is of another head': (self.evidence(head='a' * 40), set(), ((7, HEAD),))}
+        for name, (evidence, files, heads) in cases.items():
+            with self.subTest(name):
+                self.clear_rows()
+                old = self.seed_reviewed(evidence=evidence)
+                self.discover(NEW, files, heads)
+                new = R.result(f'pr:7:{heads[0][1]}:{NEW}')
+                self.assertEqual((new['state'], new['verdict'], new['attempts']), ('pending', None, 0))
+                self.assertNotIn('reviewedBaseRefOid', self.payload(new['key']))
+                self.assertNotIn('queuedSince', self.payload(new['key']))    # a reviewed PR is not drift backlog
+                self.assertEqual(R.result(old)['state'], 'superseded')
+
+    def test_unfetchable_main_keeps_the_review_for_the_next_tick(self):
+        old = self.seed_reviewed()
+
+        def offline(_old):
+            raise RuntimeError('git fetch failed (exit 128); no publication claimed')
+        self.discover(NEW, offline)
+        self.assertEqual(R.result(old)['state'], 'reviewed')
+        self.discover(NEW, set())
+        self.assertEqual(R.result(old)['state'], 'superseded')
+        self.assertEqual(R.result(self.pr_key(base=NEW))['state'], 'reviewed')
+
+    def test_a_second_carry_measures_main_from_the_original_review(self):
+        self.seed_reviewed()
+        self.discover(NEW, set())
+        self.assertEqual(self.discover(NEWER, {'system/gbox/other.py'}), [OLD])
+        carried = self.payload(self.pr_key(base=NEWER))
+        self.assertEqual((carried['baseRefOid'], carried['reviewedBaseRefOid']), (NEWER, OLD))
+        # Again, but main touched the PR's file between the original review and the newest base
+        self.clear_rows()
+        self.seed_reviewed()
+        self.discover(NEW, set())
+        self.discover(NEWER, lambda old: {'system/gbox/foo.py'} if old == OLD else set())
+        self.assertEqual(R.result(self.pr_key(base=NEWER))['state'], 'pending')
+
+    def carried(self):
+        self.seed_reviewed()
+        self.discover(NEW, {'system/gbox/other.py'})
+        return self.pr_key(base=NEW)
+
+    def test_carried_approval_merges_after_a_passing_merge_time_retest(self):
+        key = self.carried()
+        from gbox import hermes_merges
+        with patch.object(G, 'prepare', return_value=self.evidence(base=NEW)) as prepare, \
+                patch.object(G, 'discard') as discard, \
+                patch.object(G, 'pull', side_effect=[self.pull(), self.pull(), self.pull(), self.pull(state='MERGED')]), \
+                patch.object(G, 'gh', return_value='') as gh, \
+                patch.object(hermes_merges, 'reconcile'), patch.object(hermes_merges, 'reconcile_branches'):
+            self.assertEqual(G.deliver_one(), key)
+        self.assertEqual(prepare.call_args.args[0]['baseRefOid'], NEW)
+        discard.assert_called_once_with(self.evidence()['worktree'])
+        args = gh.call_args.args
+        self.assertEqual(args[0:2], ('pr', 'merge'))
+        self.assertEqual(args[-2:], ('--match-head-commit', HEAD))
+        self.assertEqual(R.result(key)['state'], 'merged')
+        receipt = self.payload(key)['retest']
+        self.assertEqual((receipt['ok'], receipt['base'], receipt['passed']), (True, NEW, 3))
+
+    def test_a_passing_retest_is_reused_while_github_catches_up(self):
+        key = self.carried()
+        from gbox import hermes_merges
+        with patch.object(G, 'prepare', return_value=self.evidence(base=NEW)) as prepare, patch.object(G, 'discard'), \
+                patch.object(G, 'pull', return_value=self.pull(mergeStateStatus='UNKNOWN')), \
+                patch.object(G, 'gh') as gh:
+            self.assertIsNone(G.deliver_one())
+        gh.assert_not_called()
+        self.assertEqual(R.result(key)['state'], 'reviewed')
+        with patch.object(G, 'prepare') as again, \
+                patch.object(G, 'pull', side_effect=[self.pull(), self.pull(), self.pull(), self.pull(state='MERGED')]), \
+                patch.object(G, 'gh', return_value=''), \
+                patch.object(hermes_merges, 'reconcile'), patch.object(hermes_merges, 'reconcile_branches'):
+            self.assertEqual(G.deliver_one(), key)
+        prepare.assert_called_once()
+        again.assert_not_called()
+
+    def test_failed_retest_sends_the_carried_approval_back_for_review_without_merging(self):
+        conflict = {'pull': self.pull(mergeable='CONFLICTING'), 'complete': False,
+                    'integration': {'blocked': 'Merge conflict; rebase preserving work, then test'}}
+        cases = {'tests fail': self.evidence(base=NEW, complete=True, integration={
+                     'blocked': 'Integration tests failed; inspect retained log', 'output': '1 failed'}),
+                 'conflict': conflict,
+                 'other files': self.evidence(base=NEW, changed=['system/gbox/foo.py']),
+                 'other diff': self.evidence(base=NEW, diff=DIFF.replace('x = 2', 'x = 3'))}
+        for name, fresh in cases.items():
+            with self.subTest(name):
+                self.clear_rows()
+                key = self.carried()
+                with patch.object(G, 'prepare', return_value=fresh), patch.object(G, 'discard'), \
+                        patch.object(G, 'pull', return_value=self.pull()), patch.object(G, 'gh') as gh:
+                    self.assertIsNone(G.deliver_one())
+                gh.assert_not_called()
+                row = R.result(key)
+                self.assertEqual((row['state'], row['verdict'], row['next_at']), ('pending', None, 0))
+                self.assertTrue(row['error'].startswith('Re-review: the approval carried from ' + OLD[:12]))
+                payload = self.payload(key)
+                self.assertNotIn('reviewedBaseRefOid', payload)     # its fresh review is of this base
+                self.assertFalse(payload['retest']['ok'])
+                with closing(R.connect()) as db:
+                    self.assertEqual(R.next_review(db, 'pr', time.time())['key'], key)
+
+    def test_retest_race_keeps_the_carried_verdict(self):
+        key = self.carried()
+        with patch.object(G, 'prepare', side_effect=RuntimeError('PR head/base/state changed; fetch a fresh review')), \
+                patch.object(G, 'pull', return_value=self.pull()), patch.object(G, 'gh') as gh:
+            self.assertIsNone(G.deliver_one())
+        gh.assert_not_called()
+        row = R.result(key)
+        self.assertEqual((row['state'], json.loads(row['verdict'])['verdict']), ('reviewed', 'approve_merge'))
+        self.assertIn('PR head/base/state changed', row['error'])
+
+    def test_main_moving_again_after_the_carry_never_merges_the_older_integration(self):
+        self.carried()
+        with patch.object(G, 'prepare') as prepare, patch.object(G, 'pull', return_value=self.pull(base=NEWER)), \
+                patch.object(G, 'gh') as gh:
+            self.assertIsNone(G.deliver_one())
+        prepare.assert_not_called()
+        gh.assert_not_called()
+
+    def test_unreviewed_prs_keep_their_place_and_drain_oldest_first(self):
+        for number, created in ((9, 1000.0), (5, 2000.0), (4, 2000.0)):
+            R.enqueue(self.pr_key(number), 'pr', '', {'number': number, 'headRefOid': HEAD, 'baseRefOid': OLD})
+            with closing(R.connect()) as db, db:
+                db.execute('UPDATE reviews SET created=? WHERE key=?', (created, self.pr_key(number)))
+        with closing(R.connect()) as db, db:   # a failing review keeps its backoff across the move
+            db.execute("UPDATE reviews SET state='retry',attempts=2,next_at=?,error='transport' WHERE key=?",
+                       (time.time() + 600, self.pr_key(4)))
+        # gh lists the newest PR first: before this change the new rows were reviewed newest first, behind every move
+        self.discover(NEW, set(), heads=((12, HEAD), (9, HEAD), (5, HEAD), (4, HEAD)))
+        self.assertEqual(self.payload(self.pr_key(9, base=NEW))['queuedSince'], 1000.0)
+        retry = R.result(self.pr_key(4, base=NEW))
+        self.assertEqual((retry['state'], retry['attempts'], retry['error']), ('retry', 2, 'transport'))
+        order = []
+        with closing(R.connect()) as db, db:
+            while (row := R.next_review(db, 'pr', time.time())):
+                order.append(json.loads(row['payload'])['number'])
+                db.execute("UPDATE reviews SET state='reviewed' WHERE key=?", (row['key'],))
+        self.assertEqual(order, [9, 5, 12])
+        with closing(R.connect()) as db:
+            self.assertEqual(json.loads(R.next_review(db, 'pr', time.time() + 700)['payload'])['number'], 4)
+
+    def test_a_local_merge_conflict_is_reviewed_as_a_failure(self):
+        def run(args, cwd, timeout=45):
+            if 'merge' in args:
+                raise RuntimeError('git -c failed (exit 1); no publication claimed')
+            return {'refs/gbox-review/pr-7': HEAD, 'origin/main': NEW}.get(args[-1], '')
+        with patch.object(G, 'pull', return_value=self.pull()), patch.object(G.D, '_run', side_effect=run), \
+                patch.object(G.D, 'repository', return_value=self.root / 'repo'):
+            fresh = G.prepare({'number': 7, 'headRefOid': HEAD, 'baseRefOid': NEW})
+        self.assertFalse(fresh['complete'])
+        self.assertIn('Merge conflict', fresh['integration']['blocked'])
+
+    def test_guidance_outbox_is_not_held_by_rows_without_a_request(self):
+        for n in range(25):
+            key = f'pr:{n}:{HEAD}:{OLD}'
+            R.enqueue(key, 'pr', '', {'number': n})
+            self.accept(key, self.verdict(key))
+        R.record_result(self.item, self.run)
+        self.accept()
+        posted = []
+        api = lambda path, body=None: posted.append(path) if body else {'messages': []}
+        with patch.object(R, '_api', side_effect=api), patch.object(R, 'reviewer', return_value={'label': 'Local'}):
+            R.deliver()
+        self.assertEqual(posted, ['/api/requests/' + self.item['request_id'] + '/messages'])
+        self.assertEqual(R.result(self.key)['delivered'], 1)
+
+
+class MainDriftGitTests(unittest.TestCase):
+    """The files main changed, from a real repository: both sides of a rename, and no answer across rewritten history."""
+
+    def git(self, cwd, *args):
+        import subprocess
+        return subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@t', *args], cwd=cwd, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def test_rename_lists_both_paths_and_rewritten_history_is_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.git(root, 'init', '-q', '--bare', '-b', 'main', 'origin.git')
+            self.git(root, 'clone', '-q', 'origin.git', 'work')
+            work = root / 'work'
+            self.git(work, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+            (work / 'a.py').write_text('a\n')
+            (work / 'b.py').write_text('b\n')
+            self.git(work, 'add', '.')
+            self.git(work, 'commit', '-q', '-m', 'one')
+            old = self.git(work, 'rev-parse', 'HEAD')
+            self.git(work, 'mv', 'a.py', 'renamed.py')
+            self.git(work, 'commit', '-q', '-m', 'two')
+            self.git(work, 'push', '-q', 'origin', 'main')
+            new = self.git(work, 'rev-parse', 'HEAD')
+            self.git(work, 'checkout', '-q', '--orphan', 'other')       # history main never had
+            self.git(work, 'commit', '-q', '-m', 'unrelated')
+            self.git(work, 'push', '-q', 'origin', 'other')
+            stranger = self.git(work, 'rev-parse', 'HEAD')
+            self.git(root, 'clone', '-q', 'origin.git', 'hermes')
+            with patch.dict(os.environ, GBOX_HERMES_REPO=str(root / 'hermes')):
+                drift = G.MainDrift(new)
+                self.assertEqual(drift.files(old), {'a.py', 'renamed.py'})
+                self.assertIsNone(drift.files(stranger))
+                self.assertIsNone(drift.files('not-a-sha'))
+
+
 if __name__ == '__main__':
     unittest.main()
 
@@ -422,7 +705,8 @@ class LocalReviewTests(ReviewFixture, unittest.TestCase):
                 patch.object(merge, 'deliver_one', side_effect=lambda: order.append('merge')), \
                 patch.object(R, 'process_one', side_effect=lambda kind='run', **_: order.append(kind) or kind):
             R.tick()
-        self.assertEqual(order, ['discover_prs', 'pr', 'merge', 'run', 'run', 'run'])
+        # PRs are discovered again before delivery: main often moves during the review, and the verdict is carried
+        self.assertEqual(order, ['discover_prs', 'pr', 'discover_prs', 'merge', 'run', 'run', 'run'])
 
     def test_local_answer_without_a_json_object_is_retried_not_accepted(self):
         R.record_result(self.item, self.run)
