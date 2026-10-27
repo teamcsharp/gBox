@@ -122,3 +122,25 @@ def test_a_prepare_receipt_naming_the_switch_editions_is_accepted_and_proves_re6
     re6=next(r for r in M.inventory(store,w,cfg) if r['title']=='re6')
     assert re6['playable'] and re6['game_id']==re_switch.RE6_GAME_ID
     assert re6['rom_access']['source']=='worker_local_path_probe' and re6['rom_access']['verified'] is True
+
+
+def test_the_rotation_plays_the_title_picked_longest_ago_so_a_new_edition_is_not_starved():
+    # 2026-10-27 on lilspark: re6 Switch became playable, but the random pick among the titles other than the one playing
+    # chose re5 again ("where is RE6?"); the least recently picked title now goes first, ties at random
+    store,w,*_=rig()
+    store.put('session','w1-prior-re6',{'session_id':'w1-prior-re6','game_id':re_switch.RE6_GAME_ID,'state':'ended'})
+    native=store.catalog_get
+    store.catalog_get=lambda gid:({'game_id':gid,'title':'Resident Evil 6','platform':'switch'}
+                                  if gid==re_switch.RE6_GAME_ID else native(gid))
+    cfg=M.configure(store,w['name'],{'titles':['re4','re5','re6'],'preferred_editions':RE6_PREFERENCE})
+    assert {r['title'] for r in M.inventory(store,w,cfg) if r['playable']}=={'re4','re5','re6'}
+    rng=random.Random(7);seen=[]
+    for _ in range(9):
+        row=M.choose(store,w,rng,cfg)
+        seen.append(row['title'])
+        store.put(M.HISTORY,w['name'],{'last_game_id':row['game_id']})   # that title plays: never "next" again at once
+    assert all(set(seen[i:i+3])=={'re4','re5','re6'} for i in range(0,9,3))   # each title once a cycle
+    assert all(a!=b for a,b in zip(seen,seen[1:]))
+    store.put(M.PICKS,w['name'],{'re4':5.0,'re5':6.0})                # re6 never picked: it goes next
+    store.put(M.HISTORY,w['name'],{'last_game_id':M.TITLES['re4']['game_ids'][0]})
+    assert M.choose(store,w,rng,cfg)['title']=='re6'
