@@ -194,13 +194,17 @@ class BehaviorMetrics:
                     self.bonus_passed.append({"id": bid, "at": [round(x), round(z)], "closest_mm": round(closest)})
 
     # --- the fire rate ---
-    def fire_tick(self, weapon_class: str, dt: float, held_on_target: bool, shots: int) -> None:
-        """A tick with the trigger held on target (the time counts) and the shots the game fired in it, per class."""
+    def fire_tick(self, weapon_class: str, dt: float, held_on_target: bool, shots: int, mode: str = "hold") -> None:
+        """A tick with the trigger working on target (the time counts: "held_s") and the shots the game fired in it, per
+        class and per trigger mode ("hold": A held, "tap": rapid presses)."""
         if not held_on_target:
             return
-        row = self.fire.setdefault(weapon_class or "other", {"held_s": 0.0, "shots": 0})
+        row = self.fire.setdefault(weapon_class or "other", {"held_s": 0.0, "shots": 0, "modes": {}})
         row["held_s"] += max(0.0, dt)
         row["shots"] += max(0, int(shots))
+        m = row.setdefault("modes", {}).setdefault(mode or "hold", [0.0, 0])
+        m[0] += max(0.0, dt)
+        m[1] += max(0, int(shots))
 
     # --- the shots' lines and outcomes, idling among foes ---
     def shot_line(self, dot_on: str) -> None:
@@ -224,7 +228,10 @@ class BehaviorMetrics:
     def summary(self) -> dict:
         deg = math.degrees
         fire = {cls: {"held_s": round(r["held_s"], 2), "shots": r["shots"],
-                      "shots_per_s": round(r["shots"] / r["held_s"], 2) if r["held_s"] >= 0.5 else None}
+                      "shots_per_s": round(r["shots"] / r["held_s"], 2) if r["held_s"] >= 0.5 else None,
+                      "by_mode": {m: {"s": round(v[0], 2), "shots": v[1],
+                                      "shots_per_s": round(v[1] / v[0], 2) if v[0] >= 0.5 else None}
+                                  for m, v in (r.get("modes") or {}).items()}}
                 for cls, r in self.fire.items()}
         portals = [{"id": pid, **row} for pid, row in self.portals.items()]
         return {

@@ -159,6 +159,11 @@ PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick d
 # shot at the gun's own, now ~1-frame, interval - instead of ~6 presses a second. Held for RAPID_PROOF_S with no shot and
 # no Ganado's health falling: this gun wants presses after all, and the round taps (stats trigger_mode says so).
 RAPID_FIRE, RAPID_PROOF_S = True, 0.8
+TRIGGER_LEARN_S = 2.0         # a weapon class's held (or pressed) trigger on target this long measures its shots a second
+TRIGGER_MIN_RATE = 3.0        # held fire under this many shots a second is not auto-repeating: rapid presses instead
+TRIGGER_DECAY = 0.8           # each round end keeps this share of a class's measurements (newer rounds count more; a
+                              # class pressed for long enough gets its held trigger tried again)
+TRIGGER_FILE = "trigger_classes.json"
 URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing this soon this close: any shot into his
                                                  # body leaves (BODY_LO..BODY_HI, aimed at the chest), not only the head
                                                  # band - 27 % of today's hits landed while he was still aiming at the head
@@ -801,6 +806,80 @@ class StageKnowledge:
             pass
 
 
+class TriggerBook:
+    """Per weapon class, which trigger fires it fastest (operator 2026-10-26: "I just like them blasting like mad ...
+    across games"; "verify live that holding fire actually auto-repeats at the 80x rate for every gun class"): the
+    shots a second measured with A held on target and with rapid presses on target, kept across runs in
+    <learn_dir>/trigger_classes.json. Held fire is tried first (it is the visible blasting when the gun auto-repeats);
+    once TRIGGER_LEARN_S of holding fired under TRIGGER_MIN_RATE the class is pressed instead, and once both have been
+    measured the faster one is kept. Each round end keeps TRIGGER_DECAY of the measurements, so a class pressed for
+    long enough has its held trigger tried again (the game, a mod or the shot reading may have changed)."""
+
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        self.d: dict = {"v": 1, "classes": {}}
+        self.dirty = False
+        if path is not None and path.is_file():
+            try:
+                d = json.loads(path.read_text())
+                if isinstance(d, dict) and d.get("v") == 1 and isinstance(d.get("classes"), dict):
+                    self.d = d
+            except (OSError, ValueError, TypeError):
+                pass
+
+    def add(self, cls: str, mode: str, dt: float, shots: int) -> None:
+        """dt seconds of the trigger working on target in mode ("hold" / "tap") and the shots the game fired in them."""
+        if not cls or cls == "none" or dt <= 0:
+            return
+        row = self.d["classes"].setdefault(cls, {}).setdefault(mode, [0.0, 0])
+        row[0] = round(row[0] + dt, 3)
+        row[1] += max(0, int(shots))
+        self.dirty = True
+
+    def rate(self, cls: str, mode: str) -> float | None:
+        """Shots a second in mode, or None before TRIGGER_LEARN_S of it."""
+        row = self.d["classes"].get(cls, {}).get(mode)
+        return row[1] / row[0] if row and row[0] >= TRIGGER_LEARN_S else None
+
+    def mode(self, cls: str) -> tuple:
+        """("hold" | "tap", why) for this class."""
+        h, t = self.rate(cls, "hold"), self.rate(cls, "tap")
+        if h is None:
+            return "hold", "trying the held trigger"
+        if t is None:
+            return (("hold", f"held {h:.1f} shots/s") if h >= TRIGGER_MIN_RATE else
+                    ("tap", f"held only {h:.1f} shots/s: rapid presses"))
+        if t > h * 1.1:
+            return "tap", f"presses {t:.1f} > held {h:.1f} shots/s"
+        return "hold", f"held {h:.1f} >= presses {t:.1f} shots/s"
+
+    def round_end(self) -> None:
+        for modes in self.d["classes"].values():
+            for row in modes.values():
+                row[0], row[1] = round(row[0] * TRIGGER_DECAY, 3), round(row[1] * TRIGGER_DECAY)
+        self.dirty = True
+
+    def summary(self) -> dict:
+        out = {}
+        for cls in sorted(self.d["classes"]):
+            h, t = self.rate(cls, "hold"), self.rate(cls, "tap")
+            out[cls] = {"mode": self.mode(cls)[0], "hold_shots_s": None if h is None else round(h, 1),
+                        "tap_shots_s": None if t is None else round(t, 1)}
+        return out
+
+    def save(self) -> None:
+        if self.path is None or not self.dirty:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.d))
+            tmp.replace(self.path)
+            self.dirty = False
+        except OSError:
+            pass
+
+
 class Bot:
     """One decision per tick; the caller sends what it returns ({'hold': keys} / {'tap': key}) and sleeps. Pad only:
     the stick turns Leon, R aims, A fires / vaults, B runs."""
@@ -883,6 +962,8 @@ class Bot:
         self.hp_best = 0                              # his best health this round (the chicken rule)
         self._items_at, self._items_seen = -math.inf, {}   # the room's items read at, {addr: (item id, pos, enabled)}
         self._bonus_detour_at = -math.inf
+        self.triggers = TriggerBook(learn_dir / TRIGGER_FILE if learn_dir else None)   # held or pressed, per class
+        self._fire_mode = "tap"                       # how the last pull worked the trigger
         from .mercs.bot_look import BotLook
         self.look = BotLook(epoch=clock)              # the last shots and decisions (stats["look"]: "look at the bot")
         self._look_pending: list = []                 # look entries of the shots Shots has not scored yet (same order)
@@ -1533,8 +1614,10 @@ class Bot:
                     return set()
                 ra.update(since=now, shots=self.shots.stats["shots"], hits=self.shots.stats["hits"])
             tr["down"], tr["at"] = True, now
+            self._fire_mode = "hold"
             self.stats["trigger_mode"] = "hold: the round gun at x80"
             return {"a"}
+        self._fire_mode = "tap"
         if tr["down"]:
             if now - tr["at"] < PRESS_HOLD:
                 return {"a"}
@@ -1551,8 +1634,14 @@ class Bot:
         """Hold A on target: the round's gun is verified in his hands at the x80 class interval (round_loadout) and
         holding has not been shown to fire nothing this round (RAPID_PROOF_S)."""
         lo = self.stats.get("round_loadout")
-        return (RAPID_FIRE and self.rapid.get("mode") == "hold" and isinstance(lo, dict)
-                and lo.get("verified") is True and lo.get("round") == self.stats.get("rounds"))
+        if not (RAPID_FIRE and self.rapid.get("mode") == "hold" and isinstance(lo, dict)
+                and lo.get("verified") is True and lo.get("round") == self.stats.get("rounds")):
+            return False
+        from .mercs.behavior_metrics import re4_weapon_class
+        mode, why = self.triggers.mode(re4_weapon_class(lo.get("equipped_id")))
+        if mode != "hold":
+            self.stats["trigger_mode"] = f"tap: {why}"
+        return mode == "hold"
 
     def _shot_seen(self, p, now):
         """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20), or - A held at
@@ -1878,8 +1967,11 @@ class Bot:
         for _ in range(max(0, min(fired, 60))):
             self.metrics.shot(now, on, small)
         dt = now - getattr(self, "_fire_at", now)
-        self.metrics.fire_tick(re4_weapon_class(s.get("weapon")), dt if 0.0 < dt < 0.3 else 0.0,
-                               getattr(self, "_fire_held", False), max(0, fired))
+        dt = dt if 0.0 < dt < 0.3 else 0.0
+        cls, mode = re4_weapon_class(s.get("weapon")), getattr(self, "_fire_mode", "tap")
+        self.metrics.fire_tick(cls, dt, on, max(0, fired), mode)          # on target in the fire branch: the trigger works
+        if on:
+            self.triggers.add(cls, mode, dt, max(0, fired))
         self._fire_at = now
         self._on_target = self._fire_held = self._target_small = False
 
@@ -2518,12 +2610,15 @@ class Bot:
                            round_loadout=lo if isinstance(lo, dict) else None,
                            trigger_mode=self.stats.get("trigger_mode"),
                            impact_lessons=self.impacts.summary(trace.room), behavior=behavior,
+                           trigger_classes=self.triggers.summary(),
                            stage_knowledge=self.knowledge.summary() if self.knowledge is not None else None)
         lm = self.learned
         summary = trace.finish(lm.walked if lm else (), lm.blocked if lm else ())
         self.impacts.save()
         if self.knowledge is not None:                # the stage's lessons survive a crash / hot reload mid-run
             self.knowledge.save()
+        self.triggers.round_end()                     # newer rounds count more (TRIGGER_DECAY)
+        self.triggers.save()
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
             self.stats["last_round_verdict"] = summary.get("verdict")
@@ -2894,6 +2989,11 @@ class LoadoutCheck:
         classes = RM.weapon_classes(g)
         want, held = lo.get("gun_id"), s.get("weapon")
         lo.update(equipped_id=held, equipped=weapon_name(held), equipped_ok=want is not None and held == want)
+        if want is None and held in classes:
+            # no draw recorded for this round (an instant round from a save state keeps the state's gun; a draw that
+            # picked nothing): the gun in his hands is the round's gun - verified on its x80 interval alone (live
+            # 2026-10-26 19:42-19:49: 'drawn None' left every instant round unverified, so the trigger was never held)
+            lo.update(equipped_ok=True, drawn_none=True)
         if not lo["equipped_ok"] and want in classes and lo.get("fixes", 0) < LOADOUT_FIXES:
             lo["fixes"] = lo.get("fixes", 0) + 1
             res = RM.equip_item(g, want)                      # gives it when the case lacks it, then equips it now
@@ -2917,8 +3017,9 @@ class LoadoutCheck:
         elif gun is None:
             lo["fire_applied"] = None
         lo["verified"] = bool(lo.get("equipped_ok")) and lo.get("fire_applied") is True
-        lo["reason"] = ("verified: %s in his hands at x%s (%s frames)" % (lo.get("equipped"), fire_x,
-                                                                         lo.get("fire_interval_frames"))
+        lo["reason"] = ("verified: %s in his hands at x%s (%s frames)%s" % (
+                            lo.get("equipped"), fire_x, lo.get("fire_interval_frames"),
+                            "; no draw this round: the gun he holds" if lo.get("drawn_none") else "")
                         if lo["verified"] else
                         "no gun in his hands" if held in (None, 0, NO_GUN) else
                         f"in his hands {lo.get('equipped')}, drawn {lo.get('gun')}" if not lo.get("equipped_ok") else

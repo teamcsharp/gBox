@@ -457,3 +457,65 @@ def test_the_audit_flags_a_round_of_wall_shots():
     audit.start(stats)
     trace.auditor = lambda summary, tr: audit.finish(summary, tr, stats)
     assert "shooting walls: 6 of 20 shots had the aim line on a wall" in trace.finish()["audit"]["problems"]
+
+
+# --- the trigger per weapon class (held at x80, or rapid presses where holding does not repeat) ----------------------
+def test_a_round_with_no_draw_verifies_the_gun_in_his_hands(monkeypatch):
+    """Live 2026-10-26 19:42-19:49: instant rounds (a save state's round) recorded 'drawn None', so the loadout was
+    never verified and the trigger never held. The gun he holds is the round's gun: verified on its x80 interval."""
+    from tests.test_re4_diagnostics_fixes import FakeG, fake_rm
+    g, calls = FakeG(0x37, [1.0] * 5), []
+    fake_rm(monkeypatch, g, calls)
+    stats = {"rounds": 3, "round_loadout": {"round": 3, "gun": None, "gun_id": None, "fire_x": 80, "verified": False,
+                                            "checks": 0, "fixes": 0}}
+    lc = B.LoadoutCheck(object(), stats)
+    lc.tick({"weapon": 0x37}, 0.0)
+    lo = lc.tick({"weapon": 0x37}, B.LOADOUT_CHECK_S + 0.1)
+    assert lo["verified"] and lo["equipped_ok"] and lo["drawn_none"] and calls == []
+    assert "no draw this round" in lo["reason"]
+    bad = {"rounds": 3, "round_loadout": {"round": 3, "gun": None, "gun_id": None, "fire_x": 80, "verified": False,
+                                          "checks": 0, "fixes": 0}}
+    lc2 = B.LoadoutCheck(object(), bad)
+    lc2.tick({"weapon": B.NO_GUN}, 0.0)
+    assert not lc2.tick({"weapon": B.NO_GUN}, B.LOADOUT_CHECK_S + 0.1)["verified"]   # no gun at all: not verified
+
+
+def test_the_trigger_book_holds_first_then_presses_a_class_that_does_not_repeat(tmp_path):
+    book = B.TriggerBook(tmp_path / "t.json")
+    assert book.mode("rifle")[0] == "hold"                                # nothing measured: hold first
+    book.add("rifle", "hold", 2.5, 1)                                     # 2.5 s held on target: one shot
+    mode, why = book.mode("rifle")
+    assert mode == "tap" and "held only 0.4 shots/s" in why
+    book.add("rifle", "tap", 2.0, 14)                                     # presses: 7 a second
+    assert book.mode("rifle") == ("tap", "presses 7.0 > held 0.4 shots/s")
+    book.add("machine gun", "hold", 3.0, 45)                              # the TMP repeats: 15 a second held
+    assert book.mode("machine gun") == ("hold", "held 15.0 shots/s")
+    book.save()
+    again = B.TriggerBook(tmp_path / "t.json")
+    assert again.summary() == {"machine gun": {"mode": "hold", "hold_shots_s": 15.0, "tap_shots_s": None},
+                               "rifle": {"mode": "tap", "hold_shots_s": 0.4, "tap_shots_s": 7.0}}
+    for _ in range(3):                                                    # rounds without the rifle: its holds fade
+        again.round_end()
+    assert again.rate("rifle", "hold") is None and again.mode("rifle")[0] == "hold"   # ... and holding is tried again
+
+
+def test_the_held_trigger_follows_the_class_book_and_feeds_it(tmp_path):
+    now = [0.0]
+    m = world([((0, 0, 1500), True)])
+    facing(m, 0.0)
+    m.put(B.ITEM_MGR + 0x10, ">H", 0x2F)                                  # the semi-auto rifle
+    bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
+    bot.stats.update(rounds=1, round_loadout={"round": 1, "verified": True, "equipped_id": 0x2F})
+    assert bot._rapid_ok()
+    bot.triggers.add("rifle", "hold", 2.5, 1)                             # holding it barely fired
+    assert not bot._rapid_ok() and bot.stats["trigger_mode"].startswith("tap: held only 0.4")
+    acts = run(bot, m, now, 0.0, 10)                                      # on him: presses, not a held A
+    downs = [("a" in a.get("hold", set())) for a in acts]
+    assert any(downs) and not all(downs[-4:])
+    bot._on_target, bot._fire_mode = True, "tap"
+    bot.shots.fired(now[0])
+    bot._fire_at = now[0] - 0.1
+    bot._shot_metrics(B.snapshot(m), now[0])
+    row = bot.triggers.d["classes"]["rifle"]["tap"]
+    assert row[1] >= 1 and row[0] > 0
+    assert bot.metrics.summary()["fire_rate"]["rifle"]["by_mode"]["tap"]["shots"] >= 1
