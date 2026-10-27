@@ -854,6 +854,20 @@ def _launch(ctx, gid: str, mod: str, node: str) -> dict:
     return {"job": j.get("id"), "state": j.get("state"), "node": node}
 
 
+def _switch_target(ctx, inp) -> dict | None:
+    """cast_swap's target game when it is a Switch title (its cast goes into a LayeredFS build, gbox.switch_mods),
+    else None; a target that does not resolve here is left to cast_swap to report."""
+    tg = inp.target_game or inp.game_id or inp.game
+    if not tg and not inp.session_id:
+        return None
+    hexid = bool(re.fullmatch(r"[0-9a-f]{16}", tg or ""))
+    try:
+        game = _game(ctx, inp.model_copy(update={"game_id": tg if hexid else "", "game": "" if hexid else tg}))
+    except Exception:                                          # noqa: BLE001
+        return None
+    return game if isinstance(game, dict) and game.get("platform") == "switch" else None
+
+
 def _request(ctx, meta: dict, game: dict, need: dict) -> dict:
     title = f"Character swap: {meta['name']} into {game['title']}"
     for r in _api(ctx, "GET", "/api/requests", params={"status": "open,in_progress"}):
@@ -2658,6 +2672,10 @@ def characters_tool(inp: CharIn, ctx):
     if inp.op == "collect":
         return {"result": collect(ctx, inp)}
     if inp.op == "cast_swap":                                 # the whole cast of one game as another's (gbox.cast_swap)
+        target = _switch_target(ctx, inp)
+        if target is not None:                                # Switch: the cast goes into the active LayeredFS build
+            from . import switch_mods
+            return {"result": switch_mods.character_use(ctx, _api, None, target, inp, op="cast_swap")}
         from . import cast_swap
         return {"result": cast_swap.run(ctx, inp)}
     if inp.op in ("extract", "add", "blender"):
@@ -2707,6 +2725,9 @@ def characters_tool(inp: CharIn, ctx):
         raise ValueError(f"no library character matches {inp.character!r}; have: {', '.join(m['name'] for m in chars)}")
     if inp.op == "live_use":
         game = _game(ctx, inp)
+        if game.get("platform") == "switch":                  # into the active LayeredFS build + an in-place restart
+            from . import switch_mods
+            return {"result": switch_mods.character_use(ctx, _api, meta, game, inp, op="live_use")}
         from . import mgs2_swap, mgs_vr_swap, twin_snakes_swap
         if game["game_id"] in mgs_vr_swap.GAME_IDS:          # VR Missions: rebuild + session_swap at the same moment
             return {"result": mgs_vr_swap.live_use(ctx, meta, game, inp)}
@@ -2759,6 +2780,9 @@ def characters_tool(inp: CharIn, ctx):
     out = {"character": meta["name"], "slug": meta["slug"], "game": game["title"], "game_id": gid}
     if meta["source"].get("game_id") == gid and inp.slot == "player" and meta.get("native_player"):
         return {"result": out | {"status": "native", "message": f"{meta['name']} is this game's own player character."}}
+    if game.get("platform") == "switch":                      # LayeredFS: the active build is edited in place, never a
+        from . import switch_mods                             # copy of the NSP (gbox.switch_mods, docs/switch-mods.md)
+        return {"result": out | switch_mods.character_use(ctx, _api, meta, game, inp, op="use")}
     from . import doa2_swap
     if gid in doa2_swap.GAME_IDS:
         return {"result": out | doa2_swap.use(ctx, meta, game, inp)}

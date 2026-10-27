@@ -3079,12 +3079,16 @@ DEBUG_ADAPTERS = {"gamecube": DolphinAdapter, "wii": DolphinAdapter, "gba": Mgba
 
 
 class YuzuAdapter(Adapter):
-    """Launch the operator's portable Yuzu and Switch ROM directly on the Windows worker."""
+    """Launch the operator's portable Yuzu and Switch ROM directly on the Windows worker. Mods are LayeredFS overlays
+    (gbox.switch_mods): the build to start (overlay_build) is linked into user/load/<title id>/ and enabled in
+    [DisabledAddOns] before Yuzu starts, when that Yuzu folder is local to this PC (never a shared network install)."""
     name = "yuzu"
     supported = {"launch_game", "stop_game", "query_runtime", "get_frame", "pause", "resume"}
+    overlay_build: str | None = None                   # set by tools._launch_game; None = the original game
 
     def __init__(self, config: Config):
         self.config = config
+        self.overlay_state = None
         self.proc = None
         self.bridge_proc = None
         self.paused_tids = []
@@ -3106,6 +3110,15 @@ class YuzuAdapter(Adapter):
         exe = self._exe()
         if HOST_OS != "windows" or not exe.is_file():
             raise ToolUnavailable(f"portable Yuzu is unavailable on this Windows worker: {exe}")
+        from . import switch_mods                      # Yuzu reads its mods and [DisabledAddOns] when it starts
+        try:
+            self.overlay_state = switch_mods.prepare_launch(
+                self.config, switch_mods.yuzu(exe, self.config), getattr(self, "game_id", None), rom,
+                self.overlay_build, serial=getattr(self, "serial", None))
+        except Exception as e:                         # noqa: BLE001 - only a launch that asked for a build fails
+            if self.overlay_build:
+                raise
+            self.overlay_state = {"selection": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
         if self.debug:
             from .yuzu_runtime import private_debug_config, set_debug_config
             with socket.socket() as port_probe:
@@ -3172,7 +3185,7 @@ class YuzuAdapter(Adapter):
                 "worker_name": __import__("platform").node(), "emulator": "yuzu", "renderer": self.video_driver,
                 "debug_port": self.debug_port, "debugger": self.dbg is not None,
                 "log": str(self.log), "validation": "window_open; gameplay not yet verified",
-                "examine": _examine_ok(self.proc, 10.0)}
+                "examine": _examine_ok(self.proc, 10.0), "overlay": self.overlay_state}
 
     def stop_game(self) -> dict:
         if self.dbg:
@@ -4389,6 +4402,37 @@ EDEN_TITLE_SETTINGS = {
 }
 EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)
+KEEP_OVERLAY = object()                                  # restart_title: keep the LayeredFS build the title runs with
+
+
+class _EdenRestarting:
+    """Stands in for Eden's process while a title restarts in place: the session pump (tools._pump) keeps seeing a
+    running game between the old Eden's exit and the new one's start instead of reporting the session ended."""
+    returncode = None
+
+    def __init__(self, pid: int | None):
+        self.pid = pid
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        return None
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    """A Linux process that still runs (a zombie waiting to be reaped does not)."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] not in ("Z", "X")
+    except (OSError, IndexError):
+        return False
 
 
 def ini_get(text: str, section: str, key: str) -> str | None:
@@ -4428,7 +4472,11 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     (src/core/arm/nce/arm_nce.cpp). Eden has no save states. Per title, EDEN_TITLE_SETTINGS go into Eden's per-game
     file, and an update or DLC kept beside the game's NSP is applied through Eden's external content folders (no NAND
     install). Run live on the Spark 2026-10-26 with Eden v0.2.1: RE5 to a No Mercy round, RE6 (v131072) to its title
-    screen (docs/research/switch-emulator-spark.md)."""
+    screen (docs/research/switch-emulator-spark.md).
+    Mods are LayeredFS overlays (gbox.switch_mods, docs/switch-mods.md): before every start the build this session
+    runs (overlay_build, set by tools._launch_game; None = the original game) is linked into Eden's load/<title id>/
+    and enabled, the title's other gBox builds disabled in [DisabledAddOns]. restart_title starts the same title
+    again in this session (an in-game swap or Reset): Eden layers mods only at boot."""
     name = "eden"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
                  "get_frame", "send_input", "stream_session"}
@@ -4438,17 +4486,20 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     hotkeys: dict[str, str] = {}
     MAPS, MEM = "/proc/{pid}/maps", "/proc/{pid}/mem"
     BOOT_S = 180.0                                        # first boots build shader caches before the guest shows
+    RESTART_GRACE_S = 6.0                                 # restart_title: SIGTERM, then SIGKILL what is left
+    overlay_build: str | None = None                      # the LayeredFS build folder this session starts with
 
     def __init__(self, config: Config, platform: str = "switch"):
         super().__init__(config, platform)
         self.env = provision.switch_linux_env(config)
-        self.home = provision.switch_linux_dir(config)   # keys/, nand/, sdmc/, log/eden_log.txt
+        self.home = provision.switch_linux_dir(config)   # keys/, nand/, sdmc/, load/, log/eden_log.txt
         self.debug, self.paused, self.rom = False, False, None
         self.title_settings: dict = {}                    # the per-title overrides this launch applied
         self.content_dirs: list[str] = []                 # Eden's external content folders for this launch
         self.nce = eden_memory.nce_capable()              # this host can run NCE (ARM64, 4 KiB pages)
         self.address_mode = eden_memory.mode_for(self.nce)
         self._mem, self._mem_checked_at = None, -1e9
+        self.overlay_state, self.restarts, self.restart_error, self._stopped = None, 0, None, False
 
     @property
     def use_nce(self) -> bool:
@@ -4458,6 +4509,21 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     def _ensure(self):
         self.write_settings()                             # before the first start: no callouts, Vulkan, the stub
         provision.ensure_switch_linux(self.config, getattr(self, "progress", None))
+        self.overlay_state = self.select_overlay()        # Eden reads its mods and [DisabledAddOns] when it starts
+
+    def select_overlay(self) -> dict:
+        """The LayeredFS selection for this start, written while Eden is down (gbox.switch_mods.prepare_launch): the
+        session's build enabled (its pending edits landed first), the title's other gBox builds disabled; the
+        original game disables them all. Operator mod folders keep their state. A failure blocks only a launch that
+        asked for a build."""
+        from . import switch_mods
+        try:
+            return switch_mods.prepare_launch(self.config, switch_mods.eden(self.config), getattr(self, "game_id", None),
+                                              self.rom, self.overlay_build, serial=getattr(self, "serial", None))
+        except Exception as e:                            # noqa: BLE001
+            if self.overlay_build:
+                raise
+            return {"selection": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
 
     def write_settings(self) -> Path:
         """qt-config.ini: EDEN_SETTINGS, the CPU backend (use_nce), the GDB stub for a debug launch and, for the game
@@ -4543,8 +4609,8 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         ok, why = switch_nsp.launchable(rom)
         if not ok:
             raise ToolUnavailable(why)
-        self._mem = None
-        self.rom = rom                                    # write_settings (via _ensure) reads the game's overrides
+        self._mem, self._stopped = None, False
+        self.rom = rom                                    # _ensure: the game's overrides and its LayeredFS selection
         try:
             d = super().launch_game(rom)
             if self.dbg:
@@ -4555,11 +4621,118 @@ class SwitchLinuxAdapter(StandaloneAdapter):
                         "cpu_backend": "nce" if self.use_nce else "dynarmic",
                         "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": switch_nsp.title_id(rom),
                         "title_settings": self.title_settings, "content_dirs": self.content_dirs,
-                        "eden_log": str(self.eden_log()),
+                        "eden_log": str(self.eden_log()), "overlay": self.overlay_state,
                         "validation": "guest memory mapped; gameplay not yet verified"}
         except BaseException:
             self.stop_game()                              # only this session's process and display
             raise
+
+    # --- an in-game swap: the same title again in this session (LayeredFS is applied at boot) ---
+    def _check_overlay(self, overlay) -> None:
+        """Refuse a build that cannot be selected before Eden is stopped (the game keeps running)."""
+        if not overlay:
+            return
+        from . import switch_mods
+        gid = getattr(self, "game_id", None)
+        if not gid:
+            raise ValueError("this session has no catalog game id, so a build cannot be selected")
+        meta = switch_mods.read_meta(switch_mods.build_dir(self.config, gid, overlay))
+        if not switch_mods.is_overlay(meta):
+            raise ValueError(f"{overlay} is not a Switch LayeredFS build of this game")
+        tid = switch_mods.title_id_for(self.rom, getattr(self, "serial", None))
+        if meta["layeredfs"]["title_id"] != tid:
+            raise ValueError(f"{overlay} was made for title {meta['layeredfs']['title_id']}; this session runs {tid}")
+
+    def _signal_pids(self, pids, sig) -> None:
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+
+    def _stop_eden(self, old) -> None:
+        """Eden's process tree ends; the Xvfb display, the stream and the session stay. SIGCONT first when paused,
+        SIGTERM, SIGKILL for whatever is left after RESTART_GRACE_S."""
+        import signal
+        pids = _proc_tree(old.pid) if old is not None and old.poll() is None else []
+        self.proc = _EdenRestarting(getattr(old, "pid", None))
+        if self.paused:
+            self._signal_pids(pids, getattr(signal, "SIGCONT", 18))
+            self.paused = False
+        self._signal_pids(pids, getattr(signal, "SIGTERM", 15))
+        deadline = time.monotonic() + self.RESTART_GRACE_S
+        while time.monotonic() < deadline:
+            if old is not None:
+                old.poll()                                # reaps AppRun (a zombie would look alive)
+            if not any(_pid_alive(p) for p in pids):
+                break
+            time.sleep(0.1)
+        self._signal_pids([p for p in pids if _pid_alive(p)], getattr(signal, "SIGKILL", 9))
+        try:
+            if old is not None:
+                old.wait(5)
+        except Exception:                                 # noqa: BLE001 - already reaped / not a child
+            pass
+
+    def _spawn(self, argv: list[str]) -> None:
+        """Eden on this session's display with the launch's environment; its output appended to the session log."""
+        env = {**os.environ, **provision.linux_audio_env(), "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb",
+               **self.env}
+        out = open(self.log_path, "ab") if self.log_path else subprocess.DEVNULL
+        self.proc = subprocess.Popen(argv, env=env, stdout=out, stderr=subprocess.STDOUT)
+
+    def _settle(self) -> None:
+        try:
+            self._wait_guest_ready()
+            self._park_pointer()
+        except Exception as e:                            # noqa: BLE001 - the pump ends the session if Eden is gone
+            self.restart_error = str(e)[:300]
+
+    def restart_title(self, overlay=KEEP_OVERLAY, *, wait: bool = True, progress=None) -> dict:
+        """The booted title again in this session: Eden stops (its own process tree; the display, the stream and the
+        session id stay), the LayeredFS selection and the build's pending edits are written while it is down, and Eden
+        starts the same file on the same display. Eden packs a title's layered RomFS once per boot and reads
+        [DisabledAddOns] once per start (patch_manager.cpp ApplyLayeredFS, main_window.cpp BootGame), so this is the
+        fastest way a RomFS change reaches the game. No save states: the title boots fresh; its own saves (NAND) stay.
+        overlay: a build folder, None = the original game, KEEP_OVERLAY = the current one."""
+        if self.debug:
+            raise Unsupported("a debug session relaunches instead: Eden's GDB stub attaches only at boot")
+        if not self.rom or not self.display or not self.proc:
+            raise Unsupported("no Switch title is running in this session")
+        target = self.overlay_build if overlay is KEEP_OVERLAY else (overlay or None)
+        self._check_overlay(target)
+        before, old = getattr(self, "progress", None), self.proc
+        self.progress = progress
+        try:
+            self.overlay_build, self._stopped, self.restart_error = target, False, None
+            self._p(10, "Stopping Eden (the session, its display and stream stay)")
+            self._stop_eden(old)
+            if self._stopped:
+                raise RuntimeError("the session was stopped while its title restarted")
+            self._mem = None
+            self._p(40, "Writing the LayeredFS selection while Eden is down")
+            self._ensure()
+            self._spawn(self._argv(self.rom))
+            self.restarts += 1
+            out = {"restarted": True, "same_session": True, "pid": self.proc.pid,
+                   "previous_pid": getattr(old, "pid", None), "overlay": self.overlay_state, "restarts": self.restarts}
+            if not wait:
+                threading.Thread(target=self._settle, daemon=True, name="eden-restart").start()
+                return out | {"ready": "booting"}
+            arena = self._wait_guest_ready()
+            self._park_pointer()
+            return out | {"ready": "guest_memory", "guest_arena": [hex(arena["lo"]), hex(arena["hi"])]}
+        except BaseException:
+            if isinstance(self.proc, _EdenRestarting):
+                self.proc = old                           # no new Eden: the pump sees the old one gone, the session ends
+            raise
+        finally:
+            self.progress = before
+
+    def reset(self) -> dict:
+        """Session > Reset: the title restarts in place (same session, same LayeredFS build). Answers once the new
+        Eden runs; the game boots in the stream."""
+        return self.restart_title(wait=False) | {"reset": True, "via": "Eden restarted in this session"}
 
     def eden_log(self) -> Path:
         return self.home.joinpath(*EDEN_LOG)
@@ -4597,6 +4770,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             pass
 
     def stop_game(self) -> dict:
+        self._stopped = True                              # a restart under way does not start Eden again
         if self.paused:                                   # a SIGSTOPped process would not act on SIGTERM
             self._signal("SIGCONT")
             self.paused = False
@@ -4608,7 +4782,9 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     def query_runtime(self) -> dict:
         d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": "eden", "paused": self.paused,
              "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
-             "debugger": self.dbg is not None}
+             "debugger": self.dbg is not None, "overlay": self.overlay_build,
+             "restarting": isinstance(self.proc, _EdenRestarting), "restarts": self.restarts,
+             **({"restart_error": self.restart_error} if self.restart_error else {})}
         try:
             arena = self._guest()[1]
             d["guest_arena"] = [hex(arena["lo"]), hex(arena["hi"])]
