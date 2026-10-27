@@ -161,9 +161,15 @@ PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick d
 RAPID_FIRE, RAPID_PROOF_S = True, 0.8
 TRIGGER_LEARN_S = 2.0         # a weapon class's held (or pressed) trigger on target this long measures its shots a second
 TRIGGER_MIN_RATE = 3.0        # held fire under this many shots a second is not auto-repeating: rapid presses instead
-TRIGGER_DECAY = 0.8           # each round end keeps this share of a class's measurements (newer rounds count more; a
-                              # class pressed for long enough gets its held trigger tried again)
+TRIGGER_DECAY = 0.8           # each round a class fired in keeps this share of its measurements (newer rounds count more;
+                              # a class pressed for long enough gets its held trigger tried again)
 TRIGGER_FILE = "trigger_classes.json"
+TRIGGER_PRIOR = {             # live 2026-10-26, MercMode on the Spark (its RAM read at 120 Hz, read-only, and the round
+                              # maps): held A does not repeat these; pressed on target they fire about every other press
+    "shotgun": {"hold": [4.0, 0], "tap": [4.0, 26]},     # held 0.7 s: nothing; presses 12.2/s -> 6.7 shots/s
+    "rifle": {"hold": [4.0, 1], "tap": [4.0, 24]},       # held on target: 2 shots in 31 s; presses 11.1/s -> 5.9 shots/s
+    "handcannon": {"hold": [4.0, 1]},                    # "A held for 0.8 s fired nothing" (2 rounds, 18:55 and 19:37)
+}
 URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing this soon this close: any shot into his
                                                  # body leaves (BODY_LO..BODY_HI, aimed at the chest), not only the head
                                                  # band - 27 % of today's hits landed while he was still aiming at the head
@@ -282,6 +288,7 @@ DOOR_W, DOOR_SCAN, DOOR_STEP = 2600.0, 1500.0, 300.0
 # slews with the stick pulsed in proportion inside AIM_PULSE and stops inside AIM_DEADBAND x the body's tolerance (no
 # hunting across him); it keeps tracking while the trigger is down
 LOCK_BREAK_S, AIM_DEADBAND, AIM_PULSE = 1.0, 0.6, 0.2
+AIM_LAG_S = 0.10                                 # the aim keeps turning this long after its key is let go (the pad's lag)
 # Time bonuses (operator: "walk past time bonuses"): one within BONUS_DETOUR_R whose path is at most BONUS_DETOUR_X the
 # straight line is taken now, before the tour's next one
 BONUS_DETOUR_R, BONUS_DETOUR_X, BONUS_DETOUR_EVERY_S = 3000.0, 1.6, 1.0
@@ -826,6 +833,8 @@ class TriggerBook:
                     self.d = d
             except (OSError, ValueError, TypeError):
                 pass
+        for cls, modes in TRIGGER_PRIOR.items():      # what was measured live, for a class this book has not learned
+            self.d["classes"].setdefault(cls, {m: list(v) for m, v in modes.items()})
 
     def add(self, cls: str, mode: str, dt: float, shots: int) -> None:
         """dt seconds of the trigger working on target in mode ("hold" / "tap") and the shots the game fired in them."""
@@ -853,11 +862,12 @@ class TriggerBook:
             return "tap", f"presses {t:.1f} > held {h:.1f} shots/s"
         return "hold", f"held {h:.1f} >= presses {t:.1f} shots/s"
 
-    def round_end(self) -> None:
-        for modes in self.d["classes"].values():
-            for row in modes.values():
+    def round_end(self, used=()) -> None:
+        """A round ended: the classes it fired keep TRIGGER_DECAY of their measurements (the others stay as they were)."""
+        for cls in used:
+            for row in self.d["classes"].get(cls, {}).values():
                 row[0], row[1] = round(row[0] * TRIGGER_DECAY, 3), round(row[1] * TRIGGER_DECAY)
-        self.dirty = True
+            self.dirty = True
 
     def summary(self) -> dict:
         out = {}
@@ -964,6 +974,7 @@ class Bot:
         self._bonus_detour_at = -math.inf
         self.triggers = TriggerBook(learn_dir / TRIGGER_FILE if learn_dir else None)   # held or pressed, per class
         self._fire_mode = "tap"                       # how the last pull worked the trigger
+        self._classes_used: set = set()               # weapon classes fired on target this round (TriggerBook.round_end)
         from .mercs.bot_look import BotLook
         self.look = BotLook(epoch=clock)              # the last shots and decisions (stats["look"]: "look at the bot")
         self._look_pending: list = []                 # look entries of the shots Shots has not scored yet (same order)
@@ -1353,7 +1364,10 @@ class Bot:
         deg = math.degrees(err)
         small = 0 < (tgt.get("hp_max") or 0) <= SMALL_HP                   # a chicken: the aim must be on the chicken
         tol = max(FIRE_TOL * 0.5, math.atan2(CHICKEN_HALF_W, max(dist, 1.0))) if small else fire_tol(dist)
-        aim_keys = self._aim_turn(err, tol)                               # slew with a deadband, in proportion
+        last = getattr(self, "_aim_obs", None)
+        rate = (wrap(p.get("aim_rot", p["rot"]) - last[1]) / (now - last[0])
+                if last is not None and 0.02 < now - last[0] < 0.3 else 0.0)
+        aim_keys = self._aim_turn(err, tol, rate)                         # slew with a deadband, in proportion
         self._aim_metric(p, err, aim_keys, tgt, now)
         self._target_small = small
         self._look_ctx = {"tgt": tgt, "kind": self._foe_kind(tgt)}         # what the next shots were fired at (the look)
@@ -1563,16 +1577,19 @@ class Bot:
             self.stats["look"] = self.look.snapshot()
             self._look_pub, self._look_ver = now, self.look.version
 
-    def _aim_turn(self, err: float, tol: float) -> set:
+    def _aim_turn(self, err: float, tol: float, rate: float = 0.0) -> set:
         """R held; the aim slews onto the target (operator 2026-10-26: "raise his gun, aim it at the target, and shoot the
         target" - not hunting across him): nothing inside AIM_DEADBAND x the shot's tolerance, the stick pulsed in
-        proportion inside AIM_PULSE (|err| / AIM_PULSE of the ticks), held beyond."""
+        proportion inside AIM_PULSE (|err| / AIM_PULSE of the ticks), held beyond. rate: the aim's own turn (rad/s, the
+        sign of err): where the turn under way carries it within AIM_LAG_S is what is steered (no overshoot past him)."""
         keys = {"r"}
-        if abs(err) <= max(FIRE_TOL * 0.5, AIM_DEADBAND * tol):
-            self._aim_acc, self._aim_last = 1.0, 0                        # a fresh error gets the stick at once
-            return keys
-        if abs(err) < AIM_PULSE:
-            self._aim_acc = getattr(self, "_aim_acc", 1.0) + abs(err) / AIM_PULSE
+        band = max(FIRE_TOL * 0.5, AIM_DEADBAND * tol)
+        pred = err - rate * AIM_LAG_S
+        if abs(err) <= band or abs(pred) <= band or pred * err < 0:
+            self._aim_acc, self._aim_last = 1.0, 0                        # there (or about to be): coast; a fresh error
+            return keys                                                   # gets the stick at once
+        if abs(pred) < AIM_PULSE:
+            self._aim_acc = getattr(self, "_aim_acc", 1.0) + abs(pred) / AIM_PULSE
             if self._aim_acc < 1.0:
                 self._aim_last = 0
                 return keys
@@ -1972,6 +1989,7 @@ class Bot:
         self.metrics.fire_tick(cls, dt, on, max(0, fired), mode)          # on target in the fire branch: the trigger works
         if on:
             self.triggers.add(cls, mode, dt, max(0, fired))
+            self._classes_used.add(cls)
         self._fire_at = now
         self._on_target = self._fire_held = self._target_small = False
 
@@ -2617,7 +2635,8 @@ class Bot:
         self.impacts.save()
         if self.knowledge is not None:                # the stage's lessons survive a crash / hot reload mid-run
             self.knowledge.save()
-        self.triggers.round_end()                     # newer rounds count more (TRIGGER_DECAY)
+        self.triggers.round_end(self._classes_used)   # newer rounds count more (TRIGGER_DECAY)
+        self._classes_used = set()
         self.triggers.save()
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]

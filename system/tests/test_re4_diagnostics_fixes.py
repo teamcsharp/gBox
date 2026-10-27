@@ -165,6 +165,7 @@ def test_the_rounds_loadout_is_read_back_and_repaired_in_the_round(monkeypatch):
     assert lo["fire_want_frames"] == 1.0 and "verified" in lo["reason"] and lo["fixes"] == 2
     bot = B.Bot(world([]), nav=False)
     bot.stats = stats
+    bot.triggers.d["classes"].pop("handcannon", None)                     # (the live prior presses it: per class)
     assert bot._rapid_ok()                                                # the trigger is held from now on
     lc.tick({"weapon": 0x37}, B.LOADOUT_CHECK_S + 10)
     assert len(calls) == 2                                                # verified: read no more

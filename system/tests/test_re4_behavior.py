@@ -147,6 +147,17 @@ def test_the_aim_slews_with_a_deadband_and_in_proportion():
     assert all("right" in bot._aim_turn(-0.5, tol) for _ in range(3))      # a big one: held
 
 
+def test_the_aim_coasts_when_its_own_turn_will_carry_it_onto_him():
+    """The pad's lag keeps the aim turning AIM_LAG_S after the key: where the turn under way carries it is steered, so
+    the stick is let go before the aim passes him (closed-loop sim: aim reversals 0.41 -> 0.21 a second)."""
+    bot = bare_bot()
+    tol = math.radians(5)                                                 # deadband 0.6 x 5 deg = 0.052 rad
+    assert bot._aim_turn(0.15, tol, rate=0.0) == {"r", "left"}           # still: the stick
+    assert bot._aim_turn(0.12, tol, rate=0.9) == {"r"}                   # 0.12 - 0.9 x 0.1 = 0.03: it gets there - coast
+    assert bot._aim_turn(0.08, tol, rate=0.9) == {"r"}                   # it would pass him: coast, never the other way
+    assert bot._aim_turn(0.30, tol, rate=0.9) == {"r", "left"}           # still far: keep turning
+
+
 def test_the_gun_keeps_tracking_its_target_while_it_fires():
     now = [0.0]
     m = world([((0, 0, 1500), True)])
@@ -480,23 +491,37 @@ def test_a_round_with_no_draw_verifies_the_gun_in_his_hands(monkeypatch):
     assert not lc2.tick({"weapon": B.NO_GUN}, B.LOADOUT_CHECK_S + 0.1)["verified"]   # no gun at all: not verified
 
 
-def test_the_trigger_book_holds_first_then_presses_a_class_that_does_not_repeat(tmp_path):
+def test_the_trigger_book_holds_first_then_presses_a_class_that_does_not_repeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(B, "TRIGGER_PRIOR", {})
     book = B.TriggerBook(tmp_path / "t.json")
-    assert book.mode("rifle")[0] == "hold"                                # nothing measured: hold first
-    book.add("rifle", "hold", 2.5, 1)                                     # 2.5 s held on target: one shot
-    mode, why = book.mode("rifle")
+    assert book.mode("magnum")[0] == "hold"                               # nothing measured: hold first
+    book.add("magnum", "hold", 2.5, 1)                                    # 2.5 s held on target: one shot
+    mode, why = book.mode("magnum")
     assert mode == "tap" and "held only 0.4 shots/s" in why
-    book.add("rifle", "tap", 2.0, 14)                                     # presses: 7 a second
-    assert book.mode("rifle") == ("tap", "presses 7.0 > held 0.4 shots/s")
+    book.add("magnum", "tap", 2.0, 14)                                    # presses: 7 a second
+    assert book.mode("magnum") == ("tap", "presses 7.0 > held 0.4 shots/s")
     book.add("machine gun", "hold", 3.0, 45)                              # the TMP repeats: 15 a second held
     assert book.mode("machine gun") == ("hold", "held 15.0 shots/s")
     book.save()
     again = B.TriggerBook(tmp_path / "t.json")
     assert again.summary() == {"machine gun": {"mode": "hold", "hold_shots_s": 15.0, "tap_shots_s": None},
-                               "rifle": {"mode": "tap", "hold_shots_s": 0.4, "tap_shots_s": 7.0}}
-    for _ in range(3):                                                    # rounds without the rifle: its holds fade
-        again.round_end()
-    assert again.rate("rifle", "hold") is None and again.mode("rifle")[0] == "hold"   # ... and holding is tried again
+                               "magnum": {"mode": "tap", "hold_shots_s": 0.4, "tap_shots_s": 7.0}}
+    again.round_end({"machine gun"})                                      # a round without the magnum: it keeps its data
+    assert again.rate("magnum", "hold") is not None
+    for _ in range(2):                                                    # rounds that pressed the magnum: its holds fade
+        again.round_end({"magnum"})
+    assert again.rate("magnum", "hold") is None and again.mode("magnum")[0] == "hold"   # ... and holding is tried again
+
+
+def test_the_trigger_book_starts_from_what_was_measured_live():
+    """Live 2026-10-26 (the MercMode session's RAM read at 120 Hz and the round maps): held A did not repeat the
+    shotgun, the semi-auto rifle or the Hand Cannon; pressed on target they fired 6-7 shots a second."""
+    book = B.TriggerBook(None)
+    assert book.mode("shotgun")[0] == "tap" and book.mode("rifle")[0] == "tap" and book.mode("handcannon")[0] == "tap"
+    assert book.mode("machine gun")[0] == "hold" and book.mode("handgun")[0] == "hold"   # not measured: hold first
+    for _ in range(4):                                                    # four rounds pressing the shotgun
+        book.round_end({"shotgun"})
+    assert book.mode("shotgun")[0] == "hold"                              # ... then holding it is tried again
 
 
 def test_the_held_trigger_follows_the_class_book_and_feeds_it(tmp_path):
@@ -505,6 +530,7 @@ def test_the_held_trigger_follows_the_class_book_and_feeds_it(tmp_path):
     facing(m, 0.0)
     m.put(B.ITEM_MGR + 0x10, ">H", 0x2F)                                  # the semi-auto rifle
     bot = B.Bot(m, clock=lambda: now[0], nav=False, learn_dir=tmp_path)
+    bot.triggers.d["classes"].pop("rifle")                                # (not the live prior: learned here)
     bot.stats.update(rounds=1, round_loadout={"round": 1, "verified": True, "equipped_id": 0x2F})
     assert bot._rapid_ok()
     bot.triggers.add("rifle", "hold", 2.5, 1)                             # holding it barely fired
