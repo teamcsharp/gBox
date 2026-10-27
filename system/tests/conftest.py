@@ -48,9 +48,18 @@ def _private_enemy_knowledge(tmp_path_factory):
     except ImportError:
         yield
         return
-    enemy_db.configure(tmp_path_factory.mktemp("enemy_knowledge"))
+
+    def point(path):
+        # Not enemy_db.configure: its flush starts the writer thread, and a test may have replaced threading.Thread
+        # (test_mercs_team_integration's ImmediateThread takes no name): the queued facts of a test are dropped.
+        enemy_db.reset()
+        s = enemy_db._state()
+        with s["lock"]:
+            s["root"] = path
+            enemy_db._forget(s)
+    point(tmp_path_factory.mktemp("enemy_knowledge"))
     yield
-    enemy_db.configure(tmp_path_factory.mktemp("enemy_knowledge_after"))
+    point(tmp_path_factory.mktemp("enemy_knowledge_after"))
 
 
 @pytest.fixture(autouse=True)

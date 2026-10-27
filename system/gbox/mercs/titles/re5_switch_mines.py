@@ -81,6 +81,7 @@ class Mines:
     def __init__(self, stats: dict, every_s: float = EVERY_S):
         self.stats = stats
         self.every_s = every_s
+        self.enabled = True                            # the `mines` op can switch new placements off (configure)
         self.state, self.t = "idle", 0.0
         self.last_at, self.last_pos = None, None       # the last placement (confirmed, or its motion seen)
         self.round_t0 = None
@@ -96,6 +97,16 @@ class Mines:
         self._tracked_at = None
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
+
+    def configure(self, settings: dict) -> None:
+        """The operator's `mines` op (re5_switch_mods.mines, through the driver's snapshot): on / off and the cadence."""
+        self.enabled = bool(settings.get("enabled", True))
+        try:
+            self.every_s = max(2.0, float(settings.get("interval_s") or self.every_s))
+        except (TypeError, ValueError):
+            pass
+        self.stats["mine_interval_s"] = self.every_s
+        self.stats["mines_enabled"] = self.enabled
 
     def new_round(self, now: float) -> None:
         self.state, self.t, self.round_t0 = "idle", now, now
@@ -144,7 +155,7 @@ class Mines:
 
     def due(self, p: dict, snap: dict, live: list, now: float) -> str | None:
         """Why a cycle may start now (None: not now)."""
-        if self.stack(snap.get("inventory")) is None:
+        if not self.enabled or self.stack(snap.get("inventory")) is None:
             return None
         start = self.last_at if self.last_at is not None else self.round_t0
         if start is None:

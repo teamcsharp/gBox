@@ -1155,6 +1155,8 @@ class Bot:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
+        if self.mines is not None and snap.get("mine_settings"):
+            self.mines.configure(snap["mine_settings"])          # the operator's `mines` op (re5_switch_mods.mines)
         act = self._heal(p, snap, live, flat, now)
         if act is not None:
             self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
@@ -1559,6 +1561,8 @@ class RE5Switch(Driver):
             return
         from . import re5_switch_mods
         res = re5_switch_mods.maintain(ad, snap, enabled=playing)
+        if snap is not None:
+            snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
         if self.stats is not None:
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
