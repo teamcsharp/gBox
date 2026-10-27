@@ -109,6 +109,53 @@ def stage_target() -> int:
     return int(SELECTION.get("stage", STAGE_TARGET))
 
 
+# Split screen (docs/research/switch-coop-bot.md, static from this main): sPlayer holds four players at +0x30 + 8 * index
+# (count +0x50); the add-player routine (main+0x1EC6F4) stores each one's index byte at +0x3F2C, and the player's init
+# (main+0x7974C4) its own uLaserSight at +0x3728 with the owner's index in the laser's +0x374. uIdStartUp29's confirm
+# (main+0x59E2FC) writes the mode list's choice to cGameSys +0x898 (SPLIT-SCREEN 2; NO MERCY is 0 plus the flag +0xA76).
+# A snapshot is player 0's, read exactly as before, unless the memory names a player (mercs_player_index) or split screen
+# (mercs_coop): gbox.mercs.titles.switch_team.View, one per player. The menus walk takes SPLIT-SCREEN for a session whose
+# memory asks for split screen (mercs_split_screen, set by switch_team.Session on its own session's memory only).
+P_INDEX, S_PLAYER_COUNT, MAX_PLAYERS = 0x3F2C, 0x50, 4
+P_LASER, LASER_OWNER = 0x3728, 0x374
+GS_PLAYERS, PLAYERS_SPLIT, MODE_SPLIT_SCREEN = 0x898, 2, 2
+
+
+def mode_target(m=None) -> int:
+    """The mode list's entry the menus walk takes: SPLIT-SCREEN for a split-screen session, NO MERCY otherwise."""
+    return MODE_SPLIT_SCREEN if getattr(m, "mercs_split_screen", False) is True else MODE_NO_MERCY
+
+
+def player_index(m) -> int | None:
+    """The player a snapshot of m is for (0 = Player 1, the solo default); None for a value that names no slot."""
+    index = getattr(m, "mercs_player_index", 0)
+    return index if type(index) is int and 0 <= index < MAX_PLAYERS else None
+
+
+def player_pointer(m, sp: int, index: int) -> int:
+    """Player `index` from sPlayer's slots, only when its own index byte agrees (never a neighbouring slot's)."""
+    try:
+        p = u64(m, sp + P_FIRST + 8 * index)
+        return p if ptr_ok(p) and m.rd(p + P_INDEX, 1)[0] == index else 0
+    except (ValueError, OSError, struct.error):
+        return 0
+
+
+def own_laser(m, p: int, index: int) -> dict | None:
+    """Player p's own laser sight (its +0x3728, owned when the laser's +0x374 holds p's index): the same reading as
+    laser(); None without one (the bot aims by heading then, never by the other player's laser)."""
+    try:
+        u = u64(m, p + P_LASER)
+        if not ptr_ok(u) or struct.unpack("<I", m.rd(u + LASER_OWNER, 4))[0] != index:
+            return None
+        at = struct.unpack("<3f", m.rd(u + LASER_DOT, 12))
+        frm = struct.unpack("<3f", m.rd(u + LASER_FROM, 12))
+    except (ValueError, OSError, struct.error):
+        return None
+    up = all(math.isfinite(v) for v in at + frm) and any(frm) and math.dist(at, frm) >= 1.0
+    return {"from": frm, "at": at, "up": bool(up)}
+
+
 def player_target() -> int:
     return int(SELECTION.get("character", PLAYER_TARGET))
 
@@ -727,7 +774,13 @@ def snapshot(m) -> dict:
         return snap
     snap["module_base"] = base
     sp = u64(m, base + S_PLAYER)
-    p = u64(m, sp + P_FIRST) if ptr_ok(sp) else 0
+    index = player_index(m)
+    coop = index != 0 or bool(getattr(m, "mercs_coop", False))    # split screen: this player's own pointers
+    if not coop:
+        p = u64(m, sp + P_FIRST) if ptr_ok(sp) else 0
+    else:
+        p = player_pointer(m, sp, index) if ptr_ok(sp) and index is not None else 0
+        snap["player_index"] = index
     if ptr_ok(p):
         try:
             pos = struct.unpack("<3f", m.rd(p + P_POS, 12))
@@ -738,7 +791,7 @@ def snapshot(m) -> dict:
         except (ValueError, OSError):
             snap["player"] = None
         if snap["player"]:
-            snap["laser"] = laser(m, base)
+            snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 snap["ground_mines"] = ground_mines(m, base)
@@ -772,6 +825,8 @@ def snapshot(m) -> dict:
                     timer_start=at(GS_START, "<f"), kills=at(GS_KILLS, "<i"), combo=at(GS_COMBO, "<i"),
                     combo_timer=round(at(GS_COMBO_T, "<f"), 2), max_combo=at(GS_MAX_COMBO, "<i"),
                     score=at(GS_SCORE, "<i"))
+        if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
+            snap["scoring_players"] = 2                     # a team round: the score is both players'
     return snap
 
 
@@ -865,7 +920,7 @@ def screen(m, merc=None) -> dict:
         elif "uIdStartUp29" in ui:
             u = ui["uIdStartUp29"]
             if _i32(m, u + MENU_SUB) == 1:
-                where, cursor, target = "mercs_mode", _i32(m, u + MODE_CURSOR), MODE_NO_MERCY
+                where, cursor, target = "mercs_mode", _i32(m, u + MODE_CURSOR), mode_target(m)
             else:
                 where = "mercs_title"                       # START is the first entry and is where it opens
         elif "uIdStartUp01" in ui:

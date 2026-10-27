@@ -433,6 +433,73 @@ def equipped_id(m, p: int) -> int:
     return inventory_state(m, p)[1]
 
 
+# Split screen (docs/research/switch-coop-bot.md, static from this main): sPlayer holds eight players at +0x30 + 8 * index
+# (count +0x70); the add-player routine (main+0x3E6E24) stores each one's index byte at +0x5A2C. main+0xB2E180 makes the
+# player's own uCameraCtrl (owner at the camera's +0xB0) and keeps it at +0x3A28; main+0xBCC014 its own uLaserSight
+# (owner's index at the laser's +0x590) at +0x54E8. THE MERCENARIES NO MERCY lists SPLIT at uIdStartUp30's index 3, and
+# SPLIT goes on only with two controllers (main+0xAB2AE8). A snapshot is player 0's, read exactly as before, unless the
+# memory names a player (mercs_player_index) or split screen (mercs_coop): gbox.mercs.titles.switch_team.View. The menus
+# walk takes SPLIT for a session whose memory asks for split screen (mercs_split_screen: switch_team.Session).
+P_INDEX, S_PLAYER_COUNT, MAX_PLAYERS = 0x5A2C, 0x70, 8
+P_CAMERA, CAM_OWNER = 0x3A28, 0xB0
+P_LASER, LASER_OWNER = 0x54E8, 0x590
+MERCS_SPLIT = 3
+
+
+def mercs_target(m=None) -> int:
+    """uIdStartUp30's entry the menus walk takes: SPLIT for a split-screen session, SOLO otherwise."""
+    return MERCS_SPLIT if getattr(m, "mercs_split_screen", False) is True else MERCS_SOLO
+
+
+def player_index(m) -> int | None:
+    """The player a snapshot of m is for (0 = Player 1, the solo default); None for a value that names no slot."""
+    index = getattr(m, "mercs_player_index", 0)
+    return index if type(index) is int and 0 <= index < MAX_PLAYERS else None
+
+
+def player_pointer(m, sp: int, index: int) -> int:
+    """Player `index` from sPlayer's slots, only when its own index byte agrees (never a neighbouring slot's)."""
+    try:
+        p = u64(m, sp + P_FIRST + 8 * index)
+        return p if ptr_ok(p) and m.rd(p + P_INDEX, 1)[0] == index else 0
+    except (ValueError, OSError, struct.error, OverflowError):
+        return 0
+
+
+def own_camera(m, p: int) -> dict | None:
+    """Player p's own camera (its +0x3A28, owned when the camera's +0xB0 points back at p): the reading camera() makes."""
+    try:
+        u = u64(m, p + P_CAMERA)
+        if not ptr_ok(u) or u64(m, u + CAM_OWNER) != p:
+            return None
+        c = struct.unpack("<3f", m.rd(u + CAM_POS, 12))
+        t = struct.unpack("<3f", m.rd(u + CAM_TARGET, 12))
+    except (ValueError, OSError, struct.error, OverflowError):
+        return None
+    if not all(math.isfinite(v) for v in c + t) or math.dist(c, t) < 1.0:
+        return None
+    flat = max(math.hypot(t[0] - c[0], t[2] - c[2]), 1e-3)
+    return {"pos": c, "target": t, "yaw": heading(t[0] - c[0], t[2] - c[2]),
+            "pitch": math.atan2(t[1] - c[1], flat), "unit": u}
+
+
+def own_laser(m, p: int, index: int) -> dict | None:
+    """Player p's own laser sight (its +0x54E8, owned when the laser's +0x590 holds p's index): the reading laser()
+    makes; None without one."""
+    try:
+        u = u64(m, p + P_LASER)
+        if not ptr_ok(u) or struct.unpack("<I", m.rd(u + LASER_OWNER, 4))[0] != index:
+            return None
+        at = struct.unpack("<3f", m.rd(u + LASER_DOT, 12))
+        frm = struct.unpack("<3f", m.rd(u + LASER_FROM, 12))
+        up = struct.unpack("<f", m.rd(u + LASER_UP, 4))[0]
+    except (ValueError, OSError, struct.error, OverflowError):
+        return None
+    if not all(math.isfinite(v) for v in at + frm):
+        return None
+    return {"at": at, "from": frm, "up": bool(math.isfinite(up) and up >= LASER_UP_MIN), "alpha": round(up, 3)}
+
+
 def game_man(m, base: int) -> int:
     gm = u64(m, base + S_GAMEMAN)
     return gm if ptr_ok(gm) else 0
@@ -447,7 +514,13 @@ def snapshot(m) -> dict:
         return snap
     snap["module_base"] = base
     sp = u64(m, base + S_PLAYER)
-    p = u64(m, sp + P_FIRST) if ptr_ok(sp) else 0
+    index = player_index(m)
+    coop = index != 0 or bool(getattr(m, "mercs_coop", False))    # split screen: this player's own pointers
+    if not coop:
+        p = u64(m, sp + P_FIRST) if ptr_ok(sp) else 0
+    else:
+        p = player_pointer(m, sp, index) if ptr_ok(sp) and index is not None else 0
+        snap["player_index"] = index
     if ptr_ok(p):
         try:
             pos = struct.unpack("<3f", m.rd(p + P_POS, 12))
@@ -468,8 +541,8 @@ def snapshot(m) -> dict:
         except (ValueError, OSError):
             snap["player"] = None
         if snap["player"]:
-            snap["camera"] = camera(m, base, snap["player"]["pos"])
-            snap["laser"] = laser(m, base, snap["player"]["pos"])
+            snap["camera"] = own_camera(m, p) if coop else camera(m, base, snap["player"]["pos"])
+            snap["laser"] = own_laser(m, p, index) if coop else laser(m, base, snap["player"]["pos"])
             if (snap["player"].get("bomb") or {}).get("out"):
                 snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
@@ -569,7 +642,7 @@ def screen(m, merc=None, now: float | None = None) -> dict:
                 out["stage"] = STAGES[target]
         elif "uIdStartUp30" in ui:
             if snap.get("mercenaries_mode") == "no_mercy":
-                where, cursor, target = "mercs_mode", _i32(m, ui["uIdStartUp30"] + MENU_CURSOR), MERCS_SOLO
+                where, cursor, target = "mercs_mode", _i32(m, ui["uIdStartUp30"] + MENU_CURSOR), mercs_target(m)
             else:
                 where = "mercs_wrong_mode"                  # THE MERCENARIES (not No Mercy): back to EXTRA CONTENT
         elif "uIdStartUp02" in ui:
