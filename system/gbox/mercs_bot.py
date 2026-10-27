@@ -627,6 +627,9 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             if coop is not None and scr.get("where") != "playing":
                 # between rounds in split screen: Player 2 takes its character (its own pad); the operator drives the
                 # menus as teammate, the walk drives Player 1 with two bots
+                fresh = True                                 # the next round counts once, as on the solo path
+                if pub is not None:
+                    pub.idle(scr.get("where"))
                 coop.menus(scr)
                 if team['config']['role'] == 'bots_p1_p2':
                     why = boot.tick(clock(), scr=scr)
