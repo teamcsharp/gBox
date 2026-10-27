@@ -234,8 +234,94 @@ def test(worktree, tests, log, junit):
             'log': str(log), 'junit': str(junit)}
 
 
-def prepare(expected):
+SUPPORTED = re.compile(r'system/(?:gbox/(?:\w+/)*\w+\.py|tests/(?:\w+/)*test_\w+\.py|docs/[\w.-]+\.md|hermes/gbox/[\w.-]+)')
+TEST_LIMIT = 50
+SOURCE_LIMIT = 150000      # the diff plus every changed file in full, as the reviewer reads them
+# One file may use the whole budget: an 80 KB limit per file kept every change to a large module out (PR 1325, a 3.7 KB
+# diff to the 113 KB mercs/titles/re5_switch.py: 124 KB in all, a 132 KB packet against the 240 KB review limit).
+FILE_LIMIT = SOURCE_LIMIT
+
+
+def module_test_prefixes(module):
+    """The test-name prefixes of a gbox module: its stem, then the stem behind each package name and behind the whole
+    package path ('system/gbox/mercs/engine.py' -> engine, mercs_engine: tests/test_mercs_engine.py)."""
+    *packages, stem = module[len('system/gbox/'):-len('.py')].split('/')
+    names = [stem] + [f'{p}_{stem}' for p in reversed(packages)] + ['_'.join(packages + [stem])]
+    return list(dict.fromkeys(names))
+
+
+def focused_tests(changed, system_dir):
+    """spark_grunt.select_tests (changed test files, tests/test_<module>*.py for top-level modules), plus changed
+    test files below tests/ and, for modules in gbox packages, tests/test_<prefix>*.py for each module_test_prefixes()."""
     from .spark_grunt import select_tests
+    out = select_tests(changed, system_dir, limit=1000)
+    for name in changed:
+        if re.fullmatch(r'system/tests/(?:\w+/)+test_\w+\.py', name) and (system_dir.parent / name).is_file():
+            out.append(name[len('system/'):])
+    for name in changed:
+        if re.fullmatch(r'system/gbox/(?:\w+/)+\w+\.py', name):
+            for prefix in module_test_prefixes(name):
+                out += [f'tests/{c.name}' for c in sorted((system_dir / 'tests').glob(f'test_{prefix}*.py'))]
+    return list(dict.fromkeys(out))
+
+
+def imports_module(text, module):
+    """Whether test source names a module by its import path (gbox.formats.nsbmd, or from gbox.formats import nsbmd)."""
+    dotted = module[len('system/'):-len('.py')].replace('/', '.')
+    package, stem = dotted.rsplit('.', 1)
+    if re.search(re.escape(dotted) + r'(?!\w)', text):
+        return True
+    return any(re.search(r'(?<!\w)' + stem + r'(?!\w)', names) for names in
+               re.findall(r'^\s*from\s+' + re.escape(package) + r'\s+import\s+(\([^)]*\)|[^\n]*)', text, re.M))
+
+
+def covers(test, module, system_dir):
+    """A selected test counts for a changed module when it is named for it. In a package, where stems repeat and
+    a name can match by chance (tests/test_re6_switch_unlock.py is gbox/re6_switch_unlock.py's, not
+    gbox/mercs/titles/re6_switch.py's), it must also import the module."""
+    stem = Path(test).stem
+    if re.fullmatch(r'system/gbox/\w+\.py', module):
+        return stem.startswith('test_' + Path(module).stem)
+    if not any(stem.startswith('test_' + prefix) for prefix in module_test_prefixes(module)):
+        return False
+    try:
+        return imports_module((system_dir / test).read_text(encoding='utf-8'), module)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def coverage(changed, diff, system_dir):
+    """-> (complete, tests, sources, why not). Complete: every file is supported source (gbox modules at any depth,
+    tests, docs, the Hermes gbox plugin), every changed gbox module has a focused test, at most TEST_LIMIT tests,
+    and the diff plus each changed file in full stay under SOURCE_LIMIT for the reviewer."""
+    worktree = system_dir.parent
+    tests = focused_tests(changed, system_dir)
+    sources = {}
+    for name in changed:
+        path = worktree / name
+        if path.is_file() and not path.is_symlink() and path.stat().st_size <= FILE_LIMIT:
+            try:
+                sources[name] = path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                pass
+    unsupported = [n for n in changed if not SUPPORTED.fullmatch(n)]
+    uncovered = [n for n in changed if n.startswith('system/gbox/') and n.endswith('.py')
+                 and not any(covers(t, n, system_dir) for t in tests)]
+    unread = [n for n in changed if (worktree / n).exists() and n not in sources]
+    size = len(diff) + sum(map(len, sources.values()))
+    for failed, why in ((not changed, 'no changed files'),
+                        (unsupported, 'unsupported: ' + ', '.join(unsupported[:5])),
+                        (uncovered, 'no focused test for ' + ', '.join(uncovered[:5])),
+                        (not tests, 'no focused tests'),
+                        (len(tests) > TEST_LIMIT, f'{len(tests)} focused tests > {TEST_LIMIT}'),
+                        (unread, f'not readable in full (> {FILE_LIMIT} B or not text): ' + ', '.join(unread[:5])),
+                        (size >= SOURCE_LIMIT, f'diff and sources {size} B >= {SOURCE_LIMIT} B')):
+        if failed:
+            return False, tests, sources, why
+    return True, tests, sources, ''
+
+
+def prepare(expected):
     p = pull(expected['number'])
     identity(p, expected)
     if p.get('mergeable') == 'CONFLICTING':
@@ -263,20 +349,8 @@ def prepare(expected):
                 'complete': False}
     changed = run(['git', 'diff', '--cached', '--name-only'], worktree).splitlines()
     diff = run(['git', 'diff', '--cached', '--no-ext-diff'], worktree)
-    supported = all(re.fullmatch(r'system/(?:gbox/\w+\.py|tests/test_\w+\.py|docs/[\w.-]+\.md|hermes/gbox/[\w.-]+)', n)
-                    for n in changed)
-    tests = select_tests(changed, worktree / 'system', limit=1000)
-    covered = all(any(Path(t).stem.startswith('test_' + Path(n).stem) for t in tests)
-                  for n in changed if n.startswith('system/gbox/') and n.endswith('.py'))
-    sources = {}
-    for name in changed:
-        path = worktree / name
-        if path.is_file() and not path.is_symlink() and path.stat().st_size <= 80000:
-            sources[name] = path.read_text(encoding='utf-8')
-    complete = bool(changed and supported and covered and tests and len(tests) <= 50
-                    and len(diff) + sum(map(len, sources.values())) < 150000
-                    and all(n in sources for n in changed if (worktree / n).exists()))
-    receipt = {'blocked': 'No complete, supported focused integration coverage'}
+    complete, tests, sources, why = coverage(changed, diff, worktree / 'system')
+    receipt = {'blocked': 'No complete, supported focused integration coverage' + (f' ({why})' if why else '')}
     if complete:
         try:
             receipt = test(worktree, tests, worktree / 'integration.log', worktree / 'integration.xml')
