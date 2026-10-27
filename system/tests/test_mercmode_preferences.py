@@ -17,8 +17,9 @@ def test_switch_no_mercy_preference_is_per_host_and_never_selects_ps3_as_its_sub
     re5=next(r for r in rows if r['title']=='re5')
     assert re5['platform']=='switch' and re5['preferred_mode']=='no_mercy'
     assert re5['map_id']==re_switch.RE5_TITLE_ID
-    assert not re5['playable'] and not re5['backend_playable']
-    assert re5['preparation']['strategy']=='native_readiness_pending'
+    assert not re5['playable'] and not re5['backend_playable']      # the rig's catalog has no Switch RE5
+    assert re5['reason']=='The verified game revision is absent from the catalog'
+    assert re5['preparation']['strategy']=='native_menus_from_boot'
     assert M.choose(store,w,random.Random(0),cfg) is None
     assert M.settings(store,'another-host')['preferred_editions']=={}
     assert not cfg['enabled']  # saving the desired edition does not start rotation

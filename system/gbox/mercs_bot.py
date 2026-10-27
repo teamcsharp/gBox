@@ -415,6 +415,8 @@ def _memory(ad):
     if callable(guest) and getattr(ad, "MEM", "").startswith("/proc/"):
         try:
             pid, base = guest()
+            if isinstance(base, dict):                      # Eden (SwitchLinuxAdapter): its HostMemory arena; under
+                base = 0 if getattr(ad, "address_mode", "direct") == "direct" else base["base"]   # NCE guest = host
             m = ProcMem(pid, base)
             m.adapter = ad
             return m
