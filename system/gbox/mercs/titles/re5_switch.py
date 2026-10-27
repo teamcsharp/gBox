@@ -158,6 +158,16 @@ HEAL_ENABLED = True                      # on (2026-10-27): watch heal_failures 
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
+# Thrown or placed, never the gun: WP06 GRENADE_NORMAL, WP07 GRENADE_FIRE, WP08 GRENADE_FLASH, WP0A MINE_B (the
+# proximity bomb). With one in hand ZL alone places or throws it (live 2026-10-27: ZL with the bomb in hand set one down
+# at his feet, and held, another every 1.25 s; its blast took 700 of his 1000 at 3.8 m), so the fight never raises one:
+# the gun comes back first (Bot._gun_back)
+THROWN = frozenset({0x06, 0x07, 0x08, 0x0A})
+GUN_BACK_GAP_S = 0.6                     # between D-pad taps for the gun (a neutral pad before each)
+# The proximity bombs on the ground (live 2026-10-27, private Citron): each placed bomb is a unit of class uWp0a on
+# sUnit's move line 11, its position at +0x60 (E_POS), ~57 cm ahead of his feet; it leaves the line when it goes off.
+# Two more uWp0a units (the stack's own) sit elsewhere all round: a placed bomb is a NEW one near him.
+MINE_LINE, MINE_CLASS, MINE_ITEM, GROUND_MAX = 11, "uWp0a", 0x10A, 64
 # A ring: Majini whose bearings leave no gap of RING_GAP, either tight (TIGHT: n within r) or, hurt (under HURT of his
 # health), RING_N within RING_R: run out through the widest gap (the left stick + B, Type D's own "Run") for ESCAPE_S,
 # at most every ESCAPE_GAP_S and ESCAPES_MAX times a round. Live 2026-10-27: 3 within 3 m at any health escaped up to 13
@@ -218,7 +228,12 @@ TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # r
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
-          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition")
+          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm")
+# Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
+# inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
+MINES, MINE_EVERY_S = True, 9.0
+MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
+                 "mines_gone", "mine_clear_runs", "gun_backs")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -320,6 +335,30 @@ def enemy_class(m, e) -> str | None:
             _CLASSES.clear()
         _CLASSES[vt] = class_name(m, e)
     return _CLASSES[vt]
+
+
+def ground_mines(m, base: int) -> list:
+    """The uWp0a units on sUnit's move line MINE_LINE: [{"ptr", "pos"}] (each vtable named once: enemy_class)."""
+    out: list = []
+    try:
+        su = u64(m, base + S_UNIT)
+        u = u64(m, su + UNIT_LINES + LINE_STRIDE * MINE_LINE) if ptr_ok(su) else 0
+    except (ValueError, OSError, struct.error):
+        return out
+    n = 0
+    while ptr_ok(u) and n < GROUND_MAX:
+        if enemy_class(m, u) == MINE_CLASS:
+            try:
+                pos = struct.unpack("<3f", m.rd(u + E_POS, 12))
+                if all(math.isfinite(v) for v in pos):
+                    out.append({"ptr": u, "pos": pos})
+            except (ValueError, OSError, struct.error):
+                pass
+        try:
+            u, n = u64(m, u + UNIT_NEXT), n + 1
+        except (ValueError, OSError, struct.error):
+            break
+    return out
 
 
 def heading_of(q) -> float:
@@ -433,6 +472,8 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = laser(m, base)
             snap["inventory"] = inventory(m, p)
+            if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
+                snap["ground_mines"] = ground_mines(m, base)
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
                 over = ui_units(m, base).get("uIdGameover00")
                 try:
@@ -745,6 +786,10 @@ class Bot:
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
+        from .re5_switch_mines import Mines
+        self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
+        self._gun_back_at = -1e9                  # the last D-pad tap for the gun with a throwable in hand
+        self.stats.setdefault("gun_backs", 0)
         self._fire_t = None                       # the last tick the fighter held the trigger (trigger_s)
         if PS3_BRAIN:
             from .re5_switch_brain import Fighter
@@ -898,6 +943,8 @@ class Bot:
         if self._round_started is None:
             self._round_started = now
             self.look.new_round()
+            if self.mines is not None:
+                self.mines.new_round(now)
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -948,7 +995,7 @@ class Bot:
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         if item is None:
             return None
-        gun = next((s for s in inv if s["hand"] and s["type"] == 1), None)
+        gun = next((s for s in inv if s["hand"] and s["type"] == 1 and s["item"] not in THROWN), None)
         self._gun_down()
         self.healing = {"player": p.get("ptr"), "id": item["id"], "hp": hp, "at": now, "uses": 0, "last_use": -1e9,
                         "count": sum(s["rounds"] for s in inv if s["id"] == item["id"]), "equips": 1, "equip_at": now,
@@ -957,9 +1004,26 @@ class Bot:
         self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
         return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
 
+    def _gun_back(self, snap, now) -> dict | None:
+        """A grenade or the bomb in hand (THROWN) with nothing else using it: the gun's D-pad slot, a tap every
+        GUN_BACK_GAP_S with the pad neutral between, until a gun is in hand. The fight raises with ZL, and ZL with the
+        bomb in hand sets one down at his feet."""
+        inv = snap.get("inventory") or ()
+        held = next((s for s in inv if s.get("hand")), None)
+        if held is None or held.get("type") != 1 or held.get("item") not in THROWN:
+            return None
+        if self._rearm(inv, None) is None:
+            return None                                      # no gun on a D-pad slot: nothing to go back to
+        if now - self._gun_back_at < GUN_BACK_GAP_S:
+            return {"hold": ()}
+        self._gun_back_at = now
+        self.stats["gun_backs"] += 1
+        return self._rearm(inv, None)
+
     def _rearm(self, inv, grid) -> dict | None:
         """The gun back in his hands after a heal: the one he held (its D-pad slot), else the first gun on one."""
-        guns = [s for s in inv if s["type"] == 1 and s["grid"] in QUICK and s["item"] not in KNIVES]
+        guns = [s for s in inv if s["type"] == 1 and s["grid"] in QUICK and s["item"] not in KNIVES
+                and s["item"] not in THROWN]
         gun = next((s for s in guns if s["grid"] == grid), None) or next(iter(guns), None)
         if gun is None or gun["hand"]:
             return None
@@ -1087,10 +1151,17 @@ class Bot:
         act = self._heal(p, snap, live, flat, now)
         if act is not None:
             self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+        elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
+                                                                  busy=self.escape is not None)) is not None:
+            self._gun_down()
+            self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
         else:
             act = self._escape(p, live, flat, now)
             if act is not None:
                 self.doing, self.why = "escape", f"{self.round_escapes} this round"
+            elif (act := self._gun_back(snap, now)) is not None:
+                self._gun_down()
+                self.doing, self.why = "rearm", "a grenade or bomb in hand: the gun back first"
             elif self.fighter is not None:
                 act = self._fight(live, snap, now)
             else:
@@ -1400,7 +1471,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):

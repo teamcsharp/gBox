@@ -163,12 +163,13 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
     assert failed == [] and flag(g, 0x02) == 1 and SM.ORIG[id(ad)]["fire_rate"] == 80.0
     assert mercs_bot.apply_ops(ad, [("nonsense", {})], prof) == ["nonsense: re5_switch_mods: unknown op 'nonsense' "
                                                                  "(status, infinite_ammo, fire_rate, infinite_spray, "
-                                                                 "revert_all)"]
+                                                                 "mine_loadout, revert_all)"]
 
 
-def test_the_profile_turns_both_on_when_a_round_starts():
+def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
-    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}]]
+    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}],
+                                               ["mine_loadout", {"on": True}]]
 
 
 def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):
@@ -208,3 +209,37 @@ def test_infinite_spray_keeps_the_live_spray_at_two_and_writes_nothing_else():
                                 for a, d in spray_writes)               # the count / capacity ints, never a pointer
     assert not [a for a, d in ad.writes if player(g) + R.P_INV <= a < player(g) + R.P_INV + R.INV_SLOT * R.INV_SLOTS
                 and not slot <= a < slot + R.INV_SLOT]                   # never another (or an empty) slot
+
+
+def chris_template(g, off, rec1=0x106):
+    """Chris (BSAA)'s loadout block as read live 2026-10-27 (12 records of 0x30)."""
+    rows = {0: (0x201, 50, 0), 1: (rec1, 5, 1), 2: (0x203, 30, 2), 3: (0x102, -1, 3), 5: (0x104, -1, 5),
+            7: (0x304, -1, 7), 9: (0x101, -1, 9), 11: (0x100, -1, 11)}
+    for k in range(12):
+        idw, count, grid = rows.get(k, (0, -1, k))
+        g.put(BASE + off + 0x30 * k, struct.pack("<Ii3iI", idw, count, -1, -1, -1, grid) + bytes(0x18))
+
+
+def test_mine_loadout_gives_chris_the_proximity_bomb_in_both_banks_and_takes_it_back():
+    g = weapon_guest()
+    for off in SM.CHRIS_TEMPLATES:
+        chris_template(g, off)
+    ad = Adapter(g)
+    res = SM.run(ad, "mine_loadout", on=True)
+    assert res["verified"] and res["blocks"] == [hex(o) for o in SM.CHRIS_TEMPLATES]
+    for off in SM.CHRIS_TEMPLATES:
+        rec = struct.unpack("<Ii3iI", g.rd(BASE + off + 0x30, 24))
+        assert rec == (SM.MINE_ID, 5, -1, -1, -1, 1)                  # the bomb x5 at grid 1, nothing else moved
+    assert all(a in (BASE + o + 0x30 for o in SM.CHRIS_TEMPLATES) and len(d) == 4 for a, d in ad.writes)
+    assert SM.run(ad, "mine_loadout", on=True)["verified"] and len(ad.writes) == 2   # already: no new write
+    assert SM.run(ad, "mine_loadout", on=False)["verified"]
+    assert struct.unpack("<I", g.rd(BASE + SM.CHRIS_TEMPLATES[0] + 0x30, 4))[0] == SM.GRENADE_ID
+
+
+def test_mine_loadout_writes_nothing_where_the_block_is_not_chriss():
+    g = weapon_guest()
+    chris_template(g, SM.CHRIS_TEMPLATES[0])
+    g.put(BASE + SM.CHRIS_TEMPLATES[0] + 0x30 * 3, struct.pack("<I", 0x111))      # another costume's gun at grid 3
+    ad = Adapter(g)
+    res = SM.run(ad, "mine_loadout", on=True)
+    assert not res["verified"] and res["blocks"] == [] and ad.writes == []
