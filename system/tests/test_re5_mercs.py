@@ -1546,7 +1546,9 @@ def test_a_dot_that_never_reaches_him_is_given_up_after_a_while(tmp_path):
     for t in (10.0, 11.0, 12.0):                              # no laser yet (the gun coming up): no evidence
         now[0] = t
         bot.tick(_snap(mem, mesh))
-    elsewhere = {"from": (50.0, 140.0, 50.0), "at": (50.0, 140.0, 800.0)}   # the laser up, the dot off him
+    # the laser up, the dot off him: 30 deg off his heading (a ray at right angles to where he faces is no read of his
+    # gun - re5_engage.plausible - and gives no evidence either way)
+    elsewhere = {"from": (50.0, 140.0, 50.0), "at": (699.5, 140.0, 425.0)}
     for t in (12.5, 13.0, 13.5, 14.0):                         # 2.0 s of laser-up time off him
         now[0] = t
         bot.tick(_snap(mem, mesh, elsewhere))

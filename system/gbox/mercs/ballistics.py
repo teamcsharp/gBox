@@ -115,6 +115,8 @@ def aim_state(combat) -> str | None:
         return "swing"
     if c.startswith("readying"):
         return "readying"
+    if c.startswith("aim by the"):                  # the gun up, no laser ray yet: the camera / body estimate
+        return "estimate"
     if " dot " in c and " yaw " in c:
         return "aim"
     if c.startswith(("laserless", "longbow", "rotten egg")):
@@ -292,6 +294,10 @@ def report(records, *, states=None, samples=None, started=None, meta=None, sourc
     rep["by_dot"] = _tally(recs, lambda r: r.get("where") or "off him")
     rep["by_gate"] = _tally(recs, _gate_key)
     rep["by_state"] = _tally(recs, lambda r: r.get("state"))
+    if any(r.get("dot_on") for r in recs):         # what the dot was on at the trigger (re5_engage.dot_class)
+        rep["by_dot_on"] = _tally(recs, lambda r: r.get("dot_on"))
+    rep["walls_shot"] = sum(1 for r in recs if r.get("dot_on") == "wall")
+    rep["floor_shots"] = sum(1 for r in recs if r.get("dot_on") == "floor")
     rep["error_deg"] = {"hits": _errors(hits), "misses": _errors(misses)}
     primary, contributing = Counter(), Counter()
     for r in misses:
@@ -347,6 +353,8 @@ def line(rep: dict) -> str:
     lo = rep["longshots"]
     if lo["shots"]:
         parts.append(f"10m+ {lo['hits']}/{lo['shots']}" + (f" best {lo['longest_hit_m']:g}m" if lo["longest_hit_m"] else ""))
+    if rep.get("walls_shot") or rep.get("floor_shots"):
+        parts.append(f"into walls {rep.get('walls_shot', 0)}, floor {rep.get('floor_shots', 0)}")
     tu = rep.get("turning") or {}
     if tu.get("swing_s"):
         parts.append(f"gun-down turning {tu['swing_s']:g}s" + (f", hit {tu['hits_taken_swinging']} of {tu['hits_taken']} times"
@@ -387,6 +395,9 @@ def advice(rep: dict) -> list:
     for cause, n in rep.get("miss_causes") or ():
         if n >= 2:
             out.append(f"{n} misses {say.get(cause, cause)}")
+    if rep.get("walls_shot") or rep.get("floor_shots"):
+        out.append(f"{rep.get('walls_shot', 0)} shots left with the dot on a wall and {rep.get('floor_shots', 0)} with it "
+                   f"on the floor short of him: those must wait for the dot on a Majini")
     for name, row in (rep.get("by_band_gated") or {}).items():
         n = row["hits"] + row["misses"]
         if name != "?" and n >= 10 and row["rate"] is not None and row["rate"] < STRICT_BELOW:
@@ -423,8 +434,8 @@ def markdown(rep: dict) -> str:
             f"{_frac(gated[k]) if k in gated else '-'} |" for k, v in rep["by_band"].items()]
     out.append("")
     for label, key in (("By weapon", "by_weapon"), ("By gate", "by_gate"), ("By dot at the trigger", "by_dot"),
-                       ("By zone", "by_zone"), ("By aim state", "by_state")):
-        rows = [f"{k} {_frac(v)}" for k, v in list(rep[key].items())[:6]]
+                       ("What the dot was on", "by_dot_on"), ("By zone", "by_zone"), ("By aim state", "by_state")):
+        rows = [f"{k} {_frac(v)}" for k, v in list((rep.get(key) or {}).items())[:6]]
         if rows:
             out.append(f"- {label}: " + "; ".join(rows))
     e = rep["error_deg"]

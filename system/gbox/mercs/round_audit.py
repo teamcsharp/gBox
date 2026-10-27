@@ -11,7 +11,9 @@ which the round map keeps as "audit" and the bot as stats["round_audit"]. The ch
   * the character unchanged from the last round (both known), or unknown;
   * RE4: the round's loadout not verified in his hands, its x80 fire interval not applied, no gun in his hands;
   * RE5: the laser read missing for more than LASERLESS_MAX of the gun-up time (the aim is blind then), the rapid-fire
-    package not verified, gun-down turning more than SWING_MAX of the fighting;
+    package not verified, gun-down turning more than SWING_MAX of the fighting; from the round's look (the bot's
+    "combat_look", gbox.mercs.bot_look): shots into walls or the floor (WALLS_MAX), standing among foes without shooting
+    or moving (IDLE_FOES_MAX seconds), the gun down turning with a Majini within 4 m (GUN_DOWN_CLOSE_MAX seconds);
   * accuracy under ACCURACY_MIN (with at least MIN_SHOTS shots), more than DAMAGE_MAX hits taken, every standstill
     over STILL_S, wall bumps (stuck events) over BUMPS_PER_MIN a minute, a death (with its cause).
 Nothing here reads or writes the game.
@@ -27,6 +29,10 @@ STILL_S = 5.0                         # a standstill this long is a problem
 BUMPS_PER_MIN = 3.0                   # stuck events a minute
 LASERLESS_MAX = 0.25                  # RE5: share of gun-up samples without a laser ray
 SWING_MAX = 0.30                      # RE5: share of fighting spent turning with the gun down
+WALLS_MAX = 0                         # RE5: shots into a wall or the floor short of the target (operator 2026-10-26: "They
+                                      # are shooting at walls and just sitting here amongst foes")
+IDLE_FOES_MAX = 5.0                   # RE5: seconds standing among foes neither shooting nor moving, in the round
+GUN_DOWN_CLOSE_MAX = 5.0              # RE5: seconds turning with the gun down while a Majini stood within 4 m
 COUNTERS = ("shots", "hits", "misses", "kills", "hits_taken", "player_damage_events", "deaths", "stuck_events", "stuck",
             "vaults", "detours", "backoffs", "evades", "quick_turns")
 UNKNOWN = (None, "", "Unknown", "unknown", "?")
@@ -173,3 +179,18 @@ class RoundAudit:
         metrics["swing_share"] = share
         if isinstance(share, (int, float)) and share > SWING_MAX and (turning.get("fight_s") or 0) >= 20:
             problems.append(f"gun-down turning {share:.0%} of {turning.get('fight_s'):g} s fighting")
+        look = summary.get("combat_look") if isinstance(summary.get("combat_look"), dict) else None
+        if look is None:
+            return
+        walls, floor = int(_num(look.get("walls_shot")) or 0), int(_num(look.get("floor_shots")) or 0)
+        idle, idle_max = _num(look.get("idle_among_foes_s")) or 0.0, _num(look.get("idle_max_s")) or 0.0
+        down, close = _num(look.get("gun_down_close_s")) or 0.0, _num(look.get("foes_close_s")) or 0.0
+        metrics.update(walls_shot=walls, floor_shots=floor, idle_among_foes_s=round(idle, 1),
+                       idle_among_foes_max_s=round(idle_max, 1), gun_down_close_s=round(down, 1),
+                       foes_close_s=round(close, 1))
+        if walls + floor > WALLS_MAX:
+            problems.append(f"shots into walls {walls}, into the floor {floor} (the dot short of the target)")
+        if idle > IDLE_FOES_MAX:
+            problems.append(f"idle among foes {idle:g} s (longest {idle_max:g} s): a Majini within 4 m, no shot, no step")
+        if down > GUN_DOWN_CLOSE_MAX:
+            problems.append(f"gun-down turning with a Majini within 4 m: {down:g} s of {close:g} s with one that close")

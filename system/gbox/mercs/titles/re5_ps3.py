@@ -32,7 +32,7 @@ from ..driver import Driver
 from .. import obstacle_map
 from .. import round_map                         # round_gap_s: the seconds between two rounds (gap_end / gap_start)
 from .. import stalemate as stalemate_rule       # no enemies for 15 s with time on the clock: the clock is cut
-from . import re5_aim_geometry, re5_combat, re5_motion, re5_nav, re5_weapons
+from . import re5_aim_geometry, re5_combat, re5_engage, re5_motion, re5_nav, re5_weapons
 
 S_PLAYER, S_ENEMY, S_MAIN = 0x017FEB34, 0x017FDB60, 0x0191CEE4
 S_ACTION, S_ITEM, S_UNIT = 0x017B7174, 0x017FE574, 0x0191D700
@@ -177,6 +177,25 @@ BEND_R = 800.0                         # a barely bending navmesh route confirms
 DOT_MEMORY_S = 1.0                     # the dot on him this recently: in sight, on any level
 HARD_REFUSALS = ("dispatch nearby exposed threat first", "clock expires before pickup",
                  "inactive, unknown ETA, or unsafe route")   # the only strategy refusals a time bonus respects
+# "look at the bot" (gbox.mercs.bot_look): a foe this near on his level makes standing without shooting or walking "idle
+# among foes"; walking is this fast at least; the view is republished this often (at once on a new shot / decision); its
+# JSON copy (look_json, for the 5 s telemetry post that keeps only scalar stats under 64 KiB) is held under this size
+LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_JSON_MAX = 400.0, 40.0, 0.25, 24000
+
+
+def look_json(view: dict) -> str:
+    """stats look_json: the look as one compact JSON string, its oldest shots / decisions dropped until it fits
+    LOOK_JSON_MAX (the telemetry post fails as a whole over 64 KiB)."""
+    view = {"shots": list(view.get("shots") or ()), "decisions": list(view.get("decisions") or ()),
+            "idle_among_foes_s": view.get("idle_among_foes_s", 0.0), "walls_shot": view.get("walls_shot", 0)}
+    while True:
+        text = json.dumps(view, separators=(",", ":"), allow_nan=False)
+        if len(text) <= LOOK_JSON_MAX or not (view["shots"] or view["decisions"]):
+            return text
+        longer = "shots" if len(view["shots"]) >= len(view["decisions"]) else "decisions"
+        view[longer] = view[longer][1:]
+
+
 RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
                                        # (docs/mercenaries_re5_meta.md 1.1); the rank is score alone, same every stage
 
@@ -1326,6 +1345,16 @@ class Bot:
         self.impacts = ImpactLessons(self._learn_root / "impact_lessons.json")
         self.audit = RoundAudit("BLUS30491")
         self._hp_seen = None                    # (player ptr, hp) at the last tick: a fall is a hit taken
+        # "look at the bot" (operator 2026-10-26: "i want you able to see the last things and results of the last bullets
+        # being fired by the bot. They are shooting at walls and just sitting here amongst foes"): the last shots and
+        # decisions (gbox.mercs.bot_look, stats look / look_json), the idle streak among foes, the walls shot
+        from ..bot_look import BotLook
+        self.look = BotLook(epoch=clock)
+        if self.combat is not None:
+            self.combat.look = self.look
+        self._look_at = None                    # (t, pos) at the last look tick
+        self._look_pub = (-1, -math.inf)        # (look version, t) last published
+        self.look_round = self._look_round_new()
 
     def _can_hunt(self) -> bool:
         """The spawn hunt (LULL_S / _hunt_spawns: after a lull he walks to the spawn points this stage has shown) has
@@ -1428,6 +1457,7 @@ class Bot:
         if self._observed_snap is snap:
             return
         self._observed_snap = snap
+        self._sanitize_laser(snap)
         p = snap.get("player")
         pickup = self.health_pickup
         if pickup is not None and p and p.get('ptr')==pickup['player']:
@@ -1563,6 +1593,10 @@ class Bot:
             if callable(getattr(getattr(self,"mines",None),"reset_round",None)):
                 self.mines.reset_round(now,p.get("ptr"))
             self._round_started = now
+            self.look.new_round()                           # walls shot / idle streaks start over; the last shots stay
+            self.look_round = self._look_round_new()
+            for k in ("aim_guard", "laserless_visibility", "last_shot"):   # never last round's in this round's telemetry
+                self.stats.pop(k, None)
             round_map.gap_start(self.stats, now, "menus")  # round_gap_s: since the last round ended (results / death)
             timer,start = snap.get("timer"),snap.get("timer_start")
             self.round_intro_timer = timer if isinstance(timer,(int,float)) and isinstance(start,(int,float)) \
@@ -1927,6 +1961,132 @@ class Bot:
                                              "room": trace.room, "round_id": trace.round_id[:8]}
 
     def tick(self, snap: dict) -> dict:
+        """One tick (_tick_main), then the look (gbox.mercs.bot_look): this tick's decision and why, the idle streak among
+        foes, the gun-down turning with a foe close; published as stats look (the shared schema) and look_json (the same
+        as one string: the 5 s telemetry post keeps only scalar stats)."""
+        self._sanitize_laser(snap)
+        n0 = getattr(self.combat, "decisions_n", 0)
+        act = self._tick_main(snap)
+        try:
+            self._look_tick(snap, act, n0)
+        except Exception as exc:                                  # noqa: BLE001 - the look never stops the bot
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return act
+
+    def _sanitize_laser(self, snap) -> None:
+        """A laser read that cannot be his gun's (re5_engage.plausible: an origin metres from him, a ray behind him or
+        straight into the ground) is no laser for anyone this tick: snap laser None, the read kept as laser_raw, stats
+        laser_rejected counts them. Malformed reads are left to the combat layer's own checks."""
+        if not isinstance(snap, dict):
+            return
+        lz = snap.get("laser")
+        seen = getattr(self, "_laser_seen", None)
+        if seen is not None and seen[0] is snap and seen[1] is lz:
+            return                                          # this snapshot's read was checked already
+        self._laser_seen = (snap, lz)
+        if not isinstance(lz, dict) or not lz.get("from") or not lz.get("at"):
+            return
+        try:
+            if not any(lz["from"]):
+                return
+            ray = re5_combat.valid_ray(lz["from"], lz["at"])
+        except (TypeError, ValueError):
+            return
+        if ray is None:
+            return
+        ok, why = re5_engage.plausible(ray, snap.get("player") or {}, on_majini=re5_engage.under_dot(
+            ray, snap.get("enemies") or (), re5_combat.dot_on) is not None)
+        if not ok:
+            snap["laser_raw"], snap["laser"] = lz, None
+            self.stats["laser_rejected"] = self.stats.get("laser_rejected", 0) + 1
+            self.stats["laser_rejected_why"] = why
+            if self.combat is not None:
+                self.combat.ray_rejected = why
+
+    @staticmethod
+    def _look_round_new() -> dict:
+        return {"walls_shot": 0, "floor_shots": 0, "idle_among_foes_s": 0.0, "idle_max_s": 0.0,
+                "gun_down_close_s": 0.0, "foes_close_s": 0.0}
+
+    def _look_tick(self, snap, act, n0) -> None:
+        """The look after this tick: the decision (the combat layer's own when it decided this tick, else the phase's),
+        tick_idle (a living Majini within LOOK_FOE_R on his level while he neither walks nor shoots with the gun up nor is
+        held by the game), the round's idle and gun-down-with-a-foe-close seconds; stats look / look_json at most every
+        LOOK_PUBLISH_S (at once when a shot or a decision came in)."""
+        now = self.clock()
+        p = snap.get("player") or {}
+        act = act if isinstance(act, dict) else {}
+        held, tap = set(act.get("hold") or ()), act.get("tap")
+        phase = str(self.stats.get("phase") or "")
+        if getattr(self.combat, "decisions_n", n0) != n0 and getattr(self.combat, "look_decision", None):
+            decision, reason = self.combat.look_decision
+        else:
+            decision, reason = self._phase_decision(phase, held, tap)
+        self.look.record_decision(phase, decision, reason, t=now)
+        pos = p.get("pos")
+        dt, moving = 0.0, False
+        if self._look_at is not None and pos:
+            dt = max(0.0, min(0.5, now - self._look_at[0]))
+            if dt > 0:
+                moving = math.hypot(pos[0] - self._look_at[1][0], pos[2] - self._look_at[1][2]) / dt >= LOOK_MOVE_CM_S
+        self._look_at = (now, tuple(pos)) if pos else None
+        foes = [e for e in snap.get("enemies") or () if re5_engage.living(e) and pos and re5_engage.on_level(p, e)
+                and re5_engage.flat(pos, e["pos"]) <= LOOK_FOE_R] if pos else []
+        ready = callable(getattr(self.combat, "_ready", None)) and self.combat._ready(p)
+        firing = "r1" in held and (ready or p.get("action") == 2)
+        forced = bool(p.get("action") in (4, 5) or snap.get("prompt") or snap.get("recovery_active")
+                      or (p.get("hp") or 0) <= 0 or own_screen(snap) != "playing")
+        busy = bool(moving or firing or forced or tap)
+        streak = self.look.tick_idle(bool(foes), busy, t=now)
+        r = self.look_round
+        if foes and own_screen(snap) == "playing":
+            r["foes_close_s"] += dt
+            if not busy:
+                r["idle_among_foes_s"] += dt
+                r["idle_max_s"] = max(r["idle_max_s"], streak)
+            combat = str(self.stats.get("combat") or "")
+            if decision in ("swing (gun down)", "quick turn") or (not held and not tap and combat.startswith(
+                    ("swinging round", "quick turn"))):
+                r["gun_down_close_s"] += dt
+        dots = getattr(self.combat, "round_dots", None) or {}
+        r["walls_shot"], r["floor_shots"] = int(dots.get("wall", 0)), int(dots.get("floor", 0))
+        if self._trace is not None:                          # the round's look flags (gbox.mercs.round_audit reads them)
+            self._trace.annex["combat_look"] = {k: round(v, 1) if isinstance(v, float) else v for k, v in r.items()}
+        self.stats.update(look_idle_among_foes_s=round(self.look.idle_s, 1), look_walls_shot=self.look.walls_shot,
+                          round_idle_among_foes_s=round(r["idle_among_foes_s"], 1),
+                          round_gun_down_close_s=round(r["gun_down_close_s"], 1),
+                          round_walls_shot=r["walls_shot"], round_floor_shots=r["floor_shots"])
+        if self.look.version != self._look_pub[0] or now - self._look_pub[1] >= LOOK_PUBLISH_S:
+            view = self.look.snapshot()
+            self.stats["look"] = view
+            self.stats["look_json"] = look_json(view)
+            self._look_pub = (self.look.version, now)
+
+    def _phase_decision(self, phase, held, tap) -> tuple[str, str]:
+        """The look's decision when the combat layer did not decide this tick: what the phase is doing and why."""
+        st = self.stats
+        if tap:
+            return f"press {tap}", str(st.get("bonus_target") or st.get("route") or phase)[:160]
+        route = str(st.get("route") or "")
+        if phase in ("gather_time", "break_for_time", "operator_collect", "practice_take_time"):
+            return "walk to a time bonus", f"{st.get('bonus_target') or ''}; {route}"[:160]
+        if phase == "pursue":
+            return "walk to a Majini", f"{st.get('sight') or 'out of sight'}; {route}"[:160]
+        if phase == "stand":
+            return ("walk to the stand" if held & {"lup", "ldown", "lleft", "lright"} else "hold the stand"), route[:160]
+        if phase.startswith("heal") or phase == "seek_health":
+            return "heal", str(st.get("heal_deferred") or st.get("health_seek_status") or phase)[:160]
+        if phase == "boss_range":
+            return "back off from the boss", str(st.get("boss") or "")[:160]
+        if phase == "hunt_spawns":
+            return "hunt the spawn points", str(st.get("hunt") or route)[:160]
+        if phase in ("keep_combo", "obstacle_detour", "recover_navigation", "leave_proximity_bomb", "egg_inventory"):
+            return phase.replace("_", " "), route[:160]
+        if phase == "waiting_round_start":
+            return "wait for the round", ""
+        return ("wait" if not held else "act"), str(st.get("combat") if phase in ("clear_nearby", "fight") else route)[:160]
+
+    def _tick_main(self, snap: dict) -> dict:
         self.stats['mine_departure_yielded'] = False
         try:
             self._round_trace(snap)
@@ -2239,18 +2399,32 @@ class Bot:
                      (math.dist(p["pos"], e["pos"]) <= SIGHT_R and self._open(p, e, mesh, now)) or
                      self._in_view(p, e, reach)) and getattr(self, "_stalled_until", {}).get(e.get("ptr", e.get("slot")), 0) <= now] \
             if self.combat is not None else live
+        # laserless: the bow / egg, or a direct gun that has been up LASERLESS_SWITCH_S without a ray. The gun DOWN shows no
+        # ray for any gun: the old "no ray right now" made every gun laserless with the gun down, so the strict corridor rule
+        # below dropped even a Majini within PURSUE_NEAR of him out of sight while close_foes kept him "close", and the bot
+        # turned to face him without raising the gun (484 s of "turning toward a front candidate" standstills, 2026-10-26)
+        direct_gun = self.combat is not None and eq is not None and eq.get("type") == 1 \
+            and re5_weapons.WEAPONS.get(eq.get("item")) is not None \
+            and re5_weapons.WEAPONS[eq["item"]].family in re5_weapons.DIRECT
+        no_ray = direct_gun and self.combat._ray(snap, now) is None
         laserless = self.combat is not None and eq is not None and eq.get("type") == 1 \
-            and (eq.get("item") in (0x0F,0x36) or (re5_weapons.WEAPONS.get(eq.get("item")) is not None
-                 and re5_weapons.WEAPONS[eq["item"]].family in re5_weapons.DIRECT
-                 and self.combat._ray(snap,now) is None))
-        if laserless:
-            # No laser: do not use the generic near-enemy / barely-bending-route visibility shortcuts.
-            # This is only a known-wall veto. Actual projectile cover remains unconfirmed in combat telemetry.
-            # A longshot weapon with its gun still down keeps the far Majini in view: the gun comes up and its laser
-            # decides (the combat layer fires beyond ENGAGE only with the dot on him).
-            sightable = [e for e in sightable if self.combat.firing_corridor(snap,p,e,eq["item"])
-                         or (reach > ENGAGE and math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) > ENGAGE
-                             and self._in_view(p, e, reach))]
+            and (eq.get("item") in (0x0F,0x36) or (direct_gun and self.combat.laserless_now(eq.get("item")) and no_ray))
+        if laserless or (direct_gun and no_ray):
+            # No laser: do not use the generic near-enemy / barely-bending-route visibility shortcuts. This is only a
+            # known-wall veto. Actual projectile cover remains unconfirmed in combat telemetry. A longshot weapon with its
+            # gun still down keeps the far Majini in view: the gun comes up and its laser decides (the combat layer fires
+            # beyond ENGAGE only with the dot on him). A laser gun whose gun is down keeps, besides, every Majini within
+            # PURSUE_NEAR on his level (the doorway / corner rule of _open) and one the dot was on a moment ago.
+            def keep(e):
+                if self.combat.firing_corridor(snap, p, e, eq["item"]):
+                    return True
+                flat = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+                if reach > ENGAGE and flat > ENGAGE and self._in_view(p, e, reach):
+                    return True
+                return not laserless and (
+                    (flat < PURSUE_NEAR and abs(e["pos"][1] - p["pos"][1]) < LEVEL_DY)
+                    or self.dot_seen.get(e.get("ptr", e.get("slot")), -math.inf) >= now - DOT_MEMORY_S)
+            sightable = [e for e in sightable if keep(e)]
         checkpoint_lease = self._checkpoint_walk_allowed(snap,close_foes,now)
         candidate = self.combat.choose_target(snap, p, sightable, now) if self.combat is not None else None
         if candidate is None and self.combat is not None and sightable:
@@ -2436,8 +2610,8 @@ class Bot:
         else:
             self.close_escape_until = self.close_acquire_until = 0.0
         if self.combat is not None and tgt.get("kind") not in ("time", "combo"):   # the combat layer owns the fight
-            if laserless and mesh is not None:
-                if self.combat.needs_firing_position:
+            if mesh is not None:                         # its firing-position request (no line: a known wall, the
+                if getattr(self.combat, "needs_firing_position", False):   # laserless corridor) is walked, any gun
                     self.laserless_reacquire_until = now+1.
                     self.combat.needs_firing_position = False
                 if now < self.laserless_reacquire_until:
@@ -2629,6 +2803,10 @@ class Bot:
         dt = max(0.0, min(0.5, now - self.engaged[3]))
         self.engaged[3] = now
         view = self._laser_view(snap, tgt)
+        lz = snap.get("laser")
+        if view != "on" and lz and lz.get("from") and lz.get("at") and any(lz["from"]) and re5_engage.under_dot(
+                (tuple(lz["from"]), tuple(lz["at"])), snap.get("enemies") or (), re5_combat.dot_on) is not None:
+            view = "on"                                     # the dot on another Majini: he is shot (no walk round him)
         if view == "on":
             self.engaged[1], self.engaged[2] = 0.0, None
             return False
