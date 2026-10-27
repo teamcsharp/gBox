@@ -22,9 +22,11 @@ Measured live on the Spark (docs/research/re6-switch-ram.md; this driver's own m
 """
 from __future__ import annotations
 
+import json
 import math
 import struct
 import time
+from pathlib import Path
 
 from ..driver import Driver
 
@@ -430,6 +432,8 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["camera"] = camera(m, base, snap["player"]["pos"])
             snap["laser"] = laser(m, base, snap["player"]["pos"])
+            if (snap["player"].get("bomb") or {}).get("out"):
+                snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         try:
@@ -697,6 +701,24 @@ def _find_unit(m, base: int, what: str, classes: tuple, lines, pick=None, now: f
     return None
 
 
+BOMB_UNITS = ("uWp1097",)               # the remote bomb lying placed, its position +0x60 like every unit's (MercMode's
+                                        # RE6 turn 2026-10-27 12:17:23: a uWp1097 unit came up as the slot went out, 34 cm
+                                        # from him - the throw had dropped it at his feet - and went at the blast 12:17:38)
+
+
+def placed_bomb(m, base: int):
+    """Where the placed remote bomb lies (x, y, z), or None: its unit found on sUnit's lines (looked for again at most
+    every RESCAN_S while it is not there)."""
+    u = _find_unit(m, base, "bomb", BOMB_UNITS, range(N_LINES))
+    if u is None:
+        return None
+    try:
+        pos = struct.unpack("<3f", m.rd(u + P_POS, 12))
+    except (ValueError, OSError):
+        return None
+    return pos if all(math.isfinite(v) and abs(v) < 1e6 for v in pos) else None
+
+
 def forget(what: str) -> None:
     """Drop a cached unit ("camera", "laser") for every main base: the next read looks for it again."""
     for key in [k for k in _FOUND if k[1] == what]:
@@ -815,6 +837,49 @@ def line_hits(origin, toward, foot, reach: float) -> bool:
     return False
 
 
+class BlastBook:
+    """The remote bomb's reach in this title, learned from its blasts: each booked blast {me_cm, hp_lost, hit_cm,
+    spared_cm, real, self_hit, at}; radius = the farthest reach of the blasts read where the bomb lay (the zombies it hurt,
+    his own distance when it hurt him with nobody near), BOMB_RADIUS_CM before any, never past BOMB_RADIUS_MAX. Kept in
+    learn_dir / BOMB_BOOK_FILE (none: this run only)."""
+
+    def __init__(self, learn_dir=None):
+        self.path = Path(learn_dir) / BOMB_BOOK_FILE if learn_dir else None
+        self.blasts: list = []
+        if self.path is not None and self.path.exists():
+            try:
+                self.blasts = list(json.loads(self.path.read_text(encoding="utf-8")).get("blasts") or [])[-BOMB_BOOK_N:]
+            except (OSError, ValueError, AttributeError):
+                self.blasts = []
+
+    @property
+    def radius(self) -> float:
+        reach = [BOMB_RADIUS_CM]
+        for b in self.blasts:
+            if b.get("real"):
+                reach += [max(b.get("hit_cm") or [0])]
+                if b.get("self_hit"):
+                    reach.append(b.get("me_cm") or 0)
+        return min(BOMB_RADIUS_MAX, max(reach))
+
+    @property
+    def safe(self) -> float:
+        return max(BOMB_SELF_R, self.radius + BOMB_MARGIN_CM)
+
+    def add(self, blast: dict) -> None:
+        self.blasts = (self.blasts + [blast])[-BOMB_BOOK_N:]
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"radius_cm": round(self.radius), "safe_cm": round(self.safe),
+                                       "blasts": self.blasts}, indent=1), encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError:
+            pass
+
+
 # --- the round brain ----------------------------------------------------------------------------------------------------
 # RE6's controls (the game's own Controls screen; measured live 2026-10-26): the right stick turns the camera (rleft = a
 # larger yaw, ~174 deg/s with the gun down), the left stick walks along the camera (lup = the camera's yaw), ZL raises
@@ -904,18 +969,32 @@ BOMB_SECTION_CM = 1500.0                # a new section: this far from where the
 BOMB_GAP_S = 12.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
 BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
-BOMB_SELF_R = 700.0                     # ... and him at least this far from it, never nearer (live 2026-10-27: set off
-                                        # from about 3 m, both blasts knocked Chris down and took a health block; operator
-                                        # 11:12: "have the bot distance himself from the remote mines")
+BOMB_SELF_R = 700.0                     # ... and him at least this far from it, never nearer: the floor of the rule
+                                        # below (live 2026-10-27: set off from about 3 m, both blasts knocked Chris down)
+# The blast's reach, learned (operator 2026-10-27 12:10: "is still standing on top of mines. The bot needs to learn the
+# proper distance needing to be had and respect that"): every blast whose bomb was read where it lay (snapshot
+# bomb_pos) books the farthest zombie it hurt and, when it cost him health with nobody at arm's length to blame, his
+# own distance (BlastBook, learn_dir / BOMB_BOOK_FILE, per title). The rule: the learned radius + BOMB_MARGIN_CM, never
+# under BOMB_SELF_R; he never sets it off inside it, whatever the wait, and inside the radius itself he walks out
+# before anything else but breaking a hold. Until the bomb is read it is taken to lie where he stood throwing it.
+BOMB_RADIUS_CM, BOMB_RADIUS_MAX = 500.0, 900.0   # before any blast is booked (live 11:35-11:38: zombies hurt to 4.9 m,
+                                        # spared from 4.85 m); a booked reach is capped here (a barrel's chain blast)
+BOMB_MARGIN_CM = 200.0
+BOMB_BOOK_FILE, BOMB_BOOK_N = "re6_bomb_blasts.json", 40
+BOMB_LEARN_S, BOMB_SPARE_R, BOMB_BLAME_R = 0.7, 1500.0, 200.0   # a blast's toll read this long after it; the zombies
+                                        # within SPARE_R left whole are the spared; one within BLAME_R of him takes the
+                                        # blame for his health instead
 BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
-BOMB_WALK_S, BOMB_MIN_R = 5.0, 550.0    # walked off it this long without getting clear: off from BOMB_MIN_R (the blast
-                                        # reached 4.9 m and spared from 4.85 m, live 2026-10-27 11:35-11:38), never nearer
-BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0   # walking off it, this many this near him: he stops and kicks (ZR alone; ZL + ZR
-                                        # would set the bomb off) instead of backing into them
+BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0   # walking off it outside its reach, this many this near him: he stops and kicks
+                                        # (ZR alone; ZL + ZR would set the bomb off) instead of backing into them
 DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
-BOMB_HURT_S, BOMB_HURT_HP = 1.0, 50     # a blast that takes this much of his health this soon: stats bomb_self_hits
+BOMB_HURT_HP = 50                       # a blast that takes this much of his health (BOMB_LEARN_S): stats bomb_self_hits
 BOMB_LOG_N = 12
+BOMB_REAL_R = 3000.0                    # the placed bomb's unit (snapshot bomb_pos) within this of him: its spot is used
+                                        # (stats bomb_aim_err_cm: how far it lay from 3 m ahead of the throw)
+BOMB_MIN_HP = 0.5                       # no new bomb under half health (live 12:29: a throw at low health dropped it at
+                                        # his feet and he crawled out of its reach at 1 health, too slow)
 BOMB_RETRY_S = 4.0                      # readying one given up (one came within BOMB_ROOM_R): tried again this soon
                                         # (live 11:21: 900 -> 1 health in 5 s readying one with two at 76 cm)
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
@@ -954,7 +1033,7 @@ class Bot:
     tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
     again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None):
         from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
@@ -963,7 +1042,7 @@ class Bot:
                   "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
                   "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks",
                   "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
-                  "bomb_self_hits", "bomb_aborts"):
+                  "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s"):
             self.stats.setdefault(k, 0.0)
@@ -1009,8 +1088,12 @@ class Bot:
         self.bomb_kills = None                               # (the kill count at a blast, when)
         self.bomb_walk, self.bomb_side_until = None, -1e9    # walking off it: (since when, from where); a side step
         self.bomb_walk_since = None                          # when this bomb's walk began
+        self.bomb_real = False                               # this bomb's spot read from its unit
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
-        self.bomb_hurt = None                                # (his health, when) at the press that set it off
+        self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
+        self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
+        self._prev_z, self._prev_hp = {}, None               # the last tick's zombies {id: (health, pos)}, his health
+                                                             # (a blast seen this tick is read against them)
         # line of sight
         self.blocked: dict = {}                              # zombie -> until when he is out of sight (never fired at)
         self.seen: dict = {}                                 # zombie -> when his health last fell to a shot
@@ -1206,6 +1289,8 @@ class Bot:
         self._los_tick(snap, now)
         self._tablet_check(p, now)
         self._bomb_kills_tick(snap, now)
+        self._bomb_track(p, snap, now)
+        self._blast_tick(p, snap, now)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
             return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
@@ -1247,6 +1332,9 @@ class Bot:
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
+        escape = self._bomb_escape(p, snap, now)
+        if escape is not None:
+            return escape
         act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
@@ -1541,9 +1629,6 @@ class Bot:
         px, _, pz = p["pos"]
         eq = p.get("equipped")
         if bomb.get("out"):
-            if self.bomb_at is None:                         # out but untracked (a bot reload): it went ahead of him
-                self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
-                self.bomb_since, self.bomb_from = now, (px, pz)
             if self.bomb_phase in ("thrown", "throw"):
                 self.bomb_phase = "wait"
                 self.stats["bombs_placed"] += 1
@@ -1553,12 +1638,9 @@ class Bot:
             on = sum(1 for e in live if math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_BLAST_R)
             me = math.hypot(px - bx, pz - bz)
             out_s = now - (self.bomb_since or now)
-            walked = self.bomb_walk_since is not None and now - self.bomb_walk_since >= BOMB_WALK_S
-            clear = me >= BOMB_SELF_R or (walked and me >= BOMB_MIN_R)
-            if clear and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S):   # never with him near it
+            if me >= self.book.safe and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S):   # never inside its reach
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
-                self.bomb_hurt = (p.get("hp"), None)
                 log = self.stats.setdefault("bomb_det_cm", [])
                 log.append(round(me))
                 del log[:-BOMB_LOG_N]
@@ -1572,7 +1654,7 @@ class Bot:
                 self.stats["melee"] += 1
                 return self._go("bomb", "bomb_kick", {"tap": "zr"}, f"a bomb out, one at {flat(close[0]):.0f} cm: a kick")
             crowd = sum(1 for e in live if flat(e) < BOMB_CROWD_R)
-            if me < BOMB_SELF_R + 150.0 and crowd < BOMB_CROWD_N:   # walk off it while they come over it
+            if me < self.book.safe + 150.0 and crowd < BOMB_CROWD_N:   # walk off it while they come over it
                 return self._bomb_walk(p, (bx, bz), yaw, me, on, now)
             self.bomb_walk = None
             nearest = min((e for e in live), key=flat, default=None)
@@ -1581,15 +1663,6 @@ class Bot:
                 return self._go("bomb", "bomb_face", {"hold": self._turn(err, MELEE_CONE / 2)},
                                 f"a bomb out, {crowd} on him: facing the nearest for a kick")
             return self._go("bomb", "bomb_wait", {"hold": ()}, f"a bomb out: {on} on it, {me:.0f} cm from him")
-        if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
-            self.stats["bombs_detonated"] += 1
-            self.bomb_walk = self.bomb_walk_since = None
-            if self.bomb_hurt is not None:
-                self.bomb_hurt = (self.bomb_hurt[0], now)
-            self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
-            if self.bomb_kills is not None:                      # its kills counted BOMB_KILLS_S from the blast
-                self.bomb_kills = (self.bomb_kills[0], now)
-            return None
         if self.bomb_phase in ("equip", "face", "aim") and live and min(flat(e) for e in live) < BOMB_ROOM_R:
             self.stats["bomb_aborts"] += 1                       # one came close while it was readied: fight first
             self.bomb_phase, self.bomb_last = None, now - BOMB_GAP_S + BOMB_RETRY_S
@@ -1600,6 +1673,9 @@ class Bot:
                 self.bomb_phase, self.bomb_last = None, now
                 return None
             return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if hp_max and hp < BOMB_MIN_HP * hp_max:                 # hurt: no bomb (a throw can drop it at his feet,
+            return None                                          # and he must walk out of its reach first)
         if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
             return None
         near = min(flat(e) for e in live)
@@ -1613,6 +1689,117 @@ class Bot:
         self.bomb_why = "a stand" if stand else "a new section"
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+
+    def _bomb_went_off(self, p, now) -> None:
+        """The bomb out is gone after a set-off (the game put the gun back): counted, its toll read for BOMB_LEARN_S
+        (_blast_tick), its kills counted BOMB_KILLS_S from now."""
+        px, _, pz = p["pos"]
+        self.stats["bombs_detonated"] += 1
+        if self.bomb_at is not None:                         # its toll on him and on them, read BOMB_LEARN_S
+            bx, bz = self.bomb_at
+            self.blast = {"t": now, "at": (bx, bz), "real": bool(self.bomb_real),
+                          "me_cm": round(math.hypot(px - bx, pz - bz)), "hp0": self._prev_hp,
+                          "z0": dict(self._prev_z), "low": {}, "my_low": self._prev_hp,
+                          "near": sum(1 for h, zp in self._prev_z.values()
+                                      if h > 0 and math.hypot(zp[0] - px, zp[2] - pz) <= BOMB_BLAME_R),
+                          "held": bool(self.in_hold)}
+        self.bomb_walk = self.bomb_walk_since = None
+        self.bomb_real = False
+        self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
+        if self.bomb_kills is not None:                      # its kills counted BOMB_KILLS_S from the blast
+            self.bomb_kills = (self.bomb_kills[0], now)
+
+    def _bomb_track(self, p, snap, now) -> None:
+        """Where the bomb out lies: read from its unit (snapshot bomb_pos, within BOMB_REAL_R of him), else where he stood
+        throwing it (out but untracked: where he stands). stats bomb_aim_err_cm: how far it lay from 3 m ahead of the
+        throw; bomb_radius_cm / bomb_safe_cm: the learned reach and the rule."""
+        self.stats["bomb_radius_cm"], self.stats["bomb_safe_cm"] = round(self.book.radius), round(self.book.safe)
+        if not (p.get("bomb") or {}).get("out"):
+            if self.bomb_phase in ("det_aim", "det", "det_wait"):
+                self._bomb_went_off(p, now)
+            return
+        px, _, pz = p["pos"]
+        if self.bomb_phase in ("thrown", "throw"):              # the throw showed in its slot: placed
+            self.bomb_phase = "wait"
+            self.stats["bombs_placed"] += 1
+        if self.bomb_at is None:
+            self.bomb_at = (px, pz)
+            self.bomb_since, self.bomb_from = now, (px, pz)
+        real = snap.get("bomb_pos")
+        if real is not None and math.hypot(real[0] - px, real[2] - pz) <= BOMB_REAL_R:
+            if not self.bomb_real:
+                self.bomb_real = True
+                if self.bomb_from is not None:
+                    fx, fz = self.bomb_from
+                    yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                    ax, az = fx + BOMB_AHEAD * math.sin(yaw), fz + BOMB_AHEAD * math.cos(yaw)
+                    log = self.stats.setdefault("bomb_aim_err_cm", [])
+                    log.append(round(math.hypot(real[0] - ax, real[2] - az)))
+                    del log[:-BOMB_LOG_N]
+            self.bomb_at = (real[0], real[2])
+
+    def _bomb_escape(self, p, snap, now) -> dict | None:
+        """Inside the bomb's learned reach while it is out: he walks out before anything else (only a hold comes first);
+        a set-off under way with him inside the rule's distance is called off. None: clear of it."""
+        if not BOMBS or not (p.get("bomb") or {}).get("out") or self.bomb_at is None:
+            return None
+        px, _, pz = p["pos"]
+        bx, bz = self.bomb_at
+        me = math.hypot(px - bx, pz - bz)
+        if self.bomb_phase in ("det_aim", "det") and me < self.book.safe:
+            self.stats["bomb_det_holds"] += 1                    # too near it for the blast: not now
+            self.bomb_phase = "wait"
+        if me >= self.book.radius:
+            return None
+        self._gun_down()
+        if self.bomb_phase not in ("wait", None):
+            self.bomb_phase = "wait"
+        if self.bomb_walk_since is None:
+            self.stats["bomb_escapes"] += 1
+        cam = snap.get("camera")
+        return self._bomb_walk(p, (bx, bz), cam["yaw"] if cam else p["rot"], me, 0, now, act="bomb_escape",
+                               why=f"inside the bomb's reach ({me:.0f} of {self.book.radius:.0f} cm): out first")
+
+    def _blast_tick(self, p, snap, now) -> None:
+        """A blast's toll, BOMB_LEARN_S after it showed: the zombies it hurt and spared by their distance from it, his
+        health lost (stats bomb_self_hits when it was the blast: him inside its reach, or nobody within BOMB_BLAME_R and
+        no hold to blame), booked for the learned reach when the bomb was read where it lay; stats bomb_blast_log."""
+        zs = {e.get("ptr", e.get("slot")): (e.get("hp") or 0, e["pos"]) for e in snap.get("enemies") or ()}
+        b = self.blast
+        if b is not None:
+            for k, (h, _pos) in zs.items():
+                if k in b["z0"]:
+                    b["low"][k] = min(b["low"].get(k, h), h)
+            if isinstance(p.get("hp"), int):
+                b["my_low"] = p["hp"] if b["my_low"] is None else min(b["my_low"], p["hp"])
+            b["held"] = b["held"] or bool(self.in_hold)
+            if now - b["t"] >= BOMB_LEARN_S:
+                self.blast = None
+                bx, bz = b["at"]
+                hit, spared = [], []
+                for k, (h0, zp) in b["z0"].items():
+                    if h0 <= 0:
+                        continue
+                    d = round(math.hypot(zp[0] - bx, zp[2] - bz))
+                    if b["low"].get(k, 0) < h0:                  # hurt, or gone (killed and freed)
+                        hit.append(d)
+                    elif d <= BOMB_SPARE_R:
+                        spared.append(d)
+                lost = (b["hp0"] - b["my_low"]) if isinstance(b["hp0"], int) and isinstance(b["my_low"], int) else 0
+                inside = b["me_cm"] < self.book.radius + 100.0
+                self_hit = lost >= BOMB_HURT_HP and (inside or (not b["near"] and not b["held"]))
+                if self_hit:
+                    self.stats["bomb_self_hits"] += 1
+                rec = {"me_cm": b["me_cm"], "hp_lost": lost, "hit_cm": sorted(hit), "spared_cm": sorted(spared)[:12],
+                       "real": b["real"], "self_hit": self_hit, "near_him": b["near"], "held": b["held"],
+                       "at": round(time.time())}
+                log = self.stats.setdefault("bomb_blast_log", [])
+                log.append(rec)
+                del log[:-BOMB_LOG_N]
+                if b["real"]:
+                    self.book.add(rec)
+        self._prev_z = zs
+        self._prev_hp = p.get("hp") if isinstance(p.get("hp"), int) else self._prev_hp
 
     def _death(self, p, snap, now) -> None:
         """stats death_log: what he was doing over his last HP_HIST_S (the decisions while his health fell), whether a
@@ -1637,7 +1824,7 @@ class Bot:
         self.hp_hist = []
         self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
 
-    def _bomb_walk(self, p, at, yaw, me, on, now) -> dict:
+    def _bomb_walk(self, p, at, yaw, me, on, now, act="bomb_walk", why=None) -> dict:
         """Off the bomb: the camera turned to it and the stick back (he runs away from it); not 30 cm further in
         BOMB_STUCK_S (a wall behind), a side step for BOMB_SIDE_S, the side swapped each time."""
         px, _, pz = p["pos"]
@@ -1654,19 +1841,11 @@ class Bot:
             self.bomb_walk = (now, (px, pz))
         err = wrap(heading(at[0] - px, at[1] - pz) - yaw)
         keys = ("ldown",) + ((self.detour,) if now < self.bomb_side_until else ()) + self._turn(err, TURN_TOL)
-        return self._go("bomb", "bomb_walk", {"hold": keys}, f"walking off the bomb: {me:.0f} cm from it, {on} on it")
+        return self._go("bomb", act, {"hold": keys}, why or f"walking off the bomb: {me:.0f} cm from it, {on} on it")
 
     def _bomb_kills_tick(self, snap, now) -> None:
         """A blast's kills (stats bomb_kills): the kill count BOMB_KILLS_S after it less the count when it was set off;
         every tick, foes or none (a blast that clears the area leaves nobody for the decision)."""
-        p = snap.get("player") or {}
-        if self.bomb_hurt is not None:                           # the blast's toll on him (BOMB_HURT_S after the press)
-            hp0, at = self.bomb_hurt                             # at: when the blast showed (None: not yet)
-            if at is not None and isinstance(hp0, int) and isinstance(p.get("hp"), int) and p["hp"] <= hp0 - BOMB_HURT_HP:
-                self.stats["bomb_self_hits"] += 1
-                self.bomb_hurt = None
-            elif at is not None and now - at > BOMB_HURT_S:
-                self.bomb_hurt = None
         if self.bomb_kills is None or self.bomb_phase in ("det_aim", "det", "det_wait"):
             return
         if now - self.bomb_kills[1] >= BOMB_KILLS_S:
@@ -1701,7 +1880,7 @@ class Bot:
             if abs(err) > BOMB_FACE and now - self.bomb_phase_at < BOMB_FACE_S:
                 return self._go("bomb", tag, {"hold": self._turn(err)}, f"facing them for the bomb ({self.bomb_why})")
             self.bomb_phase, self.bomb_phase_at = "aim", now
-            self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
+            self.bomb_at = (px, pz)                              # taken to lie where he stands until it is read
             self.bomb_from = (px, pz)
         if self.bomb_phase in ("aim", "det_aim"):
             if now - self.bomb_phase_at < BOMB_AIM_S:
@@ -1808,7 +1987,8 @@ class RE6Switch(Driver):
                       "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
                       "holds_shaken", "cc_quick_shots", "cc_kicks", "los_blocks", "nohit_blocks", "cc_blocks",
-                      "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
+                      "bomb_det_holds")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
@@ -1894,7 +2074,10 @@ class RE6Switch(Driver):
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         self.stats = stats
-        return Bot(stats=stats, clock=clock)
+        if learn_dir is None:                                    # the deployment: gbox-data/mercs/learned/<title>
+            from .. import lessons as L
+            learn_dir = L.ROOT.parent / "learned" / MAP_ID
+        return Bot(stats=stats, clock=clock, learn_dir=learn_dir)
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]
