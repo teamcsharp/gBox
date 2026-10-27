@@ -77,7 +77,7 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
     assert out["op"] == "status" and out["edition"] == "switch"
     caps = out["status"]["capabilities"]
     assert caps["weapon_override"]["available"] and caps["unlimited_health"]["available"]
-    assert not caps["add_time"]["available"] and caps["add_time"]["reason"].startswith("not yet on Switch: ")
+    assert not caps["instant_qte"]["available"] and caps["instant_qte"]["reason"].startswith("not yet on Switch: ")
     out = T.re5_mods(T.RE5ModsIn(session_id="lilspark-re5", op="fire_rate", multiplier=40), None)["result"]
     assert out["op"] == "fire_rate" and out["fire_rate_x"] == 40.0 and out["status"]["fire_rate_x"] == 40.0
     assert T.is_switch_re5({"game_id": "52d15709be0fda1a"}) and T.is_switch_re5({"title_id": "010018100cd46000"})
@@ -87,10 +87,10 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
 def test_an_op_this_edition_has_not_yet_says_why_and_is_never_a_silent_no_op():
     g = parity_guest()
     ad = Adapter(g)
-    for op in ("add_time", "rotten_egg_only", "live_weapon", "instant_qte"):
+    for op in ("rotten_egg_only", "live_weapon", "instant_qte"):
         out = SM.tool_run(ad, op, 3, True)
         assert out["verified"] is False and out["reason"].startswith("not yet on Switch: ") and out["op"] == op
-    assert SM.tool_run(ad, "clock", None, True, seconds=60)["op"] == "set_time"            # the PS3's aliases too
+    assert SM.tool_run(ad, "qte_assist", None, True)["op"] == "instant_qte"               # the PS3's aliases too
     assert ad.writes == []
     with pytest.raises(ValueError, match="unknown op"):
         SM.tool_run(ad, "teleport")
@@ -273,3 +273,60 @@ def test_bullet_damage_scales_every_firepower_level_and_turn_speed_the_turn_and_
     SM.ORIG.clear()
     with pytest.raises(RuntimeError, match="firepower"):
         SM.tool_run(Adapter(g), "bullet_damage", 10, True)               # not this build's table: nothing written
+
+
+def clock_guest():
+    """parity_guest plus the round's clock owner: sArea (main+0x26A1460) +0x7040 -> aGame, its countdown at +0x7C0 = the
+    HUD's 97.5 (cGameSys +0x948), its end flag +0x7B8 = 0."""
+    g = parity_guest()
+    area, game = g.alloc(0x8000), g.alloc(0x1000)
+    g.put(area, bytes(0x8000))
+    g.put(game, bytes(0x1000))
+    g.q(BASE + SM.S_AREA_PTR, area)
+    g.q(area + SM.AREA_GAME, game)
+    g.put(game + SM.GAME_CLOCK, struct.pack("<f", 97.5))
+    return g, game
+
+
+def test_the_clock_ops_write_the_authoritative_countdown_not_the_huds_copy():
+    g, game = clock_guest()
+    ad = Adapter(g)
+    gs = R.game_sys(g, BASE)
+    master = lambda: struct.unpack("<f", g.rd(game + SM.GAME_CLOCK, 4))[0]
+    out = SM.tool_run(ad, "add_time", None, True, seconds=60)
+    assert out["verified"] and out["added_seconds"] == 60 and master() == 157.5
+    assert struct.unpack("<i", g.rd(gs + SM.GS_LAST_BONUS, 4))[0] == 60 and g.rd(gs + SM.GS_SHOW_BONUS, 1) == b"\x01"
+    assert struct.unpack("<f", g.rd(gs + R.GS_TIMER, 4))[0] == 97.5            # the copy: the game copies it each frame
+    g.put(gs + R.GS_TIMER, struct.pack("<f", 157.5))
+    out = SM.tool_run(ad, "add_time", -500, True)                              # a cut stops at one second
+    assert out["verified"] and out["clamped"] and master() == 1.0
+    g.put(gs + R.GS_TIMER, struct.pack("<f", 1.0))
+    assert SM.tool_run(ad, "set_time", None, True, seconds=5)["verified"] and master() == 5.0
+    g.put(gs + R.GS_TIMER, struct.pack("<f", 50.0))                            # owner and HUD disagree: refused
+    with pytest.raises(RuntimeError, match="disagrees"):
+        SM.tool_run(ad, "add_time", 30, True)
+    with pytest.raises(ValueError):
+        SM.tool_run(ad, "set_time", None, True, seconds=0)
+
+
+def test_kill_time_adds_seconds_for_each_kill_and_the_hourglasses_scale_where_they_stand():
+    g, game = clock_guest()
+    ad = Adapter(g)
+    gs = R.game_sys(g, BASE)
+    assert SM.tool_run(ad, "kill_time", 5, True)["seconds"] == 5.0
+    snap = R.snapshot(g)                                                       # kills 9: the first look
+    assert SM.maintain(ad, snap)["writes"] == 0
+    g.i32(gs + R.GS_KILLS, 11)
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 1
+    assert struct.unpack("<f", g.rd(game + SM.GAME_CLOCK, 4))[0] == 107.5        # two kills: +10 s
+    st = SM.tool_run(ad, "status")["status"]
+    assert st["kill_time_on"] and st["kill_time_s"] == 5.0 and st["capabilities"]["add_time"]["available"]
+    su = R.u64(g, BASE + R.S_UNIT)
+    hg = g.alloc(0x2000)
+    g.put(hg, bytes(0x2000))
+    g.q(hg, BASE + SM.HOURGLASS_VT)
+    g.put(hg + SM.HG_SECONDS, struct.pack("<h", 30))
+    g.q(su + R.UNIT_LINES + R.LINE_STRIDE * 12, hg)
+    out = SM.tool_run(ad, "time_bonus_multiplier", 3, True)
+    assert out["verified"] and out["hourglasses"] == 1 and out["hourglass_seconds"] == [90]
+    assert SM.tool_run(ad, "time_bonus_multiplier", 3, True)["scaled"] == 0    # once a unit (90 is not raw 30)
