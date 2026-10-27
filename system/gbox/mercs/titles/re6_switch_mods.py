@@ -15,6 +15,10 @@ ops:
                             Switch keeps its spray): only the count's s16 is written, only into a live cItem slot holding
                             the tablets (id 0x1D, in use, its item object set), re-read just before the write and read
                             back after it; never the id, the object pointer or a slot that is not the tablets'
+  unlock_characters on=true every Mercenaries character and costume on the save: the character select's mask (cSystemInfo
+                            +0x974 and its copy +0x5E84, which the select's constructor main+0xAA9158 ORs with 0x20010101)
+                            set to 0x3FFFFFFF, both copies read back; nothing else in cSystemInfo is ever written, and the
+                            game's own next save keeps it (live 2026-10-27: 0x10711 -> 0x3FFFFFFF, the select listed 9)
   fire_rate multiplier=N    the bot's own trigger: with infinite ammo it presses ZR on every other tick on target (about
                             10 presses a second; the Wing Shooter fires on each, measured 6.7 a second with every press
                             a shot). RE6 has no measured game-side fire-rate multiplier: the shot motion's layer speed
@@ -46,6 +50,8 @@ WEAPON_SLOTS = 7                                         # slots 0-6 the weapons
 SLOT_VTABLE = 0x2875848                                  # cItem
 SLOT_USED, SLOT_ID, SLOT_OBJ = 0x8, 0xA, 0x20            # u8 1 = in use, u8 the item id, the item's object (never written)
 TABLET_ID, TABLET_KEEP = 0x1D, 6                         # the tablet case (Leon 8 / 12 at the start, Chris 0 / 12)
+CHARACTER_MASK = (0x974, 0x974 + 0x5510)                 # cSystemInfo: the select's unlock mask, copy A and copy B
+ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for each of 7 characters, then bits 28 and 29
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
 FIRE_MAX = 80.0
@@ -165,6 +171,29 @@ def _keep_tablets(ad, g: RE6Switch, player: int) -> int:
     return 1
 
 
+def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
+    """Every character and costume in the Mercenaries select: only the mask's two u32 in cSystemInfo (copy A, copy B)
+    are written, each read first and read back after; nothing to do once both hold every bit. Off changes nothing
+    (an unlock is the save's: the game's own next save keeps it)."""
+    from ... import re6_switch_unlock as U
+    info = U.system_info(g.m, g.base)
+    if info is None:
+        return {"unlock_characters": bool(on), "verified": False, "reason": "no cSystemInfo yet (still booting)"}
+    before = [struct.unpack("<I", g.ad.read_memory(info + off, 4))[0] for off in CHARACTER_MASK]
+    writes = 0
+    if on:
+        for off, value in zip(CHARACTER_MASK, before):
+            if value & ALL_CHARACTERS != ALL_CHARACTERS:
+                g.ad.write_memory(info + off, struct.pack("<I", value | ALL_CHARACTERS))
+                writes += 1
+    after = [struct.unpack("<I", g.ad.read_memory(info + off, 4))[0] for off in CHARACTER_MASK]
+    g.state["unlock_characters"] = bool(on)
+    return {"unlock_characters": bool(on), "verified": not on or all(v & ALL_CHARACTERS == ALL_CHARACTERS for v in after),
+            "before": [hex(v) for v in before], "after": [hex(v) for v in after], "writes": writes,
+            "note": "the character select's mask in both cSystemInfo copies; the select lists every character and "
+                    "costume from its next opening, and the game's own next save keeps it"}
+
+
 def fire_rate(g: RE6Switch, mult) -> dict:
     try:
         k = float(mult if mult is not None else FIRE_MAX)
@@ -220,17 +249,20 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")
         op = {"fire": "fire_rate", "rapid_fire": "fire_rate", "ammo": "infinite_ammo", "unlimited_ammo": "infinite_ammo",
               "no_ammo": "infinite_ammo", "tablets": "infinite_tablets", "infinite_heal": "infinite_tablets",
-              "heal_keep": "infinite_tablets"}.get(op, op)
+              "heal_keep": "infinite_tablets", "characters": "unlock_characters",
+              "all_characters": "unlock_characters", "unlock_all": "unlock_characters"}.get(op, op)
         if op == "status":
             return g.status()
         if op == "infinite_ammo":
             return infinite_ammo(g, bool(on))
         if op == "infinite_tablets":
             return infinite_tablets(g, bool(on))
+        if op == "unlock_characters":
+            return unlock_characters(g, bool(on))
         if op == "fire_rate":
             return fire_rate(g, 1.0 if on is False else multiplier)
         if op == "revert_all":
             return {"infinite_ammo": infinite_ammo(g, False), "infinite_tablets": infinite_tablets(g, False),
                     "fire_rate": fire_rate(g, 1.0)}
-        raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, fire_rate, "
-                         "revert_all)")
+        raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
+                         "unlock_characters, fire_rate, revert_all)")

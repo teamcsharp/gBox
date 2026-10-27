@@ -604,6 +604,28 @@ def test_infinite_tablets_keeps_the_case_counted_only_in_its_live_slot(mods):
     assert mods.run(ad3, "tablets", on=True)["kept"] == 0 and ad3.writes == []
 
 
+def test_unlock_characters_writes_only_the_selects_mask_in_both_copies(mods):
+    from gbox import re6_switch_unlock as U
+    g = round_guest()
+    im = g.alloc(U.INFO_ARRAY + U.INFO_STRIDE)                              # sInfoMan with its cSystemInfo 0
+    g.q(BASE + U.S_INFOMAN, im)
+    g.i32(im + U.INFO_INDEX, 0)
+    info = im + U.INFO_ARRAY
+    for off in mods.CHARACTER_MASK:
+        g.put(info + off, struct.pack("<I", 0x10711))                       # live 2026-10-27: Leon, Helena, Chris 1-3, Jake
+    ad = Adapter(g)
+    out = mods.run(ad, "unlock_characters", on=True)
+    assert out["verified"] and out["writes"] == 2 and out["after"] == ["0x3fffffff", "0x3fffffff"]
+    assert sorted(a for a, _ in ad.writes) == sorted(info + off for off in mods.CHARACTER_MASK)   # nothing else written
+    assert all(data == struct.pack("<I", 0x3FFFFFFF) for _, data in ad.writes)
+    assert mods.run(ad, "all_characters", on=True)["writes"] == 0                 # already unlocked: no write
+    g2 = round_guest()                                                       # still booting: no cSystemInfo
+    ad2 = Adapter(g2)
+    mods.ORIG.clear()
+    out2 = mods.run(ad2, "unlock_characters", on=True)
+    assert out2["verified"] is False and ad2.writes == []
+
+
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
     g = round_guest(guns=((10, 18),))
     ad = Adapter(g)

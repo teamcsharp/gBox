@@ -19,7 +19,8 @@
     "The HUD agreed with sGameMan: 009/300, Score 3,890 rolling to 4,540, 002 COMBO (docs/research/re6-switch-ram.md).",
     "A fresh save opens the main menu only after gbox.re6_switch_unlock set the save's Prologue-cleared bit at the title (game_unlocks.session_start on launch); the menus press A at the title only when uIdTitle00 +0x20A = 1.",
     "Live mods (gbox.mercs.titles.re6_switch_mods, the playing_ops): infinite_ammo keeps every gun's magazine at its capacity (the inventory's cItem slots at player +0x5070, 0x28 each: +0xA item id, +0xE rounds, +0x14 capacity; slots 0-6 the weapons, 7-11 the items, left alone: slot 7 the tablets, id 0x1D). RE6 shows no game-side fire-rate multiplier (the shot motion's layer speed leaves the pace alone); the bot presses ZR on every other tick on target and every press is a shot.",
-    "infinite_tablets (a playing_op, on by default): the tablet case's cItem slot (an item slot 7-11 with id 0x1D, in use, its item object set) is kept at 6 tablets: only its s16 count is written, re-read right before and read back after; never the id or the object pointer (RE5 Switch's count-keeping of its spray)."
+    "infinite_tablets (a playing_op, on by default): the tablet case's cItem slot (an item slot 7-11 with id 0x1D, in use, its item object set) is kept at 6 tablets: only its s16 count is written, re-read right before and read back after; never the id or the object pointer (RE5 Switch's count-keeping of its spray).",
+    "unlock_characters (a playing_op, on by default; verified live 2026-10-27): the Mercenaries character select's unlock mask, cSystemInfo +0x974 (copy B +0x5E84), read by the select's constructor main+0xAA9158 and ORed with 0x20010101, set to 0x3FFFFFFF (all 9 characters, every costume) in both copies with read-back; nothing else in cSystemInfo is written, and the game's own next save keeps it. Live: 0x10711 -> 0x3FFFFFFF at the title, then the select listed count 9, ids 0-8."
   ],
   "mercs": {
     "driver": "gbox.mercs.titles.re6_switch",
@@ -36,6 +37,12 @@
       ],
       [
         "infinite_tablets",
+        {
+          "on": true
+        }
+      ],
+      [
+        "unlock_characters",
         {
           "on": true
         }
