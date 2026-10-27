@@ -870,8 +870,9 @@ BOMB_SECTION_CM = 1500.0                # a new section: this far from where the
 BOMB_GAP_S = 12.0                       # a bomb at most this often
 BOMB_AHEAD = 300.0                      # where it lands (live: 2.9 m ahead along the aim)
 BOMB_BLAST_R, BOMB_BLAST_N = 400.0, 2   # set off with this many zombies this near it ...
-BOMB_SELF_R = 250.0                     # ... and him at least this far from it
-BOMB_HOLD_S = 8.0                       # a bomb out this long goes off anyway (the remote keeps his gun down)
+BOMB_SELF_R = 600.0                     # ... and him at least this far from it (live 2026-10-27: set off from about
+                                        # 3 m, both blasts knocked Chris down and took a health block; he backs off now)
+BOMB_HOLD_S, BOMB_GIVE_S = 8.0, 20.0    # out this long: off once he is clear; this long: off from BOMB_SELF_R * 0.6
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
 BOMB_FACE, BOMB_FACE_S = math.radians(25), 1.5        # the throw waits (this long at most) for the crowd in the aim
 BOMB_TAKE_S, BOMB_KILLS_S = 2.0, 3.0    # a throw / a blast shows in its slot within this; its kills counted this long
@@ -1137,6 +1138,7 @@ class Bot:
         self._round_start(snap, now)
         self._score_hits(snap, now)
         self._tablet_check(p, now)
+        self._bomb_kills_tick(snap, now)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
             return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
@@ -1318,11 +1320,6 @@ class Bot:
             return None
         px, _, pz = p["pos"]
         eq = p.get("equipped")
-        if self.bomb_kills is not None and now - self.bomb_kills[1] >= BOMB_KILLS_S:
-            k = snap.get("kills")
-            if isinstance(k, int) and isinstance(self.bomb_kills[0], int):
-                self.stats["bomb_kills"] += max(0, k - self.bomb_kills[0])
-            self.bomb_kills = None
         if bomb.get("out"):
             if self.bomb_at is None:                         # out but untracked (a bot reload): it went ahead of him
                 self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
@@ -1335,17 +1332,21 @@ class Bot:
             bx, bz = self.bomb_at
             on = sum(1 for e in live if math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_BLAST_R)
             me = math.hypot(px - bx, pz - bz)
-            if me >= BOMB_SELF_R and (on >= BOMB_BLAST_N or now - (self.bomb_since or now) >= BOMB_HOLD_S):
+            out_s = now - (self.bomb_since or now)
+            if (me >= BOMB_SELF_R and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S)
+                    or out_s >= BOMB_GIVE_S and me >= 0.6 * BOMB_SELF_R):
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
                 return self._bomb_press(eq, now, detonate=True)
             self.bomb_phase = "wait"
             self._gun_down()
-            keys = ("ldown",) if me < BOMB_SELF_R + 150.0 else ()   # back off it while they come
+            keys = ("ldown",) if me < BOMB_SELF_R + 150.0 else ()   # back off it while they come over it
             return self._go("bomb", "bomb_wait", {"hold": keys}, f"a bomb out: {on} on it, {me:.0f} cm from him")
         if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
             self.stats["bombs_detonated"] += 1
             self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
+            if self.bomb_kills is not None:                      # its kills counted BOMB_KILLS_S from the blast
+                self.bomb_kills = (self.bomb_kills[0], now)
             return None
         if self.bomb_phase in ("equip", "face", "aim", "throw", "thrown"):
             if self.bomb_phase == "thrown" and now - self.bomb_phase_at > BOMB_TAKE_S:   # the throw never showed
@@ -1366,6 +1367,17 @@ class Bot:
         self.bomb_why = "a stand" if stand else "a new section"
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+
+    def _bomb_kills_tick(self, snap, now) -> None:
+        """A blast's kills (stats bomb_kills): the kill count BOMB_KILLS_S after it less the count when it was set off;
+        every tick, foes or none (a blast that clears the area leaves nobody for the decision)."""
+        if self.bomb_kills is None or self.bomb_phase in ("det_aim", "det", "det_wait"):
+            return
+        if now - self.bomb_kills[1] >= BOMB_KILLS_S:
+            k = snap.get("kills")
+            if isinstance(k, int) and isinstance(self.bomb_kills[0], int):
+                self.stats["bomb_kills"] += max(0, k - self.bomb_kills[0])
+            self.bomb_kills = None
 
     def _bomb_press(self, eq, now, detonate: bool = False, live=None, p=None, yaw=0.0) -> dict | None:
         """One step of a bomb's keys: the wheel stepped (D-pad down) until the remote bomb is in hand, the crowd brought

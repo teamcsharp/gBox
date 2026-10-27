@@ -409,13 +409,20 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
     assert bot.stats["bombs_placed"] == 1 and bot.bomb_phase == "wait"
     bx, bz = bot.bomb_at
     assert math.isclose(math.hypot(bx, bz), R.BOMB_AHEAD, rel_tol=0.01)       # 3 m ahead along the camera
-    for e in snap["enemies"]:                                                 # they walk onto it
+    for e in snap["enemies"]:                                                 # they walk onto it, he next to it
         e["pos"] = (bx + 50.0, 0.0, bz + 30.0)
+    acts = run(bot, snap, clock, 4)
+    assert bot.bomb_phase == "wait" and all(a == {"hold": ("ldown",)} for a in acts)   # too near his own blast: back off
+    snap["player"]["pos"] = (-bx * 1.2, 0.0, -bz * 1.2)                        # 6.6 m clear of it
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
     assert {"hold": ("zl", "zr")} in acts and bot.bomb_phase in ("det", "det_wait")
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0)        # the blast; the game gave the gun back
     run(bot, snap, clock, 1)
     assert bot.stats["bombs_detonated"] == 1 and bot.bomb_phase is None
+    snap["kills"] = (snap.get("kills") or 0) + 10                             # ten of them, and nobody left standing
+    snap["enemies"] = []
+    run(bot, snap, clock, int(R.BOMB_KILLS_S / 0.05) + 2)
+    assert bot.stats["bomb_kills"] == 10
 
 
 def test_no_bomb_without_one_a_crowd_or_room():

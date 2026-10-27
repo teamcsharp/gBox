@@ -309,6 +309,21 @@ running game with a read-back; none patches code.
 | the character select | uIdStartUp32: +0x1CC the cursor, +0x1D0 / +0x1D4 the select ids listed; + 4 * id: +0x1F8 the costume shown, +0x21C the costumes listed; + 0x10 * id: +0x240 their costume indexes | its update main+0xAAD830: up / down the character, left / right the costume; the confirm writes the costume code to sGameMan +0x3CA4 (sGameMan +0x3C78 is the stage index, +0xCC the set-up's mode) | the menus draw a random listed costume each visit; a MercMode queue pick names the character / stage |
 | auto QTE | cSystemInfo mTempData.mExOptAutoActBtn (+0x46B0, copy B +0x9BC0) | read by the QTE sites through sInfoMan (+0x46F8 from the manager) | not written (only the character mask is written in cSystemInfo) |
 
+## The mods pass, live (2026-10-27, three private Citron NEO runs on the Spark, Chris costume 0)
+
+| what | measured |
+|---|---|
+| fire_rate | the assault rifle held 2 s: 18 rounds at x1, 55 at x4, 101 at x80 (the 0.004 s floor), 18 again at x1; the interval cell read back each time |
+| merc_loadout (at the select) | 63 pairs; Ada's rocket launcher became the Assault Shotgun (0x105); Chris started with 5 hand / incendiary / flash grenades and 5 remote bombs, game-created (their uWp objects in the slots) |
+| infinite_grenades | a thrown remote bomb took its stack 5 -> 4, kept back to 5 |
+| the remote bomb's flow | the D-pad down steps the item wheel (+0x5064 -> 12); ZL + ZR throws it about 3 m ahead and the wheel slot's mode turns 1; ZL + ZR again sets it off (mode 0) and the game puts the gun back; one blast: 11 J'avo, an 11 combo |
+| the bot's bombs (80 s of play) | 2 out, 2 set off, 10 and 8 kills; 24 kills, no death. Both blasts knocked Chris down from about 3 m: the bot now backs off to 6 m first |
+| stage and costume | the stage select listed all ten (+0x58 = 0x3FF on the gBox save); the walk drew stage 7, Liquid Fire; the character select's costume counts read 4 for the first seven, 1 for Carla and Agent; right stepped Leon to costume 2 |
+| stamina | 800 / 800 (five segments), held by the keeper |
+| auto_qte | both copies read back 1; no hold came in 30 s and 140 s standing still nor in 80 s of play, so a grab freed with nothing pressed is not yet seen |
+
+The frames are in docs/evidence/re6-switch-mods/ (real frames, cropped to the game's window).
+
 ## Live rounds (2026-10-27, a private Citron NEO session on the Spark)
 
 Seven minutes of the driver as MercMode runs it (gbox.mercs.engine.play_round with this driver, the menus between
