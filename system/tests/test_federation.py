@@ -107,6 +107,26 @@ def test_existing_remote_native_owner_is_preserved_without_worker_retirement(cfg
     assert not store.get('worker',WID)
 
 
+@pytest.mark.parametrize('seen_s,authority,admitted', [(7200, AUTH, True), (60, AUTH, False), (7200, 'f'*64, False)])
+def test_a_long_gone_worker_of_the_same_authority_no_longer_blocks_its_successor(cfg, seen_s, authority, admitted):
+    """2026-10-24: the i9-NUC's app restarted while its local scheduler ran Mercenaries 3D; that 'running' row refused
+    every later snapshot of the same PC for 49 hours. A same-authority worker unseen for 30 minutes owns nothing."""
+    app,c=plane(cfg);store=app.state.store
+    old='1'*16;sid=old+'-'+LOCAL
+    fed={'authority':authority,'epoch':'0'*32,'last_seen':time.time()-seen_s}
+    store.put('worker',old,WorkerInfo(id=old,name='Owned local fixture',os='windows',tools=[]).model_dump()
+              |{'last_seen':time.time()-seen_s,'federation':fed})
+    store.put('session',sid,{'session_id':sid,'state':'running','game_id':'owned','federation':fed})
+    response=c.post('/api/federation/'+AUTH+'/snapshot',json=snapshot())
+    assert (response.status_code==200)==admitted,response.text
+    row=store.get('session',sid)
+    if admitted:
+        assert row['state']=='ended' and row['exit']=={'via':'stale_owner','worker':old,'superseded_by':WID}
+        assert store.get('worker',WID)['federation']['authority']==AUTH
+    else:
+        assert response.status_code==409 and row['state']=='running'      # recently seen, or another PC: preserved
+
+
 def test_positive_end_cannot_be_resurrected_and_blocks_inputs(cfg):
     app,c=plane(cfg);enroll(c)
     body=snapshot();body['sessions'][0]['state']='ended';body['sessions'][0]['ended']=time.time()
