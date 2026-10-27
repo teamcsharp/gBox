@@ -98,3 +98,27 @@ def test_the_prepare_receipt_names_re6_switch_by_its_title_id():
     from gbox.tools import _prepare_title
     assert _prepare_title({'game_id':re_switch.RE6_GAME_ID,'title':'Resident Evil 6'})==re_switch.RE6_TITLE_ID
     assert _prepare_title({'game_id':re_switch.RE5_GAME_ID})==re_switch.RE5_TITLE_ID
+
+
+def test_a_prepare_receipt_naming_the_switch_editions_is_accepted_and_proves_re6_switch_access():
+    # 2026-10-27: the prepare op probes the Switch No Mercy editions (#1265) but valid_preparation knew only the discs,
+    # so every host's prepare job failed with 422 and RE6 Switch stayed "ROM access has not been verified" on lilspark
+    import time
+    from tests.test_mercmode import prepared_relay
+    store,w,job,receipt=prepared_relay()
+    stamp=time.time()-1
+    games={re_switch.RE5_GAME_ID:{'reachable':True,'checked_at':stamp,'path':'/owned/Resident Evil 5.nsp','reason':''},
+           re_switch.RE6_GAME_ID:{'reachable':True,'checked_at':stamp,
+                                  'path':'/owned/Resident Evil 6 [01002A000CD48000].nsp','reason':''}}
+    receipt=receipt|{'games':receipt['games']|games}
+    assert M.valid_preparation(receipt)
+    assert not M.valid_preparation(receipt|{'games':{'unknown-game':games[re_switch.RE6_GAME_ID]}})
+    job['output']['result']['preparation']=receipt;store.put('job',job['id'],job)
+    switch={re_switch.RE5_GAME_ID:'Resident Evil 5',re_switch.RE6_GAME_ID:'Resident Evil 6'}
+    native=store.catalog_get
+    store.catalog_get=lambda gid:({'game_id':gid,'title':switch[gid],'platform':'switch'} if gid in switch
+                                  else native(gid))
+    cfg=M.configure(store,w['name'],{'titles':['re6'],'preferred_editions':RE6_PREFERENCE})
+    re6=next(r for r in M.inventory(store,w,cfg) if r['title']=='re6')
+    assert re6['playable'] and re6['game_id']==re_switch.RE6_GAME_ID
+    assert re6['rom_access']['source']=='worker_local_path_probe' and re6['rom_access']['verified'] is True
