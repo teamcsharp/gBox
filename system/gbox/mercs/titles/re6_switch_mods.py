@@ -26,6 +26,13 @@ ops:
                             15-23, type 0x113-0x116) kept at THROWN_MAX - it never reaches 0, where the ammo consumer
                             main+0xB25DC0 frees the stack and its object - and the item wheel's count (+0x9 7-14) at the
                             stacks' total; counts only (merc_loadout gives every loadout the stacks)
+  unlock_stages on=true     every Mercenaries stage in the stage select: the stage select's update main+0xAAFB20 builds
+                            its mask (+0x58) from cSystemInfo +0x970 & 0xFFFFE | 0xFE7F9 (>> 10 in mode 8), so stages 1
+                            and 2 are the save's: only those bits (0x1806) ORed into both copies (+0x970, +0x5E80), read
+                            back; the game's own next save keeps them (operator OK 2026-10-27, "random levels")
+  auto_qte on=true          the game's own automatic action button: cSystemInfo mTempData.mExOptAutoActBtn (+0x46B0,
+                            copy B +0x9BC0) set to 1 in both copies, that field only, read back; every QTE site tests it
+                            (nonzero = automatic) (operator OK 2026-10-27, "auto QTE")
   unlock_characters on=true every Mercenaries character and costume on the save: the character select's mask (cSystemInfo
                             +0x974 and its copy +0x5E84, which the select's constructor main+0xAA9158 ORs with 0x20010101)
                             set to 0x3FFFFFFF, both copies read back; nothing else in cSystemInfo is ever written, and the
@@ -78,6 +85,11 @@ WHEEL_INDEXES = range(7, 15)                             # the item wheel: a gre
                                                          # (the ammo consumer main+0xB25DC0 recounts it after each throw)
 STAMINA_SANE = 10000.0                                   # a maximum above this is not the gauge's
 CHARACTER_MASK = (0x974, 0x974 + 0x5510)                 # cSystemInfo: the select's unlock mask, copy A and copy B
+STAGE_MASK = (0x970, 0x970 + 0x5510)                     # cSystemInfo: the stage select's save bits (main+0xAAFB20 reads
+STAGE_BITS = 0x1806                                      # them & 0xFFFFE | 0xFE7F9: stages 1 and 2 are the save's - bits
+                                                         # 1, 2, and 11, 12 for mode 8, which shifts them down by 10)
+AUTO_QTE = (0x46B0, 0x46B0 + 0x5510)                     # cSystemInfo mTempData.mExOptAutoActBtn: nonzero = the game's own
+                                                         # automatic action button (every QTE site tests it, cbz / cbnz)
 ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for each of 7 characters, then bits 28 and 29
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
@@ -455,6 +467,45 @@ def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int
                     % LOADOUT_BLOCK}
 
 
+def _info_bits(g: RE6Switch, offs, bits: int, value=None) -> dict:
+    """cSystemInfo u32s at offs (copy A, copy B): OR bits in (value None) or set to value, only where they differ,
+    each read first and back after; nothing else in cSystemInfo is touched."""
+    from ... import re6_switch_unlock as U
+    info = U.system_info(g.m, g.base)
+    if info is None:
+        return {"verified": False, "reason": "no cSystemInfo yet (still booting)", "writes": 0}
+    before = [struct.unpack("<I", g.ad.read_memory(info + off, 4))[0] for off in offs]
+    writes = 0
+    for off, v in zip(offs, before):
+        want = (v | bits) if value is None else value
+        if want != v:
+            g.ad.write_memory(info + off, struct.pack("<I", want))
+            writes += 1
+    after = [struct.unpack("<I", g.ad.read_memory(info + off, 4))[0] for off in offs]
+    ok = all((a & bits) == bits for a in after) if value is None else all(a == value for a in after)
+    return {"verified": ok, "before": [hex(v) for v in before], "after": [hex(v) for v in after], "writes": writes}
+
+
+def unlock_stages(g: RE6Switch, on: bool = True) -> dict:
+    """Every Mercenaries stage in the stage select: only the stage bits of the save's word (cSystemInfo +0x970, copy B
+    +0x5E80) - the select ORs the rest in itself - read first and back after; off changes nothing (the save keeps an
+    unlock: the game's own next save)."""
+    res = _info_bits(g, STAGE_MASK, STAGE_BITS) if on else {"verified": True, "writes": 0}
+    g.state["unlock_stages"] = bool(on)
+    return {"unlock_stages": bool(on), **res,
+            "note": "the stage select's save bits (stages 1 and 2; the select sets the other eight itself): all ten "
+                    "stages start from its next look, and the game's own next save keeps them"}
+
+
+def auto_qte(g: RE6Switch, on: bool = True) -> dict:
+    """The game's own automatic action button (QTEs and grabs resolve with nothing pressed): cSystemInfo
+    mTempData.mExOptAutoActBtn in both copies set to 1 (off: 0), that field only, read back."""
+    res = _info_bits(g, AUTO_QTE, 0, value=1 if on else 0)
+    g.state["auto_qte"] = bool(on)
+    return {"auto_qte": bool(on), **res,
+            "note": "the game's own automatic action button: every QTE site tests the option (nonzero = automatic)"}
+
+
 def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
     """Every character and costume in the Mercenaries select: only the mask's two u32 in cSystemInfo (copy A, copy B)
     are written, each read first and read back after; nothing to do once both hold every bit. Off changes nothing
@@ -593,7 +644,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
               "heal_keep": "infinite_tablets", "stamina": "infinite_stamina", "combat_gauge": "infinite_stamina",
               "unlimited_stamina": "infinite_stamina", "characters": "unlock_characters", "loadout": "merc_loadout",
               "loadouts": "merc_loadout", "no_rocket": "merc_loadout", "grenades": "infinite_grenades",
-              "infinite_mines": "infinite_grenades", "remote_bombs": "infinite_grenades",
+              "infinite_mines": "infinite_grenades", "remote_bombs": "infinite_grenades", "stages": "unlock_stages",
+              "all_stages": "unlock_stages", "qte": "auto_qte", "auto_action": "auto_qte",
               "all_characters": "unlock_characters", "unlock_all": "unlock_characters"}.get(op, op)
         if op == "status":
             return g.status()
@@ -607,6 +659,10 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return infinite_grenades(g, bool(on))
         if op == "unlock_characters":
             return unlock_characters(g, bool(on))
+        if op == "unlock_stages":
+            return unlock_stages(g, bool(on))
+        if op == "auto_qte":
+            return auto_qte(g, bool(on))
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"))
@@ -618,4 +674,5 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                     "fire_rate": fire_rate(g, 1.0),
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
-                         "infinite_stamina, infinite_grenades, unlock_characters, fire_rate, merc_loadout, revert_all)")
+                         "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, fire_rate, "
+                         "merc_loadout, revert_all)")
