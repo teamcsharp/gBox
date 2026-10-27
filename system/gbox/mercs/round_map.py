@@ -61,10 +61,27 @@ def gap_start(stats: dict, now: float, via: str | None = None) -> float | None:
     gap = round(now - end, 1) if isinstance(end, (int, float)) and 0 <= now - end <= GAP_MAX_S else None
     stats["round_gap_s"] = gap
     stats["round_start_via"] = via or "unknown"
+    stats.pop("round_wait_s", None)
     if gap is not None:
+        stats["_round_gap_from"] = end                  # gap_play: the same end, to the round's clock running
         seen = [p for p in str(stats.get("round_gaps") or "").split(", ") if p]
         stats["round_gaps"] = ", ".join((seen + [f"{gap:g} {via or 'unknown'}"])[-GAPS_KEPT:])
+    else:
+        stats.pop("_round_gap_from", None)
     return gap
+
+
+def gap_play(stats: dict, now: float) -> float | None:
+    """The round's clock started (its first playable frame; RE5 on RPCS3 shows its player ~10 s before the load ends):
+    stats round_wait_s = the seconds since the last round of this run ended, None when gap_start had no end to count
+    from. round_waits keeps the last GAPS_KEPT as text, beside round_gaps."""
+    end = stats.pop("_round_gap_from", None)
+    wait = round(now - end, 1) if isinstance(end, (int, float)) and 0 <= now - end <= GAP_MAX_S else None
+    stats["round_wait_s"] = wait
+    if wait is not None:
+        seen = [p for p in str(stats.get("round_waits") or "").split(", ") if p]
+        stats["round_waits"] = ", ".join((seen + [f"{wait:g} {stats.get('round_start_via') or 'unknown'}"])[-GAPS_KEPT:])
+    return wait
 
 
 class RoundTrace:

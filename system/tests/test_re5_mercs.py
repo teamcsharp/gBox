@@ -1424,7 +1424,9 @@ def test_from_the_title_into_reunion_by_ram():
     assert where_and_key([("uIdStartUp01", extra | {R.EXTRA_CURSOR: 3})]) == ("extra_content", "cross")  # REUNION
     assert where_and_key(["uIdStartUp29"], line=1) == ("reunion_title", "cross")                      # START
     assert where_and_key([("uIdStartUp29", {R.MENU_SUB: 1})], line=1) == ("reunion_solo", "cross")    # SOLO
-    assert where_and_key(["uIdStartUp21", "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"), ("select_stage", "dleft"))
+    ready = {0x14: R.SELECT_READY}                  # the select's state byte (+0x17): 2 takes input, 0/1 fade in
+    assert where_and_key([("uIdStartUp21", {0x14: 1}), "uIdTopMenu00"]) == ("select_stage", None)
+    assert where_and_key([("uIdStartUp21", ready), "uIdTopMenu00"]) in (("select_stage", "cross"), ("select_stage", "dright"), ("select_stage", "dleft"))
 
 
 def test_re5_plays_through_the_deployment_before_the_engine_is_ready():

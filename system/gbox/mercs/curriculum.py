@@ -19,6 +19,7 @@ class Coverage:
         self.rosters, self.stages = rosters, tuple(stages)
         self.rng = rng or random.SystemRandom()
         self.counts, self.pending, self.last, self.selection_request = {}, None, None, None
+        self.pending_for = None                     # the (mode, keep) the held pick was drawn under (choose)
         self.lock = threading.RLock()
         if self.path:
             try:
@@ -44,28 +45,71 @@ class Coverage:
             and selection.get("character") in self.rosters[selection["mode"]] \
             and type(selection.get("stage")) is int and selection["stage"] in self.stages
 
-    def choose(self):
+    def choose(self, mode=None, keep=None, last=None):
+        """The next round's {"mode", "character", "stage"}, held as pending until a round starts: the DJ's queued pick,
+        else the least-played mode/character pair and that pair's least-played stage. mode: only that mode (RE5: a
+        MercMode turn never changes mode, a change walks out to the title and in again); keep "stage" / "character":
+        that part stays as the last round's (last: the caller's (mode, character, stage), else the last one started),
+        so one change at a time is made on its own select screen (re5_ps3.Pace). A DJ pick in another mode stays queued
+        for a call without mode (the walk between two turns). A pick held from a call with other constraints is drawn
+        again."""
         with self.lock:
-            if self.selection_request and self.selection_request["state"] == "queued":
-                self.pending = dict(self.selection_request["selection"])
+            request = self.selection_request
+            if request and request["state"] == "queued" and (mode is None or request["selection"]["mode"] == mode):
+                self.pending, self.pending_for = dict(request["selection"]), None
+                return dict(self.pending)
+            last = list(last) if last is not None else self.last
+            last = list(last) if isinstance(last, (list, tuple)) and len(last) == 3 \
+                and self._valid({"mode": last[0], "character": last[1], "stage": last[2]}) else None
+            if keep not in ("stage", "character") or last is None or (mode is not None and last[0] != mode):
+                keep = None                                 # nothing of this mode to keep: a free pick in it
+            if mode is not None and mode not in self.rosters:
+                mode = None
+            if self.pending is not None and (getattr(self, "pending_for", None) not in (None, (mode, keep))
+                                             or not self._fits(self.pending, mode, keep, last)):
+                self.pending = None
+            self.pending_for = (mode, keep) if mode is not None or keep is not None else None
             if self.pending is None:
+                rosters = {m: chars for m, chars in self.rosters.items() if mode is None or m == mode}
                 # Balance mode/character appearances first, then stages for that character.
                 totals = {(m, c): sum(self.counts.get(self.key(m, c, s), 0) for s in self.stages)
-                          for m, chars in self.rosters.items() for c in chars}
-                pool = [x for x, n in totals.items() if n == min(totals.values())]
-                if self.last and len(pool) > 1:
-                    pool = [x for x in pool if list(x) != self.last[:2]] or pool
-                    # the mode just played while it still has a least-played character: a mode change walks back out
-                    # to the title and in again (RE5: +13.7 s of menus, and 56% of the gaps between rounds switched
-                    # mode on 2026-10-25/26; operator 2026-10-26: "without breaks in between rounds"). Only least-played
-                    # pairs are ever chosen, so the balance is the same: the modes take turns in blocks
-                    pool = [x for x in pool if x[0] == self.last[0]] or pool
-                mode, char = self.rng.choice(pool)
-                low = min(self.counts.get(self.key(mode, char, s), 0) for s in self.stages)
-                stage = self.rng.choice([s for s in self.stages
-                                        if self.counts.get(self.key(mode, char, s), 0) == low])
-                self.pending = {"mode": mode, "character": char, "stage": stage}
+                          for m, chars in rosters.items() for c in chars}
+                if keep == "character":
+                    pool = [(last[0], last[1])]
+                else:
+                    if keep == "stage":                     # a new character on the same stage, in the same mode
+                        totals = {x: n for x, n in totals.items() if x != (last[0], last[1])} or totals
+                    pool = [x for x, n in totals.items() if n == min(totals.values())]
+                    if last and len(pool) > 1:
+                        pool = [x for x in pool if list(x) != last[:2]] or pool
+                        # the mode just played while it still has a least-played character: a mode change walks back
+                        # out to the title and in again (RE5: +13.7 s of menus, and 56% of the gaps between rounds
+                        # switched mode on 2026-10-25/26; operator 2026-10-26: "without breaks in between rounds"). Only
+                        # least-played pairs are ever chosen, so the balance is the same: the modes take turns in blocks
+                        pool = [x for x in pool if x[0] == last[0]] or pool
+                chosen_mode, char = self.rng.choice(pool)
+                if keep == "stage":
+                    stage = last[2]
+                else:
+                    stages = [s for s in self.stages if keep != "character" or s != last[2]] or list(self.stages)
+                    low = min(self.counts.get(self.key(chosen_mode, char, s), 0) for s in stages)
+                    stage = self.rng.choice([s for s in stages
+                                            if self.counts.get(self.key(chosen_mode, char, s), 0) == low])
+                self.pending = {"mode": chosen_mode, "character": char, "stage": stage}
             return dict(self.pending)
+
+    @staticmethod
+    def _fits(pending, mode, keep, last) -> bool:
+        """Whether a held pick satisfies choose()'s constraints (a status call may have drawn it without them)."""
+        if mode is not None and pending.get("mode") != mode:
+            return False
+        if keep == "stage":
+            return pending.get("stage") == last[2] and pending.get("mode") == last[0] \
+                and pending.get("character") != last[1]
+        if keep == "character":
+            return pending.get("character") == last[1] and pending.get("mode") == last[0] \
+                and pending.get("stage") != last[2]
+        return True
 
     def request(self, mode, character, stage):
         selected = {"mode": mode, "character": character, "stage": stage}
