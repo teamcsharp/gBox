@@ -22,6 +22,10 @@ ops:
                             300) / 100); the vfunc 0x400 beside it gives the maximum's; the player's init sets both from
                             the character's level (main+0xB18BF4) and every spend / refill goes through the vfunc 0x3E0
                             (main+0xB209D0), which waits for the refill delay +0x42A8
+  infinite_grenades on=true every hand / incendiary / flash grenade and remote bomb stack (the start list's slots, +0x9
+                            15-23, type 0x113-0x116) kept at THROWN_MAX - it never reaches 0, where the ammo consumer
+                            main+0xB25DC0 frees the stack and its object - and the item wheel's count (+0x9 7-14) at the
+                            stacks' total; counts only (merc_loadout gives every loadout the stacks)
   unlock_characters on=true every Mercenaries character and costume on the save: the character select's mask (cSystemInfo
                             +0x974 and its copy +0x5E84, which the select's constructor main+0xAA9158 ORs with 0x20010101)
                             set to 0x3FFFFFFF, both copies read back; nothing else in cSystemInfo is ever written, and the
@@ -67,6 +71,11 @@ SLOT_VTABLE = 0x2875848                                  # cItem
 SLOT_USED, SLOT_ID, SLOT_OBJ = 0x8, 0xA, 0x20            # u8 1 = in use, u8 the item id, the item's object (never written)
 TABLET_ID, TABLET_KEEP = 0x1D, 6                         # the tablet case (Leon 8 / 12 at the start, Chris 0 / 12)
 P_STAMINA, P_STAMINA_MAX = 0x42A0, 0x42A4                # f32 the combat gauge and its maximum (100 a segment past 300)
+ALL_SLOTS, SLOT_INDEX, SLOT_TYPE = 24, 0x9, 0xA          # the 24 cItem slots (the getter main+0xB22BB0 finds one by its
+                                                         # +0x9 index); u16 +0xA the type (0x100 + the item id)
+STACK_INDEXES = range(15, 24)                            # the start list's items, one slot each (grenades, the remote bomb)
+WHEEL_INDEXES = range(7, 15)                             # the item wheel: a grenade's count there is its stacks' total
+                                                         # (the ammo consumer main+0xB25DC0 recounts it after each throw)
 STAMINA_SANE = 10000.0                                   # a maximum above this is not the gauge's
 CHARACTER_MASK = (0x974, 0x974 + 0x5510)                 # cSystemInfo: the select's unlock mask, copy A and copy B
 ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for each of 7 characters, then bits 28 and 29
@@ -185,6 +194,29 @@ class RE6Switch:
                         struct.unpack_from("<h", raw, o + SLOT_CAP)[0])
         return None
 
+    def thrown_slots(self, player: int) -> tuple[list, list]:
+        """The live grenade and remote bomb slots: (stacks, wheel), each [(slot, type, count, capacity)] - a cItem slot in
+        use whose type is a grenade's or the remote bomb's, at a start-list index (15-23) or an item-wheel one (7-14)."""
+        try:
+            raw = self.ad.read_memory(player + SLOTS, SLOT_STRIDE * ALL_SLOTS)
+        except (ValueError, OSError):
+            return [], []
+        stacks, wheel = [], []
+        for i in range(ALL_SLOTS):
+            o = SLOT_STRIDE * i
+            if struct.unpack_from("<Q", raw, o)[0] != self.base + SLOT_VTABLE or raw[o + SLOT_USED] != 1:
+                continue
+            kind = struct.unpack_from("<H", raw, o + SLOT_TYPE)[0]
+            if kind not in THROWN:
+                continue
+            row = (player + SLOTS + o, kind, struct.unpack_from("<h", raw, o + SLOT_ROUNDS)[0],
+                   struct.unpack_from("<h", raw, o + SLOT_CAP)[0])
+            if raw[o + SLOT_INDEX] in STACK_INDEXES:
+                stacks.append(row)
+            elif raw[o + SLOT_INDEX] in WHEEL_INDEXES:
+                wheel.append(row)
+        return stacks, wheel
+
     def status(self) -> dict:
         st = {"game": GAME, "module_base": hex(self.base), "infinite_ammo": bool(self.state.get("infinite_ammo")),
               "infinite_tablets": bool(self.state.get("infinite_tablets")),
@@ -234,6 +266,43 @@ def _keep_tablets(ad, g: RE6Switch, player: int) -> int:
         return 0
     ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", TABLET_KEEP))
     return 1
+
+
+def _keep_thrown(ad, g: RE6Switch, player: int) -> int:
+    """Each live grenade / remote bomb stack back at THROWN_MAX (it never reaches 0, where the game frees it), then each
+    item-wheel count at its stacks' total (what the game itself writes after a throw); counts only, each slot re-read
+    just before its write."""
+    stacks, _wheel = g.thrown_slots(player)
+    writes = 0
+    for slot, kind, count, _cap in stacks:
+        if 0 < count < THROWN_MAX:
+            again = struct.unpack("<h", ad.read_memory(slot + SLOT_ROUNDS, 2))[0]
+            if again == count:
+                ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", THROWN_MAX))
+                writes += 1
+    stacks, wheel = g.thrown_slots(player)
+    totals: dict = {}
+    for _slot, kind, count, _cap in stacks:
+        totals[kind] = totals.get(kind, 0) + max(0, count)
+    for slot, kind, count, _cap in wheel:
+        want = totals.get(kind)
+        if want is not None and count != want and 0 < want <= 99:
+            ad.write_memory(slot + SLOT_ROUNDS, struct.pack("<h", want))
+            writes += 1
+    return writes
+
+
+def infinite_grenades(g: RE6Switch, on: bool) -> dict:
+    g.state["infinite_grenades"] = bool(on)
+    kept = 0
+    p = R.snapshot(g.m).get("player")
+    if on and p:
+        kept = _keep_thrown(g.ad, g, p["ptr"])
+    stacks = g.thrown_slots(p["ptr"])[0] if p else []
+    return {"infinite_grenades": bool(on), "verified": True, "kept": kept,
+            "stacks": [{"type": hex(k), "count": c} for _s, k, c, _cap in stacks],
+            "note": "every grenade and remote bomb stack kept at %d (its count only, never 0: the game frees an empty "
+                    "one), the item wheel's counts at their totals" % THROWN_MAX}
 
 
 def stamina(ad, player: int) -> tuple[float, float] | None:
@@ -465,7 +534,8 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
     with _LOCK:
         st = ORIG.get(id(ad))
         out = {"active": False, "writes": 0, "verified": True}
-        keeping = st and (st.get("infinite_ammo") or st.get("infinite_tablets") or st.get("infinite_stamina"))
+        keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
+                                                 "infinite_grenades"))
         if not keeping or not enabled:
             return out
         try:
@@ -480,6 +550,8 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                     kept = _keep_tablets(ad, g, p["ptr"])
                     st["tablets_kept"] = st.get("tablets_kept", 0) + kept
                     out["writes"] += kept
+                if st.get("infinite_grenades"):
+                    out["writes"] += _keep_thrown(ad, g, p["ptr"])
                 if st.get("infinite_stamina"):
                     kept = _keep_stamina(ad, p["ptr"])
                     st["stamina_kept"] = st.get("stamina_kept", 0) + kept
@@ -499,7 +571,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
               "no_ammo": "infinite_ammo", "tablets": "infinite_tablets", "infinite_heal": "infinite_tablets",
               "heal_keep": "infinite_tablets", "stamina": "infinite_stamina", "combat_gauge": "infinite_stamina",
               "unlimited_stamina": "infinite_stamina", "characters": "unlock_characters", "loadout": "merc_loadout",
-              "loadouts": "merc_loadout", "no_rocket": "merc_loadout", "mines": "merc_loadout",
+              "loadouts": "merc_loadout", "no_rocket": "merc_loadout", "grenades": "infinite_grenades",
+              "infinite_mines": "infinite_grenades", "remote_bombs": "infinite_grenades",
               "all_characters": "unlock_characters", "unlock_all": "unlock_characters"}.get(op, op)
         if op == "status":
             return g.status()
@@ -509,6 +582,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return infinite_tablets(g, bool(on))
         if op == "infinite_stamina":
             return infinite_stamina(g, bool(on))
+        if op == "infinite_grenades":
+            return infinite_grenades(g, bool(on))
         if op == "unlock_characters":
             return unlock_characters(g, bool(on))
         if op == "merc_loadout":
@@ -518,7 +593,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return fire_rate(g, 1.0 if on is False else multiplier)
         if op == "revert_all":
             return {"infinite_ammo": infinite_ammo(g, False), "infinite_tablets": infinite_tablets(g, False),
-                    "infinite_stamina": infinite_stamina(g, False), "fire_rate": fire_rate(g, 1.0),
+                    "infinite_stamina": infinite_stamina(g, False), "infinite_grenades": infinite_grenades(g, False),
+                    "fire_rate": fire_rate(g, 1.0),
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
-                         "infinite_stamina, unlock_characters, fire_rate, merc_loadout, revert_all)")
+                         "infinite_stamina, infinite_grenades, unlock_characters, fire_rate, merc_loadout, revert_all)")
