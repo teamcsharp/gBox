@@ -4693,6 +4693,8 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     BOOT_S = 180.0                                        # first boots build shader caches before the guest shows
     RESTART_GRACE_S = 6.0                                 # restart_title: SIGTERM, then SIGKILL what is left
     overlay_build: str | None = None                      # the LayeredFS build folder this session starts with
+    coop_players = 1                                      # 2: split screen, Player 2's keyboard pad in this launch's own
+                                                          # config folder (gbox.switch_coop); read at every (re)start
     LOG = EDEN_LOG
 
     # --- what differs between Eden and Citron (CitronLinuxAdapter overrides these) ---
@@ -4724,6 +4726,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     def __init__(self, config: Config, platform: str = "switch"):
         super().__init__(config, platform)
         self.env = self._env(config)
+        self._shared_xdg_config = self.env.get("XDG_CONFIG_HOME")   # the node's config folder (only read for co-op)
         self.home = self._home(config)
         self.debug, self.paused, self.rom = False, False, None
         self.title_settings: dict = {}                    # the per-title overrides this launch applied
@@ -4742,6 +4745,31 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self.write_settings()                             # before the first start: no callouts, Vulkan, the stub
         self._provision(getattr(self, "progress", None))
         self.overlay_state = self.select_overlay()        # Eden reads its mods and [DisabledAddOns] when it starts
+        self._coop_config()                               # last: a co-op launch copies the folder as it is now
+
+    def _coop_config(self) -> None:
+        """Split screen (coop_players 2): this launch reads its own copy of the emulator's config folder with Player 2's
+        keyboard pad (gbox.switch_coop.session_config); otherwise the node's shared folder, as always. The shared
+        qt-config.ini never gets Player 2, so MercMode's solo boots and the other sessions stay as they are."""
+        from . import switch_coop
+        shared = self._shared_xdg_config
+        if self.coop_players == 2:
+            if not shared:
+                raise Unsupported("this emulator's config folder is not gBox's own; Player 2 cannot be set per launch")
+            root = switch_coop.session_config(self, Path(shared), self._config_path().parent)
+            self.env = {**self.env, "XDG_CONFIG_HOME": str(root)}
+        elif shared:
+            switch_coop.drop_session_config(self)
+            self.env = {**self.env, "XDG_CONFIG_HOME": shared}
+
+    def _coop_started(self) -> None:
+        """After every (re)start: this launch's Player 2 record and, in split screen, the controller-applet watcher
+        (both games open it when split screen is chosen; Citron's dialog waits for OK)."""
+        from . import switch_coop
+        switch_coop.launched(self)
+        if self.coop_players == 2 and getattr(self, "_coop_launch", None):
+            proc = self.proc
+            switch_coop.watch_applet(self, lambda: not self._stopped and self.proc is proc and proc.poll() is None)
 
     def select_overlay(self) -> dict:
         """The LayeredFS selection for this start, written while Eden is down (gbox.switch_mods.prepare_launch): the
@@ -4855,12 +4883,14 @@ class SwitchLinuxAdapter(StandaloneAdapter):
                     self.supported = self.supported | {"set_breakpoint", "remove_breakpoint"}
                 arena = self._wait_guest_ready()
                 self._park_pointer()
+                self._coop_started()
                 watch = self._boot_watch() if watched else {"watched": False}
                 return d | {"emulator": f"{self.name} (linux)", "ready": "guest_memory",
                             "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
                             "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": tid or None,
                             "title_settings": self.title_settings, "content_dirs": self.content_dirs,
                             "eden_log": str(self.eden_log()), "overlay": self.overlay_state,
+                            "coop_players": self.coop_players,
                             "boot_watch": watch, "boot_attempts": attempt + 1,
                             "boot_failures": failures,
                             "validation": "guest memory mapped and the boot drew changing frames; gameplay not yet "
@@ -4984,8 +5014,10 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             self._ensure()
             self._spawn(self._argv(self.rom))
             self.restarts += 1
+            self._coop_started()
             out = {"restarted": True, "same_session": True, "pid": self.proc.pid,
-                   "previous_pid": getattr(old, "pid", None), "overlay": self.overlay_state, "restarts": self.restarts}
+                   "previous_pid": getattr(old, "pid", None), "overlay": self.overlay_state, "restarts": self.restarts,
+                   "coop_players": self.coop_players}
             if not wait:
                 threading.Thread(target=self._settle, daemon=True, name="eden-restart").start()
                 return out | {"ready": "booting"}
@@ -5049,6 +5081,9 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self._signal("SIGTERM")                           # AppRun and the eden binary under it
         result = super().stop_game()
         self._mem = None
+        if getattr(self, "_coop_config_path", None) is not None:
+            from . import switch_coop
+            switch_coop.drop_session_config(self)
         return result
 
     def query_runtime(self) -> dict:
@@ -5056,7 +5091,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
              "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
              "debugger": self.dbg is not None, "overlay": self.overlay_build,
              "restarting": isinstance(self.proc, _EdenRestarting), "restarts": self.restarts,
-             "fitted_windows": self.fitted_windows,
+             "fitted_windows": self.fitted_windows, "coop_players": self.coop_players,
              **({"restart_error": self.restart_error} if self.restart_error else {})}
         try:
             arena = self._guest()[1]
@@ -5168,6 +5203,39 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         out = super().send_input(known)
         skipped = sorted({str(ev.get("key")) for ev in events if str(ev.get("key", "")).casefold() not in self.keys})
         return out | ({"skipped": skipped} if skipped else {})
+
+    # --- split screen: Player 2 (gbox.switch_coop, docs/research/switch-coop-bot.md) ---
+    def prepare_teammate_pad(self, player=2, enabled=True, restart=False) -> dict:
+        """Player 2's keyboard pad for this session, from the next (re)start of its title (the emulator reads
+        controllers only at boot). restart=True restarts the title in this session now: the round in progress is lost,
+        so only the operator's explicit choice asks for it. Never node-wide: other sessions and MercMode keep one
+        player."""
+        from . import switch_coop
+        if type(player) is not int or player != 2:
+            raise Unsupported("Teammate control is restricted to Player 2")
+        if type(enabled) is not bool or type(restart) is not bool:
+            raise Unsupported("Player 2 preparation needs boolean enabled / restart values")
+        self.coop_players = 2 if enabled else 1
+        restarted = self.restart_title(wait=False) if restart else None
+        status = switch_coop.readiness(self)
+        if not restart:
+            status["reason"] = ("Player 2 is configured from the next restart of this title in this session; the "
+                                "running game keeps its controllers" if enabled else
+                                "Player 2 is removed from the next restart of this title")
+        return status | {"enabled": enabled, "restart": restarted}
+
+    def teammate_pad_status(self) -> dict:
+        from . import switch_coop
+        return switch_coop.readiness(self)
+
+    def send_input_player(self, events, player=2) -> dict:
+        """Player 2's keys on a verified split-screen launch; the whole batch checked first, never Player 1's keys."""
+        from . import switch_coop
+        rows = switch_coop.events(self, events, player)
+        args = switch_coop.xdotool_args(rows)
+        if args:
+            self._xdo(*args)
+        return {"sent": len(rows), "player": 2}
 
 
 class CitronLinuxAdapter(SwitchLinuxAdapter):
