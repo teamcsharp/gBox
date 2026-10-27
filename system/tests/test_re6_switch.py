@@ -604,6 +604,38 @@ def test_infinite_ammo_tops_every_gun_up_to_its_capacity(mods):
     assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1
 
 
+class RacingAdapter(Adapter):
+    """The game spends `spent` of a count between the write and its read-back (an automatic's shot): the adapter's own
+    read-back then fails, as CitronLinuxAdapter's does."""
+
+    def __init__(self, g, spent):
+        super().__init__(g)
+        self.spent = spent
+
+    def write_memory(self, a, data):
+        self.writes.append((a, bytes(data)))
+        if len(data) == 2:
+            data = struct.pack("<h", struct.unpack("<h", data)[0] - self.spent)
+        self.g.put(a, bytes(data))
+        if self.spent:
+            raise RuntimeError("memory write not confirmed by read-back")
+        return {"verified": True}
+
+
+def test_a_shot_between_a_top_up_and_its_read_back_is_the_games_own_spending(mods):
+    g = round_guest(guns=((20, 30),))
+    ad = RacingAdapter(g, 1)
+    assert mods.run(ad, "infinite_ammo", on=True)["topped_up"] == 1          # 30 written, 29 read back: done
+    assert R.snapshot(g)["player"]["ammo"] == 29
+    clock = [10.0]
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["verified"] and res["writes"] == 1                           # the next check tops it up again
+    ad.spent = 7                                                             # far more than a shot: a real mismatch
+    clock[0] += mods.CHECK_S
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["verified"] is False and "read-back" in res["reason"]
+
+
 def test_infinite_ammo_leaves_the_item_slots_alone(mods):
     g = round_guest(guns=((20, 30), (7, 7)), tablets=3)                    # Chris: the rifle and a 7-round gun
     p = R.snapshot(g)["player"]["ptr"]
