@@ -8,6 +8,7 @@ R = 'b' * 16
 P = 'c' * 16
 SHA = 'd' * 64
 ART = 'e' * 64
+LITE = '/api/requests?lite=1'       # the tick's listing: the queue's view of the inbox (gbox.inbox.lite)
 
 
 def test_read_only_round_analysis_prompt_never_inherits_native_writer_or_helper_work():
@@ -359,7 +360,7 @@ def test_pump_reserves_capacity_and_repeated_tick_does_not_duplicate(env, monkey
     def api(path, body=None):
         if path == '/api/chat': return [{'id': 'old-chat', 'busy': False}]
         if path == '/api/favorites': return {'count': len(favorites), 'items': favorites}
-        if path == '/api/requests' and body is None: return reqs
+        if path == LITE and body is None: return reqs
         if path == '/api/requests':
             child = request(f'{len(reqs)+100:016x}', **body)
             reqs.append(child)
@@ -386,7 +387,7 @@ def test_quota_primary_never_dispatches(env, monkeypatch):
     monkeypatch.setattr(q.mode, '_job', lambda: {'enabled': True, 'no_agent': True})
     monkeypatch.setattr(q.mode, '_jobs', lambda: [])
     monkeypatch.setattr(q, '_executions', lambda: ({}, set()))
-    monkeypatch.setattr(q, '_api', lambda path: [] if path == '/api/requests' else {'count': 0, 'items': []})
+    monkeypatch.setattr(q, '_api', lambda path: [] if path == LITE else {'count': 0, 'items': []})
     monkeypatch.setattr(q.mode, '_config', lambda: {'cron': {'model_provider': 'zai', 'model': 'glm'}})
     (q.delivery.state_dir() / 'feedback.json').write_text(json.dumps({'cooldowns': {'zai/glm': 9999}}))
     assert q.tick(now=1000)['status'] == 'waiting_for_route_supervisor'
@@ -503,7 +504,7 @@ def test_tick_throttles_sandboxes_and_warns_agents_while_the_operator_plays(env,
         if path == '/api/workers': return [{'id': 'spark', 'os': 'linux', 'online': True}]
         if path == '/api/chat': return []
         if path == '/api/favorites': return {'count': len(favorites), 'items': favorites}
-        if path == '/api/requests' and body is None: return reqs
+        if path == LITE and body is None: return reqs
         if path == '/api/requests':
             child = request(f'{len(reqs)+100:016x}', **body)
             reqs.append(child)
@@ -543,7 +544,7 @@ def test_private_queue_scope_blocks_new_and_reused_jobs_without_claims(env, monk
     monkeypatch.setattr(q.mode, '_handoff', lambda: '')
     monkeypatch.setattr(hermes_recovery, '_active_requests', lambda: set())
     monkeypatch.setattr(q, '_api', lambda path: [request(context={'purpose': 'public_source_research'})]
-                        if path == '/api/requests' else {'count': 0, 'items': []})
+                        if path == LITE else {'count': 0, 'items': []})
     count = [0]
     def config():
         count[0] += 1
@@ -610,7 +611,7 @@ def test_tick_creates_and_re_edits_runs_with_their_worktree(env, monkeypatch):
     monkeypatch.setattr(q.mode, '_workdir', lambda rid, number: f'/tasks/{rid}/system')
     def api(path, body=None):
         if path == '/api/favorites': return {'count': 0, 'items': []}
-        if path == '/api/requests' and body is None: return reqs
+        if path == LITE and body is None: return reqs
         if path == '/api/chat': return []
         raise AssertionError(path)
     monkeypatch.setattr(q, '_api', api)
@@ -656,7 +657,7 @@ def _required_node_tick(monkeypatch, requests, *, pooled=True, cloud=False, unav
     monkeypatch.setattr(hermes_local, 'register_provider', lambda path, s: REGISTERED.append((s.provider, s.proxy_url)))
     def api(path, body=None):
         if path == '/api/favorites': return {'count': 0, 'items': []}
-        if path == '/api/requests': return requests
+        if path == LITE: return requests
         if path == '/api/chat': return []
         if path == '/api/llm/local/status': return {'enabled': True, 'gated': None}
         if path == '/api/hermes/local/nodes':
@@ -1035,3 +1036,140 @@ def test_an_unacknowledged_creation_stops_holding_its_game_once_its_request_is_c
     closed, still_open = env['items']['inbox:' + '1' * 16], env['items']['inbox:' + '2' * 16]
     assert closed['dispatch_state'] == 'finished' and closed['settled']
     assert still_open['dispatch_state'] == 'uncertain'                                  # held for inspection as before
+
+
+# --- 2026-10-27: every tick fetched the whole request history (46 MB, ~4 s of the server that relays the live game
+# streams, which stalled right after) and each saved round report twice, done ones included. The tick reads the lite
+# view (gbox.inbox.lite) and verifies each open report and damage ledger once.
+
+def _damage_request(rid):
+    return request(rid, source='player_damage', author='agent', kind='report', status='open', automated=True, context={
+        'operator_requested': True, 'player_damage': True, 'session_id': 'native-session',
+        'damage_run_id': 'run-' + rid[:8], 'game_id': G})
+
+
+@pytest.mark.parametrize('lite_view', [True, False])
+def test_the_tick_reads_the_lite_listing_or_falls_back_to_the_plain_one(env, monkeypatch, lite_view):
+    import urllib.error
+    reqs = [request(R, title='Fix typo')]
+    _required_node_tick(monkeypatch, reqs)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    inner, asked = q._api, []
+
+    def api(path, body=None):
+        if path in (LITE, '/api/requests') and body is None:
+            asked.append(path)
+            if path == LITE and not lite_view:            # a server whose lite view fails
+                raise urllib.error.HTTPError('http://127.0.0.1:8765' + path, 500, 'Internal Server Error', {}, None)
+            return reqs
+        return inner(path, body)
+    monkeypatch.setattr(q, '_api', api)
+    result = q.tick(now=1000)
+    assert asked == ([LITE] if lite_view else [LITE, '/api/requests'])
+    assert [d['request_id'] for d in result['dispatched']] == [R]
+
+
+def test_done_or_blocked_round_analyses_are_never_verified(env, monkeypatch):
+    reqs = [request(str(i) * 16) for i in (1, 2, 3)]
+    _verified_round_analysis(monkeypatch, reqs)
+    saved, fetched = q._api, []
+    monkeypatch.setattr(q, '_api', lambda path, body=None: fetched.append(path) or saved(path, body))
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=1000)
+    assert len(fetched) == 3 and all(env['items']['inbox:' + r['id']]['round_analysis_verified'] for r in reqs)
+    reqs[1]['status'], reqs[2]['status'] = 'done', 'blocked'          # their items keep the old proof flag
+    fetched.clear()
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=1001)
+    options = q.candidates(env, reqs, [], set(), set(), now=1002)
+    assert [key for key, _ in options] == ['inbox:' + reqs[0]['id']]
+    assert fetched == ['/api/mercs/round-reports/' + reqs[0]['context']['mercs_round_report_id']] * 2
+
+
+def test_one_tick_verifies_each_open_report_and_damage_ledger_once(env, monkeypatch):
+    reports = [request(str(i) * 16, created=i) for i in (1, 2, 3)]
+    damage = _damage_request('4' * 16)
+    reqs = [*reports, damage]
+    _required_node_tick(monkeypatch, reqs)
+    monkeypatch.setattr(q, '_operator_playing', lambda: [])
+    inner = q._api
+    _verified_round_analysis(monkeypatch, reports)
+    saved, fetched = q._api, []
+
+    def api(path, body=None):
+        if path.startswith('/api/mercs/round-reports/'):
+            fetched.append(path)
+            return saved(path, body)
+        if path.startswith('/api/sessions/native-session/damage/runs/'):
+            fetched.append(path)
+            return {'session_id': 'native-session', 'run_id': damage['context']['damage_run_id'], 'total': 2,
+                    'request_id': damage['id'], 'game_id': G}
+        return inner(path, body)
+    monkeypatch.setattr(q, '_api', api)
+    q.tick(now=1000)
+    assert len(fetched) == len(set(fetched)) == 4, fetched        # sync verified each; candidates reused the answers
+    items = q._read()['items']
+    assert all(items['inbox:' + r['id']]['round_analysis_verified'] for r in reports)
+    assert items['inbox:' + damage['id']]['damage_batch_verified'] is True
+    fetched.clear()
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=1001)
+    q.sync(env, {'count': 0, 'items': []}, reqs, now=1002)
+    assert len(fetched) == 8                                      # outside a tick every sync verifies again
+
+
+def test_a_cut_body_is_read_whole_only_where_its_pick_whip_search_needs_it(env, monkeypatch):
+    from gbox import inbox
+    late = 'Operator notes. ' + 'x' * 2600 + ' then used the pick whip on the soldier'
+    whole = {r['id']: r for r in (
+        request('1' * 16, source='gap', automated=True, body=late),                       # read whole: a repair
+        request('2' * 16, source='gap', automated=True, body='y' * 2600),                 # read whole: not one
+        request('3' * 16, source='gap', automated=True, body=late, status='done'),        # closed: never read
+        request('4' * 16, source='gap', automated=True, body='pick whip ' + 'z' * 2600),  # its start says it
+        request('5' * 16, source='characters', automated=True, body=late, context={'what': 'the soldier'}),
+        request('6' * 16, source='api', automated=True, body=late, context={'auto_report': True}))}
+    rows = [inbox.lite(r) for r in whole.values()]
+    assert all(r['body_chars'] > len(r['body']) for r in rows)
+    fetched = []
+    monkeypatch.setattr(q, '_api', lambda path: fetched.append(path) or whole[path.rsplit('/', 1)[-1]])
+    q.sync(env, {'count': 0, 'items': []}, rows, now=1)
+    assert sorted(fetched) == ['/api/requests/' + '1' * 16, '/api/requests/' + '2' * 16]
+    reference = {'version': 1, 'items': {}}
+    q.sync(reference, {'count': 0, 'items': []}, list(whole.values()), now=1)
+    assert env['items'] == reference['items'] and len(fetched) == 2
+    assert env['items']['inbox:' + '1' * 16]['repair'] and not env['items']['inbox:' + '2' * 16]['repair']
+
+
+def test_the_lite_view_admits_and_sizes_work_exactly_like_whole_requests(monkeypatch):
+    """Each decision the queue takes from a request reads the same from its lite row: the opening words its skip rules
+    test (after leading whitespace), the 'pick whip' search (read whole when cut) and dispatch_size (an open body it
+    reads whole is never cut; a longer one is a long ticket by body_chars)."""
+    from gbox import hermes_local, inbox
+    assert inbox.LITE_OPEN_BODY >= hermes_local.LONG_TICKET
+    pad = 'Notes about the menus. ' * 120                                        # 2760 characters
+    whole = [
+        request('1' * 16, title='Tidy', body='Fix the typo in a.py ' + 'x' * 1200),             # kept whole: small
+        request('2' * 16, title='Tidy', body=pad + ' fix the typo in one file'),                 # long ticket
+        request('3' * 16, title='Tidy',
+                body='   \n' * 700 + 'gBox request review: weekly ' + 'r' * 3000),              # skipped: a review
+        request('5' * 16, title='Old', status='done', context={'coaching': True},
+                body=' ' * 500 + '<agent-message from="x">' + pad),                             # skipped before the pop
+        request('6' * 16, source='gap', automated=True, body=pad + ' with the pick whip'),       # a repair
+        request('7' * 16, title='Writer', body='edit gbox/a.py gbox/b.py and gbox/c.py ' + 'y' * 2000),
+    ]
+    rows = [inbox.lite(r) for r in whole]
+    assert [r['id'] for r in rows if 'body_chars' in r] == ['2' * 16, '3' * 16, '5' * 16, '6' * 16]
+    by_id = {r['id']: r for r in whole}
+    monkeypatch.setattr(q, '_api', lambda path: by_id[path.rsplit('/', 1)[-1]])
+
+    def decide(listing):
+        data = {'version': 1, 'items': {'inbox:' + '5' * 16: {'lane': 'inbox', 'request_id': '5' * 16, 'attempts': 0}}}
+        q.sync(data, {'count': 0, 'items': []}, listing, now=10)
+        rows_by_id = {r['id']: r for r in listing}
+        sizes = [(k, hermes_local.dispatch_size(i, rows_by_id[i['request_id']]))
+                 for k, i in q.candidates(data, listing, [], set(), set(), now=11)]
+        return data['items'], sizes
+    items, sizes = decide(rows)
+    assert (items, sizes) == decide(whole)
+    assert dict(sizes) == {'inbox:' + '1' * 16: {'size': 'small', 'reason': 'narrow fix (typo)'},
+                           'inbox:' + '2' * 16: {'size': 'large', 'reason': 'long ticket'},
+                           'inbox:' + '6' * 16: {'size': 'large', 'reason': 'native character or session work'},
+                           'inbox:' + '7' * 16: {'size': 'large', 'reason': 'names 3 files'}}
+    assert 'inbox:' + '5' * 16 in items and 'inbox:' + '3' * 16 not in items

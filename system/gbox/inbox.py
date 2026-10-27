@@ -256,3 +256,28 @@ def grouped(requests, minimum=2):
                  newest=latest.get("created") or 0, ids=[r["id"] for r in members],
                  latest={k: latest.get(k) for k in ("id", "number", "title", "status", "created")})
     return out
+
+
+# --- the Hermes queue's view of the inbox: GET /api/requests?lite=1 ---------------------------------------------------
+# 2026-10-27: the queue pump (gbox/hermes_work_queue.py) fetched the whole history every tick, 46 MB built in ~4 s inside
+# the server that also relays the live game streams, which stalled for 2 s right after each tick started. The message
+# threads were 27.6 MB of it and the metrics 2.4 MB; the queue reads neither.
+LITE_DROPPED = ("messages", "metrics")
+LITE_OPEN_BODY = 2500    # characters an open or in-progress request keeps: hermes_local.dispatch_size reads a body this
+                         # long whole (a longer one is a "long ticket" by body_chars alone) - keep it >= its LONG_TICKET
+LITE_CLOSED_BODY = 300   # a done or blocked request: the queue reads only its opening words (the review, agent-message
+                         # and task-notification markers)
+
+
+def lite(request):
+    """`request` without its message thread and metrics, and with a body longer than its status's limit (counted after
+    any leading whitespace) cut to that prefix; a cut row says body_chars, the whole body's length. Apply it after
+    organize(), which matches parents on whole bodies."""
+    out = {k: v for k, v in request.items() if k not in LITE_DROPPED}
+    body = request.get("body")
+    if isinstance(body, str):
+        keep = len(body) - len(body.lstrip()) + (
+            LITE_OPEN_BODY if request.get("status") in ("open", "in_progress") else LITE_CLOSED_BODY)
+        if len(body) > keep:
+            out.update(body=body[:keep], body_chars=len(body))
+    return out

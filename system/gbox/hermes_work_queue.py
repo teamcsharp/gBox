@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import time
+import urllib.error
 
 from . import hermes_delivery as delivery, hermes_task_mode as mode, hermes_quota
 
@@ -119,9 +120,11 @@ def requested_player_damage(request) -> bool:
 
 
 def requested_round_analysis(request) -> bool:
-    """Only the server's exact durable solo-round/request pair may share game ownership."""
+    """Only the server's exact durable solo-round/request pair may share game ownership. A done or blocked request is
+    never dispatched, so it is not verified (2026-10-27: each tick fetched all ~740 saved reports, 148 of them done)."""
     context = request.get('context') or {}
     if not isinstance(context, dict) or request.get('source') != 'mercs_round_analysis' \
+            or request.get('status') not in ('open', 'in_progress') \
             or request.get('author') != 'agent' or request.get('kind') != 'report' \
             or context.get('operator_requested') is not True or context.get('read_only') is not True \
             or context.get('required_inference_node') != 'sparkDeux' \
@@ -148,6 +151,41 @@ def requested_round_analysis(request) -> bool:
                 and (report.get('eligibility') or {}).get('needs_analysis') is True)
     except Exception:
         return False  # Missing/offline evidence never relaxes ownership.
+
+
+def _verified(memo, check, request) -> bool:
+    """check(request), one of the server-evidence checks above, run once per request in a tick: tick() hands sync() and
+    candidates() one memo over the same request snapshot, so candidates() reuses what sync() just verified instead of
+    fetching every report and ledger a second time. Without a memo (a direct call) every call verifies again."""
+    if memo is None:
+        return check(request)
+    key = (check, request.get('id'))
+    if key not in memo:
+        memo[key] = check(request)
+    return memo[key]
+
+
+def _says_pick_whip(request, body) -> bool:
+    """'pick whip' anywhere in the request's text. A lite listing row (GET /api/requests?lite=1) may hold only the start
+    of a long body, with body_chars: an open request whose kept start lacks the words is read whole. A done or blocked
+    request's repair flag is never used (sync admits open work only), so its kept start is enough."""
+    if 'pick whip' in body.lower():
+        return True
+    if request.get('body_chars') is None or request.get('status') not in ('open', 'in_progress'):
+        return False
+    whole = _api('/api/requests/' + request['id'])
+    return 'pick whip' in str(whole.get('body') or request.get('title') or '').lower()
+
+
+def _requests():
+    """Every request as the queue reads it: GET /api/requests?lite=1 (gbox.inbox.lite: no message threads or metrics,
+    long bodies cut to their start with body_chars), 7 MB where the whole history was 46 MB and took the server ~4 s
+    each tick (2026-10-27: the live streams it relays stalled). A server without the lite view ignores the parameter
+    and sends whole requests, which read the same; one whose lite view fails gets the plain listing."""
+    try:
+        return _api('/api/requests?lite=1')
+    except urllib.error.HTTPError:
+        return _api('/api/requests')
 
 
 def _prioritized_handoff(data, request) -> bool:
@@ -183,8 +221,9 @@ def re_report(item, request, games) -> bool:
             and item.get('game_id') in games)
 
 
-def sync(data, favorites, requests, *, now):
-    """Inventory every durable favorite, including missing catalog entries."""
+def sync(data, favorites, requests, *, now, verified=None):
+    """Inventory every durable favorite, including missing catalog entries. `verified`: tick()'s per-tick memo of the
+    server-evidence checks (_verified)."""
     if (not isinstance(favorites, dict) or not isinstance(favorites.get('items'), list)
             or favorites.get('count') != len(favorites['items'])):
         raise ValueError('Incomplete favorite snapshot; dispatch deferred')
@@ -221,8 +260,8 @@ def sync(data, favorites, requests, *, now):
         context = request.get('context') or {}
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
-        damage_report = requested_player_damage(request)
-        round_analysis = requested_round_analysis(request)
+        damage_report = _verified(verified, requested_player_damage, request)
+        round_analysis = _verified(verified, requested_round_analysis, request)
         if request.get('source') == 'player_damage' and not damage_report:
             old = data['items'].get('inbox:' + request['id'])
             if old is not None:
@@ -232,7 +271,7 @@ def sync(data, favorites, requests, *, now):
         unlock_work = bool(context.get('custom_build_unlocks'))
         repair = bool(damage_report or unlock_work or context.get('auto_report') or context.get('native_replacement')
                       or actionable and (context.get('character') or context.get('what')
-                                         or body.startswith('Extract ') or 'pick whip' in body.lower()))
+                                         or body.startswith('Extract ') or _says_pick_whip(request, body)))
         operator_child = (request.get('parent_request_id') and request.get('author') == 'operator'
                           and request.get('source') not in {'characters', 'gap', 'system', 'automation', 'agent', 'review'})
         # Agent-filed resume tickets carry automated=True too. Explicit request
@@ -373,7 +412,7 @@ def reconcile(data, jobs, latest, active, *, now, closed=frozenset()):
         item['retry_at'] = max(item.get('retry_at', 0), now + delay)
 
 
-def candidates(data, requests, native, owned, on_main, *, now):
+def candidates(data, requests, native, owned, on_main, *, now, verified=None):
     by_id = {r['id']: r for r in requests}
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
     busy_games = {(j.get('input') or {}).get('game_id') or
@@ -407,14 +446,15 @@ def candidates(data, requests, native, owned, on_main, *, now):
             # It gets one separate per-game slot, still under global/node capacity.
             # Up to ANALYSIS_PER_GAME at once (operator 2026-10-24: every Mercenaries report worked as it comes,
             # spark2 at full load; one at a time left 112 reports waiting).
-            shared = requested_round_analysis(by_id.get(rid,{})) and analysis_running.count(item.get('game_id')) < ANALYSIS_PER_GAME
+            shared = _verified(verified, requested_round_analysis, by_id.get(rid,{})) \
+                and analysis_running.count(item.get('game_id')) < ANALYSIS_PER_GAME
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
                 or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
             continue
         req = by_id.get(rid, {})
         if (req.get('source') == 'player_damage' or 'damage_batch_verified' in item) \
-                and (item.get('damage_batch_verified') is not True or not requested_player_damage(req)):
+                and (item.get('damage_batch_verified') is not True or not _verified(verified, requested_player_damage, req)):
             continue                            # a later failed sync cannot leave an old eligibility proof usable
         if item.get('lane') == 'inbox' and is_live_coaching(req):
             continue                                       # live coaching: the agents' inbox hook, never Hermes
@@ -766,8 +806,9 @@ def tick(*, now=None):
         data = _read()
         jobs = mode._jobs()
         latest, active = _executions()
-        requests = _api('/api/requests')
-        sync(data, _api('/api/favorites'), requests, now=now)
+        requests = _requests()
+        verified = {}                 # this tick's report / damage-ledger checks, shared by sync() and candidates()
+        sync(data, _api('/api/favorites'), requests, now=now, verified=verified)
         reconcile(data, jobs, latest, active, now=now,
                   closed={r['id'] for r in requests if r.get('status') in ('done', 'blocked')})
         _save(data)
@@ -828,7 +869,7 @@ def tick(*, now=None):
             data['unlock_admission'] = _api('/api/custom-build-unlocks/dispatch-admission')
         except Exception:
             data['unlock_admission'] = {'allowed': False}  # unrelated queue work remains eligible
-        options = candidates(data, requests, native, owned, _on_main(), now=now)
+        options = candidates(data, requests, native, owned, _on_main(), now=now, verified=verified)
         _save(data)  # Preserve review holds/guidance even when there are no free slots.
         # Both gates apply and the stricter wins: the operator's game on the Spark defers emulator-launching items
         # and caps unpooled dispatch at 1 (docs/stream-stability.md); the local route allows only small tasks, one

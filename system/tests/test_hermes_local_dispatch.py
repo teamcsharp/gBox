@@ -65,7 +65,7 @@ def _env(monkeypatch, tmp_path, reqs, favorites, gate=None):
             return []
         if path == '/api/favorites':
             return {'count': len(favorites), 'items': favorites}
-        if path == '/api/requests' and body is None:
+        if path == '/api/requests?lite=1' and body is None:          # the tick's listing (gbox.inbox.lite)
             return reqs
         raise AssertionError(path)
     monkeypatch.setattr(q, '_api', api)

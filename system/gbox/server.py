@@ -6237,22 +6237,46 @@ def create_app(config: Config) -> FastAPI:
         return PlainTextResponse("\n".join(out), media_type="text/markdown",
                                  headers={"content-disposition": 'attachment; filename="gbox-request-history.md"'})
 
+    lite_answers: dict[str, bytes] = {}     # ETag -> encoded lite listing; the tag embeds the store digest
+    lite_lock = threading.Lock()
+
     @app.get("/api/requests")
-    def req_list(request: Request, status: str = "", source: str = "", group: int = 0, actor=Depends(auth)):
+    def req_list(request: Request, status: str = "", source: str = "", group: int = 0, lite: int = 0,
+                 actor=Depends(auth)):
         # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
         # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
         # group=1 (#1788): each kind of automated ticket (launch failures, readiness, observer/gap, agent messages,
         # reviews, other automation) becomes one summary entry with its count, pending count, newest time and ids;
         # operator requests and build reports are returned unchanged. Without it the answer is the plain list.
+        # lite=1: the Hermes queue's view (inbox.lite): no message threads or metrics, bodies cut to a prefix with
+        # body_chars. 7 MB instead of 46 MB on 2026-10-27, when the queue pump's full fetch took ~4 s of this process
+        # every tick and the game streams it relays stalled. SQLite drops the threads before Python decodes, and the
+        # encoded answer is kept for its ETag, so an unchanged inbox is answered from memory too.
         import hashlib
         from fastapi.responses import JSONResponse
-        tag = f'"{store.digest("request")}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "")).encode()).hexdigest()[:8]}"'
+        digest = store.digest("request")
+        tag = f'"{digest}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "") + ("|lite" if lite else "")).encode()).hexdigest()[:8]}"'
         if request.headers.get("if-none-match") == tag:
             return Response(status_code=304, headers={"etag": tag})
         from . import inbox
-        rs = [r for r in inbox.organize(store.all("request")) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
-        rs = sorted(rs, key=lambda r: r["created"], reverse=True)
-        return JSONResponse(_clean(inbox.grouped(rs) if group else rs), headers={"etag": tag})
+
+        def listing(docs):
+            rs = [r for r in inbox.organize(docs) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
+            return sorted(rs, key=lambda r: r["created"], reverse=True)
+        if not lite:
+            rs = listing(store.all("request"))
+            return JSONResponse(_clean(inbox.grouped(rs) if group else rs), headers={"etag": tag})
+        with lite_lock:                                    # one build per change, however many callers ask at once
+            body = lite_answers.get(tag)
+            if body is None:
+                rs = [inbox.lite(r) for r in listing(store.all("request", without=inbox.LITE_DROPPED))]
+                body = JSONResponse(_clean(inbox.grouped(rs) if group else rs)).body
+                for old in [t for t in lite_answers if not t.startswith(f'"{digest}:')]:
+                    del lite_answers[old]                  # answers for an older inbox
+                while len(lite_answers) >= 4:              # other filters of this one
+                    del lite_answers[next(iter(lite_answers))]
+                lite_answers[tag] = body
+        return Response(body, media_type="application/json", headers={"etag": tag})
 
     def _clean(o):
         """Lone surrogates (bad clipboard/dictation text) can't be sent as UTF-8 JSON: replace them, don't fail the list."""
