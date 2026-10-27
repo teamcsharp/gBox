@@ -287,3 +287,17 @@ def test_mercs_bot_reads_an_eden_session_through_proc_mem_at_the_guest_address(m
     ad.address_mode = "offset"
     mercs_bot._memory(ad)
     assert opened[-1] == (77, 0x1200000000)                                  # Dynarmic: arena base + guest address
+
+
+def test_menu_handoff_only_for_a_native_screen_in_ram():
+    """A round that ended on "Save successful" (Continue? No) has no player: the engine must hand it to the menus,
+    not call it lost (live in gBox on Citron 2026-10-26: mercs_bot stopped the run as hung)."""
+    d = R.RE5Switch()
+    save = round_guest(phase=R.PHASE_PLAYING, player=False, units=((1, "uIdAlert00"),),
+                       cursors={"uIdAlert00": {R.ALERT_UP: 0xC0, R.ALERT_ID: 0x09}})
+    assert d.screen(save, None) == "results" and d.menu_handoff(save, R.snapshot(save), "results") is True
+    tally = round_guest(phase=R.PHASE_OVER, player=False, units=((2, "uIdMerceEd00"),))
+    assert d.menu_handoff(tally, R.snapshot(tally), "results") is True
+    blank = round_guest(phase=R.PHASE_OVER, player=False, units=())
+    assert d.menu_handoff(blank, R.snapshot(blank), "results") is False        # nothing named: the lost watch runs
+    assert d.menu_handoff(save, R.snapshot(save), "loading") is False
