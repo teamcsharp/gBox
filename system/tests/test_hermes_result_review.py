@@ -643,6 +643,108 @@ class MainDriftGitTests(unittest.TestCase):
                 self.assertIsNone(drift.files('not-a-sha'))
 
 
+class MergeGateCoverageTests(unittest.TestCase):
+    """What counts as a complete, supported, focused integration: gbox modules at any package depth, tests at any
+    depth below tests/, a named test that imports a package module, and the same test-count and size caps."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.worktree = Path(tmp.name)
+        self.system = self.worktree / 'system'
+
+    def write(self, name, text='x = 1\n'):
+        path = self.worktree / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+        return name
+
+    def coverage(self, *changed, diff='diff'):
+        return G.coverage(list(changed), diff, self.system)
+
+    def test_prefixes_of_a_package_module(self):
+        self.assertEqual(G.module_test_prefixes('system/gbox/mercs/titles/re5_switch.py'),
+                         ['re5_switch', 'titles_re5_switch', 'mercs_re5_switch', 'mercs_titles_re5_switch'])
+        self.assertEqual(G.module_test_prefixes('system/gbox/formats/nsbmd.py'), ['nsbmd', 'formats_nsbmd'])
+
+    def test_package_module_with_its_named_tests_is_complete(self):
+        module = self.write('system/gbox/mercs/titles/re5_switch.py')
+        test = self.write('system/tests/test_re5_switch_smooth.py', 'from gbox.mercs.titles import re5_ps3, re5_switch as S\n')
+        self.write('system/tests/test_re5_switch.py', 'import gbox.mercs.titles.re5_switch as S\n')
+        self.write('system/tests/test_re5_switch_unlock.py', 'from gbox import re5_switch_unlock\n')   # by name only
+        self.write('system/tests/test_other.py', 'from gbox.mercs.titles import re5_switch\n')
+        complete, tests, sources, why = self.coverage(module, test)
+        self.assertEqual((complete, why), (True, ''))
+        self.assertEqual(tests, ['tests/test_re5_switch_smooth.py', 'tests/test_re5_switch.py',
+                                 'tests/test_re5_switch_unlock.py'])
+        self.assertEqual(set(sources), {module, test})
+
+    def test_package_prefixed_test_counts_when_it_imports_the_module(self):
+        module = self.write('system/gbox/mercs/engine.py')
+        self.write('system/tests/test_mercs_engine.py', 'from gbox.mercs import (\n    clock,\n    engine,\n)\n')
+        complete, tests, _, why = self.coverage(module)
+        self.assertEqual((complete, tests, why), (True, ['tests/test_mercs_engine.py'], ''))
+
+    def test_a_name_match_without_the_import_does_not_cover_a_package_module(self):
+        module = self.write('system/gbox/mercs/titles/re6_switch.py')
+        self.write('system/tests/test_re6_switch_unlock.py', 'from gbox import re6_switch_unlock as U\n')
+        complete, tests, _, why = self.coverage(module)
+        self.assertFalse(complete)
+        self.assertEqual(tests, ['tests/test_re6_switch_unlock.py'])     # still run, but it is not coverage
+        self.assertEqual(why, 'no focused test for system/gbox/mercs/titles/re6_switch.py')
+
+    def test_import_path_must_be_exact(self):
+        module = 'system/gbox/formats/nsbmd.py'
+        for text, expected in (('import gbox.formats.nsbmd as N', True),
+                               ('from gbox.formats.nsbmd import parse', True),
+                               ("monkeypatch.setattr('gbox.formats.nsbmd.MAX', 1)", True),
+                               ('from gbox.formats import (btx,\n    nsbmd as N)', True),
+                               ('from gbox.formats import nsbmd_extra', False),
+                               ('import gbox.formats.nsbmd_extra', False),
+                               ('from gbox import nsbmd', False),
+                               ('# nsbmd', False)):
+            with self.subTest(text=text):
+                self.assertIs(G.imports_module(text, module), expected)
+
+    def test_tests_below_tests_are_supported_and_selected(self):
+        test = self.write('system/tests/formats/test_nsbmd_header.py', 'from gbox.formats import nsbmd\n')
+        module = self.write('system/gbox/formats/nsbmd.py')
+        self.write('system/tests/test_nsbmd.py', 'from gbox.formats import nsbmd\n')
+        complete, tests, _, why = self.coverage(module, test)
+        self.assertEqual((complete, why), (True, ''))
+        self.assertEqual(tests, ['tests/formats/test_nsbmd_header.py', 'tests/test_nsbmd.py'])
+
+    def test_top_level_modules_keep_the_name_rule(self):
+        module = self.write('system/gbox/re4_collision.py')
+        self.write('system/tests/test_re4_collision.py', 'import struct\n')
+        self.assertEqual(self.coverage(module)[0::3], (True, ''))
+
+    def test_anything_else_is_still_unsupported(self):
+        module = self.write('system/gbox/formats/nsbmd.py')
+        self.write('system/tests/test_nsbmd.py', 'from gbox.formats import nsbmd\n')
+        for other in ('system/clients/desktop/app.py', 'system/gbox.toml', 'system/gbox/formats/table.bin',
+                      'system/gbox/mercs/commands.json', 'system/gbox/formats/nsbmd.pyc', 'system/tests/helper.py',
+                      'system/gbox/mercs-x/foo.py', 'tools/build.py'):
+            with self.subTest(other=other):
+                self.write(other)
+                complete, _, _, why = self.coverage(module, other)
+                self.assertFalse(complete)
+                self.assertEqual(why, 'unsupported: ' + other)
+
+    def test_test_count_and_size_caps_hold(self):
+        module = self.write('system/gbox/mercs/titles/re5_switch.py')
+        for n in range(G.TEST_LIMIT + 1):
+            self.write(f'system/tests/test_re5_switch_{n:02}.py', 'from gbox.mercs.titles import re5_switch\n')
+        complete, tests, _, why = self.coverage(module)
+        self.assertEqual((complete, len(tests), why), (False, 51, '51 focused tests > 50'))
+        for n in range(1, G.TEST_LIMIT + 1):
+            (self.system / f'tests/test_re5_switch_{n:02}.py').unlink()
+        self.assertEqual(self.coverage(module)[0], True)
+        complete, _, _, why = self.coverage(module, diff='+' * G.SOURCE_LIMIT)
+        self.assertFalse(complete)
+        self.assertTrue(why.startswith('diff and sources '))
+
+
 if __name__ == '__main__':
     unittest.main()
 
