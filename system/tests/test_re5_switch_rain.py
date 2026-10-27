@@ -11,6 +11,13 @@ from gbox.mercs.titles import re5_switch as R
 MUZZLE = (0.0, 140.0, 30.0)
 
 
+
+@pytest.fixture(autouse=True)
+def _switch_fight(monkeypatch):
+    """These tests drive the Switch's own fight (re5_switch.Bot._decide), kept behind PS3_BRAIN = False until the RE5
+    PS3 combat core (tests/test_re5_switch_brain.py) has proven itself live."""
+    monkeypatch.setattr(R, "PS3_BRAIN", False)
+
 @pytest.fixture(autouse=True)
 def _no_heal(monkeypatch):
     monkeypatch.setattr(R, "HEAL_ENABLED", False)

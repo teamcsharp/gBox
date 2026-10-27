@@ -13,6 +13,13 @@ GUN = {"slot": 3, "id": 0x102, "type": 1, "item": 0x02, "rounds": 50, "cap": 50,
 SPRAY = {"slot": 5, "id": 0x304, "type": 3, "item": 0x04, "rounds": 1, "cap": 1, "grid": 7, "hand": False}
 
 
+
+@pytest.fixture(autouse=True)
+def _switch_fight(monkeypatch):
+    """These tests drive the Switch's own fight (re5_switch.Bot._decide), kept behind PS3_BRAIN = False until the RE5
+    PS3 combat core (tests/test_re5_switch_brain.py) has proven itself live."""
+    monkeypatch.setattr(R, "PS3_BRAIN", False)
+
 @pytest.fixture(autouse=True)
 def _fresh_laser_caches(monkeypatch):
     for cache in (R._LASER, R._LASER_MISS, R._NOT_LASER):
