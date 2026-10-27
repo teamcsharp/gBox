@@ -150,6 +150,9 @@ PITCH_TOL, PITCH_FINE, PITCH_LIMIT_S = 0.05, 0.15, 0.5   # fire within PITCH_TOL
                                                          # stick is pulsed; a push that moves nothing this long: the limit
 SHOOT_RANGE = 2400.0                             # fire inside this
 BONUS_FIGHT_R = 2400.0                           # bonuses left: only a Ganado in view this close is fought first
+SHOOT_KEEP = 3800.0                              # ... and with the gun already up on him, he stays the target out to here
+                                                 # (today 30 % of the raises that never fired came down as he stepped past
+                                                 # 2.4 m - median 2.15 m at the last aim - for a run at him; 14 % for a bonus)
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
 PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick down, one up - ~10 presses a second, the loop's
                                                  # limit (operator 2026-10-26: "leon needs to fire about 20x faster"; the gun's
@@ -1335,8 +1338,8 @@ class Bot:
             if not self._sight(p, (tx, tgt["pos"][1] + max(band[2], 300.0), tz)):   # a wall between: navigate, never fire
                 self.r_since = None
                 return self._go(p, (tx, tz), now)
-            if dist > SHOOT_RANGE:                                     # in view but too far: close in
-                self.r_since = None
+            if dist > (SHOOT_KEEP if self.r_since is not None else SHOOT_RANGE):   # in view but too far: close in
+                self.r_since = None                                    # (the gun up already: it stays up to SHOOT_KEEP)
                 return self._run_to(p, (tx, tgt["pos"][1], tz), now)
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
         if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
@@ -2877,7 +2880,9 @@ class Bot:
         seen = bool(near) and self._sight(p, (near["pos"][0], near["pos"][1] + HEAD_H, near["pos"][2]))
         if near is not None:
             self.lock = near["slot"] if seen and dist < ENGAGE else self.lock
-        if near and dist < ENGAGE and (seen if not pending else seen and dist < BONUS_FIGHT_R):
+        fight_r = SHOOT_KEEP if self.r_since is not None and near is not None and near["slot"] == self.lock \
+            else BONUS_FIGHT_R                                             # the gun up on him: no bonus detour mid-aim
+        if near and dist < ENGAGE and (seen if not pending else seen and dist < fight_r):
             return self._fight(p, near, now, s)                           # in view (and, with bonuses left, close)
         if self.st is not None:
             if self.items and not self.ordered:                            # the round's route: best order from here
