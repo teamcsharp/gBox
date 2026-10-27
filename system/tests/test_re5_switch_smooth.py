@@ -119,3 +119,19 @@ def test_up_close_the_gun_goes_down_for_a_far_off_aim_at_once_as_before():
         assert b2.doing != "unaim"
     finally:
         R.THREAT_R = R_thr
+
+
+def test_the_dot_on_another_majini_fires_at_him_at_once_without_taking_him_as_the_target():
+    b, clock = bot()
+    a, other = at(600, 0), at(500, 4)
+    chest = lambda f: (f[0], f[1] + R.CHEST_H, f[2])
+    snap = lambda dot: {"player": p(), "enemies": [{"ptr": 10, "pos": a, "hp": 800, "hp_max": 800},
+                                                   {"ptr": 11, "pos": other, "hp": 800, "hp_max": 800}],
+                        "inventory": [], "laser": {"from": (0.0, 140.0, 30.0), "at": dot, "up": dot is not None}}
+    b.target = 10
+    b.tick({**snap(None), "laser": {"from": (0, 0, 0), "at": (0, 0, 0), "up": False}})
+    assert b.target == 10
+    clock[0] = 0.3
+    act = b.tick(snap(chest(other)))                               # one tick under the dot: shot, not yet the target
+    assert "zr" in act["hold"] and b.target == 10 and b.stats["dot_shots"] == 1
+    assert not set(act["hold"]) & {"rleft", "rright", "rup", "rdown"}   # the aim held still
