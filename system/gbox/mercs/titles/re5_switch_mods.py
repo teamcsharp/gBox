@@ -694,11 +694,16 @@ def bullet_damage_x(g: RE5Switch):
 # 0xD9080 -> 0xEADD0) counts the authoritative clock down at aGame +0x7C0 (its end flag +0x7B8) and copies it into
 # cGameSys +0x948 every frame (unless cGameSys +0x82C); a write to the copy alone is overwritten. The hourglass pickup
 # (uOmHourGlass 0x6C5824) reaches aGame through the sArea pointer (main+0x26A1460) +0x7040, adds the hourglass unit's
-# own s16 at +0x1EB8 (30 / 60 s) to +0x7C0, and shows "+NN Sec." through cGameSys +0x950 (seconds) / +0x954 (on).
+# own s16 at +0x1EB8 (30 / 60 / 90 s) to +0x7C0, and shows "+NN Sec." through cGameSys +0x950 (seconds) / +0x954 (on).
 # The melee finisher's +5 is an FP immediate in the code (0xF89BC): not data, not scaled here.
 S_AREA_PTR, AREA_GAME, GAME_CLOCK, GAME_CLOCK_END = 0x26A1460, 0x7040, 0x7C0, 0x7B8
 GS_LAST_BONUS, GS_SHOW_BONUS = 0x950, 0x954
-HOURGLASS_VT, HG_SECONDS, HOURGLASS_VALUES = 0x1BD71D8, 0x1EB8, (30, 60)
+# The standing hourglasses are uOm0100 (DTI main+0x1D639F0, a child of uOmHourGlass's main+0x1D639B8, both 0x2570
+# bytes): their vtable is main+0x1BD6D58 (its getDTI returns uOm0100; the newInstance at 0x6C6220 constructs it and
+# sets +0x1EB8 to 60). main+0x1BD71D8 is uOmHourGlass's own (the parent; its destructor is shared), never placed, so a
+# scan for it alone found no hourglass in a round (10-27 13:14). Both are accepted.
+# Live 14:24: a round's eight stood at 60 s and 90 s (s16 +0x1EB8, the same at +0x1EBA).
+HOURGLASS_VT, HOURGLASS_PARENT_VT, HG_SECONDS, HOURGLASS_VALUES = 0x1BD6D58, 0x1BD71D8, 0x1EB8, (30, 60, 90)
 MIN_CLOCK_S = 1.0                 # no write leaves the countdown at or under this: 0 is the round's end
 ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
 KILL_TIME_S, KILL_TIME_MAX_S = 10.0, 30.0
@@ -800,23 +805,23 @@ def _maintain_kill_time(g: RE5Switch, kt: dict, snap) -> int:
 
 
 def hourglasses(g: RE5Switch) -> list:
-    """The round's standing hourglasses (uOmHourGlass units, by vtable) on sUnit's move lines."""
+    """The round's standing hourglasses (uOm0100 units, or uOmHourGlass's own, by vtable) on sUnit's move lines."""
     out = []
     su = _u64(g, g.base + R.S_UNIT)
     if not R.ptr_ok(su):
         return out
-    vt = g.base + HOURGLASS_VT
+    vts = (g.base + HOURGLASS_VT, g.base + HOURGLASS_PARENT_VT)
     for line in range(R.N_LINES):
         u, n = _u64(g, su + R.UNIT_LINES + R.LINE_STRIDE * line), 0
         while R.ptr_ok(u) and n < 1024:
-            if _u64(g, u) == vt:
+            if _u64(g, u) in vts:
                 out.append(u)
             u, n = _u64(g, u + R.UNIT_NEXT), n + 1
     return out
 
 
 def time_bonus_multiplier(g: RE5Switch, mult) -> dict:
-    """Every standing hourglass's own seconds (+0x1EB8: 30 / 60) x N, once a unit (the PS3 tool's; rerun each round)."""
+    """Every standing hourglass's own seconds (+0x1EB8: 30 / 60 / 90) x N, once a unit (the PS3 tool's; rerun each round)."""
     k = float(mult if mult is not None else 1)
     if not 1 <= k <= 20:
         raise ValueError("time_bonus_multiplier: 1 .. 20")

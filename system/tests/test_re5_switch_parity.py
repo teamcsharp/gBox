@@ -327,9 +327,21 @@ def test_kill_time_adds_seconds_for_each_kill_and_the_hourglasses_scale_where_th
     g.q(hg, BASE + SM.HOURGLASS_VT)
     g.put(hg + SM.HG_SECONDS, struct.pack("<h", 30))
     g.q(su + R.UNIT_LINES + R.LINE_STRIDE * 12, hg)
+    parent, other = g.alloc(0x2000), g.alloc(0x2000)                           # uOmHourGlass's own, and not one
+    for u, vt, sec in ((parent, SM.HOURGLASS_PARENT_VT, 90), (other, 0x1BD6D48, 30)):
+        g.put(u, bytes(0x2000))
+        g.q(u, BASE + vt)
+        g.put(u + SM.HG_SECONDS, struct.pack("<h", sec))
+    g.q(su + R.UNIT_LINES + R.LINE_STRIDE * 13, parent)
+    g.q(parent + R.UNIT_NEXT, other)
     out = SM.tool_run(ad, "time_bonus_multiplier", 3, True)
-    assert out["verified"] and out["hourglasses"] == 1 and out["hourglass_seconds"] == [90]
+    assert out["verified"] and out["hourglasses"] == 2 and out["hourglass_seconds"] == [90, 270]
+    assert struct.unpack("<h", g.rd(other + SM.HG_SECONDS, 2))[0] == 30         # another unit is left alone
     assert SM.tool_run(ad, "time_bonus_multiplier", 3, True)["scaled"] == 0    # once a unit (90 is not raw 30)
+
+
+def test_the_standing_hourglass_is_uom0100_and_its_parent_is_accepted_too():
+    assert (SM.HOURGLASS_VT, SM.HOURGLASS_PARENT_VT) == (0x1BD6D58, 0x1BD71D8)
 
 
 def test_rotten_eggs_only_puts_the_egg_in_every_gun_slot_with_an_endless_stock_and_takes_it_back():
