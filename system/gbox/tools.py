@@ -1773,8 +1773,6 @@ def _session_accept(store, out: SessionOut, actor: str):
         store.put("session", out.session_id, s | {"state": "ended", "ended": s.get("ended") or time.time(),
                                                   "exit": merge(s.get("exit"), out.result), **kept})
 
-@tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
-      on_accept=_session_accept)
 def _park_autobot(sid: str, wait_s: float | None = None) -> dict:
     """Before a warm pause: the session's autobot stopped and its thread ended - a thread paused mid-read of the
     emulator's memory never sees its stop. A thread still alive after the bounded wait is reaped (_reap)."""
@@ -1792,6 +1790,8 @@ def _park_autobot(sid: str, wait_s: float | None = None) -> dict:
     return {"autobot": "ended"}
 
 
+@tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
+      on_accept=_session_accept)
 def session_op(inp: SessionIn, ctx: Ctx):
     """Call a runtime op (pause/resume/stop_game/save_state/query_runtime/step_frames...) on a live session."""
     if inp.op in ("record_start", "record_stop"):
