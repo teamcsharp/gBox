@@ -316,6 +316,44 @@ def test_each_round_carries_its_path_gap_and_wait(pace):
     assert stats["same_round_streak"] == 2
 
 
+def reunion_world(timer, hp=1000, character=6, stage=7):
+    mem = world(timer=timer, hp=hp)
+    mem.u32(GAMESYS + 0x58, 5)
+    mem.u32(GAMESYS + 0x348, stage)
+    mem.u32(GAMESYS + 0x364, character)
+    return mem
+
+
+def test_the_bot_answers_continue_yes_inside_the_streak_and_the_retry_is_its_own_round(pace):
+    pace.begin_run("s1", "job1", turn=True)
+    now, stats = [10.0], {}
+    bot = R.Bot(reunion_world(100.0), clock=lambda: now[0], stats=stats)
+    bot.observe_round(R.snapshot(reunion_world(100.0)), "playing", 10.0)
+    for n in (1, 2):
+        dead = with_continue(reunion_world(50.0, hp=0), state=2, choice=0)
+        bot.m = dead
+        now[0] += 40.0
+        assert bot.tick(R.snapshot(dead)) == {"tap": "cross"}          # Yes: the cursor rests on it
+        assert stats["continue_retried"] == n and not stats.get("continue_declined")
+        now[0] += 18.0
+        again = reunion_world(120.0)
+        bot.m = again
+        bot.observe_round(R.snapshot(again), "playing", now[0])
+        assert stats["round_start_via"] == "dead/retry" and stats["round_gap_s"] == 18.0
+        assert stats["same_round_streak"] == n + 1
+        now[0] += 11.0
+        bot.observe_round(R.snapshot(reunion_world(119.9)), "playing", now[0])   # the load over, the clock runs
+        assert stats["round_wait_s"] == 29.0
+    dead = with_continue(reunion_world(50.0, hp=0), state=2, choice=0)
+    bot.m = dead
+    now[0] += 40.0
+    assert bot.tick(R.snapshot(dead)) == {"tap": "dright"}             # the streak is done: No, to the selects
+    unit = R.ui_units(dead, range(R.N_LINES))["uIdGameover00"]
+    dead.u32(unit + R.CONTINUE_CHOICE, 1)
+    now[0] += 2.0
+    assert bot.tick(R.snapshot(dead)) == {"tap": "cross"} and stats["continue_declined"] == 1
+
+
 def test_gap_play_without_a_gap_tells_nothing():
     stats = {}
     round_map.gap_start(stats, 50.0, "start")
