@@ -1,8 +1,10 @@
-"""Pinned Switch RE5 edition and explicit readiness for the requested No Mercy mode."""
+"""Pinned Switch RE5 / RE6 editions and explicit readiness for the requested No Mercy mode."""
 from __future__ import annotations
 
 import hashlib
 import re
+
+from . import re6_switch_unlock as RE6U
 
 RE5_TITLE_ID = '010018100CD46000'
 RE5_GAME_ID = hashlib.sha1(b'quickswap-switch:Resident Evil 5/Resident Evil 5.nsp').hexdigest()[:16]
@@ -14,6 +16,17 @@ REASON = ('Switch RE5 No Mercy runs on Eden (single-core) with the re5_switch dr
           '2026-10-26 (player, enemies, cGameSys timer / kills / combo / score, native menus to No Mercy); '
           'the brain is a first cut (face, aim, fire, break free) without time bonuses or the laser-sight aim.')
 UNLOCK_REASON = 'No Mercy is selectable from a fresh save (Extra Content > The Mercenaries United); no unlock is needed.'
+
+RE6_TITLE_ID = RE6U.TITLE_ID                    # 01002A000CD48000, played with its v131072 update (1.0.2)
+RE6_GAME_ID = hashlib.sha1(b'quickswap-switch:Resident Evil 6/Resident Evil 6 [01002A000CD48000].nsp').hexdigest()[:16]
+RE6_UPDATE_GAME_ID = hashlib.sha1(
+    b'quickswap-switch:Resident Evil 6/Resident Evil 6 [01002A000CD48800][v131072].nsp').hexdigest()[:16]
+RE6_REASON = ('No RE6 Switch Mercenaries driver yet: the round, player, enemy and menu RAM facts are measured '
+              '(docs/research/re6-switch-ram.md), the brain and the menu walker are not written.')
+RE6_UNLOCK_REASON = ('A fresh RE6 Switch save forces the Prologue and never opens the main menu, so The Mercenaries and '
+                     'No Mercy (both always enabled in EXTRA CONTENT) are unreachable. gBox sets the save\'s own '
+                     '"Prologue cleared" bit (cSystemInfo mUnlockFlag bit 0) in RAM at the title screen, read back, and '
+                     'the title opens the main menu.')
 
 
 def normalize_preferences(value):
@@ -39,13 +52,49 @@ def preferred_spec(title, native_spec, settings):
             'driver': DRIVER, 'notes': REASON}
 
 
-def capabilities(game):
+def _serial(game) -> str:
+    return str(game.get('serial') or (game.get('launch') or {}).get('title_id') or '').removeprefix('0x').upper()
+
+
+def _edition(game) -> str | None:
+    """'re5' / 're6' for the pinned Switch base games (by title id, else by title when no id is known), else None.
+    RE6's update NSP (its own title id and catalog entry) is content for the base game, never an edition."""
     if str(game.get('platform') or '').casefold() != 'switch':
         return None
-    serial = str(game.get('serial') or (game.get('launch') or {}).get('title_id') or '').removeprefix('0x').upper()
+    serial = _serial(game)
+    if serial == RE5_TITLE_ID:
+        return 're5'
+    if serial == RE6_TITLE_ID:
+        return 're6'
     title = re.split(r'[\[(]', str(game.get('title') or ''), maxsplit=1)[0].strip().casefold()
-    if serial != RE5_TITLE_ID and not re.fullmatch(r'(?:resident\s+evil|biohazard)\s*5', title):
+    if re.fullmatch(r'(?:resident\s+evil|biohazard)\s*5', title):
+        return 're5'
+    if (re.fullmatch(r'(?:resident\s+evil|biohazard)\s*6', title) and not serial
+            and game.get('game_id') != RE6_UPDATE_GAME_ID):
+        return 're6'
+    return None
+
+
+def capabilities(game):
+    edition = _edition(game)
+    if edition is None:
         return None
+    serial = _serial(game)
+    if edition == 're6':
+        return {'edition': 're6', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
+                'backends': {'windows': 'yuzu', 'linux': 'eden'},
+                'requested_mode': 'no_mercy', 'modes_in_release': ['mercenaries', 'no_mercy'],
+                'no_mercy_in_release': True, 'full_playback_verified': False,
+                'autoplay': {'available': False, 'driver': None, 'backend': 'linux', 'reason': RE6_REASON},
+                'unlock_on_load': {'available': True, 'needed': True, 'profile': RE6U.PROFILE,
+                                   'apply': 'post_launch_ram', 'backend': 'linux', 'reason': RE6_UNLOCK_REASON},
+                'evidence': {'title_id': RE6_TITLE_ID,
+                             'update': {'title_id': RE6U.UPDATE_TITLE_ID, 'version': RE6U.UPDATE_VERSION,
+                                        'game_id': RE6_UPDATE_GAME_ID},
+                             'main_build_id': RE6U.MAIN_BUILD_ID, 'main_nso_sha256': RE6U.MAIN_NSO_SHA256,
+                             'ram_map': 'docs/research/re6-switch-ram.md',
+                             'unlock_live_acceptance': 'private Citron NEO session on the Spark, 2026-10-26',
+                             'runtime_verified_in_gbox': False, 'checked_date': '2026-10-26'}}
     return {'edition': 're5', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
             'backends': {'windows': 'yuzu', 'linux': 'citron', 'linux_fallback': 'eden'},   # gbox.adapters.YuzuAdapter /
             # CitronLinuxAdapter (multi-core, canonical since 2026-10-26) / SwitchLinuxAdapter (Eden, single-core)
@@ -63,6 +112,15 @@ def unlock_profile(game):
     info = capabilities(game)
     if info is None:
         return None
+    if info['edition'] == 're6':
+        record = RE6U.profile()
+        return {'status': 'verified_profile', 'profile': record['profile'], 'verified': True,
+                'game_id': game.get('game_id'), 'platform': 'switch', 'scope': record['scope'],
+                'exclusions': record['exclusions'], 'reason': RE6_UNLOCK_REASON, 'capabilities': info,
+                'evidence': record['evidence'], 'apply': record['apply'], 'save_effect': record['save_effect'],
+                'blockers': ['Applied by Eden sessions on the Linux node (guest memory through /proc/<pid>/mem); '
+                             'Yuzu on Windows has no memory access, so it stays manual there.',
+                             'Live acceptance ran the same module against Citron NEO, not yet a gBox Eden session.']}
     return {'status': 'not_needed', 'profile': None, 'verified': False,
             'game_id': game.get('game_id'), 'platform': 'switch',
             'scope': ['The Mercenaries: No Mercy', 'Mercenaries characters, costumes and stages'],

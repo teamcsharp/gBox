@@ -18,6 +18,8 @@ NDS_WCW_GAME_ID = 'd9467f457f53f2c7'  # Call of Duty: World at War (USA), NDS
 SGC_GEMS_ID = 'fc5914e3ddb540c4'  # Sonic Gems Collection (USA), platform=gamecube
 SGC_GEMS_PLATFORM = 'gamecube'
 GE007_PORT_ID = '6e4d417eef84e49b'  # GoldenEye 007 (PC port + bots)
+POST_LAUNCH_RAM = 'post_launch_ram'  # a verified profile applied in the running session's memory (session_start)
+WATCHES: dict[str, dict] = {}        # session id -> the post-launch unlock watcher's latest record
 
 
 def pre_launch(game: dict, ctx, mod: str = '') -> dict:
@@ -86,6 +88,15 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
                         'no runtime acceptance (boot, select, second launch, rollback)'],
                     'next_step': 'xref fn@0x80010810 in Ghidra project pop_sot_main to the 0x80 record writer and museum-menu eligibility test'}
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
+    if profile.get('apply') == POST_LAUNCH_RAM:
+        # RE6 Switch: the flag lives in the save the game loads after boot, so nothing is written here; the running
+        # session's watcher (session_start) writes it at the title screen, original read first, read back.
+        if _re6_opted_out(ctx):
+            return {'state': 'disabled', 'applied': False, 'profile': profile['profile'],
+                    'reason': 'RE6 setting everything_unlocked is off'}
+        return {'state': 'armed', 'applied': False, 'profile': profile['profile'], 'apply': POST_LAUNCH_RAM,
+                'scope': profile['scope'], 'exclusions': profile['exclusions'],
+                'next': 'Set in game memory at the title screen by the session watcher (gbox.re6_switch_unlock).'}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
         from . import re6_tool
         try:
@@ -272,3 +283,51 @@ def post_launch(sid: str, game: dict, hold) -> dict | None:
     return {'state': 'applied' if held and not failed else ('partial' if held else 'failed'), 'applied': bool(held),
             'profile': prof.get('profile'), 'held': held, 'failed': failed, 'scope': prof.get('scope') or [],
             'evidence': prof.get('evidence') or {}}
+
+
+# ---- unlock-on-load in the running session's memory (RE6 Switch: the gate is a save flag the game loads after boot)
+
+def _re6_opted_out(ctx) -> bool:
+    """The operator's RE6 switch everything_unlocked (gbox.re6_tool.settings, on by default) turned off."""
+    if ctx is None or not getattr(ctx, 'server', None):
+        return False
+    try:
+        from . import re6_tool
+        return re6_tool.settings(ctx.server, ctx.headers).get('everything_unlocked', True) is False
+    except Exception:                                  # noqa: BLE001 - no control plane: the default (on) holds
+        return False
+
+
+def session_start(sid: str, game: dict, adapter, ctx, start_watch=None) -> dict | None:
+    """Start the post-launch RAM unlock for a running session whose verified profile applies there (RE6 Switch), on a
+    daemon thread: gbox.re6_switch_unlock.watch writes the flag at the title screen (the build's gate checked byte for
+    byte first, the original read, the write read back) and stops once the title confirms it. The latest record is in
+    WATCHES[sid]. None for every other game; a state dict (watching / disabled / permission_required / unsupported)
+    otherwise. Never raises for a running game's sake."""
+    if str(game.get('platform') or '').casefold() != 'switch':     # the only post-launch RAM profiles so far
+        return None
+    profile = profile_for(game)
+    if not profile.get('verified') or profile.get('apply') != POST_LAUNCH_RAM:
+        return None
+    base = {'profile': profile['profile'], 'scope': profile.get('scope', [])}
+    if _re6_opted_out(ctx):
+        return base | {'state': 'disabled', 'reason': 'RE6 setting everything_unlocked is off'}
+    granted = getattr(getattr(ctx, 'config', None), 'granted_permissions', ())
+    if 'memory_write' not in granted:
+        return base | {'state': 'permission_required', 'reason': 'The worker memory_write permission is not granted'}
+    supported = getattr(adapter, 'supported', ())
+    if not {'read_memory', 'write_memory'} <= set(supported) or not callable(getattr(adapter, '_guest', None)):
+        return base | {'state': 'unsupported',
+                       'reason': f'{getattr(adapter, "name", type(adapter).__name__)} gives gBox no guest memory '
+                                 'mapping (the unlock runs in Eden sessions on the Linux node)'}
+    from . import re6_switch_unlock
+
+    def done(record):
+        WATCHES[sid] = record
+        print(f"gBox: unlock-on-load {sid}: {record.get('state')} ({len(record.get('writes') or [])} writes)",
+              flush=True)
+
+    WATCHES[sid] = base | {'state': 'watching'}
+    (start_watch or re6_switch_unlock.start_watch)(adapter, on_done=done)
+    return base | {'state': 'watching', 'apply': POST_LAUNCH_RAM,
+                   'next': 'mUnlockFlag bit 0 is set at the title screen; the title then opens the main menu.'}

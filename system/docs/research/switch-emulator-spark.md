@@ -139,7 +139,10 @@ sessions):
   round started: timer 2:00:00 counting down, score 000000, Majini on screen. Single-core gameplay measured about
   36 FPS at 66 % speed, with stalls on first-time shader compiles (async shaders off); the death screen ran 58 FPS at
   93 %. Not yet good enough for MercMode, so next: other emulators and Eden settings.
-- RE6 (with the update): "PRESS ANY BUTTON" about 31 s after launch, 60 FPS.
+- RE6 (with the update): "PRESS ANY BUTTON" about 31 s after launch, 60 FPS. A fresh save is forced into the Prologue
+  and never reaches the main menu, so The Mercenaries / No Mercy (always enabled in EXTRA CONTENT) are out of reach;
+  gBox sets the save's "Prologue cleared" bit in RAM at the title screen (`gbox/re6_switch_unlock.py`; gate, proof and
+  RAM map in docs/research/re6-switch-ram.md, measured on Citron NEO).
 
 ## Caveats and what is still unverified
 
