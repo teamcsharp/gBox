@@ -376,6 +376,7 @@ def _eden(tmp_path, monkeypatch):
     ad.nce, ad.game_id, ad.serial = True, GID, RE5
     monkeypatch.setattr(ad, "_maps", lambda pid: ARM64_MAPS)
     monkeypatch.setattr(ad, "_xdo", lambda *a: None)
+    monkeypatch.setattr(ad, "_fit_window", lambda: None)                 # no X display behind the fake
     monkeypatch.setattr(ad, "_boot_watch", lambda: {"watched": True, "frames": 3})   # RE5's boot watch: frames are fakes
     spawned, pids = [], iter(range(501, 600))
 

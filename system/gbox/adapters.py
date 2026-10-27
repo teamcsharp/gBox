@@ -4596,6 +4596,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self.address_mode = eden_memory.mode_for(self.nce)
         self._mem, self._mem_checked_at = None, -1e9
         self.overlay_state, self.restarts, self.restart_error, self._stopped = None, 0, None, False
+        self.fitted_windows, self._fit_gen = 0, 0           # windows _fit_window sized to the display; its fitter
 
     @property
     def use_nce(self) -> bool:
@@ -4902,6 +4903,48 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
         except Exception:                                 # noqa: BLE001 - the display may still be starting
             pass
+        self._fit_window()
+
+    # Without a window manager a "fullscreen" Qt window keeps its default size: 2026-10-26 MercMode's Citron window was
+    # 853x480 at 214,106 on its 1280x720 display, so the stream (the app, the Pine feed) showed the game small in the
+    # middle with black borders. Sized to the display, Citron's fullscreen mode fills it with no menu or status bar.
+    FIT_WINDOW_S, FIT_WINDOW_EVERY_S = 45.0, 3.0         # the window may appear or be resized late in a boot
+
+    def _xdo_out(self, *args) -> str:
+        r = subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5,
+                           capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+
+    def _fit_window_once(self) -> int:
+        """Move and size every visible window on this session's display to the whole display; returns how many moved.
+        The display is this session's own Xvfb, so its windows are the emulator's."""
+        fitted, w, h = 0, self.display.w, self.display.h
+        for wid in self._xdo_out("search", "--onlyvisible", "--name", ".").split():
+            geo = self._xdo_out("getwindowgeometry", wid)
+            if "Position: 0,0" in geo and f"Geometry: {w}x{h}" in geo:
+                continue
+            try:
+                self._xdo("windowmove", wid, "0", "0")
+                self._xdo("windowsize", wid, str(w), str(h))
+                fitted += 1
+            except Exception:                             # noqa: BLE001 - a window that went away meanwhile
+                continue
+        return fitted
+
+    def _fit_window(self) -> None:
+        """Fit now and keep fitting for FIT_WINDOW_S in the background (boots and title restarts). A newer call replaces
+        the running fitter, and stop_game ends it."""
+        self._fit_gen = gen = self._fit_gen + 1
+
+        def run():
+            end = time.monotonic() + self.FIT_WINDOW_S
+            while gen == self._fit_gen and time.monotonic() < end and self.display and not self._stopped:
+                try:
+                    self.fitted_windows += self._fit_window_once()
+                except Exception:                         # noqa: BLE001 - the display may be going away
+                    pass
+                time.sleep(self.FIT_WINDOW_EVERY_S)
+        threading.Thread(target=run, daemon=True, name="switch-fit-window").start()
 
     def stop_game(self) -> dict:
         self._stopped = True                              # a restart under way does not start Eden again
@@ -4918,6 +4961,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
              "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
              "debugger": self.dbg is not None, "overlay": self.overlay_build,
              "restarting": isinstance(self.proc, _EdenRestarting), "restarts": self.restarts,
+             "fitted_windows": self.fitted_windows,
              **({"restart_error": self.restart_error} if self.restart_error else {})}
         try:
             arena = self._guest()[1]

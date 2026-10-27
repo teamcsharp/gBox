@@ -359,6 +359,7 @@ def _fake_launch(ad, monkeypatch, maps_stages, popen):
     monkeypatch.setattr(ad, "_maps", lambda pid: next(stages, last))
     monkeypatch.setattr(adapters.time, "sleep", lambda s: None)
     monkeypatch.setattr(memory_card_sessions, "launched", lambda ad: None)
+    monkeypatch.setattr(ad, "_fit_window", lambda: None)                 # no X display behind the fake
     return proc
 
 
@@ -685,3 +686,48 @@ def test_catalog_rows_without_a_serial_still_pick_citron(tmp_path, monkeypatch):
     assert adapters._switch_title_id({"platform": "switch", "title": "Resident Evil 50"}) == ""
     assert adapters._switch_title_id({"platform": "ps3", "title": "Resident Evil 5"}) == ""
     assert type(adapters.for_game(dict(re5, title="Zelda"), c)) is adapters.SwitchLinuxAdapter
+
+
+def test_the_emulator_window_is_fitted_to_its_display(tmp_path):
+    """2026-10-26: without a window manager Citron's fullscreen window kept 853x480 on its 1280x720 display, so the
+    stream showed the game small in the middle with black borders; every visible window is moved and sized to fill."""
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.display = SimpleNamespace(name=":90", w=1280, h=720)
+    geometry = {"11": "Window 11\n  Position: 214,106 (screen: 0)\n  Geometry: 853x480\n",
+                "12": "Window 12\n  Position: 0,0 (screen: 0)\n  Geometry: 1280x720\n"}
+    moves = []
+    ad._xdo_out = lambda *a: "11\n12\n" if a[0] == "search" else geometry[a[1]]
+    ad._xdo = lambda *a: moves.append(a)
+    assert ad._fit_window_once() == 1
+    assert moves == [("windowmove", "11", "0", "0"), ("windowsize", "11", "1280", "720")]   # the fitted one untouched
+    moves.clear()
+    geometry["11"] = "Window 11\n  Position: 0,0 (screen: 0)\n  Geometry: 1280x720\n"
+    assert ad._fit_window_once() == 0 and moves == []                                     # nothing to do once fitted
+
+
+def test_the_window_fitter_runs_in_the_background_until_replaced_or_stopped(tmp_path):
+    import threading
+    import time
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.display, ad.FIT_WINDOW_EVERY_S = SimpleNamespace(name=":90", w=1280, h=720), 0.01
+    seen = set()
+    ad._fit_window_once = lambda: seen.add(threading.current_thread()) or 1
+
+    def started():                                                     # the fitter this _fit_window call started
+        before = set(seen)
+        ad._fit_window()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            fresh = [t for t in list(seen) if t not in before]
+            if fresh:
+                return fresh[0]
+            time.sleep(0.01)
+        raise AssertionError("no fitter ran")
+    old = started()
+    assert ad.fitted_windows >= 1
+    new = started()                                                    # a title restart: the newer fitter takes over
+    old.join(5)
+    assert new is not old and not old.is_alive() and new.is_alive()
+    ad._stopped = True                                                 # stop_game's flag
+    new.join(5)
+    assert not new.is_alive()
