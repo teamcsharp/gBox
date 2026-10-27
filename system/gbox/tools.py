@@ -947,6 +947,11 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             if ad.overlay_build:
                 diag["overlay"] = ad.overlay_build
                 ctx.progress(29, f"{launch_mod}: a LayeredFS overlay of {src.name} (only its changed files)")
+            if hasattr(ad, "coop_players"):        # split screen: Player 2's pad in this launch's own config only
+                from . import switch_coop          # (game.launch.coop from the PiP, a MercMode bot+bot turn)
+                ad.coop_players = switch_coop.players_requested(g.launch)
+                if ad.coop_players == 2:
+                    diag["coop_players"] = 2
         lap("mod_s")
         emu = ctx.config.emulators.get(g.platform)
         # big disc images (CHD/ISO/GCZ...) stream poorly over SMB: stage them onto this node's fast local cache
