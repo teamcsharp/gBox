@@ -41,6 +41,17 @@
   }
 
   // ---- geometry: window fractions <-> the picker's 4:3 picture -------------------------------------------------------
+  // The stream picture on screen: an <img> shown with object-fit: contain inside a box of another shape draws the frame
+  // smaller than its element. A Linux session's frame is 1280x720 with a 4:3 game pillarboxed in it (2026-10-27), so
+  // the element's box is no longer "the largest 4:3 picture that fits"; the frame's own box is, with the game centred.
+  function contentRect(el, win) {
+    const r = el.getBoundingClientRect(), nw = el.naturalWidth, nh = el.naturalHeight;
+    let fit = "";
+    try { fit = nw && nh && win && win.getComputedStyle ? win.getComputedStyle(el).objectFit : ""; } catch {}
+    if (fit !== "contain" || !r.width || !r.height) return { x: r.left, y: r.top, w: r.width, h: r.height };
+    const s = Math.min(r.width / nw, r.height / nh), w = nw * s, h = nh * s;
+    return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h };
+  }
   function windowToPicture(p, aspect) {
     let [x, y] = p;
     if (aspect > PICTURE) { const w = PICTURE / aspect; x = (x - (1 - w) / 2) / w; }
@@ -827,7 +838,7 @@
     // the game picture: the Play tab's stream, or any other live MJPEG view (Inspect, Examine's fallback frame)
     const scr = () => (S.el && S.el.isConnected !== false && doc.contains?.(S.el) !== false ? S.el : null) || doc.getElementById("scr");
     const sidOf = el => (el && el.dataset && el.dataset.sid) || (/\/api\/sessions\/([^/?#]+)\/mjpeg/.exec((el && el.getAttribute && el.getAttribute("src")) || "") || [])[1] || (io.sid && io.sid()) || "";
-    const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+    const rectOf = el => contentRect(el, W);
     const hover = createHover({
       request: at => runTool(io, "pick_preview", { session_id: S.sid, x: at[0], y: at[1], window_aspect: S.rect.w / S.rect.h }, { ms: 200, max: 50 }).then(r => r.result),
       apply: (res, at) => { S.preview = res; S.target = outlineOf(res, S.region, S.rect.w / S.rect.h); S.label = res && res.picked ? labelOf(res) : null; },
@@ -1108,7 +1119,7 @@
     return { state: st, onPick, render, dismiss };
   }
 
-  return { settings, saveSettings, windowToPicture, pictureToWindow, clampBox, floodRegion, decodeMask, maskBox, maskEdges, outlineOf,
+  return { settings, saveSettings, contentRect, windowToPicture, pictureToWindow, clampBox, floodRegion, decodeMask, maskBox, maskEdges, outlineOf,
     easeBox, labelOf, labelHTML, ramText, createHover, missingTool, startJob, waitJob, runTool, identify, nameLocal, replace, replaceText, rankCharacters, castMatch, castCandidates,
     menuItems, consoleLines, fitLines, ensureCss, paintOutline, placeLabel, openMenu, setMenuHead, closeMenu, browser, createConsole,
     createHold, mountOverlay, characterMenu, reportBody, reportPopup, markedFrame, PICTURE };

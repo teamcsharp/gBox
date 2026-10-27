@@ -776,7 +776,7 @@ def test_the_window_fitter_runs_in_the_background_until_replaced_or_stopped(tmp_
     ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
     ad.display, ad.FIT_WINDOW_EVERY_S = SimpleNamespace(name=":90", w=1280, h=720), 0.01
     seen = set()
-    ad._fit_window_once = lambda: seen.add(threading.current_thread()) or 1
+    ad._fit_window_once = lambda nudged=None: seen.add(threading.current_thread()) or 1
 
     def started():                                                     # the fitter this _fit_window call started
         before = set(seen)

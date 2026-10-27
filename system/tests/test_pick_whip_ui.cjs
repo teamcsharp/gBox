@@ -462,3 +462,18 @@ test('menu: face editor acquires its own hold before the picker is dismissed', a
   assert.equal(fx.seen.face.sid,'w1-s1');assert.deepEqual(fx.seen.face.point,{x:.5,y:.5,window_aspect:4/3});
   resolve();await pending;assert.deepEqual(fx.seen.closed,['face']);
 });
+
+test('a stream drawn with object-fit: contain: the picture box is the frame, not the element (16:9 Spark frames)', () => {
+  const box = () => ({ left: 10, top: 20, width: 1200, height: 800 });
+  const el = { getBoundingClientRect: box, naturalWidth: 1280, naturalHeight: 720 };
+  const contain = { getComputedStyle: () => ({ objectFit: 'contain' }) };
+  const r = PW.contentRect(el, contain);
+  assert.deepEqual(r, { x: 10, y: 82.5, w: 1200, h: 675 });                    // 1280x720 fitted in 1200x800
+  // a 4:3 game pillarboxed in that frame: the picker's window is the frame, the game centred in it
+  assert.deepEqual(PW.windowToPicture([0.125, 0], r.w / r.h).map(v => +v.toFixed(6)), [0, 0]);
+  assert.deepEqual(PW.windowToPicture([0.875, 1], r.w / r.h).map(v => +v.toFixed(6)), [1, 1]);
+  // the element's own box when it is not object-fit: contain, or has no frame yet (as before)
+  assert.deepEqual(PW.contentRect(el, { getComputedStyle: () => ({ objectFit: 'fill' }) }), { x: 10, y: 20, w: 1200, h: 800 });
+  assert.deepEqual(PW.contentRect({ getBoundingClientRect: box }, contain), { x: 10, y: 20, w: 1200, h: 800 });
+  assert.deepEqual(PW.contentRect(el, {}), { x: 10, y: 20, w: 1200, h: 800 });
+});

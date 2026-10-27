@@ -180,7 +180,8 @@ def dolphin_opts(p: dict, max_res_scale: int | None = None) -> dict:
     game's compatibility hacks and anything the operator set in Dolphin's Game Properties keep winning, and nothing is
     written to disk. Only these keys are owned: GFX.Settings.InternalResolution / MSAA / SSAA and
     GFX.Enhancements.MaxAnisotropy (only when an anisotropy level is chosen; 0 leaves Dolphin's own setting).
-    max_res_scale caps the internal resolution where extra pixels cannot be seen (a 640x480 streamed window)."""
+    max_res_scale caps the internal resolution where extra pixels cannot be seen (the Spark's streamed 1280x720
+    display, where a GameCube frame is drawn at most about 1280x983)."""
     scale = int(p["res_scale"])
     if max_res_scale:
         scale = min(scale, int(max_res_scale))

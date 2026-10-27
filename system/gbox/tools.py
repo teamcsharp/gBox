@@ -2929,6 +2929,14 @@ BLACK_LUMA, BLACK_FOR = 6.0, 45.0      # mean grey (0..255) of a black frame; ho
 RELAUNCH_WAIT = 300
 
 
+def _thumb(ad, frame: bytes) -> str:
+    """imitate.thumb of the game's picture in a session frame: a Linux session's 1280x720 display pillarboxes a 4:3
+    game and keeps a letterboxed title's bars off-screen (gbox/session_display.py), so the picture, not the frame, is
+    what stays comparable with older anchors and with the black-frame threshold."""
+    from . import imitate, session_display
+    return imitate.thumb(frame, session_display.session_picture(ad))
+
+
 def _black(ad) -> bool | None:
     """True when the game's picture is (nearly) black, False when it shows something, None when there is no frame."""
     import base64
@@ -2945,7 +2953,7 @@ def _black(ad) -> bool | None:
                 return None
         else:
             frame = ad.get_frame()
-        px = base64.b64decode(imitate.thumb(frame))
+        px = base64.b64decode(_thumb(ad, frame))
     except Exception:                                          # noqa: BLE001 - no frame now: no verdict
         return None
     return bool(px) and sum(px) / len(px) < BLACK_LUMA
@@ -3153,8 +3161,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                 except Exception:                              # noqa: BLE001 - no RAM view: the screen alone
                     pass
             if "prompt" in inspect.signature(pb.play).parameters and hasattr(ad, "get_frame"):
-                from . import screen_prompt                    # the game's on-screen button prompts (A TAKE / JUMP OVER):
-                watcher = run["prompt_watcher"] = screen_prompt.Watcher(lambda: ad.get_frame(), hz=6.0).start()
+                from . import screen_prompt, session_display  # the game's on-screen button prompts (A TAKE / JUMP OVER):
+                watcher = run["prompt_watcher"] = screen_prompt.Watcher(
+                    lambda: ad.get_frame(), hz=6.0, picture=session_display.session_picture(ad)).start()
                 kw["prompt"] = lambda: watcher.visible(0.5)    # after RAM, when RAM can't tell
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
@@ -3521,7 +3530,7 @@ def _start_imitation(inp, ctx, d, ad, g, game_id, since) -> dict:
 
         def go():
             try:
-                sync = (lambda mark: imitate.wait_for_screen(mark, lambda: imitate.thumb(ad.get_frame()),
+                sync = (lambda mark: imitate.wait_for_screen(mark, lambda: _thumb(ad, ad.get_frame()),
                                                              lambda: d.stopped)) if marks else None
                 run["result"] = imitate.play_plan(plan, send=send, stopped=lambda: d.stopped, clock=time.time,
                                                   sleep=time.sleep, offset=offset, sync=sync) | {
@@ -3700,7 +3709,7 @@ def _jump_watch(run, d, ad, g, stuck, stats, after_replay=False):
 def _stuck(ad):
     """A stuck-screen watch for this session (title screens, dialogue): None when the emulator gives no frames."""
     from . import imitate
-    return imitate.Stuck(lambda: imitate.thumb(ad.get_frame())) if hasattr(ad, "get_frame") else None
+    return imitate.Stuck(lambda: _thumb(ad, ad.get_frame())) if hasattr(ad, "get_frame") else None
 
 
 def _style_model(ctx, runs, ad, game_id, platform):
@@ -3725,7 +3734,7 @@ def _save_anchor(sid, ad, ctx, at):
     if run and run["thread"].is_alive():
         return
     try:
-        t = imitate.thumb(ad.get_frame())
+        t = _thumb(ad, ad.get_frame())
         httpx.post(f"{ctx.server}/api/gameplay-memory/runs/{sid}/observe", headers=ctx.headers, timeout=10,
                    json={"kind": "frame", "payload": {"thumb": t, "size": list(imitate.THUMB), "why": "press after a pause"},
                          "token": f"{sid}-anchor-{at:.2f}", "at": at})
@@ -5347,6 +5356,16 @@ def project_point(eye, tgt, pt, fov_deg):
 PICK_FRAME = (640, 480)                   # picture the probe projects into (4:3; the click is mapped into it)
 
 
+def _click_aspect(inp, ad) -> float:
+    """The width / height of what the click's x, y are fractions of: the window_aspect a client sends with its click,
+    else (an agent's x, y on the frame it was shown) the session frame's own shape. A Linux session's display is
+    1280x720 and pillarboxes a 4:3 game (gbox/session_display.py), so its frame is no longer the 4:3 picture itself."""
+    d = getattr(ad, "display", None)
+    if "window_aspect" in getattr(inp, "model_fields_set", ()) or not getattr(d, "w", None) or not getattr(d, "h", None):
+        return inp.window_aspect
+    return d.w / d.h
+
+
 def _picture_xy(inp: PickIn):
     """The 4:3 picture is centred in the window: map the click into picture coordinates (0..1)."""
     cx, cy = inp.x, inp.y
@@ -5389,6 +5408,7 @@ def pick(inp: PickIn, ctx: Ctx):
     import struct as S
     from . import semantic
     ad, g = SESSIONS[inp.session_id]
+    inp.window_aspect = _click_aspect(inp, ad)
     paused = False
     try:                                                      # freeze the world while camera + objects are read together
         already = (ad.query_runtime() or {}).get("state") == "PAUSED" if hasattr(ad, "query_runtime") else False
@@ -5483,6 +5503,7 @@ def pick_preview(inp: PickPreviewIn, ctx: Ctx):
     with a snapshot of its live RAM and the profile evidence that describes where it lives in code."""
     from . import semantic
     ad, g = SESSIONS[inp.session_id]
+    inp.window_aspect = _click_aspect(inp, ad)
     st = _semantic_state(ad, g)
     prof = next((p for p in semantic.load_profiles() if p.get("id") == st.get("profile")), None)
     if not prof or not prof.get("camera"):
