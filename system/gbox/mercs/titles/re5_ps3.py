@@ -632,7 +632,7 @@ def result_notice_screen(m, ui=None) -> dict | None:
                  and u32(m, confirm_pad + PAD_CONFIRM) == 0x4000)
         if ready and (u32(m, unit) == MERCE_END_VT and m.rd(unit + 0x16, 2) == b"\x03\x06"
                       and m.rd(unit + 0x28C, 13) == raw[0x28C:0x299]):
-            out.update(where="unlock_notice", unlock_ready=True)
+            out.update(where="unlock_notice", unlock_ready=True, input_ready=True)   # inner 3 reads confirm: at once
         return out
     except (OSError, ValueError, TypeError, struct.error):
         return out
