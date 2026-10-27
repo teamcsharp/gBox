@@ -12,6 +12,10 @@ ops:
   fire_rate multiplier=N    the player's own time scale x N while his shot motion plays (1..80; 1 = off): a held ZR
                             repeats about N times faster, up to the frame rate. Aiming, walking and turning keep the
                             game's speed (the scale is 1 whenever the shot motion is not playing)
+  mine_loadout on=true      Chris (BSAA)'s loadout template: proximity bomb x5 at grid 1 (D-pad up) in place of his
+                            hand grenades. The game builds the stack itself at the next round's start (no item record or
+                            pointer is ever written); with infinite_ammo's flag on the bomb (WP0A) a placement spends
+                            none. Off: the grenades back (the next round)
 
 Where (measured live 2026-10-26 in a private Citron NEO session on the Spark; docs/research/re5-switch-ram.md):
   main+0x1D08680  the weapon definition records, 0x140 each, index = weapon id. A constructor fills them at boot (no
@@ -27,6 +31,11 @@ Where (measured live 2026-10-26 in a private Citron NEO session on the Spark; do
   player +0x8F8   u8 motion: 29 while a shot plays (gbox.mercs.titles.re5_switch.P_MOTION).
 Live (round starts, the M92F, held ZR): 2.7 shots/s at x1, 4.7 x2, 8.7 x4, 15.3 x8, 16.7 x32, 24.7 x80 (the frame
 rate caps it; Citron ran 40-60 fps). With the no-ammo flag its rounds stayed at 50 through the fire.
+  main+0x1AAD9A8  the Mercenaries loadout templates (read 2026-10-27 in MercMode's session): 12 records of 0x30 per
+                  costume (u32 id, count, -1 x3, grid, then weapon words), the game's constructor copies one block into
+                  the round's inventory. Chris (BSAA): 0x201 x50 @0, 0x106 x5 @1 (hand grenades), 0x203 x30 @2, 0x102
+                  M92F @3, 0x104 Ithaca @5, 0x304 spray @7, 0x101 knife @9, 0x100 @11; the same block again at
+                  main+0x1AAF208 (a second bank). Other costumes carry 0x10A, the proximity bomb (x3, x5).
 """
 from __future__ import annotations
 
@@ -49,6 +58,12 @@ FIRE_MAX = 80.0
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
 SPRAY_KEEP = 2                                               # infinite_spray keeps its count here (a use leaves one)
+MINE_ID, GRENADE_ID = 0x10A, 0x106                           # WP0A the proximity bomb, WP06 the hand grenade
+TEMPLATE_REC, TEMPLATE_RECS = 0x30, 12
+CHRIS_TEMPLATES = (0x1AAD9A8, 0x1AAF208)                     # Chris (BSAA)'s loadout block, both banks (this build)
+CHRIS_RECORDS = {0: (0x201, 50, 0), 2: (0x203, 30, 2), 3: (0x102, None, 3), 5: (0x104, None, 5), 7: (0x304, None, 7),
+                 9: (0x101, None, 9), 11: (0x100, None, 11)}  # (id, count or None, grid) that name the block
+MINE_SLOT = 1                                                # record 1: the grenades' (x5, grid 1 = D-pad up)
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")                              # a bot hot reload keeps the originals and the settings
@@ -164,6 +179,37 @@ def fire_rate(g: RE5Switch, mult) -> dict:
                     "held ZR repeats about N times faster, capped by the frame rate (live: x8 15 shots/s, x80 25)"}
 
 
+def chris_block(g: RE5Switch, off: int) -> bool:
+    """Whether main+off holds Chris (BSAA)'s loadout block: its records as read live, record 1 the grenades or the bomb."""
+    raw = g.rd(g.base + off, TEMPLATE_REC * TEMPLATE_RECS)
+    for k, (idw, count, grid) in CHRIS_RECORDS.items():
+        w = struct.unpack_from("<6I", raw, k * TEMPLATE_REC)
+        if w[0] != idw or w[5] != grid or (count is not None and w[1] != count):
+            return False
+    w = struct.unpack_from("<6I", raw, MINE_SLOT * TEMPLATE_REC)
+    return w[0] in (GRENADE_ID, MINE_ID) and w[1] == 5 and w[2:5] == (0xFFFFFFFF,) * 3 and w[5] == 1
+
+
+def mine_loadout(g: RE5Switch, on: bool) -> dict:
+    """Chris (BSAA)'s loadout template, both banks: record 1 the proximity bomb (on) or the hand grenades (off). Only the
+    id word of a block whose records match is written; the round after builds its inventory from it."""
+    want = MINE_ID if on else GRENADE_ID
+    blocks, ok = [], True
+    for off in CHRIS_TEMPLATES:
+        if not chris_block(g, off):
+            continue
+        at = g.base + off + MINE_SLOT * TEMPLATE_REC
+        if g.u32(at) != want:
+            ok = g.wr(at, struct.pack("<I", want)) and ok
+        blocks.append(off)
+        ok = ok and g.u32(at) == want
+    g.state["mine_loadout"] = bool(on)
+    return {"mine_loadout": bool(on), "verified": bool(ok and blocks), "blocks": [hex(b) for b in blocks],
+            "effective": "the next round's start",
+            "note": "Chris (BSAA) carries the proximity bomb x5 at grid 1 (D-pad up) instead of his hand grenades"
+                    if on else "Chris (BSAA)'s hand grenades back at grid 1"}
+
+
 def infinite_spray(g: RE5Switch, on: bool) -> dict:
     g.state["infinite_spray"] = bool(on)
     return {"infinite_spray": bool(on), "verified": True,
@@ -264,8 +310,10 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch |
             return fire_rate(g, 1.0 if on is False else multiplier)
         if op == "infinite_spray":
             return infinite_spray(g, bool(on))
+        if op in ("mine_loadout", "mines", "proximity_bombs"):
+            return mine_loadout(g, bool(on))
         if op == "revert_all":
             return {"infinite_ammo": infinite_ammo(g, False), "fire_rate": fire_rate(g, 1.0),
-                    "infinite_spray": infinite_spray(g, False)}
+                    "infinite_spray": infinite_spray(g, False), "mine_loadout": mine_loadout(g, False)}
         raise ValueError(f"re5_switch_mods: unknown op {op!r} (status, infinite_ammo, fire_rate, infinite_spray, "
-                         f"revert_all)")
+                         f"mine_loadout, revert_all)")
