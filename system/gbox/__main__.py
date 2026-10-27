@@ -9,6 +9,28 @@ from pathlib import Path
 from . import config as cfgmod
 
 
+OPEN_FILES = 65536
+
+
+def raise_open_files(limit: int = OPEN_FILES) -> int | None:
+    """The soft open-file limit up to `limit` (never past the hard one). systemd starts gbox.service at 1024, and the
+    reconnects right after a restart (streams, PiPs, pollers) plus sqlite handles passed it: "Too many open files" and
+    "unable to open database file" for the first two minutes (2026-10-27 09:45 and 10:22), a MercMode launch included."""
+    try:
+        import resource
+    except ImportError:                                  # Windows: no rlimits
+        return None
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+    if soft != resource.RLIM_INFINITY and soft < want:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            return want
+        except (ValueError, OSError):
+            return soft
+    return soft
+
+
 def main():
     ap = argparse.ArgumentParser(prog="gbox")
     ap.add_argument("--config", default=os.environ.get("GBOX_CONFIG", "gbox.toml"))
@@ -75,6 +97,7 @@ def main():
     if a.cmd in ("serve", "worker"):                     # a venv older than a dependency gets it now, before tools import
         from . import deps
         deps.ensure_declared()
+        raise_open_files()
     if a.cmd == "serve":
         import uvicorn
         from .server import create_app
