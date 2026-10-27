@@ -440,6 +440,30 @@ class LocalReviewTests(ReviewFixture, unittest.TestCase):
         self.assertEqual(who['proxy_url'], node.proxy_url)
 
 
+    def test_the_policy_pins_a_local_node_with_paid_routes_on(self):
+        # 2026-10-27: DeepSeek's credit ran out, every review failed and no Hermes PR merged after 10-26 17:58
+        from gbox import hermes_local, hermes_pool
+        big = SimpleNamespace(enabled=True, allow_large_tasks=True, max_parallel_jobs=32, provider='gbox-sparkDeux',
+                              model='nvidia/Qwen3.8-27B-NVFP4', host_name='sparkDeux',
+                              proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/sparkDeux/v1')
+        kimi = SimpleNamespace(enabled=True, allow_large_tasks=True, max_parallel_jobs=8, provider='gbox-kimi',
+                               model='kimi-for-coding', host_name='kimi',
+                               proxy_url='http://127.0.0.1:8765/api/llm/local/nodes/kimi/v1')
+        nodes = {'sparkDeux': big, 'kimi': kimi}
+        with patch.object(hermes_local, 'local_only', return_value=False), \
+                patch.object(hermes_pool, 'node_settings', return_value=nodes):
+            self.assertFalse(R.reviewer()['local'])                              # no policy: DeepSeek as before
+            R.save_config(R.config() | {'reviewer': 'local'})
+            self.assertEqual(R.reviewer()['provider'], 'gbox-sparkDeux')          # the local pool's reviewer
+            R.save_config(R.config() | {'reviewer': 'kimi'})
+            who = R.reviewer()
+            self.assertEqual((who['provider'], who['proxy_url']), ('gbox-kimi', kimi.proxy_url))
+            R.save_config(R.config() | {'reviewer': 'gone'})
+            self.assertEqual(R.reviewer()['provider'], 'gbox-sparkDeux')          # an unknown node: the local pick
+            R.save_config(R.config() | {'reviewer': 'cloud'})
+            self.assertFalse(R.reviewer()['local'])
+
+
 class UnreviewableRunTests(ReviewFixture, unittest.TestCase):
     """A run the ledger cannot review must not hold its task forever."""
 
