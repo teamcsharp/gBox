@@ -16,7 +16,7 @@ MUZZLE = (0.0, 140.0, 30.0)
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
-    assert R.RAMPAGE
+    monkeypatch.setattr(R, "RAMPAGE", True)              # off in MercMode since 16:45 (it spun between foes); the code is kept
 
 
 def at(dist, deg, y=0.0):
