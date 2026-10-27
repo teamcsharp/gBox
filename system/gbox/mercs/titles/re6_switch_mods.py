@@ -763,6 +763,18 @@ def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
                     "costume from its next opening, and the game's own next save keeps it"}
 
 
+def bot_options(g: RE6Switch, nades=None, bomb_drop=None) -> dict:
+    """The bot's switches a profile turns on (playing_ops): nades - the flash at 3+ within 4 m with the melee fever after
+    it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd.
+    None leaves a switch as it is. Nothing is written to the game."""
+    from . import re6_switch as B
+    if nades is not None:
+        B.NADES = bool(nades)
+    if bomb_drop is not None:
+        B.BOMB_DROP = bool(bomb_drop)
+    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP}
+
+
 def fire_interval(index: int, k: float, magnum: float | None = None, throw: float | None = None) -> float:
     """Record index's seconds between shots at multiplier k: this build's value / k for a gun (never below FIRE_FLOOR),
     / magnum for the magnums when that is given, / throw for the three grenades when that is given; the build's own for
@@ -933,6 +945,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
                                 magnum=_extra.get("magnum", False) not in (False, None, "off", 0))
+        if op == "bot_options":
+            return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"))
         if op == "fire_rate":
             if on is False:
                 return fire_rate(g, 1.0)

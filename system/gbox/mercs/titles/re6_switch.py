@@ -1114,7 +1114,7 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 #          (else the incendiary), never nearer than its blast;
 #   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
 #          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
-NADES = True                            # the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+NADES = False                           # off by default: on per profile (re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
@@ -1123,7 +1123,7 @@ FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 400.0, 200.0   # the flash when they are on 
 # The bomb dropped while backing out of a crowd (BOMB_DROP_N within CC_BACK_R, him above BOMB_MIN_HP, BOMB_GAP_S since
 # the last): the wheel's up (one press from a gun) to it, ZL then ZR at his feet, then out of its reach first and set
 # off from the rule's distance as they come (stats bomb_drops).
-BOMB_DROP = True
+BOMB_DROP = False                       # off by default: on per profile (re6_switch_mods bot_options bomb_drop=)
 BOMB_DROP_N = 3
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 600.0, 1000.0, 300.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is

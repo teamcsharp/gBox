@@ -92,6 +92,13 @@
           "on": true,
           "seconds": 3
         }
+      ],
+      [
+        "bot_options",
+        {
+          "nades": false,
+          "bomb_drop": false
+        }
       ]
     ],
     "vocab": {

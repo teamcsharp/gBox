@@ -821,7 +821,16 @@ def test_no_bomb_without_one_a_crowd_or_room():
         assert bot.doing != "bomb" and {"tap": "dup"} not in acts and bot.bomb_phase is None
 
 
-def test_backing_out_of_a_crowd_he_drops_a_bomb_at_his_feet_and_walks_out_of_its_reach():
+def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
+    monkeypatch.setattr(R, "NADES", False)
+    monkeypatch.setattr(R, "BOMB_DROP", False)
+    out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
+    assert out == {"verified": True, "nades": True, "bomb_drop": True} and R.NADES and R.BOMB_DROP
+    assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
+
+
+def test_backing_out_of_a_crowd_he_drops_a_bomb_at_his_feet_and_walks_out_of_its_reach(monkeypatch):
+    monkeypatch.setattr(R, "BOMB_DROP", True)
     three = ((0.0, 0.0, 200.0, 700), (120.0, 0.0, 250.0, 700), (-120.0, 0.0, 280.0, 700))
     bot, clock, snap = brain(round_guest(enemies=three, cam_yaw=0.0))
     bot.held = lambda p, now: False
