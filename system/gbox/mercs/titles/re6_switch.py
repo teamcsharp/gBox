@@ -481,6 +481,8 @@ def snapshot(m) -> dict:
                     combo_timer=round(at(GM_COMBO_T, "<f"), 2), combo_bonus=at(GM_COMBO_BONUS, "<i"),
                     score=at(GM_SCORE, "<i"), base_points=at(GM_BASE, "<i"),
                     mercenaries_mode={MODE_MERCENARIES: "mercenaries", MODE_NO_MERCY: "no_mercy"}.get(mode))
+        if snap["mercenaries_phase"] == PHASE_PLAYING and snap["player"]:
+            snap["bonuses"] = bonuses(m, base)
     return snap
 
 
@@ -898,6 +900,82 @@ class BlastBook:
             pass
 
 
+# --- time bonuses -------------------------------------------------------------------------------------------------------
+# The stage's time and combo bonuses are breakable set pieces on sUnit's lines (live census 2026-10-27, Mining the Depths:
+# uSm5923 x5 the time bonuses, uSm5924 x2 the combo bonuses, on line 14 among the barrels and crates of line 13). A
+# piece's current action sits at +0x13F0: cSmTimeBonusAct_Wait / cSmComboBonusAct_Wait while it waits to be broken (a
+# shot or a kick); broken, it leaves that action. The class numbers differ by stage, the actions do not, so a bonus is
+# found by its action. bonuses() walks every line at most every BONUS_RESCAN_S (each vtable named once) and between
+# walks re-reads only the found pieces' actions.
+PIECE_ACTION = 0x13F0
+BONUS_ACTIONS = {"cSmTimeBonusAct_Wait": "time", "cSmComboBonusAct_Wait": "combo"}
+BONUS_RESCAN_S = 3.0
+_BONUS: dict = {"base": None, "at": -1e9, "units": (), "names": {}}
+
+
+def bonuses(m, base: int, now: float | None = None) -> list[dict] | None:
+    """The bonuses still waiting to be broken: [{ptr, pos, kind ("time" / "combo")}]; None when a read failed."""
+    now = time.monotonic() if now is None else now
+    cache = _BONUS
+    if cache["base"] != base:
+        cache.update(base=base, at=-1e9, units=(), names={})
+    names = cache["names"]
+    if len(names) > 4096:
+        names.clear()
+
+    def name_of(obj, vt):
+        if vt not in names:
+            names[vt] = class_name(m, obj)
+        return names[vt]
+
+    def kind_of(u):
+        act = u64(m, u + PIECE_ACTION)
+        if not ptr_ok(act):
+            return None
+        return BONUS_ACTIONS.get(name_of(act, u64(m, act)) or "")
+
+    try:
+        if now - cache["at"] >= BONUS_RESCAN_S:
+            cache["at"] = now
+            found = []
+            su = u64(m, base + S_UNIT)
+            for line in range(N_LINES):
+                u, n = u64(m, su + UNIT_LINES + LINE_STRIDE * line), 0
+                while ptr_ok(u) and n < WALK_MAX:
+                    vt = u64(m, u)
+                    if (name_of(u, vt) or "").startswith("uSm"):
+                        found.append((u, vt))
+                    u, n = u64(m, u + UNIT_NEXT), n + 1
+            cache["units"] = tuple(found)
+        out = []
+        for u, vt in cache["units"]:
+            if u64(m, u) != vt:                             # freed since the walk
+                continue
+            kind = kind_of(u)
+            if kind is None:
+                continue
+            pos = struct.unpack("<3f", m.rd(u + P_POS, 12))
+            if all(math.isfinite(v) for v in pos):
+                out.append({"ptr": u, "pos": pos, "kind": kind})
+        return out
+    except (ValueError, OSError, OverflowError):
+        cache["at"] = -1e9
+        return None
+
+
+def near_ray(origin, dot, point, radius: float, slack: float = FIRE_SLACK) -> bool:
+    """Whether the ray origin -> dot reaches point (it does not end more than slack short of it) and passes within
+    radius of it."""
+    have, want = math.dist(origin, dot), math.dist(origin, point)
+    if have < 1.0 or want < 1.0 or have < want - slack:
+        return False
+    d = tuple((dot[k] - origin[k]) / have for k in range(3))
+    along = sum((point[k] - origin[k]) * d[k] for k in range(3))
+    if along <= 0.0:
+        return False
+    return math.dist(point, tuple(origin[k] + along * d[k] for k in range(3))) <= radius
+
+
 # --- the round brain ----------------------------------------------------------------------------------------------------
 # RE6's controls (the game's own Controls screen; measured live 2026-10-26): the right stick turns the camera (rleft = a
 # larger yaw, ~174 deg/s with the gun down), the left stick walks along the camera (lup = the camera's yaw), ZL raises
@@ -1070,6 +1148,18 @@ BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace an
 BOMB_FACE, BOMB_FACE_S = math.radians(25), 1.5        # the throw waits (this long at most) for the crowd in the aim
 BOMB_TAKE_S, BOMB_KILLS_S = 2.0, 3.0    # a throw / a blast shows in its slot within this; its kills counted this long
 REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long at most before it counts as lost
+# Time bonuses (operator 2026-10-27: "I am not seeing them go after the time bonuses"; snapshot bonuses): with nobody
+# within BONUS_SAFE_R, a bonus within BONUS_R (flat) and BONUS_DY (height) is shot - the camera turned to it with the
+# gun down, then the gun up and the laser's ray (or the camera's line) closed onto it, the trigger down while the ray
+# passes within BONUS_HIT_R of it and does not end short of it. Aimed at BONUS_TRY_S without breaking (out of sight):
+# left for BONUS_SKIP_S. Every break (his shot, a bomb, a kick) counts as taken, a bonus still waiting when the round
+# ends as missed: stats bonuses_taken / bonuses_missed (per round: round_*, bonus_log).
+BONUS_PURSUIT = True
+BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
+BONUS_H, BONUS_HIT_R = 40.0, 45.0
+BONUS_TRY_S, BONUS_SKIP_S = 5.0, 30.0
+BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
+BONUS_LOG_N = 12
 HANG_S = 6.0
 # "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the
 # decisions and why, the idle streak among zombies) and the round counters below, whose per-round amounts the engine
@@ -1083,7 +1173,7 @@ HANG_S = 6.0
 #   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
-          "walk", "no_foes", "dead", "bomb", "crowd", "nade")
+          "walk", "no_foes", "dead", "bomb", "crowd", "nade", "bonus")
 AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("held", "tablet", "reload")
 
@@ -1114,7 +1204,9 @@ class Bot:
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
                   "bomb_hits_taken", "flashes", "frags", "fires", "nade_aborts", "nade_back_fails", "fever_kicks",
                   "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "dyings",
-                  "tablet_dying_presses", "tablet_dying_taken", "cc_backouts"):
+                  "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
+                  "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
+                  "bonus_shots"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s"):
             self.stats.setdefault(k, 0.0)
@@ -1181,6 +1273,10 @@ class Bot:
         self.cc_miss: dict = {}
         self.detour, self.detour_at = "lleft", -1e9
         self._ppos, self._pos_of = None, {}                  # his position this tick, the zombies' by id
+        # time bonuses: the one being shot (since when), those left for a while, this round's book
+        self.bonus_target, self.bonus_since, self.bonus_skip = None, -1e9, {}
+        self.bonus_prev: dict = {}                           # ptr -> kind, waiting at the last tick
+        self.bonus_round = None                              # {"seen": {ptr: kind}, "taken": {ptr: kind}}
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -1363,6 +1459,8 @@ class Bot:
 
     def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
+        if snap.get("mercenaries_phase") != PHASE_PLAYING:
+            self._bonus_close()
         if not p:
             self._gun_down()
             return self._go("none", "no_player", {"hold": ()}, "no player (between rounds)")
@@ -1401,6 +1499,7 @@ class Bot:
         self._bomb_kills_tick(snap, now)
         self._bomb_track(p, snap, now)
         self._blast_tick(p, snap, now)
+        self._bonus_book(snap)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
             return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
@@ -1479,6 +1578,9 @@ class Bot:
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         if not live:
+            took = self._bonus(p, live, flat, snap, now)
+            if took is not None:
+                return took
             self._gun_down()
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
@@ -1515,6 +1617,9 @@ class Bot:
         crowded = self._crowd_control(vis, flat, bearing, now)
         if crowded is not None:
             return crowded
+        took = self._bonus(p, live, flat, snap, now)
+        if took is not None:
+            return took
         if not vis:                                              # every one in reach out of sight: a way round
             self._gun_down()
             if now - self.detour_at >= DETOUR_S:
@@ -1892,6 +1997,105 @@ class Bot:
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
         return self._go("crowd", "cc_space", {"hold": ("ldown",)}, f"one at {d:.0f} cm: stepping back between attacks")
+
+    # --- time bonuses ----------------------------------------------------------------------------------------------
+    def _bonus_book(self, snap) -> None:
+        """This round's bonuses: one waiting at the last tick and gone now was broken (taken: stats bonuses_taken,
+        <kind>_bonuses_taken); BONUS_RESET_N or more gone at once is the round starting again (the book closes)."""
+        bs = snap.get("bonuses")
+        if bs is None or snap.get("mercenaries_phase") != PHASE_PLAYING:
+            return
+        cur = {b["ptr"]: b["kind"] for b in bs}
+        gone = {ptr: kind for ptr, kind in self.bonus_prev.items() if ptr not in cur}
+        if len(gone) >= BONUS_RESET_N:
+            self._bonus_close()
+            gone = {}
+        if self.bonus_round is None:
+            self.bonus_round = {"seen": {}, "taken": {}}
+        r = self.bonus_round
+        for ptr, kind in gone.items():
+            if ptr in r["taken"]:
+                continue
+            r["taken"][ptr] = kind
+            self.stats["bonuses_taken"] += 1
+            self.stats[kind + "_bonuses_taken"] += 1
+            if ptr == self.bonus_target:
+                self.bonus_target = None
+        r["seen"].update(cur)
+        self.bonus_prev = cur
+
+    def _bonus_close(self) -> None:
+        """The round's end (or a replay): the bonuses still waiting count as missed; bonus_log keeps the last rounds."""
+        r, self.bonus_round, self.bonus_prev = self.bonus_round, None, {}
+        self.bonus_target, self.bonus_skip = None, {}
+        if not r or not r["seen"]:
+            return
+        missed = [ptr for ptr in r["seen"] if ptr not in r["taken"]]
+        self.stats["bonuses_missed"] += len(missed)
+        kinds = list(r["taken"].values())
+        log = self.stats.setdefault("bonus_log", [])
+        log.append({"seen": len(r["seen"]), "taken": len(kinds), "time": kinds.count("time"),
+                    "combo": kinds.count("combo"), "missed": len(missed)})
+        del log[:-BONUS_LOG_N]
+
+    def _bonus(self, p, live, flat, snap, now) -> dict | None:
+        """A time / combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
+        onto it and the trigger down while the ray runs through it. None: no bonus to shoot (the fight goes on)."""
+        bs = snap.get("bonuses")
+        if (not BONUS_PURSUIT or not bs or (p.get("bomb") or {}).get("out")   # the remote in hand: ZR would set it off
+                or any(flat(e) < BONUS_SAFE_R for e in live)):
+            self.bonus_target = None
+            return None
+        px, py, pz = p["pos"]
+        reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
+        cands = [b for b in bs if self.bonus_skip.get(b["ptr"], -1e9) <= now
+                 and abs(b["pos"][1] - py) <= BONUS_DY and reach(b) <= BONUS_R]
+        b = next((c for c in cands if c["ptr"] == self.bonus_target), None)
+        if b is not None and now - self.bonus_since > BONUS_TRY_S:   # aimed at this long, still there: out of sight
+            self.bonus_skip[b["ptr"]] = now + BONUS_SKIP_S
+            self.stats["bonus_skips"] += 1
+            self._gun_down()
+            cands.remove(b)
+            b = None
+        if b is None:
+            if not cands:
+                self.bonus_target = None
+                return None
+            b = min(cands, key=reach)
+            self.bonus_target, self.bonus_since = b["ptr"], now
+        pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
+        d, kind = reach(b), b["kind"]
+        cam = snap.get("camera")
+        err = wrap(heading(pt[0] - px, pt[2] - pz) - (cam["yaw"] if cam else p["rot"]))
+        if self.aim_since is None and abs(err) > AIM_CONE:           # the gun down: the camera turns to it
+            return self._go("bonus", "bonus_turn", {"hold": self._turn(err)},
+                            f"a {kind} bonus at {d:.0f} cm, {math.degrees(err):+.0f} deg: turning to it")
+        if self.aim_since is None:
+            self.aim_since, self._raise_t, self.reraised = now, None, False
+        lz = snap.get("laser")
+        if lz is not None and lz.get("up") and now - self.aim_since >= READY_S:
+            origin, dot, source = tuple(lz["from"]), tuple(lz["at"]), "laser"
+        elif cam is not None and now - self.aim_since >= LASER_WAIT_S:
+            origin, source = cam["pos"], "camera"
+            far = math.dist(origin, pt) + 100.0
+            have = max(math.dist(origin, cam["target"]), 1.0)
+            dot = tuple(origin[k] + (cam["target"][k] - origin[k]) * far / have for k in range(3))
+        else:
+            return self._go("bonus", "bonus_raise", {"hold": ("zl",)}, f"a {kind} bonus at {d:.0f} cm: the gun comes up")
+        on = near_ray(origin, dot, pt, BONUS_HIT_R)
+        yaw_err, pitch_err = ray_error(origin, dot, pt)
+        fire = set()
+        if on:
+            self.fire_down = True if p.get("weapon_id") in AUTO_IDS else not self.fire_down
+            if self.fire_down:
+                fire = {"zr"}
+                self.stats["bonus_shots"] += 1
+        else:
+            self.fire_down = False
+        keys = {"zl"} | self._yaw(yaw_err) | self._pitch(pitch_err) | fire
+        return self._go("bonus", "bonus_fire" if fire else "bonus_aim", {"hold": tuple(sorted(keys))},
+                        f"a {kind} bonus at {d:.0f} cm ({source}): " + ("shooting it" if on else
+                        f"steering {math.degrees(yaw_err):+.0f} / {math.degrees(pitch_err):+.0f} deg onto it"))
 
     # --- remote bombs ----------------------------------------------------------------------------------------------
     def _bomb(self, p, live, flat, yaw, snap, now) -> dict | None:
@@ -2278,7 +2482,7 @@ class RE6Switch(Driver):
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
-                      "tablet_dying_taken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

@@ -109,6 +109,7 @@ def _fresh_caches():
     """The unit caches are per main base, and every fake guest here shares BASE."""
     for cache in (R._FOUND, R._MISS):
         cache.clear()
+    R._BONUS.update(base=None)
     R.TITLE.since = None
     yield
 
@@ -121,6 +122,8 @@ def round_guest(phase=R.PHASE_PLAYING, hp=900, timer=97.5, enemies=((300.0, 0.0,
     g.i32(gm + R.GM_MODE, mode)
     g.i32(gm + R.GM_PHASE, phase)
     g.f32(gm + R.GM_TIMER, timer)
+    from gbox.mercs.titles import re6_switch_mods as RM
+    g.f32(gm + RM.GM_CLOCK, timer)                            # the countdown itself (GM_TIMER: the HUD's copy of it)
     g.i32(gm + R.GM_BONUS_S, 5)
     for off, v in ((R.GM_KILLS, 9), (R.GM_COMBO_ON, 1), (R.GM_COMBO, 2), (R.GM_MAX_COMBO, 7),
                    (R.GM_COMBO_BONUS, 40), (R.GM_SCORE, 4540), (R.GM_BASE, 2700)):
@@ -855,6 +858,85 @@ def test_quick_shots_that_never_hurt_a_close_one_leave_him_but_never_one_at_arms
     assert not bot.is_blocked(snap["enemies"][0], clock[0]) and bot.stats["los_blocks"] == 0
 
 
+def bonus_piece(g, action, pos, line=14, cls="uSm5923"):
+    """A breakable set piece on a move line: its class, position and current action (+0x13F0)."""
+    u = g.unit(line, cls, size=0x1500)
+    g.q(u + R.PIECE_ACTION, g.obj(action, 0x100))
+    g.f32(u + R.P_POS, *pos)
+    return u
+
+
+def test_the_snapshot_finds_the_time_and_combo_bonuses_by_their_action():
+    g = round_guest()
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    t = bonus_piece(g, "cSmTimeBonusAct_Wait", (100.0, 0.0, 900.0))
+    c = bonus_piece(g, "cSmComboBonusAct_Wait", (-400.0, 50.0, 300.0), cls="uSm5924")
+    bonus_piece(g, "SmWoodBoxActWait", (0.0, 0.0, 200.0), line=13, cls="uSm1537")     # a crate: not a bonus
+    snap = R.snapshot(g)
+    assert sorted((b["kind"], b["ptr"]) for b in snap["bonuses"]) == sorted([("time", t), ("combo", c)])
+    assert next(b for b in snap["bonuses"] if b["ptr"] == t)["pos"] == (100.0, 0.0, 900.0)
+    g.q(t + R.PIECE_ACTION, g.obj("cSmGlassAct_Break", 0x100))                         # shot: it breaks
+    assert [b["kind"] for b in R.snapshot(g)["bonuses"]] == ["combo"]                  # seen without a new walk
+    g.i32(gm + R.GM_PHASE, R.PHASE_OVER)
+    assert "bonuses" not in R.snapshot(g)
+
+
+def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken():
+    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
+    u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                   # 10 m ahead
+    bot, clock, snap = brain(g)
+    acts = run(bot, snap, clock, 12)
+    assert bot.doing == "bonus" and all("zl" in a["hold"] for a in acts[1:])
+    assert any("zr" in a["hold"] for a in acts) and bot.stats["bonus_shots"] >= 2 and bot.stats["shots"] == 0
+    snap["bonuses"] = []                                                               # it broke
+    run(bot, snap, clock, 1)
+    assert bot.stats["bonuses_taken"] == 1 and bot.stats["time_bonuses_taken"] == 1 and bot.bonus_target is None
+    snap["mercenaries_phase"] = R.PHASE_OVER                                           # the round's end
+    run(bot, snap, clock, 1)
+    assert bot.stats["bonus_log"] == [{"seen": 1, "taken": 1, "time": 1, "combo": 0, "missed": 0}]
+    assert bot.stats["bonuses_missed"] == 0 and u
+
+
+def test_no_bonus_shot_with_a_bomb_out():
+    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
+    bot, clock, snap = brain(g)
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, -1500.0))
+    bot.bomb_at, bot.bomb_since, bot.bomb_phase = (0.0, 0.0), clock[0], "wait"
+    acts = run(bot, snap, clock, 12)
+    assert bot.doing != "bonus" and all("zr" not in a.get("hold", ()) for a in acts)
+
+
+def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed():
+    g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))                               # a zombie 4 m ahead
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
+    bot, clock, snap = brain(g)
+    run(bot, snap, clock, 6)
+    assert bot.doing != "bonus" and bot.stats["bonus_shots"] == 0
+    R._BONUS.update(base=None)                                                         # another guest at the same base
+    g = round_guest(enemies=((0.0, 0.0, 3000.0, 700),), laser=((0.0, 60.0, 500.0), (20.0, 145.0, 30.0), 0.86))
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                       # a wall at 5 m: the dot short
+    bot, clock, snap = brain(g)
+    acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
+    assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["bonus_skips"] == 1
+    assert bot.doing == "walk"                                                         # left: on to the zombie
+    snap["mercenaries_phase"] = R.PHASE_OVER
+    run(bot, snap, clock, 1)
+    assert bot.stats["bonuses_missed"] == 1 and bot.stats["bonus_log"][-1]["missed"] == 1
+
+
+def test_a_replay_is_not_every_bonus_taken():
+    g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))
+    for x in (0.0, 500.0, 1000.0):
+        bonus_piece(g, "cSmTimeBonusAct_Wait", (x, 0.0, 2000.0))
+    bot, clock, snap = brain(g)
+    run(bot, snap, clock, 2)
+    snap["bonuses"] = [dict(b, ptr=b["ptr"] + 0x10000) for b in snap["bonuses"]]      # the round again: new pieces
+    run(bot, snap, clock, 2)
+    assert bot.stats["bonuses_taken"] == 0 and bot.stats["bonus_log"][-1] == {"seen": 3, "taken": 0, "time": 0,
+                                                                              "combo": 0, "missed": 3}
+
+
 def test_it_aims_along_the_laser_and_fires_when_the_dot_is_on_him():
     on = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.86)          # the dot on his chest
     bot, clock, snap = brain(round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500), laser=on))
@@ -1318,6 +1400,110 @@ def test_unlock_stages_and_auto_qte_write_only_their_own_cells_in_both_copies(mo
     assert off["after"] == ["0x0", "0x0"] and off["writes"] == 2
     for cell in (0x974, 0x974 + 0x5510):                                                   # the character mask untouched
         assert struct.unpack("<I", g.rd(info + cell, 4))[0] == 0x10711
+
+
+def test_kill_time_adds_seconds_per_new_kill_with_the_huds_notice(mods):
+    g = round_guest(timer=60.0)
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    ad = Adapter(g)
+    clock = [10.0]
+    out = mods.run(ad, "kill_time_bonus", seconds=3)
+    assert out["kill_time"] is True and out["seconds"] == 3.0
+    mods.run(ad, "infinite_ammo", on=False)
+    snap = R.snapshot(g)
+    assert mods.maintain(ad, snap, clock=lambda: clock[0])["writes"] == 0       # the round's count read: 9 kills
+    g.i32(gm + R.GM_KILLS, 11)                                                 # two more
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["writes"] == 1 and res["kill_time"]["applied_seconds"] == pytest.approx(6.0)
+    assert struct.unpack("<f", g.rd(gm + mods.GM_CLOCK, 4))[0] == pytest.approx(66.0)
+    assert struct.unpack("<i", g.rd(gm + mods.GM_SHOWN, 4))[0] == 6 and g.rd(gm + mods.GM_NOTICE, 1) == b"\x01"
+    g.i32(gm + R.GM_KILLS, 12)                                                 # one more while the notice is up
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<i", g.rd(gm + mods.GM_SHOWN, 4))[0] == 9           # the notice adds up, as the game's
+    assert struct.unpack("<f", g.rd(gm + R.GM_TIMER, 4))[0] == 60.0            # the HUD's copy is the game's to write
+    g.i32(gm + R.GM_KILLS, 0)                                                  # a new round: counted afresh
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0
+    g.f32(gm + mods.GM_CLOCK, 5998.0)
+    g.i32(gm + R.GM_KILLS, 1)
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(gm + mods.GM_CLOCK, 4))[0] == pytest.approx(mods.CLOCK_MAX)   # the game's cap
+    g.i32(gm + R.GM_PHASE, R.PHASE_OVER)                                       # time up: nothing written
+    g.i32(gm + R.GM_KILLS, 3)
+    before = list(ad.writes)
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert ad.writes == before
+    assert mods.run(ad, "status")["kill_time_on"] is True
+    with pytest.raises(ValueError):
+        mods.run(ad, "kill_time", seconds=40)
+
+
+def test_add_time_and_set_time_move_the_clock_within_its_bounds(mods):
+    g = round_guest(timer=30.0)
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    ad = Adapter(g)
+    out = mods.run(ad, "add_time", seconds=20)
+    assert out["verified"] and out["added_seconds"] == 20 and out["clock_after"] == pytest.approx(50.0)
+    out = mods.run(ad, "add_time", seconds=-100)                              # never under 1 s
+    assert out["clock_after"] == pytest.approx(1.0) and out["clamped"]
+    assert mods.run(ad, "set_time", seconds=90)["clock_after"] == pytest.approx(90.0)
+    g.i32(gm + R.GM_PHASE, R.PHASE_OVER)
+    assert mods.run(ad, "add_time", seconds=10)["verified"] is False
+    with pytest.raises(ValueError):
+        mods.run(ad, "set_time", seconds=0)
+
+
+def struggle_guest(state=8, target=5.0, progress=1.5, active=1, kind=8, outcome=4, new=0):
+    """sActionButton with player 0's ButtonMgr and one live struggle unit (a cActionButton): a zombie's grab by
+    default (a chance button, type 8, its outcome rolled: 4 the bite)."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    g = round_guest(state=state)
+    sab = g.obj("sActionButton", 0x1D40)
+    g.q(BASE + RM.S_ACTBTN, sab)
+    mgr = sab + RM.AB_MGRS
+    g.q(mgr, g.klass("sActionButton::ButtonMgr"))
+    btn = g.obj("cActionButton", 0x1D0)
+    u = mgr + RM.MGR_UNITS[0]
+    g.i32(u + RM.UNIT_OUTCOME, outcome)
+    g.put(u + RM.UNIT_ACTIVE, bytes([active, new]))
+    g.q(u + RM.UNIT_BUTTON, btn)
+    g.i32(u + RM.UNIT_TYPE, kind)
+    g.f32(u + RM.UNIT_TARGET, target, progress)
+    return g, u
+
+
+def test_auto_qte_ram_frees_a_grab_at_once_only_while_he_is_held(mods):
+    g, u = struggle_guest()
+    ad = Adapter(g)
+    out = mods.run(ad, "auto_qte_ram", on=True)
+    assert out["verified"] and out["units"] == 1
+    clock = [10.0]
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert res["writes"] == 1 and struct.unpack("<I", g.rd(u + mods.UNIT_OUTCOME, 4))[0] == 0   # free at once
+    assert ad.writes == [(u + mods.UNIT_OUTCOME, struct.pack("<I", 0))]                         # that u32 only
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0              # once a grab
+    assert mods.run(ad, "status")["struggles_completed"] == 1
+    for kw in ({"state": 0}, {"active": 0}, {"new": 1}, {"outcome": 0}, {"outcome": 9}):
+        g2, u2 = struggle_guest(**kw)                       # free / no live unit / not rolled yet / free already / odd
+        ad2 = Adapter(g2)
+        mods.ORIG.clear()
+        mods.run(ad2, "qte_ram", on=True)
+        mods.maintain(ad2, R.snapshot(g2), clock=lambda: clock[0])
+        assert ad2.writes == [], kw
+
+
+def test_auto_qte_ram_fills_a_mash_button_to_its_target(mods):
+    g, u = struggle_guest(kind=2)
+    ad = Adapter(g)
+    mods.run(ad, "auto_qte_ram", on=True)
+    res = mods.maintain(ad, R.snapshot(g), clock=lambda: 10.0)
+    assert res["writes"] == 1 and struct.unpack("<f", g.rd(u + mods.UNIT_PROGRESS, 4))[0] == 5.0   # at its target
+    assert ad.writes == [(u + mods.UNIT_PROGRESS, struct.pack("<f", 5.0))]
+    g2, _ = struggle_guest(kind=2, target=5000.0)            # not a struggle's target
+    ad2 = Adapter(g2)
+    mods.ORIG.clear()
+    mods.run(ad2, "auto_qte_ram", on=True)
+    mods.maintain(ad2, R.snapshot(g2), clock=lambda: 10.0)
+    assert ad2.writes == []
 
 
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
