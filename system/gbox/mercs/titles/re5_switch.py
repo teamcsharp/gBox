@@ -288,10 +288,25 @@ RAMPAGE_FAMILIES = ("shotgun", "magnum")
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
                     "offscreen_aim_s", "whips", "rampage_swaps")
+# Time bonuses first (operator 16:45: "the most important thing is capturing every time bonus and then maintaining the
+# combo"; 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... In Resident Evil Five, the only way
+# to grab a time bonus is to walk up to it and melee it ... after grabbing all the time bonuses, that's when the match
+# truly begins"). Phase 1 of a round: the hourglass statues (uOm0100 units, vtable main+0x1BD6D58, #1350; the snapshot
+# reads them every BONUS_SCAN_S: snap bonuses ptr / pos / s16 seconds), the next one by the flat distance + 3 x the
+# height: he runs there (B; walking the last BONUS_WALK_R), faces it and swings the knife (L held, ZR every
+# KNIFE_SWING_S) within KNIFE_R until it breaks (a step closer after KNIFE_TRY_S, KNIFE_RETRIES times, then another one
+# for BONUS_BLOCK_S); a detour when no closer for 1.5 s. Only a Majini within BONUS_FIGHT_R (in his way, about to grab)
+# is fought first. Phase 2, the match, once none is left or reachable. Counters: bonuses_seen, bonuses_taken (a statue
+# gone from the scan), bonuses_left, bonus_time_s (the round's time when the last went), time_gained (the clock's jumps
+# of BONUS_JUMP_S or more), bonus_runs, knife_swings, bonus_detours.
+BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S =     True, 0x1BD6D58, 1.0, 200.0, 250.0, 12.0, 20.0
+KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 90.0, math.radians(12), 0.35, 3.0, 2
+BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
-                     "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS
+                     "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
+    + BONUS_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -567,6 +582,42 @@ def heading(dx: float, dz: float) -> float:
 
 
 _UNIT_CENSUS = {"at": -1e9, "n": None}
+_BONUS_SCAN = {"at": -1e9, "list": None, "line": None, "full_at": -1e9}
+
+
+def time_bonuses(m, base: int, now: float | None = None):
+    """The hourglass statues standing (uOm0100, vtable main+BONUS_VT): [{"ptr", "pos", "secs"}], read at most every
+    BONUS_SCAN_S - their own line only, every line every 10 s (where they live is learned)."""
+    now = time.monotonic() if now is None else now
+    if now - _BONUS_SCAN["at"] < BONUS_SCAN_S:
+        return _BONUS_SCAN["list"]
+    _BONUS_SCAN["at"] = now
+    out, found_line = [], None
+    try:
+        su = u64(m, base + S_UNIT)
+        if not ptr_ok(su):
+            return None
+        vt = base + BONUS_VT
+        full = _BONUS_SCAN["line"] is None or now - _BONUS_SCAN["full_at"] >= 10.0
+        lines = range(N_LINES) if full else (_BONUS_SCAN["line"],)
+        if full:
+            _BONUS_SCAN["full_at"] = now
+        for line in lines:
+            u, k = u64(m, su + UNIT_LINES + LINE_STRIDE * line), 0
+            while ptr_ok(u) and k < 1024:
+                if u64(m, u) == vt:
+                    pos = struct.unpack("<3f", m.rd(u + E_POS, 12))
+                    secs = struct.unpack("<h", m.rd(u + E_HP, 2))[0]
+                    if all(math.isfinite(v) for v in pos):
+                        out.append({"ptr": u, "pos": pos, "secs": secs})
+                        found_line = line
+                u, k = u64(m, u + UNIT_NEXT), k + 1
+    except (ValueError, OSError, struct.error):
+        return _BONUS_SCAN["list"]
+    if found_line is not None:
+        _BONUS_SCAN["line"] = found_line
+    _BONUS_SCAN["list"] = out
+    return out
 
 
 def unit_enemies_alive(m, base: int, now: float | None = None):
@@ -698,6 +749,7 @@ def snapshot(m) -> dict:
                 except (ValueError, OSError):
                     snap["continue_cursor"] = None
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
+    snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
@@ -993,6 +1045,8 @@ class Bot:
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
         self._first_check, self._raise_is_reroll, self._reroll_next, self._close_sky_since = False, False, False, None
         self._ramp = None                                # the rampage: {"since", "main", "kills0", "retarget_at"}
+        self._bonus_known, self._bonus_block, self._bonus = {}, {}, None   # statues seen; given up; the run under way
+        self._timer_prev = None
         self._ramp_t, self._swap_at, self._restore = None, -1e9, None
         self._whip = {"dir": 0, "amount": 0.0, "end": -1e9, "last_big": None, "rot": None}
         self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
@@ -1110,6 +1164,7 @@ class Bot:
         self._fault_t = now
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
+        self._bonus_tick(snap, now)
         self._watch_whips(p, now)
         self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
         if snap.get("unit_enemies_alive") is not None:
@@ -1202,6 +1257,93 @@ class Bot:
                    (180, ("ldown",)), (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)),
                    (-45, ("lright", "lup")))
         return min(options, key=lambda o: abs(o[0] - a))[1]
+
+    def _bonus_tick(self, snap, now) -> None:
+        """The round's statues: each new one seen, one gone taken; the clock's jumps (time_gained); bonuses_left."""
+        bonuses = snap.get("bonuses")
+        t = snap.get("timer")
+        if isinstance(t, (int, float)) and isinstance(self._timer_prev, (int, float)) \
+                and t - self._timer_prev >= BONUS_JUMP_S:
+            self.stats["time_gained"] = round(self.stats["time_gained"] + (t - self._timer_prev), 1)
+        if isinstance(t, (int, float)):
+            self._timer_prev = t
+        if bonuses is None:
+            return
+        now_keys = {b["ptr"] for b in bonuses}
+        for b in bonuses:
+            if b["ptr"] not in self._bonus_known:
+                self._bonus_known[b["ptr"]] = b
+                self.stats["bonuses_seen"] += 1
+        for key in [k for k in self._bonus_known if k not in now_keys]:
+            del self._bonus_known[key]
+            self.stats["bonuses_taken"] += 1
+            if self._bonus is not None and self._bonus.get("ptr") == key:
+                self._bonus = None
+        self.stats["bonuses_left"] = len(now_keys)
+        if not now_keys and self.stats.get("bonuses_seen") and self._round_started is not None                 and self.stats.get("_bonus_done_round") != self._round_started:
+            self.stats["_bonus_done_round"] = self._round_started
+            self.stats["bonus_time_s"] = round(now - self._round_started, 1)
+
+    def _go_bonus(self, p, live, flat, snap, now):
+        """Phase 1 (operator 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... the only way to
+        grab a time bonus is to walk up to it and melee it"): the next statue - run to it, face it, the knife (L + ZR)
+        until it breaks; only a Majini within BONUS_FIGHT_R (in the way, about to grab) is fought first."""
+        bonuses = snap.get("bonuses") or ()
+        px, py, pz = p["pos"]
+        blocking = any(flat(e) <= BONUS_FIGHT_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
+        if not BONUS or not bonuses or blocking:
+            return None
+        self._bonus_block = {k: t for k, t in self._bonus_block.items() if t > now}
+        open_ = [b for b in bonuses if b["ptr"] not in self._bonus_block]
+        if not open_:
+            return None
+        cost = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz) + 3.0 * abs(b["pos"][1] - py)
+        run = self._bonus
+        b = next((x for x in open_ if run is not None and x["ptr"] == run["ptr"]), None) or min(open_, key=cost)
+        if run is None or run["ptr"] != b["ptr"]:
+            self.stats["bonus_runs"] += 1
+            run = self._bonus = {"ptr": b["ptr"], "since": now, "knife_since": None, "retries": 0,
+                                 "best": 1e9, "best_at": now, "side": 1, "detour_until": -1e9, "detours": 0}
+        if self.aim_since is not None:
+            self._gun_down()
+        bx, by, bz = b["pos"]
+        d = math.hypot(bx - px, bz - pz)
+        err = wrap(heading(bx - px, bz - pz) - p["rot"])
+        if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
+            if abs(err) > KNIFE_FACE:
+                self.doing, self.why = "turn", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: facing it"
+                run["knife_since"] = None
+                return {"hold": self._turn(err)}
+            run["knife_since"] = run["knife_since"] or now
+            if now - run["knife_since"] > KNIFE_TRY_S:   # not broken yet: a step in, again (then another one)
+                run["knife_since"], run["retries"] = None, run["retries"] + 1
+                if run["retries"] > KNIFE_RETRIES:
+                    self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
+                    self._bonus = None
+                self.doing, self.why = "walk", "time bonus: a step closer for the knife"
+                return {"hold": ("lup",)}
+            swing = int((now - run["knife_since"]) / KNIFE_SWING_S) % 2 == 1
+            if swing and not run.get("swung"):
+                self.stats["knife_swings"] += 1
+            run["swung"] = swing
+            self.doing, self.why = "melee", f"time bonus {b.get('secs')} s: the knife"
+            return {"hold": ("l", "zr") if swing else ("l",)}
+        if d < run["best"] - 50.0:                       # on the way: run (walk the last metres), a detour when stuck
+            run["best"], run["best_at"] = d, now
+        elif now - run["best_at"] > 1.5 and now >= run["detour_until"]:
+            run["detours"] += 1
+            run["side"] = -run["side"]
+            run["detour_until"], run["best_at"] = now + 0.9, now + 0.9
+            self.stats["bonus_detours"] += 1
+            if run["detours"] > 3:
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
+                self._bonus = None
+        off = math.radians(70) * run["side"] if now < run["detour_until"] else 0.0
+        err = wrap(heading(bx - px, bz - pz) + off - p["rot"])
+        self.doing = "walk"
+        self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
+                    f"{len(open_)} left" + (" - a detour" if off else ""))
+        return {"hold": (("lup", "b") if d > BONUS_WALK_R else ("lup",)) + self._turn(err, TURN_TOL)}
 
     def _watch_whips(self, p, now) -> None:
         """A turn of WHIP_DEG or more one way, then WHIP_BACK_DEG back within WHIP_S of its end: a whip."""
@@ -1722,6 +1864,7 @@ class Bot:
             self.stats["crowd_max"] = 0
             for kind in FAULT_KINDS:
                 self.stats["ex_" + kind] = ""
+            self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
             if self.mines is not None:
                 self.mines.new_round(now)
 
@@ -2011,6 +2154,9 @@ class Bot:
             live = rest or live
         self._fault_tick(p, live, flat, snap, now)
         if not live:
+            act = self._go_bonus(p, live, flat, snap, now)
+            if act is not None:
+                return act
             act = self._rampage(p, live, flat, snap, now)   # (the circle clear: the main gun back)
             if act is not None:
                 return act
@@ -2034,6 +2180,9 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
+        act = self._go_bonus(p, live, flat, snap, now)
+        if act is not None:
+            return act
         act = self._pursue(p, live, flat, snap, now)
         if act is not None:
             return act
