@@ -1,0 +1,25 @@
+# gbox/refract.py setup steps, platform-independent part, run on the Spark 2026-10-27 (scratch, deleted after):
+# the pinned Refract 1.0.2 win64 release, Google's Android 14 ARM64 image, ext4==1.2.4 via pip --target, Refract's make_sysroot.py
+09:40:34 refract zip ok 107 s
+09:40:35 release tops {'Refract-1.0.2-win64'} missing []
+09:41:25 image zip ok 50 s
+09:41:29 image tops {'arm64-v8a'} system.img /home/ehm_eckx/gBox_alt/scratch/agent/refract-check/preflight/image/arm64-v8a/system.img 1622147072
+09:41:34 pip 0 5 s name=crcmod-1.7-cp312-cp312-linux_aarch64.whl size=32060 sha256=35e82be239c0000bf0ef6d9cd53775b9bdb8fa6b103b23e6a53b61291539fe11
+  Stored in directory: /tmp/pip-ephem-wheel-cache-2hn84zo9/wheels/76/08/0b/caa8b1380122cbfe6a03eaccbec0f63c67e619af4e30ca5e2a
+Successfully built crcmod
+Installing collected packages: crcmod, cachetools, ext4
+
+Successfully installed cachetools-6.0.0 crcmod-1.7 ext4-1.2.4
+ 
+
+09:41:41 make_sysroot 0 6 s
+system/lib64: 676 libraries
+apex com.android.runtime: 13 files
+apex com.android.art: 58 files
+apex com.android.i18n: 7 files
+apex com.android.tzdata: 5 files
+apex com.android.os.statsd: 10 files
+apex com.android.conscrypt: 9 files
+sysroot: /home/ehm_eckx/gBox_alt/scratch/agent/refract-check/preflight/sysroot
+ 
+09:41:41 {"refract_symlinks.txt": true, "linker64": true, "linker64_size": 2052848, "apex runtime": true, "apex art": true, "lib64 .so": 669, "bionic libc": true, "files at 4 KiB multiples": "0 of 200"}
