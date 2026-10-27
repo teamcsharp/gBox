@@ -86,3 +86,19 @@ def test_the_flip_guard_works_on_its_own_with_smooth_off(monkeypatch):
     b._set_target(10, 5.0)
     b.target_at = -10.0
     assert b._choose(pl, live, 5.2)["ptr"] == 11                   # with the piece off he flips back at once
+
+
+def test_each_lapse_is_counted_by_its_cause_and_the_full_window_is_kept():
+    b, clock = bot()
+    seq = ((0.0, [], 0, 0.0), (0.1, [at(500, 0)], 1, 6.5), (0.2, [at(500, 0)], 1, 0.3),
+           (0.3, [], 0, 0.0),                                         # nobody alive: empty
+           (0.4, [at(2000, 0)], 1, 6.5), (0.5, [at(2000, 0)], 1, 0.4),
+           (0.6, [at(2000, 0)], 0, 0.0),                              # the nearest 20 m off: far
+           (0.7, [at(400, 0)], 1, 6.5), (0.8, [at(400, 0)], 1, 0.5),
+           (0.9, [at(400, 0)], 0, 0.0))                               # one at 4 m: near
+    for t, foes, combo, window in seq:
+        clock[0] = t
+        b._track_combo(snap(foes, combo=combo, window=window))
+    st = b.stats
+    assert (st["combo_lapses"], st["combo_lapse_empty"], st["combo_lapse_far"], st["combo_lapse_near"]) == (3, 1, 1, 1)
+    assert st["combo_lapse_aimed"] == 0 and st["combo_window_full"] == 6.5

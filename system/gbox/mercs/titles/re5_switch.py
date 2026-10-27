@@ -203,7 +203,11 @@ LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # running and its window under COMBO_URGENT_S, the target is the quickest kill (the cheapest in reach, his level first,
 # no stickiness), and with nobody within COMBO_REACH he walks to the nearest (combo_pushes counts the ticks).
 COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
-COMBO_COUNTERS = ("combo_breaks", "combo_lapses", "combo_pushes")
+# Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
+# nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
+# those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
+COMBO_COUNTERS = ("combo_breaks", "combo_lapses", "combo_pushes", "combo_lapse_empty", "combo_lapse_far",
+                  "combo_lapse_near", "combo_lapse_aimed")
 # The enemy knowledge database at work (brain step 4, operator 2026-10-27: "not utilizing any of the lessons learned";
 # Hermes #4484): the fight asks gbox.mercs.brain.knowledge.dispatch_plan (K's learned fields over the defaults) for its
 # target's class, distance and weapon, and uses a learned field only at K_MIN_CONF and K_MIN_SAMPLES: the aim height
@@ -1033,8 +1037,23 @@ class Bot:
             self.stats["combo_breaks"] += 1
             if isinstance(self._combo_window, (int, float)) and self._combo_window <= COMBO_LAPSE_S:
                 self.stats["combo_lapses"] += 1
+                self._lapse_cause(snap)
+        if combo > 0 and isinstance(window, (int, float)) and not isinstance(window, bool) and 0 < window < 600:
+            self.stats["combo_window_full"] = round(max(window, self.stats.get("combo_window_full") or 0.0), 1)
         self._combo_prev = combo
         self._combo_window = window if combo > 0 else None
+
+    def _lapse_cause(self, snap) -> None:
+        p = snap.get("player") or {}
+        px, _, pz = p.get("pos") or (0.0, 0.0, 0.0)
+        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
+        if not alive:
+            self.stats["combo_lapse_empty"] += 1
+            return
+        near = min(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in alive)
+        self.stats["combo_lapse_far" if near > COMBO_REACH else "combo_lapse_near"] += 1
+        if self.aim_since is not None:
+            self.stats["combo_lapse_aimed"] += 1
 
     def _combo_urgent(self, snap) -> bool:
         combo, window = snap.get("combo"), snap.get("combo_timer")
