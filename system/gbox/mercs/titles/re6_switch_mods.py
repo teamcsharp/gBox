@@ -233,6 +233,8 @@ class RE6Switch:
         st = {"game": GAME, "module_base": hex(self.base), "infinite_ammo": bool(self.state.get("infinite_ammo")),
               "infinite_tablets": bool(self.state.get("infinite_tablets")),
               "infinite_stamina": bool(self.state.get("infinite_stamina")), "fire_rate_x": self.state.get("fire_rate", 1.0)}
+        kt = self.state.get("kill_time", {})
+        st["kill_time_s"] = kt.get("seconds_max", kt.get("seconds", KILL_TIME_S)) if kt.get("on") else 0.0
         snap = R.snapshot(self.m)
         p = snap.get("player")
         if p:
@@ -529,6 +531,110 @@ def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
                     "costume from its next opening, and the game's own next save keeps it"}
 
 
+# Time per kill: the operator's 2026-10-27 request for RE6 Switch is +3 seconds per kill.
+# Kills come from sGameMan +0x408C; the round clock lives at sGameMan +0x3DF0 (f32 seconds left).
+# The research notes +0x3DF0 is a per-frame copy (+0x4698 tracks it too); the authoritative owner
+# for writes is not yet verified live, so this mod writes the HUD copy and reads it back.
+KILL_TIME_S = 3.0
+KILL_TIME_MAX_S = 30.0
+_KILL_LOCK = threading.RLock()
+
+# The round clock and kills (sGameMan, measured live 2026-10-26)
+GM_CLOCK, GM_KILLS = 0x3DF0, 0x408C
+# The tracking field the research notes (+0x4698 tracks the timer too)
+GM_CLOCK_TRACK = 0x4698
+
+
+def kill_time(g: RE6Switch, on: bool, seconds=None, seconds_max=None) -> dict:
+    """Switch the per-kill time bonus; the driver's maintain() applies it each snapshot.
+    seconds alone: that many per kill; seconds and seconds_max: a random whole number in that range;
+    neither: the last setting (KILL_TIME_S the first time)."""
+    with _KILL_LOCK:
+        state = g.state.setdefault("kill_time", {})
+        if seconds is None:
+            low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
+        else:
+            low = float(seconds)
+            high = float(seconds_max) if seconds_max is not None else low
+        low, high = float(low), float(high)
+        if not 0 < low <= high <= KILL_TIME_MAX_S:
+            raise ValueError(f"kill_time seconds: more than 0, at most {KILL_TIME_MAX_S:g}, and the minimum first")
+        state.update(on=bool(on), seconds=low, seconds_max=high, gm=None, kills=None)
+        return {"kill_time": state["on"], "seconds": low, "seconds_max": high, "verified": True}
+
+
+def _kill_seconds(state) -> float:
+    """One kill's seconds: the configured fixed value, or an explicit random range."""
+    import random
+    low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
+    if high <= low:
+        return low
+    if float(low).is_integer() and float(high).is_integer():
+        return float(random.randint(int(low), int(high)))
+    return round(random.uniform(low, high), 1)
+
+
+def _add_clock(ad, gm: int, seconds: float) -> dict:
+    """Add seconds to the RE6 round clock at sGameMan +0x3DF0 (f32), read back.
+    Never leaves the clock at or below 0 (the round's end)."""
+    import math
+    try:
+        before = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
+    except (ValueError, OSError, struct.error):
+        return {"verified": False, "reason": "clock unreadable", "clock_before": None, "clock_after": None}
+    if not math.isfinite(before) or before <= 0 or before > 86400:
+        return {"verified": False, "reason": "no active round clock", "clock_before": before, "clock_after": None}
+    wanted = before + float(seconds)
+    target = max(1.0, wanted)
+    try:
+        ad.write_memory(gm + GM_CLOCK, struct.pack("<f", target))
+        after = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
+    except (ValueError, OSError, struct.error, RuntimeError):
+        return {"verified": False, "reason": "clock write failed", "clock_before": before, "clock_after": None}
+    verified = math.isfinite(after) and target - 0.5 <= after <= target + 0.01
+    return {"verified": verified, "clock_before": round(before, 2), "clock_after": round(after, 2),
+            "applied_seconds": round(target - before, 2), "clamped": target != wanted,
+            **({"reason": "clock write not confirmed"} if not verified else {})}
+
+
+def maintain_kill_time(ad, snap=None) -> dict:
+    """+seconds on the round clock for each kill since the last snapshot. A new round (another sGameMan,
+    or the count going down) starts counting afresh; a clock at 0 (the round is over) is never written."""
+    with _KILL_LOCK:
+        state = ORIG.get(id(ad), {}).get("kill_time", {})
+        if not state.get("on"):
+            return {"kill_time": False, "added": 0.0, "verified": True}
+        try:
+            m = Mem(ad)
+            base = R.module_base(m)
+            if base is None:
+                return {"kill_time": True, "added": 0.0, "verified": True, "reason": "main not found"}
+            gm = R.game_man(m, base)
+            if not gm:
+                return {"kill_time": True, "added": 0.0, "verified": True, "reason": "no round"}
+            kills = R._i32(m, gm + GM_KILLS)
+            if not 0 <= kills <= 500:
+                return {"kill_time": True, "added": 0.0, "verified": False, "reason": "invalid kill count"}
+            last = state.get("kills")
+            if state.get("gm") != gm or last is None or kills < last:
+                state.update(gm=gm, kills=kills)
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills}
+            if kills == last:
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills}
+            state["kills"] = kills
+            clock = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
+            if clock <= 0:
+                return {"kill_time": True, "added": 0.0, "verified": True, "kills": kills, "reason": "round over"}
+            added = sum(_kill_seconds(state) for _ in range(kills - last))
+            result = _add_clock(ad, gm, added)
+            verified = result["verified"]
+            return {"kill_time": True, "added": added if verified else 0.0, "verified": verified, "kills": kills,
+                    "clock": result.get("clock_after"), **({"reason": result["reason"]} if result.get("reason") else {})}
+        except Exception as error:  # noqa: BLE001 - a lost adapter must not stop the bot's next snapshot
+            return {"kill_time": True, "added": 0.0, "verified": False,
+                    "reason": f"kill time unavailable: {type(error).__name__}: {str(error)[:120]}"}
+
+
 def fire_interval(index: int, k: float) -> float:
     """Record index's seconds between shots at multiplier k: this build's value / k for a gun (never below FIRE_FLOOR),
     the build's own for the grenades, the remote bomb, the knife and the melee weapons (and at k=1)."""
@@ -602,35 +708,44 @@ def _top_up(ad, g: RE6Switch, player: int) -> int:
 
 def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> dict:
     """Each driver snapshot: infinite_ammo's magazines topped up, infinite_tablets' case and infinite_stamina's gauge kept
-    (at most every CHECK_S), only into the snapshot's own player; never raises."""
+    (at most every CHECK_S), only into the snapshot's own player; never raises. kill_time is applied when a round is up."""
     with _LOCK:
-        st = ORIG.get(id(ad))
+        st = ORIG.get(id(ad)) or {}
         out = {"active": False, "writes": 0, "verified": True}
-        keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
-                                                 "infinite_grenades"))
+        keeping = any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
+                                          "infinite_grenades"))
         if not keeping or not enabled:
-            return out
-        try:
-            p = (snap or {}).get("player")
-            now = clock()
-            if p and now - st.get("ammo_at", -1e9) >= CHECK_S:
-                st["ammo_at"] = now
-                g = RE6Switch(ad)
-                if st.get("infinite_ammo"):
-                    out["writes"] += _top_up(ad, g, p["ptr"])
-                if st.get("infinite_tablets"):
-                    kept = _keep_tablets(ad, g, p["ptr"])
-                    st["tablets_kept"] = st.get("tablets_kept", 0) + kept
-                    out["writes"] += kept
-                if st.get("infinite_grenades"):
-                    out["writes"] += _keep_thrown(ad, g, p["ptr"])
-                if st.get("infinite_stamina"):
-                    kept = _keep_stamina(ad, p["ptr"])
-                    st["stamina_kept"] = st.get("stamina_kept", 0) + kept
-                    out["writes"] += kept
-            out["active"] = True
-        except Exception as e:                               # noqa: BLE001 - a missed top-up never stops a tick
-            out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
+            pass                                       # the per-kill time bonus still runs outside this gate
+        else:
+            try:
+                p = (snap or {}).get("player")
+                now = clock()
+                if p and now - st.get("ammo_at", -1e9) >= CHECK_S:
+                    st["ammo_at"] = now
+                    g = RE6Switch(ad)
+                    if st.get("infinite_ammo"):
+                        out["writes"] += _top_up(ad, g, p["ptr"])
+                    if st.get("infinite_tablets"):
+                        kept = _keep_tablets(ad, g, p["ptr"])
+                        st["tablets_kept"] = st.get("tablets_kept", 0) + kept
+                        out["writes"] += kept
+                    if st.get("infinite_grenades"):
+                        out["writes"] += _keep_thrown(ad, g, p["ptr"])
+                    if st.get("infinite_stamina"):
+                        kept = _keep_stamina(ad, p["ptr"])
+                        st["stamina_kept"] = st.get("stamina_kept", 0) + kept
+                        out["writes"] += kept
+                out["active"] = True
+            except Exception as e:                               # noqa: BLE001 - a missed top-up never stops a tick
+                out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
+        # The per-kill time bonus: applied on every snapshot when enabled, even without a player in the snapshot
+        # (the round's sGameMan outlives the player pointer between rounds).
+        kt = maintain_kill_time(ad, snap)
+        if kt.get("kill_time"):
+            out["kill_time"] = kt
+            if not kt.get("verified", True):
+                out["verified"] = False
+                out["reason"] = kt.get("reason", "")
         return out
 
 
@@ -646,6 +761,7 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
               "loadouts": "merc_loadout", "no_rocket": "merc_loadout", "grenades": "infinite_grenades",
               "infinite_mines": "infinite_grenades", "remote_bombs": "infinite_grenades", "stages": "unlock_stages",
               "all_stages": "unlock_stages", "qte": "auto_qte", "auto_action": "auto_qte",
+              "time_per_kill": "kill_time", "kill_bonus": "kill_time", "time_bonus": "kill_time",
               "all_characters": "unlock_characters", "unlock_all": "unlock_characters"}.get(op, op)
         if op == "status":
             return g.status()
@@ -663,6 +779,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return unlock_stages(g, bool(on))
         if op == "auto_qte":
             return auto_qte(g, bool(on))
+        if op == "kill_time":
+            return kill_time(g, bool(on), seconds=_extra.get("seconds"), seconds_max=_extra.get("seconds_max"))
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"))
@@ -674,5 +792,5 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                     "fire_rate": fire_rate(g, 1.0),
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
-                         "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, fire_rate, "
-                         "merc_loadout, revert_all)")
+                         "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, kill_time, "
+                         "fire_rate, merc_loadout, revert_all)")
