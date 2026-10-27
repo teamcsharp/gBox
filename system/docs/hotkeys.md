@@ -15,7 +15,7 @@ only while a gBox window has the keyboard.
 | Shift+F2 / Ctrl+F2 | Save slot + / - |
 | F3 | Autoplay on/off (also `A` when no text box has focus) |
 | F4 | Load state |
-| F5 | Reset the game (the console's reset switch) |
+| F5 | Full recovery, step by step in the reconnect dialog: update this PC's gBox (a fast-forward of a clean `main` checkout, then one reload), reconnect to the Spark, show MercMode's current game in the PiP with a fresh stream (a new encoder when no frame arrives within 3 s) and its autobot driving, and put the main window on the same game. The operator's own game on this PC stays on screen. See `clients/desktop/reconnect-flow.js`. |
 | F11 / Alt+Enter | Full screen on/off |
 | Esc | Leave full screen |
 | Ctrl+I | Game eyedropper |

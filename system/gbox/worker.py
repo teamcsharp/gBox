@@ -71,6 +71,9 @@ def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: 
     ctx = Ctx(config, job_id=job["id"], worker=wid)
     ctx.parent_request_id = job.get("parent_request_id")
     ctx.agent_use = bool(job.get("agent_use"))
+    ctx.actor = job.get("actor")
+    # what this job may copy onto this PC (gbox/storage_policy.py): stamped by the control plane at claim
+    ctx.build_permit = job.get("build_permit") if isinstance(job.get("build_permit"), dict) else None
     # x-gbox-parent-job: a tool calling the control plane back (e.g. characters op=use -> @launch) is traced to this
     # job, and an agent job's callbacks count as automation (never swapping the operator's game; stream-stability.md)
     ctx.server, ctx.headers = server, h | {"x-gbox-parent-job": job["id"]}
@@ -291,6 +294,13 @@ def run(server: str, token: str, config: Config, name: str | None = None,
     info = describe(config, name)
     from . import cache_tiers                       # two-tier cache where configured (no-op when `serve` did it)
     cache_tiers.install(config)
+    from . import storage_policy                    # no game data on a Windows system drive (operator 2026-10-26)
+    storage_policy.activate()
+    moved = storage_policy.redirect_temp(config)
+    if moved:
+        print(f"gBox: temp files go to {moved} (the system drive keeps no game data)", flush=True)
+    for row in storage_policy.system_drive_report(config):
+        print(f"gBox storage: {row['root']} is on the system drive ({row['path']}): {row['note']}", flush=True)
     def _push():                                    # mods built on this machine join the central collection on the Spark
         try:
             from . import filemods

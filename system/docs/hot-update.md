@@ -68,7 +68,8 @@ the `*_mods_tool.py` files, `profiles/`, `hermes/`, `gbox.toml`, `pyproject.toml
    same start path as always. The x-gbox-parent-job header stays the run's accepted autoplay job, so
    `mercmode.successor_autoplay` / `accept_boundary` keep taking its native round boundaries. The round count lives in
    the control plane's run (`mercmode_rounds`) and is untouched. A bot is not restarted when autoplay was stopped
-   (`_AUTOPLAY_STOPS`) or the player touched the pad during the reload. Its "stopped" telemetry is posted instead. A
+   (`_AUTOPLAY_STOPS`) during the reload; its "stopped" telemetry is posted instead. The player's pad is no stop: a pad
+   takeover in progress (gbox/pad_takeover.py) carries over and the restarted bot yields to it. A
    session whose bot did not come back (an unexpected start error) goes to F5's path from the route: `BotControl.ensure`,
    which calls `Screensaver.restart_bot` for a MercMode run.
 7. **settle.** If a restarted bot dies with an error within `settle_s` (5 s), every bot is stopped again, the old

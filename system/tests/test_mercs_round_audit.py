@@ -53,3 +53,17 @@ def test_impact_lessons_persist_and_classify_the_attackers_side(tmp_path):
     assert again["hits"] == 3 and (again["front"], again["side"], again["behind"]) == (1, 1, 1)
     assert again["mean_dist"] == 100 and again["max_loss"] == 0.16
     assert json.loads(f.read_text())["v"] == 1 and IL.facing_class(None) is None
+
+
+def test_a_standstill_while_the_operator_drives_is_not_the_bots_problem():
+    """A pad takeover (gbox.pad_takeover): the round map marks those standstills "operator"; the audit counts only the
+    bot's and names the operator's time."""
+    audit, stats = RoundAudit("G4BE08"), {"rounds": 1, "character": "Leon",
+                                          "round_loadout": {"round": 1, "verified": True, "fire_applied": True}}
+    audit.start(stats)
+    trace = RoundTrace(None, "G4BE08", "r400", "r1", 400.0)
+    for k in range(80):                                                   # 20 s on one spot, the operator driving
+        trace.add(k * 0.25, 0.0, 0.0, 0.0, {"phase": "fight", "operator_control": True, "operator_segment": "seg-1"})
+    trace.auditor = lambda summary, tr: audit.finish(summary, tr, stats)
+    a = trace.finish()["audit"]
+    assert not any("standstill" in p for p in a["problems"]) and a["metrics"]["operator_s"] > 0

@@ -27,6 +27,7 @@ const createMercsWindows = require('./mercs-window.cjs');
 let mercsWindows=null;
 const recordingExport = require('./recording-export.cjs');
 const desktopAuthority = require('./desktop-authority.cjs');
+const appUpdate = require('./app-update.cjs');
 let connection = null, localControlProcess = null, localControlInfo = null, localControlStarting = null, localControlChannel=null;
 let localControlError = '', remoteManagement = { ssh:false }, remoteManagementPending = null;
 let catalogSyncPending=null,catalogSyncAt=0,catalogSyncOffset=0;
@@ -799,7 +800,8 @@ app.on("web-contents-created", (_e, wc) => wc.on("before-input-event", (ev, inpu
 }));
 // Universal game hotkeys, the same for every emulator (operator 2026-10-26: "when i press F3, I intend to start the autobot,
 // not save a replay ... I want to save replays with F1. F2 saves state and F4 loads it"): F1 saves the replay (the last 3
-// minutes), F2 save state, F3 autobot on/off for the game shown (whichever PC runs it), F4 load state, F5 reloads the client.
+// minutes), F2 save state, F3 autobot on/off for the game shown (whichever PC runs it), F4 load state, F5 recovers gBox
+// (update, reconnect, MercMode back in the PiP: reconnect-flow.js run({ f5: true }), client:update below).
 // Inside gBox (any page, the streamed view included) they arrive here; while a native game window has the keyboard they come
 // through global shortcuts, held only while a game is docked AND gBox is the foreground window (see f3(), hotkey-scope.js).
 const GAME_KEYS = { F1: "replay", F2: "save", F3: "autoplay", F4: "load", F5: "client-refresh" };
@@ -954,7 +956,8 @@ ipcMain.handle('client:reload', async (event, state) => {
   clientReloading = true;
   try {
     const version = await clientVersions?.read({ freshBackend: true });
-    if (version?.restart) {
+    // an F5 pull of code the worker or this process loads (client:update) relaunches too, whatever the identity says
+    if (version?.restart || (typeof runtimeUpdatePending !== 'undefined' && runtimeUpdatePending)) {
       const hadWorker = !!worker||(typeof localControlProcess!=='undefined'&&!!localControlProcess);
       if (!state || state.v !== 1) clientActivation = { state: 'pending', reason: 'The saved stream view is unavailable; refreshed views only.' };
       else clientActivation = await clientHandoff.perform({
@@ -989,6 +992,28 @@ ipcMain.handle('client:reload', async (event, state) => {
   return clientActivation;
 });
 let clientVersions = null;
+// F5's first step (operator 2026-10-26: "press F5 ... and build and update the gbox app"; reconnect-flow.js): this app's
+// own checkout is fast-forwarded to GitHub's main (app-update.cjs: only on main without local changes, nothing ever
+// discarded; code the worker or this process loads only while this PC is idle). The answer carries the client identity
+// after it and, when gBox itself must restart, why it cannot now; the renderer then reloads once through client:reload,
+// whose guarded handoff relaunches gBox for new runtime code.
+const APP_CHECKOUT = path.resolve(__dirname, '..', '..');
+let runtimeUpdatePending = false;
+ipcMain.handle('client:update', async event => {
+  assertClientSender(event);
+  if (clientHandoffBusy || clientReloading) throw Error('A desktop refresh is already in progress.');
+  const idle = async () => { try { return await inspectClientIdle(); } catch (error) { return String(error.message || error); } };
+  const own = Object.keys(require.cache).filter(p => p.startsWith(__dirname + path.sep))
+    .map(p => path.relative(APP_CHECKOUT, p).split(path.sep).join('/'));
+  const pull = await appUpdate.pull({ root: APP_CHECKOUT, busy: idle, runtimeFiles: own });
+  if (pull.state === 'updated' && pull.runtime) runtimeUpdatePending = true;
+  const version = await clientVersions?.read({ freshBackend: true }).catch(() => null) || null;
+  const restart = !!(version?.restart || runtimeUpdatePending);
+  // a pull of runtime code has just found this PC idle; otherwise ask again when a relaunch is due
+  const busy = !restart ? null : pull.state === 'updated' && pull.runtime ? null : await idle();
+  logPush('update', `F5 update: ${pull.state}: ${pull.detail}${restart ? ` (restart ${busy ? 'waits: ' + busy : 'due'})` : ''}`);
+  return { ...pull, version, restart, busy, activation: clientActivation };
+});
 ipcMain.handle('client:version', async event => {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can inspect its client version.');
   return { ...await clientVersions?.read(), activation: clientActivation };

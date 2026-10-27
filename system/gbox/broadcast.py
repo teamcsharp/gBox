@@ -420,8 +420,13 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
         mine = [r for r in rows if pc_match(r, target)]
         if not mine:
             return None, f"{target} is not running a game"
-        best = max(mine, key=lambda r: (bool(r.get("fresh")), r.get("started") or 0))
-        return best["session_id"], f"pinned to {best.get('pc') or target}"
+        # that PC's MercMode turn first, never a game its warm pool holds paused for the next title (2026-10-26: the
+        # program pinned to lilspark showed the paused, prelaunched RE5 - "the pine agent has been showing the game
+        # loading for more than an hour" - while RE4 played: it was the newest session with a picture)
+        best = max(mine, key=lambda r: (r.get("mercmode") == "run", r.get("mercmode") != "warm",
+                                        bool(r.get("fresh")), r.get("started") or 0))
+        return best["session_id"], f"pinned to {best.get('pc') or target}" + (
+            " (its MercMode turn)" if best.get("mercmode") == "run" else "")
     watched = (watch or {}).get("session_id")
     if watched and now - ((watch or {}).get("at") or 0) <= watch_ttl_s:
         if watched not in running:
@@ -433,7 +438,8 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
         return current, why or "still on air"          # stays while it has a picture, or while nothing else does
     if not pool:
         return None, why or "no game is running"
-    best = max(pool, key=lambda r: (bool(r.get("fresh")), not r.get("agent_owned"), r.get("started") or 0))
+    best = max(pool, key=lambda r: (r.get("mercmode") != "warm", bool(r.get("fresh")), not r.get("agent_owned"),
+                                    r.get("mercmode") == "run", r.get("started") or 0))
     return best["session_id"], why or ("newest game with a picture" if best.get("fresh") else "newest game")
 
 
@@ -1118,12 +1124,31 @@ class Hub:
             row["kind"], row["age"] = self.source_kind(row)
             row["fresh"] = row["age"] is not None and row["age"] <= self._stale_after(row["kind"])
             rows.append(row)
+        self._mark_mercmode(rows)
         alive = {r["session_id"] for r in rows}
         for sid in [k for k in self._owned if k not in alive]:
             self._owned.pop(sid, None)
         with self.lock:
             self._rows, self._workers, self._rows_at = rows, workers, now
         return rows
+
+    def _mark_mercmode(self, rows: list[dict]) -> None:
+        """row["mercmode"]: "run" for the session a PC's MercMode turn plays, "warm" for one its warm pool keeps (paused,
+        prelaunched or prepared for the next title) - choose() puts the turn on air and never a warm game."""
+        try:
+            from .mercmode import warm_pool
+            from .screensaver import STATE
+        except Exception:                                        # noqa: BLE001 - no MercMode: nothing to mark
+            return
+        for pc in {r["pc"] for r in rows}:
+            try:
+                run = (self.store.get(STATE, pc) or {}).get("session_id")
+                warm = {w.get("session_id") for w in warm_pool(self.store, pc).values() if isinstance(w, dict)}
+            except Exception:                                    # noqa: BLE001 - a store hiccup leaves the rows unmarked
+                continue
+            for r in rows:
+                if r["pc"] == pc:
+                    r["mercmode"] = "run" if r["session_id"] == run else "warm" if r["session_id"] in warm else None
 
     def workers(self) -> dict[str, dict]:
         return self._workers
@@ -1579,7 +1604,8 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
                                  request.client.host if request.client else "")
         from .operator_guard import report_watch
         report_watch(store, "app:" + (request.client.host if request.client else "") + ":" +
-                     request.headers.get("x-gbox-client", ""), sid)
+                     request.headers.get("x-gbox-client", ""), sid,
+                     host=request.client.host if request.client else "")   # the pad takeover's viewing() check
         hub.refresh(force=True)
         hub.wait_tick()
         return {"watch": watch, "program": hub.program_status()}

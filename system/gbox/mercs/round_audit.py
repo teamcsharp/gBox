@@ -102,7 +102,9 @@ class RoundAudit:
         if taken and taken > DAMAGE_MAX:
             problems.append(f"{int(taken)} hits taken (> {DAMAGE_MAX})")
 
-        still = [s for s in summary.get("standstills") or () if (s.get("seconds") or 0) > STILL_S]
+        if summary.get("operator_s"):                     # a pad takeover (gbox.pad_takeover): the operator's time
+            metrics["operator_s"] = summary["operator_s"]
+        still = [s for s in summary.get("standstills") or () if (s.get("seconds") or 0) > STILL_S and not s.get("operator")]
         metrics["standstills_over_5s"] = len(still)
         metrics["standstill_s"] = round(sum(s["seconds"] for s in still), 1)
         if still:

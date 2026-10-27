@@ -364,9 +364,21 @@ def _same_host_worker(store, source, worker):
     return False
 
 
+def _host_matcher(store, worker):
+    """_same_host_worker for one worker, each source worker id walked once (2026-10-26: /api/mercmode took 20-40 s on the
+    loaded Spark - inventory() walked the alias chain, up to 8 store reads, for every session of every MercMode title)."""
+    seen={}
+    def match(source):
+        if source not in seen:
+            seen[source]=_same_host_worker(store,source,worker)
+        return seen[source]
+    return match
+
+
 def rotation_predecessor(store, worker, now):
     from .screensaver import LOG
-    rows=[r for r in store.all(LOG) if _same_host_worker(store,r.get('worker_id'),worker)
+    same=_host_matcher(store,worker)
+    rows=[r for r in store.all(LOG) if same(r.get('worker_id'))
           and r.get('why')=='verified native round boundary: next MercMode title'
           and r.get('mercmode_rotate_requested') is True and 0<=now-r.get('ended',0)<=900
           and isinstance(r.get('mercmode_last_round'),dict)]
@@ -570,12 +582,13 @@ def inventory(store, worker, cfg=None, sessions=None):
         if backend_ready:
             prepared=host_preparation(store,worker)
             known=sessions if sessions is not None else store.all('session')
+            same=_host_matcher(store,worker)
             for game in games:
                 gid=game['game_id']
                 # a restart gives the same PC a new worker id: the registered aliases keep its launch history
                 prior=next((s for s in known if s.get('game_id')==gid
                     and s.get('state') in ('running','ended')
-                    and _same_host_worker(store,s.get('session_id','').split('-')[0],worker)),None)
+                    and same(s.get('session_id','').split('-')[0])),None)
                 candidate={'verified':False,'reason':'ROM access has not been verified on this PC'}
                 probe=(prepared.get('games') or {}).get(gid) or {}
                 if prior:

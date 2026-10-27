@@ -659,13 +659,23 @@ def _player_active(sid: str, within: float = 3.0) -> bool:
 ACTIVE: dict[str, SessionRewind] = {}
 
 
+def ring_root(config) -> Path:
+    """runtime/rewind, never on a Windows system drive (gbox/storage_policy.py: moved under the cache, or
+    SystemDriveRefused when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.game_dir(config, Path(config.runtime) / "rewind", "rewind")
+
+
 def ring_dir(config, sid: str) -> Path:
-    return Path(config.runtime) / "rewind" / sid
+    return ring_root(config) / sid
 
 
 def sweep(config) -> None:
     """Rings of sessions that are gone (a previous worker run): deleted."""
-    root = Path(config.runtime) / "rewind"
+    try:
+        root = ring_root(config)
+    except RuntimeError:
+        return
     try:
         for d in root.iterdir() if root.is_dir() else ():
             if d.name not in ACTIVE:
@@ -697,8 +707,13 @@ def start(sid: str, adapter, config, game: dict | None = None, enabled: bool | N
             mode = "checkpoint"
             sweep(config)
             interval = max(float(interval), float(getattr(adapter, "checkpoint_min_interval_s", 0) or 0))
-            ring = CheckpointRing(adapter, ring_dir(config, sid), interval, depth, max_mb,
-                                  content=(game or {}).get("_rom_path"), max_duty=max_duty, two_state=two_state)
+            try:
+                folder = ring_dir(config, sid)
+            except RuntimeError as e:                 # storage_policy.SystemDriveRefused: no checkpoints on C:
+                mode, reason, folder = "unsupported", str(e), None
+            if folder is not None:
+                ring = CheckpointRing(adapter, folder, interval, depth, max_mb,
+                                      content=(game or {}).get("_rom_path"), max_duty=max_duty, two_state=two_state)
     # The pad reaches RetroArch's own hotkeys on Windows (XInput binds in the session cfg) and, streamed, where the
     # game leaves the triggers free (trigger_hotkeys); elsewhere the worker drives the native rewind and the ramp itself.
     # One owner for every chord, including the D-pad aliases. RetroArch's own trigger hotkeys are disabled in the

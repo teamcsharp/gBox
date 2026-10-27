@@ -177,6 +177,89 @@ def test_write_settings_owns_only_its_keys_and_marks_them_non_default(tmp_path):
     assert path.read_text() == before
 
 
+def test_re5_and_re6_get_single_core_in_edens_per_game_file(tmp_path):
+    """Eden v0.2.1 loses the npad thread that moves itself to cores 1-2 at boot (svcBreak 0xE401 / SIGSEGV): RE5 and
+    RE6 run single-core through Eden's per-game file; the global file keeps multi-core for every other game."""
+    folder = tmp_path / "Resident Evil 5"
+    folder.mkdir()
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.rom = build_nsp(folder / "Resident Evil 5.nsp", ["a.nca", "010018100cd460000000000000000003.tik"])
+    ad.write_settings()
+    custom = provision.switch_linux_config(ad.config).parent / "custom" / "010018100CD46000.ini"
+    t = custom.read_text()
+    assert "[Core]\n" in t and "use_multi_core\\use_global=false\n" in t and "use_multi_core\\default=false\n" in t
+    assert adapters.ini_get(t, "Core", "use_multi_core") == "false"
+    assert ad.title_settings == {"Core": {"use_multi_core": "false"}}
+    assert adapters.ini_get(provision.switch_linux_config(ad.config).read_text(), "Core", "use_multi_core") == "true"
+    assert set(adapters.EDEN_TITLE_SETTINGS) >= {"010018100CD46000", "01002A000CD48000"}
+    # Eden rewrites the file on every boot with its own lines; gBox keeps them and stays idempotent
+    custom.write_text(t + "\n[Cpu]\ncpu_accuracy\\use_global=true\n")
+    ad.write_settings()
+    before = custom.read_text()
+    assert "cpu_accuracy\\use_global=true" in before
+    ad.write_settings()
+    assert custom.read_text() == before
+    # a game without overrides gets no per-game file
+    other = tmp_path / "Zelda"
+    other.mkdir()
+    ad.rom = build_nsp(other / "Zelda.nsp", ["a.nca", "0100f2c0115b60000000000000000003.tik"])
+    ad.write_settings()
+    assert ad.title_settings == {} and not (custom.parent / "0100F2C0115B6000.ini").exists()
+
+
+def test_a_dropped_title_override_goes_back_to_the_global_value(tmp_path, monkeypatch):
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    assert ad.write_title_settings("010018100cd46000") == {"Core": {"use_multi_core": "false"}}
+    monkeypatch.setattr(adapters, "EDEN_TITLE_SETTINGS", {"01002A000CD48000": {"Core": {"use_multi_core": "false"}}})
+    assert ad.write_title_settings("010018100CD46000") == {}
+    t = (provision.switch_linux_config(ad.config).parent / "custom" / "010018100CD46000.ini").read_text()
+    assert adapters.ini_get(t, "Core", "use_multi_core\\use_global") == "true"
+    assert ad.write_title_settings(None) == {} and ad.write_title_settings("") == {}
+
+
+def test_an_update_beside_the_game_becomes_an_eden_content_folder(tmp_path):
+    """RE6 boots with its v131072 update through Eden's external content folders (no NAND install); a game whose
+    folder holds no update or DLC clears them."""
+    re6 = tmp_path / "Resident Evil 6"
+    re6.mkdir()
+    base = build_nsp(re6 / "Resident Evil 6 [01002A000CD48000].nsp", ["a.nca", "01002a000cd480000000000000000003.tik"])
+    build_nsp(re6 / "Resident Evil 6 [01002A000CD48800][v131072].nsp", ["b.nca"])
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.rom = base
+    ini = ad.write_settings()
+    t = ini.read_text()
+    assert ad.content_dirs == [str(re6)]
+    assert adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\size") == "1"
+    assert adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\1\\path") == str(re6)
+    assert ad.title_settings == {"Core": {"use_multi_core": "false"}}
+    re5 = tmp_path / "Resident Evil 5"
+    re5.mkdir()
+    ad.rom = build_nsp(re5 / "Resident Evil 5.nsp", ["a.nca", "010018100cd460000000000000000003.tik"])
+    t = ad.write_settings().read_text()
+    assert ad.content_dirs == [] and adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\size") == "0"
+    assert adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\1\\path") is None
+    assert t.count("[UI]") == 1
+
+
+def test_eden_never_opens_a_host_browser_or_self_updates(tmp_path, monkeypatch):
+    """RE5's first boot asks to open Capcom's privacy page: Eden's openUrl ran xdg-open, which opened the Spark user's
+    Firefox on the session display. A no-op xdg-open goes first on Eden's PATH."""
+    import os
+    c = cfg(tmp_path)
+    env = provision.switch_linux_env(c)
+    stub = provision.switch_linux_stub_dir(c)
+    assert env["PATH"].split(os.pathsep)[0] == str(stub)
+    assert env["BROWSER"] == env["DEFAULT_BROWSER"] == str(stub / "xdg-open") and env["DISABLE_AUTO_UPDATES"] == "1"
+    path = provision.switch_linux_url_stub(c)
+    assert path == stub / "xdg-open" and path.read_text() == provision.SWITCH_URL_STUB
+    assert path.read_text().startswith("#!/bin/sh\n") and "exit 0" in path.read_text()
+    path.write_text("#!/bin/sh\nexec firefox \"$@\"\n")        # replaced when it changed
+    provision.switch_linux_url_stub(c)
+    assert path.read_text() == provision.SWITCH_URL_STUB
+    ad = adapters.SwitchLinuxAdapter(c)
+    assert ad.env["PATH"] == env["PATH"]
+
+
 def test_argv_is_fullscreen_plus_game(tmp_path):
     binary = tmp_path / "eden"
     binary.write_text("bin")
@@ -382,3 +465,21 @@ def test_nsp_title_id_from_the_ticket_then_from_the_file_name(tmp_path):
     assert switch_nsp.title_id(r) == "010018100CD46000"
     assert switch_nsp.is_update("01002A000CD48800") and not switch_nsp.is_update("01002A000CD48000")
     assert switch_nsp.base_title_id("01002A000CD48000") == "01002A000CD48000"
+
+
+def test_companions_are_the_games_own_updates_and_dlc_beside_it(tmp_path):
+    re6 = tmp_path / "Resident Evil 6"
+    re6.mkdir()
+    base = build_nsp(re6 / "Resident Evil 6 [01002A000CD48000].nsp", ["a.nca", "01002a000cd480000000000000000003.tik"])
+    upd = build_nsp(re6 / "Resident Evil 6 [01002A000CD48800][v131072].nsp", ["b.nca"])
+    dlc = build_nsp(re6 / "RE6 costume [01002A000CD49001].nsp", ["c.nca"])
+    build_nsp(re6 / "Other game update [0100AAAA00000800][v65536].nsp", ["d.nca"])
+    (re6 / "notes.txt").write_text("x")
+    assert [str(p) for p in switch_nsp.companions(base)] == sorted([upd, dlc])
+    assert switch_nsp.companions(upd) == []                     # an update has no companions of its own
+    assert switch_nsp.is_addon_of("01002A000CD49001", "01002A000CD48000")
+    assert not switch_nsp.is_addon_of("01002A000CD48800", "01002A000CD48000")
+    alone = tmp_path / "Resident Evil 5"
+    alone.mkdir()
+    assert switch_nsp.companions(build_nsp(alone / "Resident Evil 5.nsp", ["010018100cd460000000000000000003.tik"])) == []
+    assert switch_nsp.companions(tmp_path / "missing" / "x.nsp") == []

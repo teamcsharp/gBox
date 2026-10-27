@@ -1945,6 +1945,9 @@ class Bot:
 
     def _tick(self, s: dict) -> dict:
         now, p = self.clock(), s["player"]
+        if self.stats.get("operator_control") is True:   # the operator plays (pad takeover): no decisions, no walls or stuck
+            self.r_since, self.goal = None, None         # spots learned from their moves; the route map keeps recording
+            return {"hold": set()}
         self.stats["max_combo"] = max(self.stats["max_combo"], s["combo"])
         if not p:
             return {"hold": set()}
@@ -2348,6 +2351,9 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
 
     def hold(keys):
         nonlocal held
+        if bot.stats.get("operator_control") is True:   # the operator has the pad (gbox.pad_takeover released our keys):
+            held = set()                                 # nothing sent; back from a clean hand when the pad goes idle
+            return
         rows = [{"key": k, "down": False} for k in sorted(held - keys)] + [{"key": k, "down": True} for k in sorted(keys - held)]
         if rows:
             send(rows)
