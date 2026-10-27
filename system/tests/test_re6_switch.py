@@ -839,6 +839,50 @@ def test_a_long_shot_the_laser_confirms_is_fired_and_its_kill_counted():
     assert bot.stats["long_shot_kills"] == 1
 
 
+def test_quick_attack_runs_his_quick_attacks_ten_times_faster_and_puts_his_clock_back(mods, monkeypatch):
+    g = round_guest()
+    ad = Adapter(g)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.f32(p + mods.UNIT_DELTA, 1.0)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    monkeypatch.setattr(R, "QA_FAST", False)
+    out = mods.run(ad, "quick_attack", multiplier=10)
+    assert out["verified"] and out["quick_attack_x"] == 10.0 and R.QA_FAST
+    mods.run(ad, "infinite_ammo", on=False)
+    clock = [10.0]
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0          # walking: his own 1.0
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_comn_quick_shot", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 10.0                     # the quick shot x10
+    assert ad.writes[-1] == (p + mods.UNIT_DELTA, struct.pack("<f", 10.0))
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_wait", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0                      # back to 1.0 after it
+    g.f32(p + mods.UNIT_DELTA, 0.5)                                                         # the game's slow motion
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_attack_ex", 0x100))
+    before = list(ad.writes)
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert ad.writes == before                                                              # left alone
+    with pytest.raises(ValueError):
+        mods.run(ad, "quick_attack", multiplier=50)
+
+
+def test_with_quick_attacks_fast_crowd_control_presses_back_to_back_and_counts_them(monkeypatch):
+    monkeypatch.setattr(R, "QA_FAST", True)
+    g = round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0)
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)                                          # 1 s
+    assert bot.stats["cc_quick_shots"] >= 5                                   # every 0.15 s, not every 0.5 s
+    for i in range(3):                                                        # three quick shots begun, 0.2 s apart
+        snap["player"]["action"] = "cPlAction_pl_act_weapon_comn_quick_shot"
+        run(bot, snap, clock, 2)
+        snap["player"]["action"] = "cPlAction_pl_act_wait"
+        run(bot, snap, clock, 2)
+    assert bot.stats["quick_attacks"] == 3 and bot.stats["quick_attack_interval"] == pytest.approx(0.2, abs=0.01)
+    assert R.unit_action(g, R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)) is None and acts
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))

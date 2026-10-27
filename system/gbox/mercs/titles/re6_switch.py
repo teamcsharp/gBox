@@ -409,6 +409,25 @@ def inventory_items(m, p: int) -> dict:
     return out
 
 
+_ACTION_NAMES: dict = {}
+
+
+def unit_action(m, u: int) -> str | None:
+    """A unit's current action's class (+0x13F0: the player's cPlAction_pl_act_..., a set piece's cSm...Act_...)."""
+    try:
+        act = u64(m, u + 0x13F0)
+        if not ptr_ok(act):
+            return None
+        vt = u64(m, act)
+    except (ValueError, OSError):
+        return None
+    if vt not in _ACTION_NAMES:
+        if len(_ACTION_NAMES) > 512:
+            _ACTION_NAMES.clear()
+        _ACTION_NAMES[vt] = class_name(m, act)
+    return _ACTION_NAMES[vt]
+
+
 def equipped_id(m, p: int) -> int:
     """The item id of the gun in hand (inventory_state)."""
     return inventory_state(m, p)[1]
@@ -441,7 +460,8 @@ def snapshot(m) -> dict:
             equipped, weapon_id, bomb = inventory_state(m, p)
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
-                              "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p)}
+                              "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p),
+                              "action": unit_action(m, p)}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
                 snap["continue_cursor"] = continue_prompt(m, over)["cursor"] if over else None
@@ -1027,6 +1047,8 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 # grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
 CC_R, CC_CONE = 350.0, math.radians(100)   # (5 m all round was tried live 2026-10-27 13:43 / 13:53: more holds, fewer kills)
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
+QA_FAST, CC_FAST_GAP_S = False, 0.15    # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
+                                        # back: this often, the gauge kept full by infinite_stamina
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
 # more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
@@ -1139,6 +1161,8 @@ KITE_N, KITE_R, KITE_SCAN_R, KITE_DIRS = 3, 600.0, 700.0, 16
 # LONG_R (the laser shows whether he is in sight). stats confirmed_shots, moving_shots (the stick on as it fires),
 # long_shot_kills (one over LONG_KILL_R dying within LONG_KILL_S of the trigger on him).
 LONG_R, LONG_KILL_R, LONG_KILL_S = 3500.0, 1500.0, 1.5
+QUICK_ACTION_NAMES = frozenset({"cPlAction_pl_act_attack_ex", "cPlAction_pl_act_weapon_comn_quick_shot",
+                                "cPlAction_pl_act_jake_hand_quick_attack"})   # his quick attacks (re6_switch_mods)
 SURROUND_N = 8
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
@@ -1231,7 +1255,7 @@ class Bot:
                   "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
-                  "moving_shots", "long_shot_kills"):
+                  "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
             self.stats.setdefault(k, 0.0)
@@ -1287,7 +1311,8 @@ class Bot:
         self.combo_prev, self.combo_urgent = 0, False
         self.surrounded = False                              # 8+ within 4 m last tick
         self._p, self._cam_yaw = None, 0.0
-        self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R                       # this tick's player and camera yaw (crowd control's way out)
+        self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
+        self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then                       # this tick's player and camera yaw (crowd control's way out)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
         self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
@@ -1556,6 +1581,7 @@ class Bot:
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
         self._combo_tick(snap, live, flat, now)
+        self._quick_tick(p, snap, now)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
         if within >= SURROUND_N and not self.surrounded:
@@ -1816,6 +1842,24 @@ class Bot:
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    def _quick_tick(self, p, snap, now) -> None:
+        """Quick attacks from his action (snapshot action): stats quick_attacks (each one begun), quick_attack_interval
+        (the mean seconds between two begun within 1 s of each other: the pace the game accepts), quick_attack_kills (the
+        kill count rising while one runs)."""
+        quick = p.get("action") in QUICK_ACTION_NAMES
+        k = snap.get("kills")
+        if quick and not self.qa_in:
+            self.stats["quick_attacks"] += 1
+            if self.qa_at is not None and now - self.qa_at <= 1.0:
+                n = self.stats.get("quick_attack_pairs", 0) + 1
+                mean = self.stats.get("quick_attack_interval", 0.0)
+                self.stats["quick_attack_interval"] = round(mean + (now - self.qa_at - mean) / n, 3)
+                self.stats["quick_attack_pairs"] = n
+            self.qa_at = now
+        if quick and isinstance(k, int) and isinstance(self.qa_kills_k, int) and k > self.qa_kills_k:
+            self.stats["quick_attack_kills"] += k - self.qa_kills_k
+        self.qa_in, self.qa_kills_k = quick, k
 
     # --- the way out -------------------------------------------------------------------------------------------------
     @staticmethod
@@ -2085,13 +2129,14 @@ class Bot:
         out = self._stick(self._open_heading(self._p, live), self._cam_yaw) if backing else ()   # toward open space
         if backing:
             self.stats["cc_backouts"] += 1
-        if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= CC_KICK_GAP_S:
+        kick_gap, qshot_gap = (CC_FAST_GAP_S, CC_FAST_GAP_S) if QA_FAST else (CC_KICK_GAP_S, CC_QSHOT_GAP_S)
+        if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= kick_gap:
             self.melee_at = now
             self.stats["melee"] += 1
             self.stats["cc_kicks"] += 1
             return self._go("crowd", "cc_kick", {"hold": out + ("zr",)} if backing else {"tap": "zr"},
                             f"one at {d:.0f} cm: a kick (crowd control)" + (", backing out" if backing else ""))
-        if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= CC_QSHOT_GAP_S:
+        if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap:
             self.qshot_at = now
             self.stats["quick_shots"] += 1
             self.stats["cc_quick_shots"] += 1
@@ -2600,6 +2645,7 @@ class RE6Switch(Driver):
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
+                      "quick_attacks", "quick_attack_kills",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
                       "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
