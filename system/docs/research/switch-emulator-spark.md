@@ -1,9 +1,37 @@
 # Switch emulator for the Spark (Linux aarch64, NVIDIA GB10)
 
-Decision, 2026-10-26: **Eden**, the yuzu continuation. gBox runs it through `gbox.adapters.SwitchLinuxAdapter`
-(provisioned by `gbox.provision.ensure_switch_linux`). Backup: Citron NEO. Everything below was read on the projects'
-own pages on 2026-10-26; "not verified" means exactly that. First live runs on the Spark: "Live on the Spark with
-Eden v0.2.1" below (tickets #3841, #3842, #3954, #3955).
+Decision, updated 2026-10-26 evening: **Citron NEO is canonical for RE5 and RE6** (`gbox.adapters.CitronLinuxAdapter`,
+`gbox.provision.ensure_citron_linux`): it runs them multi-core. **Eden** (`SwitchLinuxAdapter`) stays the default
+for every other title and remains an option for these two (`switch_linux_emulator = "eden"`). Everything below was
+read on the projects' own pages on 2026-10-26; "not verified" means exactly that. First live runs on the Spark: "Live
+on the Spark with Eden v0.2.1" and "Citron NEO" below (tickets #3841, #3842, #3954, #3955).
+
+## Citron NEO (live 2026-10-26, nightly 56dad8119)
+
+- Source: https://github.com/citron-neo/CI/releases/tag/nightly-linux,
+  `citron_nightly-56dad8119-linux-aarch64-use-nopgo.AppImage` (sha256 6471eced..., SHA-1 matches the release's zsync
+  manifest), placed in `~/gBox_alt/downloads/citron-neo-nightly-56dad8119/` with the operator's OK. Each node names it:
+  `switch_citron_appimage = "<path>"` in `gbox.local-<host>.toml`. gBox extracts it once, like Eden's.
+- RE5 No Mercy runs **multi-core** at 60 FPS (16.6 ms frames through crowd scenes, dips only while first-time shaders
+  compile). Eden v0.2.1 needs single-core for these titles: 74 % speed, 86 % with async shaders. The re5_switch driver,
+  the menus walk and the RAM map work unchanged, because Citron keeps the same HostMemory arena with guest = host
+  under NCE.
+- RE6 boots multi-core with its v131072 update applied through `external_content_dirs` (the window title reads
+  "RESIDENT EVIL 6 (64-bit) | 1.0.2"). A fresh save starts the Prologue; The Mercenaries is locked until it is unlocked
+  (a separate task).
+- Two host specifics:
+  - The Spark's usb4 bus hangs every sysfs read, and Citron calls `libusb_init` on its main thread for its GameCube
+    adapter driver, so it never opened a window. gBox builds `gbox/native/libusb_noinit.c` with the host's compiler
+    (`provision.switch_usb_shim`, cached by the source's digest; never a committed binary) and preloads it. Citron's
+    sharun loader passes LD_PRELOAD on only with `SHARUN_ALLOW_LD_PRELOAD=1`.
+  - Citron's renderer enum is {Vulkan=0, Null=1}, against Eden's {OpenGL=0, Vulkan=1}. `backend=1` runs the game on the
+    Null renderer: it is fast, and the screen stays black.
+- Selection (`adapters.switch_linux_kind`): `switch_linux_emulator = auto` (the default) starts SWITCH_CITRON_TITLES
+  (RE5, RE6) in Citron once it is configured, and everything else in Eden. LayeredFS builds use Citron's own load
+  folder and [DisabledAddOns] (`switch_mods.citron`).
+- Boot watch, both emulators: after the memory map, RE5 and RE6 must draw three different frames within 45 s, after
+  8 s for the emulator's loading overlay. A still or dead boot is stopped and started once more. Eden single-core
+  stayed black in 1 of 7 boots.
 
 ## Why Eden
 
