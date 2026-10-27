@@ -158,7 +158,8 @@ def screen(m, merc=None) -> dict:
     story_starting | options | load | press_start | extra_* (loading, menu setup, leaving) | extra_menu (The
     Mercenaries: GAME START / EXIT) | ada_* | players_setup | select_player | players_leaving | stages_setup |
     select_stage | starting | unknown;
-    in a room (ROOM_WHERE): playing (a Mercenaries round) | results (the clock at 0) | dead ("You Are Dead") |
+    in a room (ROOM_WHERE): playing (a Mercenaries round) | results (the clock at 0, or above any clock's
+    reading: re4_merc_bot.CLOCK_MAX_S) | dead ("You Are Dead") |
     loading (a stage still loading) | story (any other room: wandered off).
     merc: re4_merc_bot.snapshot over the same memory (read here when not given)."""
     m = Mem(m) if not hasattr(m, "rd") else m
@@ -238,8 +239,10 @@ def _game(merc, base) -> dict:
                                                             # 2026-10-20: A was pressed while the Village loaded)
     if s.get("hp") is not None and s["hp"] <= 0 and s.get("player"):
         return {"where": "dead"}
-    if s.get("timer", 0) <= 0:
-        return {"where": "results"}
+    from .re4_merc_bot import CLOCK_MAX_S
+    timer = s.get("timer", 0) or 0
+    if timer <= 0 or timer > CLOCK_MAX_S:                   # a word no clock reads is the Result screen, not a round (live
+        return {"where": "results"}                         # 2026-10-27: 17897063.5 s on the last round's results)
     return {"where": "playing" if s.get("player") else "loading"}
 
 

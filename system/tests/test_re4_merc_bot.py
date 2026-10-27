@@ -1310,6 +1310,40 @@ def test_prepare_drives_the_menus_to_the_round_start_pauses_there_and_the_next_s
     assert g.picks == ["THE MERCENARIES", "GAME START", "HUNK", "Base"]      # no second walk through the menus
 
 
+def test_a_prepare_on_the_last_rounds_result_screen_walks_to_a_new_round_instead_of_calling_it_ready(monkeypatch, tmp_path):
+    """Live 2026-10-27 (lilspark, RE4 parked after its turn): the warm prepare resumed the game on the previous round's
+    Result screen, whose clock word reads 17897063.5 s; read as a running round, the walk ended at once ("ready"), and
+    the switch resumed a results screen the bot then "played" for 24 minutes. A clock above CLOCK_MAX_S is the results:
+    A leaves them and the walk reaches a real round's first frame."""
+    from test_re4_menus import FakeRE4
+
+    class ResultsRE4(FakeRE4):
+        def __init__(self):
+            super().__init__(routine=4)
+            self.round()                                     # the last round's room, Leon still there
+            self.put(B.MERC_TIMER, ">I", 0x2000A021)         # the Result screen's word where the clock was
+            self.at_results = True
+
+        def press(self, key):
+            if self.at_results:
+                self.events.append(key)
+                if key == "a":                               # Results: next - back to the Mercenaries menu
+                    self.at_results = False
+                    self.title_task(True)
+                    self.tw(6, 4)
+                    self.put(B.MERC_TIMER, ">I", 0)
+                return
+            super().press(key)
+    g = ResultsRE4()
+    assert B.snapshot(g)["timer"] > B.CLOCK_MAX_S
+    tools, ad, events, ctx, now = _prepare_rig(monkeypatch, tmp_path, g)
+    r = tools.autoplay(tools.AutoplayIn(session_id="s4", op="prepare"), ctx)["result"]
+    assert g.events[0] == "a" and not g.at_results                          # the results were left with A
+    assert r["prepared"] is True and "GAME START" in g.picks and len(g.picks) >= 3
+    assert 0 < B.snapshot(g)["timer"] <= B.CLOCK_MAX_S                       # paused on a real round's first frame
+    assert events == ["resume", "pause"]
+
+
 def test_a_prepare_that_wanders_off_pauses_the_game_back_where_it_is_and_tells_why(monkeypatch, tmp_path):
     from gbox import re4_menus as RM
     from gbox.mercs import warm_boot

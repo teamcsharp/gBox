@@ -172,6 +172,26 @@ def test_merc_loadout_writes_one_record_per_item_with_its_amount(monkeypatch):
     assert {"character": "wesker", "action": "give", "item": "Handcannon Ammo", "id": "0x1A", "amount": 50} in listed
 
 
+def test_a_loadout_for_all_characters_replaces_every_record_so_round_draws_never_overflow(monkeypatch):
+    # live 2026-10-27: the bot's per-round random_loadout (character "all") kept the per-character gun removals of the
+    # round before, ten more each round: "too many loadout entries (36); max 31" on the third round
+    ad, g = gc_game()
+    ad.put(R.RECS, bytes([0xFE]) + bytes(5))
+    monkeypatch.setattr(T, "install_weapon_code", lambda g: None)
+    monkeypatch.setattr(T, "weapon_classes", lambda g: {0x37: (0x0E, 0), 0x23: (0, 0)})
+    T.run(ad, "loadout", character="wesker", items=["handcannon"], on=True, g=g)
+    sizes = []
+    for _ in range(4):
+        r = T.run(ad, "loadout", character="all", items=["handcannon", "handcannon ammo:50"], on=True, g=g)
+        sizes.append(len(T.read_recs(g)))
+        assert r["verified"]
+    assert len(set(sizes)) == 1 and sizes[0] <= (R.RECS_END - R.RECS) // 6 - 1
+    recs = T.read_recs(g)
+    assert all((c, 2, w, 0) in recs for c, ws in R.MERC_DEFAULT_WEAPONS.items() for w in ws)   # every default gun goes
+    T.run(ad, "loadout", character="leon", items=["handcannon"], on=True, g=g)                 # one character: only its own
+    assert all((5, 2, w, 0) in T.read_recs(g) for w in R.MERC_DEFAULT_WEAPONS[5])
+
+
 def test_item_ids_and_addresses_ops():
     ad, g = gc_game()
     ids = T.run(ad, "item_ids", g=g)["items"]

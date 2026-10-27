@@ -343,6 +343,11 @@ HOURGLASS = {0x400: [(19401.0, -6857.0), (-20476.0, -5294.0), (-8452.0, -20283.0
 MENU_AFTER, MENU_EVERY = 2.0, 1.5                 # out of a stage this long: press A this often (next round)
 TRANSIENT_MAX = 20.0                             # a gap in a live Mercenaries room (grabbed, a pickup) waits this long
 RESULTS_FROM_S = 5.0                             # a results screen ends a round only when the clock was last seen running
+CLOCK_MAX_S = 1200.0                             # the Mercenaries clock never reads more (2:00 at the start, the hourglass
+                                                 # bonuses add a minute or so): above it the word is not a running round's
+                                                 # clock - the Result screen reuses it (live 2026-10-27, a warm resume onto
+                                                 # the previous round's results: 17897063.5 s = 0x2000A021 frames, read as
+                                                 # "playing" for 24 min while the bot turned and declined 1499 prompts)
                                                  # this low (it ran down to 0; a stage's first frames show 0 straight away)
 RETRY_JUMP_S = 3.0                               # a retry without a load seen: the clock is back up this much over its end
 PROMPT_EVERY, PROMPT_BURST, PROMPT_REST = 0.6, 3, 5.0   # press a prompt this often; still up after this many presses
@@ -3712,7 +3717,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         bot.stats = stats
     stalemate_rule.configure(bot.stats, game)          # the launch's MercMode stalemate_cut / stalemate_cut_s (default on, 5 s)
     try:
-        started_in = in_mercenaries(snapshot(m)) and _room_on(m)
+        first = snapshot(m)
+        started_in = in_mercenaries(first) and _room_on(m) and (first.get("timer") or 0) <= CLOCK_MAX_S
     except Exception:                              # noqa: BLE001 - a read during a load: from the menus
         started_in = False
     bot.stats.update(rounds=1 if started_in else 0, menu_presses=0,
@@ -3805,7 +3811,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             ended = boundary_id
             terminal_clock = s.get('timer')
             roundmap.gap_end(bot.stats, now)          # the next round's round_gap_s counts from here
-        if room_on and s.get('room') is not None and (s['room'] >> 8) == 4 and (s.get('timer') or 0) > 0:
+        if room_on and s.get('room') is not None and (s['room'] >> 8) == 4 and 0 < (s.get('timer') or 0) <= CLOCK_MAX_S:
             clock_seen = s['timer']
         if terminal is not None and reporting:
             hold(set())
@@ -3842,12 +3848,12 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 if frozen:
                     bot.stats.update(hung=True, wandered=f"instant round: {why}")
                     break
-        if not in_mercenaries(s) or s["timer"] <= 0 or not room_on:   # results (clock at 0), the title, menus, a load
-            hold(set())
+        if not in_mercenaries(s) or not 0 < s["timer"] <= CLOCK_MAX_S or not room_on:   # results (clock at 0, or a
+            hold(set())                                # word no clock reads: the Result screen), the title, menus, a load
             out_since = out_since or now
             # Leon grabbed / a pickup animation: still the Mercenaries room with time on the clock - not the round's
             # end (a 2 s gap there reran a 49,370 round with 21 s left, 2026-10-20); wait it out
-            transient = room_on and s["room"] is not None and (s["room"] >> 8) == 4 and s["timer"] > 0.5
+            transient = room_on and s["room"] is not None and (s["room"] >> 8) == 4 and 0.5 < s["timer"] <= CLOCK_MAX_S
             if transient and now - out_since < TRANSIENT_MAX:
                 sleep(0.25)
                 continue

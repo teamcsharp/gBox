@@ -1210,7 +1210,10 @@ def _run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool
         if ch is None:
             raise ValueError(f"character: {', '.join(g.V.CHARACTERS)}")
         install_weapon_code(g)
-        recs = [r for r in read_recs(g) if r[0] != ch]
+        # this character's records go (its gun removals too); "all" replaces every character's: its removals are written
+        # per character, and keeping them made each round's draw add ten more until the list overflowed (live 2026-10-27:
+        # "too many loadout entries (36); max 31" on the third round)
+        recs = [] if ch == 0xFF else [r for r in read_recs(g) if r[0] != ch]
         if reset or not items:
             want = recs
             res.update(character=character or "any", loadout="game default")
