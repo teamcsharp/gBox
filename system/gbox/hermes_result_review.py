@@ -598,15 +598,17 @@ def tick():
                 from . import hermes_provider_scope as scope
                 if scope.admission(M._config(), {'provider': who['provider'], 'model': who['model']}):
                     return {'state': 'waiting_provider_scope', **summary()}
-            for index in range(3):
-                if not process_one('run', newest=index < 2):
-                    break
-            if state.get('review_prs') and time.time() >= config().get('next_at', 0):
+            # PRs first: a merged PR is the delivery, and a run review on a busy local node takes ~10 min, so three of
+            # them ahead of it left one PR review per 30-50 min tick (2026-10-27: 52 PRs pending, none merged in 16 h)
+            if state.get('review_prs'):
                 from . import hermes_review_merge as merge
                 merge.discover()
                 process_one('pr')
                 if state.get('auto_merge'):
                     merge.deliver_one()
+            for index in range(3):
+                if time.time() < config().get('next_at', 0) or not process_one('run', newest=index < 2):
+                    break
             deliver()
             return summary()
     except (BlockingIOError, PermissionError):

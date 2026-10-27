@@ -411,6 +411,19 @@ class LocalReviewTests(ReviewFixture, unittest.TestCase):
         self.assertTrue(state['local'])
         process.assert_called()
 
+    def test_a_tick_reviews_and_merges_a_pr_before_the_run_reviews(self):
+        from gbox import hermes_review_merge as merge
+        order = []
+        policy = {'enabled': True, 'review_prs': True, 'auto_merge': True}
+        with patch.object(R, 'reviewer', return_value=self.local()), patch.object(R, 'config', return_value=policy), \
+                patch.object(R.M, '_job', return_value={'enabled': True}), \
+                patch.object(R, 'discover'), patch.object(R, 'deliver'), patch.object(R, 'refresh_holds'), \
+                patch.object(merge, 'discover', side_effect=lambda: order.append('discover_prs')), \
+                patch.object(merge, 'deliver_one', side_effect=lambda: order.append('merge')), \
+                patch.object(R, 'process_one', side_effect=lambda kind='run', **_: order.append(kind) or kind):
+            R.tick()
+        self.assertEqual(order, ['discover_prs', 'pr', 'merge', 'run', 'run', 'run'])
+
     def test_local_answer_without_a_json_object_is_retried_not_accepted(self):
         R.record_result(self.item, self.run)
         bad = {'choices': [{'finish_reason': 'stop', 'message': {'content': 'I could not review this run.'}}]}
