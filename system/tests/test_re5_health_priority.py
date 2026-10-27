@@ -198,7 +198,7 @@ def test_no_heal_starts_with_a_majini_near_unless_health_is_critical(tmp_path):
     near = {'ptr':0x30700000,'slot':0,'pos':(0.,0.,300.),'hp':800,'hp_max':800}
     snap = {'player':player,'inventory':[gun,spray],'enemies':[near]}
     assert bot._heal(player,snap,10.) is None                       # 30 %: a Majini 3 m away, the fight first
-    assert bot.stats['heal_deferred'].startswith('1 Majini within 5 m at 30%')
+    assert bot.stats['heal_deferred'].startswith('1 Majini within 4 m at 30%')   # HEAL_SAFE_R 400 since 2026-10-26
     assert bot._seek_health(player,snap | {'health_items':[{'ptr':3,'id':0x305,'pos':(800.,0.,0.),'evidence':'native item table'}]},10.) is None
     snap['enemies'] = []
     assert bot._heal(player,snap,10.) == {'tap':'triangle'}        # nobody near: the heal

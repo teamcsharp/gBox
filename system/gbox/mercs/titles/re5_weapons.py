@@ -154,16 +154,28 @@ def suitability(slot, snap, target):
     return score
 
 
-def best_quick_slot(snap, target, blocked=()):
-    """Return a materially better, loaded quick-slot weapon, else None. No imaginary inventory RAM equips."""
+CLOSE_LASER_R = 800.0                  # a target this near: a gun without a laser ray (the bow, or one whose ray has not
+LASERLESS_PENALTY = 30.0               # shown) gives way to a loaded laser gun in a quick slot (operator 2026-10-26: "at close
+                                       # range ... switch to it and keep the rifle for long shots only")
+
+
+def best_quick_slot(snap, target, blocked=(), laserless=False):
+    """Return a materially better, loaded quick-slot weapon, else None. No imaginary inventory RAM equips. laserless:
+    the gun in hand has shown no laser ray (re5_combat.Combat.laserless_now) - inside CLOSE_LASER_R a laser gun wins."""
     inventory = snap.get("inventory") or ()
     current = next((w for w in inventory if w.get("hand")), None)
     score = suitability(current, snap, target) if current else -1000
     options = [w for w in inventory if not w.get("hand") and quick_key(w)
                and inventory_key(w) not in blocked]
     current_spec = WEAPONS.get((current or {}).get("item"))
-    if current_spec and current_spec.family == "bow" and current.get("rounds", 0) > 0:
-        return None  # Preserve the character's bow; its controller owns aim and trigger pacing.
+    try:
+        close = math.dist(snap["player"]["pos"], target["pos"]) < CLOSE_LASER_R
+    except (KeyError, TypeError, ValueError):
+        close = False
+    if current_spec and current_spec.family == "bow" and current.get("rounds", 0) > 0 and not close:
+        return None  # Preserve the character's bow at range; its controller owns aim and trigger pacing.
+    if close and (laserless or (current_spec is not None and current_spec.family == "bow")):
+        score -= LASERLESS_PENALTY
     if current_spec and current_spec.family in {"rocket", "rifle"}:
         magnums = [w for w in options if w.get("type") == 1 and w.get("rounds", 0) > 0
                    and w.get("item") in (0x0B, 0x1A, 0x1B)]

@@ -57,6 +57,12 @@ P90_KEEP, P90_MIN = 50, 10              # the hits' trigger errors kept per band
 BLAST_GATE = "threat: blasting"         # the operator's close-threat blast: its own policy, never calibrated
 
 
+def blasted(rec: dict) -> bool:
+    """A close-threat blast (the laser path's BLAST_GATE, or the laserless one's "threat: blasting (laserless)"): fired by
+    policy whatever the aim, so never in the calibration's windows."""
+    return str(rec.get("gate") or "").startswith(BLAST_GATE)
+
+
 def band(dist) -> str | None:
     d = _num(dist)
     if d is None:
@@ -280,7 +286,7 @@ def report(records, *, states=None, samples=None, started=None, meta=None, sourc
                pending=sum(1 for r in recs if r.get("result") in (None, "pending")))
     rep["by_weapon"] = _tally(recs, _weapon_key)
     rep["by_band"] = _tally(recs, lambda r: band(r.get("dist")), BAND_NAMES)
-    gated = [r for r in recs if r.get("gate") != BLAST_GATE and not r.get("pb")]   # what the calibration decides
+    gated = [r for r in recs if not blasted(r) and not r.get("pb")]   # what the calibration decides
     rep["by_band_gated"] = _tally(gated, lambda r: band(r.get("dist")), BAND_NAMES)
     rep["by_zone"] = _tally(recs, lambda r: r.get("zone"))
     rep["by_dot"] = _tally(recs, lambda r: r.get("where") or "off him")
@@ -598,7 +604,7 @@ class Calibration:
         blank): the band's window, and a steady hit's trigger error."""
         if rec.get("result") not in ("hit", "miss") or _num(rec.get("dist")) is None or rec.get("character") is None:
             return
-        if rec.get("gate") == BLAST_GATE or rec.get("pb"):
+        if blasted(rec) or rec.get("pb"):
             return
         c = self._cell(self.key(rec["character"], rec.get("wid"), rec["dist"]))
         hit = rec["result"] == "hit"
