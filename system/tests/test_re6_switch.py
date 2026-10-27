@@ -269,7 +269,8 @@ def menu_guest(name, offset=None, value=0, extra=None, mode=R.MODE_NO_MERCY):
     ("uIdStartUp01", R.MENU_CURSOR, 0, "play_game", 3, "ddown"),
     ("uIdStartUp30", R.MENU_CURSOR, 0, "mercs_mode", 0, "a"),
     ("uIdStartUp31", R.MENU_CURSOR, 2, "select_stage", 0, "dup"),
-    ("uIdStartUp32", R.PLAYER_CURSOR, 0, "select_player", 0, "a")])
+    ("uIdStartUp32", R.PLAYER_CURSOR, 0, "select_player", 1, "ddown"),     # Chris: the automatic rifle
+    ("uIdStartUp32", R.PLAYER_CURSOR, 1, "select_player", 1, "a")])
 def test_menus_walk_to_no_mercy(name, offset, value, where, target, key):
     scr = R.screen(menu_guest(name, offset, value))
     assert (scr["where"], scr["cursor"], scr["target"]) == (where, value, target) and R.step(scr) == key
@@ -477,13 +478,16 @@ def test_a_tablet_counts_once_the_count_falls_and_an_ignored_press_is_pressed_ag
     assert bot.stats["tablet_presses"] == 3
 
 
-def test_a_gun_that_does_not_come_up_drops_the_cached_laser():
+def test_a_gun_that_does_not_come_up_keeps_aiming_along_the_camera_and_looks_for_the_laser_again():
     down = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.3)            # the laser unit, but the gun not up
     bot, clock, snap = brain(round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500),
                                          laser=down))
     R._FOUND[(BASE, "laser")] = (1, 2)
-    acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 2)
-    assert bot.stats["reraise"] == 1 and {"hold": ()} in acts and (BASE, "laser") not in R._FOUND
+    acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 4)
+    assert bot.stats["reraise"] == 1 and (BASE, "laser") not in R._FOUND
+    assert all("zl" in a["hold"] for a in acts)                              # the gun never went down for it
+    assert "zr" in acts[-1]["hold"] or "zr" in acts[-2]["hold"]             # the camera's line runs through him: fire
+    assert bot.stats["aim"].endswith(("keys rleft,zl,zr", "keys zl,zr")) or "via camera" in bot.stats["aim"]
 
 
 # --- the live mods ---------------------------------------------------------------------------------------------------
@@ -622,13 +626,15 @@ def test_a_stale_camera_or_laser_after_a_replay_is_looked_up_again():
     assert R.snapshot(g)["laser"]["up"] is False and (BASE, "laser") not in R._FOUND
 
 
-def test_a_crowd_close_by_is_backed_off_before_it_grabs():
-    crowd = ((150.0, 0.0, 150.0, 700), (-150.0, 0.0, 180.0, 700), (0.0, 0.0, 900.0, 700))
-    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=0.0))
-    acts = run(bot, snap, clock, 3)
-    assert all(a["hold"] == ("ldown",) for a in acts) and bot.stats["backoffs"] == 1 and bot.stats["act"] == "backoff"
-    clock[0] += R.BACKOFF_S
-    assert run(bot, snap, clock, 1)[0].get("hold") != ("ldown",)                 # then it fights (a gap before the next)
+def test_a_crowd_close_by_is_fired_on_while_he_steps_back():
+    crowd = ((100.0, 0.0, 200.0, 700), (-120.0, 0.0, 200.0, 700), (0.0, 0.0, 900.0, 700))   # two within CROWD_R
+    on = ((100.0, R.CHEST_H, 200.0), (20.0, 145.0, 30.0), 0.86)              # the dot on the near one's chest
+    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=math.atan2(100, 200), laser=on))
+    acts = run(bot, snap, clock, 10)
+    assert acts[0] == {"hold": ("zl", "zr")} and bot.stats["quick_shots"] == 1   # the close one: the quick shot first
+    assert all("ldown" in a.get("hold", ()) for a in acts[2:]) and bot.stats["backoffs"] == 1   # stepping back ...
+    assert all("zl" in a.get("hold", ()) for a in acts[2:])                  # ... with the gun up
+    assert sum("zr" in a.get("hold", ()) for a in acts[2:]) >= 2 and bot.stats["t_fire"] > 0    # ... and firing
 
 
 def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
@@ -647,7 +653,7 @@ def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
     assert d2.screen(res, None) == "results" and d2.result_ready(R.snapshot(res), 0.0) is True
 
 
-def test_aiming_gives_way_to_a_kick_when_one_closes_in():
+def test_one_closing_in_while_he_aims_is_backed_away_from_with_the_gun_up():
     on = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.86)
     g = round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500), laser=on)
     bot, clock, snap = brain(g)
@@ -655,7 +661,7 @@ def test_aiming_gives_way_to_a_kick_when_one_closes_in():
     assert bot.aim_since is not None                                   # aiming at the far one
     snap["enemies"].append({"slot": 1, "ptr": 99, "pos": (20.0, 0.0, 90.0), "hp": 700, "hp_max": 700})
     act = run(bot, snap, clock, 1)[0]
-    assert act == {"tap": "zr"} and bot.stats["melee"] == 1              # the gun down, the kick
+    assert "zl" in act["hold"] and "ldown" in act["hold"] and bot.stats["melee"] == 0   # gun up, a step back
 
 
 def test_warm_probe_names_stable_native_menus_and_waits_for_an_open_title():

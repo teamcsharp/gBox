@@ -73,7 +73,8 @@ MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, MERCS_SOLO = 0, 3, 0
 STAGES = ("Urban Chaos", "Steel Beast", "Mining the Depths", "Rail Yard", "High Seas Fortress", "The Catacombs",
           "Requiem for War", "Liquid Fire", "Rooftop Mission", "Creature Workshop")
 CHARACTERS = ("Leon", "Chris", "Jake", "Agent")
-STAGE_TARGET, PLAYER_TARGET = 0, 0      # Urban Chaos, Leon (the selects' first entries)
+STAGE_TARGET, PLAYER_TARGET = 0, 1      # Urban Chaos, Chris: his assault rifle is automatic (ZR held fires 9.6 rounds
+                                        # a second; with infinite ammo it never stops: "rain fire", operator 2026-10-27)
 
 CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO, CONTINUE_MENU = 0x50, 0, 1, 0x248   # uIdGameover00 "YOU ARE DEAD -
                                         # CONTINUE? YES / NO": +0x50 the cursor (0 YES, 1 NO), +0x248 -> its YES / NO
@@ -117,6 +118,7 @@ P_STATE, P_MOTION = 0x6E2, 0x598        # u8 the action's kind, u16 its motion (
                                         # motion 4012 / 4018 only then
 HELD_STATES = frozenset({8, 9, 25})
 P_TABLETS = 0x5196                      # s16: the health tablets (8 at the round start; R takes one, live 2026-10-27)
+P_WEAPON_ID = 0x507A                    # u8: slot 0's item id, the gun in hand at the start (Leon 0x03, Chris 0x0F)
 
 
 def _rows(m):
@@ -263,8 +265,9 @@ def snapshot(m) -> dict:
             state = m.rd(p + P_STATE, 1)[0]
             motion = struct.unpack("<H", m.rd(p + P_MOTION, 2))[0]
             tablets = struct.unpack("<h", m.rd(p + P_TABLETS, 2))[0]
+            weapon_id = m.rd(p + P_WEAPON_ID, 1)[0]
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
-                              "state": state, "motion": motion, "tablets": tablets}
+                              "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
                 snap["continue_cursor"] = continue_prompt(m, over)["cursor"] if over else None
@@ -628,24 +631,48 @@ def through(origin, dot, foot) -> bool:
     return False
 
 
+def line_hits(origin, toward, foot, reach: float) -> bool:
+    """Whether the line from origin through toward, out to reach, passes inside a zombie standing at foot (his head or
+    his body between the knees and the shoulders). The camera's forward line is the aim's when the laser is not read:
+    RE6 aims at the middle of the screen."""
+    have = math.dist(origin, toward)
+    if have < 1.0:
+        return False
+    d = tuple((toward[k] - origin[k]) / have for k in range(3))
+    for h in (HEAD_H, CHEST_H, KNEE_H + 30):
+        along = sum((foot[k] + (h if k == 1 else 0.0) - origin[k]) * d[k] for k in range(3))
+        if 0.0 < along <= reach and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot) is not None:
+            return True
+    return False
+
+
 # --- the round brain ----------------------------------------------------------------------------------------------------
 # RE6's controls (the game's own Controls screen; measured live 2026-10-26): the right stick turns the camera (rleft = a
 # larger yaw, ~174 deg/s with the gun down), the left stick walks along the camera (lup = the camera's yaw), ZL raises
-# the gun along the camera (the body turns to it; the right stick then moves the aim, ~70 deg/s yaw, ~95 deg/s pitch),
-# ZR fires while ZL is held, ZR alone is a physical attack (melee), ZL and ZR together a quick shot (the game's own
-# auto-aimed shot), L-stick back + B the quick turn (180 deg, the camera follows), Y reloads.
+# the gun along the camera (the body turns to it; the right stick then moves the aim, ~70 deg/s yaw, ~95 deg/s pitch;
+# the left stick still walks him, RE6 moves while aiming), ZR fires while ZL is held, ZR alone is a physical attack
+# (melee), ZL and ZR together a quick shot (the game's own auto-aimed shot), L-stick back + B the quick turn (180 deg,
+# the camera follows), Y reloads.
+#
+# "Raise their weapon and rain fire" (operator 2026-10-27): the gun comes up as soon as a zombie stands in front within
+# reach (FRONT_CONE, ENGAGE_R) and stays up while any does; the trigger is down whenever the aim's line runs through any
+# zombie, not only the one being steered to; with one close he steps back while he fires instead of lowering the gun;
+# the laser not read yet (raising, a replay, a stale unit) hands the aim to the camera's line instead of lowering the
+# gun. The gun goes down only to turn to a zombie outside the front with none in it, for a kick at arm's length, a
+# tablet, and a hold.
 ENGAGE_R, MAX_DY = 1800.0, 300.0
-AIM_CONE = math.radians(25)             # the camera this close to him: the gun comes up (it rises along the camera)
-UNAIM_ERR = math.radians(55)            # aiming and the ray this far off him: the gun goes down, the camera turns faster
+FRONT_CONE = math.radians(60)           # a zombie this close to the aim within ENGAGE_R: the gun comes up and stays up
+AIM_CONE = FRONT_CONE                   # (the camera turning with the gun down raises it once he is this close)
+UNAIM_ERR = math.radians(100)           # aiming, the target this far off the line with none in front: gun down, turn
 TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (gun down): pulsed inside TURN_FINE
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
 FINE_YAW, FINE_PITCH = math.radians(6), math.radians(12)  # the aim's stick in pulses inside these (pitch is fast)
 QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(130), 1.5, 0.45
 MELEE_R, MELEE_CONE, MELEE_GAP_S = 140.0, math.radians(40), 0.7
-CROWD_R, CROWD_N, BACKOFF_S, BACKOFF_GAP_S = 260.0, 2, 0.6, 1.8   # this many this near: step back (away from the
-                                        # camera's view, where they come from) before they grab
+CROWD_R, CROWD_N = 260.0, 2             # this many this near, or one within KEEP_R: he steps back while he fires
+KEEP_R = 200.0
 QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 450.0, math.radians(35), 1.5
-READY_S, LASER_WAIT_S, RAY_STALE_S = 0.2, 0.9, 1.0
+READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
 GRAB_R, GRAB_S, STUCK_S, BREAK_S = 120.0, 0.6, 0.5, 1.2
@@ -658,38 +685,60 @@ TABLET_LOW_HP = 0.34                    # ... and at a third or less whoever is 
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
+AUTO_IDS = frozenset({0x0F})            # automatic guns: ZR held, not tapped (Chris's assault rifle: held 2.5 s, 24 rounds)
 REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long at most before it counts as lost
 HANG_S = 6.0
+# "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the
+# decisions and why, the idle streak among zombies) and the round counters below, whose per-round amounts the engine
+# records (Driver.round_counters: round_<key>):
+#   t_<doing>      seconds spent on each decision (DOINGS): fire (the trigger working on a zombie on the line), aim (the
+#                  gun up, steering, nobody on the line), raise (the gun coming up), turn / unaim / quick_turn (the body
+#                  turning, the gun down), melee, quick_shot, held (breaking a hold), tablet, reload, walk, no_foes, dead
+#   trigger_s      seconds with the trigger working (t_fire), the number to raise
+#   pulls_hit / pulls_miss  trigger pulls (a streak on one zombie) that took health within HIT_S / that did not
+#   first_pull_s/_n  seconds from the gun's raise to its first pull, summed / how many raises fired
+#   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
+LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
+DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
+          "walk", "no_foes", "dead")
+AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
+SURVIVAL = ("held", "tablet", "reload")
 
 
 class Bot:
     """One decision per tick from the snapshot.
 
-    The zombie to fight: near and in front of the camera first; a new one is kept COMMIT_S, then while he lives unless
-    another costs KEEP_TARGET times less or one comes within THREAT_R. Gun down: the camera turns to him (the right
-    stick; the quick turn for one behind), a melee kick for one at arm's length, the game's quick shot for one close in
-    front; ZL once the camera is within AIM_CONE. Gun up: the laser's ray (muzzle +0x440 -> dot +0x60, RAM) is closed
-    onto his chest with the right stick (pulsed inside the fine zones) and ZR is tapped while the dot sits on a zombie or
-    the ray runs through him. Far: walk to him along the camera. Held (RAM's action byte, or the stick moving nothing):
-    B mashed with the left stick turned round. Hurt: a tablet (R) while he is free, counted once the tablet count falls
-    (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round again at once;
-    NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
+    The zombie to fight: near and in front of the camera first (those in front within reach before any other); a new
+    one is kept COMMIT_S, then while he lives unless another costs KEEP_TARGET times less or one comes within THREAT_R.
+    A zombie in front within reach: the gun up (a kick first for one at arm's length, the game's quick shot for one
+    close), the laser's ray (muzzle +0x440 -> dot +0x60, RAM) - or the camera's line while the laser is not read - closed
+    onto his chest with the right stick, and the trigger down whenever the line runs through any zombie (tapped for a
+    handgun, held for an automatic); one close or a crowd: he steps back while he fires. Nobody in front: the gun down,
+    the camera turns to him (the quick turn for one behind), or he walks to him. Held (RAM's action byte, or the stick
+    moving nothing): B mashed with the left stick turned round. Hurt: a tablet (R) while he is free, counted once the
+    tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
+    again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic):
+        from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
-                  "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs"):
+                  "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
+                  "pulls_hit", "pulls_miss", "first_pull_n"):
             self.stats.setdefault(k, 0)
+        for k in ("trigger_s", "first_pull_s"):
+            self.stats.setdefault(k, 0.0)
         self.target, self.target_at = None, -1e9
         self.aim_since = None
+        self.reraised = False                     # this raise already looked for the laser unit again
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when) after an R press, until it falls
-        self.backoff_until = self.backoff_ready = -1e9
+        self.keeping_off = False
         self.qshot_release = False
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.wiggle = 0
@@ -700,6 +749,20 @@ class Bot:
         self.dead_since, self.dead_taps = None, 0
         self.died, self.continued = False, None   # this round ended in a death / how "Continue?" was answered
         self._round_started = None                # the engine's round marker (a replay starts a new round in one call)
+        # the look
+        self.look = BotLook()
+        self.doing, self.why = "none", ""
+        self._ran = ("none", False)               # the last decision and whether a zombie stood in front while it ran
+        self._acc = {k: float(self.stats.get(k) or 0) for k in tuple("t_" + d for d in DOINGS) + ("t_turn_foe_front",
+                                                                                                   "trigger_s")}
+        self._tick_t = None
+        self._look_at = None
+        self._look_pub = (-1, -1e9)
+        self._pull = None                         # the trigger pull under way: {target, start, entry}
+        self._pulls: list = []                    # pulls ended, waiting out HIT_S: [{target, end, hit, entry}]
+        self._dropped: set = set()                # the zombies whose health fell this tick
+        self._raise_t = None                      # when the gun went up for the pull to come (first_pull_s)
+        self._aimctx: dict = {}
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -715,6 +778,7 @@ class Bot:
                 self._round_started = now
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
                 self.tablet_wait, self.tablet_missed = None, False
+                self.look.new_round()
             self.continued = None
         if self._round_started is None:
             self._round_started = now
@@ -772,9 +836,10 @@ class Bot:
             self.tablet_wait, self.tablet_missed = None, True
 
     def _score_hits(self, snap, now) -> None:
-        """A zombie's health falling within HIT_S of an aimed shot is that shot's hit (accuracy = hits / shots)."""
+        """A zombie's health falling within HIT_S of a shot is that shot's hit (accuracy = hits / shots)."""
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
-        drops = sum(1 for k, h in hp.items() if h < self.hp_prev.get(k, h))
+        self._dropped = {k for k, h in hp.items() if h < self.hp_prev.get(k, h)}
+        drops = len(self._dropped)
         self.hp_prev = hp
         self.pending = [t for t in self.pending if now - t <= HIT_S]
         while drops and self.pending:
@@ -813,12 +878,13 @@ class Bot:
                 return set()
         return {"rup"} if err > 0 else {"rdown"}
 
-    def _trigger(self, on: bool, now) -> set:
-        """ZR tapped (a tick down, a tick up: the handgun fires once a press) while on him."""
+    def _trigger(self, on: bool, now, auto: bool = False) -> set:
+        """The trigger while a zombie is on the line: held for an automatic gun, tapped (a tick down, a tick up: the
+        handgun fires once a press) for any other."""
         if not on:
             self.fire_down = False
             return set()
-        self.fire_down = not self.fire_down
+        self.fire_down = True if auto else not self.fire_down
         if not self.fire_down:
             return set()
         self.stats["shots"] += 1
@@ -826,7 +892,7 @@ class Bot:
         return {"zr"}
 
     def _gun_down(self) -> None:
-        self.aim_since, self.fire_down, self.ray_key = None, False, None
+        self.aim_since, self.fire_down, self.ray_key, self.reraised = None, False, None, False
 
     def _act(self, name: str) -> None:
         """What this tick decided, for the watch panel and the round's audit: stats act and acts (counts)."""
@@ -834,14 +900,27 @@ class Bot:
         acts = self.stats.setdefault("acts", {})
         acts[name] = acts.get(name, 0) + 1
 
+    def _go(self, doing: str, act: str, out: dict, why: str = "") -> dict:
+        """One decision: its doing (the look's time budget), its act (stats act / acts) and why."""
+        self.doing, self.why = doing, why
+        self._act(act)
+        return out
+
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        out = self._tick(snap, now)
+        try:
+            self._look_tick(snap, now)
+        except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return out
+
+    def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
         if not p:
             self._gun_down()
-            self._act("no_player")
-            return {"hold": ()}
+            return self._go("none", "no_player", {"hold": ()}, "no player (between rounds)")
         if (p.get("hp") or 0) <= 0:
             self._gun_down()
             self.died = True
@@ -849,37 +928,31 @@ class Bot:
                 self.dead_since = now
                 self.stats["deaths"] += 1
             if now - self.dead_since < DEAD_WAIT_S:
-                self._act("dead_wait")
-                return {"hold": ()}
+                return self._go("dead", "dead_wait", {"hold": ()}, "dead: the Continue? screen comes up")
             cursor = snap.get("continue_cursor")
             if cursor is None:                                   # CONTINUE? not taking input yet
-                self._act("dead_wait")
-                return {"hold": ()}
+                return self._go("dead", "dead_wait", {"hold": ()}, "dead: Continue? not taking input yet")
             self.dead_taps += 1
             want = continue_target()
             if cursor == want:                                   # A only on the answer the pace wants
                 self.continued = "yes" if want == CONTINUE_YES else "no"
-                self._act("continue")
-                return {"tap": "a"}
-            self._act("continue")
-            return {"tap": "dleft" if cursor > want else "dright"}
+                return self._go("dead", "continue", {"tap": "a"}, f"Continue? {self.continued}")
+            return self._go("dead", "continue", {"tap": "dleft" if cursor > want else "dright"}, "Continue? cursor")
         self.dead_since = None
         self._round_start(snap, now)
         self._score_hits(snap, now)
         self._tablet_check(p, now)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
-            self._act("quick_shot_release")
-            return {"hold": ()}
+            return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
         if self.quick:                                           # the quick turn: the stick back, + B, let go
             step, self.quick = self.quick, (self.quick + 1) % 4
             if step == 2:
                 self.quick_at = now
-            self._act("quick_turn")
-            return {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}
+            return self._go("quick_turn", "quick_turn",
+                            {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}, "the quick turn")
         if now - self.quick_at < QUICK_SETTLE_S:
-            self._act("quick_turn_settle")
-            return {"hold": ()}
+            return self._go("quick_turn", "quick_turn_settle", {"hold": ()}, "the quick turn settles")
         px, py, pz = p["pos"]
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
@@ -898,8 +971,8 @@ class Bot:
             self._gun_down()
             self.still = None
             self.wiggle += 1
-            self._act("break_free")
-            return {"hold": WIGGLE[self.wiggle % len(WIGGLE)]}
+            return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
+                            f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
         act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
@@ -910,19 +983,15 @@ class Bot:
         px, py, pz = p["pos"]
         if not live:
             self._gun_down()
-            self._act("idle")
-            return {"hold": ()}
+            return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
-        tgt = self._choose(p, yaw, live, now)
-        foot = tgt["pos"]
-        dist = flat(tgt)
-        err = wrap(heading(foot[0] - px, foot[2] - pz) - yaw)
+        bearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)
+        front = [e for e in live if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
+        tgt = self._choose(p, yaw, front or live, now)
+        foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         self.stats["target_dist"] = round(dist)
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
-        if self.aim_since is not None and (near < MELEE_R or (crowd >= CROWD_N and now >= self.backoff_ready)):
-            self._gun_down()                                     # one at arm's length or a crowd closing in while he
-                                                                 # aims: the gun down, a kick or a step back first
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
         gap = TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
         if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
@@ -932,93 +1001,190 @@ class Bot:
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1
-            self._act("tablet")
-            return {"tap": "r"}
+            return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
         if self.aim_since is None:
-            if dist > ENGAGE_R:                                  # nobody in range: walk to him along the camera
-                self._act("walk")
-                return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
-            near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - yaw)
-            if crowd >= CROWD_N and now >= self.backoff_ready:
-                self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
-                self.stats["backoffs"] += 1
-            if now < self.backoff_until:                         # keep distance: back off the crowd
-                self._act("backoff")
-                return {"hold": ("ldown",)}
+            near_err = bearing(near_e)
             if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
                 self.melee_at = now                              # one at arm's length in front: a kick
                 self.stats["melee"] += 1
-                self._act("melee")
-                return {"tap": "zr"}
+                return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
+            if not front:
+                if dist > ENGAGE_R:                              # nobody in reach: walk to him along the camera
+                    return self._go("walk", "walk", {"hold": ("lup",) + self._turn(err, TURN_TOL)},
+                                    f"the nearest at {dist:.0f} cm: walking")
+                if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                    self.stats["quick_turns"] += 1               # him behind: the quick turn
+                    self.quick = 2
+                    return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
+                                    f"him behind ({math.degrees(err):+.0f} deg): the quick turn")
+                self.stats["turns"] += 1                         # the camera turns to him (fast, the gun down)
+                return self._go("turn", "turn", {"hold": self._turn(err)},
+                                f"nobody in front: turning {math.degrees(err):+.0f} deg to him")
             if dist < QSHOT_R and abs(err) <= QSHOT_CONE and now - self.qshot_at >= QSHOT_GAP_S:
                 self.qshot_at = now                              # close in front: the game's own quick shot
                 self.stats["quick_shots"] += 1
                 self.qshot_release = True
-                self._act("quick_shot")
-                return {"hold": ("zl", "zr")}
-            if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
-                self.stats["quick_turns"] += 1                   # him behind: the quick turn
-                self.quick = 2
-                self._act("quick_turn")
-                return {"hold": ("ldown",)}
-            if abs(err) > AIM_CONE:                              # the camera turns to him first (fast, the gun down)
-                self.stats["turns"] += 1
-                self._act("turn")
-                return {"hold": self._turn(err)}
-            self.aim_since = now
-        lz = snap.get("laser")
+                return self._go("quick_shot", "quick_shot", {"hold": ("zl", "zr")}, f"one at {dist:.0f} cm: quick shot")
+            self.aim_since, self._raise_t, self.reraised = now, now, False   # a zombie in front: the gun comes up
+        keep_off = crowd >= CROWD_N or near < KEEP_R             # he steps back while he fires
+        if keep_off and not self.keeping_off:
+            self.stats["backoffs"] += 1
+        self.keeping_off = keep_off
+        back = ("ldown",) if keep_off else ()
         if p.get("ammo") == 0 and now - self.reload_at > RELOAD_GAP_S:
             self.reload_at = now                                 # empty: reload (Y)
             self.stats["reloads"] += 1
-            self._act("reload")
-            return {"hold": ("zl", "y")}
-        if lz is None or (not lz.get("up") and now - self.aim_since < LASER_WAIT_S) or now - self.aim_since < READY_S:
-            if lz is None and now - self.aim_since >= READY_S:   # no laser unit at all: the camera's ray stands in
-                self._act("aim_camera")
-                return self._aim(p, tgt, foot, dist, cam["pos"] if cam else p["pos"],
-                                 cam["target"] if cam else None, now)
-            self._act("raise")
-            return {"hold": ("zl",)}
-        if not lz.get("up"):
-            self.stats["reraise"] += 1                           # the gun did not come up: let ZL go a tick, and
-            self._gun_down()                                     # look for the laser unit again (another may be his)
+            return self._go("reload", "reload", {"hold": ("zl", "y")}, "the gun is empty: reload")
+        if now - self.aim_since < READY_S:
+            return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up")
+        origin = dot = None
+        lz = snap.get("laser")
+        if lz is not None and lz.get("up"):
+            ray = (tuple(lz["from"]), tuple(lz["at"]))
+            if ray != self.ray_key:
+                self.ray_key, self.ray_since = ray, now
+                origin, dot = ray
+            elif now - self.ray_since > RAY_STALE_S:             # a frozen ray is another unit's: look again
+                self.stats["restale"] += 1
+                forget("laser")
+                self.ray_key = None
+            else:
+                origin, dot = ray
+        if origin is None and now - self.aim_since >= LASER_WAIT_S and not self.reraised:
+            self.reraised = True                                 # still no laser: the unit may be another one's
+            self.stats["reraise"] += 1
             forget("laser")
-            self._act("reraise")
-            return {"hold": ()}
-        ray = (tuple(lz["from"]), tuple(lz["at"]))
-        if ray != self.ray_key:
-            self.ray_key, self.ray_since = ray, now
-        elif now - self.ray_since > RAY_STALE_S:
-            self.stats["restale"] += 1
-            self._gun_down()
-            self._act("restale")
-            return {"hold": ()}
-        origin, dot = ray
-        on_e = next((e for e in live if dot_on(dot, e["pos"])), None)
-        if on_e is not None and on_e is not tgt:                 # the dot is on another one: he is the target now
+        source = "laser"
+        if origin is None:
+            if cam is None or now - self.aim_since < LASER_WAIT_S:
+                return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
+            origin, dot, source = cam["pos"], cam["target"], "camera"
+        on_e = self._on_line(origin, dot, source, front or live)
+        if on_e is not None and on_e is not tgt:                 # the line is on another one: he is the target now
             tgt, foot = on_e, on_e["pos"]
-            self.target = tgt.get("ptr", tgt.get("slot"))
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             dist = flat(tgt)
-        return self._aim(p, tgt, foot, dist, origin, dot, now)
+        return self._aim(p, tgt, foot, dist, origin, dot, source, on_e, front, back, now)
 
-    def _aim(self, p, tgt, foot, dist, origin, dot, now) -> dict:
-        if dot is None:
-            self._gun_down()
-            self._act("aim")
-            return {"hold": ()}
+    def _on_line(self, origin, dot, source, cands):
+        """The zombie the aim's line runs into first: the laser's dot on him or its ray through him, or the camera's line
+        through him within ENGAGE_R. None: nobody on the line."""
+        best, best_d = None, math.inf
+        for e in cands:
+            foot = e["pos"]
+            if source == "laser":
+                hit = dot_on(dot, foot) is not None or through(origin, dot, foot)
+            else:
+                hit = line_hits(origin, dot, foot, ENGAGE_R + 300.0)
+            if hit:
+                d = math.dist(origin, foot)
+                if d < best_d:
+                    best, best_d = e, d
+        return best
+
+    def _aim(self, p, tgt, foot, dist, origin, dot, source, on_e, front, back, now) -> dict:
         chest = (foot[0], foot[1] + CHEST_H, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
-        if abs(yaw_err) > UNAIM_ERR:                             # the aim is far off him: gun down, the camera turns
-            self._gun_down()
-            self._act("unaim")
-            return {"hold": ()}
-        where = dot_on(dot, foot)
-        on = where is not None or through(origin, dot, foot)
-        keys = {"zl"} | self._yaw(yaw_err) | self._pitch(pitch_err) | self._trigger(on, now)
+        if abs(yaw_err) > UNAIM_ERR and on_e is None:
+            line_yaw = heading(dot[0] - origin[0], dot[2] - origin[2])
+            px, _, pz = p["pos"]
+            alt = [e for e in front if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - line_yaw)) <= FRONT_CONE]
+            if not alt:                                          # far off him and nobody in front: gun down, turn
+                self._gun_down()
+                return self._go("unaim", "unaim", {"hold": ()}, f"aim {math.degrees(yaw_err):+.0f} deg off him: gun down")
+            tgt = min(alt, key=lambda e: math.dist(origin, e["pos"]))
+            foot = tgt["pos"]
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            yaw_err, pitch_err = ray_error(origin, dot, (foot[0], foot[1] + CHEST_H, foot[2]))
+        on = on_e is not None
+        auto = p.get("weapon_id") in AUTO_IDS
+        trig = self._trigger(on, now, auto)
+        keys = {"zl"} | self._yaw(yaw_err) | self._pitch(pitch_err) | trig | set(back)
+        self._aimctx = {"target": (on_e or tgt).get("ptr", (on_e or tgt).get("slot")), "dist": dist,
+                        "yaw_err": yaw_err, "source": source, "where": dot_on(dot, foot) if source == "laser" else None}
+        where = self._aimctx["where"]
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
-                             f"on {where or ('ray' if on else '-')} keys {','.join(sorted(keys))}")
-        self._act("aim")
-        return {"hold": tuple(sorted(keys))}
+                             f"on {where or ('line' if on else '-')} via {source} keys {','.join(sorted(keys))}")
+        return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
+                        (f"on a zombie at {dist:.0f} cm ({source})" if on else
+                         f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
+    def _front_foe(self, p, snap) -> bool:
+        """A living zombie in front of him within reach (inside FRONT_CONE of his facing)."""
+        px, py, pz = p["pos"]
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0 or abs(e["pos"][1] - py) > MAX_DY:
+                continue
+            dx, dz = e["pos"][0] - px, e["pos"][2] - pz
+            if math.hypot(dx, dz) <= ENGAGE_R and abs(wrap(heading(dx, dz) - p["rot"])) <= FRONT_CONE:
+                return True
+        return False
+
+    def _pulls_tick(self, now) -> None:
+        """Trigger pulls: one starts when the trigger starts working on a zombie (its look entry, the raise's first pull
+        timed), ends when it stops or moves to another; an ended pull resolves after HIT_S: hit when its zombie's health
+        fell while it ran or within HIT_S after."""
+        firing = self.doing == "fire"
+        target = self._aimctx.get("target") if firing else None
+        if self._pull is not None and (not firing or target != self._pull["target"]):
+            self._pull["end"] = now
+            self._pulls.append(self._pull)
+            self._pull = None
+        if firing and self._pull is None:
+            from ..bot_look import make_target
+            if self._raise_t is not None:                        # the first pull since the gun went up
+                self.stats["first_pull_n"] += 1
+                self.stats["first_pull_s"] = round(self.stats["first_pull_s"] + max(0.0, now - self._raise_t), 2)
+                self._raise_t = None
+            ctx = self._aimctx
+            entry = self.look.record_shot("auto" if self.fire_down and self.doing == "fire" else "gun",
+                                          f"the line on him ({ctx.get('source')})",
+                                          make_target(id=str(target), kind="zombie", dist_m=(ctx.get("dist") or 0) / 100.0),
+                                          aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
+                                          dot_on="target" if ctx.get("source") == "laser" else "off")
+            self._pull = {"target": target, "start": now, "end": None, "hit": False, "entry": entry}
+        for pull in ([self._pull] if self._pull else []) + self._pulls:
+            if pull["target"] in self._dropped:
+                pull["hit"] = True
+        for pull in [x for x in self._pulls if now - x["end"] > HIT_S]:
+            self._pulls.remove(pull)
+            self.stats["pulls_hit" if pull["hit"] else "pulls_miss"] += 1
+            self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
+
+    def _look_tick(self, snap, now) -> None:
+        """After each decision: the time since the last tick in the budget of the decision that ran (t_<doing>,
+        trigger_s, the turning with a zombie in front), the pulls, the idle streak among zombies, the decision itself,
+        and stats look (at most every LOOK_PUBLISH_S)."""
+        dt = 0.0 if self._tick_t is None else max(0.0, min(now - self._tick_t, LOOK_STEP_MAX_S))
+        self._tick_t = now
+        ran, front = self._ran
+        keys = (("t_" + ran,) if ran in DOINGS and dt else ()) + (("trigger_s",) if ran == "fire" and dt else ()) \
+            + (("t_turn_foe_front",) if front and dt else ())
+        for key in keys:
+            self._acc[key] += dt
+            self.stats[key] = round(self._acc[key], 2)
+        p = snap.get("player")
+        doing = self.doing
+        self._ran = (doing, bool(doing in ("turn", "unaim") and p and self._front_foe(p, snap)))
+        self._pulls_tick(now)
+        if p and doing not in ("none",):
+            pos = p["pos"]
+            moving = bool(self._look_at is not None and dt and
+                          math.hypot(pos[0] - self._look_at[0], pos[2] - self._look_at[2]) / dt >= LOOK_MOVE_CM_S)
+            self._look_at = pos
+            foes = any((e.get("hp") or 0) > 0 and abs(e["pos"][1] - pos[1]) <= MAX_DY
+                       and math.hypot(e["pos"][0] - pos[0], e["pos"][2] - pos[2]) <= LOOK_FOE_R
+                       for e in snap.get("enemies") or ())
+            busy = moving or doing not in ("aim", "raise", "no_foes", "walk")
+            self.look.tick_idle(foes, busy, t=now)
+            phase = "dead" if doing == "dead" else "survive" if doing in SURVIVAL else "fight"
+            self.look.record_decision(phase, doing, self.why, t=now)
+        self.stats["look_idle_among_foes_s"] = round(self.look.idle_s, 1)
+        if "look" not in self.stats or (self.look.version != self._look_pub[0]
+                                        and now - self._look_pub[1] >= LOOK_PUBLISH_S):
+            self.stats["look"] = self.look.snapshot()
+            self._look_pub = (self.look.version, now)
 
     def prompt_ok(self, button, snap, now) -> bool:
         return True
@@ -1031,7 +1197,7 @@ class RE6Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "quick_shots", "melee", "holds", "reloads", "deaths", "tablets",
-                      "tablet_presses", "tablet_misses")
+                      "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
