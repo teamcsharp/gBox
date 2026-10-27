@@ -396,6 +396,10 @@ def screen(m, merc=None) -> dict:
         except (ValueError, OSError):
             cursor = None
         return out | {"where": "dead", "cursor": cursor, "target": CONTINUE_NO}
+    if snap.get("player") and out["where"] == "loading" and snap.get("mercenaries_phase") == PHASE_INTRO \
+            and "uIdNowLoading00" not in ui:
+        return out | {"where": "playing", "intro": True}    # the round is up (its intro, the clock not yet running):
+                                                            # the menus are done, and a MercMode prepare parks here
     if snap.get("player") and out["where"] in ("playing", "dead", "loading"):
         return out
     if "uIdMerceEd00" in ui:
@@ -428,6 +432,56 @@ def screen(m, merc=None) -> dict:
         where = "unknown"
     return out | {"where": where, "cursor": cursor, "target": target,
                   "confirmation_boundary": where in ("select_player", "mercs_mode", "extra_content")}
+
+
+WARM_SCREENS = {"uIdStartUp00": "main_menu", "uIdStartUp01": "play_game", "uIdStartUp29": "mercs_title",
+                "uIdStartUp21": "select_stage", "uIdStartUp22": "select_player"}
+WARM_ALERTS = {0x08: "alert_ok"}         # "Load successful.": the boot's first stop after PRESS ANY BUTTON
+WARM_RESCAN_S = 2.0                      # main not found yet (still booting): look again this often (a full scan)
+TITLE_READY = 0x18                       # uIdTitle00 +0x18: a pointer that appears ~6 s after the unit (live 2026-10-26,
+                                         # Citron: the unit at 10.6 s of boot, black screen; the pointer at ~17 s): the
+                                         # title's own state past its load, where the warm pool may pause it
+
+
+def warm_probe(m) -> dict:
+    """gbox.mercs.warm_boot's boot observer for RE5 Switch (title_probe): a stable native menu where the warm pool may
+    pause the boot, read only (no input, no writes). Main's 64-byte signature pins this build (module_base); the
+    screens are sUnit's interface units, each with its unit as the token (a menu that rebuilds is a new token)."""
+    out = {"ready": False, "screen": "unknown", "title": MAP_ID}
+    now = time.monotonic()
+    if getattr(m, "_warm_miss", None) is not None and now - m._warm_miss < WARM_RESCAN_S:
+        return out
+    base = module_base(m)
+    try:
+        m._warm_miss = None if base is not None else now
+    except AttributeError:
+        pass
+    if base is None:
+        return out
+    units = ui_units(m, base)
+    if "uIdNowLoading00" in units:
+        return out | {"screen": "loading"}
+    for name, where in WARM_SCREENS.items():
+        if name in units:
+            return out | {"ready": True, "screen": where, "token": (name, units[name])}
+    alert = units.get("uIdAlert00")
+    if alert:
+        try:
+            up, aid = struct.unpack("<ii", m.rd(alert + ALERT_UP, 8))
+        except (ValueError, OSError):
+            up, aid = 0, 0
+        if up and aid in WARM_ALERTS:
+            return out | {"ready": True, "screen": WARM_ALERTS[aid], "token": ("alert", alert, aid)}
+    title = units.get("uIdTitle00")
+    if title:
+        try:
+            state = u64(m, title + TITLE_READY)
+        except (ValueError, OSError):
+            state = 0
+        if ptr_ok(state):                                   # PRESS ANY BUTTON's state is up: pause here, press nothing
+            return out | {"ready": True, "screen": "title", "token": ("uIdTitle00", title, state)}
+        return out | {"screen": "title"}
+    return out
 
 
 def step(scr: dict) -> str | None:
