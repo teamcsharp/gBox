@@ -86,7 +86,8 @@ def own_screen(snap: dict) -> str:
         return "loading"
     if room >> 8 != 4:
         return "story"
-    if (snap.get("timer") or 0) <= 0:
+    from ...re4_merc_bot import CLOCK_MAX_S
+    if not 0 < (snap.get("timer") or 0) <= CLOCK_MAX_S:     # at 0, or a word no clock reads (the Result screen)
         return "results"
     if snap.get("hp") is not None and snap["hp"] <= 0:
         return "dead"

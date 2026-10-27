@@ -186,6 +186,12 @@ def test_results_dead_and_story_rooms():
     assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {}}, base) == {"where": "results"}
     assert RM._game({"room": 0x400, "timer": 50.0, "hp": 0, "player": {"ptr": 1}}, base) == {"where": "dead"}
     assert RM._game({"room": 0x400, "timer": 50.0, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "playing"}
+    # the Result screen after a warm resume (live 2026-10-27): the clock's word reads 17897063.5 s - no round's clock
+    assert RM._game({"room": 0x400, "timer": 17897063.5, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "results"}
+    assert RM._game({"room": 0x400, "timer": B.CLOCK_MAX_S, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "playing"}
+    from gbox.mercs.titles.re4_gc import own_screen
+    assert own_screen({"room": 0x400, "timer": 17897063.5, "hp": 900, "player": {"ptr": 1}}) == "results"
+    assert own_screen({"room": 0x400, "timer": 50.0, "hp": 900, "player": {"ptr": 1}}) == "playing"
     assert RM._game({"room": 0x100, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, base) == {"where": "story"}
     loading = {"game_routine": 0}          # the Village loading: clock 0 but not the results
     assert RM._game({"room": 0x400, "timer": 0.0, "hp": 900, "player": {"ptr": 1}}, loading) == {"where": "loading"}
