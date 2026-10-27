@@ -37,7 +37,7 @@ def bot():
 
 def test_no_flip_back_to_the_majini_he_just_left_unless_one_is_about_to_grab_him():
     b, clock = bot()
-    live = foes((1500, 100), (400, -100))                         # nobody in front: the cost decides
+    live = foes((1500, 100), (500, -100))                         # nobody in front or near: the cost decides
     first = b._choose(p(), live, 0.0)
     assert first["ptr"] == 11                                      # the near one, far cheaper
     other = live[0]
@@ -49,7 +49,7 @@ def test_no_flip_back_to_the_majini_he_just_left_unless_one_is_about_to_grab_him
     assert b.stats["target_flips"] == 0
     b.target_at = -10.0
     assert b._choose(p(), live, 4.0)["ptr"] == first["ptr"]        # past FLIP_S: free to go back
-    grab = foes((1500, 100), (400, -100), (100, 170))
+    grab = foes((1500, 100), (500, -100), (100, 170))
     b._set_target(grab[0]["ptr"], 5.0)
     b.target_at = -10.0
     assert b._choose(p(), grab, 5.2)["ptr"] == 12                  # one about to grab him wins at once

@@ -178,8 +178,8 @@ SMOOTH = False
 SMOOTH_FAR = True        # the far-aim unaim hold and the re-raise hysteresis, only with nobody within THREAT_R (13:25)
 SMOOTH_FLIP = True       # no flip back to the Majini he just left within FLIP_S (back 14:10)
 SMOOTH_DOT = False       # the dot takes another Majini after DOT_SWITCH_TICKS (and fires on him at once meanwhile)
-SMOOTH_LEVEL = False     # his own level first, no pitch swings to roofs while ground Majini come
-SMOOTH_CLOSE = False     # up close the target is kept until it dies or leaves THREAT_R
+SMOOTH_LEVEL = True      # his own level first, no pitch swings to roofs while ground Majini come (back 14:40)
+SMOOTH_CLOSE = True      # up close the target is kept until it dies or leaves THREAT_R (back 14:40)
 
 
 def piece(flag: bool) -> bool:
@@ -203,6 +203,22 @@ LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # running and its window under COMBO_URGENT_S, the target is the quickest kill (the cheapest in reach, his level first,
 # no stickiness), and with nobody within COMBO_REACH he walks to the nearest (combo_pushes counts the ticks).
 COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
+# Threat first (operator 2026-10-27 14:30, watching RE5: "the bot aim sporadically where they're pointing at enemies
+# that are way farther away despite them being crowded in the same area by enemies that are a much more immediate
+# threat ... jumping his view around way too much"): with a Majini on his level within THREAT_NEAR_R, no target beyond
+# THREAT_CAP_R - not the choice, not the dot's switch, not the nearest to the ray, not the combo's quickest kill. Among
+# those his own level first, then the lowest threat distance: the distance less APPROACH_LEAD_S of the Majini's closing
+# speed, x (1 + TURN_W x the turn to him / pi). The current one is kept while his threat distance is within THREAT_KEEP
+# of the best (+ THREAT_KEEP_CM); one within GRAB_THREAT_R wins unless the current one is that near too.
+THREAT_FIRST, THREAT_NEAR_R, THREAT_CAP_R = True, 400.0, 800.0
+APPROACH_LEAD_S, APPROACH_EMA, TURN_W, THREAT_KEEP, THREAT_KEEP_CM = 0.6, 0.5, 0.5, 1.25, 25.0
+# Pitch up (the same watch: "I will randomly see them point just up in the air"): every aimed tick with the laser more
+# than PITCH_UP_LOG above level is counted with its cause - the target itself that high (pitch_up_target_high), the gun
+# just raised (pitch_up_raise: the camera's old pitch), the target just changed (pitch_up_retarget), else
+# pitch_up_other; stats pitch_up_last holds the last one's numbers.
+PITCH_UP_LOG, PITCH_UP_RECENT_S = math.radians(20), 0.6
+THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
+                   "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other")
 # Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
 # nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
 # those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
@@ -842,8 +858,9 @@ class Bot:
         self.turning = False                      # turning with the gun down (RERAISE_FRAC)
         self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
         self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
-        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS:
+        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS + THREAT_COUNTERS:
             self.stats.setdefault(k, 0)
+        self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._combo_prev, self._combo_window = 0, None   # the last combo count and its window (combo_breaks / lapses)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
@@ -933,6 +950,58 @@ class Bot:
             return c * K_RANGE_PREF
         return c
 
+    def _track_approach(self, p, live, now) -> None:
+        """Each Majini's closing speed on him (cm/s, + = coming), smoothed (APPROACH_EMA), from tick to tick."""
+        px, _, pz = p["pos"]
+        seen = {}
+        for e in live:
+            k = e.get("ptr", e.get("slot"))
+            d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            prev = self._appr.get(k)
+            v = 0.0
+            if prev is not None:
+                dt = now - prev[1]
+                v = APPROACH_EMA * (prev[0] - d) / dt + (1.0 - APPROACH_EMA) * prev[2] if 0.0 < dt <= 0.5 else prev[2]
+            seen[k] = (d, now, max(-1000.0, min(1000.0, v)))
+        self._appr = seen
+
+    def _threat_d(self, p, e) -> float:
+        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him."""
+        px, _, pz = p["pos"]
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        v = (self._appr.get(e.get("ptr", e.get("slot"))) or (0.0, 0.0, 0.0))[2]
+        turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+
+    @staticmethod
+    def _threat_near(p, live) -> bool:
+        """A Majini on his level within THREAT_NEAR_R (THREAT_FIRST)."""
+        px, py, pz = p["pos"]
+        return bool(THREAT_FIRST and any(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= THREAT_NEAR_R
+                                         and abs(e["pos"][1] - py) <= LEVEL_DY for e in live))
+
+    def _threat_pick(self, p, live, cur, now):
+        """Threat first: within THREAT_CAP_R, his level first, the lowest threat distance; the current one kept within
+        THREAT_KEEP; one within GRAB_THREAT_R wins (unless the current one is that near)."""
+        px, py, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        pool = [e for e in live if flat(e) <= THREAT_CAP_R]
+        pool = [e for e in pool if abs(e["pos"][1] - py) <= LEVEL_DY] or pool
+        self.stats["threat_ticks"] += 1
+        if len(pool) < len(live):
+            self.stats["threat_caps"] += 1                   # one or more beyond the cap (or off his level) left out
+        td = lambda e: self._threat_d(p, e)
+        best = min(pool, key=td)
+        grab = min((e for e in pool if flat(e) < GRAB_THREAT_R), key=flat, default=None)
+        in_pool = cur is not None and any(e is cur for e in pool)
+        if grab is not None and not (in_pool and flat(cur) < GRAB_THREAT_R):
+            best = grab
+        elif in_pool and td(cur) <= THREAT_KEEP * td(best) + THREAT_KEEP_CM:
+            best = cur
+        if best is not cur:
+            self.stats["threat_switches"] += 1
+        return best
+
     def _choose(self, p, live, now):
         """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
         one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
@@ -962,6 +1031,14 @@ class Bot:
                     self.stats["close_keeps"] += 1           # up close: kept until it dies or leaves THREAT_R
                     self._set_target(cur.get("ptr", cur.get("slot")), now)
                     return cur
+        if self._threat_near(p, live):                       # one on his level within reach of him: threat first
+            best = self._threat_pick(p, live, cur, now)
+            if best is not cur:
+                self.target_at = now
+                if cur is not None and abs(self._pitch_to(p, best) - self._pitch_to(p, cur)) > PITCH_SWING:
+                    self.stats["pitch_swings"] += 1
+            self._set_target(best.get("ptr", best.get("slot")), now)
+            return best
         if front:
             best = cur if cur is not None and any(e is cur for e in front) else min(front, key=flat)
             if flat(nearest) < GRAB_THREAT_R and not any(e is nearest for e in front) and flat(best) > 2 * flat(nearest):
@@ -1481,6 +1558,8 @@ class Bot:
             self.doing, self.why = "walk", f"hunt: the nearest {near / 100:.1f} m"
             self._gun_down()
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+        self._track_approach(p, live, now)
+        self._threat_now = self._threat_near(p, live)
         urgent = self._combo_urgent(snap)
         if urgent:                                           # the combo window runs down: the quickest kill
             self.stats["combo_pushes"] += 1
@@ -1490,7 +1569,7 @@ class Bot:
                 self.doing, self.why = "walk", f"combo {snap.get('combo')}: the nearest {near / 100:.1f} m"
                 self._gun_down()
                 return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
-        if urgent and reach:
+        if urgent and reach and not self._threat_now:        # (a threat near: the threat pick is the quickest kill)
             tgt = min(reach, key=lambda e: self._cost(p, e))
             self._set_target(tgt.get("ptr", tgt.get("slot")), now)
         else:
@@ -1573,7 +1652,8 @@ class Bot:
                 self._trigger(False, now)
             return {"hold": ("zl",)}
         origin, dot = ray
-        on_e = next((e for e in live if dot_on(dot, e["pos"])), None)
+        on_e = next((e for e in live if dot_on(dot, e["pos"])
+                     and not (self._threat_now and flat(e) > THREAT_CAP_R)), None)   # threat first: none far off
         other = on_e.get("ptr", on_e.get("slot")) if on_e is not None and on_e is not tgt else None
         self.dot_other = (other, self.dot_other[1] + 1 if other is not None and other == self.dot_other[0] else
                           (1 if other is not None else 0))
@@ -1591,7 +1671,8 @@ class Bot:
         far_off = abs(yaw_err) > UNAIM_ERR and not point_blank
         self.unaim_since = (self.unaim_since or now) if far_off else None
         if far_off:                                          # the aim is far off him
-            alt = self._near_aim(origin, dot, live, flat) if ray_len >= STEER_RAY_CM else None
+            pool = [e for e in live if flat(e) <= THREAT_CAP_R] if self._threat_now else live
+            alt = self._near_aim(origin, dot, pool, flat) if ray_len >= STEER_RAY_CM else None
             hold = piece(SMOOTH_FAR) and near > THREAT_R and abs(yaw_err) <= UNAIM_HARD \
                 and (now - self.unaim_since < UNAIM_HOLD_S or now - self.aim_since < MIN_UP_S)
             if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
@@ -1613,6 +1694,9 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
+        self._pitch_up(origin, dot, chest, tgt, dist, now)
+        if self._threat_now and dist > THREAT_CAP_R:
+            self.stats["far_aim_ticks"] += 1                 # (none expected: every path above is capped)
         if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
             other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
             if other_where is not None:                      # now (the trigger), the aim kept where it is (no swing)
@@ -1664,6 +1748,22 @@ class Bot:
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
+
+    def _pitch_up(self, origin, dot, chest, tgt, dist, now) -> None:
+        """An aimed tick with the laser over PITCH_UP_LOG above level: counted, with its cause."""
+        have = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
+        if have <= PITCH_UP_LOG:
+            return
+        want = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
+        cause = ("target_high" if want > PITCH_UP_LOG else
+                 "raise" if self.aim_since is not None and now - self.aim_since < PITCH_UP_RECENT_S else
+                 "retarget" if now - self.target_at < PITCH_UP_RECENT_S else "other")
+        self.stats["pitch_up_ticks"] += 1
+        self.stats["pitch_up_" + cause] += 1
+        self.stats["pitch_up_last"] = {"cause": cause, "have_deg": round(math.degrees(have), 1),
+                                       "want_deg": round(math.degrees(want), 1), "dist_m": round(dist / 100, 1),
+                                       "dy_cm": round(tgt["pos"][1] - origin[1] + MUZZLE_H), "class": tgt.get("class"),
+                                       "up_s": round(now - self.aim_since, 2) if self.aim_since is not None else None}
 
     @staticmethod
     def _near_aim(origin, dot, live, flat):
@@ -1869,6 +1969,7 @@ class RE5Switch(Driver):
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
+        + THREAT_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
