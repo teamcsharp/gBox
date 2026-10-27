@@ -80,11 +80,68 @@ SELECT, the round. `re5_switch.screen` / `step` walk all of this from RAM, and t
 
 Left stick moves (forward = facing). The right stick turns: rleft raises the heading, about 160 deg/s. ZL aims,
 ZL + ZR fires, L + ZR swings the knife, ZL + B reloads, X opens the inventory, R shows the map, A is partner action.
+While aiming, the right stick moves the aim instead: rleft about +36 deg/s of yaw, rright about -42 deg/s, rup raises
+the pitch about 40 deg/s. Left stick back, then B: the quick turn, 180 deg in 0.3 s (the stick takes about 1.1 s).
 
 ## First driver run (2026-10-26)
 
 The menus walked from the Save successful dialog to the selects and into a round on their own. The first-cut brain
 (face, aim, fire, break free) played two rounds until Chris died: 4 kills / 1,210 points (109 shots, 42 wiggles) and
-1 kill / 300 points (251 shots). Most shots miss: the body's heading is not where the gun points while aiming. Next:
-the laser sight as the aim point (PS3: uLaserSight +0x30 dot, +0x200 muzzle), keeping distance from the crowd, the
-time bonuses.
+1 kill / 300 points (251 shots). Most shots miss: the body's heading is not where the gun points while aiming.
+
+## The laser sight (sUnit line 19)
+
+The effects line (19; the PS3's FxCore line 18) holds a `uLaserSight` unit for the whole round. In a round it held two
+units (`uEfCamDying`, `uLaserSight`). While the gun is up, +0x280 is the laser's origin (the muzzle) and +0x60 the dot,
+where the ray lands (copies at +0x100 and +0x180). Sampled every 30 ms (`probe_laser.py`): both read zero with the gun
+down. They come alive about 0.21 s after ZL goes down and zero again within 30-60 ms of letting it go. A ray that hits
+nothing ends 5000 cm out (its range). `re5_switch.laser_unit` walks the line once, names each other vtable once and
+checks the cached unit by its vtable on every read.
+
+## Player states (+0x8F8, the motion byte)
+
+One byte at player +0x8F8 (copy at +0x2550) names what the body is doing, measured over rounds v2c-v2f:
+
+| value | state |
+|---|---|
+| 0 / 1 / 7 | standing / walking / backing up |
+| 9, 10 | turning in place |
+| 22, 26 | the gun coming up, aimed |
+| 29 | a shot |
+| 32 | reloading (ZR on an empty magazine) |
+| 107 then 106 | grabbed, then held ("Break free", the left stick's prompt); health does not fall, another Majini swings |
+| 113, 100, 114 | strangled (health drains about 150 in 1.5 s) |
+| 104 | let go |
+| 40, 47, 51 | dying (health 1, the PS3's solo DYING) |
+| 8 | dead |
+
+In every hold the Majini's position is 0-8 cm from the player's (bodies otherwise stay about 50 cm apart), so the bot
+also counts one closer than 25 cm as a hold. +0x1138 looked like the PS3's action byte (0 free, 2 gun, 3 reload, 4 held,
+5 hit) in one round. In the next it read 6 from the moment health fell to 216 until death, whatever the body did, so the
+bot does not use it.
+
+## Brain v2: the laser aim (2026-10-26)
+
+`re5_switch.Bot` turns the body (the quick turn for a Majini behind), raises the gun, and closes the laser's ray
+(muzzle -> dot) onto the Majini's chest (110 cm above his feet). ZR is tapped while the dot sits on a Majini or the ray
+runs through him, using the PS3 combat layer's body measures. When the motion byte says held, a Majini is on top of him,
+or the stick does not move him, the bot shakes the left stick and mashes A / B. Live rounds in a private Citron session
+(Public Assembly, Chris, No Mercy; real damage unless noted):
+
+| run | kills | score | shots | hits | hit rate | end |
+|---|---|---|---|---|---|---|
+| v1 (heading aim, in gBox) | 4 | 1,240 | 68 | - | - | died, 42 s left |
+| v2a (laser; health held full) | 10 | 3,840 | 138 | 39 | 28 % (laser-guided presses 78 %, blind ones 20 %) | time |
+| v2b (no blind shots, quick turn) | 7 | 2,160 | 36 | 24 | 67 % | died, 5 s left (held 6.5 s, unseen) |
+| v2c (+ break free when the stick does not move him) | 14 | 5,050 | 102 | 64 | 63 % | time |
+| v2d | 8 | 2,500 | 53 | 34 | 64 % | died, 29 s left (holds not yet read from RAM) |
+| v2e (+ holds from the motion byte) | 10 | 3,050 | 68 | 46 | 68 % | time |
+| v2f (+ a Majini on top of him is a hold) | 9 | 3,340 | 63 | 46 | 73 % | died, 12 s left |
+
+A shot here is a ZR press, so the hit rate is a floor. The PS3 bot's hit rate on 2026-10-26 was 42 %
+(docs/evidence/mercs-diagnostics-2026-10-26.md). Holds now last about 2 s: they lasted 4 s when the break-free started
+1.5 s late, and 6.5 s with no break-free. Frames: docs/evidence/switch-citron/re5-switch-aim-round.jpg (v2c, real
+frames of the private Citron session, one every 15 s) and re5-switch-break-free.jpg (a hold, v2e).
+
+Open: health (the bot never heals; the inventory is not mapped yet), the handgun's ~35 shots a minute (rapid fire and
+infinite ammo are next), the time bonuses.

@@ -79,8 +79,16 @@ class Guest:
         return o
 
 
+@pytest.fixture(autouse=True)
+def _fresh_laser_caches():
+    """The laser caches are per main base, and every fake guest here shares BASE."""
+    for cache in (R._LASER, R._LASER_MISS, R._NOT_LASER):
+        cache.clear()
+    yield
+
+
 def round_guest(phase=R.PHASE_PLAYING, hp=1000, timer=97.5, enemies=((300.0, 0.0, 500.0, 800),), player=True,
-                units=(), cursors=None):
+                units=(), cursors=None, motion=0):
     g = Guest()
     main = g.obj("sBioMain", 0x60000)
     g.q(BASE + R.S_MAIN, main)
@@ -101,6 +109,7 @@ def round_guest(phase=R.PHASE_PLAYING, hp=1000, timer=97.5, enemies=((300.0, 0.0
         g.put(p + R.P_POS, struct.pack("<3f", 0.0, 0.0, 0.0))
         g.put(p + R.P_ROT, struct.pack("<4f", 0.0, 0.0, 0.0, 1.0))      # heading 0: facing +z
         g.put(p + R.P_HP, struct.pack("<hh", hp, 1000))
+        g.put(p + R.P_MOTION, bytes([motion]))
     se = g.obj("sEnemy", 0x1B0)
     g.q(BASE + R.S_ENEMY, se)
     arr = g.alloc(8 * max(1, len(enemies)))
@@ -148,6 +157,8 @@ def test_snapshot_reads_the_measured_fields():
     snap = R.snapshot(round_guest())
     p = snap["player"]
     assert p["hp"] == 1000 and p["hp_max"] == 1000 and p["pos"] == (0.0, 0.0, 0.0) and p["rot"] == 0.0
+    assert p["motion"] == 0 and R.snapshot(round_guest(motion=106))["player"]["motion"] == 106
+    assert snap["laser"] is None                                          # no laser sight unit in this guest
     assert snap["timer"] == 97.5 and snap["timer_start"] == 120.0 and snap["kills"] == 9 and snap["score"] == 3060
     assert snap["combo"] == 4 and snap["max_combo"] == 6 and snap["combo_timer"] == 8.5
     assert snap["mercenaries_phase"] == R.PHASE_PLAYING and snap["module_base"] == BASE
@@ -228,23 +239,166 @@ def test_results_loading_dead_and_unknown():
     assert R.wandered({"where": "playing"}) is None
 
 
+# --- the laser sight ---------------------------------------------------------------------------------------------------
+
+def test_the_laser_sight_is_read_from_the_effects_line():
+    g = round_guest(units=((R.LASER_LINE, "uEfCamDying"), (R.LASER_LINE, "uLaserSight")))
+    u = R.laser_unit(g, BASE)
+    assert R.class_name(g, u) == "uLaserSight"
+    assert R.snapshot(g)["laser"] == {"from": (0.0, 0.0, 0.0), "at": (0.0, 0.0, 0.0), "up": False}   # the gun down
+    g.put(u + R.LASER_FROM, struct.pack("<3f", 10.0, 140.0, 40.0))
+    g.put(u + R.LASER_DOT, struct.pack("<3f", 10.0, 120.0, 600.0))
+    assert R.snapshot(g)["laser"] == {"from": (10.0, 140.0, 40.0), "at": (10.0, 120.0, 600.0), "up": True}
+    su = R.u64(g, BASE + R.S_UNIT)
+    g.q(su + R.UNIT_LINES + R.LINE_STRIDE * R.LASER_LINE, 0)
+    assert R.laser_unit(g, BASE) == u                                     # cached: checked by its vtable, no walk
+    g.q(u, g.klass("uEfBlood"))                                           # gone: looked for again ...
+    assert R.laser_unit(g, BASE, now=100.0) is None
+    g.q(su + R.UNIT_LINES + R.LINE_STRIDE * R.LASER_LINE, u)
+    g.q(u, g.klass("uLaserSight"))
+    assert R.laser_unit(g, BASE, now=100.1) is None                       # ... at most every LASER_RESCAN_S
+    assert R.laser_unit(g, BASE, now=100.0 + R.LASER_RESCAN_S + 0.01) == u
+
+
+def test_ray_geometry():
+    o = (0.0, 140.0, 0.0)
+    yaw, pitch = R.ray_error(o, (100.0, 140.0, 1000.0), (0.0, 110.0, 1000.0))
+    assert yaw < 0 and pitch < 0                     # the dot is at a larger heading and level: rright, rdown
+    foot = (0.0, 0.0, 1000.0)
+    assert R.dot_on((10.0, 120.0, 990.0), foot) == "body" and R.dot_on((0.0, 160.0, 1000.0), foot) == "head"
+    assert R.dot_on((0.0, 120.0, 1100.0), foot) is None and R.dot_on((60.0, 120.0, 1000.0), foot) is None
+    assert R.through(o, (0.0, 100.0, 2000.0), foot)                       # the dot past him, the ray through him
+    assert not R.through(o, (0.0, 120.0, 500.0), foot)                    # it ends short of him (a wall)
+    assert not R.through(o, (400.0, 120.0, 2000.0), foot)                 # beside him
+
+
 # --- the brain -------------------------------------------------------------------------------------------------------
 
+OFF = {"from": (0.0, 0.0, 0.0), "at": (0.0, 0.0, 0.0), "up": False}
+
+
+def ray(at, frm=(0.0, 140.0, 40.0)):
+    return {"from": frm, "at": at, "up": True}
+
+
+def bot_snap(enemy=(0.0, 0.0, 600.0), rot=0.0, laser=OFF, hp=1000, motion=0, ehp=800, more=()):
+    enemies = ([{"ptr": 1, "pos": enemy, "hp": ehp, "hp_max": 800}] if enemy else []) + \
+        [{"ptr": 2 + i, "pos": pos, "hp": 800, "hp_max": 800} for i, pos in enumerate(more)]
+    return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": 1000, "motion": motion},
+            "enemies": enemies, "laser": laser}
+
+
 def snap_with(enemy, hp=1000, rot=0.0):
+    """No motion byte and no laser unit: the bot's fallbacks (the health heuristic, the heading aim)."""
     return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": 1000},
             "enemies": [{"pos": enemy, "hp": 800, "hp_max": 800}] if enemy else []}
 
 
-def test_bot_faces_aims_and_fires_at_the_nearest():
+def brain():
     clock = [0.0]
-    b = R.Bot(stats={}, clock=lambda: clock[0])
-    assert b.tick(snap_with((500.0, 0.0, 0.0)))["hold"] == ("rleft",)       # +x is heading +90: rleft raises it
-    assert b.tick(snap_with((-500.0, 0.0, 0.0)))["hold"] == ("rright",)
-    first = b.tick(snap_with((0.0, 0.0, 600.0)))["hold"]
-    second = b.tick(snap_with((0.0, 0.0, 600.0)))["hold"]
-    assert {first, second} == {("zl", "zr"), ("zl",)}                        # ZR goes down every other tick
-    assert b.stats["shots"] == 1
-    assert b.tick(snap_with((0.0, 0.0, 5000.0)))["hold"] == ("lup",)        # nobody in range: walk to him
+    return R.Bot(stats={}, clock=lambda: clock[0]), clock
+
+
+def test_bot_turns_raises_the_gun_and_closes_the_laser_on_his_chest():
+    b, clock = brain()
+    assert b.tick(bot_snap((600.0, 0.0, 0.0)))["hold"] == ("rleft",)      # +x is heading +90: rleft raises it
+    clock[0] = 0.05
+    assert b.tick(bot_snap())["hold"] == ("zl",)                         # faced: the gun comes up
+    clock[0] = 0.3
+    assert b.tick(bot_snap(laser=ray((-100.0, 110.0, 600.0))))["hold"] == ("rleft", "zl")   # off him: steer, no shot
+    assert b.stats["shots"] == 0
+    clock[0] = 0.35
+    on = bot_snap(laser=ray((5.0, 110.0, 590.0)))                        # the dot on his body
+    first, second = b.tick(on)["hold"], b.tick(dict(on, laser=ray((5.0, 111.0, 590.0))))["hold"]
+    assert "zr" in first and "zr" not in second and "zl" in second       # ZR tapped: a tick down, a tick up
+    assert b.stats["shots"] == 1 and "on body" in b.stats["aim"]
+
+
+def test_bot_fires_through_him_but_not_into_a_wall_short_of_him():
+    b, clock = brain()
+    b.tick(bot_snap())
+    clock[0] = 0.3
+    assert "zr" in b.tick(bot_snap(laser=ray((0.0, 90.0, 1200.0))))["hold"]   # the dot past him: the ray runs through
+    b, clock = brain()
+    b.tick(bot_snap())
+    clock[0] = 0.3
+    assert "zr" not in b.tick(bot_snap(laser=ray((0.0, 120.0, 300.0))))["hold"]   # it ends on something in front
+
+
+def test_bot_takes_the_majini_the_dot_is_on():
+    b, clock = brain()
+    b.tick(bot_snap(more=((150.0, 0.0, 700.0),)))
+    clock[0] = 0.3
+    act = b.tick(bot_snap(more=((150.0, 0.0, 700.0),), laser=ray((140.0, 100.0, 690.0))))
+    assert "zr" in act["hold"] and b.target == 2
+
+
+def test_bot_raises_the_gun_again_and_waits_out_a_reload():
+    b, clock = brain()
+    b.tick(bot_snap())
+    clock[0] = R.LASER_WAIT_S + 0.1
+    assert b.tick(bot_snap())["hold"] == () and b.stats["reraise"] == 1  # the laser never came up: ZL again
+    b, clock = brain()
+    b.tick(bot_snap())
+    clock[0] = 5.0
+    assert b.tick(bot_snap(motion=R.MOTION_RELOAD))["hold"] == ("zl",)  # reloading: no re-raise
+    assert b.stats["reraise"] == 0
+
+
+def test_bot_quick_turns_for_one_behind():
+    b, clock = brain()
+    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ("ldown",)
+    clock[0] = 0.05
+    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ("ldown", "b")
+    clock[0] = 0.1
+    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ()
+    clock[0] = 0.2
+    assert b.tick(bot_snap((0.0, 0.0, -600.0)))["hold"] == ()            # it swings round by itself
+    assert b.stats["quick_turns"] == 1
+
+
+def test_bot_backs_off_one_in_front_only():
+    b, clock = brain()
+    assert b.tick(bot_snap((0.0, 0.0, 100.0)))["hold"][0] == "ldown" and b.stats["backoffs"] == 1
+    b, clock = brain()
+    assert b.tick(bot_snap((0.0, 0.0, -100.0)))["hold"] == ("ldown",)    # behind: the quick turn, not a back-off
+    assert b.stats["backoffs"] == 0 and b.stats["quick_turns"] == 1
+
+
+@pytest.mark.parametrize("snap,kind", [(bot_snap(motion=106), "holds"), (bot_snap(motion=113), "holds"),
+                                       (bot_snap((0.0, 0.0, 8.0)), "holds"), (bot_snap(hp=1), "dying")])
+def test_bot_breaks_free_when_held_or_dying(snap, kind):
+    b, clock = brain()
+    keys = {b.tick(snap)["hold"], b.tick(snap)["hold"]}
+    assert keys == set(R.WIGGLE) and b.stats[kind] == 1                   # the left stick shaken, A / B mashed
+
+
+def test_bot_breaks_free_when_the_stick_does_not_move_him():
+    b, clock = brain()
+    far = bot_snap((600.0, 0.0, 0.0))                                     # a turn he cannot make
+    for k in range(12):
+        clock[0] = 0.05 * k
+        act = b.tick(far)
+    assert act["hold"] in R.WIGGLE and b.stats["holds"] == 1
+
+
+def test_bot_scores_its_hits():
+    b, clock = brain()
+    b.tick(bot_snap())
+    clock[0] = 0.3
+    b.tick(bot_snap(laser=ray((5.0, 110.0, 590.0))))
+    clock[0] = 0.4
+    b.tick(bot_snap(laser=ray((5.0, 111.0, 590.0)), ehp=640))            # his health fell after the shot
+    assert b.stats["shots"] == 1 and b.stats["hits"] == 1 and b.stats["accuracy"] == 1.0
+
+
+def test_bot_without_a_laser_unit_aims_by_heading():
+    b, clock = brain()
+    b.tick(snap_with((0.0, 0.0, 600.0)))
+    clock[0] = 0.3
+    first, second = b.tick(snap_with((0.0, 0.0, 600.0)))["hold"], b.tick(snap_with((0.0, 0.0, 600.0)))["hold"]
+    assert {first, second} == {("zl", "zr"), ("zl",)} and b.stats["laserless"] == 2
+    assert b.tick(snap_with((0.0, 0.0, 5000.0)))["hold"] == ("lup",)     # nobody in range: walk to him
     assert b.tick(snap_with(None))["hold"] == ()
 
 
@@ -254,10 +408,10 @@ def test_bot_breaks_free_and_answers_continue_no():
     b.tick(snap_with((0.0, 0.0, 60.0), hp=900))
     clock[0] = 0.2
     act = b.tick(snap_with((0.0, 0.0, 60.0), hp=800))                         # health falling, one at arm's length
-    assert act["hold"] in (("lleft",), ("lright",)) and b.stats["wiggles"] == 1
-    clock[0] = 1.0
+    assert act["hold"] in R.WIGGLE and b.stats["wiggles"] == 1
+    clock[0] = 1.0 + R.BREAK_S
     assert b.tick(snap_with((0.0, 0.0, 60.0), hp=0)) == {"hold": ()}          # the death animation
-    clock[0] = 1.0 + R.DEAD_WAIT_S
+    clock[0] = 1.0 + R.BREAK_S + R.DEAD_WAIT_S
     assert b.tick(snap_with(None, hp=0)) == {"tap": "dright"}                 # Continue? -> No ...
     assert b.tick(snap_with(None, hp=0)) == {"tap": "a"}                      # ... and confirm
 

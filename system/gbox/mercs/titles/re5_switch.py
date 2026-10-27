@@ -1,7 +1,7 @@
 """Title: Resident Evil 5 (Nintendo Switch: title 010018100CD46000, v1.0.0, main build EBFFDB223149A725A93CD9B60979F6AA)
 - The Mercenaries United in No Mercy (operator 2026-10-26: "I need RE5 and 6 no mercy being the canonical mercenaries
-mode we run for those two titles"), on Eden (gbox.adapters.SwitchLinuxAdapter: single-core, NCE, where a guest address
-is the host address).
+mode we run for those two titles"), on Citron NEO (canonical, multi-core) or Eden (single-core): gbox.adapters'
+SwitchLinuxAdapter / CitronLinuxAdapter, NCE, where a guest address is the host address.
 
 The same MT Framework as the PS3 build (gbox/mercs/titles/re5_ps3.py), little-endian with 8-byte pointers. ASLR moves
 main every boot, so every chain starts at module_base(m) + an offset. module_base finds main by 64 bytes of its
@@ -12,8 +12,9 @@ read-only data (unique in the module). Measured live 2026-10-26 on the Spark (do
                               +0x970 combo on, +0x974 s32 combo, +0x978 s32 max combo, +0x97C f32 combo window,
                               +0x990 s32 score (the results screen agreed: Enemies Routed 9, Max combo 6x, 3,060)
     sPlayer [base+0x1CF1C98]  +0x30 -> the player (uPl00ChrisNormal ...): +0x60 pos (x, y up, z; cm), +0x70 rotation
-                              quaternion (heading = 2 atan2(qy, qw), forward = (sin, 0, cos)), +0x1EB8 s16 health,
-                              +0x1EBA maximum (1000). 0 once the round is over.
+                              quaternion (heading = 2 atan2(qy, qw), forward = (sin, 0, cos)), +0x8F8 u8 motion (held,
+                              reloading, dying: P_MOTION), +0x1EB8 s16 health, +0x1EBA maximum (1000). 0 once the round
+                              is over.
     sEnemy  [base+0x1CF04B8]  +0x38 u32 count (40-47 alive in No Mercy), +0x48 -> the enemies (uEm10 / uEm11 Majini,
                               uEm21, uEm62 ...): +0x60 pos, +0x1EB8 s16 health, +0x1EBA maximum (Majini 800 / 700)
     sUnit   [base+0x26A3270]  move lines at +0x18 + 0x30 * line (the line's first unit; each unit's +0x18 is the next).
@@ -22,11 +23,13 @@ read-only data (unique in the module). Measured live 2026-10-26 on the Spark (do
                               United (+0x1C4 = 1 its mode list, cursor +0x1C8: NO MERCY = 3), 21 STAGE SELECT (cursor
                               +0x74), 22 CHARACTER SELECT (cursor +0x1D0), uIdMerce00 the round's HUD, uIdMerceEd00
                               results, uIdGameover00 "You Are Dead - Continue?", uIdNowLoading00, uIdAlert00 (+0x68 the
-                              dialog up: 0xC0 "Connect to the Leaderboards?", answered B).
+                              dialog up: 0xC0 "Connect to the Leaderboards?", answered B). Line 19 (effects) holds the
+                              uLaserSight: +0x280 the muzzle, +0x60 the dot, while the gun is up (zero when it is down).
 An object's class: its vtable's slot 5 (getDTI) returns the MtDTI, whose +8 is the class name.
 
 Controls (Type D, from the game's own Controller Settings): left stick moves, right stick turns (rleft = larger
-heading, about 160 deg/s), ZL aims, ZL + ZR fires, L + ZR swings the knife, ZL + B reloads, X inventory, R map.
+heading, about 160 deg/s; while aiming it moves the aim, 36-42 deg/s, rup = up), ZL aims, ZL + ZR fires, L + ZR swings
+the knife, ZL + B reloads, left stick back + B the quick turn (180 deg in 0.3 s), X inventory, R map.
 """
 from __future__ import annotations
 
@@ -48,6 +51,15 @@ GS_PHASE, GS_TIMER, GS_START, GS_KILLS = 0x944, 0x948, 0x94C, 0x96C
 GS_COMBO_ON, GS_COMBO, GS_MAX_COMBO, GS_COMBO_T, GS_SCORE = 0x970, 0x974, 0x978, 0x97C, 0x990
 PHASE_INTRO, PHASE_PLAYING, PHASE_OVER = 0, 1, 3
 P_FIRST, P_POS, P_ROT, P_HP = 0x30, 0x60, 0x70, 0x1EB8
+P_MOTION = 0x8F8                         # u8 motion (also at +0x2550), live 2026-10-26 (rounds v2c / v2d): 0 standing,
+                                         # 1 walking, 7 backing up, 9 / 10 turning, 22 the gun coming up, 26 aimed, 29 a
+                                         # shot, 32 reloading, 107 grabbed then 106 held (a Majini holds him for another's
+                                         # swing; his health does not fall), 113 / 100 / 114 strangled (it drains), 104 let
+                                         # go, 40 / 47 / 51 dying (health 1), 8 dead
+MOTION_HELD, MOTION_RELOAD = frozenset({100, 106, 107, 113, 114}), 32
+HELD_R = 25.0                            # a Majini this near is on him: every hold measured 0-8 cm (bodies collide ~50 cm
+                                         # apart otherwise), whatever the motion says
+DYING_HP = 1                             # the solo dying state keeps exactly 1 HP (the PS3's, verified; seen live here)
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
 MAX_ENEMIES = 64
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
@@ -66,11 +78,46 @@ MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_sta
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "mercs_mode": ("dup", "ddown"), "select_stage": ("dleft", "dright"), "select_player": ("dleft", "dright")}
 
-# The round brain (first cut, 2026-10-26): face the nearest Majini, aim, fire; walk to the next one when nobody is
-# in range; wiggle the left stick when one holds the player.
-ENGAGE_R, TOO_CLOSE, MAX_DY = 1600.0, 90.0, 300.0
+# uLaserSight (sUnit move line 19, the effects line; PS3 line 18): while ZL is held, +0x60 is the laser dot, where the
+# ray lands (a Majini, a wall, the ground), and +0x280 the laser's origin at the muzzle (PS3 +0x30 / +0x200). Measured
+# live 2026-10-26: the stick moves the aim about 36-42 deg/s while aiming (rleft = larger yaw, rup = up).
+LASER_LINE, LASER_DOT, LASER_FROM = 19, 0x60, 0x280
+LASER_WALK_MAX, LASER_RESCAN_S = 1024, 0.25
+_LASER: dict = {}                        # main base -> (the uLaserSight unit, its vtable), checked on every read
+_LASER_MISS: dict = {}                   # main base -> when a walk last ended without it
+_NOT_LASER: dict = {}                    # main base -> the effects line's other vtables (each named once)
+
+# A Majini's body for the shot (the PS3 combat layer's measures, gbox/mercs/titles/re5_combat.py; the same models): a
+# head sphere HEAD_H above his feet, HEAD_R wide; a body capsule from KNEE_H to SHOULDER_H, BODY_R wide; aimed at CHEST_H.
+HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 36.0, 110.0
+FIRE_SLACK = 60.0                        # a ray ending this much short of him ends on something in front of him
+STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle) carries too little direction to steer by
+
+# The round brain: face a Majini with the right stick (the body turns fast with the gun down), ready the gun (ZL), close
+# the laser's ray onto his chest with the right stick (slow while aiming: it moves the aim, not the body), tap ZR while
+# the dot is on a Majini or the ray runs through him; back off one that gets too close, walk to the next one when nobody
+# is in range, wiggle free of a grab.
+ENGAGE_R, TOO_CLOSE, MAX_DY = 2200.0, 150.0, 300.0
 TURN_TOL, AIM_TOL = math.radians(14), math.radians(5)
+BODY_AIM_TOL = math.radians(12)          # the body this close to him: the gun comes up (the aim then takes over)
+TURN_FINE, FINE = math.radians(24), math.radians(5)   # inside these the stick goes in pulses (a tick on, a tick off)
+YAW_DEAD, PITCH_DEAD = math.radians(0.6), math.radians(0.6)
+UNAIM_ERR = math.radians(35)             # the ray this far off him: the gun goes down and the body turns (faster)
+KEEP_TARGET = 1.5                        # the current Majini is kept unless another costs this much less ...
+THREAT_R = 250.0                         # ... or another is this near (he grabs next): that one
+READY_S = 0.15                           # ZL down this long before the laser is believed (the last aim's ray clears)
+LASER_WAIT_S = 0.6                       # ZL down this long without the laser coming up (a stagger, a grab): ZL again
+RAY_STALE_S = 1.0                        # the ray unchanged this long with the gun up: not aiming: ZL again
+BACKOFF_S, BACKOFF_GAP_S = 0.5, 1.5      # one too close in front with the gun down: back off this long, then fight
+BACKOFF_CONE = math.radians(60)          # ... only from one in front (backing up walks into one behind)
+QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(120), 1.5, 0.3   # him behind, the gun down: the quick turn
+                                         # (left stick back, then B: 180 deg in 0.3 s, measured; the stick takes ~1.1 s)
+HIT_S = 0.4                              # a Majini's health falls within this of the shot that hit him
 GRAB_R, GRAB_S = 120.0, 0.6
+STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he neither turns nor moves: held (a Majini holds
+                                         # him for another's swing; his health does not fall): break free this long
+COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
+WIGGLE = (("lleft", "a"), ("lright", "b"))   # break free: the left stick shaken, A and B mashed (the grab prompts)
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 
@@ -170,6 +217,59 @@ def game_sys(m, base: int) -> int:
     return u64(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
 
 
+def laser_unit(m, base: int, now: float | None = None) -> int | None:
+    """The uLaserSight unit in sUnit's effects line: found once (by class, each other vtable named only once, since
+    the line holds every muzzle flash, spark and blood unit), checked by its vtable on every read, looked for again
+    when gone (at most every LASER_RESCAN_S)."""
+    hit = _LASER.get(base)
+    if hit is not None:
+        try:
+            if u64(m, hit[0]) == hit[1]:
+                return hit[0]
+        except (ValueError, OSError):
+            pass
+        _LASER.pop(base, None)
+    now = time.monotonic() if now is None else now
+    if now - _LASER_MISS.get(base, -1e9) < LASER_RESCAN_S:
+        return None
+    for cache in (_LASER, _LASER_MISS, _NOT_LASER):
+        if len(cache) > 16:                                 # a base per boot: keep a few
+            cache.clear()
+    others = _NOT_LASER.setdefault(base, set())
+    try:
+        su = u64(m, base + S_UNIT)
+        u, n = u64(m, su + UNIT_LINES + LINE_STRIDE * LASER_LINE), 0
+        while ptr_ok(u) and n < LASER_WALK_MAX:
+            vt = u64(m, u)
+            if vt not in others:
+                if class_name(m, u) == "uLaserSight":
+                    _LASER[base] = (u, vt)
+                    _LASER_MISS.pop(base, None)
+                    return u
+                others.add(vt)
+            u, n = u64(m, u + UNIT_NEXT), n + 1
+    except (ValueError, OSError):
+        pass
+    _LASER_MISS[base] = now
+    return None
+
+
+def laser(m, base: int) -> dict | None:
+    """The laser sight: {from: the muzzle, at: the dot, up: the gun is up}, None without the unit. Measured live: both
+    points read zero with the gun down, come alive ~0.2 s after ZL goes down and zero again ~50 ms after it is let go;
+    a ray that hits nothing ends 5000 cm (its range) out."""
+    u = laser_unit(m, base)
+    if u is None:
+        return None
+    try:
+        at = struct.unpack("<3f", m.rd(u + LASER_DOT, 12))
+        frm = struct.unpack("<3f", m.rd(u + LASER_FROM, 12))
+    except (ValueError, OSError):
+        return None
+    up = all(math.isfinite(v) for v in at + frm) and any(frm) and math.dist(at, frm) >= 1.0
+    return {"from": frm, "at": at, "up": bool(up)}
+
+
 def snapshot(m) -> dict:
     """The round from RAM: the player, the live enemies and the Mercenaries counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None, "kills": None,
@@ -185,9 +285,12 @@ def snapshot(m) -> dict:
             pos = struct.unpack("<3f", m.rd(p + P_POS, 12))
             rot = struct.unpack("<4f", m.rd(p + P_ROT, 16))
             hp, hp_max = struct.unpack("<hh", m.rd(p + P_HP, 4))
-            snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max}
+            snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
+                              "motion": m.rd(p + P_MOTION, 1)[0]}
         except (ValueError, OSError):
             snap["player"] = None
+        if snap["player"]:
+            snap["laser"] = laser(m, base)
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
@@ -335,49 +438,186 @@ def pressed(scr: dict, key: str) -> None:
     return None
 
 
+def ray_error(origin, dot, target) -> tuple[float, float]:
+    """(yaw, pitch) radians that turn the ray origin -> dot onto target (+ yaw = a larger heading = rleft, + pitch = up)."""
+    ox, oy, oz = origin
+    want_yaw, have_yaw = heading(target[0] - ox, target[2] - oz), heading(dot[0] - ox, dot[2] - oz)
+    want_pitch = math.atan2(target[1] - oy, max(math.hypot(target[0] - ox, target[2] - oz), 1.0))
+    have_pitch = math.atan2(dot[1] - oy, max(math.hypot(dot[0] - ox, dot[2] - oz), 1.0))
+    return wrap(want_yaw - have_yaw), want_pitch - have_pitch
+
+
+def dot_on(dot, foot) -> str | None:
+    """Where the laser dot sits on a Majini standing at foot: "head", "body", else None (short of him, past, beside)."""
+    dx, dy, dz = dot[0] - foot[0], dot[1] - foot[1], dot[2] - foot[2]
+    if math.sqrt(dx * dx + (dy - HEAD_H) ** 2 + dz * dz) <= HEAD_R:
+        return "head"
+    if math.hypot(dx, dz) <= BODY_R and KNEE_H - 10 <= dy <= SHOULDER_H + 20:
+        return "body"
+    return None
+
+
+def through(origin, dot, foot) -> bool:
+    """Whether the ray origin -> dot runs to him: it reaches his chest's distance (less FIRE_SLACK) and passes inside his
+    head or body on the way, or ends inside his body's angular width of his chest (close up the body is wide)."""
+    chest = (foot[0], foot[1] + CHEST_H, foot[2])
+    want, have = math.dist(origin, chest), math.dist(origin, dot)
+    if want < 1.0 or have < 1.0 or have < want - FIRE_SLACK:
+        return False
+    d = tuple((dot[k] - origin[k]) / have for k in range(3))
+    cos = sum((chest[k] - origin[k]) * d[k] for k in range(3)) / want
+    if math.acos(max(-1.0, min(1.0, cos))) <= math.atan2(BODY_R, want):
+        return True
+    for h in (HEAD_H, CHEST_H, KNEE_H + 30):
+        along = sum((foot[k] + (h if k == 1 else 0.0) - origin[k]) * d[k] for k in range(3))
+        if 0.0 < along <= have and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot) is not None:
+            return True
+    return False
+
+
 class Bot:
-    """One decision per tick (first cut): turn to the nearest living Majini with the right stick, aim (ZL) when facing
-    him inside ENGAGE_R, fire (ZR, pressed every other tick while aimed and on target), walk toward the nearest one when
-    nobody is in range, wiggle the left stick while one holds the player (health falling with one at arm's length).
-    Dead: "Continue?" is answered No (right, then A), like the PS3 bot, so the round ends on its results."""
+    """One decision per tick from the snapshot.
+
+    The Majini to fight: near and in front first; a new one is kept COMMIT_S, then while he lives unless another costs
+    KEEP_TARGET times less or one comes within THREAT_R. Gun down: the body turns to him (the right stick turns it fast;
+    the quick turn, stick back + B, for one behind), ZL once within BODY_AIM_TOL. Gun up: the laser sight's ray (muzzle
+    -> dot, RAM) is closed onto his chest with the right stick (slow while aiming; pulsed inside FINE), and ZR is tapped
+    while the dot sits on a Majini (that one becomes the target) or the ray runs through him. The body's heading is not
+    the gun's aim: the upper body aims inside a cone, and the v1 bot, firing on the heading, hit few of its shots (live
+    2026-10-26: 78 % of laser-guided presses hit, 20 % of the rest). The gun not up within LASER_WAIT_S: ZL again; a
+    reload waits. One closer than TOO_CLOSE in front with the gun down: back off first.
+
+    Held (the motion byte, a Majini on top of him, or the stick not moving him; the health need not fall) or dying
+    (health 1): the left stick shaken with A / B mashed ("Break free", the left stick's prompt). Dead: "Continue?" is
+    answered No (right, then A), like the PS3 bot, so the round ends on its results. Without a laser unit the v1 heading
+    aim stands in."""
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic):
         self.stats = stats if stats is not None else {}
         self.clock = clock
-        self.fire_phase = False
+        for k in ("shots", "hits", "turns", "quick_turns", "backoffs", "wiggles", "holds", "laserless", "reraise",
+                  "restale"):
+            self.stats.setdefault(k, 0)
+        self.target = None
+        self.aim_since = None
+        self.fire_down = False
+        self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
+        self.ray_key, self.ray_since = None, 0.0
+        self.backoff_until = self.backoff_ready = 0.0
+        self.quick, self.quick_at = 0, -1e9      # the quick turn's step (1 stick back, 2 + B, 3 let go), its B press
+        self.target_at = -1e9
+        self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.wiggle = 0
         self.hp_seen: list = []
+        self.hp_prev: dict = {}
+        self.pending: list = []                 # shots not yet matched to a Majini's health falling
         self._threats: list = []
         self.dead_since, self.dead_taps = None, 0
 
-    def _target(self, snap):
-        p = snap["player"]
-        px, py, pz = p["pos"]
-        best = None
-        for e in snap.get("enemies") or []:
-            if (e.get("hp") or 0) <= 0:
-                continue
-            ex, ey, ez = e["pos"]
-            if abs(ey - py) > MAX_DY:
-                continue
-            d = math.hypot(ex - px, ez - pz)
-            if best is None or d < best[0]:
-                best = (d, e, heading(ex - px, ez - pz))
+    # --- what to fight -----------------------------------------------------------------------------------------------
+    @staticmethod
+    def _cost(p, e) -> float:
+        px, _, pz = p["pos"]
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) / math.pi)
+
+    def _choose(self, p, live, now):
+        best = min(live, key=lambda e: self._cost(p, e))
+        cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        px, _, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        nearest = min(live, key=flat)
+        if cur is not None and now - self.target_at < COMMIT_S:
+            best = cur
+        elif flat(nearest) < THREAT_R and (cur is None or flat(cur) > 1.5 * flat(nearest)):
+            best = nearest
+        elif cur is not None and self._cost(p, cur) <= KEEP_TARGET * self._cost(p, best):
+            best = cur
+        if best is not cur:
+            self.target_at = now
+        self.target = best.get("ptr", best.get("slot"))
         return best
 
-    def grabbed(self, snap, now) -> bool:
-        p = snap["player"]
+    def held(self, p, now) -> bool:
+        """The sticks pressed for STUCK_S while he neither turns nor moves: something holds him."""
+        pos, rot = p["pos"], p["rot"]
+        moved = self.still is None or math.dist(pos, self.still[1]) > 2.0 or abs(wrap(rot - self.still[2])) > math.radians(1)
+        if moved or now - self.move_at > 0.2:               # moving, or not trying to: no hold
+            self.still = (now, pos, rot)
+            return False
+        return now - self.still[0] > STUCK_S
+
+    def grabbed(self, p, near: float, now) -> bool:
         self.hp_seen = [(t, hp) for t, hp in self.hp_seen if now - t <= GRAB_S] + [(now, p.get("hp") or 0)]
         falling = len(self.hp_seen) > 1 and self.hp_seen[-1][1] < self.hp_seen[0][1]
-        tgt = self._target(snap)
-        return bool(falling and tgt is not None and tgt[0] <= GRAB_R)
+        return bool(falling and near <= GRAB_R)
 
+    def _score_hits(self, snap, now) -> None:
+        """A Majini's health falling within HIT_S of a shot is that shot's hit (accuracy = hits / shots)."""
+        hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
+        drops = sum(1 for k, h in hp.items() if h < self.hp_prev.get(k, h))
+        self.hp_prev = hp
+        self.pending = [t for t in self.pending if now - t <= HIT_S]
+        while drops and self.pending:
+            self.pending.pop(0)
+            drops -= 1
+            self.stats["hits"] += 1
+        if self.stats["shots"]:
+            self.stats["accuracy"] = round(self.stats["hits"] / self.stats["shots"], 3)
+
+    # --- the sticks and the trigger ------------------------------------------------------------------------------------
+    def _turn(self, err: float, tol: float = 0.0) -> tuple:
+        """The body (gun down): the right stick, pulsed inside TURN_FINE so it does not swing past him."""
+        if abs(err) <= tol:
+            return ()
+        if abs(err) < TURN_FINE:
+            self.turn_pulse ^= 1
+            if not self.turn_pulse:
+                return ()
+        return ("rleft",) if err > 0 else ("rright",)
+
+    def _yaw(self, err: float) -> set:
+        if abs(err) <= YAW_DEAD:
+            return set()
+        if abs(err) < FINE:
+            self.yaw_pulse ^= 1
+            if not self.yaw_pulse:
+                return set()
+        return {"rleft"} if err > 0 else {"rright"}
+
+    def _pitch(self, err: float) -> set:
+        if abs(err) <= PITCH_DEAD:
+            return set()
+        if abs(err) < FINE:
+            self.pitch_pulse ^= 1
+            if not self.pitch_pulse:
+                return set()
+        return {"rup"} if err > 0 else {"rdown"}
+
+    def _trigger(self, on: bool, now) -> set:
+        """ZR tapped (a tick down, a tick up: a handgun fires once a press) while on him."""
+        if not on:
+            self.fire_down = False
+            return set()
+        self.fire_down = not self.fire_down
+        if not self.fire_down:
+            return set()
+        self.stats["shots"] += 1
+        self.pending.append(now)
+        return {"zr"}
+
+    def _gun_down(self) -> None:
+        self.aim_since, self.fire_down, self.ray_key = None, False, None
+
+    # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         p = snap.get("player")
         if not p:
+            self._gun_down()
             return {"hold": ()}
         if (p.get("hp") or 0) <= 0:
+            self._gun_down()
             if self.dead_since is None:
                 self.dead_since = now
             if now - self.dead_since < DEAD_WAIT_S:
@@ -385,33 +625,113 @@ class Bot:
             self.dead_taps += 1
             return {"tap": "dright" if self.dead_taps % 2 else "a"}
         self.dead_since = None
-        if self.grabbed(snap, now):
-            self.wiggle += 1
-            self.stats["wiggles"] = self.stats.get("wiggles", 0) + 1
-            return {"hold": ("lleft",) if self.wiggle % 2 else ("lright",)}
-        tgt = self._target(snap)
-        if tgt is None:
-            self.fire_phase = False
+        self._score_hits(snap, now)
+        if self.quick:                                       # the quick turn: the stick back, + B, let go
+            step, self.quick = self.quick, (self.quick + 1) % 4
+            if step == 2:
+                self.quick_at = now
+            return {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}
+        if now - self.quick_at < QUICK_SETTLE_S:             # it swings round by itself
             return {"hold": ()}
-        dist, enemy, want = tgt
-        err = wrap(want - p["rot"])
-        turn = ("rleft",) if err > 0 else ("rright",)
+        px, py, pz = p["pos"]
+        live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        near_e = min(live, key=flat, default=None)
+        near = flat(near_e) if near_e is not None else math.inf
+        motion = p.get("motion")                         # None: no motion byte (the health / stick heuristics)
+        held = motion in MOTION_HELD or near < HELD_R or p.get("hp") == DYING_HP
+        if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or self.held(p, now):
+            if held:                                         # held, or dying: break free / recover (RAM says so)
+                if not self.in_hold:
+                    kind = "dying" if p.get("hp") == DYING_HP else "holds"
+                    self.stats[kind] = self.stats.get(kind, 0) + 1
+                self.in_hold = True
+            elif now >= self.break_until:
+                self.stats["holds" if self.still and now - self.still[0] > STUCK_S else "wiggles"] += 1
+                self.break_until = now + BREAK_S
+            self._gun_down()
+            self.still = None
+            self.wiggle += 1
+            return {"hold": WIGGLE[self.wiggle % len(WIGGLE)]}
+        self.in_hold = False
+        if motion == MOTION_RELOAD and self.aim_since is not None:
+            self.aim_since = now                             # reloading: the gun comes back up by itself
+            return {"hold": ("zl",)}
+        act = self._decide(p, live, flat, near_e, near, snap, now)
+        if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
+            self.move_at = now
+        return act
+
+    def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
+        px, py, pz = p["pos"]
+        if not live:
+            self._gun_down()
+            return {"hold": ()}
+        tgt = self._choose(p, live, now)
+        foot = tgt["pos"]
+        dist = flat(tgt)
+        body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
-        if dist > ENGAGE_R:
-            self.fire_phase = False
-            return {"hold": ("lup",) + (turn if abs(err) > TURN_TOL else ())}
-        if abs(err) > TURN_TOL:
-            self.fire_phase = False
-            return {"hold": turn + (("ldown",) if dist < TOO_CLOSE else ())}
-        keys = ["zl"]
-        if abs(err) > AIM_TOL:
-            keys.append(turn[0])
-        else:
-            self.fire_phase = not self.fire_phase
-            if self.fire_phase:
-                keys.append("zr")
-                self.stats["shots"] = self.stats.get("shots", 0) + 1
-        return {"hold": tuple(keys)}
+        if dist > ENGAGE_R:                                  # nobody in range: walk to him
+            self._gun_down()
+            return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
+        if self.aim_since is None:
+            near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+            if near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back first
+                if now >= self.backoff_ready:
+                    self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
+                    self.stats["backoffs"] += 1
+                if now < self.backoff_until:
+                    return {"hold": ("ldown",) + self._turn(body_err)}
+            if abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                self.stats["quick_turns"] += 1               # him behind: the quick turn
+                self.quick = 2
+                return {"hold": ("ldown",)}
+            if abs(body_err) > BODY_AIM_TOL:                 # turn round first (fast, the gun down)
+                self.stats["turns"] += 1
+                return {"hold": self._turn(body_err)}
+            self.aim_since = now
+        lz = snap.get("laser")
+        if lz is None:                                       # no laser unit at all: the body's heading stands in
+            if now - self.aim_since < READY_S:
+                return {"hold": ("zl",)}
+            self.stats["laserless"] += 1
+            keys = {"zl"} | (self._yaw(body_err) if abs(body_err) > AIM_TOL else self._trigger(True, now))
+            return {"hold": tuple(sorted(keys))}
+        if not lz.get("up") or now - self.aim_since < READY_S:   # the gun is coming up (or knocked down)
+            if now - self.aim_since > LASER_WAIT_S:
+                self.stats["reraise"] += 1                   # it did not come up: let ZL go a tick, press it again
+                self._gun_down()
+                return {"hold": ()}
+            return {"hold": ("zl",)}
+        ray = (tuple(lz["from"]), tuple(lz["at"]))
+        if ray != self.ray_key:
+            self.ray_key, self.ray_since = ray, now
+        elif now - self.ray_since > RAY_STALE_S:
+            self.stats["restale"] += 1                       # a frozen ray: not a live aim
+            self._gun_down()
+            return {"hold": ()}
+        origin, dot = ray
+        on_e = next((e for e in live if dot_on(dot, e["pos"])), None)
+        if on_e is not None and on_e is not tgt:             # the dot is on another one: he is the target now
+            tgt, foot = on_e, on_e["pos"]
+            self.target = tgt.get("ptr", tgt.get("slot"))
+            dist = flat(tgt)
+        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        yaw_err, pitch_err = ray_error(origin, dot, chest)
+        if abs(yaw_err) > UNAIM_ERR:                         # the aim is far off him: gun down, turn the body
+            self._gun_down()
+            return {"hold": self._turn(body_err)}
+        where = dot_on(dot, foot)
+        on = where is not None or through(origin, dot, foot)
+        keys = {"zl"}
+        if math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
+            keys |= self._yaw(yaw_err) | self._pitch(pitch_err)
+        keys |= self._trigger(on, now)
+        self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
+                             f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
+                             f"keys {','.join(sorted(keys))}")
+        return {"hold": tuple(sorted(keys))}
 
     def prompt_ok(self, button, snap, now) -> bool:
         return True
