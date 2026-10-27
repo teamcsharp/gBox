@@ -114,7 +114,8 @@ def _fresh_caches():
 
 
 def round_guest(phase=R.PHASE_PLAYING, hp=900, timer=97.5, enemies=((300.0, 0.0, 500.0, 700),), player=True,
-                state=0, ammo=18, cam_yaw=0.0, hud=True, laser=None, mode=R.MODE_NO_MERCY, tablets=8, guns=()):
+                state=0, ammo=18, cam_yaw=0.0, hud=True, laser=None, mode=R.MODE_NO_MERCY, tablets=8, guns=(),
+                kills=9):
     g = Guest()
     gm = g.obj("sGameMan", 0x8000)
     g.q(BASE + R.S_GAMEMAN, gm)
@@ -122,7 +123,7 @@ def round_guest(phase=R.PHASE_PLAYING, hp=900, timer=97.5, enemies=((300.0, 0.0,
     g.i32(gm + R.GM_PHASE, phase)
     g.f32(gm + R.GM_TIMER, timer)
     g.i32(gm + R.GM_BONUS_S, 5)
-    for off, v in ((R.GM_KILLS, 9), (R.GM_COMBO_ON, 1), (R.GM_COMBO, 2), (R.GM_MAX_COMBO, 7),
+    for off, v in ((R.GM_KILLS, kills), (R.GM_COMBO_ON, 1), (R.GM_COMBO, 2), (R.GM_MAX_COMBO, 7),
                    (R.GM_COMBO_BONUS, 40), (R.GM_SCORE, 4540), (R.GM_BASE, 2700)):
         g.i32(gm + off, v)
     g.f32(gm + R.GM_COMBO_T, 14.75)
@@ -1230,6 +1231,100 @@ def weapon_table(g, site=None):
         g.f32(rec + RM.FIRE_INTERVAL, v)
         g.f32(rec + 0x30, 0.24)
     return BASE + RM.FIRE_TABLE
+
+
+def test_kill_time_adds_three_seconds_per_kill_and_tracks_new_rounds(mods):
+    g = round_guest(kills=5, timer=100.0)
+    ad = Adapter(g)
+    out = mods.run(ad, "kill_time", on=True, seconds=3)
+    assert out["verified"] and out["kill_time"] is True and out["seconds"] == 3.0
+    # no kills yet this snapshot: nothing added
+    res = mods.maintain_kill_time(ad)
+    assert res["kill_time"] is True and res["added"] == 0.0 and res["kills"] == 5
+    # two more kills: +6 seconds
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    g.i32(gm + mods.GM_KILLS, 7)
+    res = mods.maintain_kill_time(ad)
+    assert res["kill_time"] is True and res["added"] == 6.0 and res["verified"] is True
+    assert res["clock"] == pytest.approx(106.0, abs=0.01)
+    # same kills again: nothing added
+    res = mods.maintain_kill_time(ad)
+    assert res["added"] == 0.0
+    # a new round (kills drop): counting starts afresh, no time added
+    g.i32(gm + mods.GM_KILLS, 2)
+    res = mods.maintain_kill_time(ad)
+    assert res["added"] == 0.0 and res["kills"] == 2
+    # kills climb again: +3s each
+    g.i32(gm + mods.GM_KILLS, 4)
+    res = mods.maintain_kill_time(ad)
+    assert res["added"] == 6.0 and res["verified"] is True
+
+
+def test_kill_time_never_leaves_the_clock_at_zero(mods):
+    g = round_guest(kills=0, timer=2.0)
+    ad = Adapter(g)
+    mods.run(ad, "kill_time", on=True, seconds=3)
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    # baseline snapshot: records the starting kill count
+    mods.maintain_kill_time(ad)
+    g.i32(gm + mods.GM_KILLS, 1)
+    res = mods.maintain_kill_time(ad)
+    assert res["verified"] is True and res["added"] == 3.0
+    clock = struct.unpack("<f", g.rd(gm + mods.GM_CLOCK, 4))[0]
+    assert clock == pytest.approx(5.0, abs=0.01)
+
+
+def test_kill_time_off_adds_nothing(mods):
+    g = round_guest(kills=0, timer=100.0)
+    ad = Adapter(g)
+    mods.run(ad, "kill_time", on=True, seconds=3)
+    mods.run(ad, "kill_time", on=False)
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    g.i32(gm + mods.GM_KILLS, 3)
+    res = mods.maintain_kill_time(ad)
+    assert res["kill_time"] is False and res["added"] == 0.0
+
+
+def test_kill_time_validates_seconds(mods):
+    g = round_guest()
+    ad = Adapter(g)
+    with pytest.raises(ValueError):
+        mods.run(ad, "kill_time", on=True, seconds=0)
+    with pytest.raises(ValueError):
+        mods.run(ad, "kill_time", on=True, seconds=31)
+    with pytest.raises(ValueError):
+        mods.run(ad, "kill_time", on=True, seconds=5, seconds_max=3)
+
+
+def test_kill_time_status_reports_the_configured_seconds(mods):
+    g = round_guest()
+    ad = Adapter(g)
+    mods.run(ad, "kill_time", on=True, seconds=3)
+    st = mods.run(ad, "status")
+    assert st["kill_time_s"] == 3.0
+    mods.run(ad, "kill_time", on=False)
+    st = mods.run(ad, "status")
+    assert st["kill_time_s"] == 0.0
+
+
+def test_maintain_runs_kill_time_even_without_a_player(mods):
+    g = round_guest(player=False, kills=0, timer=100.0)
+    ad = Adapter(g)
+    mods.run(ad, "kill_time", on=True, seconds=3)
+    gm = R.u64(g, BASE + R.S_GAMEMAN)
+    # baseline snapshot: records the starting kill count
+    mods.maintain(ad, R.snapshot(g))
+    g.i32(gm + mods.GM_KILLS, 2)
+    res = mods.maintain(ad, R.snapshot(g))
+    assert res["kill_time"]["added"] == 6.0 and res["kill_time"]["verified"] is True
+
+
+def test_apply_ops_dispatches_kill_time(mods, monkeypatch):
+    from gbox import mercs_bot
+    g = round_guest(kills=0, timer=100.0)
+    ad = Adapter(g)
+    failed = mercs_bot.apply_ops(ad, [("kill_time", {"on": True, "seconds": 3})], {"map_id": R.MAP_ID, "platform": "switch"})
+    assert failed == [] and mods.ORIG[id(ad)]["kill_time"]["on"] is True
 
 
 def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back(mods):
