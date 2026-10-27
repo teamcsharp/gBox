@@ -25,6 +25,26 @@ def test_switch_no_mercy_preference_is_per_host_and_never_selects_ps3_as_its_sub
     assert not cfg['enabled']  # saving the desired edition does not start rotation
 
 
+def test_the_settings_route_saves_and_clears_the_edition_preference(cfg):
+    # 2026-10-26: POST /api/mercmode dropped preferred_editions (not in its model), so neither the mercmode tool nor MCP
+    # could select RE5 Switch No Mercy
+    import time
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    from tests.test_screensaver import worker
+    app=create_app(cfg);store=app.state.store
+    w=worker(time.time(),name='lilspark',os='linux')
+    store.put('worker',w['id'],w|{'last_seen':time.time(),'tools':['mercmode','launch_game','autoplay']})
+    with TestClient(app,headers={'Authorization':'Bearer '+cfg.token()}) as c:
+        r=c.post('/api/mercmode',json={'host':'lilspark','preferred_editions':PREFERENCE})
+        assert r.status_code==200,r.text
+        assert M.settings(store,'lilspark')['preferred_editions']==PREFERENCE
+        assert c.post('/api/mercmode',json={'host':'lilspark','preferred_editions':{'re5':{'platform':'ps3'}}}).status_code==422
+        assert M.settings(store,'lilspark')['preferred_editions']==PREFERENCE        # a refused value changes nothing
+        assert c.post('/api/mercmode',json={'host':'lilspark','preferred_editions':{}}).status_code==200
+        assert M.settings(store,'lilspark')['preferred_editions']=={}
+
+
 @pytest.mark.parametrize('preference',[None,[],{'re4':{}},{'re5':{'platform':'ps3'}},
     {'re5':{'platform':'switch','mode':'mercenaries','title_id':re_switch.RE5_TITLE_ID}}])
 def test_edition_preference_rejects_ambiguous_or_unreviewed_values(preference):
