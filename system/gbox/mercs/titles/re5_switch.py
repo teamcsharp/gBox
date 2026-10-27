@@ -37,6 +37,7 @@ import math
 import struct
 import time
 
+from ..bot_look import BotLook, make_target
 from ..driver import Driver
 
 TITLE_ID = "010018100CD46000"
@@ -173,6 +174,28 @@ FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # result_ready (the PS3 driver's rule)
+# "Look at the bot" (gbox.mercs.bot_look; operator 2026-10-27: "From the diagnostics data per match, you should be able to
+# see shots, misfires, aimbot commands ... where the aimbot is going wrong and be able to fix it"): stats look (the last
+# trigger pulls and what they did, the decisions and why, the idle streak among foes, the walls shot) and the aim's
+# round counters below, whose per-round amounts the engine records (Driver.round_counters: round_<key>).
+#   t_<doing>        seconds spent on each decision (DOINGS): fire (ZR held on him), aim (the gun up, steering), raise
+#                    (the gun coming up), turn / unaim / quick_turn (the body turning, the gun down), the survival ones
+#   pulls_hit        trigger pulls that took a Majini's health within HIT_S
+#   pulls_dot_miss   pulls with the dot on a Majini (head / body) that took no health: "misses with the dot on"
+#   pulls_ray_miss   pulls on a ray running through him (the dot behind him) that took no health
+#   pulls_blind      pulls without a target in the line (the laserless heading aim)
+#   pulls_short      pulls shorter than PULL_SHORT_S (the aim flickering on and off him)
+#   pulls_slipped    pulls that ended with the aim sliding off a living target (not the gun going down)
+#   drops_mid_burst  living targets left for another while the trigger was held (a new pull starts on the new one)
+#   first_pull_s/_n  seconds from the gun's raise to its first pull, summed / how many raises fired
+#   t_turn_foe_front seconds spent turning the body while another Majini stood in front within reach
+LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
+RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
+DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
+          "escape", "heal", "held", "reload", "walk", "no_foes", "dead")
+AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
+                "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
+SURVIVAL = ("heal", "escape", "held", "backoff", "burst_backoff", "reload")
 
 
 def _rows(m):
@@ -659,6 +682,17 @@ class Bot:
         self.round_escapes = 0                    # escapes this round (ESCAPES_MAX)
         self.trigger_since = None                 # the burst's first pull since the gun came up (kept across the
                                                   # targets it drops; the gun going down ends the burst)
+        for k in AIM_COUNTERS + tuple("t_" + d for d in DOINGS):
+            self.stats.setdefault(k, 0)
+        self.look = BotLook(epoch=clock)          # stats look: the last pulls and decisions ("look at the bot")
+        self.doing, self.why, self._now = "none", "", None   # this tick's decision (DOINGS) and why
+        self._tick_t = self._look_at = None
+        self._ran = ("none", False)               # (the last decision, turning with a foe in front): charged next tick
+        self._acc = {k: float(self.stats.get(k) or 0) for k in tuple("t_" + d for d in DOINGS) + ("t_turn_foe_front",)}
+        self._look_pub = (-1, -math.inf)          # (look version, when) last published
+        self._aimctx = None                       # the aim as the trigger was pulled (_decide)
+        self._pulls: list = []                    # pulls whose hit window is still open
+        self._raise_t = None                      # when the gun went up for the pulls to come (first_pull_s)
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -701,8 +735,13 @@ class Bot:
     def _score_hits(self, snap, now) -> None:
         """A Majini's health falling while the trigger is held, or within HIT_S of letting it go, is a hit."""
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
-        drops = sum(1 for k, h in hp.items() if h < self.hp_prev.get(k, h))
+        fell = {k: self.hp_prev[k] - h for k, h in hp.items() if h < self.hp_prev.get(k, h)}
+        drops = len(fell)
         self.hp_prev = hp
+        for pull in self._pulls:                             # the look: which pull took the health
+            if fell and (pull["end"] is None or now - pull["end"] <= HIT_S):
+                pull["drops"] += drops
+                pull["hp_delta"] -= fell.get(pull["target"], 0)
         if drops and self.fire_at is not None and now - self.fire_at <= HIT_S:
             self.stats["hits"] += drops
         if self.stats.get("trigger_s"):
@@ -741,12 +780,15 @@ class Bot:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
         if not on:
+            if self.fire_down:                               # the aim slid off him: the pull ends
+                self._pull_end(now, slipped=True)
             self.fire_down = False
             return set()
         if not self.fire_down:
             self.stats["shots"] += 1
             if self.trigger_since is None:
                 self.trigger_since = now
+            self._pull_start(now)
         elif self.fire_at is not None:
             self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self.fire_at, 0.2), 2)
             if self.stats["trigger_s"]:
@@ -767,12 +809,17 @@ class Bot:
                 self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.stats["round_start_via"] = "dead/retry"
                 self.target, self.hp_prev, self.hp_seen, self.round_escapes = None, {}, [], 0
+                self.look.new_round()
             self.continued = None
         if self._round_started is None:
             self._round_started = now
+            self.look.new_round()
 
     def _gun_down(self) -> None:
+        if self.fire_down and self._now is not None:
+            self._pull_end(self._now)
         self.aim_since, self.fire_down, self.ray_key, self.trigger_since = None, False, None, None
+        self._raise_t = None
 
     # --- survival ----------------------------------------------------------------------------------------------------
     def _heal(self, p, snap, live, flat, now) -> dict | None:
@@ -874,11 +921,21 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self.doing, self.why, self._now = "none", "", now
+        act = self._tick(snap, now)
+        try:
+            self._look_tick(snap, now)
+        except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return act
+
+    def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
         if not p:
             self._gun_down()
             return {"hold": ()}
         if (p.get("hp") or 0) <= 0:
+            self.doing, self.why = "dead", "Continue?"
             self._gun_down()
             self.died = True
             if self.dead_since is None:
@@ -900,11 +957,13 @@ class Bot:
         self._round_start(snap, now)
         self._score_hits(snap, now)
         if self.quick:                                       # the quick turn: the stick back, + B, let go
+            self.doing, self.why = "quick_turn", f"step {self.quick}"
             step, self.quick = self.quick, (self.quick + 1) % 4
             if step == 2:
                 self.quick_at = now
             return {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}
         if now - self.quick_at < QUICK_SETTLE_S:             # it swings round by itself
+            self.doing, self.why = "quick_turn", "settling"
             return {"hold": ()}
         px, py, pz = p["pos"]
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
@@ -926,14 +985,23 @@ class Bot:
             self.still = None
             self.wiggle += 1
             dying = p.get("hp") == DYING_HP and motion not in MOTION_HELD
+            self.doing, self.why = "held", ("dying" if dying else f"motion {motion}" if held else "stuck, breaking free")
             pattern = MASH if dying else WIGGLE
             return {"hold": pattern[self.wiggle % len(pattern)]}
         self.in_hold = False
         if motion == MOTION_RELOAD and self.aim_since is not None:
+            self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
-        act = self._heal(p, snap, live, flat, now) or self._escape(p, live, flat, now) \
-            or self._decide(p, live, flat, near_e, near, snap, now)
+        act = self._heal(p, snap, live, flat, now)
+        if act is not None:
+            self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+        else:
+            act = self._escape(p, live, flat, now)
+            if act is not None:
+                self.doing, self.why = "escape", f"{self.round_escapes} this round"
+            else:
+                act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
@@ -941,6 +1009,7 @@ class Bot:
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
         if not live:
+            self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
         tgt = self._choose(p, live, now)
@@ -949,10 +1018,12 @@ class Bot:
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
+            self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
             return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
+                self.doing, self.why = "backoff", "finishing a back-off"
                 return {"hold": ("ldown",) + self._turn(body_err)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
             if near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back first
@@ -960,32 +1031,46 @@ class Bot:
                     self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
                     self.stats["backoffs"] += 1
                 if now < self.backoff_until:
+                    self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
             if abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
             if abs(body_err) > BODY_AIM_TOL:                 # turn round first (fast, the gun down)
+                self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
                 self.stats["turns"] += 1
                 return {"hold": self._turn(body_err)}
-            self.aim_since = now
+            self.aim_since = self._raise_t = now
         lz = snap.get("laser")
+        gun = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
+        weapon = f"0x{gun['id']:03x}" if gun else "gun"
         if lz is None:                                       # no laser unit at all: the body's heading stands in
+            self.doing, self.why = "raise", "no laser unit"
             if now - self.aim_since < READY_S:
                 return {"hold": ("zl",)}
             self.stats["laserless"] += 1
-            keys = {"zl"} | (self._yaw(body_err) if abs(body_err) > AIM_TOL else self._trigger(True, now))
+            self._aimctx = {"target": tgt.get("ptr", tgt.get("slot")), "dist": dist, "bearing": body_err,
+                            "yaw_err": body_err, "where": None, "laserless": True, "weapon": weapon,
+                            "gate": "laserless: the body's heading"}
+            fire = abs(body_err) <= AIM_TOL
+            self.doing, self.why = ("fire", "laserless heading") if fire else ("aim", "laserless heading")
+            keys = {"zl"} | (self._trigger(True, now) if fire else self._yaw(body_err))
             return {"hold": tuple(sorted(keys))}
         if not lz.get("up") or now - self.aim_since < READY_S:   # the gun is coming up (or knocked down)
             if now - self.aim_since > LASER_WAIT_S:
+                self.doing, self.why = "reraise", f"no laser after {now - self.aim_since:.2f} s"
                 self.stats["reraise"] += 1                   # it did not come up: let ZL go a tick, press it again
                 self._gun_down()
                 return {"hold": ()}
+            self.doing, self.why = "raise", "the gun coming up"
             return {"hold": ("zl",)}
         ray = (tuple(lz["from"]), tuple(lz["at"]))
         if ray != self.ray_key:
             self.ray_key, self.ray_since = ray, now
         elif now - self.ray_since > RAY_STALE_S:
+            self.doing, self.why = "restale", f"the ray unchanged {RAY_STALE_S:.0f} s"
             self.stats["restale"] += 1                       # a frozen ray: not a live aim
             self._gun_down()
             return {"hold": ()}
@@ -995,9 +1080,11 @@ class Bot:
             tgt, foot = on_e, on_e["pos"]
             self.target = tgt.get("ptr", tgt.get("slot"))
             dist = flat(tgt)
+            body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         chest = (foot[0], foot[1] + CHEST_H, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         if abs(yaw_err) > UNAIM_ERR:                         # the aim is far off him: gun down, turn the body
+            self.doing, self.why = "unaim", f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m"
             self._gun_down()
             return {"hold": self._turn(body_err)}
         where = dot_on(dot, foot)
@@ -1005,10 +1092,23 @@ class Bot:
         front = sum(1 for e in live if flat(e) < FRONT_R
                     and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
         if front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
+            self.doing, self.why = "burst_backoff", f"{front} in front after a {now - self.trigger_since:.1f} s burst"
             self.stats["burst_backoffs"] += 1                # a crowd in front: the burst is done, step back, burst again
             self._gun_down()
             self.backoff_until = now + BACKOFF_S
             return {"hold": ("ldown",)}
+        self._aimctx = {"target": tgt.get("ptr", tgt.get("slot")), "dist": dist, "bearing": body_err,
+                        "yaw_err": yaw_err, "where": where, "laserless": False, "weapon": weapon, "origin": origin,
+                        "dot": dot, "py": py, "gate": f"dot on {where}" if where else "ray through him"}
+        self.doing = "fire" if on else "aim"
+        self.why = (f"{where or 'ray'} at {dist / 100:.1f} m" if on else
+                    f"yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} at {dist / 100:.1f} m")
+        held = next((x for x in reversed(self._pulls) if x["end"] is None), None) if self.fire_down else None
+        if held is not None and held["target"] != self._aimctx["target"] \
+                and (self.hp_prev.get(held["target"]) or 0) > 0:     # a living target left with the trigger held
+            self.stats["drops_mid_burst"] += 1
+            self._pull_end(now)
+            self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
         keys = {"zl"} | self._trigger(on, now)
         if not on and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err) | self._pitch(pitch_err)   # steer only off him: a raised fire rate paces the
@@ -1017,6 +1117,105 @@ class Bot:
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
+
+    # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
+    def _pull_start(self, now) -> None:
+        """A trigger pull: its entry in the look, with the aim as it was pulled (_decide's _aimctx). dot_on is "target"
+        for the laser's pulls (the dot on him, or the ray running through him first) and "off" for the laserless aim."""
+        ctx = self._aimctx or {}
+        if self._raise_t is not None:                        # the first pull since the gun went up
+            self.stats["first_pull_n"] += 1
+            self.stats["first_pull_s"] = round(self.stats["first_pull_s"] + max(0.0, now - self._raise_t), 2)
+            self._raise_t = None
+        target = make_target(id=ctx.get("target"), kind="majini" if ctx.get("target") is not None else None,
+                             dist_m=(ctx.get("dist") or 0.0) / 100.0, bearing_deg=-math.degrees(ctx.get("bearing") or 0.0))
+        entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
+                                      aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
+                                      dot_on="off" if ctx.get("laserless") else "target")
+        self._pulls.append({"entry": entry, "start": now, "end": None, "drops": 0, "hp_delta": 0,
+                            "target": ctx.get("target"), "where": ctx.get("where"),
+                            "laserless": bool(ctx.get("laserless")), "behind": self._behind(ctx)})
+        del self._pulls[:-4]                                 # (a pull resolves within HIT_S of its end)
+
+    @staticmethod
+    def _behind(ctx) -> str:
+        """What the dot met behind him on a ray-through pull: "wall", "floor" or "none" (nothing in range)."""
+        origin, dot = ctx.get("origin"), ctx.get("dot")
+        if ctx.get("where") is not None or origin is None or dot is None:
+            return ""
+        if math.dist(origin, dot) >= RAY_RANGE_CM:
+            return "none"
+        return "floor" if abs(dot[1] - (ctx.get("py") or 0.0)) <= FLOOR_DY else "wall"
+
+    def _pull_end(self, now, slipped: bool = False) -> None:
+        pull = next((x for x in reversed(self._pulls) if x["end"] is None), None)
+        if pull is None:
+            return
+        pull["end"] = now
+        if now - pull["start"] < PULL_SHORT_S:
+            self.stats["pulls_short"] += 1
+        if slipped and pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) > 0:
+            self.stats["pulls_slipped"] += 1
+
+    def _resolve_pulls(self, now) -> None:
+        """Pulls whose hit window has passed: hit (a Majini's health fell), or why not."""
+        for pull in [x for x in self._pulls if x["end"] is not None and now - x["end"] > HIT_S]:
+            self._pulls.remove(pull)
+            if pull["drops"]:
+                out, key = "hit:majini", "pulls_hit"
+            elif pull["laserless"]:
+                out, key = "miss:off_target", "pulls_blind"
+            elif pull["where"] is not None:
+                out, key = "miss:no_damage", "pulls_dot_miss"
+            else:
+                out, key = "miss:off_target", "pulls_ray_miss"
+            self.stats[key] += 1
+            gate = pull["entry"].get("gate") or ""
+            if pull["behind"]:
+                pull["entry"]["gate"] = f"{gate} (the dot on the {pull['behind']} behind him)"[:160]
+            self.look.resolve(pull["entry"], out, pull["hp_delta"] or None)
+
+    def _front_foe(self, p, snap) -> bool:
+        """Another living Majini in front of him (inside BODY_AIM_TOL) within reach: one he could shoot without turning."""
+        px, py, pz = p["pos"]
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0 or abs(e["pos"][1] - py) > MAX_DY or e.get("ptr", e.get("slot")) == self.target:
+                continue
+            dx, dz = e["pos"][0] - px, e["pos"][2] - pz
+            if math.hypot(dx, dz) <= ENGAGE_R and abs(wrap(heading(dx, dz) - p["rot"])) <= BODY_AIM_TOL:
+                return True
+        return False
+
+    def _look_tick(self, snap, now) -> None:
+        """After each decision: its time in the budget (t_<doing>), the turning with a foe in front, the pulls' outcomes,
+        the idle streak among foes, the decision itself, and stats look (at most every LOOK_PUBLISH_S)."""
+        dt = 0.0 if self._tick_t is None else max(0.0, min(now - self._tick_t, LOOK_STEP_MAX_S))
+        self._tick_t = now
+        doing, p = self.doing, snap.get("player")
+        ran, front = self._ran                               # the time since the last tick ran the last decision
+        for key in (("t_" + ran,) if ran in DOINGS and dt else ()) + (("t_turn_foe_front",) if front and dt else ()):
+            self._acc[key] += dt                             # (summed unrounded: 2,400 ticks a round)
+            self.stats[key] = round(self._acc[key], 2)
+        self._ran = (doing, bool(doing in ("turn", "unaim", "quick_turn") and p and self._front_foe(p, snap)))
+        self._resolve_pulls(now)
+        if p and doing != "none":
+            pos = p["pos"]
+            moving = bool(self._look_at is not None and dt and
+                          math.hypot(pos[0] - self._look_at[0], pos[2] - self._look_at[2]) / dt >= LOOK_MOVE_CM_S)
+            self._look_at = pos
+            foes = any((e.get("hp") or 0) > 0 and abs(e["pos"][1] - pos[1]) <= MAX_DY
+                       and math.hypot(e["pos"][0] - pos[0], e["pos"][2] - pos[2]) <= LOOK_FOE_R
+                       for e in snap.get("enemies") or ())
+            busy = moving or doing not in ("aim", "raise", "reraise", "restale", "no_foes", "walk")
+            self.look.tick_idle(foes, busy, t=now)
+            phase = "dead" if doing == "dead" else "survive" if doing in SURVIVAL else "fight"
+            self.look.record_decision(phase, doing, self.why, t=now)
+        self.stats["look_idle_among_foes_s"] = round(self.look.idle_s, 1)
+        self.stats["look_walls_shot"] = self.look.walls_shot
+        if "look" not in self.stats or (self.look.version != self._look_pub[0]
+                                        and now - self._look_pub[1] >= LOOK_PUBLISH_S):
+            self.stats["look"] = self.look.snapshot()
+            self._look_pub = (self.look.version, now)
 
     def prompt_ok(self, button, snap, now) -> bool:
         return True
@@ -1033,7 +1232,8 @@ class RE5Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
-                      "heal_starts", "heal_failures")
+                      "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale") \
+        + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
