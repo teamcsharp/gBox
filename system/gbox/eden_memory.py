@@ -17,9 +17,20 @@ Two address modes:
 The mode follows the cpu_backend gBox wrote for the launch. A read or write is refused unless its host range lies in a
 HostMemory row, so a wrong mode never hands back another mapping's bytes. The first live run on the Spark still has
 to confirm this against the GDB stub (docs/research/switch-emulator-spark.md).
+
+Direct mode accepts any HostMemory row, not only the rows of the walk around the first one: every such row maps the
+guest's memfd, so it is guest memory wherever it sits. The walk (guest_arena's lo/hi) can stop short of the heap. Live
+2026-10-27, Citron NEO's RE5 session (2,325 HostMemory rows, heap rows 0x5d2b800000-0x5df5000000): the turn's first
+round made 3 mod writes where earlier turns made about 150 a round, and logged "Switch address 0x5d47d71aa8 is outside
+the guest arena (direct mode)" for fire_rate's time scale on the player, while the reads, which go to /proc/<pid>/mem
+directly, saw the player. A map read after the turn walked the whole 256 GiB reservation, so the break comes and goes.
+Likely causes: Eden's Protect() mprotects whole ranges, so an anonymous placeholder row in one gets perms outside
+ARENA_PERMS; and a 3,000-row maps file is read in pieces while rows split and merge. Offset mode keeps the arena
+check, because there the arena's start is the address base.
 """
 from __future__ import annotations
 
+import bisect
 import os
 import platform
 
@@ -48,8 +59,10 @@ def _arena_row(row: dict) -> bool:
 
 
 def guest_arena(lines) -> dict | None:
-    """The HostMemory arena: {lo, hi, base, mapped: [(start, end, perms)]} from the rows around the first memfd row
-    (adjacent anonymous reservation rows and memfd rows, nothing with another path), or None before a game boots."""
+    """The HostMemory arena: {lo, hi, base, mapped: [(start, end, perms)], rows: [(start, end, perms)]} from the rows
+    around the first memfd row (adjacent anonymous reservation rows and memfd rows, nothing with another path), or None
+    before a game boots. `mapped` holds the memfd rows of that walk (regions(), offset mode), `rows` every memfd row of
+    the process, sorted (direct mode)."""
     rows = parse_maps(lines)
     first = next((i for i, r in enumerate(rows) if r["path"].startswith(HOSTMEM)), None)
     if first is None:
@@ -61,7 +74,8 @@ def guest_arena(lines) -> dict | None:
         hi_i += 1
     lo, hi = rows[lo_i]["start"], rows[hi_i]["end"]
     mapped = [(r["start"], r["end"], r["perms"]) for r in rows[lo_i:hi_i + 1] if r["path"].startswith(HOSTMEM)]
-    return {"lo": lo, "hi": hi, "base": -(-lo // HUGE_PAGE) * HUGE_PAGE, "mapped": mapped}
+    every = sorted((r["start"], r["end"], r["perms"]) for r in rows if r["path"].startswith(HOSTMEM))
+    return {"lo": lo, "hi": hi, "base": -(-lo // HUGE_PAGE) * HUGE_PAGE, "mapped": mapped, "rows": every}
 
 
 def mode_for(nce: bool) -> str:
@@ -79,11 +93,22 @@ def nce_capable(machine: str | None = None, pagesize: int | None = None) -> bool
     return machine in ("aarch64", "arm64") and pagesize == 4096
 
 
+def _row(arena: dict, host: int) -> tuple[int, int, str] | None:
+    """The HostMemory row (start, end, perms) that holds `host`, any of the process's (rows are sorted, one bisect)."""
+    rows = arena.get("rows", arena["mapped"])
+    i = bisect.bisect_right(rows, (host, float("inf"))) - 1
+    return rows[i] if i >= 0 and rows[i][0] <= host < rows[i][1] else None
+
+
 def host_address(arena: dict, address: int, mode: str) -> int:
-    """The host address of a guest address in this arena, or ValueError when it cannot be in the guest at all."""
+    """The host address of a guest address in this arena, or ValueError when it cannot be in the guest at all. Direct
+    mode also takes an address in any HostMemory row outside the walk's lo/hi (module docstring)."""
     if mode == "direct":
         host = address
-    elif mode == "offset":
+        if not arena["lo"] <= host < arena["hi"] and _row(arena, host) is None:
+            raise ValueError(f"Switch address {address:#x} is outside the guest arena ({mode} mode)")
+        return host
+    if mode == "offset":
         host = arena["base"] + address
     else:
         raise ValueError(f"unknown address mode {mode!r}")
@@ -93,8 +118,10 @@ def host_address(arena: dict, address: int, mode: str) -> int:
 
 
 def mapped(arena: dict, host: int, length: int, perm: str | None = "r") -> bool:
-    """Whether [host, host+length) lies in one HostMemory row (with `perm` in its flags when given)."""
-    return any(s <= host and host + length <= e and (perm is None or perm in p) for s, e, p in arena["mapped"])
+    """Whether [host, host+length) lies in one HostMemory row (with `perm` in its flags when given). Any row of the
+    process: in offset mode host_address has already kept `host` inside lo/hi, and every memfd row there is the walk's."""
+    row = _row(arena, host)
+    return row is not None and host + length <= row[1] and (perm is None or perm in row[2])
 
 
 def guest_address(arena: dict, host: int, mode: str) -> int:
