@@ -211,13 +211,16 @@ back-offs a round. Most deaths came swarmed.
     the gun and backs off for 0.5 s (he cannot move while aiming), then fires the next burst; the rapid fire makes a
     burst count.
   - A back-off under way always finishes.
-- **Healing** (built, behind `HEAL_ENABLED`, off): the PS3 bot's rules. A heal starts below 40 % health with no Majini
-  within 4 m, or below 25 % anyway. The First Aid Spray (0x304) or a herb (0x305, 0x307, 0x309) comes up from its D-pad
-  slot (grid 1 / 3 / 5 / 7 = up / left / right / down), and `HEAL_USE_KEY` (Y, the PS3's Square by position) uses it,
-  every 0.35 s, for at most 4 s. It counts as done when the item's count falls or health rises by 50, then the gun
-  comes back from its slot. It stays off until a live run confirms the button: a wrong one would cost 4 s a try at
-  low health. The probe (Y, then ZL + ZR, then A; never X, the inventory) aborted twice on CPU (the Spark at 92-93 %
-  from other services).
+- **Healing** (`HEAL_ENABLED`, on since 2026-10-27): the PS3 bot's rules. A heal starts below 40 % health with no
+  Majini within 4 m, or below 25 % anyway. The First Aid Spray (0x304) or a herb (0x305, 0x307, 0x309) comes up from
+  its D-pad slot (grid 1 / 3 / 5 / 7 = up / left / right / down), and Y uses it, every 0.35 s, for at most 4 s. It
+  counts as done when the item's count falls or health rises by 50, then the gun comes back from its slot. The use key
+  comes from the game's own Controller Settings for Type D
+  (docs/evidence/switch-citron/re5-switch-controls-type-d.jpg): stick: strafe, stick + B: run, L + ZR: knife, ZL + ZR:
+  fire / throw, ZL + B: reload, X: inventory, right stick: rotate, R: map, ZR: locate partner, A: partner action, and
+  Y unassigned. Those buttons sit where the PS3's do (X = Triangle, A = Circle, B = Cross), so Y is the PS3 manual's
+  Square, "use recovery item". A live press has not been seen yet, so the live telemetry watches heal_failures against
+  heals; the bounded try gives the gun back after 4 s if the key were wrong.
 - **Infinite spray** (`re5_switch_mods` op `infinite_spray`, not in the profile yet): it keeps the round's own spray
   slot record (in-hand cleared) and writes it back into that slot once the slot is empty or holds a spray of count 0,
   never over another item. It waits for the same live run, which shows what a used-up slot looks like.

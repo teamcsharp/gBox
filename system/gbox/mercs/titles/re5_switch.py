@@ -147,9 +147,10 @@ MASH = (("a",), ())                      # dying: "Resuscitate", A mashed (the p
 # PS3's Square by position), confirmed by its count falling or his health rising, then the gun goes back up.
 HEAL_IDS = frozenset({0x304, 0x305, 0x307, 0x309})   # First Aid Spray, green herb, the mixed herbs (red alone: no)
 HEAL_AT, HEAL_CRITICAL, HEAL_SAFE_R, HEAL_GAIN = 0.4, 0.25, 400.0, 50
-HEAL_USE_KEY = "y"
-HEAL_ENABLED = False                     # off until a live run confirms the use key (a wrong key would cost 4 s a try at low
-                                         # health); the tests switch it on
+HEAL_USE_KEY = "y"                       # the game's own Type D screen leaves Y unassigned, and by position it is the PS3
+                                         # manual's Square, "use recovery item" (X = Triangle inventory, A = Circle partner
+                                         # action, B = Cross run: docs/evidence/switch-citron/re5-switch-controls-type-d.jpg)
+HEAL_ENABLED = True                      # on (2026-10-27): watch heal_failures against heals in the live telemetry
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
