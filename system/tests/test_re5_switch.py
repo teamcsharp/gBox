@@ -349,7 +349,10 @@ def test_bot_takes_the_majini_the_dot_is_on():
     b.tick(bot_snap(more=((150.0, 0.0, 700.0),)))
     clock[0] = 0.3
     act = b.tick(bot_snap(more=((150.0, 0.0, 700.0),), laser=ray((140.0, 100.0, 690.0))))
-    assert "zr" in act["hold"] and b.target == 2
+    assert b.target != 2                                             # one tick under the dot: not yet (smoothness)
+    clock[0] = 0.35
+    act = b.tick(bot_snap(more=((150.0, 0.0, 700.0),), laser=ray((140.0, 100.0, 691.0))))
+    assert "zr" in act["hold"] and b.target == 2 and b.stats["target_switches"] == 1
 
 
 def test_bot_raises_the_gun_again_and_waits_out_a_reload():

@@ -130,8 +130,8 @@ def test_a_living_target_left_with_the_trigger_held_is_a_drop_and_a_new_pull():
     clock[0] = 0.2
     b.tick(snap([(a, 800)], dot=chest(a)))
     assert b.fire_down and b.stats["shots"] == 1
-    clock[0] = 1.3                                                    # past COMMIT_S: one comes within THREAT_R
-    near = at(200, 3)                                                 # in the line too, in front of the dot
+    clock[0] = 1.3                                                    # past COMMIT_S: one comes within GRAB_THREAT_R
+    near = at(110, 3)                                                 # in the line too, in front of the dot
     b.tick(snap([(a, 800), (near, 800)], dot=chest(near)))
     assert b.target == 11 and b.fire_down and b.stats["drops_mid_burst"] == 1 and b.stats["shots"] == 2
     clock[0] = 1.35

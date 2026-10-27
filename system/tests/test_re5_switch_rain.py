@@ -128,8 +128,11 @@ def test_a_far_off_aim_takes_the_majini_near_the_ray_instead_of_lowering():
     b, clock = bot()
     b.tick(snap([(target, 800)]))
     clock[0] = 0.3
-    b.tick(snap([(target, 800)], dot=chest(other, 30.0), motion=26))   # nobody near the ray: the gun goes down
-    assert b.doing == "unaim" and b.aim_since is None
+    b.tick(snap([(target, 800)], dot=chest(other, 30.0), motion=26))   # nobody near the ray, but just raised:
+    assert b.doing != "unaim" and b.aim_since is not None              # the gun stays up (smoothness, MIN_UP_S)
+    clock[0] = 0.8
+    b.tick(snap([(target, 800)], dot=chest(other, 31.0), motion=26))   # still off him after UNAIM_HOLD_S: down
+    assert b.doing == "unaim" and b.aim_since is None and b.stats["unaims"] == 1
 
 
 def test_one_close_in_front_gets_the_gun_not_a_back_off_and_a_crowd_no_burst_cut():

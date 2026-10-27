@@ -159,6 +159,16 @@ GRAB_R, GRAB_S = 120.0, 0.6
 STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he neither turns nor moves: held (a Majini holds
                                          # him for another's swing; his health does not fall): break free this long
 COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
+# Smoothness (operator 2026-10-27 10:55: "the bot in RE5 is aiming spasticly"). Live 10:36-10:48: hit rates fine, but 90
+# decision changes a minute: the gun raised 22 times and lowered 16 times a minute (each a camera zoom in / out on
+# stream), 9 body turns and 5 quick turns a minute. Now: the target is not flipped back to the one he just left within
+# FLIP_S (a grab threat still wins), the dot on another Majini makes him the target only after DOT_SWITCH_TICKS ticks,
+# the gun goes down for a far-off aim only after UNAIM_HOLD_S of it (or past UNAIM_HARD), never within MIN_UP_S of
+# coming up, and once turning with the gun down it comes up again inside RERAISE_FRAC of the raise tolerance.
+SMOOTH = True
+FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
+UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
+MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
 WIGGLE = (("lleft",), ("lright",))       # "Break free": the left stick shaken (the prompt's icon)
 MASH = (("a",), ())                      # dying: "Resuscitate", A mashed (the prompt's icon)
 # Survival (operator 2026-10-26, the first MercMode turn: 5 deaths in 6 rounds, usually swarmed).
@@ -779,6 +789,14 @@ class Bot:
         self.backoff_until = self.backoff_ready = 0.0
         self.quick, self.quick_at = 0, -1e9      # the quick turn's step (1 stick back, 2 + B, 3 let go), its B press
         self.target_at = -1e9
+        self.prev_target, self.switch_at = None, -1e9   # the one he left and when (FLIP_S)
+        self.dot_other = (None, 0)                # another Majini under the dot, for how many ticks (DOT_SWITCH_TICKS)
+        self.unaim_since = None                   # the aim far off him since (UNAIM_HOLD_S)
+        self.turning = False                      # turning with the gun down (RERAISE_FRAC)
+        self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
+        self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
+        for k in MOTION_COUNTERS:
+            self.stats.setdefault(k, 0)
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.wiggle = 0
         self.hp_seen: list = []
@@ -858,10 +876,36 @@ class Bot:
             best = nearest
         elif cur is not None and self._cost(p, cur) <= KEEP_TARGET * self._cost(p, best):
             best = cur
+        if SMOOTH and cur is not None and best is not cur and best.get("ptr", best.get("slot")) == self.prev_target \
+                and now - self.switch_at < FLIP_S and flat(best) >= GRAB_THREAT_R:
+            best = cur                                       # not back to the one he just left (a flip-flop)
         if best is not cur:
             self.target_at = now
-        self.target = best.get("ptr", best.get("slot"))
+        self._set_target(best.get("ptr", best.get("slot")), now)
         return best
+
+    def _count_sticks(self, act, now) -> None:
+        """The right stick's motion this tick: a key newly down (stick_onsets: the pulses), and the yaw turned the other
+        way within 0.4 s of the last (aim_reversals: the camera swinging back)."""
+        sticks = {k for k in act.get("hold") or () if k in ("rleft", "rright", "rup", "rdown")}
+        self.stats["stick_onsets"] += len(sticks - self._sticks)
+        self._sticks = sticks
+        d = 1 if "rleft" in sticks else -1 if "rright" in sticks else 0
+        if d:
+            if self._yaw_dir and d != self._yaw_dir and now - self._yaw_dir_at <= 0.4:
+                self.stats["aim_reversals"] += 1
+            self._yaw_dir, self._yaw_dir_at = d, now
+
+    def _set_target(self, key, now) -> None:
+        """The target from here on: a change is counted (target_switches), and a change back to the one he left within
+        FLIP_S too (target_flips)."""
+        if key != self.target:
+            if self.target is not None and key is not None:
+                self.stats["target_switches"] += 1
+                if key == self.prev_target and now - self.switch_at < FLIP_S:
+                    self.stats["target_flips"] += 1
+            self.prev_target, self.switch_at = self.target, now
+        self.target = key
 
     def held(self, p, now) -> bool:
         """The sticks pressed for STUCK_S while he neither turns nor moves: something holds him."""
@@ -1107,6 +1151,7 @@ class Bot:
         now = self.clock()
         self.doing, self.why, self._now = "none", "", now
         act = self._tick(snap, now)
+        self._count_sticks(act, now)
         try:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
@@ -1299,11 +1344,15 @@ class Bot:
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
-            if abs(body_err) > self.raise_tol(dist):         # turn round first (fast, the gun down)
+            tol = self.raise_tol(dist) * (RERAISE_FRAC if SMOOTH and self.turning else 1.0)
+            if abs(body_err) > tol:                          # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
                 self.stats["turns"] += 1
+                self.turning = True
                 return {"hold": self._turn(body_err)}
+            self.turning = False
             self.aim_since = self._raise_t = now
+            self.stats["raises"] += 1
             self.ray_seen = self.last_ray = None
         lz = snap.get("laser")
         gun = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
@@ -1346,24 +1395,36 @@ class Bot:
             return {"hold": ("zl",)}
         origin, dot = ray
         on_e = next((e for e in live if dot_on(dot, e["pos"])), None)
-        if on_e is not None and on_e is not tgt:             # the dot is on another one: he is the target now
-            tgt, foot = on_e, on_e["pos"]
-            self.target = tgt.get("ptr", tgt.get("slot"))
+        other = on_e.get("ptr", on_e.get("slot")) if on_e is not None and on_e is not tgt else None
+        self.dot_other = (other, self.dot_other[1] + 1 if other is not None and other == self.dot_other[0] else
+                          (1 if other is not None else 0))
+        if other is not None and (not SMOOTH or self.dot_other[1] >= DOT_SWITCH_TICKS or flat(on_e) < GRAB_THREAT_R):
+            tgt, foot = on_e, on_e["pos"]                    # the dot stays on another one: he is the target now
+            self._set_target(other, now)
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         chest = (foot[0], foot[1] + CHEST_H, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         ray_len = math.dist(origin, dot)
         point_blank = ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
-        if abs(yaw_err) > UNAIM_ERR and not point_blank:     # the aim is far off him
+        far_off = abs(yaw_err) > UNAIM_ERR and not point_blank
+        self.unaim_since = (self.unaim_since or now) if far_off else None
+        if far_off:                                          # the aim is far off him
             alt = self._near_aim(origin, dot, live, flat) if ray_len >= STEER_RAY_CM else None
+            hold = SMOOTH and abs(yaw_err) <= UNAIM_HARD and (now - self.unaim_since < UNAIM_HOLD_S
+                                                              or now - self.aim_since < MIN_UP_S)
+            if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
+                far_off = False
+        if far_off:
             if alt is None:                                  # nobody near the aim: gun down, turn the body
+                self.stats["unaims"] += 1
                 self.doing, self.why = "unaim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m "
                                                  f"(ray {ray_len / 100:.1f} m)")
                 self._gun_down()
                 return {"hold": self._turn(body_err)}
             tgt, foot = alt, alt["pos"]                      # another one near the aim: him, the gun stays up
-            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            self._set_target(tgt.get("ptr", tgt.get("slot")), now)
+            self.target_at = now
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
             chest = (foot[0], foot[1] + CHEST_H, foot[2])
@@ -1616,7 +1677,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
