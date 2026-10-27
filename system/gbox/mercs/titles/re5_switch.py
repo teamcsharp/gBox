@@ -173,6 +173,15 @@ SMOOTH = True
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
 UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
 MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
+# His own level first (live 12:06: the camera pointed at the sky for 2 s, the aim pitched up at a Majini on a roof inside
+# the MAX_DY window, while ground Majini closed in and grabbed him): a Majini off his level costs LEVEL_COST x its
+# height / MAX_DY more, and the "in front" pick takes one on his level (within LEVEL_DY) whenever there is one.
+LEVEL_COST, LEVEL_DY = 1.5, 120.0
+# No pitch swing past PITCH_SWING (to a Majini that far above or below the muzzle) while one on his level is within
+# PITCH_GUARD_R; a grab threat (GRAB_THREAT_R) always first. Up close (THREAT_R) he keeps his target until it dies or
+# leaves THREAT_R unless another gets within GRAB_THREAT_R and nearer (no re-pick every tick among equal threats).
+PITCH_SWING, PITCH_GUARD_R, MUZZLE_H = math.radians(25), 600.0, 140.0
+LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # The enemy knowledge database at work (brain step 4, operator 2026-10-27: "not utilizing any of the lessons learned";
 # Hermes #4484): the fight asks gbox.mercs.brain.knowledge.dispatch_plan (K's learned fields over the defaults) for its
 # target's class, distance and weapon, and uses a learned field only at K_MIN_CONF and K_MIN_SAMPLES: the aim height
@@ -807,7 +816,7 @@ class Bot:
         self.turning = False                      # turning with the gun down (RERAISE_FRAC)
         self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
         self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
-        for k in MOTION_COUNTERS + K_COUNTERS:
+        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS:
             self.stats.setdefault(k, 0)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
@@ -859,9 +868,10 @@ class Bot:
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
     def _cost(p, e) -> float:
-        px, _, pz = p["pos"]
+        px, py, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
-        return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) / math.pi)
+        level = 1.0 + (LEVEL_COST * min(abs(e["pos"][1] - py), MAX_DY) / MAX_DY if SMOOTH else 0.0)
+        return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) / math.pi) * level
 
     @staticmethod
     def raise_tol(dist: float) -> float:
@@ -901,15 +911,29 @@ class Bot:
         one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
         Nobody in front: the cost (near and in front; K's learned range preferred), a new one kept COMMIT_S, one within
         THREAT_R first."""
+        px, py, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        if SMOOTH:                                           # no pitching up at a roof while ground Majini come
+            ground_near = any(flat(e) <= PITCH_GUARD_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
+            calm = [e for e in live
+                    if not (ground_near and flat(e) >= GRAB_THREAT_R and self._pitch_to(p, e) > PITCH_SWING)]
+            live = calm or live
         best = min(live, key=lambda e: self._kcost(p, e, now))
         if K_PLAN and best is not min(live, key=lambda e: self._cost(p, e)):
             self.stats["k_range_picks"] += 1                 # a choice the learned range changed
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
-        px, _, pz = p["pos"]
-        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         nearest = min(live, key=flat)
         front = [e for e in live if flat(e) <= ENGAGE_R
                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
+        if SMOOTH:
+            level = [e for e in front if abs(e["pos"][1] - py) <= LEVEL_DY]
+            front = level or front                           # his own level first
+            if cur is not None and flat(cur) < THREAT_R and (cur.get("hp") or 0) > 0:
+                grab = min((e for e in live if e is not cur and flat(e) < GRAB_THREAT_R), key=flat, default=None)
+                if grab is None or flat(grab) > 0.7 * flat(cur):
+                    self.stats["close_keeps"] += 1           # up close: kept until it dies or leaves THREAT_R
+                    self._set_target(cur.get("ptr", cur.get("slot")), now)
+                    return cur
         if front:
             best = cur if cur is not None and any(e is cur for e in front) else min(front, key=flat)
             if flat(nearest) < GRAB_THREAT_R and not any(e is nearest for e in front) and flat(best) > 2 * flat(nearest):
@@ -925,8 +949,18 @@ class Bot:
             best = cur                                       # not back to the one he just left (a flip-flop)
         if best is not cur:
             self.target_at = now
+            if abs(best["pos"][1] - p["pos"][1]) > LEVEL_DY:
+                self.stats["off_level_picks"] += 1
+            if cur is not None and abs(self._pitch_to(p, best) - self._pitch_to(p, cur)) > PITCH_SWING:
+                self.stats["pitch_swings"] += 1
         self._set_target(best.get("ptr", best.get("slot")), now)
         return best
+
+    @staticmethod
+    def _pitch_to(p, e) -> float:
+        """The aim's pitch (absolute, radians) from his muzzle to this Majini's chest."""
+        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        return abs(math.atan2(e["pos"][1] + CHEST_H - (p["pos"][1] + MUZZLE_H), max(d, 1.0)))
 
     def _count_sticks(self, act, now) -> None:
         """The right stick's motion this tick: a key newly down (stick_onsets: the pulses), and the yaw turned the other
@@ -1757,7 +1791,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
