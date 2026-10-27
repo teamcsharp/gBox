@@ -861,7 +861,10 @@ def _popen(ad, argv, **kw) -> subprocess.Popen:
 
 def capture_start():
     """Windows: a capture session's window is shown normally but never activated (a minimized Vulkan/GL window has
-    no swapchain to present, so RenderDoc would never see a frame); keep_offscreen parks it off-screen as it opens."""
+    no swapchain to present, so RenderDoc would never see a frame); keep_offscreen parks it off-screen as it opens.
+    None on other platforms (subprocess.Popen's default)."""
+    if HOST_OS != "windows":
+        return None
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 4                                     # SW_SHOWNOACTIVATE
@@ -871,7 +874,9 @@ def capture_start():
 def hidden_start():
     """Windows: start the emulator minimized and without focus. Its first ShowWindow takes this instead of whatever the
     emulator asks for, so no big window flashes on the desktop before gBox docks it into the game area (winembed un-minimizes
-    it while docking)."""
+    it while docking). None on other platforms (subprocess.Popen's default)."""
+    if HOST_OS != "windows":
+        return None
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 7                                     # SW_SHOWMINNOACTIVE
