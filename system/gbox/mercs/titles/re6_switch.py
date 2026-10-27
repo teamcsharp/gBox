@@ -947,14 +947,17 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 # gauge is kept full by re6_switch_mods.infinite_stamina): a zombie within CC_R in front or flanking (CC_CONE) puts the
 # gun down for the game's quick shot every CC_QSHOT_GAP_S and a kick at arm's length every CC_KICK_GAP_S, before it can
 # grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
-CC_R, CC_CONE = 500.0, math.pi           # all round, out to 5 m (operator 13:10: "There should never be him chilling
-                                        # surrounded by enemies"): one behind gets the quick turn
+CC_R, CC_CONE = 350.0, math.radians(100)   # (5 m all round was tried live 2026-10-27 13:43 / 13:53: more holds, fewer kills)
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
 # more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
 # count fell) say whether the game takes it there, dying_states the action bytes seen while dying.
-DYING_TABLETS, DYING_HP, DYING_GAP_S = True, 1, 1.0
+DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no tablet while dying (live 13:55: 4 presses
+                                        # at 1 health, the count never fell); dyings / dying_states still counted
+# Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
+# crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
+CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -1027,7 +1030,8 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 #          (else the incendiary), never nearer than its blast;
 #   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
 #          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
-NADES = True
+NADES = False                           # off until the item wheel's steps are measured (live 13:53: the wheel moved off
+                                        # the frag by itself, and the D-pad's right landed on the knife's slot)
 FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 600.0, 200.0
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 600.0, 1000.0, 300.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
@@ -1105,7 +1109,7 @@ class Bot:
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
                   "bomb_hits_taken", "flashes", "frags", "fires", "nade_aborts", "nade_back_fails", "fever_kicks",
                   "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "dyings",
-                  "tablet_dying_presses", "tablet_dying_taken"):
+                  "tablet_dying_presses", "tablet_dying_taken", "cc_backouts"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s"):
             self.stats.setdefault(k, 0.0)
@@ -1415,7 +1419,15 @@ class Bot:
             self._hold_ended(now, snap)
         if p.get("hp") != DYING_HP:
             self.dying_since = None
-        elif DYING_TABLETS and not held and self.nade is None:   # dying: a tablet before anything else
+        elif not DYING_TABLETS:
+            if self.dying_since is None:                     # counted only (no tablet while dying)
+                self.dying_since = now
+                self.stats["dyings"] += 1
+                st = p.get("state")
+                seen = self.stats.setdefault("dying_states", [])
+                if st is not None and st not in seen and len(seen) < 8:
+                    seen.append(st)
+        elif not held and self.nade is None:                 # dying: a tablet before anything else
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
@@ -1477,7 +1489,9 @@ class Bot:
         gap = TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
         if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
                 and self.tablet_wait is None and now - self.tablet_at >= gap
-                and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R))):
+                and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
+                     or (hp <= CROWD_TABLET_HP * hp_max
+                         and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
             self.tablet_wait = (p.get("tablets"), now)
@@ -1689,7 +1703,8 @@ class Bot:
             cx = sum(e["pos"][0] for e in group) / len(group)
             cz = sum(e["pos"][2] for e in group) / len(group)
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
-                             "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "dright"}
+                             "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "dright",
+                             "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None}
         self._gun_down()
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
@@ -1731,7 +1746,7 @@ class Bot:
             n.update(phase="back", at=now, steps=0)
             return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the triggers let go")
         if n["phase"] == "back":
-            if eq is not None and eq < WEAPON_INDEXES:
+            if eq is not None and (eq == n["gun"] if n["gun"] is not None else eq < WEAPON_INDEXES):   # his own gun
                 self._nade_done(n, now)
                 return None
             if n["steps"] >= NADE_STEPS:
@@ -1850,11 +1865,15 @@ class Bot:
             self.stats["quick_turns"] += 1                       # one behind: the quick turn
             self.quick = 2
             return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
+        backing = sum(1 for z in live if flat(z) < CC_BACK_R) >= CC_BACK_N   # a crowd: every attack backs out too
+        if backing:
+            self.stats["cc_backouts"] += 1
         if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= CC_KICK_GAP_S:
             self.melee_at = now
             self.stats["melee"] += 1
             self.stats["cc_kicks"] += 1
-            return self._go("crowd", "cc_kick", {"tap": "zr"}, f"one at {d:.0f} cm: a kick (crowd control)")
+            return self._go("crowd", "cc_kick", {"hold": ("ldown", "zr")} if backing else {"tap": "zr"},
+                            f"one at {d:.0f} cm: a kick (crowd control)" + (", backing out" if backing else ""))
         if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= CC_QSHOT_GAP_S:
             self.qshot_at = now
             self.stats["quick_shots"] += 1
@@ -1862,8 +1881,8 @@ class Bot:
             self.qshot_release = True
             self.cc_shot = (e.get("ptr", e.get("slot")), now,
                             {z.get("ptr", z.get("slot")): z.get("hp") or 0 for z in live if flat(z) <= CC_R})
-            return self._go("crowd", "cc_quick_shot", {"hold": ("zl", "zr")},
-                            f"one at {d:.0f} cm: quick shot (crowd control)")
+            return self._go("crowd", "cc_quick_shot", {"hold": ("ldown", "zl", "zr") if backing else ("zl", "zr")},
+                            f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
         if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")

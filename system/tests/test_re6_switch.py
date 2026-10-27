@@ -638,7 +638,8 @@ def test_no_bomb_readied_with_two_within_three_metres():
     assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0
 
 
-def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever():
+def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
     near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))   # three at 4.5-5.2 m
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
@@ -662,7 +663,8 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever():
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
 
 
-def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted():
+def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
     cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
     bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
     bot.held = lambda p, now: False
@@ -678,7 +680,8 @@ def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(
     assert bot.stats["grenade_kills"] == 3
 
 
-def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close():
+def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
     near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
@@ -719,7 +722,8 @@ def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     assert {"tap": "dright"} in acts and bot.stats["unsafe_trigger_blocks"] >= 1
 
 
-def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took():
+def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(monkeypatch):
+    monkeypatch.setattr(R, "DYING_TABLETS", True)                             # (off in play: the game takes none)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 800.0, 700),), hp=1, state=3))
     act = run(bot, snap, clock, 1)[0]
     assert act == {"tap": "r"} and bot.stats["act"] == "tablet_dying" and bot.stats["dying_states"] == [3]
@@ -729,6 +733,18 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     snap["player"].update(tablets=7, hp=300)                                  # this one took: back up
     run(bot, snap, clock, 1)
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
+
+
+def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks():
+    four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m
+    bot.held = lambda p, now: False
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a tablet already
+    bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    attacks = [a for a in acts if "zr" in a.get("hold", ())]
+    assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
 def test_no_new_bomb_under_half_health():
@@ -990,7 +1006,7 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # dying: R for one (DYING_TABLETS)
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: RE6 takes none (DYING_TABLETS off)
     bot, clock, snap = brain(round_guest(hp=300, state=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
 
