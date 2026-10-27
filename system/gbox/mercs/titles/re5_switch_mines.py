@@ -28,9 +28,16 @@ Mines (the bot's) places one every EVERY_S seconds of the round:
     its blast the same way.
 A placement counts (mines_placed) only when confirmed. One whose placing motion was seen but no bomb or count drop came
 still sends him out of its way (mine_unconfirmed); one with neither waits EVERY_S again.
+
+What the bombs did (the round's counters): a bomb that leaves sUnit's line went off (mines_gone; the bot never picks one
+up). The live blast showed the kills a poll before the units left the line, so a window from BLAST_BEFORE_S before the
+first bomb seen gone to BLAST_AFTER_S after the last one is the blast: mine_kills the cGameSys kills gained in it,
+mine_blast_hp_loss his health lost in it (his own bomb's damage, or a Majini's in the same second), mine_blasts the
+windows.
 """
 from __future__ import annotations
 
+import collections
 import math
 
 MINE_ID = 0x10A
@@ -49,8 +56,9 @@ QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 RUN = ("b", "lup")
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})
 THROWN = frozenset({0x06, 0x07, 0x08, 0x0A})        # grenades and the bomb: never the gun to go back to
+BLAST_BEFORE_S, BLAST_AFTER_S = 0.6, 0.4  # the blast window around the bombs leaving the line (kills show first)
 COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
-            "mines_gone", "mine_clear_runs")
+            "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss")
 
 
 def wrap(a: float) -> float:
@@ -83,27 +91,56 @@ class Mines:
         self.saw_place = False
         self.clear_from = None                         # the bomb the guard is running from
         self.gun_grid = None
+        self.hist = collections.deque(maxlen=64)       # (t, kills, his health) of the recent ticks
+        self.blast = None                              # the open blast window: {"t0", "until", "kills", "hp"}
+        self._tracked_at = None
         for k in COUNTERS:
             self.stats.setdefault(k, 0)
 
     def new_round(self, now: float) -> None:
         self.state, self.t, self.round_t0 = "idle", now, now
         self.last_at, self.last_pos, self.site, self.clear_from = None, None, None, None
-        self.bombs = {}
+        self.bombs, self.blast = {}, None
+        self.hist.clear()
 
     @staticmethod
     def stack(inv) -> dict | None:
         return next((s for s in inv or () if s.get("id") == MINE_ID and (s.get("rounds") or 0) > 0
                      and s.get("grid") in QUICK), None)
 
-    def _track(self, snap: dict) -> None:
-        """His bombs still down: one that left sUnit's line went off (or was picked up)."""
+    def watch(self, p: dict, snap: dict, now: float) -> None:
+        """Every tick, whatever the bot decided (held, healing, fighting): the bombs and their blasts (_track)."""
+        self._track(p, snap, now)
+
+    def _track(self, p: dict, snap: dict, now: float) -> None:
+        """His bombs still down: one that left sUnit's line went off. Its blast window: the kills gained and his health
+        lost from BLAST_BEFORE_S before it to BLAST_AFTER_S after the last bomb seen gone. Once a tick."""
+        if self._tracked_at == now:
+            return
+        self._tracked_at = now
+        kills, hp = snap.get("kills"), p.get("hp")
+        self.hist.append((now, kills, hp))
+        b = self.blast
+        if b is not None and now >= b["until"]:
+            if isinstance(kills, int) and isinstance(b["kills"], int):
+                self.stats["mine_kills"] += max(0, kills - b["kills"])
+            if isinstance(hp, int) and isinstance(b["hp"], int):
+                self.stats["mine_blast_hp_loss"] += max(0, b["hp"] - max(hp, 0))
+            self.blast = None
         if not self.bombs or "ground_mines" not in snap:
             return
         now_ptrs = {g["ptr"] for g in snap.get("ground_mines") or ()}
-        for ptr in [k for k in self.bombs if k not in now_ptrs]:
+        gone = [k for k in self.bombs if k not in now_ptrs]
+        for ptr in gone:
             del self.bombs[ptr]
             self.stats["mines_gone"] += 1
+        if gone:
+            if self.blast is None:
+                before = [h for h in self.hist if h[0] >= now - BLAST_BEFORE_S] or [self.hist[-1]]
+                self.blast = {"t0": now, "until": now + BLAST_AFTER_S, "kills": before[0][1], "hp": before[0][2]}
+                self.stats["mine_blasts"] += 1
+            else:
+                self.blast["until"] = now + BLAST_AFTER_S
 
     def due(self, p: dict, snap: dict, live: list, now: float) -> str | None:
         """Why a cycle may start now (None: not now)."""
@@ -140,7 +177,7 @@ class Mines:
     def tick(self, p: dict, snap: dict, live: list, now: float, *, busy: bool = False) -> dict | None:
         inv = snap.get("inventory") or ()
         mine = self.stack(inv)
-        self._track(snap)
+        self._track(p, snap, now)
         if self.state == "idle":
             act = self._clear(p, live)
             if act is not None or busy or self.due(p, snap, live, now) is None:
