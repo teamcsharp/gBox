@@ -1036,6 +1036,7 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
+TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -1157,7 +1158,7 @@ REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long a
 BONUS_PURSUIT = True
 BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
 BONUS_H, BONUS_HIT_R = 40.0, 45.0
-BONUS_TRY_S, BONUS_SKIP_S = 5.0, 30.0
+BONUS_TRY_S, BONUS_SKIP_S = 2.5, 30.0   # (5 s a try wasted 20 s on 4 out of sight live 14:41)
 BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
 BONUS_LOG_N = 12
 HANG_S = 6.0
@@ -1219,6 +1220,7 @@ class Bot:
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when) after an R press, until it falls
+        self._zl_at = -1e9                                   # when ZL was last held
         self.tablet_dying, self.dying_since = False, None    # that press made while dying; dying since when
         self.keeping_off = False
         self.qshot_release = False
@@ -1444,6 +1446,8 @@ class Bot:
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         out = self._tick(snap, now)
+        if "zl" in (out.get("hold") or ()):
+            self._zl_at = now
         hold = set(out.get("hold") or ())
         eq = (snap.get("player") or {}).get("equipped")
         if ({"zl", "zr"} <= hold and isinstance(eq, int) and eq >= WEAPON_INDEXES
@@ -1600,6 +1604,8 @@ class Bot:
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
+            if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
+                return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1

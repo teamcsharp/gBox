@@ -84,6 +84,13 @@
           "multiplier": 4,
           "magnum": 8
         }
+      ],
+      [
+        "kill_time",
+        {
+          "on": true,
+          "seconds": 3
+        }
       ]
     ],
     "vocab": {

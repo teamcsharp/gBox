@@ -161,7 +161,7 @@ LOADOUTS = (                                             # this build's entries:
 # while its notice +0x3DFC (+0x46A4) is up). sGameMan +0x3DF0 is the HUD's copy, rewritten every frame (live
 # 2026-10-27: +30 there read back and was gone the next frame; +30 at +0x4698 stuck and the copy followed it).
 # kill_time / add_time / set_time write the clock the same way (RE5's names: gbox.re5_mods_tool).
-GM_CLOCK, GM_SHOWN, GM_NOTICE = 0x4698, 0x46A0, 0x46A4
+GM_CLOCK = 0x4698
 CLOCK_MAX, CLOCK_MIN = 5999.99, 1.0                      # no write leaves the countdown at or under CLOCK_MIN
 KILL_TIME_S, KILL_TIME_MAX_S = 3.0, 30.0                 # operator 2026-10-27: "add 3 seconds to the clock per kill"
 ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
@@ -572,9 +572,8 @@ def _gm(g: RE6Switch) -> int:
 
 def _add_clock(ad, g: RE6Switch, gm: int, seconds: float = 0.0, absolute=None) -> dict:
     """The round clock moved as the game's own time-add handler moves it: seconds added (negative takes) or set to
-    `absolute`, kept within CLOCK_MIN..CLOCK_MAX, read back; time added shows the HUD's bonus notice (GM_SHOWN /
-    GM_NOTICE as the handler writes them, only while both read as a notice does: 0..999 and 0 / 1). Only while a round
-    is playing."""
+    `absolute`, kept within CLOCK_MIN..CLOCK_MAX, read back (the HUD's copy follows it). Only while a round is playing.
+    No "+N" notice: the guessed notice fields (+0x46A0 / +0x46A4) hold other data (live 14:41: a float at +0x46A0)."""
     import math
     phase = struct.unpack("<i", ad.read_memory(gm + R.GM_PHASE, 4))[0]
     before = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
@@ -590,11 +589,6 @@ def _add_clock(ad, g: RE6Switch, gm: int, seconds: float = 0.0, absolute=None) -
     after = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
     verified = math.isfinite(after) and target - 0.5 <= after <= target + 0.01
     delta = target - before
-    if verified and delta >= 1:
-        shown, up = struct.unpack("<iB", ad.read_memory(gm + GM_SHOWN, 5))
-        if 0 <= shown <= 999 and up in (0, 1):
-            ad.write_memory(gm + GM_SHOWN, struct.pack("<i", min(999, (shown if up else 0) + int(round(delta)))))
-            ad.write_memory(gm + GM_NOTICE, b"\x01")
     return {"verified": verified, "clock_before": round(before, 2), "clock_after": round(after, 2),
             "applied_seconds": round(delta, 2) if verified else 0.0, "clamped": target != wanted,
             **({} if verified else {"reason": "the clock write was not read back"})}

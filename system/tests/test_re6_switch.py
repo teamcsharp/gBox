@@ -1129,10 +1129,17 @@ def test_a_tablet_counts_once_the_count_falls_and_an_ignored_press_is_pressed_ag
     assert bot.stats["tablets"] == 1 and bot.stats["tablet_misses"] == 0
     clock[0] += R.TABLET_GAP_S
     assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 2
-    acts = run(bot, snap, clock, int(R.TABLET_CONFIRM_S / 0.05) + 2)       # the count stays at 7: ignored
+    acts = run(bot, snap, clock, int((R.TABLET_CONFIRM_S + R.TABLET_LOWER_S) / 0.05) + 3)   # the count stays: ignored
     assert bot.stats["tablet_misses"] == 1 and bot.stats["tablets"] == 1
     assert acts.count({"tap": "r"}) == 1 and acts[0] != {"tap": "r"}        # pressed again once the miss is known
     assert bot.stats["tablet_presses"] == 3
+
+
+def test_a_tablet_waits_a_moment_after_the_gun_was_up():
+    bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    bot._zl_at = clock[0]                                                     # the gun was up just now
+    acts = run(bot, snap, clock, int(R.TABLET_LOWER_S / 0.05) + 2)
+    assert acts[0] == {"hold": ()} and {"tap": "r"} in acts and bot.stats["tablet_presses"] == 1
 
 
 def test_a_gun_that_does_not_come_up_keeps_aiming_along_the_camera_and_looks_for_the_laser_again():
@@ -1402,7 +1409,7 @@ def test_unlock_stages_and_auto_qte_write_only_their_own_cells_in_both_copies(mo
         assert struct.unpack("<I", g.rd(info + cell, 4))[0] == 0x10711
 
 
-def test_kill_time_adds_seconds_per_new_kill_with_the_huds_notice(mods):
+def test_kill_time_adds_seconds_per_new_kill(mods):
     g = round_guest(timer=60.0)
     gm = R.u64(g, BASE + R.S_GAMEMAN)
     ad = Adapter(g)
@@ -1416,10 +1423,10 @@ def test_kill_time_adds_seconds_per_new_kill_with_the_huds_notice(mods):
     res = mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
     assert res["writes"] == 1 and res["kill_time"]["applied_seconds"] == pytest.approx(6.0)
     assert struct.unpack("<f", g.rd(gm + mods.GM_CLOCK, 4))[0] == pytest.approx(66.0)
-    assert struct.unpack("<i", g.rd(gm + mods.GM_SHOWN, 4))[0] == 6 and g.rd(gm + mods.GM_NOTICE, 1) == b"\x01"
-    g.i32(gm + R.GM_KILLS, 12)                                                 # one more while the notice is up
+    assert ad.writes[-1] == (gm + mods.GM_CLOCK, struct.pack("<f", 66.0))      # that f32 only (no notice)
+    g.i32(gm + R.GM_KILLS, 12)                                                 # one more
     mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
-    assert struct.unpack("<i", g.rd(gm + mods.GM_SHOWN, 4))[0] == 9           # the notice adds up, as the game's
+    assert struct.unpack("<f", g.rd(gm + mods.GM_CLOCK, 4))[0] == pytest.approx(69.0)
     assert struct.unpack("<f", g.rd(gm + R.GM_TIMER, 4))[0] == 60.0            # the HUD's copy is the game's to write
     g.i32(gm + R.GM_KILLS, 0)                                                  # a new round: counted afresh
     assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0
