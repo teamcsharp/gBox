@@ -701,8 +701,9 @@ def _find_unit(m, base: int, what: str, classes: tuple, lines, pick=None, now: f
     return None
 
 
-BOMB_UNITS = ("uWp1231",)               # the remote bomb lying placed (MercMode's census 2026-10-27: a uWp1231 unit lives
-                                        # only while one is out); its position +0x60 like every unit's
+BOMB_UNITS = ("uWp1097",)               # the remote bomb lying placed, its position +0x60 like every unit's (MercMode's
+                                        # RE6 turn 2026-10-27 12:17:23: a uWp1097 unit came up as the slot went out, 34 cm
+                                        # from him - the throw had dropped it at his feet - and went at the blast 12:17:38)
 
 
 def placed_bomb(m, base: int):

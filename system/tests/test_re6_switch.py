@@ -477,7 +477,7 @@ def test_inside_the_bombs_reach_he_walks_out_before_anything_and_outside_it_kick
 def test_the_placed_bombs_own_spot_is_used_when_its_unit_is_found():
     g = round_guest(enemies=((0.0, 0.0, 3000.0, 700),))
     p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
-    bu = g.unit(16, "uWp1231")
+    bu = g.unit(16, "uWp1097")
     g.f32(bu + R.P_POS, 30.0, 0.0, 60.0)                                      # it dropped at his feet (a wall ahead)
     snap = R.snapshot(g)
     assert "bomb_pos" not in snap                                             # no bomb out: not looked for
