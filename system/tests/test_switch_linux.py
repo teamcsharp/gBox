@@ -666,3 +666,22 @@ def test_a_hung_boot_is_started_once_more(tmp_path, monkeypatch):
         raise AssertionError("not watched")
     monkeypatch.setattr(ad, "_boot_watch", never)
     assert ad.launch_game(other)["boot_watch"] == {"watched": False}             # only the listed titles
+
+
+def test_catalog_rows_without_a_serial_still_pick_citron(tmp_path, monkeypatch):
+    """The share's RE5 row has no serial and its file name no [TITLEID] tag (live 2026-10-26: auto started it in Eden):
+    the title names it, the way gbox.re_switch does; RE6 by its file name's tag (an update's tag names its base)."""
+    monkeypatch.setattr(adapters, "HOST_OS", "linux")
+    c = citron_cfg(tmp_path)
+    re5 = {"game_id": "52d15709be0fda1a", "platform": "switch", "title": "Resident Evil 5", "serial": None,
+           "launch": {"kind": "emulator", "platform": "switch",
+                      "path": "\\10.89.1.125\QuickSwap2\Emulation\_switch\Resident Evil 5\Resident Evil 5.nsp"}}
+    assert adapters._switch_title_id(re5) == "010018100CD46000"
+    assert isinstance(adapters.for_game(re5, c), adapters.CitronLinuxAdapter)
+    re6 = {"platform": "switch", "title": "RE6", "rel_path": "Resident Evil 6/Resident Evil 6 [01002A000CD48000].nsp"}
+    assert adapters._switch_title_id(re6) == "01002A000CD48000"
+    upd = {"platform": "switch", "title": "x", "rel_path": "Resident Evil 6 [01002A000CD48800][v131072].nsp"}
+    assert adapters._switch_title_id(upd) == "01002A000CD48000"
+    assert adapters._switch_title_id({"platform": "switch", "title": "Resident Evil 50"}) == ""
+    assert adapters._switch_title_id({"platform": "ps3", "title": "Resident Evil 5"}) == ""
+    assert type(adapters.for_game(dict(re5, title="Zelda"), c)) is adapters.SwitchLinuxAdapter
