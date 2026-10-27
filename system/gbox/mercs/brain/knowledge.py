@@ -53,6 +53,12 @@ class DispatchPlan:
     shots_to_kill: float | None = None
     hit_rate: float | None = None
     confidence: float = 0.0            # the learned fields' lowest confidence (0: none learned)
+    field_confidence: tuple = ()       # ((field, confidence), ...) of each learned field
+    field_samples: tuple = ()          # ((field, samples), ...) of each learned field
+
+    def conf(self, field: str) -> float:
+        """One learned field's confidence (0.0: the field is the default)."""
+        return dict(self.field_confidence).get(field, 0.0)
 
 
 class Knowledge(Protocol):
@@ -119,13 +125,14 @@ def _learned(field) -> bool:
 def from_k(plan, base: DispatchPlan) -> DispatchPlan:
     """K's Plan on the brain's DispatchPlan: each learned field over base's constant, metres -> centimetres."""
     out = dict(base.__dict__)
-    used, confidence = [], []
+    used, confidence, samples = [], [], []
 
     def take(name, field, value):
         if _learned(field):
             out[name] = value(field.value)
             used.append(name)
             confidence.append(float(getattr(field, "confidence", 0.0) or 0.0))
+            samples.append(int(getattr(field, "samples", 0) or 0))
     take("aim_offset", plan.aim, lambda a: (0.0, float(a.up_m) * 100.0, 0.0))
     if "aim_offset" in used:
         out["aim_lateral"] = float(plan.aim.value.lateral_m or 0.0) * 100.0
@@ -139,6 +146,8 @@ def from_k(plan, base: DispatchPlan) -> DispatchPlan:
     if used:
         out["source"] = "enemy_db: " + ", ".join(used)
         out["confidence"] = round(min(confidence), 3)
+        out["field_confidence"] = tuple((n, round(c, 3)) for n, c in zip(used, confidence))
+        out["field_samples"] = tuple(zip(used, samples))
     return DispatchPlan(**out)
 
 

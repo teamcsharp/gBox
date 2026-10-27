@@ -169,6 +169,14 @@ SMOOTH = True
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
 UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
 MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
+# The enemy knowledge database at work (brain step 4, operator 2026-10-27: "not utilizing any of the lessons learned";
+# Hermes #4484): the fight asks gbox.mercs.brain.knowledge.dispatch_plan (K's learned fields over the defaults) for its
+# target's class, distance and weapon, and uses a learned field only at K_MIN_CONF and K_MIN_SAMPLES: the aim height
+# (in place of CHEST_H), and the range where that class's shots do the most (such a Majini costs K_RANGE_PREF less as a
+# target). Fire mode: the database has not learned one here (the default, held). Plans are cached per class, 2 m band
+# and weapon for K_CACHE_S. Round counters k_aim_ticks / k_range_picks; stats k_plan says what the last plan carried.
+K_PLAN, K_MIN_CONF, K_MIN_SAMPLES, K_CACHE_S, K_RANGE_PREF = True, 0.6, 30, 1.0, 0.85
+K_COUNTERS = ("k_aim_ticks", "k_range_picks")
 WIGGLE = (("lleft",), ("lright",))       # "Break free": the left stick shaken (the prompt's icon)
 MASH = (("a",), ())                      # dying: "Resuscitate", A mashed (the prompt's icon)
 # Survival (operator 2026-10-26, the first MercMode turn: 5 deaths in 6 rounds, usually swarmed).
@@ -795,8 +803,10 @@ class Bot:
         self.turning = False                      # turning with the gun down (RERAISE_FRAC)
         self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
         self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
-        for k in MOTION_COUNTERS:
+        for k in MOTION_COUNTERS + K_COUNTERS:
             self.stats.setdefault(k, 0)
+        self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
+        self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.wiggle = 0
         self.hp_seen: list = []
@@ -855,11 +865,38 @@ class Bot:
         0.8 m away that is 29 deg, where the body turn used to wait for 12)."""
         return max(BODY_AIM_TOL, math.atan2(BODY_R * RAISE_WIDTH, max(dist, 1.0)))
 
+    def _aim_h(self, tgt, dist, now) -> float:
+        """The height on him to aim at: K's learned aim for his class at this distance and weapon (sure), else CHEST_H;
+        kept inside his body (KNEE_H .. HEAD_H)."""
+        plan = self._plan(tgt, dist, self._item, now)
+        if self._sure(plan, "aim_offset"):
+            self.stats["k_aim_ticks"] += 1
+            self.stats["k_plan"] = {"class": tgt.get("class"), "dist_m": round(dist / 100, 1),
+                                    "aim_h_cm": round(plan.aim_offset[1]), "zone": plan.zone,
+                                    "fields": [f for f, _ in plan.field_confidence],
+                                    "confidence": dict(plan.field_confidence)}
+            return max(KNEE_H, min(HEAD_H, float(plan.aim_offset[1])))
+        return CHEST_H
+
+    def _kcost(self, p, e, now) -> float:
+        """_cost, K_RANGE_PREF less for a Majini standing where K says his class's shots do the most (learned, sure)."""
+        c = self._cost(p, e)
+        if not K_PLAN or not e.get("class"):
+            return c
+        d = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        plan = self._plan(e, d, self._item, now)
+        if self._sure(plan, "range_cm") and plan.range_cm and plan.range_cm[0] <= d <= plan.range_cm[1]:
+            return c * K_RANGE_PREF
+        return c
+
     def _choose(self, p, live, now):
         """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
         one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
-        Nobody in front: the cost (near and in front), a new one kept COMMIT_S, one within THREAT_R first."""
-        best = min(live, key=lambda e: self._cost(p, e))
+        Nobody in front: the cost (near and in front; K's learned range preferred), a new one kept COMMIT_S, one within
+        THREAT_R first."""
+        best = min(live, key=lambda e: self._kcost(p, e, now))
+        if K_PLAN and best is not min(live, key=lambda e: self._cost(p, e)):
+            self.stats["k_range_picks"] += 1                 # a choice the learned range changed
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         px, _, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
@@ -874,7 +911,7 @@ class Bot:
             best = cur
         elif flat(nearest) < THREAT_R and (cur is None or flat(cur) > 1.5 * flat(nearest)):
             best = nearest
-        elif cur is not None and self._cost(p, cur) <= KEEP_TARGET * self._cost(p, best):
+        elif cur is not None and self._kcost(p, cur, now) <= KEEP_TARGET * self._kcost(p, best, now):
             best = cur
         if SMOOTH and cur is not None and best is not cur and best.get("ptr", best.get("slot")) == self.prev_target \
                 and now - self.switch_at < FLIP_S and flat(best) >= GRAB_THREAT_R:
@@ -895,6 +932,31 @@ class Bot:
             if self._yaw_dir and d != self._yaw_dir and now - self._yaw_dir_at <= 0.4:
                 self.stats["aim_reversals"] += 1
             self._yaw_dir, self._yaw_dir_at = d, now
+
+    def _plan(self, e, dist, item, now):
+        """K's dispatch plan for this Majini (class, distance, weapon), or None (no class, K off, or no learned field)."""
+        cls = e.get("class")
+        if not K_PLAN or not cls:
+            return None
+        key = (cls, int(dist // 200), item)
+        hit = self._plans.get(key)
+        if hit is not None and now - hit[0] < K_CACHE_S:
+            return hit[1]
+        from ..brain import knowledge
+        try:
+            plan = knowledge.dispatch_plan(MAP_ID, cls, None, dist, item)
+        except Exception:                                    # noqa: BLE001 - no knowledge: today's constants
+            plan = None
+        plan = plan if plan is not None and plan.source != "default" else None
+        if len(self._plans) > 256:
+            self._plans.clear()
+        self._plans[key] = (now, plan)
+        return plan
+
+    @staticmethod
+    def _sure(plan, field) -> bool:
+        return plan is not None and plan.conf(field) >= K_MIN_CONF \
+            and dict(plan.field_samples).get(field, 0) >= K_MIN_SAMPLES
 
     def _set_target(self, key, now) -> None:
         """The target from here on: a change is counted (target_switches), and a change back to the one he left within
@@ -1150,6 +1212,8 @@ class Bot:
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         self.doing, self.why, self._now = "none", "", now
+        held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
+        self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
         self._count_sticks(act, now)
         try:
@@ -1403,7 +1467,8 @@ class Bot:
             self._set_target(other, now)
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
-        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        aim_h = self._aim_h(tgt, dist, now)
+        chest = (foot[0], foot[1] + aim_h, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
         ray_len = math.dist(origin, dot)
         point_blank = ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
@@ -1427,7 +1492,8 @@ class Bot:
             self.target_at = now
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
-            chest = (foot[0], foot[1] + CHEST_H, foot[2])
+            aim_h = self._aim_h(tgt, dist, now)
+            chest = (foot[0], foot[1] + aim_h, foot[2])
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
@@ -1677,7 +1743,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
