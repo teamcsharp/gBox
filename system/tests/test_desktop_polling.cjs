@@ -288,9 +288,24 @@ test('opening Requests triggers an explicit refresh rather than waiting for a ti
 });
 
 test('timer wiring always uses automatic mode and consumes timer rejections', () => {
-  for (const [name, interval] of [['auditPoll', 3000], ['statusRight', 5000]])
-    assert.ok(html.includes(`setInterval(() => ${name}(false).catch(() => {}), ${interval})`));
+  assert.ok(html.includes('setInterval(() => auditPoll(false).catch(() => {}), 3000)'));
+  // the status strip is hidden behind the PiP (operator 2026-10-27: its ~0.5 MB PC list every 5 s is not read for it then)
+  assert.ok(html.includes('setInterval(() => { if (!$("body").classList.contains("gbox-compact")) statusRight(false).catch(() => {}); }, 5000)'));
   assert.ok(html.includes('refreshInbox(false).catch(() => {});'));
+});
+
+test('the process pop-ups are not synced (nor the PC list read for them) behind the PiP', async () => {
+  const received = []; let mounts = 0, workerReads = 0;
+  const context = vm.createContext({ SBX_READY: Promise.resolve(), SBX: { api: 'https://fixture.invalid', tok: 't' }, encodeURIComponent,
+    document: { querySelector: () => null, body: { classList: { contains: k => k === 'gbox-compact' } } },
+    WORKERS: { get: async () => { workerReads++; return { ok: true, data: [] }; } }, S: { workerName: 'fixture' },
+    window: { GBoxProcessPopup: { mount() { mounts++; return { sync: jobs => received.push(jobs) }; } } } });
+  vm.runInContext(between('let PROCESS_POPUP = null;', 'function auditPoll(explicit'), context);
+  await vm.runInContext('processPopupSync([{id:"job"}])', context);
+  assert.equal(mounts, 0); assert.equal(workerReads, 0); assert.deepEqual(received, []);
+  context.document.body.classList.contains = () => false;
+  await vm.runInContext('processPopupSync([{id:"job"}])', context);
+  assert.equal(mounts, 1); assert.equal(workerReads, 1);
 });
 
 test('#712: an unchanged request history (same ETag) is neither copied into the page nor keyed by its contents', async () => {
@@ -324,4 +339,9 @@ test('#712: the 8 MB request history is polled every 5 s only while Requests is 
   on.add('on');
   for (let i = 0; i < 4; i++) { now += 5000; tickFn(); }
   assert.equal(polls, 5);                                    // visible: every 5 s
+  // behind the PiP, never: the whole history was 46 MB on 2026-10-27, half a minute of Wi-Fi taken from the PiP's stream
+  on.delete('on'); on.add('gbox-compact');
+  for (let i = 0; i < 30; i++) { now += 5000; tickFn(); }
+  assert.equal(polls, 5);
+  on.delete('gbox-compact'); now += 5000; tickFn(); assert.equal(polls, 6);
 });

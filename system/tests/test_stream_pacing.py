@@ -52,6 +52,46 @@ def test_backpressured_viewer_reads_newest_picture_without_a_frame_queue():
     asyncio.run(run())
 
 
+def test_viewer_frame_rate_cap_sends_the_newest_frame_at_most_that_often():
+    # operator 2026-10-27: the desktop PiP over Wi-Fi played for seconds, then stopped; a 57 fps source of 32 KB JPEGs is
+    # ~15 Mbps per viewer, and the PiP asks for 30 (GET /api/sessions/{sid}/mjpeg?fps=30)
+    async def run():
+        lv, clock, slept = live(), [0.0], []
+
+        async def sleep(seconds):
+            slept.append(seconds)
+            clock[0] += seconds + 1e-6
+        gen = live_stream.async_mjpeg_parts(lv, clock=lambda: clock[0], max_fps=30, sleep=sleep)
+        assert await anext(gen) == live_stream.part(b"first")          # the first picture at once
+        clock[0] += .010; publish(lv, b"2", 2)
+        clock[0] += .005; publish(lv, b"3", 3)                         # two pictures inside one 1/30 s step
+        assert await anext(gen) == live_stream.part(b"3")               # the step waited out, then the newest
+        assert slept == [pytest.approx(1 / 30 - .015)]
+        assert lv["viewer_skips"] == 1 and lv["viewer_frames"] == 2
+        clock[0] += .050; publish(lv, b"4", 4)                         # a picture a full step later: no wait
+        assert await anext(gen) == live_stream.part(b"4")
+        assert len(slept) == 1
+        await gen.aclose()
+        assert not lv["async_waiters"]
+    asyncio.run(run())
+
+
+def test_uncapped_viewer_still_gets_every_picture_it_can_take():
+    async def run():
+        lv, slept = live(), []
+
+        async def sleep(seconds):
+            slept.append(seconds)
+        gen = live_stream.async_mjpeg_parts(lv, max_fps=0, sleep=sleep)
+        assert await anext(gen) == live_stream.part(b"first")
+        for seq in range(2, 6):
+            publish(lv, str(seq).encode(), seq)
+            assert await anext(gen) == live_stream.part(str(seq).encode())
+        assert slept == [] and lv.get("viewer_skips", 0) == 0
+        await gen.aclose()
+    asyncio.run(run())
+
+
 def test_fast_viewer_receives_frames_while_other_viewer_is_backpressured():
     async def run():
         lv = live()

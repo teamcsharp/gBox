@@ -73,9 +73,12 @@
     if (!isStream(el) || sessionOf(el.getAttribute('src')) !== sid) return true;
     return el.getAttribute('data-stream-state') === 'connected';
   }
+  // healthMisses: health reads that must fail in a row before a stream is reconnected for it. One failed read is the
+  // control plane or this PC's link being slow (operator 2026-10-27: the PiP over Wi-Fi reconnected - stopped - on
+  // single misses); a connection that really broke reports itself through the image's error event.
   function createStreamWatchdog({ doc, setTimer = setTimeout, clearTimer = clearTimeout, now = Date.now,
     interval = 4000, blankAfter = 8000, maxDelay = 10000, stallAfter = 3000, reattachAfterStall = 20000,
-    requestTimeout = 5000, renewAfter = 60000, posterEvery = 15000, carryFor = 5000, log = () => {},
+    requestTimeout = 5000, renewAfter = 60000, posterEvery = 15000, carryFor = 5000, healthMisses = 3, log = () => {},
     env = typeof window !== 'undefined' ? window : null, preload = defaultPreload(env),
     fetchHealth = defaultHealth(env), readPicture = pictureReader(doc),
     captureFrame = env?.GBOX_STREAM_CAPTURE_FRAME || picturePoster(doc) } = {}) {
@@ -95,7 +98,7 @@
         cancel(s);
         s = { key, attempt: 0, since: now(), pending: false, trouble: null, stale: false, posterAt: -Infinity,
           poster: null, ended: false, badge: null, checking: false, healthAt: -Infinity, probing: false, tasks: new Set(),
-          hash: null, renderAt: now(), status: null, posterVersion:0, alt: el.getAttribute('alt') };
+          hash: null, renderAt: now(), status: null, posterVersion:0, alt: el.getAttribute('alt'), misses: 0 };
         state.set(el, s); tracked.add(el);
         status(el, 'connecting');
       }
@@ -208,6 +211,7 @@
       try {
         const h = await bounded(s, opts => fetchHealth(src, opts));
         if (!current(el, s) || !h) return;
+        s.misses = 0;
         if (h.state === 'ended') {
           s.ended = true; cancelRetry(s);
           status(el, el.getAttribute('data-stream-follow') === 'game' ? 'reconnecting' : 'ended');
@@ -230,7 +234,9 @@
           if (!s.pending) calm(el);
         }
         if (!el.naturalWidth && now() - s.since >= blankAfter) reconnect(el, 'no picture');
-      } catch { if (current(el, s) && !s.ended) reconnect(el, 'server unreachable'); }
+      } catch {
+        if (current(el, s) && !s.ended && (++s.misses >= healthMisses || !el.naturalWidth)) reconnect(el, 'server unreachable');
+      }
       finally { s.checking = false; }
     }
     function onError(event) { if (isStream(event.target)) reconnect(event.target, 'error'); }

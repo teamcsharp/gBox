@@ -4287,9 +4287,11 @@ def create_app(config: Config) -> FastAPI:
         return picture_bounds.cached(sid, f)
 
     @app.get("/api/sessions/{sid}/mjpeg")
-    def mjpeg(sid: str, request: Request, actor=Depends(auth)):
+    def mjpeg(sid: str, request: Request, fps: float = 0, actor=Depends(auth)):
+        """fps (1-60, optional): this viewer's frame-rate cap; the desktop PiP asks for 30 so a Wi-Fi link carries it."""
         from .live_stream import async_mjpeg_parts, BackgroundCheck, BackgroundLease
         lv = _live(sid)
+        max_fps = min(60.0, fps) if fps >= 1 else 0.0
 
         async def read_alive() -> bool:
             s = await asyncio.to_thread(store.get, "session", sid)
@@ -4308,7 +4310,7 @@ def create_app(config: Config) -> FastAPI:
                 lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid, host=host),
                 lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, None))
             try:
-                async for part in async_mjpeg_parts(lv, alive=alive):
+                async for part in async_mjpeg_parts(lv, alive=alive, max_fps=max_fps):
                     now = time.time()
                     if now - renewed >= 5:
                         lease.renew()

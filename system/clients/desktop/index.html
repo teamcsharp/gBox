@@ -2657,7 +2657,8 @@ function loadPlay() {
         // Its first paint is awaited at most 250 ms: a view loaded while hidden (behind the PiP, which hides everything
         // else) gets no animation frames at all, so it timed out every 30 s, was rebuilt and never became ready, and the
         // PiP could not follow its game to a new session (operator 2026-10-27: "stuck reconnecting" after a Spark restart)
-        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => { requestAnimationFrame(resolve); setTimeout(resolve, 250); }); })()`);
+        // The stream parking (guestStreamParkScript) goes in first: a view loaded behind the PiP never opens its own stream.
+        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; ${typeof guestStreamParkScript === "function" ? guestStreamParkScript() : ""} await window.gboxViewReady; await new Promise(resolve => { requestAnimationFrame(resolve); setTimeout(resolve, 250); }); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
         readyResolve();
@@ -3644,9 +3645,11 @@ document.addEventListener("click", async e => {
 // #712: /api/requests is the whole request history (~8 MB, ~1 s to serve, a ~150 ms main-thread task to receive).
 // Poll it every 5 s only while Requests is on screen; the toolbar's pending count refreshes once a minute otherwise
 // (and immediately after every send, reply or status change, which call refreshInbox()).
+// Never behind the PiP, which hides the inbox and its count: the whole history was 46 MB on 2026-10-27, half a minute of
+// this PC's Wi-Fi taken from the PiP's stream once a minute (operator: "it plays for three seconds and then it stops").
 var inboxAt = 0;
 setInterval(() => {
-  if (GBoxLivePoll.due(inboxAt, $("#requests").classList.contains("on"), 5000, 60000)) refreshInbox(false).catch(() => {});
+  if (!$("body").classList.contains("gbox-compact") && GBoxLivePoll.due(inboxAt, $("#requests").classList.contains("on"), 5000, 60000)) refreshInbox(false).catch(() => {});
 }, 5000);
 
 // ---------------- native game window inside gBox ----------------
@@ -3841,6 +3844,20 @@ const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
 let compactMedia = null, compactTransition = null, compactFit = null;
 const compactCurrentSid = () => COMPACT.on ? gboxStreamWatchdog.sessionOf($('#compact-stream')?.getAttribute('src') || '') || COMPACT.sid : null;
 const compactApi = async (url, body, method) => { const r = await gbox.api(url, body, method); if (!r.ok) throw Error(r.error || 'PiP request failed'); return r.data; };
+// While the PiP shows a streamed game, the main window's view stays loaded behind it (it comes back as it was) but never
+// pulls a second live copy of the stream: its MJPEG pictures become a still until the PiP closes (operator 2026-10-27:
+// over Wi-Fi the PiP played for seconds, then stopped; the hidden view streamed the same game at full rate beside it).
+function guestStreamParkScript() {
+  let on = false; try { on = COMPACT.on && !COMPACT.local; } catch { /* before the PiP state exists */ }
+  return `if (!window.gboxParkStreams) { const live = /\\/mjpeg(\\?|$)/; let parked = false;
+    const sweep = () => { for (const img of document.querySelectorAll(parked ? 'img[src*="/mjpeg"]' : 'img[data-gbox-live]')) {
+      if (!parked) { img.setAttribute('src', img.dataset.gboxLive); delete img.dataset.gboxLive; continue; }
+      const src = img.getAttribute('src') || ''; if (live.test(src)) { img.dataset.gboxLive = src; img.setAttribute('src', src.replace(live, '/frame.jpg$1')); } } };
+    new MutationObserver(() => { if (parked) sweep(); }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
+    window.gboxParkStreams = value => { parked = !!value; sweep(); return parked; }; }
+    window.gboxParkStreams(${on});`;
+}
+const parkGuestStreams = () => document.querySelector('#wv')?.executeJavaScript(guestStreamParkScript()).catch(() => {});
 // one of gBox's random visualizations on the PiP while MercMode boots the next title (viz.js, demo signal: no audio)
 const compactVisual = { ctl: null,
   async start(canvas) {
@@ -3898,7 +3915,9 @@ const compactController = GBoxCompactGame.create({
     }
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
-    const streamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}`;
+    // fps=30 (gbox/live_stream.py): half of a 57 fps source's bitrate, the newest frame each time, so a Wi-Fi link carries
+    // the PiP steadily (operator 2026-10-27: "it plays for three seconds and then it stops")
+    const streamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}&fps=30`;
     const restoreCurrent = () => requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation;
     if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
     if (document.fullscreenElement) await document.exitFullscreen();
@@ -3920,6 +3939,7 @@ const compactController = GBoxCompactGame.create({
   render: state => {
     VIEW.mode = state.on ? 'compact' : state.returnMode === 'full' ? 'full' : 'auto';
     document.body.classList.toggle('gbox-compact', state.on);
+    if (typeof parkGuestStreams === 'function') parkGuestStreams();     // the hidden view's own streams: off while it hides
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
@@ -3984,7 +4004,7 @@ async function compactFollow(session, from, { force = false } = {}) {
   else if (image) image.style.backgroundImage = '';            // never the old game's last frame under the new one
   compactSession = session; compactTitle = sessionTitle(session);
   closePipMenu();
-  compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
+  compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}&fps=30`;
   await compactController.follow(from, {sid:session.session_id, local:false});
   document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
 }
@@ -7899,7 +7919,7 @@ const auIcon = (tbl, v) => tbl.find(([rx]) => rx.test(v || ""))[1];
 let PROCESS_POPUP = null;
 let PROCESS_POPUP_WORKER = null;
 async function processPopupSync(jobs) {
-  if (!window.GBoxProcessPopup) return;
+  if (!window.GBoxProcessPopup || document.body?.classList.contains("gbox-compact")) return;   // hidden behind the PiP
   if(document.querySelector('iframe[title="Live background operations"]')){PROCESS_POPUP?.suspend();return;}
   await SBX_READY;                                                          // first job must not cache a failed file:// / unauthenticated model load
   const workers = await WORKERS.get();
@@ -7977,7 +7997,8 @@ const pollStatusRight = singleFlightPoll(async () => {
             : `<span class="emu mut">no emulator</span>`;
   $("#sb-right").innerHTML = h;
 });
-statusRight(false).catch(() => {}); setInterval(() => statusRight(false).catch(() => {}), 5000);
+// the status strip is hidden behind the PiP: its PC list (/api/workers, ~0.5 MB) is not read every 5 s for it then
+statusRight(false).catch(() => {}); setInterval(() => { if (!$("body").classList.contains("gbox-compact")) statusRight(false).catch(() => {}); }, 5000);
 
 // ---- this PC's worker offline (operator 2026-10-26: i9-NUC's worker had been gone for 43 h while the app ran, watching
 // MercMode): after a minute offline a quiet badge says so, with one click to relaunch it through the app's own local gBox

@@ -80,7 +80,8 @@ it. A swap's child launch has no parent link before this change; look for a `ses
   - an `error` event;
   - 8 s with no picture;
   - a stall of 20 s or more, once frames flow again (that response may have ended or stalled);
-  - the server coming back after it was unreachable.
+  - three health reads failing in a row (`healthMisses`), or one while no picture is shown. A single slow or failed
+    read is the control plane or the viewer's link being busy, not the picture failing (2026-10-27, below).
 
   The old picture stays up until the new response delivers.
 - **Blanking only at a real end.** The view is left alone only when the server reports the session `ended`. The app then
@@ -144,6 +145,27 @@ cannot guarantee seamless emulation under every competing workload.
 Canvas-readable viewers still compare displayed and latest server pictures to detect a silent browser freeze.
 Opaque file:// viewers use IPC source health and image errors; source health alone cannot prove that the browser
 has painted the newest picture. The generic embedding fallback without health access retains bounded renewal.
+
+### Desktop PiP over Wi-Fi (2026-10-27)
+
+The operator: "it plays for three seconds and then it stops". On JAYBUILTFINALE (AX200 Wi-Fi) the PiP's stream shared
+the link with the app's own traffic. The Spark saw that PC's MJPEG connection swing between 2 and 18 Mbps with up to
+~950 KB queued, a second stream of the same game come and go, and the stream reconnected several times in three minutes.
+The traffic, all from the same app:
+
+- the PiP itself at the source rate, 57 fps of 32 KB JPEGs (~15 Mbps);
+- the main window's view behind the PiP streaming the same game (it was also rebuilt every 30 s until #1275);
+- the inbox's background refresh downloading the whole request history, 46 MB, once a minute (aborted after 8 s);
+- the connection probe giving the Spark 1.2 s; answers took up to 1.3 s on that link, and one miss marked the Spark
+  offline for 5 s, so the watchdog's health read failed and it reattached the PiP.
+
+Now:
+
+- `GET /api/sessions/{sid}/mjpeg?fps=N` (1-60) caps that viewer: the newest frame at most N times a second
+  (`live_stream.async_mjpeg_parts(max_fps=)`); the PiP and the mini player ask for 30.
+- While the PiP shows a streamed game, the hidden view's MJPEG pictures become stills (`/frame.jpg`) until it closes;
+  the inbox and status-strip polls (whole request history, PC list) wait until the PiP closes.
+- The desktop's remote probe allows 3 s; the watchdog's health misses are described above.
 
 ### Swap and launch hygiene (`gbox/server.py`, `gbox/operator_guard.py`, `clients/web/index.html`)
 

@@ -207,6 +207,43 @@ test('a native game here whose worker is offline is never docked or shown; a gam
   assert.equal((await lease.resolve('http://spark',{ok:true,data:[offlineRow,healthy]},{worker:'PC'})).session.session_id,'nuc-live');
 });
 
+// operator 2026-10-27 (JAYBUILTFINALE on Wi-Fi): "it plays for three seconds and then it stops". Behind the PiP the main
+// window's view showed the same game and streamed it at full rate too, half of the link for a picture nobody saw.
+function guestDom(srcs) {
+  const imgs = srcs.map(src => ({ attrs: { src }, dataset: {}, getAttribute(k) { return this.attrs[k] ?? null; }, setAttribute(k, v) { this.attrs[k] = v; } }));
+  let mutated = null;
+  const document = { documentElement: {}, querySelectorAll(selector) {
+    if (selector === 'img[src*="/mjpeg"]') return imgs.filter(img => String(img.attrs.src).includes('/mjpeg'));
+    if (selector === 'img[data-gbox-live]') return imgs.filter(img => img.dataset.gboxLive !== undefined);
+    throw Error('unexpected selector ' + selector);
+  } };
+  const ctx = vm.createContext({ document, window: {}, MutationObserver: class { constructor(fn) { mutated = fn; } observe() {} } });
+  return { imgs, ctx, mutate: () => mutated?.([]) };
+}
+test('behind a streamed PiP the hidden main view parks its own streams as stills, and gets them back when the PiP closes', () => {
+  const compact = { on: true, local: false };
+  const script = vm.runInNewContext(html.slice(html.indexOf('function guestStreamParkScript() {'), html.indexOf('const parkGuestStreams'))
+    + '\nguestStreamParkScript', { COMPACT: compact });
+  const g = guestDom(['/api/sessions/w-s/mjpeg?token=t', '/covers/re4.jpg']);
+  vm.runInContext(script(), g.ctx);
+  assert.equal(g.imgs[0].attrs.src, '/api/sessions/w-s/frame.jpg?token=t', 'a still of the same game, with its credentials');
+  assert.equal(g.imgs[1].attrs.src, '/covers/re4.jpg');
+  g.imgs.push(guestDom(['/api/sessions/w-next/mjpeg?token=t&reconnect=2']).imgs[0]); g.mutate();   // the view follows the PiP
+  assert.equal(g.imgs[2].attrs.src, '/api/sessions/w-next/frame.jpg?token=t&reconnect=2');
+  compact.on = false; vm.runInContext(script(), g.ctx);
+  assert.deepEqual(g.imgs.map(img => img.attrs.src), ['/api/sessions/w-s/mjpeg?token=t', '/covers/re4.jpg', '/api/sessions/w-next/mjpeg?token=t&reconnect=2']);
+  g.imgs.push(guestDom(['/api/sessions/w-full/mjpeg?token=t']).imgs[0]); g.mutate();
+  assert.equal(g.imgs[3].attrs.src, '/api/sessions/w-full/mjpeg?token=t', 'the full app streams as before');
+  Object.assign(compact, { on: true, local: true }); vm.runInContext(script(), g.ctx);
+  assert.equal(g.imgs[3].attrs.src, '/api/sessions/w-full/mjpeg?token=t', 'a game docked on this PC has no stream to park');
+  // a view loaded behind the PiP gets the parking before its first picture; every PiP change re-applies it
+  assert.match(html, /incidentCapture: true \}\)\}; \$\{typeof guestStreamParkScript === "function" \? guestStreamParkScript\(\) : ""\} await window\.gboxViewReady;/);
+  assert.match(html, /document\.body\.classList\.toggle\('gbox-compact', state\.on\);\r?\n\s*if \(typeof parkGuestStreams === 'function'\) parkGuestStreams\(\);/);
+  // and the PiP's own stream asks for at most 30 fps on entering as on following (gbox/live_stream.py max_fps)
+  assert.match(html, /mjpeg\?token=\$\{encodeURIComponent\(await gbox\.token\(\)\)\}&fps=30`;/);
+  assert.match(html, /compactStreamUrl = `\$\{S\.apiUrl\}\/api\/sessions\/\$\{encodeURIComponent\(session\.session_id\)\}\/mjpeg\?token=\$\{encodeURIComponent\(token\)\}&fps=30`;/);
+});
+
 test('picture-in-picture never opens a game whose PC is offline, and never moves the Sessions view to it',async()=>{
   const shown=[];
   const wv={gboxReady:Promise.resolve(),executeJavaScript:async code=>{shown.push(code);}};

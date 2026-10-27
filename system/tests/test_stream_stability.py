@@ -411,6 +411,9 @@ def test_queued_launch_is_held_if_viewing_starts_before_claim(swap_app):
     assert "PiP" in store.get("job", job["id"])["admission_wait"]["reason"]
 
 
+VIEWER = type("Request", (), {"client": type("Client", (), {"host": "10.89.1.13"})()})()   # the viewing machine
+
+
 def test_connected_mjpeg_view_protects_bot_until_stream_closes(swap_app, monkeypatch):
     import asyncio
     app, store, _, _ = swap_app
@@ -418,7 +421,7 @@ def test_connected_mjpeg_view_protects_bot_until_stream_closes(swap_app, monkeyp
     async def frames(*a, **kw):
         yield JPEG
     monkeypatch.setattr(live_stream, "async_mjpeg_parts", frames)
-    response = route(app, "/api/sessions/{sid}/mjpeg", "GET").endpoint("spark-op", actor="operator")
+    response = route(app, "/api/sessions/{sid}/mjpeg", "GET").endpoint("spark-op", VIEWER, actor="operator")
     assert operator_guard.watched_sessions(store, "spark")
 
     async def consume():
@@ -426,6 +429,26 @@ def test_connected_mjpeg_view_protects_bot_until_stream_closes(swap_app, monkeyp
 
     assert asyncio.run(consume()) == [JPEG]
     assert not operator_guard.watched_sessions(store, "spark")
+
+
+def test_mjpeg_view_passes_the_viewers_frame_rate_cap(swap_app, monkeypatch):
+    # operator 2026-10-27: the desktop PiP over Wi-Fi played for seconds, then stopped; it now asks for ?fps=30
+    import asyncio
+    app, store, _, _ = swap_app
+    caps = []
+    async def frames(lv, **kw):
+        caps.append(kw.get("max_fps"))
+        yield JPEG
+    monkeypatch.setattr(live_stream, "async_mjpeg_parts", frames)
+    endpoint = route(app, "/api/sessions/{sid}/mjpeg", "GET").endpoint
+
+    async def consume(response):
+        return [part async for part in response.body_iterator]
+
+    for fps in (30, 0, 0.5, 240):
+        assert asyncio.run(consume(endpoint("spark-op", VIEWER, fps=fps, actor="operator"))) == [JPEG]
+    assert caps == [30, 0, 0, 60], "1-60 caps the viewer; below 1 (or absent) is the source's own rate"
+    assert asyncio.run(consume(endpoint("spark-op", VIEWER, actor="operator"))) == [JPEG] and caps[-1] == 0
 
 
 def test_jobs_record_actor_and_client_origin(swap_app):

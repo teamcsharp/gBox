@@ -204,7 +204,8 @@ def test_control_plane_routes_encode_answers_off_the_event_loop(app, monkeypatch
     async def frames(*a, **kw):
         yield JPEG
     monkeypatch.setattr(live_stream, "async_mjpeg_parts", frames)
-    view = route(app, "/api/sessions/{sid}/mjpeg").dependant.call("w-s", actor="operator")
+    viewer = type("Request", (), {"client": type("Client", (), {"host": "10.89.1.13"})()})()
+    view = route(app, "/api/sessions/{sid}/mjpeg").dependant.call("w-s", viewer, actor="operator")
     assert isinstance(view, StreamingResponse) and view.media_type == "multipart/x-mixed-replace; boundary=f"
 
     async def consume():
