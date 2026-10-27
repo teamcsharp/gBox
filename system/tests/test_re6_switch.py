@@ -780,6 +780,37 @@ def test_the_gun_in_hand_is_the_equipped_slots_and_automatics_hold_the_trigger()
     assert {0x0F, 0x10, 0x11, 0x0C, 0x0E} <= R.AUTO_IDS and not {0x07, 0x03, 0x04, 0x13} & R.AUTO_IDS
 
 
+def system_info_guest(mask=0x10711, stages=0x1, qte=0):
+    from gbox import re6_switch_unlock as U
+    g = round_guest()
+    im = g.alloc(U.INFO_ARRAY + U.INFO_STRIDE)
+    g.q(BASE + U.S_INFOMAN, im)
+    g.i32(im + U.INFO_INDEX, 0)
+    info = im + U.INFO_ARRAY
+    for a, b, v in ((0x974, 0x974 + 0x5510, mask), (0x970, 0x970 + 0x5510, stages), (0x46B0, 0x46B0 + 0x5510, qte)):
+        g.put(info + a, struct.pack("<I", v))
+        g.put(info + b, struct.pack("<I", v))
+    return g, info
+
+
+def test_unlock_stages_and_auto_qte_write_only_their_own_cells_in_both_copies(mods):
+    g, info = system_info_guest(stages=0x1)
+    ad = Adapter(g)
+    out = mods.run(ad, "unlock_stages", on=True)
+    assert out["verified"] and out["writes"] == 2 and out["after"] == ["0x1807", "0x1807"]   # bits 1, 2, 11, 12 ORed in
+    assert sorted(a for a, _ in ad.writes) == sorted(info + off for off in mods.STAGE_MASK)
+    assert mods.run(ad, "all_stages", on=True)["writes"] == 0                             # already there
+    ad.writes.clear()
+    out = mods.run(ad, "auto_qte", on=True)
+    assert out["verified"] and out["writes"] == 2 and out["after"] == ["0x1", "0x1"]
+    assert sorted(a for a, _ in ad.writes) == sorted(info + off for off in mods.AUTO_QTE)
+    assert all(d == struct.pack("<I", 1) for _, d in ad.writes)
+    off = mods.run(ad, "qte", on=False)
+    assert off["after"] == ["0x0", "0x0"] and off["writes"] == 2
+    for cell in (0x974, 0x974 + 0x5510):                                                   # the character mask untouched
+        assert struct.unpack("<I", g.rd(info + cell, 4))[0] == 0x10711
+
+
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
     g = round_guest(guns=((10, 18),))
     ad = Adapter(g)
