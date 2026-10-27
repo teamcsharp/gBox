@@ -189,7 +189,13 @@ def test_re5_and_re6_get_single_core_in_edens_per_game_file(tmp_path):
     t = custom.read_text()
     assert "[Core]\n" in t and "use_multi_core\\use_global=false\n" in t and "use_multi_core\\default=false\n" in t
     assert adapters.ini_get(t, "Core", "use_multi_core") == "false"
-    assert ad.title_settings == {"Core": {"use_multi_core": "false"}}
+    # single-core's cost, measured in a live No Mercy round: no stalls on first-time shader compiles
+    assert adapters.ini_get(t, "Renderer", "use_asynchronous_shaders") == "true"
+    assert adapters.ini_get(t, "Renderer", "async_presentation") == "true"
+    assert adapters.ini_get(t, "Renderer", "async_presentation\\use_global") == "false"
+    assert adapters.ini_get(t, "Renderer", "gpu_accuracy") is None          # Eden's default: Low inverted a frame
+    assert ad.title_settings == {"Core": {"use_multi_core": "false"},
+                                 "Renderer": {"use_asynchronous_shaders": "true", "async_presentation": "true"}}
     assert adapters.ini_get(provision.switch_linux_config(ad.config).read_text(), "Core", "use_multi_core") == "true"
     assert set(adapters.EDEN_TITLE_SETTINGS) >= {"010018100CD46000", "01002A000CD48000"}
     # Eden rewrites the file on every boot with its own lines; gBox keeps them and stays idempotent
@@ -209,7 +215,7 @@ def test_re5_and_re6_get_single_core_in_edens_per_game_file(tmp_path):
 
 def test_a_dropped_title_override_goes_back_to_the_global_value(tmp_path, monkeypatch):
     ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
-    assert ad.write_title_settings("010018100cd46000") == {"Core": {"use_multi_core": "false"}}
+    assert ad.write_title_settings("010018100cd46000") == adapters.EDEN_TITLE_SETTINGS["010018100CD46000"]
     monkeypatch.setattr(adapters, "EDEN_TITLE_SETTINGS", {"01002A000CD48000": {"Core": {"use_multi_core": "false"}}})
     assert ad.write_title_settings("010018100CD46000") == {}
     t = (provision.switch_linux_config(ad.config).parent / "custom" / "010018100CD46000.ini").read_text()
@@ -231,7 +237,7 @@ def test_an_update_beside_the_game_becomes_an_eden_content_folder(tmp_path):
     assert ad.content_dirs == [str(re6)]
     assert adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\size") == "1"
     assert adapters.ini_get(t, "UI", "Paths\\external_content_dirs\\1\\path") == str(re6)
-    assert ad.title_settings == {"Core": {"use_multi_core": "false"}}
+    assert ad.title_settings["Core"] == {"use_multi_core": "false"}
     re5 = tmp_path / "Resident Evil 5"
     re5.mkdir()
     ad.rom = build_nsp(re5 / "Resident Evil 5.nsp", ["a.nca", "010018100cd460000000000000000003.tik"])
