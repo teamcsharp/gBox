@@ -1,0 +1,73 @@
+{
+  "format": "gbox-ram-map/1",
+  "id": "010018100CD46000",
+  "title": "Resident Evil 5 (Nintendo Switch, v1.0.0, main build EBFFDB223149A725A93CD9B60979F6AA)",
+  "platform": "switch",
+  "endian": "little",
+  "pointer_size": 8,
+  "match": {
+    "title_id": "010018100CD46000",
+    "game_ids": [
+      "52d15709be0fda1a"
+    ]
+  },
+  "regions": [],
+  "notes": [
+    "MT Framework, 64-bit: every manager is a singleton whose instance pointer sits beside its class descriptor (MtDTI, 0x38 bytes: +8 name, +0x20 parent, +0x30 size>>2, +0x34 id); an object's class is the name its vtable's slot 5 (getDTI) returns.",
+    "ASLR moves main every boot: every address is main's base (gbox.mercs.titles.re5_switch.module_base: 64 bytes of main's read-only data at +0x1191000) plus an offset, so this map holds no absolute fields; the driver reads them.",
+    "Measured live 2026-10-26 on the Spark (Eden v0.2.1, single-core, NCE: a guest address is the host address) in The Mercenaries United, No Mercy, Public Assembly, Chris (BSAA): sMain base+0x26A1BA8 (sBioMain) +0x584E0 -> cGameSys (+0x944 phase 0/1/3, +0x948 f32 seconds left, +0x94C round time, +0x96C kills, +0x974 combo, +0x978 max combo, +0x97C f32 combo window, +0x990 score); sPlayer base+0x1CF1C98 +0x30 -> the player (+0x60 pos, +0x70 quaternion, +0x1EB8 s16 health, +0x1EBA maximum); sEnemy base+0x1CF04B8 (+0x38 count, +0x48 -> enemy pointers; +0x60 pos, +0x1EB8 health).",
+    "The results screen agreed with cGameSys: Enemies Routed 9, Max combo 6x, Score 3,060 (docs/research/re5-switch-ram.md).",
+    "Type D controls (the game's default): left stick moves, right stick turns (rleft = larger heading), ZL aims, ZL + ZR fires, L + ZR knife, ZL + B reload."
+  ],
+  "mercs": {
+    "driver": "gbox.mercs.titles.re5_switch",
+    "menus": "gbox.mercs.titles.re5_switch",
+    "ready": true,
+    "jump_at": "select_player",
+    "package": [],
+    "vocab": {
+      "screen": "driver",
+      "merc.stage": null,
+      "merc.timer": "driver",
+      "merc.combo": "driver",
+      "merc.combo_timer": "driver",
+      "merc.score": "driver",
+      "merc.kills": "driver",
+      "player.pos": "driver",
+      "player.facing": "driver",
+      "player.hp": "driver",
+      "player.hp_max": "driver",
+      "player.state": null,
+      "player.aim_pitch": null,
+      "player.weapon": null,
+      "player.ammo": null,
+      "enemies": "driver",
+      "enemies.pos": "driver",
+      "enemies.hp": "driver",
+      "enemies.hp_max": "driver",
+      "enemies.type": null,
+      "enemies.state": null,
+      "enemies.act": null,
+      "projectiles": null,
+      "prompt.kind": null,
+      "prompt.button": null,
+      "bonuses": null,
+      "drops": null,
+      "partner.pos": null
+    },
+    "units_per_m": 100,
+    "heading": {
+      "zero": "+z",
+      "positive": "toward +x"
+    },
+    "aim": {
+      "turn_rad_s": 2.8
+    },
+    "rules": {
+      "mode": "no_mercy",
+      "round_time_s": 120
+    }
+  },
+  "groups": {},
+  "fields": {}
+}

@@ -4396,9 +4396,14 @@ EDEN_SETTINGS = {
 # that thread's state: InvalidHandle 0xE401, SVCs re-run with stale registers, other threads jump to PC=4, then
 # svcBreak or SIGSEGV 3-4 s in. NCE and Dynarmic both fail and the symptoms differ from run to run. Single-core boots
 # both games to gameplay (docs/research/switch-emulator-spark.md).
+# Single-core costs speed. In a live RE5 No Mercy round (Eden reniced +10, Spark load 22-34), async shaders (no stall
+# on a first-time shader compile) plus async presentation took the round from about 74 % to about 86 % speed. GPU
+# accuracy Low looked like it added a colour-inverted frame, so it stays at Eden's default.
+_MT_FRAMEWORK_EDEN = {"Core": {"use_multi_core": "false"},
+                      "Renderer": {"use_asynchronous_shaders": "true", "async_presentation": "true"}}
 EDEN_TITLE_SETTINGS = {
-    "010018100CD46000": {"Core": {"use_multi_core": "false"}},   # Resident Evil 5
-    "01002A000CD48000": {"Core": {"use_multi_core": "false"}},   # Resident Evil 6
+    "010018100CD46000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 5
+    "01002A000CD48000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 6
 }
 EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)

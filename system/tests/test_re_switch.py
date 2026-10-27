@@ -3,11 +3,14 @@ import pytest
 from gbox import game_unlocks, re_switch as S
 
 
-def test_pinned_switch_no_mercy_is_not_native_ps3_autoplay():
+def test_pinned_switch_no_mercy_has_its_own_driver_not_the_ps3_one():
     game = {'game_id': S.RE5_GAME_ID, 'platform': 'switch', 'serial': '0x010018100cd46000', 'title': 'Resident Evil 5'}
     info = S.capabilities(game)
     assert info['serial'] == S.RE5_TITLE_ID and info['no_mercy_in_release']
-    assert not info['autoplay']['available'] and not info['unlock_on_load']['available']
+    assert info['autoplay']['available'] and info['autoplay']['driver'] == 'gbox.mercs.titles.re5_switch'
+    assert not info['unlock_on_load']['available'] and info['unlock_on_load']['needed'] is False
+    assert info['evidence']['main_build_id'] == 'EBFFDB223149A725A93CD9B60979F6AA'
+    assert S.RE5_GAME_ID == '52d15709be0fda1a'                    # the catalog id of the share's NSP
     profile = game_unlocks.profile_for(game)
     assert profile['platform'] == 'switch' and profile['verified'] is False
 
@@ -17,8 +20,9 @@ def test_preference_is_explicit_and_host_settings_are_unchanged():
     assert S.preferred_spec('re5', native, {}) is native
     preferred = {'re5': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': S.RE5_TITLE_ID}}
     spec = S.preferred_spec('re5', native, {'preferred_editions': preferred})
-    assert spec['platform'] == 'switch' and spec['playable'] is False
-    assert spec['modes'] == ['no_mercy'] and spec['map_id'] != 'BLUS30491'
+    assert spec['platform'] == 'switch' and spec['playable'] is True and 'reason' not in spec
+    assert spec['modes'] == ['no_mercy'] and spec['map_id'] == S.RE5_TITLE_ID != 'BLUS30491'
+    assert spec['game_ids'] == (S.RE5_GAME_ID,) and spec['driver'] == 'gbox.mercs.titles.re5_switch'
     assert S.normalize_preferences(preferred) == preferred
     assert native == {'platform': 'ps3', 'playable': True}
 

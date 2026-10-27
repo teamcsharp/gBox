@@ -612,8 +612,10 @@ def inventory(store, worker, cfg=None, sessions=None):
 
 def preparation(platform):
     if platform == 'switch':
-        return {'strategy': 'native_readiness_pending', 'instant_state_supported': False,
-                'reason': 'Switch emulator startup, No Mercy selection and native autoplay hooks need live verification.'}
+        return {'strategy': 'native_menus_from_boot', 'instant_state_supported': False,
+                'reason': 'Eden has no save states: every launch boots the title and gbox.mercs.titles.re5_switch walks '
+                          'its native menus to No Mercy from RAM (title, PLAY GAME, EXTRA CONTENT, THE MERCENARIES '
+                          'UNITED, NO MERCY, stage, character); between rounds the results lead back to the selects.'}
     return ({'strategy': 'persistent_install_and_shader_cache', 'instant_state_supported': False,
              'reason': 'RPCS3 uses its installed data and retained caches, then verified native menus. '
                        'No save-state capture/reload. With keep_warm the next title boots paused in the round\'s last '
