@@ -171,6 +171,20 @@ RUN = ("b", "lup")
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
 FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
+# Rain fire (operator 2026-10-27: "the bot needs to raise their weapon and rain fire. I need them unloading with the
+# gidra hooks"): the gun stays up and the trigger down whenever a Majini is in front. The live look (03:13-03:16, stats
+# look, 350 decisions) had the trigger down 4 % of the round. After almost every pull the laser read down for a tick in
+# the shot's motion (29), and the bot stopped firing to wait for it (25 times) or let the gun go (17 of 24 reraises at
+# motion 29). 49 body turns and 46 unaims were for Majini 0.8 m away (median; turns of 19 deg, inside his body's width
+# that close), half the unaims on a ray of 0.2-0.6 m (the dot on the Majini at the muzzle), and back-offs took 15 %.
+MOTION_AIM = frozenset({22, 26, 29})     # the gun coming up, aimed, a shot: the gun is up even when the laser reads down
+FLICKER_S = 0.6                          # the last ray stands in this long while the motion byte says the gun is up ...
+LASER_STUCK_S = 2.0                      # ... and the gun is raised again after this long without a laser, whatever it says
+RAISE_WIDTH = 1.25                       # the gun comes up once he is inside this many body half-widths (close up: wide)
+POINT_BLANK_RAY, POINT_BLANK_R = 60.0, 150.0   # a ray this short with him this near in front: the dot is on him
+SWITCH_ERR = math.radians(20)            # the aim far off the target: a Majini this near the ray is taken instead
+GRAB_THREAT_R = 120.0                    # one this near, not in front, is turned to before the ones in front
+CLOSE_BACKOFF, BURST_BACKOFF, HEALTHY_ESCAPES = False, False, False   # no back-offs, no bursts cut short; escapes hurt only
 DEAD_WAIT_S = 2.5                        # "You Are Dead - Continue?" comes up after the death animation
 HANG_S = 6.0
 TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # result_ready (the PS3 driver's rule)
@@ -693,6 +707,8 @@ class Bot:
         self._aimctx = None                       # the aim as the trigger was pulled (_decide)
         self._pulls: list = []                    # pulls whose hit window is still open
         self._raise_t = None                      # when the gun went up for the pulls to come (first_pull_s)
+        self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
+        self.stats.setdefault("flicker_s", 0)
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -701,13 +717,28 @@ class Bot:
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) / math.pi)
 
+    @staticmethod
+    def raise_tol(dist: float) -> float:
+        """How far off his bearing the gun comes up: BODY_AIM_TOL, or close up his body's angle (RAISE_WIDTH half-widths:
+        0.8 m away that is 29 deg, where the body turn used to wait for 12)."""
+        return max(BODY_AIM_TOL, math.atan2(BODY_R * RAISE_WIDTH, max(dist, 1.0)))
+
     def _choose(self, p, live, now):
+        """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
+        one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
+        Nobody in front: the cost (near and in front), a new one kept COMMIT_S, one within THREAT_R first."""
         best = min(live, key=lambda e: self._cost(p, e))
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         px, _, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         nearest = min(live, key=flat)
-        if cur is not None and now - self.target_at < COMMIT_S:
+        front = [e for e in live if flat(e) <= ENGAGE_R
+                 and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
+        if front:
+            best = cur if cur is not None and any(e is cur for e in front) else min(front, key=flat)
+            if flat(nearest) < GRAB_THREAT_R and not any(e is nearest for e in front) and flat(best) > 2 * flat(nearest):
+                best = nearest
+        elif cur is not None and now - self.target_at < COMMIT_S:
             best = cur
         elif flat(nearest) < THREAT_R and (cur is None or flat(cur) > 1.5 * flat(nearest)):
             best = nearest
@@ -892,7 +923,7 @@ class Bot:
             return None
         px, _, pz = p["pos"]
         hurt = (p.get("hp") or 0) < HURT * (p.get("hp_max") or 0)
-        limits = TIGHT + (((RING_N, RING_R),) if hurt else ())
+        limits = (TIGHT if hurt or HEALTHY_ESCAPES else ()) + (((RING_N, RING_R),) if hurt else ())
         ring = None
         for n, r in limits:
             near = sorted(heading(e["pos"][0] - px, e["pos"][2] - pz) for e in live if flat(e) < r)
@@ -1021,12 +1052,13 @@ class Bot:
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
             return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
+        motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
                 self.doing, self.why = "backoff", "finishing a back-off"
                 return {"hold": ("ldown",) + self._turn(body_err)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
-            if near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back first
+            if CLOSE_BACKOFF and near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back
                 if now >= self.backoff_ready:
                     self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
                     self.stats["backoffs"] += 1
@@ -1038,11 +1070,12 @@ class Bot:
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
-            if abs(body_err) > BODY_AIM_TOL:                 # turn round first (fast, the gun down)
+            if abs(body_err) > self.raise_tol(dist):         # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
                 self.stats["turns"] += 1
                 return {"hold": self._turn(body_err)}
             self.aim_since = self._raise_t = now
+            self.ray_seen = self.last_ray = None
         lz = snap.get("laser")
         gun = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         weapon = f"0x{gun['id']:03x}" if gun else "gun"
@@ -1058,22 +1091,30 @@ class Bot:
             self.doing, self.why = ("fire", "laserless heading") if fire else ("aim", "laserless heading")
             keys = {"zl"} | (self._trigger(True, now) if fire else self._yaw(body_err))
             return {"hold": tuple(sorted(keys))}
-        if not lz.get("up") or now - self.aim_since < READY_S:   # the gun is coming up (or knocked down)
-            if now - self.aim_since > LASER_WAIT_S:
-                self.doing, self.why = "reraise", f"no laser after {now - self.aim_since:.2f} s (motion {p.get('motion')})"
+        if lz.get("up") and now - self.aim_since >= READY_S:
+            ray = (tuple(lz["from"]), tuple(lz["at"]))
+            self.ray_seen, self.last_ray = now, ray
+            if ray != self.ray_key:
+                self.ray_key, self.ray_since = ray, now
+            elif now - self.ray_since > RAY_STALE_S:
+                self.doing, self.why = "restale", f"the ray unchanged {RAY_STALE_S:.0f} s"
+                self.stats["restale"] += 1                   # a frozen ray: not a live aim
+                self._gun_down()
+                return {"hold": ()}
+        elif self.last_ray is not None and motion in MOTION_AIM and now - self.ray_seen <= FLICKER_S:
+            ray = self.last_ray                              # the laser read down in the shot: the gun is up, aim on
+            self.stats["flicker_s"] = round(self.stats["flicker_s"] + min(now - (self._tick_t or now), LOOK_STEP_MAX_S), 2)
+        else:                                                # the gun is coming up (or knocked down)
+            waited = now - max(self.aim_since, self.ray_seen if self.ray_seen is not None else -math.inf)
+            if (waited > LASER_WAIT_S and motion not in MOTION_AIM and motion != MOTION_RELOAD) or waited > LASER_STUCK_S:
+                self.doing, self.why = "reraise", f"no laser after {waited:.2f} s (motion {motion})"
                 self.stats["reraise"] += 1                   # it did not come up: let ZL go a tick, press it again
                 self._gun_down()
                 return {"hold": ()}
-            self.doing, self.why = "raise", f"the gun coming up (motion {p.get('motion')})"
+            self.doing, self.why = "raise", f"the gun coming up (motion {motion})"
+            if self.fire_down:
+                self._trigger(False, now)
             return {"hold": ("zl",)}
-        ray = (tuple(lz["from"]), tuple(lz["at"]))
-        if ray != self.ray_key:
-            self.ray_key, self.ray_since = ray, now
-        elif now - self.ray_since > RAY_STALE_S:
-            self.doing, self.why = "restale", f"the ray unchanged {RAY_STALE_S:.0f} s"
-            self.stats["restale"] += 1                       # a frozen ray: not a live aim
-            self._gun_down()
-            return {"hold": ()}
         origin, dot = ray
         on_e = next((e for e in live if dot_on(dot, e["pos"])), None)
         if on_e is not None and on_e is not tgt:             # the dot is on another one: he is the target now
@@ -1083,16 +1124,26 @@ class Bot:
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         chest = (foot[0], foot[1] + CHEST_H, foot[2])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
-        if abs(yaw_err) > UNAIM_ERR:                         # the aim is far off him: gun down, turn the body
-            self.doing, self.why = "unaim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m "
-                                             f"(ray {math.dist(origin, dot) / 100:.1f} m)")
-            self._gun_down()
-            return {"hold": self._turn(body_err)}
+        ray_len = math.dist(origin, dot)
+        point_blank = ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
+        if abs(yaw_err) > UNAIM_ERR and not point_blank:     # the aim is far off him
+            alt = self._near_aim(origin, dot, live, flat) if ray_len >= STEER_RAY_CM else None
+            if alt is None:                                  # nobody near the aim: gun down, turn the body
+                self.doing, self.why = "unaim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m "
+                                                 f"(ray {ray_len / 100:.1f} m)")
+                self._gun_down()
+                return {"hold": self._turn(body_err)}
+            tgt, foot = alt, alt["pos"]                      # another one near the aim: him, the gun stays up
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            dist = flat(tgt)
+            body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
+            chest = (foot[0], foot[1] + CHEST_H, foot[2])
+            yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
-        on = where is not None or through(origin, dot, foot)
+        on = where is not None or point_blank or through(origin, dot, foot)
         front = sum(1 for e in live if flat(e) < FRONT_R
                     and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
-        if front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
+        if BURST_BACKOFF and front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
             self.doing, self.why = "burst_backoff", f"{front} in front after a {now - self.trigger_since:.1f} s burst"
             self.stats["burst_backoffs"] += 1                # a crowd in front: the burst is done, step back, burst again
             self._gun_down()
@@ -1100,9 +1151,10 @@ class Bot:
             return {"hold": ("ldown",)}
         self._aimctx = {"target": tgt.get("ptr", tgt.get("slot")), "dist": dist, "bearing": body_err,
                         "yaw_err": yaw_err, "where": where, "laserless": False, "weapon": weapon, "origin": origin,
-                        "dot": dot, "py": py, "gate": f"dot on {where}" if where else "ray through him"}
+                        "dot": dot, "py": py,
+                        "gate": f"dot on {where}" if where else "point blank" if point_blank else "ray through him"}
         self.doing = "fire" if on else "aim"
-        self.why = (f"{where or 'ray'} at {dist / 100:.1f} m" if on else
+        self.why = (f"{where or ('point blank' if point_blank else 'ray')} at {dist / 100:.1f} m" if on else
                     f"yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} at {dist / 100:.1f} m")
         held = next((x for x in reversed(self._pulls) if x["end"] is None), None) if self.fire_down else None
         if held is not None and held["target"] != self._aimctx["target"] \
@@ -1118,6 +1170,18 @@ class Bot:
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
+
+    @staticmethod
+    def _near_aim(origin, dot, live, flat):
+        """The Majini nearest the aim line (by the ray's yaw to his chest), within SWITCH_ERR and in reach; None."""
+        best, best_err = None, SWITCH_ERR
+        for e in live:
+            if flat(e) > ENGAGE_R:
+                continue
+            err = abs(ray_error(origin, dot, (e["pos"][0], e["pos"][1] + CHEST_H, e["pos"][2]))[0])
+            if err < best_err:
+                best, best_err = e, err
+        return best
 
     # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
     def _pull_start(self, now) -> None:
@@ -1233,7 +1297,8 @@ class RE5Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
-                      "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale") \
+                      "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
+                      "flicker_s") \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):

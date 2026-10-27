@@ -108,7 +108,7 @@ def test_a_ray_through_him_that_takes_nothing_names_what_the_dot_met_behind_him(
 
 def test_turning_the_body_to_a_side_target_while_another_stands_in_front_is_counted():
     b, clock = bot()
-    ahead, side = at(1500, 0), at(300, 100)                           # costs 1500 and 300 * (1 + 100/180) = 467
+    ahead, side = at(1500, 0), at(100, 100)                           # one about to grab him beside: turned to first
     for k in range(5):
         clock[0] = 0.05 * k
         b.tick(snap([(ahead, 800), (side, 800)]))

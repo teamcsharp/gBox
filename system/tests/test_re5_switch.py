@@ -358,7 +358,8 @@ def test_bot_quick_turns_for_one_behind():
     assert b.stats["quick_turns"] == 1
 
 
-def test_bot_backs_off_one_in_front_only():
+def test_bot_backs_off_one_in_front_only(monkeypatch):
+    monkeypatch.setattr(R, "CLOSE_BACKOFF", True)                         # (off since rain fire: the gun goes up)
     b, clock = brain()
     assert b.tick(bot_snap((0.0, 0.0, 100.0)))["hold"][0] == "ldown" and b.stats["backoffs"] == 1
     b, clock = brain()

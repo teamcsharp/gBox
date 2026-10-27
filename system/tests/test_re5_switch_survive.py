@@ -116,11 +116,20 @@ def test_a_ring_is_left_through_its_widest_gap():
     ([at(200, 10), at(200, 130), at(200, -110)], 1000, 0),                         # loose (3 within 2 m), healthy: fight
     ([at(150, 10), at(150, 130), at(150, -110)], 1000, 0),                         # 3 within 1.5 m, healthy: fight too
     ([at(200, 10), at(200, 130), at(200, -110)], 500, 1),                          # the same ring, hurt (50 %): escape
-    ([at(230, 0), at(230, 90), at(230, 180), at(230, -90)], 1000, 1)])             # 4 within 2.5 m: tight
-def test_only_a_tight_ring_or_a_hurt_player_escapes(enemies, hp, escapes):
+    ([at(230, 0), at(230, 90), at(230, 180), at(230, -90)], 1000, 0),              # 4 within 2.5 m, healthy: fight
+    ([at(230, 0), at(230, 90), at(230, 180), at(230, -90)], 500, 1)])              # ... hurt: tight, escape
+def test_only_a_hurt_player_escapes_a_ring(enemies, hp, escapes):
     b, clock = brain()
     b.tick(snap(enemies=enemies, hp=hp, inv=()))
     assert b.stats["escapes"] == escapes
+
+
+def test_a_tight_ring_at_full_health_escapes_only_with_healthy_escapes_on(monkeypatch):
+    ring = [at(230, 0), at(230, 90), at(230, 180), at(230, -90)]
+    monkeypatch.setattr(R, "HEALTHY_ESCAPES", True)
+    b, clock = brain()
+    b.tick(snap(enemies=ring, inv=()))
+    assert b.stats["escapes"] == 1
 
 
 def test_escapes_are_capped_each_round():
@@ -130,7 +139,7 @@ def test_escapes_are_capped_each_round():
         clock[0] = k * (R.ESCAPE_GAP_S + R.ESCAPE_S + 1)
         b.escape = None
         b.quick, b.quick_at = 0, -1e9
-        b.tick(snap(enemies=ring, inv=()))
+        b.tick(snap(enemies=ring, inv=(), hp=500))
     assert b.stats["escapes"] == R.ESCAPES_MAX
 
 
@@ -146,7 +155,8 @@ def test_an_escape_runs_for_its_time_then_fights_again():
     assert b.escape is None and b.stats["escapes"] == 0                            # done; no new escape so soon
 
 
-def test_a_crowd_in_front_gets_a_burst_then_a_back_off():
+def test_a_crowd_in_front_gets_a_burst_then_a_back_off(monkeypatch):
+    monkeypatch.setattr(R, "BURST_BACKOFF", True)                                  # (off since rain fire)
     b, clock = brain()
     crowd = [(0.0, 0.0, 180.0), (40.0, 0.0, 200.0)]                                # two in front within 2.2 m
     on = {"from": (0.0, 140.0, 40.0), "at": (0.0, 110.0, 170.0), "up": True}      # the dot on the first one
