@@ -10,6 +10,7 @@ from tests.test_screensaver import Store as BaseStore, worker
 
 
 RE4,RE5=M.TITLES['re4']['game_ids'][0],M.TITLES['re5']['game_ids'][0]
+RE6=M.TITLES['re6']['game_ids'][0]
 
 
 class Store(BaseStore):
@@ -680,7 +681,7 @@ def test_dj_queue_validates_rounds_against_each_titles_roster():
                                               {'title':'re4','character':'HUNK'},{'title':'re4'}]})
     assert [e['title'] for e in cfg['queue']]==['re5','re4','re4'] and cfg['queue'][1]['stage'] is None
     for bad in ({'title':'re4','character':'Chris (BSAA)'},{'title':'re5','stage':8},{'title':'re5','mode':'story'},
-                {'title':'re6','character':'Leon'},{'title':'nope'},{'title':'re4','extra':1}):
+                {'title':'re6','character':'Agent'},{'title':'nope'},{'title':'re4','extra':1}):
         with pytest.raises(ValueError):M.configure(store,w['name'],{'queue':[bad]})
     with pytest.raises(ValueError,match='at most'):M.configure(store,w['name'],{'queue':[{'title':'re4'}]*21})
     sel=M.resolve_selection({'title':'re4','mode':None,'character':None,'stage':None},random.Random(1))
@@ -729,3 +730,63 @@ def test_re4_menu_layer_honours_a_requested_round_once_then_returns_to_random():
         sel.screen(None)
     assert 'ad1' not in R.REQUESTS
     with pytest.raises(ValueError):R.request('ad1','Leon',9)
+
+
+def test_re6_ps3_backend_selection_replaces_xbox360_placeholder():
+    spec=M.TITLES['re6']
+    assert spec['map_id']=='BLUS30855' and spec['platform']=='ps3' and RE6=='6fc93ff62e4eb868'
+    assert '0871eee3b68cdea3' not in spec['game_ids']     # the stale Xbox 360 revision is gone
+    assert spec['witnessed_launch_required'] is True
+    cat=M.catalog()['re6']
+    assert cat['modes']['mercenaries'][0]=='Leon' and 'Agent' not in cat['modes']['mercenaries']
+    assert 'Urban Chaos' in cat['stages'] and len(cat['stages'])==3
+    assert M.selection_job('re6','w1-x',{}) is None       # no native selection tool measured yet
+
+
+def test_re6_playable_only_after_this_host_actually_launched_blus30855():
+    import time
+    store,w,*_=rig()
+    now=time.time()
+    prepared={'checked_at':now,'emulator_launched':False,'configuration_changed':False,
+              'games':{RE6:{'reachable':True,'checked_at':now,'reason':'','path':'//share/RE6'}}}
+    store.put(M.PREPARATION,w['name'],prepared)           # a reachable ROM path alone...
+    rows={r['title']:r for r in M.inventory(store,w)}
+    assert not rows['re6']['playable'] and rows['re6']['backend_playable']
+    assert 'no verified' in rows['re6']['reason']
+    store.put('session','w1-prior-re6',{'session_id':'w1-prior-re6','game_id':RE6,'state':'ended'})
+    rows={r['title']:r for r in M.inventory(store,w)}     # ...but this host's own launch does
+    assert rows['re6']['playable'] and rows['re6']['rom_access']['source']=='actual_prior_host_launch'
+    M.configure(store,w['name'],{'enabled':True,'titles':['re6'],'queue':[{'title':'re6'}]})
+    pick=M.choose(store,w,random.Random(2))
+    assert pick['title']=='re6' and pick['selection']['mode']=='mercenaries'
+    assert pick['selection']['character'] in M.catalog()['re6']['modes']['mercenaries']
+
+
+def test_re6_unavailable_rom_is_not_playable():
+    class NoRE6(Store):
+        def catalog_get(self,gid):
+            return None if gid==RE6 else super().catalog_get(gid)
+    store=NoRE6();w=worker(10000.,name='lilspark',os='linux')
+    rows={r['title']:r for r in M.inventory(store,w)}
+    assert not rows['re6']['playable'] and rows['re6']['game_id'] is None
+    assert 'absent from the catalog' in rows['re6']['reason']
+
+
+def test_re6_boundaries_accept_once_and_reject_stale_revision():
+    store,w,*_=rig()
+    job={'id':'aj','tool':'autoplay','state':'running','worker_id':'w1',
+         'require_worker':'w1','input':{'op':'start','session_id':'w1-re6'},'created':1000.}
+    store.put('job',job['id'],job)
+    run={'worker':'lilspark','worker_id':'w1','session_id':'w1-re6','game_id':RE6,
+         'playing_since':1000.,'autoplay_job':'aj','mercmode':{'title':'re6','map_id':'BLUS30855'},
+         'mercmode_round_ids':[]}
+    body={'session_id':'w1-re6','round_id':'e'*32,'at':1990.,'map_id':'BLUS30855','role':'solo_p1',
+          'source':'native_terminal_reader','mode':'mercenaries','stage':0,'character':'Leon',
+          'witness':{'playing_observed':True,'player_verified':True,'screen':'results',
+                     'tally_ready':True,'timer':0}}
+    receipt=M.accept_boundary(store,run,body,parent_job=job,now=2000.)
+    assert receipt['round_id']=='e'*32 and receipt['map_id']=='BLUS30855'
+    run['mercmode_round_ids'].append(receipt['round_id'])
+    assert M.accept_boundary(store,run,body,parent_job=job,now=2001.) is None     # duplicate delivery
+    with pytest.raises(ValueError):                                            # stale Xbox 360 revision
+        M.accept_boundary(store,run,body|{'map_id':'BH6','round_id':'f'*32},parent_job=job,now=2002.)

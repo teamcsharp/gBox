@@ -25,10 +25,15 @@ TITLES = {
     're5': {'name': 'Resident Evil 5', 'map_id': 'BLUS30491', 'platform': 'ps3',
             'game_ids': ('e7ca89bbeb67360d',), 'playable': True,
             'characters': 18, 'stages': 8, 'modes': ['mercenaries', 'reunion']},
-    're6': {'name': 'Resident Evil 6', 'map_id': 'BH6', 'platform': 'xbox360',
-            'game_ids': ('0871eee3b68cdea3',), 'playable': False,
-            'reason': 'RE6 has no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
+    're6': {'name': 'Resident Evil 6', 'map_id': 'BLUS30855', 'platform': 'ps3',
+            'game_ids': ('6fc93ff62e4eb868',), 'playable': True, 'witnessed_launch_required': True,
+            'characters': 7, 'stages': 3, 'modes': ['mercenaries']},
 }
+# re6: the PS3/RPCS3 backend (BLUS30855) replaces the unavailable Xbox 360 placeholder
+# (0871eee3b68cdea3 / BH6). No native Mercenaries driver, menu cursor or terminal-round
+# reader is measured for this revision yet, so playable is gated per host: only a host
+# that has actually launched BLUS30855 (inventory rom_access source
+# 'actual_prior_host_launch') rotates into RE6; a reachable ROM path alone never does.
 
 
 def normalize(patch, current=None):
@@ -50,9 +55,10 @@ def normalize(patch, current=None):
 def catalog():
     """What the DJ queue can ask for, per verified title: modes -> characters (native roster order), stages."""
     from . import re4_menus
-    from .mercs.titles import re5_ps3
+    from .mercs.titles import re5_ps3, re6_ps3
     return {'re4': {'modes': {'mercenaries': list(re4_menus.PLAYERS)}, 'stages': list(re4_menus.STAGES)},
-            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)}}
+            're5': {'modes': {m: list(r) for m, r in re5_ps3.MODE_ROSTERS.items()}, 'stages': list(re5_ps3.STAGE_NAMES)},
+            're6': {'modes': {m: list(r) for m, r in re6_ps3.MODE_ROSTERS.items()}, 'stages': list(re6_ps3.STAGE_NAMES)}}
 
 
 def queue_entry(entry):
@@ -317,13 +323,21 @@ def inventory(store, worker, cfg=None, sessions=None):
                 probe=(prepared.get('games') or {}).get(gid) or {}
                 if prior:
                     candidate={'verified':True,'source':'actual_prior_host_launch','session_id':prior['session_id']}
-                if probe and 0<=time.time()-probe.get('checked_at',0)<=1800:
+                if probe and 0<=time.time()-probe.get('checked_at',0)<=1800 and not spec.get('witnessed_launch_required'):
                     candidate={'verified':probe.get('reachable') is True,'source':'worker_local_path_probe',
                                'checked_at':probe.get('checked_at'),'reason':probe.get('reason','')}
+                elif probe and spec.get('witnessed_launch_required') and not prior:
+                    # a reachable ROM path alone never makes a witnessed-launch title playable
+                    candidate={'verified':False,'source':'worker_local_path_probe',
+                               'reason':'RE6 (BLUS30855) has no verified native round on this PC; '
+                                        'this host must actually launch it before it joins the rotation'}
                 if game is games[0] or candidate['verified']:
                     access=candidate;selected_game=game
                 if candidate['verified']:break       # preferred accessible exact disc, never another disc's evidence
             if not access['verified']:reason=access.get('reason') or 'ROM is unavailable on this PC'
+            if not access['verified'] and spec.get('witnessed_launch_required'):
+                reason=('RE6 (BLUS30855) has no verified native round on this PC; '
+                        'it joins the rotation only after this host actually launches it')
         rows.append({'title': key, 'name': spec['name'], 'map_id': spec['map_id'],
                      'playable': bool(backend_ready and access['verified']), 'backend_playable':backend_ready,
                      'rom_access':access, 'reason': reason,
