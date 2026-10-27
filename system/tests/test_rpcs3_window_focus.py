@@ -17,6 +17,7 @@ def harness(tmp_path, monkeypatch):
         def __init__(self,target,**kwargs):self.target=target
         def start(self):self.target()
     monkeypatch.setattr(adapters.threading,'Thread',Thread)
+    monkeypatch.setattr(ad,'_fit_window',lambda:None)   # the window fitter has its own tests (test_session_display)
     monkeypatch.setattr(ad,'_xdo',lambda *args:calls.append(('input',args)))
     def command(display,args,timeout):
         assert display is ad.display and display.name==':90' and 0<timeout<=.25

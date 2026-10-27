@@ -2452,7 +2452,9 @@ sessionsView.after = (sid, mode) => {
 document.addEventListener("click", async e => {
   const im = e.target.closest?.("#scr"); if (!im || !e.ctrlKey) return;
   e.preventDefault();
-  const r = im.getBoundingClientRect(), sid = (window.active || {}).sid || new URLSearchParams(location.hash.slice(1)).get("sid");
+  // the frame's own box (object-fit: contain draws it inside the element): a Spark frame is 16:9 with a 4:3 game in it
+  const c = GBoxPickWhip.contentRect(im, window), r = { left: c.x, top: c.y, width: c.w, height: c.h };
+  const sid = (window.active || {}).sid || new URLSearchParams(location.hash.slice(1)).get("sid");
   const s = $("#sopres"); s.textContent = "✏ picking…";
   try {
     const j = await runJob({ tool: "pick", input: { session_id: im.dataset.sid || active.sid, x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height,

@@ -64,7 +64,8 @@ def test_re4_launches_with_aa_af_and_raised_internal_resolution(tmp_path, monkey
     saved = {path: path.read_bytes() for path in files}
     rom = disc(tmp_path / ('Resident Evil 4 (USA) (Disc 1)' + extension), b'G4BE08')
     argv = adapter._argv(rom)
-    # the Windows window is the operator's own screen (3x); the Spark's stream is 640x480 (capped at 2x)
+    # the Windows window is the operator's own screen (3x); the Spark's 1280x720 display shows RE4's frame about
+    # 1280x983, 2x (capped at 2x)
     ir = '3' if cls is adapters.DolphinWinAdapter else '2'
     assert gfx(argv) == {'GFX.Settings.InternalResolution': ir, 'GFX.Settings.MSAA': '4', 'GFX.Settings.SSAA': 'False',
                          'GFX.Enhancements.MaxAnisotropy': '4'}

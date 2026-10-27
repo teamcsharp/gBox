@@ -107,11 +107,13 @@ class Driver:
                     return Image.open(BytesIO(buf[a:b + 2])).convert("L")
 
     def dialog_open(self) -> bool:
-        """PSO's talk/info box: a large white panel in the upper middle of the screen (game UI, not world)."""
+        """PSO's talk/info box: a large white panel in the upper middle of the picture (game UI, not world). The box is
+        a share of the 4:3 picture, which a Linux session's 1280x720 display pillarboxes (gbox/session_display.py)."""
         try:
+            from .session_display import frame_picture, map_box
             im = self.frame()
             w, h = im.size
-            box = im.crop((int(w * .2), int(h * .24), int(w * .72), int(h * .36)))
+            box = im.crop(map_box((.2, .24, .72, .36), frame_picture(w, h), w, h))
             px = list(box.getdata())
             return sum(v > 225 for v in px) > 0.55 * len(px)
         except Exception:

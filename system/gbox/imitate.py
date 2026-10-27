@@ -92,10 +92,19 @@ def diff(before: frozenset, after: frozenset) -> list[dict]:
     return [{"key": k, "down": False} for k in sorted(before - after)] + [{"key": k, "down": True} for k in sorted(after - before)]
 
 
-def thumb(image: bytes) -> str:
-    """A frame (PNG/JPEG) as a 32x24 grey thumbnail, base64: small enough for a gameplay-memory event."""
+def thumb(image: bytes, picture: tuple[float, float, float, float] | None = None) -> str:
+    """A frame (PNG/JPEG) as a 32x24 grey thumbnail, base64: small enough for a gameplay-memory event.
+    picture: where the game's whole picture is in the frame (fractions x, y, w, h: gbox.session_display.session_picture).
+    The thumbnail is then of the picture alone, so anchors stay comparable whatever display shows it: a Linux session's
+    1280x720 display pillarboxes a 4:3 game, and a letterboxed title's bars are off-screen (the crop past the frame's
+    edges comes back black, as those bars were in the 4:3 frames older anchors were taken from)."""
     from PIL import Image
-    im = Image.open(io.BytesIO(image)).convert("L").resize(THUMB, Image.BILINEAR)
+    im = Image.open(io.BytesIO(image)).convert("L")
+    if picture:
+        w, h = im.size
+        x, y, pw, ph = picture
+        im = im.crop((round(x * w), round(y * h), round((x + pw) * w), round((y + ph) * h)))
+    im = im.resize(THUMB, Image.BILINEAR)
     return base64.b64encode(im.tobytes()).decode()
 
 

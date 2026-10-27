@@ -14,7 +14,7 @@ import struct
 import time
 from pathlib import Path
 
-from . import eden_memory, provision
+from . import eden_memory, provision, session_display
 from .config import HOST_OS, Config, EmulatorConfig
 from .registry import ToolUnavailable, Unsupported
 from .yuzu_runtime import SWITCH_KEYS
@@ -204,8 +204,9 @@ class CommandAdapter(Adapter):
 # --- virtual display (linux) ---------------------------------------------------------------
 
 class Display:
-    """A private Xvfb display per session so sessions never overlap and frames/input are isolated."""
-    def __init__(self, w: int = 960, h: int = 720):          # = stream size: no rescale per frame
+    """A private Xvfb display per session so sessions never overlap and frames/input are isolated. Every Linux session
+    is 1280x720 (gbox.session_display.SESSION_SIZE): the emulator fills it and keeps its own aspect ratio."""
+    def __init__(self, w: int = session_display.SESSION_SIZE[0], h: int = session_display.SESSION_SIZE[1]):
         self.w, self.h, self.proc = w, h, None
         for n in range(90, 140):
             if not Path(f"/tmp/.X11-unix/X{n}").exists() and not Path(f"/tmp/.X{n}-lock").exists():
@@ -2005,7 +2006,8 @@ class RetroArchAdapter(CommandAdapter):
     def stream_session(self) -> MjpegStream:
         if not self.stream:
             self.stream = MjpegStream(self.display.name if self.display else None,
-                                      size=(self.display.w, self.display.h) if self.display else None)
+                                      size=(self.display.w, self.display.h) if self.display else None,
+                                      max_width=session_display.STREAM_MAX_WIDTH)
         return self.stream
 
     def _remote_port(self) -> int:
@@ -2148,13 +2150,16 @@ class StandaloneAdapter(Adapter):
                  "send_input", "stream_session", "set_breakpoint", "remove_breakpoint", "save_state", "load_state"}
     keys: dict[str, str] = {}                     # pad button -> X keysym the emulator is configured for
     hotkeys = {"save_state": "shift+F1", "load_state": "F1"}
-    screen = (960, 720)
+    screen = session_display.SESSION_SIZE         # every Linux session: 1280x720 (gbox/session_display.py)
+    picture_aspect = session_display.STANDARD     # the console's picture, which the emulator keeps when it fills screen
     env: dict[str, str] = {}
 
     def __init__(self, config: Config, platform: str):
         self.config, self.platform = config, platform
         self.proc = self.display = self.stream = self.dbg = self.log_path = None
         self.port = _free_tcp_port()
+        self.fitted_windows, self._fit_gen = 0, 0          # windows _fit_window placed; its fitter's generation
+        self.stale_nudges = 0                              # resizes made because the picture sat in the corner
 
     def _p(self, pct, msg):
         cb = getattr(self, "progress", None)
@@ -2208,12 +2213,124 @@ class StandaloneAdapter(Adapter):
                 raise RuntimeError(f"{self.name} exited {self.proc.returncode}: {self.log_tail()}")
             self.dbg = None
             self._p(95, f"running without debugger: {e}")
+        self._fit_window()
         # pid, display (+ its Xvfb pid) and debug port: what re-adopting this game after a service restart needs
         # (docs/hot-update.md, part 2)
         return {"pid": self.proc.pid, "display": self.display.name,
                 "display_pid": getattr(getattr(self.display, "proc", None), "pid", None), "debug_port": self.port,
                 "debugger": bool(self.dbg), "worker_name": __import__("platform").node(), "emulator": self.name,
-                "log": str(self.log_path)}
+                "log": str(self.log_path), "window": list(self.window_rect()), "picture": list(self.picture_rect())}
+
+    # --- the emulator's window on its display (gbox/session_display.py) ---
+    # There is no window manager on a session's Xvfb display, so a "fullscreen" window keeps whatever size the emulator
+    # gives it: 2026-10-26 Citron's was 853x480 at 214,106 on its 1280x720 display, and the stream (the app, the Pine
+    # feed) showed the game small in the middle with black borders (#1264). The adapter sizes it: the whole display,
+    # where the emulator keeps its own aspect ratio, or a letterboxed title's taller window (window_rect).
+    FIT_NAME = "."                                       # xdotool --name pattern of the windows that are sized
+    FIT_WINDOW_S, FIT_WINDOW_EVERY_S = 45.0, 3.0         # the window may appear or be resized late in a boot
+    # A window already at its place is still resized off and back this many times (once per fitter pass): 2026-10-27 on
+    # a 1280x720 display, Dolphin's Qt fullscreen window was 1280x720 from the start, so nothing was moved, yet Dolphin
+    # drew its 640x480 picture in the top-left corner - its renderer keeps the size of the window it started in (the
+    # 640x480 of its saved render-window geometry) until a resize reaches it, and resizes early in a boot can be missed
+    # (live: up to ~25 s after a jump-state boot, ~2 min once with no resize at all). So for up to STALE_CHECK_S the
+    # fitter also looks at the display (a 160x90 grey grab without the pointer) and resizes again while everything drawn
+    # sits in the top-left corner (session_display.corner_only), until a picture reaches past it.
+    FIT_NUDGES = 2
+    STALE_CHECK_S, STALE_NUDGES_MAX = 120.0, 20           # a picture that only looks stuck is resized 20 times at most
+    THUMB = (160, 90)
+
+    def letterbox(self) -> "session_display.Letterbox | None":
+        """The band this title letterboxes inside its frame (gbox.session_display.LETTERBOXED), or None: the window
+        then fills the display."""
+        return None
+
+    def _frame(self) -> tuple[float, float | None]:
+        lb = self.letterbox()
+        return (lb.aspect, lb.band) if lb else (self.picture_aspect, None)
+
+    def window_rect(self) -> tuple[int, int, int, int]:
+        """(x, y, w, h) the emulator's window gets on the display: all of it, or for a letterboxed title the taller
+        window whose band covers the display (RE4 on 1280x720: 1280x993 at y -137)."""
+        return session_display.window_rect(self._screen_size(), *self._frame())
+
+    def picture_rect(self) -> tuple[int, int, int, int]:
+        """(x, y, w, h) of the game's whole frame on the display (a 4:3 picture on 1280x720: 960x720 at x 160; RE4's
+        frame: 1280x983 at y -132, its band on the display)."""
+        return session_display.picture_rect(self._screen_size(), *self._frame())
+
+    def _screen_size(self) -> tuple[int, int]:
+        d = self.display
+        return (d.w, d.h) if d is not None and getattr(d, "w", None) else tuple(self.screen)
+
+    def _xdo_out(self, *args) -> str:
+        r = subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5,
+                           capture_output=True, text=True)
+        return r.stdout if r.returncode == 0 else ""
+
+    def _fit_window_once(self, nudged: dict | None = None) -> int:
+        """Move and size every visible window named like FIT_NAME on this session's display to window_rect(); returns
+        how many it resized. The display is this session's own Xvfb, so its windows are the emulator's. nudged (window
+        id -> count, kept by one fitter run): a window already in place is resized two pixels shorter and back, up to
+        FIT_NUDGES times, so its renderer sizes itself to the window (FIT_NUDGES)."""
+        x, y, w, h = self.window_rect()
+        fitted = 0
+        for wid in self._xdo_out("search", "--onlyvisible", "--name", self.FIT_NAME).split():
+            geo = self._xdo_out("getwindowgeometry", wid)
+            placed = f"Position: {x},{y} " in geo and f"Geometry: {w}x{h}" in geo
+            if placed and (nudged is None or nudged.get(wid, 0) >= self.FIT_NUDGES):
+                continue
+            try:
+                if placed:
+                    nudged[wid] = nudged.get(wid, 0) + 1
+                    self._xdo("windowsize", wid, str(w), str(h - 2))
+                self._xdo("windowmove", wid, str(x), str(y))      # y < 0 for a letterboxed title: no window manager
+                self._xdo("windowsize", wid, str(w), str(h))      # keeps a window on the screen
+                fitted += 1
+            except Exception:                             # noqa: BLE001 - a window that went away meanwhile
+                continue
+        return fitted
+
+    def _picture_stale(self) -> bool | None:
+        """session_display.corner_only on a small grey grab of this session's display (no pointer): True while the
+        emulator still draws in the top-left corner at an old size, False once its picture is full size, None for a
+        black frame or no grab."""
+        w, h = self.THUMB
+        if getattr(self.display, "proc", None) is None:     # no Xvfb behind this display (a test's fake)
+            return None
+        try:
+            r = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "x11grab", "-draw_mouse", "0",
+                                "-video_size", f"{self.display.w}x{self.display.h}", "-i", self.display.name,
+                                "-frames:v", "1", "-vf", f"scale={w}:{h}", "-pix_fmt", "gray", "-f", "rawvideo", "-"],
+                               capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return session_display.corner_only(r.stdout, w, h) if len(r.stdout) == w * h else None
+
+    def _fit_window(self) -> None:
+        """Fit now and keep fitting for FIT_WINDOW_S in the background (boots and title restarts), and for up to
+        STALE_CHECK_S resize again while the picture is stuck in the corner (FIT_NUDGES). A newer call replaces the
+        running fitter, and stop_game ends it."""
+        self._fit_gen = gen = self._fit_gen + 1
+
+        def run():
+            start, nudged, settled, resized = time.monotonic(), {}, False, 0
+            while gen == self._fit_gen and self.display and not getattr(self, "_stopped", False):
+                age = time.monotonic() - start
+                if age >= self.FIT_WINDOW_S and (settled or age >= self.STALE_CHECK_S):
+                    break
+                try:
+                    if age < self.FIT_WINDOW_S:
+                        self.fitted_windows += self._fit_window_once(nudged)
+                    if not settled:
+                        stale = self._picture_stale()
+                        if stale and resized < self.STALE_NUDGES_MAX:
+                            resized += 1
+                            self.stale_nudges += self._fit_window_once({})    # every placed window resized again
+                        settled = stale is False or resized >= self.STALE_NUDGES_MAX
+                except Exception:                         # noqa: BLE001 - the display may be going away
+                    pass
+                time.sleep(self.FIT_WINDOW_EVERY_S)
+        threading.Thread(target=run, daemon=True, name=f"{self.name}-fit-window").start()
 
     def log_tail(self, n: int = 1500) -> str:
         try:
@@ -2222,6 +2339,7 @@ class StandaloneAdapter(Adapter):
             return ""
 
     def stop_game(self) -> dict:
+        self._fit_gen += 1                      # the window fitter ends
         if self.stream:
             self.stream.close()
         if self.dbg:
@@ -2232,7 +2350,8 @@ class StandaloneAdapter(Adapter):
         return {"returncode": self.proc.poll() if self.proc else None}
 
     def query_runtime(self) -> dict:
-        d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name}
+        d = {"running": bool(self.proc and self.proc.poll() is None), "emulator": self.name,
+             "fitted_windows": self.fitted_windows, "stale_nudges": self.stale_nudges}
         if self.dbg:
             try:
                 d["state"] = "PAUSED" if self.dbg.info()["halted"] else "PLAYING"
@@ -2282,7 +2401,8 @@ class StandaloneAdapter(Adapter):
 
     def stream_session(self) -> MjpegStream:
         if not self.stream:
-            self.stream = MjpegStream(self.display.name, size=(self.display.w, self.display.h))
+            self.stream = MjpegStream(self.display.name, size=(self.display.w, self.display.h),
+                                      max_width=session_display.STREAM_MAX_WIDTH)
         return self.stream
 
     def send_input(self, events: list[dict]) -> dict:
@@ -2306,7 +2426,10 @@ class DolphinAdapter(StandaloneAdapter):
     name = "dolphin"
     supported = StandaloneAdapter.supported | {'fast_forward'}
     flatpak = "org.DolphinEmu.dolphin-emu"
-    screen = (640, 480)                          # GameCube output size; Dolphin's window opens at exactly this
+    # The session's 1280x720 display (StandaloneAdapter.screen): Dolphin's fullscreen window fills it and pillarboxes a
+    # 4:3 game. A title that letterboxes its picture inside the frame (Resident Evil 4) gets a 1280x993 window at y -137
+    # instead, so its own black bars fall off the display (letterbox, gbox/session_display.py).
+    FIT_NAME = "^Dolphin [0-9]"                  # the render window ("Dolphin 2609a | JITARM64 SC | Vulkan | HLE | ...")
     checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
     # Demo jump states (gbox/jumpstate.py) are saved through Dolphin's slot 10, which only gBox's demos use: the operator
     # keeps slot 1 and the checkpoint ring slot 8. Only the save is bound: a jump state is loaded at boot (jump_boot),
@@ -2462,9 +2585,16 @@ D-Pad/Right = `H`
             return {'Dolphin.Core.CPUThread': 'False'}
         return {}
 
-    # The Spark streams a 640x480 private display (screen): past 2x native the extra pixels never reach the stream and
-    # only take GPU time from the operator's services. The Windows window is docked and resizable: no cap there.
+    # The Spark streams a 1280x720 private display (screen): a 4:3 picture is 960x720 there and a letterboxed title's
+    # frame about 1280x983 (2x native), so past 2x the extra pixels never reach the stream and only take GPU time from
+    # the operator's services. The Windows window is docked and resizable: no cap there.
     MAX_RES_SCALE: int | None = 200
+
+    def letterbox(self) -> "session_display.Letterbox | None":
+        """The letterbox fact for this disc (gbox.session_display.LETTERBOXED, by the disc id _gecko_setup read): the
+        window becomes 1280x993 at y -137 and the band fills the display. Dolphin keeps its own Auto aspect: it ignores
+        aspect settings on its command line here (session_display), so the window takes the frame's drawn shape."""
+        return session_display.letterbox(getattr(self, "gecko_id", None))
 
     def _graphics_options(self) -> dict:
         """Per-game graphics (internal resolution, MSAA, anisotropic filtering) on every launch path: play, MercMode /
@@ -2970,7 +3100,7 @@ class MgbaAdapter(StandaloneAdapter):
     """Game Boy Advance on standalone mGBA (apt) with its GDB stub: ARM7 registers (named, from target.xml), Thumb-aware
     disassembly, breakpoints, watchpoints, stepping. ponytail: mGBA's stub port is fixed (2345) -> one debug GBA session at a time."""
     name = "mgba"
-    screen = (720, 480)
+    picture_aspect = 3 / 2                       # 240x160: fullscreen (-f) mGBA pillarboxes it in the 1280x720 display
     # the service has no audio session; mGBA paces itself on audio and crawls (0.4 fps) without a device
     env = {"SDL_AUDIODRIVER": "dummy"}
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "l": "a", "r": "s",
@@ -3006,7 +3136,6 @@ class DuckStationAdapter(StandaloneAdapter):
     DuckStation reads one fixed settings.ini, so it's patched in place before each launch (ponytail: concurrent launches race)."""
     name = "duckstation"
     flatpak = "org.duckstation.DuckStation"
-    screen = (640, 480)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
             "l": "q", "r": "w", "l2": "e", "r2": "r", "start": "Return", "select": "BackSpace"}
     SETTINGS = Path.home() / ".var/app/org.duckstation.DuckStation/config/duckstation/settings.ini"
@@ -3046,8 +3175,7 @@ class MameAdapter(StandaloneAdapter):
     """Arcade on standalone MAME (apt) with its gdbstub debugger: registers/breakpoints/stepping for the CPUs MAME's
     gdbstub supports (68000 family, Z80, x86, ARM, PPC, MIPS, SH...). Register layout + CPU come from MAME's target.xml.
     ponytail: the NAS romset is MAME 0.228 and apt MAME is newer, so a few sets may not boot here."""
-    name = "mame"
-    screen = (800, 600)
+    name = "mame"                                # its -resolution window is the 1280x720 display; MAME keeps the aspect
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "Control_L", "b": "Alt_L", "x": "space",
             "y": "Shift_L", "l": "z", "r": "x", "l2": "c", "r2": "v", "start": "1", "select": "5"}   # MAME defaults (5 = coin)
 
@@ -3976,7 +4104,8 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
                  "get_frame", "send_input", "stream_session", "save_state", "load_state"}
     checkpoint_state, checkpoint_reason = False, "RPCS3 reloads the game on every save state (no in-place rewind)"
-    screen = (1280, 720)
+    picture_aspect = session_display.WIDE                 # 1280x720 output fills the 1280x720 display
+    FIT_NAME = "^FPS[: ]"                                 # only the renderer window (_focus_game_window's), never a dialog
     keys = {**{b: (k.lower() if len(k) == 1 else ("space" if k == "Space" else k)) for b, k in RPCS3_KEYPAD.items()},
             **{a: (RPCS3_KEYPAD[b].lower() if len(RPCS3_KEYPAD[b]) == 1 else RPCS3_KEYPAD[b])
                for a, b in RPCS3_PAD_ALIASES.items()}}
@@ -4121,6 +4250,8 @@ class RPCS3LinuxAdapter(StandaloneAdapter):
             self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
         except Exception:                                 # noqa: BLE001 - the display may still be starting
             pass
+        self._fit_window()                                # the renderer appears once the guest runs, maybe after the
+                                                          # launch's own fitter (StandaloneAdapter) gave up
 
     def _maybe_focus_game_window(self):
         """Launch and early pad input may precede RPCS3's renderer window. Retry off the input thread, at most 1/s.
@@ -4550,7 +4681,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
                  "get_frame", "send_input", "stream_session"}
     checkpoint_state, checkpoint_reason = False, "Eden (yuzu) has no save states"
-    screen = (1280, 720)                                  # docked Switch output at 1x
+    picture_aspect = session_display.WIDE                 # docked Switch output at 1x fills the 1280x720 display
     keys = dict(SWITCH_KEYS)                              # letters and arrow keysyms: xdotool names as they are
     hotkeys: dict[str, str] = {}
     MAPS, MEM = "/proc/{pid}/maps", "/proc/{pid}/mem"
@@ -4596,7 +4727,6 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self.address_mode = eden_memory.mode_for(self.nce)
         self._mem, self._mem_checked_at = None, -1e9
         self.overlay_state, self.restarts, self.restart_error, self._stopped = None, 0, None, False
-        self.fitted_windows, self._fit_gen = 0, 0           # windows _fit_window sized to the display; its fitter
 
     @property
     def use_nce(self) -> bool:
@@ -4903,48 +5033,8 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             self._xdo("mousemove", str(self.display.w // 2), str(self.display.h // 2))
         except Exception:                                 # noqa: BLE001 - the display may still be starting
             pass
-        self._fit_window()
-
-    # Without a window manager a "fullscreen" Qt window keeps its default size: 2026-10-26 MercMode's Citron window was
-    # 853x480 at 214,106 on its 1280x720 display, so the stream (the app, the Pine feed) showed the game small in the
-    # middle with black borders. Sized to the display, Citron's fullscreen mode fills it with no menu or status bar.
-    FIT_WINDOW_S, FIT_WINDOW_EVERY_S = 45.0, 3.0         # the window may appear or be resized late in a boot
-
-    def _xdo_out(self, *args) -> str:
-        r = subprocess.run(["xdotool", *args], env={**os.environ, "DISPLAY": self.display.name}, timeout=5,
-                           capture_output=True, text=True)
-        return r.stdout if r.returncode == 0 else ""
-
-    def _fit_window_once(self) -> int:
-        """Move and size every visible window on this session's display to the whole display; returns how many moved.
-        The display is this session's own Xvfb, so its windows are the emulator's."""
-        fitted, w, h = 0, self.display.w, self.display.h
-        for wid in self._xdo_out("search", "--onlyvisible", "--name", ".").split():
-            geo = self._xdo_out("getwindowgeometry", wid)
-            if "Position: 0,0" in geo and f"Geometry: {w}x{h}" in geo:
-                continue
-            try:
-                self._xdo("windowmove", wid, "0", "0")
-                self._xdo("windowsize", wid, str(w), str(h))
-                fitted += 1
-            except Exception:                             # noqa: BLE001 - a window that went away meanwhile
-                continue
-        return fitted
-
-    def _fit_window(self) -> None:
-        """Fit now and keep fitting for FIT_WINDOW_S in the background (boots and title restarts). A newer call replaces
-        the running fitter, and stop_game ends it."""
-        self._fit_gen = gen = self._fit_gen + 1
-
-        def run():
-            end = time.monotonic() + self.FIT_WINDOW_S
-            while gen == self._fit_gen and time.monotonic() < end and self.display and not self._stopped:
-                try:
-                    self.fitted_windows += self._fit_window_once()
-                except Exception:                         # noqa: BLE001 - the display may be going away
-                    pass
-                time.sleep(self.FIT_WINDOW_EVERY_S)
-        threading.Thread(target=run, daemon=True, name="switch-fit-window").start()
+        self._fit_window()                                # once the guest runs, and after every title restart (Citron's
+                                                          # fullscreen window kept 853x480 on 1280x720 without it, #1264)
 
     def stop_game(self) -> dict:
         self._stopped = True                              # a restart under way does not start Eden again
