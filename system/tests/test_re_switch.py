@@ -94,6 +94,42 @@ def test_re6_switch_session_start_watches_only_with_memory_access_and_permission
     assert len(started) == 1
 
 
+def test_re4_switch_is_recognized_but_not_yet_playable():
+    """RE4 Switch (010099A00BC1E000) is recognized by the edition framework but stays not playable
+    until the operator adds the game and the RAM map is measured live (request #4486)."""
+    game = {'game_id': S.RE4_GAME_ID, 'platform': 'switch', 'serial': '0x010099A00BC1E000',
+            'title': 'Resident Evil 4'}
+    info = S.capabilities(game)
+    assert info['edition'] == 're4' and info['platform'] == 'switch'
+    assert info['autoplay']['available'] is False           # no driver RAM map yet
+    assert info['autoplay']['driver'] == 'gbox.mercs.titles.re4_switch'
+    assert info['unlock_on_load']['available'] is False and info['unlock_on_load']['needed'] is False
+    assert info['evidence']['title_id'] == S.RE4_TITLE_ID
+    assert S._edition(game) == 're4'
+    assert S._edition({'platform': 'switch', 'title': 'Resident Evil 4'}) == 're4'
+    assert S._edition({'platform': 'switch', 'title': 'Biohazard 4'}) == 're4'
+
+
+def test_re4_switch_preference_selects_the_switch_edition():
+    native = {'platform': 'gamecube', 'playable': True}
+    assert S.preferred_spec('re4', native, {}) is native
+    preferred = {'re4': {'platform': 'switch', 'mode': 'mercenaries', 'title_id': S.RE4_TITLE_ID}}
+    spec = S.preferred_spec('re4', native, {'preferred_editions': preferred})
+    assert spec['platform'] == 'switch' and spec['playable'] is False   # not playable until measured
+    assert spec['modes'] == ['mercenaries'] and spec['map_id'] == S.RE4_TITLE_ID != 'G4BE08'
+    assert spec['driver'] == 'gbox.mercs.titles.re4_switch'
+    assert S.normalize_preferences(preferred) == preferred
+    assert native == {'platform': 'gamecube', 'playable': True}
+
+
+def test_re4_switch_is_in_citron_titles():
+    from gbox.adapters import SWITCH_CITRON_TITLES, BOOT_WATCH_TITLES, _switch_title_id
+    assert '010099A00BC1E000' in SWITCH_CITRON_TITLES
+    assert '010099A00BC1E000' in BOOT_WATCH_TITLES
+    assert _switch_title_id({'platform': 'switch', 'title': 'Resident Evil 4'}) == '010099A00BC1E000'
+    assert _switch_title_id({'platform': 'switch', 'title': 'Biohazard 4'}) == '010099A00BC1E000'
+
+
 def test_re6_switch_operator_opt_out_is_authoritative(monkeypatch):
     from gbox import re6_tool
     monkeypatch.setattr(re6_tool, 'settings', lambda server, headers: {'everything_unlocked': False})

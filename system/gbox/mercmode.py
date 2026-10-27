@@ -56,7 +56,15 @@ QUEUE_MAX = 20
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
             'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'playable': True,
-            'characters': 5, 'stages': 4, 'modes': ['mercenaries']},
+            'characters': 5, 'stages': 4, 'modes': ['mercenaries'],
+            'backends': {
+                'gamecube': {'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'adapter': 'dolphin',
+                             'verified': True},
+                # the Switch Mercenaries edition, chosen per host through preferred_editions (gbox.re_switch.preferred_spec)
+                'switch': {'game_id': None, 'title_id': '010099A00BC1E000', 'adapter': 'citron',
+                           'verified': False, 'mode': 'mercenaries',
+                           'driver': 'gbox.mercs.titles.re4_switch', 'selected_by': 'preferred_editions'},
+            }},
     're5': {'name': 'Resident Evil 5', 'map_id': 'BLUS30491', 'platform': 'ps3',
             'game_ids': ('e7ca89bbeb67360d',), 'playable': True,
             'characters': 18, 'stages': 8, 'modes': ['mercenaries', 'reunion']},
