@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import errno
 import os
 import time
 import zlib
@@ -197,13 +198,17 @@ class ShmRam:
     def __init__(self, pid: int, hosts: dict[int, int]):
         self.pid, self.hosts = pid, hosts                       # region base -> host address of its view
         self.fd = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        self.gate = None                                        # the session's adapter: no read while it is paused
 
     @classmethod
     def find(cls, ad) -> "ShmRam | None":
         if HOST_OS != "linux" or getattr(ad, "name", "") != "dolphin":
             return None
         pid = getattr(getattr(ad, "proc", None), "pid", None)
-        return cls.find_pid(int(pid)) if pid else None
+        ram = cls.find_pid(int(pid)) if pid else None
+        if ram is not None:
+            ram.gate = ad
+        return ram
 
     @classmethod
     def find_pid(cls, pid: int) -> "ShmRam | None":
@@ -233,6 +238,10 @@ class ShmRam:
         return None
 
     def read(self, address: int, n: int) -> bytes:
+        if self.gate is not None and getattr(self.gate, "paused", False):
+            # a stopped (SIGSTOP) Dolphin: a read of its memory can block in the kernel until it resumes - and a bot
+            # thread blocked there never sees its stop (2026-10-27 05:56)
+            raise OSError(errno.EAGAIN, "the emulator is paused: its memory is not read")
         base = next((b for b in self.hosts if b <= address and address + n <= b + SHM_SIZES[b]), None)
         if base is None:
             raise ValueError(f"{address:#x}+{n:#x} is outside this Dolphin's RAM views")

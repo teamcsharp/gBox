@@ -1755,6 +1755,23 @@ def _session_accept(store, out: SessionOut, actor: str):
 
 @tool("session_op", "1.0", SessionIn, SessionOut, capabilities=["runtime"], permissions=[P.EXECUTE],
       on_accept=_session_accept)
+def _park_autobot(sid: str, wait_s: float | None = None) -> dict:
+    """Before a warm pause: the session's autobot stopped and its thread ended - a thread paused mid-read of the
+    emulator's memory never sees its stop. A thread still alive after the bounded wait is reaped (_reap)."""
+    run = AUTOPLAY.get(sid)
+    th = (run or {}).get("thread")
+    if run is None or th is None or not th.is_alive() or run.get("prepare") is not None:
+        return {"autobot": "none"}
+    run["driver"].stopped = True
+    run.setdefault("stop_at", time.time())
+    _AUTOPLAY_STOPS.setdefault(sid, time.time())
+    th.join(PARK_STOP_WAIT_S if wait_s is None else wait_s)
+    if th.is_alive():
+        _reap(sid, run, "still running at the warm pause")
+        return {"autobot": "reaped"}
+    return {"autobot": "ended"}
+
+
 def session_op(inp: SessionIn, ctx: Ctx):
     """Call a runtime op (pause/resume/stop_game/save_state/query_runtime/step_frames...) on a live session."""
     if inp.op in ("record_start", "record_stop"):
@@ -1808,6 +1825,8 @@ def session_op(inp: SessionIn, ctx: Ctx):
     if inp.op in ("pause", "resume") and "warm" in (inp.args or {}):
         # MercMode warm pool: args.warm=true parks the game paused between its turns (closed later without a save);
         # resume clears it, so the game is an ordinary live session again once it is swapped in.
+        if inp.op == "pause" and inp.args.get("warm") is True:
+            _park_autobot(inp.session_id)                       # its bot ends first: never paused mid-read (REAP_AFTER_S)
         _warm_priority(ad, 10 if inp.op == "pause" else 0)      # parked: background priority; swapped in: normal
         res = getattr(ad, inp.op)(**{k: v for k, v in inp.args.items() if k != "warm"})
         ad.gbox_warm = inp.op == "pause" and inp.args.get("warm") is True
@@ -2620,6 +2639,44 @@ def _missions(game_id=None):
 
 
 _AUTOPLAY_STOPS: dict[str, float] = {}     # session_id -> when autoplay op=stop last came (a bot reload never undoes it)
+# A stop always completes (2026-10-27 05:56, RE4 on the Spark: the MercMode park's autoplay stop and its warm pause ran
+# together, the bot thread was mid-read of Dolphin's memory when the pause stopped Dolphin, sat in os.pread for 30 min
+# and never saw its stop; every later start and prepare failed "Autoplay is stopping", the zombie played on after a
+# resume, and every hot reload was refused "autobot still stopping"):
+#   * the warm pause (session_op pause args.warm) first stops the session's autobot and waits PARK_STOP_WAIT_S for its
+#     thread to end; one still alive then is reaped before the game is paused;
+#   * a run still stopping REAP_AFTER_S after its stop is reaped by the session's next start or prepare, or by a bot
+#     reload: it leaves AUTOPLAY, its inputs are dropped (_bot_send), and its end posts nothing (go / _ended);
+#   * the readers of a Dolphin's memory refuse while the session is paused (gbox.ram_dump.ShmRam, re4_merc_bot.OwnShm).
+PARK_STOP_WAIT_S = 6.0
+REAP_AFTER_S = 20.0
+REAPED: list = []                          # the reaped runs (the last few), for status and evidence
+
+
+def _stopping_since(run) -> float | None:
+    """When this run's stop came (op=stop, a reload's stop, a takeover), None while it is not stopping."""
+    if not (run.get("took_over") or getattr(run.get("driver"), "stopped", False)):
+        return None
+    return run.get("stop_at") or _AUTOPLAY_STOPS.get(run.get("sid", ""))     # (no stop time known: never stuck)
+
+
+def _stuck_stopping(run, now=None) -> bool:
+    """Its thread still alive REAP_AFTER_S after its stop: blocked (a read of a paused emulator), never ending by itself."""
+    th = run.get("thread")
+    at = _stopping_since(run)
+    return th is not None and th.is_alive() and at is not None and (now or time.time()) - at >= REAP_AFTER_S
+
+
+def _reap(sid: str, run, why: str) -> None:
+    """Let a stuck run go: out of AUTOPLAY (a new run may start), its inputs dropped from now on, its end silent."""
+    run["reaped"] = why
+    run["driver"].stopped = True
+    if AUTOPLAY.get(sid) is run:
+        AUTOPLAY.pop(sid, None)
+    REAPED.append({"session_id": sid, "at": time.time(), "why": why, "mission": run.get("mission"),
+                   "stopping_since": _stopping_since(run)})
+    del REAPED[:-16]
+    _release_all(sid)
 
 
 @tool("autoplay", "1.0", AutoplayIn, AutoplayOut, capabilities=["runtime"], timeout_s=60)
@@ -2664,6 +2721,7 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
     if inp.op == "stop":
         if run:
             run["driver"].stopped = True
+            run.setdefault("stop_at", time.time())
         _release_all(inp.session_id)                           # never leave a direction held: the character would keep running
         return {"result": {"stopped": bool(run), "mission": run and run["mission"]}}
     if inp.op == "status":
@@ -2674,11 +2732,16 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
                            "continuous": bool(run and getattr(run.get('inp'), 'continuous', False)),
                            "recovery": run and run.get('recovery'),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace),
+                           "reaped": [r for r in REAPED if r["session_id"] == inp.session_id][-3:],
                            **({"prepare": run["prepare"].snapshot()} if run and run.get("prepare") is not None else {})}}
     if inp.op != "start":
         raise ValueError(f"unknown op {inp.op}")
     if inp.mode not in ("auto", "playbook", "mission", "replay", "learned", "vision"):
         raise ValueError("mode: auto | playbook | mission | replay | learned | vision")
+    if run and run["thread"].is_alive() and _stuck_stopping(run):
+        _reap(inp.session_id, run, f"still stopping {time.time() - _stopping_since(run):.0f} s after its stop: "
+                                   "a new start")
+        run = None
     if run and run["thread"].is_alive():
         if run.get('took_over') or getattr(run.get('driver'), 'stopped', False):
             raise ValueError('Autoplay is stopping; wait for it to stop before starting it again.')
@@ -2849,9 +2912,16 @@ def _bot_lease(run, d, sid, since):
 
 
 def _bot_send(run, ad, d):
-    """The send() a bot plays with (_autoplay_send) behind its session's pad takeover gate (gbox/pad_takeover.py)."""
+    """The send() a bot plays with (_autoplay_send) behind its session's pad takeover gate (gbox/pad_takeover.py); a
+    reaped run (_reap) sends nothing - the session may already have a new bot."""
     from . import pad_takeover
-    return pad_takeover.Gate(run["sid"], _autoplay_send(ad, d))
+    raw = _autoplay_send(ad, d)
+
+    def send(rows):
+        if run.get("reaped"):
+            return None
+        return raw(rows)
+    return pad_takeover.Gate(run["sid"], send)
 
 
 TELEMETRY_BLOCKS = ("look",)           # JSON blocks posted with the scalar stats: stats["look"] (gbox.mercs.bot_look: the
@@ -3205,6 +3275,9 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
                     and run.get('live', {}).get('native_read_status') == 'timeout':
                 run['bad_end'] = 'hung'
                 run['live']['stopped_reason'] = 'native reads stayed unavailable after bounded retries; recovering continuous run'
+        if run.get("reaped"):                                  # let go long ago: the session's keys and story are a new run's
+            run["ended"] = time.time()
+            return
         _release_all(sid)
         _ended(run)
     _bot_lease(run, d, sid, since)                             # the operator's pad: a brief takeover, then the bot again
@@ -3276,7 +3349,9 @@ def _prepare_round(inp: AutoplayIn, ctx: Ctx) -> dict:
         if not (run.get("took_over") or getattr(run.get("driver"), "stopped", False)):
             raise ValueError("Autoplay is playing this game; only a parked or warm MercMode game is prepared.")
         run["thread"].join(PREPARE_STOP_WAIT_S)                   # the park's stop: its bot finishes releasing the pad
-        if run["thread"].is_alive():
+        if run["thread"].is_alive() and _stuck_stopping(run):
+            _reap(sid, run, "still stopping at a round preparation")
+        elif run["thread"].is_alive():
             raise ValueError("Autoplay is stopping; wait for it to stop before preparing this game.")
     pb = _playbook(ad, g)
     if pb is None or "prepare" not in inspect.signature(pb.play).parameters:
@@ -3401,6 +3476,9 @@ class _ReloadHost:
             th = run.get("thread")
             if th is None or not th.is_alive():
                 continue
+            if _stuck_stopping(run) and run.get("prepare") is None:
+                _reap(sid, run, "still stopping at a bot reload")   # blocked: it would refuse every reload forever
+                continue
             if run.get("prepare") is not None:
                 return f"a MercMode round preparation is running on {sid}"
             if (run.get("took_over") or getattr(run.get("driver"), "stopped", False)) and self.playbook_of(run):
@@ -3410,6 +3488,7 @@ class _ReloadHost:
     def stop(self, sid, run) -> None:
         run["reloading"] = True                                # its telemetry's last word is the restarted bot's
         run["driver"].stopped = True                           # the playbook ends at its next tick, releasing its input
+        run.setdefault("stop_at", time.time())
 
     def join(self, run, timeout) -> bool:
         run["thread"].join(timeout)
