@@ -763,6 +763,63 @@ def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
                     "costume from its next opening, and the game's own next save keeps it"}
 
 
+# Quick attacks x10 (operator 2026-10-27 15:31: "for the quick attack in RE6, allow the bot to do it 10x faster and in rapid
+# succession"): a unit's own clock rate is cUnit::mDeltaTime (Ghidra: cUnit's property registration main+0x1240228
+# names it at this + 0x30; live 1.0 on the player), and the unit's current action sits at +0x13F0 (live: the player's
+# cEmActionGrap_PL while held). While his action is a quick shot or a physical attack (QUICK_ACTIONS) quick_attack
+# keeps his mDeltaTime at the multiplier - the whole move, its recovery included, runs that much faster - and puts 1.0
+# back as soon as he is in any other action; it only ever writes over 1.0 or its own value (a game's slow-motion is left
+# alone), each write read back. status quick_attacks counts the quick attacks it sped up.
+UNIT_DELTA, UNIT_ACTION = 0x30, 0x13F0
+QUICK_ACTIONS = frozenset({"cPlAction_pl_act_attack_ex", "cPlAction_pl_act_weapon_comn_quick_shot",
+                           "cPlAction_pl_act_jake_hand_quick_attack"})
+QUICK_MAX = 10.0
+
+
+def quick_attack(g: RE6Switch, mult=10.0) -> dict:
+    try:
+        k = float(10.0 if mult is None else mult)
+    except (TypeError, ValueError):
+        raise ValueError("quick_attack multiplier: 1..10 (1 = the game's)") from None
+    if not 1.0 <= k <= QUICK_MAX:
+        raise ValueError("quick_attack multiplier: 1..10 (1 = the game's)")
+    g.state["quick_attack"] = k
+    from . import re6_switch as B
+    B.QA_FAST = k > 1.0
+    return {"quick_attack_x": k, "verified": True,
+            "note": "his quick shots and physical attacks run %gx (cUnit mDeltaTime +0x30 while his action +0x13F0 is "
+                    "one of them, 1.0 back after)" % k}
+
+
+def _keep_quick(ad, g: RE6Switch, player: int, st: dict) -> int:
+    """mDeltaTime at the multiplier while his action is a quick attack, 1.0 otherwise (only over 1.0 or its own value)."""
+    k = st.get("quick_attack") or 1.0
+    try:
+        act = R.u64(g.m, player + UNIT_ACTION)
+        name = None
+        if R.ptr_ok(act):
+            vt = R.u64(g.m, act)
+            names = st.setdefault("qa_names", {})
+            if vt not in names:
+                names[vt] = R.class_name(g.m, act)
+            name = names[vt]
+        cur = struct.unpack("<f", ad.read_memory(player + UNIT_DELTA, 4))[0]
+    except (ValueError, OSError):
+        return 0
+    quick = name in QUICK_ACTIONS
+    if quick and not st.get("qa_in"):
+        st["quick_attacks"] = st.get("quick_attacks", 0) + 1
+    st["qa_in"] = quick
+    want = k if quick else 1.0
+    if abs(cur - want) < 1e-4 or not (abs(cur - 1.0) < 1e-4 or abs(cur - k) < 1e-4):
+        return 0
+    try:
+        ad.write_memory(player + UNIT_DELTA, struct.pack("<f", want))   # read back by the adapter
+    except RuntimeError:
+        return 0
+    return 1
+
+
 def bot_options(g: RE6Switch, nades=None, bomb_drop=None) -> dict:
     """The bot's switches a profile turns on (playing_ops): nades - the flash at 3+ within 4 m with the melee fever after
     it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd.
@@ -864,14 +921,17 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
         out = {"active": False, "writes": 0, "verified": True}
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
                                                  "infinite_grenades", "auto_qte_ram")) or \
-            st and (st.get("kill_time") or {}).get("on")
+            st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0)
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
-            if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")):
+            if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")
+                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in")):
                 g0 = RE6Switch(ad)
+                if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in"):
+                    out["writes"] += _keep_quick(ad, g0, p["ptr"], st)
                 if (st.get("kill_time") or {}).get("on"):
                     kt = _maintain_kill_time(ad, g0, st)
                     if kt.get("applied_seconds"):
@@ -945,6 +1005,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
                                 magnum=_extra.get("magnum", False) not in (False, None, "off", 0))
+        if op == "quick_attack":
+            return quick_attack(g, 1.0 if on is False else (multiplier if multiplier is not None else 10.0))
         if op == "bot_options":
             return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"))
         if op == "fire_rate":
