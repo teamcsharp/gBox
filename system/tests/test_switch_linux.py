@@ -368,8 +368,10 @@ def test_launch_waits_for_guest_memory_then_parks_the_pointer(tmp_path, monkeypa
     popen, xdo = [], []
     _fake_launch(ad, monkeypatch, [["aaaad0000000-aaaad0010000 r-xp 00000000 fe:01 1 /opt/eden/usr/bin/eden"], ARM64_MAPS], popen)
     monkeypatch.setattr(ad, "_xdo", lambda *a: xdo.append(a))
+    monkeypatch.setattr(ad, "_boot_watch", lambda: {"watched": True, "frames": 3, "after_s": 9.0})
     rom = build_nsp(tmp_path / "Resident Evil 5.nsp", ["010018100cd460000000000000000003.tik", "a.nca"])
     out = ad.launch_game(rom)
+    assert out["boot_watch"]["watched"] and out["boot_attempts"] == 1 and out["boot_failures"] == []
     argv, kw = popen[0]
     assert argv[1:] == ["-f", "-g", rom]
     assert kw["env"]["DISPLAY"] == ":99" and kw["env"]["QT_QPA_PLATFORM"] == "xcb"
@@ -489,3 +491,178 @@ def test_companions_are_the_games_own_updates_and_dlc_beside_it(tmp_path):
     alone.mkdir()
     assert switch_nsp.companions(build_nsp(alone / "Resident Evil 5.nsp", ["010018100cd460000000000000000003.tik"])) == []
     assert switch_nsp.companions(tmp_path / "missing" / "x.nsp") == []
+
+
+# --- Citron NEO: the canonical Switch emulator for RE5 / RE6 (multi-core; live 2026-10-26) ---------------------------------
+
+def citron_cfg(tmp_path, **kw):
+    img = tmp_path / "citron_nightly-56dad8119-linux-aarch64-use-nopgo.AppImage"
+    img.write_bytes(b"AI")
+    return cfg(tmp_path, switch_citron_appimage=str(img), **kw)
+
+
+def re5_game(**kw):
+    return dict(switch_game(), serial="010018100CD46000", **kw)
+
+
+def test_re5_and_re6_start_in_citron_once_it_is_configured(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters, "HOST_OS", "linux")
+    plain = adapters.for_game(re5_game(), cfg(tmp_path))
+    assert type(plain) is adapters.SwitchLinuxAdapter                            # no Citron placed: Eden
+    c = citron_cfg(tmp_path)
+    ad = adapters.for_game(re5_game(), c)
+    assert isinstance(ad, adapters.CitronLinuxAdapter) and ad.name == "citron"
+    re6 = dict(switch_game(), serial="0x01002a000cd48000", title="Resident Evil 6")
+    assert isinstance(adapters.for_game(re6, c), adapters.CitronLinuxAdapter)
+    zelda = dict(switch_game(), serial="0100F2C0115B6000", title="Zelda")
+    assert type(adapters.for_game(zelda, c)) is adapters.SwitchLinuxAdapter      # other titles stay in Eden
+    forced = citron_cfg(tmp_path, switch_linux_emulator="eden")
+    assert type(adapters.for_game(re5_game(), forced)) is adapters.SwitchLinuxAdapter
+    forced = cfg(tmp_path, switch_linux_emulator="citron")
+    assert isinstance(adapters.for_game(zelda, forced), adapters.CitronLinuxAdapter)
+
+
+def test_citron_settings_are_its_own_and_multi_core(tmp_path):
+    folder = tmp_path / "Resident Evil 5"
+    folder.mkdir()
+    ad = adapters.CitronLinuxAdapter(citron_cfg(tmp_path))
+    ad.nce, ad.debug, ad.port = True, False, 43210
+    ad.rom = build_nsp(folder / "Resident Evil 5.nsp", ["a.nca", "010018100cd460000000000000000003.tik"])
+    path = ad.write_settings()
+    assert path == provision.citron_linux_config(ad.config) and path.parent.name == "citron"
+    t = path.read_text()
+    assert adapters.ini_get(t, "Renderer", "backend") == "0"                    # Citron: Vulkan 0, Null 1
+    assert adapters.ini_get(t, "Core", "use_multi_core") == "true"
+    assert adapters.ini_get(t, "Cpu", "cpu_backend") == "1" and adapters.ini_get(t, "UI", "confirmStop") == "2"
+    custom = path.parent / "custom" / "010018100CD46000.ini"
+    c = custom.read_text()
+    assert adapters.ini_get(c, "Renderer", "use_asynchronous_shaders") == "true"
+    assert adapters.ini_get(c, "Core", "use_multi_core") is None                # no single-core in Citron
+    assert ad.title_settings == adapters.CITRON_TITLE_SETTINGS["010018100CD46000"]
+    assert not provision.switch_linux_config(ad.config).exists()                 # Eden's files are not touched
+    assert ad.eden_log() == provision.citron_linux_dir(ad.config) / "log" / "citron_log.txt"
+
+
+def test_citron_env_lets_the_usb_shim_through_sharun(tmp_path):
+    import os
+    c = citron_cfg(tmp_path)
+    env = provision.citron_linux_env(c)
+    home = provision.citron_linux_home(c)
+    assert env["XDG_DATA_HOME"] == str(home / "data") and env["QT_QPA_PLATFORM"] == "xcb"
+    assert env["SHARUN_ALLOW_LD_PRELOAD"] == "1"
+    assert env["LD_PRELOAD"].startswith(str(c.runtime / "switch-usb-shim")) and env["LD_PRELOAD"].endswith(".so")
+    assert env["PATH"].split(os.pathsep)[0] == str(home / "bin") and env["DISABLE_AUTO_UPDATES"] == "1"
+    assert adapters.CitronLinuxAdapter(c).env == env
+
+
+def test_usb_shim_is_built_from_the_repos_source_once(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        out = argv[argv.index("-o") + 1]
+        with open(out, "wb") as f:
+            f.write(b"\x7fELF")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(provision.shutil, "which", lambda n: "/usr/bin/cc" if n == "cc" else None)
+    monkeypatch.setattr(provision.subprocess, "run", fake_run)
+    shim = provision.switch_usb_shim(c)
+    assert shim.is_file() and shim.name == "libgbox_usb_noinit.so"
+    assert calls[0][0] == "/usr/bin/cc" and "-nostdlib" in calls[0] and str(provision.USB_SHIM_SOURCE) in calls[0]
+    assert provision.USB_SHIM_SOURCE.read_text().count("libusb_init") >= 2
+    assert provision.switch_usb_shim(c) == shim and len(calls) == 1               # cached by the source's digest
+    assert str(shim) == provision.citron_linux_env(c)["LD_PRELOAD"]
+    monkeypatch.setattr(provision.shutil, "which", lambda n: None)
+    with pytest.raises(ToolUnavailable, match="no C compiler"):
+        provision.switch_usb_shim(cfg(tmp_path / "other"))
+
+
+def test_ensure_citron_extracts_once_installs_keys_stub_and_shim(tmp_path, monkeypatch):
+    monkeypatch.setattr(provision, "HOST_OS", "linux")
+    share = tmp_path / "share" / "_switch"
+    share.mkdir(parents=True)
+    (share / "prod.keys").write_text("header_key = 00\n")
+    c = citron_cfg(tmp_path, switch_keys=str(share / "prod.keys"))
+    calls = []
+
+    def extract(appimage, home):
+        calls.append(appimage)
+        (home / "squashfs-root").mkdir(parents=True, exist_ok=True)
+        (home / "squashfs-root" / "AppRun").write_text("#!/bin/sh\n")
+    monkeypatch.setattr(provision, "_rpcs3_appimage_extract", extract)
+    monkeypatch.setattr(provision, "switch_usb_shim", lambda cfg_: tmp_path / "shim.so")
+    r = provision.ensure_citron_linux(c)
+    assert r["step"] == "citron" and r["status"] == "ok" and len(calls) == 1 and "shim.so" in r["detail"]
+    assert (provision.citron_linux_dir(c) / "keys" / "prod.keys").read_text() == "header_key = 00\n"
+    assert (provision.citron_linux_home(c) / "bin" / "xdg-open").read_text() == provision.SWITCH_URL_STUB
+    provision.ensure_citron_linux(c)
+    assert len(calls) == 1                                                       # unchanged AppImage: not again
+    assert provision.citron_linux_available(c)
+    with pytest.raises(ToolUnavailable, match="switch_citron_appimage"):
+        provision.ensure_citron_linux(cfg(tmp_path / "bare"))
+
+
+def test_layeredfs_uses_citrons_own_load_folder(tmp_path, monkeypatch):
+    from gbox import switch_mods
+    c = citron_cfg(tmp_path)
+    emu = switch_mods.citron(c)
+    assert emu.kind == "citron" and emu.load == provision.citron_linux_dir(c) / "load"
+    assert emu.config == provision.citron_linux_config(c)
+    assert adapters.CitronLinuxAdapter(c)._emu() == emu
+    monkeypatch.setattr(switch_mods, "HOST_OS", "linux")
+    assert switch_mods._emu_here(c, re5_game()).kind == "citron"
+    assert switch_mods._emu_here(cfg(tmp_path / "e"), re5_game()).kind == "eden"
+    assert [e.kind for e in switch_mods.local_emulators(c)] == ["eden", "citron"]
+
+
+# --- the boot watch: one more start for a boot that never draws -------------------------------------------------------
+
+def test_boot_watch_needs_changing_frames_after_the_loading_overlay(tmp_path, monkeypatch):
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.proc = SimpleNamespace(pid=5, poll=lambda: None)
+    clock = [0.0]
+    monkeypatch.setattr(adapters.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(adapters.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    frames = iter([b"a", b"b", b"c"])
+    monkeypatch.setattr(ad, "get_frame", lambda: next(frames))
+    out = ad._boot_watch()
+    assert out["watched"] and out["frames"] == 3 and out["after_s"] >= adapters.BOOT_WATCH_SETTLE_S
+    clock[0] = 0.0
+    monkeypatch.setattr(ad, "get_frame", lambda: b"black")
+    with pytest.raises(adapters.BootHung, match="no changing frame"):
+        ad._boot_watch()
+    clock[0] = 0.0
+    ad.proc = SimpleNamespace(pid=5, poll=lambda: -11)
+    with pytest.raises(adapters.BootHung, match="exited during boot"):
+        ad._boot_watch()
+
+
+def test_a_hung_boot_is_started_once_more(tmp_path, monkeypatch):
+    ad = adapters.SwitchLinuxAdapter(cfg(tmp_path))
+    ad.nce, ad.address_mode = True, "direct"
+    popen, stops = [], []
+    _fake_launch(ad, monkeypatch, [ARM64_MAPS], popen)
+    monkeypatch.setattr(ad, "_xdo", lambda *a: None)
+    monkeypatch.setattr(ad, "stop_game", lambda: stops.append(1) or {})
+    outcomes = [adapters.BootHung("drew no changing frame"), {"watched": True, "frames": 3}]
+
+    def watch():
+        r = outcomes.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+    monkeypatch.setattr(ad, "_boot_watch", watch)
+    rom = build_nsp(tmp_path / "Resident Evil 5.nsp", ["010018100cd460000000000000000003.tik", "a.nca"])
+    out = ad.launch_game(rom)
+    assert out["boot_attempts"] == 2 and "drew no changing frame" in out["boot_failures"][0]
+    assert len(popen) == 2 and len(stops) == 1                                   # the hung one stopped, one restart
+    outcomes[:] = [adapters.BootHung("hung"), adapters.BootHung("hung again")]
+    with pytest.raises(adapters.BootHung, match="hung again"):
+        ad.launch_game(rom)
+    other = build_nsp(tmp_path / "Zelda.nsp", ["0100f2c0115b60000000000000000003.tik", "a.nca"])
+
+    def never():
+        raise AssertionError("not watched")
+    monkeypatch.setattr(ad, "_boot_watch", never)
+    assert ad.launch_game(other)["boot_watch"] == {"watched": False}             # only the listed titles

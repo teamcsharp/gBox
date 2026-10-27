@@ -284,6 +284,9 @@ class Config(BaseModel):
                                           # too when it exists on this host (docs/research/switch-emulator-spark.md)
     switch_keys: str | None = None        # prod.keys for it (unset: a prod.keys at a Switch library's root, e.g. the
                                           # share's _switch/prod.keys); copied into gBox's own Eden keys folder
+    switch_citron_appimage: str | None = None   # linux Switch sessions in Citron NEO (gbox.adapters.CitronLinuxAdapter):
+                                          # its AppImage (extracted once), extracted AppRun or citron binary
+    switch_linux_emulator: str = "auto"   # eden | citron | auto: auto = Citron for SWITCH_CITRON_TITLES when configured
     decomp_me_enabled: bool = False       # opt-in: the `decomp_me` tool only talks to the network when true
     decomp_me_url: str = "https://decomp.me/api"
     ninja_ripper: dict = {}               # path, dll, launcher_args, hotkey, output_dir (docs/rip_and_decomp_tools.md)

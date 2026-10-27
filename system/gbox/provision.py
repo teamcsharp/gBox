@@ -4,6 +4,7 @@ Every step is idempotent (check first, install only when missing) and returns a 
 Linux installs use `sudo -n` (passwordless sudo required, never prompts). Downloads come from the projects' own
 distribution points (Ubuntu apt, buildbot.libretro.com, GitHub releases).
 """
+import hashlib
 import io
 import json
 import os
@@ -754,9 +755,10 @@ def switch_linux_env(cfg: Config) -> dict:
             "BROWSER": str(stub / "xdg-open"), "DEFAULT_BROWSER": str(stub / "xdg-open"), "DISABLE_AUTO_UPDATES": "1"}
 
 
-def switch_linux_url_stub(cfg: Config) -> Path:
-    """Write the no-op xdg-open (switch_linux_env) if it is missing or changed; returns its path."""
-    path = switch_linux_stub_dir(cfg) / "xdg-open"
+def switch_linux_url_stub(cfg: Config, folder: Path | None = None) -> Path:
+    """Write the no-op xdg-open (switch_linux_env; folder: another emulator's stub folder) if it is missing or changed;
+    returns its path."""
+    path = (folder or switch_linux_stub_dir(cfg)) / "xdg-open"
     if not path.is_file() or path.read_text(errors="replace") != SWITCH_URL_STUB:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(SWITCH_URL_STUB)
@@ -864,6 +866,125 @@ def ensure_switch_linux(cfg: Config, progress=None) -> dict:
     copied = switch_install_keys(keys, switch_linux_dir(cfg) / "keys")
     switch_linux_url_stub(cfg)
     return _receipt("eden", "ok", f"{exe}; keys from {keys}" + (f" ({', '.join(copied)} copied)" if copied else ""))
+
+
+# --- Citron NEO: the canonical Switch emulator for RE5 / RE6 (operator 2026-10-26) ---------------------------------------
+# Live on the Spark 2026-10-26 (nightly 56dad8119, NCE): RE5 No Mercy ran in multi-core at 60 FPS. Eden v0.2.1 needs
+# single-core for RE5 / RE6 (74-86 % speed). RE6 v131072 booted through external_content_dirs ("1.0.2" in the
+# window title). Its AppImage is sharun-based: LD_PRELOAD passes through only with SHARUN_ALLOW_LD_PRELOAD=1.
+# Citron's renderer enum is {Vulkan=0, Null=1}; Eden's is {OpenGL=0, Vulkan=1}.
+CITRON_RELEASE = "https://github.com/citron-neo/CI/releases/tag/nightly-linux"
+CITRON_ASSET = {"aarch64": "citron_nightly-<commit>-linux-aarch64-use-nopgo.AppImage"}
+USB_SHIM_SOURCE = Path(__file__).parent / "native" / "libusb_noinit.c"
+
+
+def citron_linux_home(cfg: Config) -> Path:
+    """gBox's own Citron on Linux: the extracted AppImage (squashfs-root) and Citron's XDG folders."""
+    return cfg.runtime / "citron-linux"
+
+
+def citron_linux_dir(cfg: Config) -> Path:
+    """Citron's data folder (keys/, nand/, sdmc/, load/, log/citron_log.txt)."""
+    return citron_linux_home(cfg) / "data" / "citron"
+
+
+def citron_linux_config(cfg: Config) -> Path:
+    return citron_linux_home(cfg) / "config" / "citron" / "qt-config.ini"
+
+
+def _citron_conf(cfg: Config) -> Path | None:
+    return Path(cfg.switch_citron_appimage).expanduser() if cfg.switch_citron_appimage else None
+
+
+def citron_linux_exe(cfg: Config) -> Path:
+    """switch_citron_appimage when it names an AppRun, a folder with one or a citron binary; else the AppImage gBox
+    extracted into its home (an .AppImage is never run directly: extracted once, like Eden's)."""
+    conf = _citron_conf(cfg)
+    if conf is not None:
+        if conf.is_dir():
+            for c in (conf / "AppRun", conf / "squashfs-root" / "AppRun", conf / "AppDir" / "AppRun",
+                      conf / "bin" / "citron"):
+                if c.is_file():
+                    return c
+        elif conf.is_file() and not conf.name.lower().endswith(".appimage"):
+            return conf
+    return citron_linux_home(cfg) / "squashfs-root" / "AppRun"
+
+
+def citron_linux_available(cfg: Config) -> bool:
+    """Citron is configured on this node (its AppImage / binary named and present) or already extracted."""
+    conf = _citron_conf(cfg)
+    return bool(conf is not None and conf.exists()) or citron_linux_exe(cfg).is_file()
+
+
+def switch_usb_shim(cfg: Config) -> Path:
+    """The libusb_init LD_PRELOAD shim (gbox/native/libusb_noinit.c), built here with the host's C compiler into a
+    folder named by the source's digest; reused while the source is unchanged. Never shipped as a binary."""
+    digest = hashlib.sha256(USB_SHIM_SOURCE.read_bytes()).hexdigest()[:16]
+    target = cfg.runtime / "switch-usb-shim" / digest / "libgbox_usb_noinit.so"
+    if target.is_file():
+        return target
+    cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
+    if not cc:
+        raise ToolUnavailable("Citron needs the USB shim built from gbox/native/libusb_noinit.c and this node has no C "
+                              "compiler (cc / gcc / clang)")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    r = subprocess.run([cc, "-O2", "-shared", "-fPIC", "-nostdlib", "-o", str(tmp), str(USB_SHIM_SOURCE)],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode or not tmp.is_file():
+        raise ToolUnavailable(f"building the USB shim failed: {(r.stdout + r.stderr)[-400:]}")
+    tmp.replace(target)
+    return target
+
+
+def citron_linux_env(cfg: Config) -> dict:
+    """Citron's XDG folders are gBox's own (runtime/citron-linux), as for Eden. The same no-op xdg-open goes first on
+    PATH. SHARUN_ALLOW_LD_PRELOAD=1 lets the libusb_init shim (switch_usb_shim) through sharun's loader."""
+    home = citron_linux_home(cfg)
+    stub = citron_linux_home(cfg) / "bin"
+    shim = cfg.runtime / "switch-usb-shim"
+    try:
+        digest = hashlib.sha256(USB_SHIM_SOURCE.read_bytes()).hexdigest()[:16]
+        preload = str(shim / digest / "libgbox_usb_noinit.so")
+    except OSError:
+        preload = ""
+    return {"XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
+            "XDG_DATA_HOME": str(home / "data"), "QT_QPA_PLATFORM": "xcb", **linux_audio_env(),
+            "PATH": os.pathsep.join([str(stub), os.environ.get("PATH", os.defpath)]),
+            "BROWSER": str(stub / "xdg-open"), "DEFAULT_BROWSER": str(stub / "xdg-open"), "DISABLE_AUTO_UPDATES": "1",
+            "SHARUN_ALLOW_LD_PRELOAD": "1", "LD_PRELOAD": preload}
+
+
+def ensure_citron_linux(cfg: Config, progress=None) -> dict:
+    """Citron NEO on a Linux node: the configured AppImage extracted once (or its AppRun / binary), the console keys
+    in gBox's own Citron folder, the no-op xdg-open, and the USB shim built from source. Nothing is downloaded."""
+    if HOST_OS != "linux":
+        raise ToolUnavailable("citron (linux): Linux nodes only")
+    home = citron_linux_home(cfg)
+    home.mkdir(parents=True, exist_ok=True)
+    exe = citron_linux_exe(cfg)
+    img = _citron_conf(cfg)
+    if img is not None and img.is_file() and img.name.lower().endswith(".appimage"):
+        mark, stat_ = home / "squashfs-root.from", f"{img} {img.stat().st_size} {int(img.stat().st_mtime)}"
+        if not exe.is_file() or not mark.is_file() or mark.read_text() != stat_:
+            progress and progress(12, f"Unpacking {img.name}")
+            _rpcs3_appimage_extract(img, home)
+            mark.write_text(stat_)
+            exe = citron_linux_exe(cfg)
+    if not exe.is_file():
+        asset = CITRON_ASSET.get(ARCH, "a Citron NEO Linux AppImage")
+        raise ToolUnavailable(f"no Citron on this Linux node: place {asset} from {CITRON_RELEASE} on this host and set "
+                              "switch_citron_appimage = \"<path>\" in gbox.local-<hostname>.toml")
+    keys = switch_keys_source(cfg)
+    if keys is None:
+        raise ToolUnavailable("no prod.keys for the Switch emulator: set switch_keys in gbox.local-<hostname>.toml or "
+                              "keep prod.keys at the Switch library's root (the share's _switch/prod.keys)")
+    copied = switch_install_keys(keys, citron_linux_dir(cfg) / "keys")
+    switch_linux_url_stub(cfg, citron_linux_home(cfg) / "bin")
+    shim = switch_usb_shim(cfg)
+    return _receipt("citron", "ok", f"{exe}; keys from {keys}; usb shim {shim}"
+                    + (f" ({', '.join(copied)} copied)" if copied else ""))
 
 
 def ensure_ghidra(cfg: Config) -> dict:

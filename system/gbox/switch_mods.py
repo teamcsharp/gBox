@@ -89,6 +89,14 @@ def eden(cfg) -> Emu:
                provision.switch_linux_home(cfg) / "cache" / "eden")
 
 
+def citron(cfg) -> Emu:
+    """gBox's own Citron NEO on a Linux node (provision.citron_linux_env): the same LayeredFS rules as Eden, with its own
+    load folder and qt-config.ini ([DisabledAddOns])."""
+    from . import provision
+    return Emu("citron", provision.citron_linux_dir(cfg) / "load", provision.citron_linux_config(cfg),
+               provision.citron_linux_home(cfg) / "cache" / "citron")
+
+
 def yuzu(exe, cfg=None) -> Emu:
     """The portable Yuzu a Windows PC launches (user/ beside yuzu.exe). Private only as a local folder: a Yuzu on a
     network share serves every PC, and a link in its load folder would point at one PC's cache."""
@@ -121,7 +129,8 @@ def _local_drive(p: Path) -> bool:
 def local_emulators(cfg) -> list[Emu]:
     """The Switch emulator installs this node launches (for link cleanup when a build is deleted)."""
     if HOST_OS == "linux":
-        return [eden(cfg)]
+        from . import provision
+        return [eden(cfg)] + ([citron(cfg)] if provision.citron_linux_available(cfg) else [])
     if HOST_OS == "windows":
         try:
             from .adapters import YuzuAdapter
@@ -1437,7 +1446,11 @@ def _switch_ids(ctx) -> dict[str, str | None]:
         return {}
 
 
-def _emu_here(cfg) -> Emu:
+def _emu_here(cfg, game: dict | None = None) -> Emu:
+    """The install this node starts `game` in (a Linux node: Citron for its titles once configured, else Eden)."""
+    if HOST_OS == "linux" and game is not None:
+        from .adapters import switch_linux_kind
+        return citron(cfg) if switch_linux_kind(game, cfg) == "citron" else eden(cfg)
     emus = local_emulators(cfg)
     if not emus:
         raise ValueError("no Switch emulator on this node")
@@ -1552,7 +1565,7 @@ def switch_mods_tool(inp: SwitchModsIn, ctx):
         raise ValueError(f"{game.get('title')} is not a Switch game")
     gid = game["game_id"]
     tid, base = _facts(ctx, game)
-    emu = _emu_here(cfg) if inp.op in ("status", "select") else None
+    emu = _emu_here(cfg, game) if inp.op in ("status", "select") else None
     active = inp.build if inp.build is not None else active_build(cfg, game, None, emu.kind if emu else (
         "eden" if HOST_OS == "linux" else "yuzu"))
     by = f"job {getattr(ctx, 'job_id', '')}"
