@@ -810,35 +810,32 @@ ipcMain.handle("clip:image", (_e, dataUrl) => { clipboard.writeImage(nativeImage
 ipcMain.handle("rec:open", (_e, file) => file ? shell.showItemInFolder(file) : shell.openPath(REC_DIR));
 
 // ---------------- native game windows embedded in the app (Windows) ----------------
-let embedder = null, embedQ = [], embedBuf = "";
-function embedCmd(cmd, deadlineMs=3000) {
+// embed-helper.cjs runs winembed.py: a slow first start gets more time, a helper that stops answering is replaced, and an
+// unanswered command says so (unavailable) so picture-in-picture falls back instead of failing (operator 2026-10-27).
+const embedHelper = require('./embed-helper.cjs').create({
+  start: () => spawn(venvPython(), ["-u", path.join(__dirname, "winembed.py")], { windowsHide: true }),
+  // the venv's python.exe is a launcher: its interpreter is a child process, so a stuck helper is ended as a tree
+  kill: proc => { if (process.platform === 'win32' && proc.pid) execFile('taskkill', ['/T', '/F', '/PID', String(proc.pid)], { windowsHide: true }, () => {}); else proc.kill(); },
+  log: text => logPush('embed', text),
+  onEvent: m => {
+    if (m.event === "whip") { pickWhip(m); return; }
+    if (m.event === "foreground") { hotkeys.setFront(!!m.front); return; }   // gBox gained / lost the foreground
+    if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); return; }
+    if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); }
+  },
+  // A helper that exited takes the PiP's window controls with it: the window is restored. One replaced because it stopped
+  // answering keeps the PiP; the new helper is told about the compact window (main keeps the caption bits to put back).
+  onExit: ({ restarted }) => {
+    embedded = null; fgWatched = 0; hotkeys.setFront(false);
+    if (restarted) { if (!quitting && compactWindow.state().on) compactWindow.rechrome().catch(error => logPush('compact', error.message)); return; }
+    if (!quitting && compactWindow.state().on && !compactRecoveryPending) {
+      compactRecoveryPending = true;
+      compactWindow.restore().catch(error => logPush('compact', error.message));
+    }
+  } });
+function embedCmd(cmd, deadlineMs = 3000, options) {
   if (process.platform !== "win32") return Promise.resolve({ ok: false });
-  if (!embedder) {
-    embedder = spawn(venvPython(), ["-u", path.join(__dirname, "winembed.py")], { windowsHide: true });
-    embedder.stdout.on("data", d => { embedBuf += d; let i; while ((i = embedBuf.indexOf("\n")) >= 0) { const l = embedBuf.slice(0, i); embedBuf = embedBuf.slice(i + 1); let m;
-      try{m=JSON.parse(l);}catch{logPush('embed','Ignored malformed helper output');continue;}
-      if (m.event === "whip") { pickWhip(m); continue; }
-      if (m.event === "foreground") { hotkeys.setFront(!!m.front); continue; }   // gBox gained / lost the foreground
-      if (m.event === 'piprestore') { compactWindow.restore().catch(error => logPush('compact', error.message)); continue; }
-      if (m.event) { if (win) { const k = screen.getDisplayMatching(win.getBounds()).scaleFactor; win.webContents.send("embed:event", { ...m, x: m.x / k, y: m.y / k }); } continue; }
-      const r = embedQ.shift(); r && r(m); } });
-    embedder.on("close", () => { embedder = null; embedded = null; fgWatched = 0; hotkeys.setFront(false); embedQ.splice(0).forEach(r => r({ ok: false }));
-      if (!quitting && compactWindow.state().on && !compactRecoveryPending) {
-        compactRecoveryPending = true;
-        compactWindow.restore().catch(error => logPush('compact', error.message));
-      } });
-  }
-  if(embedQ.length>=64)return Promise.resolve({ok:false,error:'Game-window helper is busy; the current dock was preserved'});
-  return new Promise(res => {
-    let timer,settled=false;
-    const finish=value=>{clearTimeout(timer);if(!settled){settled=true;res(value);}};
-    embedQ.push(finish);
-    timer=setTimeout(()=>finish({ok:false,error:'Game-window helper timed out; the current dock was preserved'}),deadlineMs);
-    // Keep a timed-out reply's FIFO slot until it arrives; do not let it be
-    // mistaken for the next command or detach a different game's surface.
-    try{embedder.stdin.write(JSON.stringify(cmd)+'\n');}
-    catch(error){const at=embedQ.indexOf(finish);if(at>=0)embedQ.splice(at,1);finish({ok:false,error:error.message});}
-  });
+  return embedHelper.send(cmd, deadlineMs, options);
 }
 let compactChromeBits = null, compactRecoveryPending = false;
 let clientReloading = false;
@@ -849,9 +846,12 @@ const compactWindow = require('./compact-window.cjs').create({ getWin: () => win
     const appWindow = Number(win.getNativeWindowHandle().readBigUInt64LE(0));
     const watched = await embedCmd({ op: 'watch', app: appWindow });
     if (!watched.ok) return watched;
+    // The caption bits taken away are kept here, also from an answer that came after its deadline, and handed to a helper
+    // that started while the window was already compact, so restoring always puts back exactly those.
+    const keep = result => { if (result?.ok) { compactChromeBits = on ? result.bits : null; compactRecoveryPending = false; } };
     const result = await embedCmd({ op: 'appchrome', app: appWindow, pid: process.pid, on,
-      ...(!on && compactChromeBits !== null ? { bits: compactChromeBits } : {}) });
-    if (result.ok) { compactChromeBits = on ? result.bits : null; compactRecoveryPending = false; }
+      ...(compactChromeBits !== null ? { bits: compactChromeBits } : {}) }, 3000, { late: keep });
+    keep(result);
     return result;
   },
   emit: state => { if (win && !win.isDestroyed()) win.webContents.send('compact:view', state); }
@@ -1519,16 +1519,16 @@ function shutdownSessions() {
   if (!FIRST) return;
   if (clientRefreshExit) {
     // Only idle, parent-owned helpers remain. No game/job cleanup or Spark action.
-    embedder?.kill();
+    embedHelper.kill();
     if(typeof localControlProcess!=='undefined')localControlProcess?.kill();
     return;
   }
-  try { embedder && embedder.stdin.write(JSON.stringify({ op: "detach" }) + "\n"); } catch {}
+  embedHelper.notify({ op: "detach" });
   for (const p of procs.values()) p.kill();
   workerStopRequested = true;
   if (worker) { try { execFileSync("taskkill", ["/T", "/F", "/PID", String(worker.pid)], { windowsHide: true, timeout: 8000 }); } catch {} }
   if(localControlProcess?.pid){try{execFileSync('taskkill',['/T','/F','/PID',String(localControlProcess.pid)],{windowsHide:true,timeout:8000});}catch{}}
-  embedder?.kill();                                            // this app's own helper only
+  embedHelper.kill();                                          // this app's own helper only
 }
 app.on("window-all-closed", () => {
   shutdownSessions();

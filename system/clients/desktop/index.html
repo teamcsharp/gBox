@@ -2654,7 +2654,10 @@ function loadPlay() {
     wv.addEventListener("dom-ready", async () => {
       const revision = generation;
       try {
-        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => requestAnimationFrame(resolve)); })()`);
+        // Its first paint is awaited at most 250 ms: a view loaded while hidden (behind the PiP, which hides everything
+        // else) gets no animation frames at all, so it timed out every 30 s, was rebuilt and never became ready, and the
+        // PiP could not follow its game to a new session (operator 2026-10-27: "stuck reconnecting" after a Spark restart)
+        await wv.executeJavaScript(`(async () => { document.documentElement.dataset.embedded = "true"; document.documentElement.style.colorScheme = "dark"; window.GBOX_LOCAL = ${JSON.stringify({ worker: S.workerName, incidentCapture: true })}; await window.gboxViewReady; await new Promise(resolve => { requestAnimationFrame(resolve); setTimeout(resolve, 250); }); })()`);
         if (!wv.isConnected || revision !== generation) return;
         clearTimeout(timeout); wv.dataset.ready = "true"; panel.hidden = true;
         readyResolve();
@@ -3958,19 +3961,27 @@ const compactContinuity = GBoxSessionContinuity.create({
     () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
   follow: (session, from) => compactFollow(session, from)
 });
-// force (F5): the PiP moves at once, its first frame only a poster when there is one (the operator asked for this game)
+// force (F5): the PiP moves at once, its first frame only a poster when there is one (the operator asked for this game).
+// Otherwise the main window's view checks the first frame; a view not ready or silent for 5 s never holds the PiP on an
+// ended game (operator 2026-10-27, "stuck reconnecting" after a Spark restart): the stream's health decides then.
 async function compactFollow(session, from, { force = false } = {}) {
   const token = await gbox.token();
-  const webview = document.querySelector('#wv');
-  if (webview?.dataset.ready !== 'true' && !force) return;
-  const url = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/frame.jpg?token=${encodeURIComponent(token)}`;
-  const look = () => webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
-  const frame = !force ? await look() : webview?.dataset.ready === 'true' ? await look().catch(() => null) : null;
+  const webview = document.querySelector('#wv'), sid = encodeURIComponent(session.session_id);
+  const url = `${S.apiUrl}/api/sessions/${sid}/frame.jpg?token=${encodeURIComponent(token)}`;
+  let timer;
+  const look = () => Promise.race([webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(Error('No answer')), 5000); })]).finally(() => clearTimeout(timer));
+  let frame = webview?.dataset.ready === 'true' ? await look().catch(() => null) : null;
+  if (!frame && !force) {
+    const h = await compactApi(`/api/sessions/${sid}/stream/health`, undefined, 'GET').catch(() => null);
+    if (!(h?.state === 'running' && h.age_s != null && h.age_s < 3)) return;   // no live picture yet: asked again
+    frame = { visible: true };
+  }
   if (!frame?.visible && !force) return; // black boot frames do not replace the held gameplay
   if (!COMPACT.on || COMPACT.sid !== from) return;
   const image = $('#compact-stream');
   if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
-  else if (image && force) image.style.backgroundImage = '';   // never the old game's last frame under the new one
+  else if (image) image.style.backgroundImage = '';            // never the old game's last frame under the new one
   compactSession = session; compactTitle = sessionTitle(session);
   closePipMenu();
   compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;

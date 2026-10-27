@@ -69,6 +69,19 @@ def test_a_restarted_helper_restores_chrome_from_the_trusted_main_process_snapsh
     assert user.styles[9]&bits==bits
 
 
+def test_a_helper_started_while_compact_keeps_the_original_bits_from_main_not_the_stripped_window():
+    # operator 2026-10-27: a helper that stopped answering is replaced while the PiP stays open; the new helper sees the
+    # window without its caption bits, and must still put back the ones main took away
+    chrome,state,user,bits=chrome_fixture(); original=user.styles[9]
+    user.styles[9]&=~bits
+    assert chrome(9,42,True,bits)=={'ok':True,'on':True,'aspect':16/9,'bits':bits}
+    assert user.styles[9]&bits==0
+    assert chrome(9,42,False)['ok']
+    assert user.styles[9]==original
+    plain,state2,user2,_=chrome_fixture()                  # without main's bits a first hide snapshots the window as it is
+    assert plain(9,42,True)['bits']==bits
+
+
 def test_native_restore_gesture_is_activated_only_for_compact_scoped_plain_game_clicks():
     source=SOURCE.read_text(encoding='utf-8')
     assert "enabled and hit == 'game' and plain" in source

@@ -184,7 +184,8 @@ test('desktop compact stream receives non-bubbling watchdog status through captu
 });
 test('handoff shutdown and startup skip broad cleanup, game snapshots and Spark bootstrap',()=>{
   const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
-  const branch=main.slice(main.indexOf('if (clientRefreshExit)'),main.indexOf('try { embedder && embedder.stdin.write',main.indexOf('if (clientRefreshExit)')));
+  const branch=main.slice(main.indexOf('if (clientRefreshExit)'),main.indexOf('embedHelper.notify({ op: "detach" });',main.indexOf('if (clientRefreshExit)')));
+  assert.ok(branch.length>0 && branch.length<600,'the client-refresh exit branch is found and ends before the detach');
   assert.match(branch,/return;/);assert.doesNotMatch(branch,/cleanupSessions|taskkill|keepMoments|ssh\(/);
   const startup=main.slice(main.indexOf('if (startupHandoff.requested) {'),main.indexOf('startAudioVolumeHelper();',main.indexOf('if (startupHandoff.requested) {')));
   assert.match(startup,/startWorker\(\)/);assert.doesNotMatch(startup.replace(/\/\/[^\n]*/g,''),/cleanupSessions|bootstrap|ssh\(/);

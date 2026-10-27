@@ -4,6 +4,9 @@
 // the desktop window becomes a small game-only player. No second stream/window.
 const DEFAULT_ASPECT = 4 / 3;
 const WINDOW_ASPECT = 16 / 9;
+const CHROME_RETRY_MS = 2000, CHROME_RETRY_MAX_MS = 30000;
+const OVERLAY = { color: '#111114', symbolColor: '#e8e8ee', height: 36 };
+const OVERLAY_HIDDEN = { color: '#00000000', symbolColor: '#00000000', height: 0 };
 const validAspect = value => Number.isFinite(+value) && +value >= .1 && +value <= 10;
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 
@@ -22,26 +25,44 @@ function fitBounds(bounds, aspect, work, width) {
     y: Math.round(clamp(bounds.y, work.y, work.y + work.height - h)), width: Math.round(w), height: h };
 }
 
-function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emit = () => {} }) {
+function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emit = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
   let saved = null, aspect = DEFAULT_ASPECT, queue = Promise.resolve(), compactBounds = null, restoreSeed = null;
+  // chrome: the native helper hid the caption controls. A PiP opened while the helper did not answer keeps them in view
+  // (chrome false) and asks again, backing off, until it does.
+  let chrome = false, retryTimer = null, retryMs = CHROME_RETRY_MS;
   const state = () => ({ on: !!saved, aspect });
   const window = () => { const w = getWin(); if (!w || w.isDestroyed()) throw Error('The gBox window is unavailable.'); return w; };
   const publish = () => { const value = state(); emit(value); return value; };
   const workArea = w => screen.getDisplayMatching(w.getBounds()).workArea;
   const enqueue = run => { const next = queue.then(run); queue = next.catch(() => {}); return next; };
+  const later = () => { cancel(retryTimer); retryTimer = saved && !chrome ? schedule(() => { retryTimer = null; rechrome().catch(() => {}); }, retryMs) : null; };
+  // Hide (or hide again, for a helper started while the window was already compact) the native caption controls.
+  function rechrome() {
+    return enqueue(async () => {
+      if (!saved) return state();
+      const result = await nativeChrome(true).catch(error => ({ ok: false, error: error.message }));
+      if (result?.ok) {
+        if (!chrome) window().setTitleBarOverlay?.(OVERLAY_HIDDEN);
+        chrome = true; retryMs = CHROME_RETRY_MS;
+      } else if (!chrome) { retryMs = Math.min(CHROME_RETRY_MAX_MS, retryMs * 2); later(); }
+      return state();
+    });
+  }
 
   async function restoreNow() {
     if (!saved) return state();
     const w = window(), before = saved;
     compactBounds = w.getBounds();
-    // A failed native restore must leave the mode recoverable for a second try.
+    // A failed native restore must leave the mode recoverable for a second try. Controls the helper never hid (it did
+    // not answer when the PiP opened) need no answer to come back.
     const result = await nativeChrome(false);
-    if (!result?.ok) throw Error(result?.error || 'Could not restore the gBox window controls.');
+    if (!result?.ok && chrome) throw Error(result?.error || 'Could not restore the gBox window controls.');
+    cancel(retryTimer); retryTimer = null; chrome = false; retryMs = CHROME_RETRY_MS;
     w.setAspectRatio(0);
     w.setMinimumSize(...before.minimum);
     w.setMaximumSize(...before.maximum);
     w.setAlwaysOnTop(before.top);
-    w.setTitleBarOverlay?.({ color: '#111114', symbolColor: '#e8e8ee', height: 36 });
+    w.setTitleBarOverlay?.(OVERLAY);
     w.setBounds(before.bounds);
     if (before.maximized) w.maximize();
     if (before.fullscreen) w.setFullScreen(true);
@@ -71,25 +92,31 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       if (before.fullscreen) w.setFullScreen(false);
       if (before.maximized) w.unmaximize();
       const result = await nativeChrome(true);
-      if (!result?.ok) throw Error(result?.error || 'Could not hide the gBox window controls.');
-      aspect = validAspect(request.aspect) ? +request.aspect : validAspect(result.aspect) ? +result.aspect : DEFAULT_ASPECT;
+      // A helper that did not answer (a cold start while gBox boots, or one stuck on another window) never keeps the
+      // game out of the PiP (operator 2026-10-27: F5 ended inert on "Game-window helper timed out"): the window becomes
+      // the PiP with its caption controls in view, hidden once the helper answers. A refusal still rolls back.
+      if (!result?.ok && !result?.unavailable) throw Error(result?.error || 'Could not hide the gBox window controls.');
+      chrome = !!result?.ok;
+      aspect = validAspect(request.aspect) ? +request.aspect : validAspect(result?.aspect) ? +result.aspect : DEFAULT_ASPECT;
       w.setMinimumSize(160, 90); w.setMaximumSize(0, 0);
       const windowAspect = WINDOW_ASPECT;
       w.setAlwaysOnTop(true); w.setAspectRatio(windowAspect);
       // Electron exposes overlay styling, rather than a runtime visibility API.
       // The native helper removes caption controls; transparent overlay styling
       // also avoids a flash while Chromium processes that style change.
-      w.setTitleBarOverlay?.({ color: '#00000000', symbolColor: '#00000000', height: 0 });
+      // Controls the helper could not remove stay visible (never invisible but clickable).
+      if (chrome) w.setTitleBarOverlay?.(OVERLAY_HIDDEN);
       const work = workArea(w), width = Number.isFinite(+request.width) ? +request.width : compactBounds?.width || 480;
       const candidate = compactBounds || { x: work.x + work.width - width - 24, y: work.y + work.height - width / windowAspect - 24, width };
       w.setBounds(fitBounds(candidate, windowAspect, work, width));
-      saved = before; restoreSeed = null;
+      saved = before; restoreSeed = null; retryMs = CHROME_RETRY_MS;
+      if (!chrome) later();
       return publish();
     } catch (error) {
       // Roll back the same live window; this never touches the emulator process.
       await nativeChrome(false).catch(() => {});
       w.setAspectRatio(0); w.setMinimumSize(...before.minimum); w.setMaximumSize(...before.maximum);
-      w.setAlwaysOnTop(before.top); w.setTitleBarOverlay?.({ color: '#111114', symbolColor: '#e8e8ee', height: 36 });
+      w.setAlwaysOnTop(before.top); w.setTitleBarOverlay?.(OVERLAY);
       w.setBounds(before.bounds);
       if (before.maximized) w.maximize();
       if (before.fullscreen) w.setFullScreen(true);
@@ -97,7 +124,7 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
     }
   }
 
-  return { state, update: request => enqueue(() => updateNow(request)), restore: () => enqueue(restoreNow),
+  return { state, update: request => enqueue(() => updateNow(request)), restore: () => enqueue(restoreNow), rechrome,
     handoff: () => {
       const w = window();
       return { window: saved || { bounds: w.getNormalBounds(), maximized: w.isMaximized(), fullscreen: w.isFullScreen(), top: w.isAlwaysOnTop() },
@@ -107,4 +134,4 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
   };
 }
 
-module.exports = { create, fitBounds, validAspect, wideBounds };
+module.exports = { create, fitBounds, validAspect, wideBounds, CHROME_RETRY_MS, CHROME_RETRY_MAX_MS };
