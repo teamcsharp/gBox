@@ -4435,9 +4435,32 @@ class BootHung(RuntimeError):
     """A Switch title that mapped its memory but never drew a changing frame (or whose emulator died) during boot."""
 
 
+_SWITCH_TID_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
+# Catalog rows that carry no serial (the share's "Resident Evil 5.nsp" has no [TITLEID] tag and the catalog does not read
+# its ticket): named by title, the way gbox.re_switch.capabilities does.
+_SWITCH_TITLES_BY_NAME = ((re.compile(r"(?:resident\s+evil|biohazard)\s*5", re.I), "010018100CD46000"),
+                          (re.compile(r"(?:resident\s+evil|biohazard)\s*6", re.I), "01002A000CD48000"))
+
+
 def _switch_title_id(game: dict) -> str:
-    serial = str(game.get("serial") or (game.get("launch") or {}).get("title_id") or "")
-    return serial.removeprefix("0x").removeprefix("0X").upper()
+    """The game's base title id: its serial or launch title id, else a [TITLEID] tag in its file name, else its title
+    for the titles gBox knows by name (RE5 / RE6); "" when nothing says."""
+    launch = game.get("launch") or {}
+    serial = str(game.get("serial") or launch.get("title_id") or "").removeprefix("0x").removeprefix("0X").upper()
+    if re.fullmatch(r"[0-9A-F]{16}", serial):
+        return serial
+    names = [launch.get("path"), game.get("rel_path"), *(game.get("source_paths") or [])]
+    for name in names:
+        m = _SWITCH_TID_TAG.search(str(name or ""))
+        if m:
+            tid = m[1].upper()
+            return f"{int(tid, 16) & ~0xFFF:016X}" if (int(tid, 16) & 0xFFF) == 0x800 else tid
+    if str(game.get("platform") or "").casefold() == "switch":
+        title = re.split(r"[\[(]", str(game.get("title") or ""), maxsplit=1)[0]
+        for rx, tid in _SWITCH_TITLES_BY_NAME:
+            if rx.fullmatch(title.strip()):
+                return tid
+    return serial
 
 
 def switch_linux_kind(game: dict, config: Config) -> str:
