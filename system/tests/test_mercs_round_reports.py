@@ -275,3 +275,65 @@ def test_recent_report_limit_ignores_old_report_reconciliation(evidence):
     result=TestClient(app).get('/api/mercs/round-reports?limit=2').json()
     assert [r['id'] for r in result['reports']]==[newest['id'],newer['id']]
     assert e.store.get(R.KIND,old['id'])['updated']==1300.
+
+
+# --- Switch No Mercy (Citron NEO): solo drivers without a navigation atlas ------------------------------------------
+
+SWITCH_SID, SWITCH_JOB = 'e4cdbbef52344447-073eb0a890a943f9', 'df90eafd3b6b4bb9'
+SWITCH_GAMES = {'010018100CD46000': '52d15709be0fda1a', '01002A000CD48000': '115f9cdbba115432'}
+
+
+def switch_round(tmp_path, title, extra=None, outcome='completed'):
+    """A live-shaped Switch row (RE5's 2026-10-27 01:35:58 round, cut down), its session and its autoplay start job."""
+    store = Store(tmp_path)
+    store.put('session', SWITCH_SID, {'session_id': SWITCH_SID, 'game_id': SWITCH_GAMES[title], 'state': 'running'})
+    store.put('job', SWITCH_JOB, {'id': SWITCH_JOB, 'tool': 'autoplay', 'worker_id': SWITCH_SID.split('-')[0],
+              'require_worker': SWITCH_SID.split('-')[0], 'input': {'op': 'start', 'session_id': SWITCH_SID},
+              'state': 'succeeded'})
+    observed = {'source_session_id': SWITCH_SID, 'source_autoplay_job_id': SWITCH_JOB, 'team_role': 'solo_p1',
+                'scoring_scope': 'solo', 'mode': 'no_mercy', 'kills': 10, 'score': 3640, 'timer': 0.0,
+                'result_rank_observed': None, 'player_damage_events': 28, 'hits_taken': 0,
+                'shots': 129, 'hits': 196, 'trigger_s': 19.56, 'holds': 30, 'escapes': 18, 'heals': 4,
+                'round_shots': 30, 'round_hits': 41, 'round_trigger_s': 3.26, 'round_holds': 8, 'round_escapes': 4,
+                'round_burst_backoffs': 0, 'round_heals': 1, 'round_heal_starts': 1, 'round_heal_failures': 0,
+                'aim': 'd 278 yaw +0.0 pitch -8.9 dot_dy +143 on body keys zl,zr', **(extra or {})}
+    Notebook(tmp_path/'mercs', title).finish('unknown', 'mercenaries', 'unknown', outcome, observed, round_id=RID)
+    return store, R.Reports(store, tmp_path, now=lambda: 1000.)
+
+
+@pytest.mark.parametrize('title', sorted(SWITCH_GAMES))
+def test_switch_solo_round_without_an_atlas_queues_its_sparkdeux_analysis(tmp_path, monkeypatch, title):
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path/'hermes'))
+    store, runner = switch_round(tmp_path, title)
+    assert runner.scan() == 1                                     # the scanner reads mercs/curriculum/<title>
+    doc = runner.materialize(store.get(R.KIND, R.identity(title, RID)))
+    report = doc['report']
+    assert doc['state'] == 'queued_for_hermes' and report['eligibility'] == {
+        'eligible': True, 'needs_analysis': True, 'reason': 'terminal solo round; rank uncertainty is investigated'}
+    assert report['atlas']['state'] == 'unavailable' and report['atlas']['rounds'] == []
+    assert report['source']['provenance'] == {'verified': True, 'source': 'owning_local_autoplay_job',
+                                              'reason': 'matched exact worker/session start'}
+    assert report['source']['game_id'] == SWITCH_GAMES[title] and report['learning']['validated_existing_consumer'] is None
+    assert report['metrics']['aim']['round_shots'] == 30 and report['metrics']['aim']['round_trigger_s'] == 3.26
+    assert report['metrics']['survival']['round_holds'] == 8 and report['metrics']['survival']['round_escapes'] == 4
+    assert report['metrics']['survival']['round_heals'] == 1 and report['metrics']['damage']['player_damage_events'] == 28
+    assert len(R.encoded(report).encode()) <= R.MAX_REPORT
+    request = store.get('request', doc['request_id'])
+    assert request['context']['required_inference_node'] == 'sparkDeux' and request['context']['game_id'] == SWITCH_GAMES[title]
+    assert 'round_holds' in request['body'] and 'no navigation atlas' in request['body']
+    assert 'mine-retreat' not in request['body']
+
+
+def test_switch_round_without_the_solo_role_is_recorded_but_never_dispatched(tmp_path, monkeypatch):
+    monkeypatch.setenv('GBOX_HERMES_HOME', str(tmp_path/'hermes'))
+    store, runner = switch_round(tmp_path, '010018100CD46000', extra={'team_role': None, 'scoring_scope': None})
+    doc = runner.materialize(runner.ingest('010018100CD46000', runner.row('010018100CD46000', RID)))
+    assert doc['state'] == 'recorded_no_dispatch' and store.all('request') == []
+
+
+def test_titles_with_an_atlas_still_wait_for_it(evidence):
+    e = evidence; row = e.record(with_atlas=False)
+    assert TITLE not in R.NO_ATLAS and R.atlas_evidence(e.root, TITLE, row)['state'] == 'pending'
+    with pytest.raises(RuntimeError, match='Atlas evidence is not ready'):
+        e.runner.materialize(e.runner.ingest(TITLE, row))
+    assert e.store.all('request') == []

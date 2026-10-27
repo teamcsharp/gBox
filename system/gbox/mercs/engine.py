@@ -151,6 +151,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     "damage_events", "player_damage_events", "hits_taken", "mine_attempts", "mine_detonations_observed", "mine_retreats_completed",
                     "mine_pickups_avoided", "qte_presses", "resuscitate_presses", "route_replans", "nav_recoveries")
     baseline = {k: stats.get(k, 0) for k in delta_fields}
+    round_counters = tuple(getattr(drv, "round_counters", ()) or ())   # the driver's turn-long counters (Driver)
+    counter_base = {k: stats.get(k) for k in round_counters}
     round_closed = False
     last_round_marker = None
     native_playing_seen = False
@@ -165,6 +167,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     for key in ('source_session_id','source_autoplay_job_id'):
         stats.pop(key,None)
     stats.update(provenance)
+    if session_runtime is None and getattr(drv, "solo_p1", False) is True:
+        # A driver with no teamplay: the bot alone on P1, the score P1's own (Driver.solo_p1). round_reports and
+        # MercMode adoption require this exact role; SessionRuntime records it for the titles that have teamplay.
+        stats.update(team_role="solo_p1", scoring_scope="solo")
     try:
         from . import lessons as lesson_store
         from .notebook import Notebook
@@ -192,6 +198,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         row['assistance_verified'] = row['assistance']['verified']
         for key in delta_fields:
             row[key] = max(0, (row.get(key) or 0) - baseline[key])
+        for key in round_counters:
+            end, start = row.get(key), counter_base.get(key)
+            if type(end) in (int, float):
+                row['round_'+key] = round(max(0, end - (start if type(start) in (int, float) else 0)), 3)
         if row.get('round_accuracy') is not None:
             row['accuracy'] = row['round_accuracy']
         if trace is not None:
@@ -236,10 +246,11 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     def start_evidence(before):
         nonlocal trace, remembered, round_id, baseline, round_closed, outcome, last_stats, assistance
         nonlocal native_playing_seen, terminal_witness
-        nonlocal solo_native_round
+        nonlocal solo_native_round, counter_base
         round_id = uuid.uuid4().hex
         remembered = None
         baseline = {key:before.get(key,0) for key in delta_fields}
+        counter_base = {key:before.get(key) for key in round_counters}
         round_closed, outcome, last_stats = False, "interrupted", {}
         native_playing_seen, terminal_witness = False, None
         solo_native_round = True

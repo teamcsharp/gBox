@@ -1031,6 +1031,9 @@ class Bot:
 
 class RE5Switch(Driver):
     map_id = MAP_ID
+    solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
+    round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
+                      "heal_starts", "heal_failures")
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
