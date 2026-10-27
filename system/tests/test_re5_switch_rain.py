@@ -144,3 +144,33 @@ def test_one_close_in_front_gets_the_gun_not_a_back_off_and_a_crowd_no_burst_cut
         act = b.tick(snap(crowd, dot=chest(at(180, 0), k * 0.1), motion=29))
         assert "zr" in act["hold"]
     assert b.stats["burst_backoffs"] == 0 and b.stats["shots"] == 1
+
+
+def test_a_long_shot_waits_for_the_dot_to_settle_on_him_when_nobody_is_close():
+    b, clock = bot()
+    far = at(1500, 0)
+    b.tick(snap([(far, 800)], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([(far, 800)], dot=chest(far), motion=26))      # one tick on him: not yet
+    assert "zr" not in act["hold"] and b.why == "settling on him at 15.0 m" and b.stats["shots"] == 0
+    clock[0] = 0.35
+    act = b.tick(snap([(far, 800)], dot=chest(far, 1.0), motion=26))  # still on him: the trigger
+    assert "zr" in act["hold"] and b.why.endswith("(long shot)") and b.stats["shots"] == 1
+    clock[0] = 0.4
+    assert "zr" in b.tick(snap([(far, 800)], dot=chest(far, 2.0), motion=29))["hold"]   # firing: no new wait
+    b, clock = bot()
+    near = at(300, 40)                                                # one close by: no waiting at range
+    b.tick(snap([(far, 800), (near, 800)], motion=22))
+    b.target = 10
+    clock[0] = 0.3
+    act = b.tick(snap([(far, 800), (near, 800)], dot=chest(far), motion=26))
+    assert "zr" in act["hold"] or b.target == 11
+
+
+def test_a_long_shot_creeps_onto_him_with_sparser_pulses():
+    b = R.Bot(stats={})
+    win = math.atan2(R.BODY_R, 1500.0)                                # his window at 15 m: about 1.4 deg
+    assert R.Bot._pulse_n(math.radians(4.0), win) == 2 and R.Bot._pulse_n(math.radians(2.0), win) == 3
+    assert R.Bot._pulse_n(math.radians(1.0), win) == 4 and R.Bot._pulse_n(math.radians(1.0), None) == 2
+    on = [bool(b._yaw(math.radians(2.0), win)) for _ in range(9)]     # one tick in three
+    assert on.count(True) == 3 and on == [False, False, True] * 3
