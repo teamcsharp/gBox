@@ -282,3 +282,9 @@ workers = ["i9-NUC"]
 root = { windows = "D:/gBox/refract" }
 # A Quest game starts only with the operator's own [quest.owned."<package>"] declaration below (declared_by and
 # declared_at required; gBox never writes it) or when Refract's Meta sign-in on that PC lists it as owned.
+
+[quest.owned."com.Armature.VR4"]
+title = "Resident Evil 4 VR"
+declared_by = "mx1001"
+declared_at = "2026-10-27"
+statement = "I own the game. I pulled it from a headset and it's a product I purchased."
