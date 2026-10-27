@@ -33,6 +33,16 @@ ops:
   auto_qte on=true          the game's own automatic action button: cSystemInfo mTempData.mExOptAutoActBtn (+0x46B0,
                             copy B +0x9BC0) set to 1 in both copies, that field only, read back; every QTE site tests it
                             (nonzero = automatic) (operator OK 2026-10-27, "auto QTE")
+  kill_time on=true seconds=3 [seconds_max=N]  +seconds on the round clock for every new kill of sGameMan's count
+                            (+0x408C) while a round is playing (RE5's kill_time): the clock sGameMan +0x3DF0 written as
+                            the game's own time-add handler main+0x1DF9A4 writes it (clamped to 5999.99, the HUD's
+                            bonus notice +0x3DF8 / +0x3DFC), read back; a new round counts afresh
+  add_time seconds=N / set_time seconds=N  the round clock moved / set the same way (RE5's names; never under 1 s)
+  auto_qte_ram on=true      while a zombie holds him (action 8 / 9 / 25), the grab's action button (sActionButton
+                            [main+0x28E7AF0], ButtonMgr +0x50 + 0x398 * player, units +0x248 / +0x2E0) gets the escape
+                            the game itself grants (the evaluation main+0x31F0C0): a chance button (type 8 ...: the grab)
+                            its rolled outcome +0x8 set to 0, free at once; a mash button its progress +0x40 up to its
+                            target +0x3C; the bot's own shake stays the fallback
   unlock_characters on=true every Mercenaries character and costume on the save: the character select's mask (cSystemInfo
                             +0x974 and its copy +0x5E84, which the select's constructor main+0xAA9158 ORs with 0x20010101)
                             set to 0x3FFFFFFF, both copies read back; nothing else in cSystemInfo is ever written, and the
@@ -145,6 +155,32 @@ LOADOUTS = (                                             # this build's entries:
     (0x0206, ((0x102, 16), (0x112, 6)), ((0x201, 50), (0x209, 12), (0x20A, 6))),
     (0x0007, ((0x101, 15), (0x10A, 5), (0x118, 0xFFFF)), ((0x116, 5), (0x120, 2), (0x201, 50), (0x203, 20))),
 )
+# The round clock (Ghidra: the game manager's own time-add handler main+0x1DF9A4, the time bonuses' and the finishers'
+# path, works on sGameMan's Mercenaries block at +0x8A8): that block's +0x3DF0 - sGameMan +0x4698 - is the countdown
+# itself, clamped to 5999.99 (main+0x21516F0), its +0x3DF8 (+0x46A0) the bonus the HUD shows (999 at most, added to
+# while its notice +0x3DFC (+0x46A4) is up). sGameMan +0x3DF0 is the HUD's copy, rewritten every frame (live
+# 2026-10-27: +30 there read back and was gone the next frame; +30 at +0x4698 stuck and the copy followed it).
+# kill_time / add_time / set_time write the clock the same way (RE5's names: gbox.re5_mods_tool).
+GM_CLOCK = 0x4698
+CLOCK_MAX, CLOCK_MIN = 5999.99, 1.0                      # no write leaves the countdown at or under CLOCK_MIN
+KILL_TIME_S, KILL_TIME_MAX_S = 3.0, 30.0                 # operator 2026-10-27: "add 3 seconds to the clock per kill"
+ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
+# The game's own action-button struggle (Ghidra): sActionButton [main+0x28E7AF0] (constructor main+0x31B350) holds a
+# ButtonMgr per player at +0x50 + 0x398 * index (its update main+0x31D4F0), each with two ButtonUnits of 0x98 at +0x248
+# and +0x2E0 (+0xC active, +0x10 the cActionButton). The evaluation main+0x31F0C0 adds 0.5 a press to the unit's
+# progress +0x40 and grants the action once it reaches the target +0x3C (the cActionButton calls its success function:
+# the zombie lets go); +0x4C counts the time limit to 100 (the bite). auto_qte_ram writes the progress up to the target
+# while a zombie holds him: the escape the game itself grants when the mashing fills it.
+S_ACTBTN, AB_MGRS, AB_MGR_STRIDE, AB_PLAYERS = 0x28E7AF0, 0x50, 0x398, 8
+MGR_UNITS, UNIT_ACTIVE, UNIT_BUTTON, UNIT_TARGET, UNIT_PROGRESS = (0x248, 0x2E0), 0xC, 0x10, 0x3C, 0x40
+# A zombie's grab is a "chance" button (unit +0x1C type 8, 0x12, 0x13, 0x17-0x19; live: type 8, target 34, time limit
+# 180): its outcome is rolled once at the start into unit +0x8 (0 free at once, 1 / 2 / 3 free at 10 / 50 / 80 % of the
+# time limit +0x4C, 4 the bite at 100 %; the roll weighs his health), +0xD set until the roll is done. For those
+# auto_qte_ram writes the outcome the game itself can roll: 0, free at once.
+UNIT_OUTCOME, UNIT_NEW, UNIT_TYPE = 0x8, 0xD, 0x1C
+CHANCE_TYPES = frozenset({0x8, 0x12, 0x13, 0x17, 0x18, 0x19})
+QTE_ROLLED_N = 20                       # status qte_rolled: the last outcomes the game had rolled for the grabs freed
+QTE_TARGET_MAX = 1000.0                                  # a target above this is not a struggle's
 ORIG: dict = {}                                          # id(adapter) -> this boot's settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")
@@ -237,7 +273,13 @@ class RE6Switch:
     def status(self) -> dict:
         st = {"game": GAME, "module_base": hex(self.base), "infinite_ammo": bool(self.state.get("infinite_ammo")),
               "infinite_tablets": bool(self.state.get("infinite_tablets")),
-              "infinite_stamina": bool(self.state.get("infinite_stamina")), "fire_rate_x": self.state.get("fire_rate", 1.0)}
+              "infinite_stamina": bool(self.state.get("infinite_stamina")), "fire_rate_x": self.state.get("fire_rate", 1.0),
+              "kill_time_on": bool((self.state.get("kill_time") or {}).get("on")),
+              "kill_time_s": (self.state.get("kill_time") or {}).get("seconds", KILL_TIME_S),
+              "kill_time_added": self.state.get("kill_time_added", 0.0),
+              "auto_qte_ram": bool(self.state.get("auto_qte_ram")),
+              "struggles_completed": self.state.get("struggles_completed", 0),
+              "qte_rolled": list(self.state.get("qte_rolled") or ())}
         snap = R.snapshot(self.m)
         p = snap.get("player")
         if p:
@@ -523,6 +565,181 @@ def auto_qte(g: RE6Switch, on: bool = True) -> dict:
             "note": "the game's own automatic action button: every QTE site tests the option (nonzero = automatic)"}
 
 
+def _gm(g: RE6Switch) -> int:
+    gm = R.u64(g.m, g.base + R.S_GAMEMAN)
+    return gm if R.ptr_ok(gm) else 0
+
+
+def _add_clock(ad, g: RE6Switch, gm: int, seconds: float = 0.0, absolute=None) -> dict:
+    """The round clock moved as the game's own time-add handler moves it: seconds added (negative takes) or set to
+    `absolute`, kept within CLOCK_MIN..CLOCK_MAX, read back (the HUD's copy follows it). Only while a round is playing.
+    No "+N" notice: the guessed notice fields (+0x46A0 / +0x46A4) hold other data (live 14:41: a float at +0x46A0)."""
+    import math
+    phase = struct.unpack("<i", ad.read_memory(gm + R.GM_PHASE, 4))[0]
+    before = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
+    if phase != R.PHASE_PLAYING or not (math.isfinite(before) and 0.0 < before <= CLOCK_MAX + 1):
+        return {"verified": False, "reason": "no round playing (phase %s, clock %s)" % (phase, round(before, 2)),
+                "applied_seconds": 0.0}
+    wanted = float(absolute) if absolute is not None else before + float(seconds)
+    target = min(CLOCK_MAX, max(CLOCK_MIN, wanted))
+    try:
+        ad.write_memory(gm + GM_CLOCK, struct.pack("<f", target))
+    except RuntimeError:                                     # the countdown ran a frame between the write and the read
+        pass
+    after = struct.unpack("<f", ad.read_memory(gm + GM_CLOCK, 4))[0]
+    verified = math.isfinite(after) and target - 0.5 <= after <= target + 0.01
+    delta = target - before
+    return {"verified": verified, "clock_before": round(before, 2), "clock_after": round(after, 2),
+            "applied_seconds": round(delta, 2) if verified else 0.0, "clamped": target != wanted,
+            **({} if verified else {"reason": "the clock write was not read back"})}
+
+
+def kill_time(g: RE6Switch, on: bool, seconds=None, seconds_max=None) -> dict:
+    """The per-kill time bonus (RE5's kill_time): `seconds` a kill (a random whole number up to `seconds_max` when that
+    is given); maintain adds them on the round clock for every new kill of sGameMan's count while a round is playing."""
+    state = g.state.setdefault("kill_time", {})
+    if seconds is None:
+        low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
+    else:
+        low = float(seconds)
+        high = float(seconds_max) if seconds_max is not None else low
+    low, high = float(low), float(high)
+    if not 0 < low <= high <= KILL_TIME_MAX_S:
+        raise ValueError(f"kill_time seconds: more than 0, at most {KILL_TIME_MAX_S:g}, and the minimum first")
+    state.update(on=bool(on), seconds=low, seconds_max=high, gm=None, kills=None)
+    return {"kill_time": state["on"], "seconds": low, "seconds_max": high, "verified": True,
+            "note": "+%g s on the round clock for every kill (the game's own time-add path, the HUD's bonus notice)"
+                    % low if high == low else "+%g-%g s a kill" % (low, high)}
+
+
+def _kill_seconds(state) -> float:
+    import random
+    low, high = state.get("seconds", KILL_TIME_S), state.get("seconds_max", state.get("seconds", KILL_TIME_S))
+    if high <= low:
+        return low
+    if float(low).is_integer() and float(high).is_integer():
+        return float(random.randint(int(low), int(high)))
+    return round(random.uniform(low, high), 1)
+
+
+def _maintain_kill_time(ad, g: RE6Switch, st: dict) -> dict:
+    state = st.get("kill_time") or {}
+    if not state.get("on"):
+        return {}
+    gm = _gm(g)
+    if not gm:
+        return {}
+    kills = struct.unpack("<i", ad.read_memory(gm + R.GM_KILLS, 4))[0]
+    if not 0 <= kills <= 2000:
+        return {"verified": False, "reason": "kill count out of range"}
+    last = state.get("kills")
+    if state.get("gm") != gm or last is None or kills < last:   # a new round: count afresh
+        state.update(gm=gm, kills=kills)
+        return {}
+    if kills == last:
+        return {}
+    added = sum(_kill_seconds(state) for _ in range(kills - last))
+    res = _add_clock(ad, g, gm, added)
+    if res.get("reason", "").startswith("no round"):
+        state["kills"] = kills                               # time up: these kills are past the clock
+        return {}
+    state["kills"] = kills
+    st["kill_time_added"] = round(st.get("kill_time_added", 0.0) + res.get("applied_seconds", 0.0), 2)
+    return res | {"kills": kills, "added": added}
+
+
+def add_time(g: RE6Switch, seconds=60.0) -> dict:
+    """Add to (negative: take from) the round clock, read back; added time shows the HUD's bonus notice."""
+    try:
+        n = int(round(float(60 if seconds is None else seconds)))
+    except (TypeError, ValueError):
+        raise ValueError("add_time seconds: a number") from None
+    if n == 0 or not ADD_TIME_RANGE[0] <= n <= ADD_TIME_RANGE[1]:
+        raise ValueError("add_time seconds: -3600 .. 3600, not 0 (negative takes time away)")
+    gm = _gm(g)
+    if not gm:
+        return {"verified": False, "reason": "no sGameMan (between rounds)", "added_seconds": 0}
+    res = _add_clock(g.ad, g, gm, n)
+    return res | {"requested_seconds": n, "added_seconds": int(round(res.get("applied_seconds", 0.0)))}
+
+
+def set_time(g: RE6Switch, seconds) -> dict:
+    try:
+        n = int(round(float(seconds)))
+    except (TypeError, ValueError):
+        raise ValueError("set_time seconds: a number") from None
+    if not SET_TIME_RANGE[0] <= n <= SET_TIME_RANGE[1]:
+        raise ValueError("set_time seconds: 1 .. 3600")
+    gm = _gm(g)
+    if not gm:
+        return {"verified": False, "reason": "no sGameMan (between rounds)"}
+    return _add_clock(g.ad, g, gm, absolute=n) | {"set_seconds": n}
+
+
+def struggle_units(g: RE6Switch, index: int = 0) -> list[dict]:
+    """Player `index`'s live action-button units: in sActionButton's ButtonMgr for the player, active, its button a
+    cActionButton - {unit, button, type, outcome, new, target, progress}."""
+    import math
+    sab = R.u64(g.m, g.base + S_ACTBTN)
+    if not R.ptr_ok(sab) or R.class_name(g.m, sab) != "sActionButton":
+        return []
+    mgr = sab + AB_MGRS + AB_MGR_STRIDE * index
+    if R.class_name(g.m, mgr) != "sActionButton::ButtonMgr":
+        return []
+    out = []
+    for off in MGR_UNITS:
+        u = mgr + off
+        raw = g.ad.read_memory(u, 0x48)
+        btn = struct.unpack_from("<Q", raw, UNIT_BUTTON)[0]
+        if not raw[UNIT_ACTIVE] or not R.ptr_ok(btn) or R.class_name(g.m, btn) != "cActionButton":
+            continue
+        target, prog = struct.unpack_from("<2f", raw, UNIT_TARGET)
+        out.append({"unit": u, "button": btn, "type": struct.unpack_from("<I", raw, UNIT_TYPE)[0],
+                    "outcome": struct.unpack_from("<I", raw, UNIT_OUTCOME)[0], "new": raw[UNIT_NEW],
+                    "target": target if math.isfinite(target) else None, "progress": prog if math.isfinite(prog) else None})
+    return out
+
+
+def _complete_struggle(ad, g: RE6Switch, player: int) -> int:
+    """While a zombie holds him (action 8 / 9 / 25): each live struggle unit given the game's own escape - a chance
+    button's rolled outcome set to 0 (free at once) once the roll is done, a mash button's progress up to its target."""
+    try:
+        state = ad.read_memory(player + R.P_STATE, 1)[0]
+    except (ValueError, OSError):
+        return 0
+    if state not in R.HELD_STATES:
+        return 0
+    n = 0
+    for x in struggle_units(g):
+        if x["type"] in CHANCE_TYPES:
+            if x["new"] or x["outcome"] == 0 or x["outcome"] > 4:
+                continue
+            addr, data = x["unit"] + UNIT_OUTCOME, struct.pack("<I", 0)
+            rolled = g.state.setdefault("qte_rolled", [])    # what the game had rolled (4: the bite)
+            rolled.append(x["outcome"])
+            del rolled[:-QTE_ROLLED_N]
+        elif (x["target"] is not None and x["progress"] is not None and 0.0 < x["target"] <= QTE_TARGET_MAX
+              and x["progress"] < x["target"]):
+            addr, data = x["unit"] + UNIT_PROGRESS, struct.pack("<f", x["target"])
+        else:
+            continue
+        try:
+            ad.write_memory(addr, data)
+        except RuntimeError:                                 # the game took it from there (granted, the unit reset)
+            pass
+        n += 1
+    return n
+
+
+def auto_qte_ram(g: RE6Switch, on: bool = True) -> dict:
+    g.state["auto_qte_ram"] = bool(on)
+    p = R.snapshot(g.m).get("player")
+    units = struggle_units(g) if p else []
+    return {"auto_qte_ram": bool(on), "verified": True, "units": len(units),
+            "note": "while a zombie holds him, the grab's action button gets the escape the game itself grants: a "
+                    "chance button's rolled outcome set to 0 (free at once), a mash button's progress up to its target"}
+
+
 def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
     """Every character and costume in the Mercenaries select: only the mask's two u32 in cSystemInfo (copy A, copy B)
     are written, each read first and read back after; nothing to do once both hold every bit. Off changes nothing
@@ -634,12 +851,24 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
         st = ORIG.get(id(ad))
         out = {"active": False, "writes": 0, "verified": True}
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
-                                                 "infinite_grenades"))
+                                                 "infinite_grenades", "auto_qte_ram")) or \
+            st and (st.get("kill_time") or {}).get("on")
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
+            if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")):
+                g0 = RE6Switch(ad)
+                if (st.get("kill_time") or {}).get("on"):
+                    kt = _maintain_kill_time(ad, g0, st)
+                    if kt.get("applied_seconds"):
+                        out["writes"] += 1
+                        out["kill_time"] = kt
+                if st.get("auto_qte_ram"):
+                    done = _complete_struggle(ad, g0, p["ptr"])
+                    st["struggles_completed"] = st.get("struggles_completed", 0) + done
+                    out["writes"] += done
             if p and now - st.get("ammo_at", -1e9) >= CHECK_S:
                 st["ammo_at"] = now
                 g = RE6Switch(ad)
@@ -673,6 +902,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
               "loadouts": "merc_loadout", "no_rocket": "merc_loadout", "grenades": "infinite_grenades",
               "infinite_mines": "infinite_grenades", "remote_bombs": "infinite_grenades", "stages": "unlock_stages",
               "all_stages": "unlock_stages", "qte": "auto_qte", "auto_action": "auto_qte",
+              "kill_time_bonus": "kill_time", "time_per_kill": "kill_time", "qte_ram": "auto_qte_ram",
+              "auto_struggle": "auto_qte_ram",
               "all_characters": "unlock_characters", "unlock_all": "unlock_characters"}.get(op, op)
         if op == "status":
             return g.status()
@@ -686,6 +917,14 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return infinite_grenades(g, bool(on))
         if op == "unlock_characters":
             return unlock_characters(g, bool(on))
+        if op == "kill_time":
+            return kill_time(g, bool(on), _extra.get("seconds"), _extra.get("seconds_max"))
+        if op == "add_time":
+            return add_time(g, _extra.get("seconds", 60))
+        if op == "set_time":
+            return set_time(g, _extra.get("seconds"))
+        if op == "auto_qte_ram":
+            return auto_qte_ram(g, bool(on))
         if op == "unlock_stages":
             return unlock_stages(g, bool(on))
         if op == "auto_qte":
@@ -701,8 +940,9 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "revert_all":
             return {"infinite_ammo": infinite_ammo(g, False), "infinite_tablets": infinite_tablets(g, False),
                     "infinite_stamina": infinite_stamina(g, False), "infinite_grenades": infinite_grenades(g, False),
+                    "kill_time": kill_time(g, False), "auto_qte_ram": auto_qte_ram(g, False),
                     "fire_rate": fire_rate(g, 1.0),
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
-                         "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, fire_rate, "
-                         "merc_loadout, revert_all)")
+                         "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, auto_qte_ram, "
+                         "kill_time, add_time, set_time, fire_rate, merc_loadout, revert_all)")
