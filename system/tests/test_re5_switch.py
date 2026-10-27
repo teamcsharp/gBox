@@ -344,7 +344,8 @@ def test_bot_fires_through_him_but_not_into_a_wall_short_of_him():
     assert "zr" not in b.tick(bot_snap(laser=ray((0.0, 120.0, 300.0))))["hold"]   # it ends on something in front
 
 
-def test_bot_takes_the_majini_the_dot_is_on():
+def test_bot_takes_the_majini_the_dot_is_on(monkeypatch):
+    monkeypatch.setattr(R, "SMOOTH", True)                      # (with SMOOTH off the switch is immediate, as before)
     b, clock = brain()
     b.tick(bot_snap(more=((150.0, 0.0, 700.0),)))
     clock[0] = 0.3
