@@ -88,3 +88,11 @@ def test_the_learned_range_is_preferred_in_the_target_choice_and_counted():
     assert b2._choose(p, [inside, outside], 0.0)["ptr"] == 11 and b2.stats["k_range_picks"] == 0
     for k in R.K_COUNTERS:
         assert k in R.RE5Switch.round_counters
+
+
+def test_at_grabbing_range_the_old_chest_rule_stands_whatever_the_database_says():
+    knowledge.set_provider(Provider())
+    b = R.Bot(stats={}, clock=lambda: 0.0)
+    assert b._aim_h({"ptr": 10, "pos": at(90, 0), "class": "uEm10"}, 90.0, 0.0) == R.CHEST_H
+    assert b.stats["k_aim_ticks"] == 0
+    assert b._aim_h({"ptr": 10, "pos": at(300, 0), "class": "uEm10"}, 300.0, 0.0) == 130.0
