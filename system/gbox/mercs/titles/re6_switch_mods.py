@@ -102,6 +102,9 @@ FIRE_ORIGINAL = (10.0, 0.5, 0.6, 0.5, 1.2, 0.8, 0.6, 0.8, 1.2, 10.0, 0.7, 2.25, 
                  10.0, 1.0, 0.5, 0.25, 2.25, 0.5, 0.1, 1.0, 1.0, 2.0)   # this build's intervals, records 0-47 (live dump)
 FIRE_SKIP = frozenset({0x13, 0x14, 0x15, 0x16, 0x2F})   # the grenades and the remote bomb: thrown, never sped up
 FIRE_GUN_MAX = 5.0                                       # a longer interval is the knife's or a melee weapon's
+MAGNUM_RECORDS = frozenset({0x07, 0x08})                 # the magnums' records (0x107 / 0x108): fire_rate magnum=
+THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary and flash grenades' (fire_rate throw=;
+                                                         # not the remote bomb's): their 2.0 s, the throw's own wait
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
 # The Mercenaries' starting loadouts (Ghidra, this build): main+0x38C740 copies one 0x74-byte entry into the game's
@@ -118,6 +121,8 @@ L_WEAPONS, L_EXTRAS, N_WEAPONS, N_EXTRAS = 0x10, 0x4C, 7, 9
 EMPTY = (0, 0xFFFF)
 ROCKET = 0x117                                           # the rocket launcher (1 round; Ada's first costume)
 SWAPS = ((0x107, 7), (0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3))   # magnums and shotguns: (type, magazine)
+MAGNUMS = ((0x107, 7), (0x108, 5))                      # merc_loadout magnum=: one of these in weapon slot 0 (the gun
+                                                         # in his hand at the start) - his own when the entry has one
 REMOTE_BOMB, HAND_GRENADE, INCENDIARY, FLASH = 0x116, 0x113, 0x114, 0x115
 THROWN = (REMOTE_BOMB, HAND_GRENADE, INCENDIARY, FLASH)  # given in this order while the start list has room
 THROWN_MAX = 5                                           # the grenades' and the remote bomb's carry limit (their records)
@@ -381,14 +386,24 @@ def _padded(pairs, n: int) -> list[tuple[int, int]]:
     return list(pairs) + [EMPTY] * (n - len(pairs))
 
 
-def loadout_plan(entry: int, rocket: bool, thrown: int, rng) -> tuple[list, list]:
+def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = False) -> tuple[list, list]:
     """The entry's (weapons, start list) as merc_loadout leaves them: the rocket launcher swapped for a random magnum or
     shotgun at its magazine, the remote bomb and the grenades each at `thrown` (an existing pair raised, a missing one
-    put in the start list's next empty pair while there is one)."""
+    put in the start list's next empty pair while there is one); with magnum, a magnum in slot 0 - his own moved there
+    (slot 0's gun taking its place), else 0x107 with slot 0's gun moved to the first empty slot."""
     _id, weapons, extras = LOADOUTS[entry]
     w = _padded(weapons, N_WEAPONS)
     if rocket:
         w = [rng.choice(SWAPS) if t == ROCKET else (t, c) for t, c in w]
+    if magnum and w[0] not in MAGNUMS:
+        own = next((i for i, pair in enumerate(w) if pair in MAGNUMS), None)
+        if own is not None:
+            w[0], w[own] = w[own], w[0]
+        else:
+            free = next((i for i, pair in enumerate(w) if pair == EMPTY), None)
+            if free is not None:
+                w[free] = w[0]
+            w[0] = MAGNUMS[0]
     x = _padded(extras, N_EXTRAS)
     if thrown > 0:
         for kind in THROWN:
@@ -410,16 +425,18 @@ def _loadout_ok(entry: int, raw: bytes) -> bool:
     hd = struct.unpack_from("<5H", raw, 0)
     if hd[0] != eid or hd[1] != 900 or hd[2] != 900 or hd[3] != 0 or hd[4] != L_TAG_VALUE:
         return False
+    allowed = set(_padded(weapons, N_WEAPONS)) | set(SWAPS) | {EMPTY}
     for cur, orig in zip(_pairs(raw, L_WEAPONS, N_WEAPONS), _padded(weapons, N_WEAPONS)):
-        if cur != orig and not (orig[0] == ROCKET and cur in SWAPS):
-            return False
+        if cur != orig and not (orig[0] == ROCKET and cur in SWAPS) and cur not in allowed:
+            return False   # (a magnum moved to slot 0 leaves the build's own guns, rearranged)
     for cur, orig in zip(_pairs(raw, L_EXTRAS, N_EXTRAS), _padded(extras, N_EXTRAS)):
         if cur != orig and not (cur[0] in THROWN and 0 < cur[1] <= THROWN_MAX and (orig == EMPTY or orig[0] == cur[0])):
             return False
     return True
 
 
-def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int = THROWN_MAX, seed=None) -> dict:
+def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int = THROWN_MAX, seed=None,
+                 magnum: bool = False) -> dict:
     """Every Mercenaries starting loadout (the table the game copies at a round's set-up, so the game itself creates the
     weapons and items): no rocket launcher - a random magnum or shotgun in its place - and the remote bomb, the hand,
     incendiary and flash grenades at `thrown` each where the start list has room. Only the changed (type, count) pairs
@@ -445,7 +462,7 @@ def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int
     writes, swapped, given = 0, [], 0
     for i, cur in enumerate(entries):
         if on:
-            w, x = loadout_plan(i, rocket, thrown, rng)
+            w, x = loadout_plan(i, rocket, thrown, rng, magnum=magnum)
         else:
             w, x = _padded(LOADOUTS[i][1], N_WEAPONS), _padded(LOADOUTS[i][2], N_EXTRAS)
         at = base + i * LOADOUT_SIZE
@@ -460,7 +477,7 @@ def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int
                         if o == ROCKET and t != ROCKET]
             given += sum(1 for t, _c in x if t in THROWN)
     g.state["merc_loadout"] = bool(on)
-    return {"merc_loadout": bool(on), "verified": True, "writes": writes, "rocket_swaps": swapped,
+    return {"merc_loadout": bool(on), "verified": True, "writes": writes, "rocket_swaps": swapped, "magnum_first": magnum,
             "thrown_pairs": given, "thrown_each": thrown if on else None,
             "note": "the Mercenaries' starting loadouts (main+%#x, read by the round set-up main+0x38C740): no rocket "
                     "launcher, the remote bomb and the grenades given; the next round set up starts with them"
@@ -529,10 +546,15 @@ def unlock_characters(g: RE6Switch, on: bool = True) -> dict:
                     "costume from its next opening, and the game's own next save keeps it"}
 
 
-def fire_interval(index: int, k: float) -> float:
+def fire_interval(index: int, k: float, magnum: float | None = None, throw: float | None = None) -> float:
     """Record index's seconds between shots at multiplier k: this build's value / k for a gun (never below FIRE_FLOOR),
-    the build's own for the grenades, the remote bomb, the knife and the melee weapons (and at k=1)."""
+    / magnum for the magnums when that is given, / throw for the three grenades when that is given; the build's own for
+    the remote bomb, the knife and the melee weapons (and at k=1 with neither)."""
     orig = FIRE_ORIGINAL[index]
+    if index in THROW_RECORDS and throw and throw > 1.0:
+        return max(FIRE_FLOOR, orig / throw)
+    if index in MAGNUM_RECORDS and magnum and magnum > 1.0:
+        return max(FIRE_FLOOR, orig / magnum)
     if k == 1.0 or index in FIRE_SKIP or not 0.0 < orig < FIRE_GUN_MAX:
         return orig
     return max(FIRE_FLOOR, orig / k)
@@ -565,13 +587,15 @@ def fire_records(g: RE6Switch) -> list[tuple[int, int, float]] | None:
     return out
 
 
-def fire_rate(g: RE6Switch, mult) -> dict:
+def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
     try:
         k = float(mult if mult is not None else FIRE_MAX)
+        magnum = float(magnum) if magnum is not None else None
+        throw = float(throw) if throw is not None else None
     except (TypeError, ValueError):
-        raise ValueError("fire_rate multiplier: a number 1..80 (1 = the game's)") from None
-    if not 1.0 <= k <= FIRE_MAX:
-        raise ValueError("fire_rate multiplier: 1..80 (1 = the game's)")
+        raise ValueError("fire_rate multiplier / magnum / throw: numbers 1..80 (1 = the game's)") from None
+    if not 1.0 <= k <= FIRE_MAX or any(x is not None and not 1.0 <= x <= FIRE_MAX for x in (magnum, throw)):
+        raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
     recs = fire_records(g)
     if recs is None:
         return {"fire_rate_x": g.state.get("fire_rate", 1.0), "verified": False, "writes": 0,
@@ -579,14 +603,17 @@ def fire_rate(g: RE6Switch, mult) -> dict:
                           "written" % FIRE_SITE}
     writes = 0
     for i, addr, cur in recs:
-        want = _f32(fire_interval(i, k))
+        want = _f32(fire_interval(i, k, magnum, throw))
         if cur != want:
             g.ad.write_memory(addr, struct.pack("<f", want))      # read back by the adapter
             writes += 1
     g.state["fire_rate"] = k
+    g.state["fire_magnum"], g.state["fire_throw"] = magnum, throw
     rifle = _f32(fire_interval(0x0F, k))
-    return {"fire_rate_x": k, "verified": True, "writes": writes,
+    return {"fire_rate_x": k, "magnum_x": magnum, "throw_x": throw, "verified": True, "writes": writes,
             "assault_rifle_interval_s": round(rifle, 4),
+            "magnum_interval_s": round(_f32(fire_interval(0x07, k, magnum)), 4),
+            "grenade_interval_s": round(_f32(fire_interval(0x13, k, magnum, throw)), 4),
             "note": "the game's own seconds between shots (weapon table +0x1C) at the build's / %g for every gun; the "
                     "grenades, the remote bomb, the knife and the melee weapons keep theirs" % k}
 
@@ -665,9 +692,12 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return auto_qte(g, bool(on))
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
-                                thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"))
+                                thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
+                                magnum=_extra.get("magnum", False) not in (False, None, "off", 0))
         if op == "fire_rate":
-            return fire_rate(g, 1.0 if on is False else multiplier)
+            if on is False:
+                return fire_rate(g, 1.0)
+            return fire_rate(g, multiplier, magnum=_extra.get("magnum"), throw=_extra.get("throw"))
         if op == "revert_all":
             return {"infinite_ammo": infinite_ammo(g, False), "infinite_tablets": infinite_tablets(g, False),
                     "infinite_stamina": infinite_stamina(g, False), "infinite_grenades": infinite_grenades(g, False),

@@ -391,6 +391,24 @@ def inventory_state(m, p: int) -> tuple[int | None, int, dict | None]:
     return idx, item, bomb
 
 
+NADE_TYPES = {"frag": 0x113, "fire": 0x114, "flash": 0x115}   # the hand, incendiary and flash grenades' item types
+WEAPON_INDEXES = 7                      # wheel indexes 0-6 the weapons, 7-12 the items (the remote bomb 12)
+
+
+def inventory_items(m, p: int) -> dict:
+    """The grenades on his item wheel: {type: (wheel index +0x9, count +0xE)} for the live slots holding one."""
+    try:
+        raw = m.rd(p + P_SLOTS, SLOT_STRIDE * N_SLOTS)
+    except (ValueError, OSError):
+        return {}
+    out = {}
+    for o in range(0, SLOT_STRIDE * N_SLOTS, SLOT_STRIDE):
+        t = struct.unpack_from("<H", raw, o + 0xA)[0]
+        if raw[o + 8] and t in NADE_TYPES.values() and t not in out:
+            out[t] = (raw[o + 9], struct.unpack_from("<h", raw, o + 0xE)[0])
+    return out
+
+
 def equipped_id(m, p: int) -> int:
     """The item id of the gun in hand (inventory_state)."""
     return inventory_state(m, p)[1]
@@ -423,7 +441,7 @@ def snapshot(m) -> dict:
             equipped, weapon_id, bomb = inventory_state(m, p)
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
-                              "equipped": equipped, "bomb": bomb}
+                              "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p)}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
                 snap["continue_cursor"] = continue_prompt(m, over)["cursor"] if over else None
@@ -929,18 +947,14 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 # gauge is kept full by re6_switch_mods.infinite_stamina): a zombie within CC_R in front or flanking (CC_CONE) puts the
 # gun down for the game's quick shot every CC_QSHOT_GAP_S and a kick at arm's length every CC_KICK_GAP_S, before it can
 # grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
-CC_R, CC_CONE = 350.0, math.radians(100)
+CC_R, CC_CONE = 500.0, math.pi           # all round, out to 5 m (operator 13:10: "There should never be him chilling
+                                        # surrounded by enemies"): one behind gets the quick turn
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
 # more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
 # count fell) say whether the game takes it there, dying_states the action bytes seen while dying.
 DYING_TABLETS, DYING_HP, DYING_GAP_S = True, 1, 1.0
-# The trigger's safety (live 2026-10-27 13:43: a crowd-control quick shot with the remote bomb in hand threw it and set it
-# off at his feet): ZL + ZR goes out only with a gun in hand (wheel index < WEAPON_INDEXES) or in the bomb's own throw and
-# set-off; otherwise the D-pad's right brings the gun back first (stats unsafe_trigger_blocks).
-WEAPON_INDEXES = 7                      # wheel indexes 0-6 the weapons, 7-12 the items (the remote bomb 12)
-THROW_ACTS = ("bomb_place", "bomb_det")
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -1003,6 +1017,33 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 # within BOMB_DET_NEAR_R (the gun comes back with the blast); the camera turns to the bomb standing only with nobody
 # within BOMB_FACE_CLEAR_R and for BOMB_FACE_MAX_S a bomb at most. No bomb is readied with BOMB_CROWD_N within
 # BOMB_CROWD_R (it lands at his feet). stats bomb_face_s, bomb_kicks, bomb_hits_taken (health lost in a bomb act).
+# Aggression (operator 2026-10-27 13:10: "proactive with a rapid fire magnum absolutely removing all nearby enemies ...
+# throwing grenades at 16x speed and flashbanging the enemies and going on a melee fever ... It is essential to be
+# proactive with combo time"):
+#   flash: FLASH_N within FLASH_R and none within NADE_CLEAR_R - the flash grenade (the item wheel stepped with the D-pad's
+#          down, ZL then ZR at them), the gun back (the D-pad's right), then the melee fever for FEVER_S: at the stunned
+#          ones within FEVER_R, walking in and kicking (the finishers) every CC_KICK_GAP_S, no quick shots;
+#   grenade: a cluster of NADE_N (within NADE_CLUSTER_R of one another) NADE_MIN_R..NADE_MAX_R off - the hand grenade
+#          (else the incendiary), never nearer than its blast;
+#   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
+#          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
+NADES = True
+FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 600.0, 200.0
+NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 600.0, 1000.0, 300.0
+NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
+                                        # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
+                                        # remote bomb)
+NADE_START_R, NADE_FACE_ERR = 300.0, math.radians(60)   # a throw starts with nobody this near; the camera turned to
+                                        # them only when they are this far off the aim
+NADE_WHEEL_N = 6                        # stats nade_wheel: the last throws' wheel steps (the item in hand after each)
+# The trigger's safety (live 13:43: a crowd-control quick shot with the remote bomb in hand threw it and set it off at
+# his feet): ZL + ZR goes out only with a gun in hand (wheel index < WEAPON_INDEXES) or in a throw of the bomb's or a
+# grenade's own; otherwise the D-pad's right brings the gun back first (stats unsafe_trigger_blocks).
+THROW_ACTS = ("bomb_place", "bomb_det", "nade_frag", "nade_fire", "nade_flash")
+NADE_KILLS_S = 3.0
+FEVER_S, FEVER_R = 4.0, 500.0
+COMBO_LOW_S = 3.0
+AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on one this near: he walks at him
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
 BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0
@@ -1033,7 +1074,7 @@ HANG_S = 6.0
 #   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
-          "walk", "no_foes", "dead", "bomb", "crowd")
+          "walk", "no_foes", "dead", "bomb", "crowd", "nade")
 AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("held", "tablet", "reload")
 
@@ -1062,7 +1103,9 @@ class Bot:
                   "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks",
                   "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
-                  "bomb_hits_taken", "unsafe_trigger_blocks", "dyings", "tablet_dying_presses", "tablet_dying_taken"):
+                  "bomb_hits_taken", "flashes", "frags", "fires", "nade_aborts", "nade_back_fails", "fever_kicks",
+                  "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "dyings",
+                  "tablet_dying_presses", "tablet_dying_taken"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s"):
             self.stats.setdefault(k, 0.0)
@@ -1111,6 +1154,9 @@ class Bot:
         self.bomb_walk_since = None                          # when this bomb's walk began
         self.bomb_real = False                               # this bomb's spot read from its unit
         self.bomb_face_t, self._tick_hp, self._tick_at = 0.0, None, None   # this bomb's facing; last tick's health
+        self.nade, self.nade_last, self.nade_kills = None, -1e9, None   # the throw under way; its kills (count, when)
+        self.fever_until = -1e9                              # the melee fever after a flash
+        self.combo_prev, self.combo_urgent = 0, False
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
         self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
@@ -1299,7 +1345,7 @@ class Bot:
                 and self.stats.get("act") not in THROW_ACTS):     # an item in hand: ZL + ZR would throw it or set it off
             self.stats["unsafe_trigger_blocks"] += 1
             self.qshot_release, self.fire_down = False, False
-            out = self._go("bomb", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back first")
+            out = self._go("nade", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back first")
         try:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
@@ -1362,13 +1408,14 @@ class Bot:
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
+        self._combo_tick(snap, live, flat, now)
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
             self._hold_ended(now, snap)
         if p.get("hp") != DYING_HP:
             self.dying_since = None
-        elif DYING_TABLETS and not held:                     # dying: a tablet before anything else
+        elif DYING_TABLETS and not held and self.nade is None:   # dying: a tablet before anything else
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
@@ -1439,6 +1486,13 @@ class Bot:
         bombed = self._bomb(p, live, flat, yaw, snap, now)
         if bombed is not None:
             return bombed
+        thrown = self._nade(p, vis, live, flat, yaw, snap, now)
+        if thrown is not None:
+            return thrown
+        if self.combo_urgent and vis:                        # the combo running out: the nearest open one
+            tgt = min(vis, key=flat)
+            self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
+            foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         crowded = self._crowd_control(vis, flat, bearing, now)
         if crowded is not None:
             return crowded
@@ -1563,6 +1617,8 @@ class Bot:
         on = on_e is not None
         auto = p.get("weapon_id") in AUTO_IDS
         trig = self._trigger(on, now, auto)
+        if not on and not back and dist <= AIM_WALK_R and self.aim_since is not None and now - self.aim_since > AIM_WALK_S:
+            back = ("lup",)                                      # never standing among them: in at him while aiming
         if on:                                                   # the trigger on him: his health must fall (NOHIT_S)
             tid = on_e.get("ptr", on_e.get("slot"))
             if self.fire_track is None or self.fire_track[0] != tid:
@@ -1577,6 +1633,126 @@ class Bot:
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    # --- grenades and the combo -------------------------------------------------------------------------------------
+    def _combo_tick(self, snap, live, flat, now) -> None:
+        """The combo's count and window (sGameMan): stats combo_best, combo_breaks (it lapsed with a zombie in reach),
+        combo_urgent while it runs under COMBO_LOW_S; a grenade's kills (grenade_kills) NADE_KILLS_S after its throw."""
+        combo, ct = snap.get("combo"), snap.get("combo_timer")
+        if isinstance(combo, int):
+            self.stats["combo_best"] = max(self.stats["combo_best"], combo)
+            if self.combo_prev > 0 and combo == 0 and any(flat(e) <= ENGAGE_R for e in live):
+                self.stats["combo_breaks"] += 1
+            urgent = combo > 0 and isinstance(ct, (int, float)) and 0 < ct < COMBO_LOW_S
+            if urgent and not self.combo_urgent:
+                self.stats["combo_pushes"] += 1
+            self.combo_urgent = urgent
+            self.combo_prev = combo
+        if self.nade_kills is not None and now - self.nade_kills[1] >= NADE_KILLS_S:
+            k = snap.get("kills")
+            if isinstance(k, int) and isinstance(self.nade_kills[0], int):
+                self.stats["grenade_kills"] += max(0, k - self.nade_kills[0])
+            self.nade_kills = None
+
+    def _nade(self, p, vis, live, flat, yaw, snap, now) -> dict | None:
+        """A flash at FLASH_N within FLASH_R (none within NADE_CLEAR_R), or a hand / incendiary grenade into a cluster
+        NADE_MIN_R..NADE_MAX_R off: the item wheel stepped (D-pad down) to it, the camera to them, ZL then ZR, the gun
+        back (D-pad right); one coming within NADE_CLEAR_R calls it off (the gun back first: ZL + ZR with a grenade in
+        hand would throw it at his feet). None: no throw this tick."""
+        n = self.nade
+        eq = p.get("equipped")
+        px, _, pz = p["pos"]
+        if n is None:
+            if not NADES or now - self.nade_last < NADE_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
+                return None
+            nades = p.get("nades") or {}
+            if any(flat(e) < NADE_START_R for e in live):
+                return None
+            group, kind = None, None
+            near = [e for e in vis if flat(e) <= FLASH_R]
+            if len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0:
+                group, kind = near, "flash"
+            else:
+                for e in vis:
+                    if not NADE_MIN_R <= flat(e) <= NADE_MAX_R:
+                        continue
+                    c = [z for z in vis if math.hypot(z["pos"][0] - e["pos"][0], z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R]
+                    if len(c) >= NADE_N and all(flat(z) >= NADE_MIN_R * 0.8 for z in c):
+                        for k in ("frag", "fire"):
+                            if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0:
+                                group, kind = c, k
+                                break
+                        if group:
+                            break
+            if group is None:
+                return None
+            cx = sum(e["pos"][0] for e in group) / len(group)
+            cz = sum(e["pos"][2] for e in group) / len(group)
+            self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
+                             "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "dright"}
+        self._gun_down()
+        if n["seen"][-1] != eq:
+            n["seen"].append(eq)
+        if n["phase"] in ("equip", "face", "aim") and any(flat(e) < MELEE_R for e in live):
+            self.stats["nade_aborts"] += 1                       # one on him: the gun back first, then the fight
+            n.update(phase="back", at=now - NADE_STEP_S, steps=0)
+        if n["phase"] == "equip":
+            if eq == n["index"]:
+                n.update(phase="face", at=now)
+            elif n["steps"] >= NADE_STEPS:
+                n.update(phase="back", at=now - NADE_STEP_S, steps=0)
+                self.stats["nade_aborts"] += 1
+            elif now - n["at"] >= NADE_STEP_S:
+                n["steps"] += 1
+                n["at"] = now
+                return self._go("nade", "nade_" + n["kind"], {"tap": "ddown"}, f"the item wheel to the {n['kind']} grenade")
+            else:
+                return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
+        if n["phase"] == "face":
+            err = wrap(heading(n["to"][0] - px, n["to"][1] - pz) - yaw)
+            if abs(err) > NADE_FACE_ERR and now - n["at"] < NADE_FACE_S:
+                return self._go("nade", "nade_" + n["kind"], {"hold": self._turn(err)}, f"facing them for the {n['kind']}")
+            n.update(phase="aim", at=now)
+        if n["phase"] == "aim":
+            if eq != n["index"]:                                 # not that grenade in hand (the wheel moved): no throw
+                self.stats["nade_aborts"] += 1
+                n.update(phase="back", at=now - NADE_STEP_S, steps=0)
+                return self._go("nade", "nade_back", {"hold": ()}, "the wheel moved off the grenade: the gun back")
+            if now - n["at"] < NADE_AIM_S:
+                return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade readied")
+            n.update(phase="thrown", at=now)
+            self.stats[{"flash": "flashes", "frag": "frags", "fire": "fires"}[n["kind"]]] += 1
+            if n["kind"] == "flash":
+                self.fever_until = now + FEVER_S + 0.6
+            else:
+                self.nade_kills = (snap.get("kills"), now)
+            return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
+        if n["phase"] == "thrown":
+            n.update(phase="back", at=now, steps=0)
+            return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the triggers let go")
+        if n["phase"] == "back":
+            if eq is not None and eq < WEAPON_INDEXES:
+                self._nade_done(n, now)
+                return None
+            if n["steps"] >= NADE_STEPS:
+                if n["back_key"] == "dright":                    # the other way round the wheel
+                    n.update(back_key="dleft", steps=0)
+                else:
+                    self.stats["nade_back_fails"] += 1
+                    self._nade_done(n, now)
+                    return None
+            if now - n["at"] >= NADE_STEP_S:
+                n["steps"] += 1
+                n["at"] = now
+                return self._go("nade", "nade_back", {"tap": n["back_key"]}, "the gun back in hand")
+            return self._go("nade", "nade_back", {"hold": ()}, "the gun coming back")
+        return None
+
+    def _nade_done(self, n, now) -> None:
+        log = self.stats.setdefault("nade_wheel", [])
+        log.append({"kind": n["kind"], "to": n["index"], "seen": n["seen"][-12:]})
+        del log[:-NADE_WHEEL_N]
+        self.nade, self.nade_last = None, now
 
     # --- line of sight ---------------------------------------------------------------------------------------------
     def is_blocked(self, e, now) -> bool:
@@ -1653,12 +1829,27 @@ class Bot:
         """A zombie up close (CC_R, in front or flanking): the gun down, the game's quick shot every CC_QSHOT_GAP_S and a
         kick at arm's length every CC_KICK_GAP_S (the gauge is kept full), the camera turned to one on the flank; between
         them he steps back. None: nobody that close (the gun's bursts go on)."""
-        close = [e for e in live if flat(e) <= CC_R and abs(bearing(e)) <= CC_CONE]
+        fever = now < self.fever_until
+        close = [e for e in live if flat(e) <= (FEVER_R if fever else CC_R) and abs(bearing(e)) <= CC_CONE]
         if not close:
             return None
         e = min(close, key=flat)
         d, err = flat(e), bearing(e)
         self._gun_down()
+        if fever:                                                # after a flash: in among the stunned ones, kicking
+            if d < MELEE_R and now - self.melee_at >= CC_KICK_GAP_S:
+                self.melee_at = now
+                self.stats["melee"] += 1
+                self.stats["fever_kicks"] += 1
+                return self._go("crowd", "fever_kick", {"hold": ("zr",) + self._turn(err, CC_ATTACK_CONE)},
+                                f"melee fever: a kick at the one at {d:.0f} cm")
+            walk = ("lup",) if d >= MELEE_R * 0.8 else ()
+            return self._go("crowd", "fever_close", {"hold": walk + self._turn(err, TURN_TOL)},
+                            f"melee fever: in to the one at {d:.0f} cm")
+        if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and d > MELEE_R:
+            self.stats["quick_turns"] += 1                       # one behind: the quick turn
+            self.quick = 2
+            return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
         if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= CC_KICK_GAP_S:
             self.melee_at = now
             self.stats["melee"] += 1
@@ -1701,7 +1892,8 @@ class Bot:
             out_s = now - (self.bomb_since or now)
             on_him = [e for e in live if flat(e) <= BOMB_FIGHT_R]
             coming = any(flat(e) <= BOMB_DET_NEAR_R for e in live)
-            if not on_him and me >= self.book.safe and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S or coming):
+            if not on_him and me >= self.book.safe and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S or coming
+                                                        or (self.combo_urgent and on >= 1)):
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
                 log = self.stats.setdefault("bomb_det_cm", [])
@@ -2060,7 +2252,8 @@ class RE6Switch(Driver):
                       "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
                       "holds_shaken", "cc_quick_shots", "cc_kicks", "los_blocks", "nohit_blocks", "cc_blocks",
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
-                      "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "unsafe_trigger_blocks", "tablet_dying_presses",
+                      "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
+                      "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
                       "tablet_dying_taken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
