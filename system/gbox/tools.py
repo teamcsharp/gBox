@@ -2847,26 +2847,6 @@ def _bot_send(run, ad, d):
     return pad_takeover.Gate(run["sid"], _autoplay_send(ad, d))
 
 
-TELEMETRY_BLOCKS = ("look",)           # JSON blocks posted with the scalar stats: stats["look"] (gbox.mercs.bot_look: the
-TELEMETRY_BLOCK_MAX = 40 * 1024        # bot's last shots and decisions, "look at the bot"), each under this many bytes (the
-                                       # server takes 64 KB of stats: screensaver.TELEMETRY_STATS_MAX_BYTES)
-
-
-def _telemetry_blocks(live: dict) -> dict:
-    """The allowed JSON blocks of a run's live stats that encode (finite, JSON) within TELEMETRY_BLOCK_MAX."""
-    out = {}
-    for k in TELEMETRY_BLOCKS:
-        v = live.get(k)
-        if not isinstance(v, dict):
-            continue
-        try:
-            if len(json.dumps(v, allow_nan=False, separators=(",", ":")).encode("utf-8")) <= TELEMETRY_BLOCK_MAX:
-                out[k] = v
-        except (TypeError, ValueError, OverflowError, RecursionError):
-            pass
-    return out
-
-
 def _telemetry(run, ctx, title: str = "") -> None:
     """While the run plays, post what it is doing every 5 s (mode, mission, live stats) for the watch panel."""
     if ctx is None:
@@ -2875,7 +2855,6 @@ def _telemetry(run, ctx, title: str = "") -> None:
     def body(running):
         live = run.get("live") or {}
         stats = {k: v for k, v in live.items() if isinstance(v, (int, float, str, bool))}
-        stats.update(_telemetry_blocks(live))          # stats["look"]: the bot's last shots and decisions
         return {"running": running, "mode": run.get("mode") or "", "mission": run.get("mission") or "",
                 "title": title, "stats": stats, "demo": bool(getattr(run.get("driver"), "demo", False)),
                 "autoplay_taken_over": bool(run.get("took_over")),
