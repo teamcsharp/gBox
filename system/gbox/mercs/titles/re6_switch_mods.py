@@ -115,6 +115,11 @@ FIRE_GUN_MAX = 5.0                                       # a longer interval is 
 MAGNUM_RECORDS = frozenset({0x07, 0x08})                 # the magnums' records (0x107 / 0x108): fire_rate magnum=
 THROW_RECORDS = frozenset({0x13, 0x14, 0x15})            # the hand, incendiary and flash grenades' (fire_rate throw=;
                                                          # not the remote bomb's): their 2.0 s, the throw's own wait
+# down_fire (operator 16:22: "I want the fire rate tripled and them becoming even more lethal when grounded so they can
+# rise again"): while he is down (re6_switch.DOWN_ACTIONS - dying, lying, crawling - held through DOWN_KEEP's) the
+# weapon table at DOWN_FIRE_X times fire_rate's multipliers (its magnum's too), back to them the moment he is up; only
+# once fire_rate has set the table this boot. The down_fire op sets the factor (1 = off).
+DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
 # The Mercenaries' starting loadouts (Ghidra, this build): main+0x38C740 copies one 0x74-byte entry into the game's
@@ -820,16 +825,67 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict) -> int:
     return 1
 
 
-def bot_options(g: RE6Switch, nades=None, bomb_drop=None) -> dict:
+def bot_options(g: RE6Switch, nades=None, bomb_drop=None, aim_lock=None) -> dict:
     """The bot's switches a profile turns on (playing_ops): nades - the flash at 3+ within 4 m with the melee fever after
-    it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd.
-    None leaves a switch as it is. Nothing is written to the game."""
+    it, the hand / incendiary grenade into a cluster; bomb_drop - the remote bomb dropped while backing out of a crowd;
+    aim_lock - the RAM aim lock (the player camera's yaw / pitch written onto the target; off: the camera keys). None
+    leaves a switch as it is. Nothing is written to the game here."""
     from . import re6_switch as B
     if nades is not None:
         B.NADES = bool(nades)
     if bomb_drop is not None:
         B.BOMB_DROP = bool(bomb_drop)
-    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP}
+    if aim_lock is not None:
+        B.AIM_LOCK = bool(aim_lock)
+    return {"verified": True, "nades": B.NADES, "bomb_drop": B.BOMB_DROP, "aim_lock": B.AIM_LOCK}
+
+
+def down_fire(g: RE6Switch, mult) -> dict:
+    """The factor on fire_rate's multipliers while he is down (maintain applies and restores it); 1 = off."""
+    try:
+        k = float(mult if mult is not None else DOWN_FIRE_X)
+    except (TypeError, ValueError):
+        raise ValueError("down_fire multiplier: a number 1..%g (1 = off)" % DOWN_FIRE_MAX) from None
+    if not 1.0 <= k <= DOWN_FIRE_MAX:
+        raise ValueError("down_fire multiplier: 1..%g (1 = off)" % DOWN_FIRE_MAX)
+    g.state["down_fire"] = k
+    return {"verified": True, "down_fire_x": k}
+
+
+def is_down(p: dict | None, was: bool = False) -> bool:
+    """Down by his action: one of re6_switch.DOWN_ACTIONS, or one of DOWN_KEEP while already down (or at 1 health)."""
+    from . import re6_switch as B
+    act = (p or {}).get("action")
+    return act in B.DOWN_ACTIONS or (act in B.DOWN_KEEP and (was or (p or {}).get("hp") == B.DYING_HP))
+
+
+def _keep_down_fire(ad, g: RE6Switch, p: dict, st: dict) -> int:
+    """The weapon table at down_fire x fire_rate's multipliers while he is down, fire_rate's own once he is up; written
+    only on the change, each cell read back by the adapter."""
+    down = is_down(p, bool(st.get("down_on")))
+    if down == bool(st.get("down_on")):
+        return 0
+    k = st.get("down_fire", DOWN_FIRE_X) or 1.0
+    base, mag, thr = st.get("fire_rate", 1.0), st.get("fire_magnum"), st.get("fire_throw")
+    if down:
+        want_k, want_mag = min(FIRE_MAX, base * k), min(FIRE_MAX, (mag or base) * k)
+    else:
+        want_k, want_mag = base, mag
+    recs = fire_records(g)
+    if recs is None:
+        return 0
+    n = 0
+    try:
+        for i, addr, cur in recs:
+            want = _f32(fire_interval(i, want_k, want_mag, thr))
+            if cur != want:
+                ad.write_memory(addr, struct.pack("<f", want))   # read back by the adapter
+                n += 1
+    except RuntimeError:
+        return n
+    st["down_on"] = down
+    st["down_fire_switches"] = st.get("down_fire_switches", 0) + 1
+    return n
 
 
 def fire_interval(index: int, k: float, magnum: float | None = None, throw: float | None = None) -> float:
@@ -919,17 +975,21 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
     with _LOCK:
         st = ORIG.get(id(ad))
         out = {"active": False, "writes": 0, "verified": True}
+        down_fire_on = bool(st and st.get("fire_rate") and ((st.get("down_fire", DOWN_FIRE_X) or 1.0) > 1.0
+                                                            or st.get("down_on")))
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
                                                  "infinite_grenades", "auto_qte_ram")) or \
-            st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0)
+            st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0) or down_fire_on
         if not keeping or not enabled:
             return out
         try:
             p = (snap or {}).get("player")
             now = clock()
             if p and ((st.get("kill_time") or {}).get("on") or st.get("auto_qte_ram")
-                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in")):
+                      or (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in") or down_fire_on):
                 g0 = RE6Switch(ad)
+                if down_fire_on:
+                    out["writes"] += _keep_down_fire(ad, g0, p, st)
                 if (st.get("quick_attack") or 1.0) > 1.0 or st.get("qa_in"):
                     out["writes"] += _keep_quick(ad, g0, p["ptr"], st)
                 if (st.get("kill_time") or {}).get("on"):
@@ -1008,7 +1068,10 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "quick_attack":
             return quick_attack(g, 1.0 if on is False else (multiplier if multiplier is not None else 10.0))
         if op == "bot_options":
-            return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"))
+            return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"),
+                               aim_lock=_extra.get("aim_lock"))
+        if op == "down_fire":
+            return down_fire(g, 1.0 if on is False else multiplier)
         if op == "fire_rate":
             if on is False:
                 return fire_rate(g, 1.0)

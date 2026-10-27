@@ -107,7 +107,7 @@ def ui(g, line, name):
 @pytest.fixture(autouse=True)
 def _fresh_caches():
     """The unit caches are per main base, and every fake guest here shares BASE."""
-    for cache in (R._FOUND, R._MISS):
+    for cache in (R._FOUND, R._MISS, R._ACTION_NAMES):
         cache.clear()
     R._BONUS.update(base=None)
     R.TITLE.since = None
@@ -745,7 +745,7 @@ def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
 
 
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # a quick shot's distance
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False
     snap["player"]["equipped"] = 12                                           # the remote bomb in hand
     acts = run(bot, snap, clock, 6)
@@ -873,7 +873,7 @@ def test_quick_attack_runs_his_quick_attacks_ten_times_faster_and_puts_his_clock
 
 def test_with_quick_attacks_fast_crowd_control_presses_back_to_back_and_counts_them(monkeypatch):
     monkeypatch.setattr(R, "QA_FAST", True)
-    g = round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0)
+    g = round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0)
     bot, clock, snap = brain(g)
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 20)                                          # 1 s
@@ -904,7 +904,8 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     assert bot.stats["pursuit_kills"] == 1
 
 
-def test_after_a_multi_kill_with_nobody_near_he_taunts_and_the_emotion_is_counted():
+def test_after_a_multi_kill_with_nobody_near_he_taunts_and_the_emotion_is_counted(monkeypatch):
+    monkeypatch.setattr(R, "TAUNTS", True)                                    # (off in play)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
     bot.held = lambda p, now: False
     snap["kills"] = 10
@@ -921,7 +922,8 @@ def test_after_a_multi_kill_with_nobody_near_he_taunts_and_the_emotion_is_counte
     assert bot.stats["taunts"] == 1
 
 
-def test_no_taunt_with_one_near_and_a_boss_down_triggers_one():
+def test_no_taunt_with_one_near_and_a_boss_down_triggers_one(monkeypatch):
+    monkeypatch.setattr(R, "TAUNTS", True)                                    # (off in play)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # one at 3 m
     bot.held = lambda p, now: False
     snap["kills"] = 0
@@ -936,6 +938,171 @@ def test_no_taunt_with_one_near_and_a_boss_down_triggers_one():
     snap["enemies"] = [snap["enemies"][1]]                                    # the big one gone
     run(bot, snap, clock, 2)
     assert bot.stats["taunt_boss"] == 1
+
+
+def with_aim_cam(g, pitch=0.1, yaw=0.5, vt_ok=True, owner_ok=True):
+    """P1's own camera at player +0x3A28 (owner +0xB0) with the player camera uCameraQFPS at +0x16A0."""
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    cam = g.alloc(0x4D00)
+    g.q(p + R.CAM_OWNED, cam)
+    g.q(cam + R.CAM_OWNER, p if owner_ok else p + 8)
+    g.q(cam + R.QFPS_OFF, BASE + (R.QFPS_VT if vt_ok else R.QFPS_VT + 0x40))
+    g.f32(cam + R.QFPS_OFF + R.QFPS_PITCH, pitch, yaw)
+    return cam
+
+
+def test_snapshot_reads_his_player_camera_state_and_only_his():
+    g = round_guest()
+    cam = with_aim_cam(g, pitch=0.25, yaw=-1.5)
+    ac = R.snapshot(g)["aim_cam"]
+    assert ac["addr"] == cam + R.QFPS_OFF + R.QFPS_PITCH and ac["pitch"] == 0.25 and ac["yaw"] == pytest.approx(-1.5)
+    g2 = round_guest()
+    with_aim_cam(g2, vt_ok=False)                                             # not uCameraQFPS there
+    assert R.snapshot(g2)["aim_cam"] is None
+    g3 = round_guest()
+    with_aim_cam(g3, owner_ok=False)                                          # another player's camera
+    assert R.snapshot(g3)["aim_cam"] is None
+
+
+def test_the_aim_writer_writes_both_floats_and_reads_them_back():
+    g = round_guest()
+    cam = with_aim_cam(g)
+    ad = Adapter(g)
+
+    class M:
+        adapter = ad
+    w = R.aim_writer(M())
+    addr = cam + R.QFPS_OFF + R.QFPS_PITCH
+    assert w(addr, -0.4, 2.0) and ad.writes == [(addr, struct.pack("<2f", -0.4, 2.0))]
+    assert struct.unpack("<2f", g.rd(addr, 8)) == pytest.approx((-0.4, 2.0))
+
+    class Off:
+        adapter = ad
+        mercs_no_modifications = True
+    assert R.aim_writer(Off()) is None
+
+
+def lock_brain(enemies, laser=None, ok=True):
+    bot, clock, snap = brain(round_guest(enemies=enemies, cam_yaw=0.0, laser=laser))
+    bot.held = lambda p, now: False
+    writes = []
+
+    def ram(addr, pitch, yaw):
+        writes.append((addr, pitch, yaw))
+        if ok:                                                                # the game holds what was written
+            snap["aim_cam"].update(pitch=pitch, yaw=yaw)
+        return ok
+    bot.ram = ram
+    snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
+    return bot, clock, snap, writes
+
+
+def test_with_the_lock_the_camera_is_written_onto_the_target_and_no_camera_key_steers():
+    bot, clock, snap, writes = lock_brain(((600.0, 0.0, 900.0, 700),))       # off to the right of the camera's line
+    acts = run(bot, snap, clock, 24)
+    assert writes and bot.stats["aim_locks"] == 1 and bot.stats["lock_write_ok"] >= 1
+    c = snap["camera"]["pos"]
+    assert writes[-1][2] == pytest.approx(R.heading(600.0 - c[0], 900.0 - c[2]), abs=1e-4)   # the camera's line on him
+    want = math.degrees(math.atan2(R.CHEST_H - c[1], math.hypot(600.0 - c[0], 900.0 - c[2])))
+    assert writes[-1][1] == pytest.approx((want - R.PITCH_DEG_AT_0) / R.PITCH_DEG_PER_UNIT, abs=1e-3)
+    assert all(not ({"rleft", "rright", "rup", "rdown"} & set(a.get("hold", ()))) for a in acts)
+    assert "LOCK" in bot.stats["aim"]
+
+
+def test_one_hanging_from_the_ceiling_within_fifteen_metres_is_locked_and_shot():
+    hang = (0.0, 600.0, 900.0, 700)                                           # 6 m up: off his floor
+    pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 900.0)
+    bot, clock, snap, writes = lock_brain((hang,), laser=(pt, (20.0, 145.0, 30.0), 0.86))
+    acts = run(bot, snap, clock, 10)
+    assert writes and any("zr" in a.get("hold", ()) for a in acts) and bot.stats["aimed_shots"] >= 1
+    c = snap["camera"]["pos"]
+    assert writes[-1][2] == pytest.approx(R.heading(-c[0], 900.0 - c[2]), abs=1e-4)
+    bot2, clock2, snap2 = brain(round_guest(enemies=(hang,), cam_yaw=0.0, laser=(pt, (20.0, 145.0, 30.0), 0.86)))
+    bot2.held = lambda p, now: False
+    acts2 = run(bot2, snap2, clock2, 10)                                      # without the lock: off his floor, ignored
+    assert not any("zr" in a.get("hold", ()) for a in acts2)
+
+
+def test_the_big_one_gets_the_focus_fire_first():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 600.0, 500), (500.0, 0.0, 1000.0, 1000)))
+    snap["enemies"][1]["hp_max"] = 1000
+    run(bot, snap, clock, 4)
+    c = snap["camera"]["pos"]
+    assert writes[-1][2] == pytest.approx(R.heading(500.0 - c[0], 1000.0 - c[2]), abs=1e-4)
+    assert bot.target == snap["enemies"][1]["ptr"]
+
+
+def test_a_lock_that_does_not_stick_puts_the_camera_keys_back():
+    bot, clock, snap, writes = lock_brain(((600.0, 0.0, 900.0, 700),), ok=False)
+    acts = run(bot, snap, clock, 30)
+    assert bot.stats["lock_write_fail"] >= R.LOCK_FAIL_N and bot.stats["lock_fallbacks"] == 1
+    assert any({"rleft", "rright"} & set(a.get("hold", ())) for a in acts[-3:])    # the keys steer again
+
+
+def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead():
+    near = (0.0, 0.0, 500.0, 700)
+    bot, clock, snap, writes = lock_brain((near, (0.0, 0.0, 800.0, 700)),
+                                          laser=((0.0, R.CHEST_H, 500.0), (20.0, 60.0, 30.0), 0.86))
+    snap["player"].update(hp=1, action="cPlAction_pl_act_dying_loop")
+    snap["kills"] = 20
+    acts = run(bot, snap, clock, 6)
+    assert bot.down and bot.stats["act"] in ("down_fire", "down_aim") and {"tap": "r"} not in acts
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["down_shots"] >= 1
+    assert writes and all(not ({"lup", "ldown", "lleft", "lright"} & set(a.get("hold", ()))) for a in acts)
+    snap["player"]["action"] = "cPlAction_pl_act_weapon_fire"                 # still down while it fires
+    snap["kills"] = 22
+    for e in snap["enemies"]:
+        e["hp"] = 0
+    acts = run(bot, snap, clock, 2)
+    assert bot.down and bot.stats["down_kills"] == 2 and acts[-1] == {"hold": ("lup",)}   # nobody near: rising
+    snap["player"]["action"] = "cPlAction_pl_act_gets_up"
+    run(bot, snap, clock, 1)
+    assert not bot.down and bot.stats["down_recoveries"] == 1 and bot.stats["down_s"] > 0
+    snap["player"]["action"] = "cPlAction_pl_act_wait"
+    snap["enemies"] = [{"slot": 9, "ptr": 0x9999, "pos": (0.0, 0.0, 1500.0), "hp": 700, "hp_max": 700}]
+    assert {"tap": "r"} in run(bot, snap, clock, 3)                          # up at 1 health: a tablet at once
+    snap["player"]["hp"] = 0
+    run(bot, snap, clock, 1)
+    assert bot.stats["dying_deaths"] == 1
+
+
+def test_health_falling_with_nobody_near_marks_a_hazard_and_he_moves_out_of_it():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0, hp=800))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 2)
+    snap["player"]["hp"] = 760                                                # smoke: nobody within 2.5 m
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["hazard_marks"] == 1 and bot.hazard is not None and bot.stats["hazard_s"] > 0
+    assert any(set(a.get("hold", ())) & {"lup", "ldown", "lleft", "lright"} for a in acts)
+    clock[0] += R.HAZARD_S + 0.1
+    run(bot, snap, clock, 1)
+    assert bot.hazard is None
+
+
+def test_down_fire_triples_the_table_while_he_is_down_and_puts_it_back(mods):
+    g = round_guest()
+    table = weapon_table(g)
+    ad = Adapter(g)
+    iv = lambda i: struct.unpack("<f", g.rd(table + mods.FIRE_STRIDE * i + mods.FIRE_INTERVAL, 4))[0]
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    mods.run(ad, "fire_rate", multiplier=4, magnum=8, throw=16)
+    assert mods.run(ad, "down_fire", multiplier=3)["down_fire_x"] == 3.0
+    clock = [10.0]
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert iv(0x0F) == pytest.approx(0.025) and iv(0x07) == pytest.approx(0.1)    # up: fire_rate's own
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_lying_down_weapon_ready_loop", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert iv(0x0F) == pytest.approx(0.025 / 3) and iv(0x07) == pytest.approx(0.1 / 3)   # down: x3
+    assert iv(0x13) == pytest.approx(0.125)                                   # the grenades keep theirs
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))  # firing from the ground: still down
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert iv(0x07) == pytest.approx(0.1 / 3)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_gets_up", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])
+    assert iv(0x0F) == pytest.approx(0.025) and iv(0x07) == pytest.approx(0.1)    # up: back at once
+    with pytest.raises(ValueError):
+        mods.run(ad, "down_fire", multiplier=50)
 
 
 def test_no_new_bomb_under_half_health():
@@ -961,8 +1128,10 @@ def test_no_bomb_without_one_a_crowd_or_room():
 def test_bot_options_turn_the_grenades_and_the_bomb_drop_on(mods, monkeypatch):
     monkeypatch.setattr(R, "NADES", False)
     monkeypatch.setattr(R, "BOMB_DROP", False)
+    monkeypatch.setattr(R, "AIM_LOCK", True)
     out = mods.run(Adapter(round_guest()), "bot_options", nades=True, bomb_drop=True)
-    assert out == {"verified": True, "nades": True, "bomb_drop": True} and R.NADES and R.BOMB_DROP
+    assert out == {"verified": True, "nades": True, "bomb_drop": True, "aim_lock": True} and R.NADES and R.BOMB_DROP
+    assert mods.run(Adapter(round_guest()), "bot_options", aim_lock=False)["aim_lock"] is False and not R.AIM_LOCK
     assert mods.run(Adapter(round_guest()), "bot_options", nades=False)["nades"] is False and R.BOMB_DROP
 
 
@@ -1029,12 +1198,8 @@ def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
     assert bot.stats["nohit_blocks"] == 0 and bot.seen
 
 
-def test_quick_shots_that_never_hurt_a_close_one_leave_him_but_never_one_at_arms_length():
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # 3 m ahead (a wall between)
-    bot.held = lambda p, now: False
-    run(bot, snap, clock, int(R.CC_MISS_N * R.CC_QSHOT_GAP_S / 0.05) + 12)
-    assert bot.stats["cc_quick_shots"] == R.CC_MISS_N and bot.stats["cc_blocks"] == 1
-    assert bot.doing != "crowd"
+def test_point_blank_quick_shots_never_leave_one_even_when_they_miss():
+    assert R.CC_R <= R.BLOCK_MIN_R                                            # crowd control only where nothing blocks
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))   # 1.5 m: always fought
     bot.held = lambda p, now: False
     run(bot, snap, clock, int(4 * R.CC_QSHOT_GAP_S / 0.05))
@@ -1198,7 +1363,7 @@ def test_the_quick_turn_for_one_behind():
 def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 100.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] == {"tap": "zr"} and bot.stats["melee"] == 1
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 380.0, 700),), cam_yaw=0.0))
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # point blank (CC_R)
     acts = run(bot, snap, clock, 2)
     assert acts[0]["hold"] == ("zl", "zr") and acts[1]["hold"] == () and bot.stats["quick_shots"] == 1
 
@@ -1344,7 +1509,11 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    snap["player"]["action"] = "cPlAction_pl_act_dying_loop"
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: RE6 takes none (DYING_TABLETS off)
+    bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    snap["player"]["action"] = "cPlAction_pl_act_weapon_ready_loop"
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # up again at 1 health: a tablet at once
     bot, clock, snap = brain(round_guest(hp=300, state=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
 
@@ -1946,9 +2115,9 @@ def test_a_stale_camera_or_laser_after_a_replay_is_looked_up_again():
 
 
 def test_zombies_up_close_get_quick_shots_and_kicks_and_the_ones_further_back_the_bursts():
-    crowd = ((100.0, 0.0, 200.0, 700), (-120.0, 0.0, 200.0, 700), (0.0, 0.0, 900.0, 700))   # two within CC_R
-    on = ((100.0, R.CHEST_H, 200.0), (20.0, 145.0, 30.0), 0.86)
-    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=math.atan2(100, 200), laser=on))
+    crowd = ((60.0, 0.0, 150.0, 700), (-70.0, 0.0, 150.0, 700), (0.0, 0.0, 900.0, 700))   # two within CC_R
+    on = ((60.0, R.CHEST_H, 150.0), (20.0, 145.0, 30.0), 0.86)
+    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=math.atan2(60, 150), laser=on))
     bot.held = lambda p, now: False                                          # (the frozen snapshot never moves him)
     acts = run(bot, snap, clock, 30)                                         # 1.5 s
     assert acts[0] == {"hold": ("zl", "zr")} and bot.doing == "crowd"         # the gun down: the quick shot at once
@@ -1968,9 +2137,9 @@ def test_kicks_at_arms_length_every_point_four_seconds_and_a_flanker_is_turned_t
     acts = run(bot, snap, clock, 21)                                         # 1 s with one at arm's length
     assert acts[0] == {"tap": "zr"} and bot.stats["cc_kicks"] == 3            # one every CC_KICK_GAP_S
     assert bot.stats["cc_quick_shots"] >= 1                                  # quick shots between the kicks
-    bot, clock, snap = brain(round_guest(enemies=((300.0, 0.0, 0.0, 700),), cam_yaw=0.0))   # 3 m off to the right
+    bot, clock, snap = brain(round_guest(enemies=((180.0, 0.0, 0.0, 700),), cam_yaw=0.0))   # 1.8 m off to the right
     act = run(bot, snap, clock, 1)[0]
-    assert bot.doing == "crowd" and act["hold"] == bot._turn(R.heading(300.0, 0.0))   # the camera to him
+    assert bot.doing == "crowd" and act["hold"] == bot._turn(R.heading(180.0, 0.0))   # the camera to him
     assert bot.stats["cc_quick_shots"] == 0 and bot.stats["cc_kicks"] == 0
 
 
