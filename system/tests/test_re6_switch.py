@@ -466,6 +466,24 @@ def test_walking_off_a_bomb_he_kicks_and_stops_for_a_crowd_and_after_the_walk_se
     assert {"hold": ("zl", "zr")} in acts and bot.stats["bomb_det_cm"] == [600]   # the walk ran out: off from 6 m
 
 
+def test_the_placed_bombs_own_spot_is_used_when_its_unit_is_found():
+    g = round_guest(enemies=((0.0, 0.0, 3000.0, 700),))
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    bu = g.unit(16, "uWp1231")
+    g.f32(bu + R.P_POS, 30.0, 0.0, 60.0)                                      # it dropped at his feet (a wall ahead)
+    snap = R.snapshot(g)
+    assert "bomb_pos" not in snap                                             # no bomb out: not looked for
+    bot, clock, _ = brain(g)
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True})
+    snap["bomb_pos"] = R.placed_bomb(g, BASE)
+    assert snap["bomb_pos"] == (30.0, 0.0, 60.0) and p
+    bot.bomb_at, bot.bomb_since, bot.bomb_phase = (0.0, R.BOMB_AHEAD), clock[0], "wait"
+    bot.held = lambda p, now: False
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.bomb_at == (30.0, 60.0) and bot.stats["bomb_aim_err_cm"] == [242]
+    assert "ldown" in act["hold"] and bot.doing == "bomb"                    # 0.7 m from it: walking off it
+
+
 def test_a_death_is_logged_with_its_cause_and_forgets_the_bomb():
     bot, clock, snap = bomb_out(((0.0, 0.0, 120.0, 700),) * 3)
     run(bot, snap, clock, 4)

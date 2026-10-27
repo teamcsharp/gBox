@@ -430,6 +430,8 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["camera"] = camera(m, base, snap["player"]["pos"])
             snap["laser"] = laser(m, base, snap["player"]["pos"])
+            if (snap["player"].get("bomb") or {}).get("out"):
+                snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         try:
@@ -697,6 +699,23 @@ def _find_unit(m, base: int, what: str, classes: tuple, lines, pick=None, now: f
     return None
 
 
+BOMB_UNITS = ("uWp1231",)               # the remote bomb lying placed (MercMode's census 2026-10-27: a uWp1231 unit lives
+                                        # only while one is out); its position +0x60 like every unit's
+
+
+def placed_bomb(m, base: int):
+    """Where the placed remote bomb lies (x, y, z), or None: its unit found on sUnit's lines (looked for again at most
+    every RESCAN_S while it is not there)."""
+    u = _find_unit(m, base, "bomb", BOMB_UNITS, range(N_LINES))
+    if u is None:
+        return None
+    try:
+        pos = struct.unpack("<3f", m.rd(u + P_POS, 12))
+    except (ValueError, OSError):
+        return None
+    return pos if all(math.isfinite(v) and abs(v) < 1e6 for v in pos) else None
+
+
 def forget(what: str) -> None:
     """Drop a cached unit ("camera", "laser") for every main base: the next read looks for it again."""
     for key in [k for k in _FOUND if k[1] == what]:
@@ -916,6 +935,8 @@ DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
 BOMB_HURT_S, BOMB_HURT_HP = 1.0, 50     # a blast that takes this much of his health this soon: stats bomb_self_hits
 BOMB_LOG_N = 12
+BOMB_REAL_R = 3000.0                    # the placed bomb's unit (snapshot bomb_pos) within this of him: its spot is used
+                                        # (stats bomb_aim_err_cm: how far it lay from 3 m ahead of the throw)
 BOMB_RETRY_S = 4.0                      # readying one given up (one came within BOMB_ROOM_R): tried again this soon
                                         # (live 11:21: 900 -> 1 health in 5 s readying one with two at 76 cm)
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
@@ -1009,6 +1030,7 @@ class Bot:
         self.bomb_kills = None                               # (the kill count at a blast, when)
         self.bomb_walk, self.bomb_side_until = None, -1e9    # walking off it: (since when, from where); a side step
         self.bomb_walk_since = None                          # when this bomb's walk began
+        self.bomb_real = False                               # this bomb's spot read from its unit
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.bomb_hurt = None                                # (his health, when) at the press that set it off
         # line of sight
@@ -1544,6 +1566,14 @@ class Bot:
             if self.bomb_at is None:                         # out but untracked (a bot reload): it went ahead of him
                 self.bomb_at = (px + BOMB_AHEAD * math.sin(yaw), pz + BOMB_AHEAD * math.cos(yaw))
                 self.bomb_since, self.bomb_from = now, (px, pz)
+            real = snap.get("bomb_pos")
+            if real is not None and math.hypot(real[0] - px, real[2] - pz) <= BOMB_REAL_R:   # where it really lies
+                if not self.bomb_real:                       # (a throw into a wall drops it at his feet)
+                    self.bomb_real = True
+                    log = self.stats.setdefault("bomb_aim_err_cm", [])
+                    log.append(round(math.hypot(real[0] - self.bomb_at[0], real[2] - self.bomb_at[1])))
+                    del log[:-BOMB_LOG_N]
+                self.bomb_at = (real[0], real[2])
             if self.bomb_phase in ("thrown", "throw"):
                 self.bomb_phase = "wait"
                 self.stats["bombs_placed"] += 1
@@ -1584,6 +1614,7 @@ class Bot:
         if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
             self.stats["bombs_detonated"] += 1
             self.bomb_walk = self.bomb_walk_since = None
+            self.bomb_real = False
             if self.bomb_hurt is not None:
                 self.bomb_hurt = (self.bomb_hurt[0], now)
             self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
