@@ -118,4 +118,41 @@ def test_an_aim_pitched_up_is_counted_with_its_cause():
     clock2[0] = 0.3
     b2.tick(snap([ground], dot=high, motion=26))                   # a level target, the laser up: the gun just raised
     assert b2.stats["pitch_up_ticks"] == 1 and b2.stats["pitch_up_target_high"] == 0
-    assert b2.stats["pitch_up_last"]["cause"] in ("raise", "retarget", "other")
+    assert b2.stats["pitch_up_last"].split(":")[0] in ("raise", "retarget", "other")
+
+
+def test_the_sky_guard_pushes_the_aim_down_and_never_up_at_a_ground_majini():
+    b, clock = bot()
+    ground = at(500, 0)
+    b.tick(snap([ground], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([ground], dot=(0.0, 140.0 + 400.0, 500.0), motion=26))   # the laser 38 deg up
+    assert "rdown" in act["hold"] and "rup" not in act["hold"]
+    assert b.stats["sky_corrections"] == 1 and b.stats["sky_ticks"] == 1 and b.why.startswith("sky guard")
+    clock[0] = 0.35
+    b.tick(snap([ground], dot=(0.0, 140.0 + 250.0, 500.0), motion=26))          # still 27 deg up: the same episode
+    assert b.stats["sky_corrections"] == 1 and b.stats["sky_guard_ticks"] == 2
+    clock[0] = 0.4
+    act = b.tick(snap([ground], dot=(0.0, 140.0 + 50.0, 500.0), motion=26))     # 6 deg: back under the margin
+    assert b.stats["sky_guard_ticks"] == 2 and not b.why.startswith("sky guard")
+    assert "pitch_up_last" in b.stats and "keys" in b.stats["pitch_up_last"]
+
+
+def test_a_majini_actually_high_may_take_the_aim_up():
+    b, clock = bot()
+    ledge = at(450, 0, y=290.0)                                    # 2.9 m up at 4.5 m: his chest about 31 deg up
+    b.tick(snap([ledge], motion=22))
+    clock[0] = 0.3
+    act = b.tick(snap([ledge], dot=(0.0, 140.0 + 150.0, 500.0), motion=26))    # the laser 17 deg up, under him
+    assert b.stats["sky_corrections"] == 0 and "rup" in act["hold"]
+
+
+def test_aimed_with_no_laser_the_aim_goes_down():
+    b, clock = bot()
+    ground = at(500, 0)
+    b.tick(snap([ground], motion=22))
+    clock[0] = 0.2
+    assert "rdown" not in b.tick(snap([ground], motion=26))["hold"]           # just up: wait for the dot
+    clock[0] = 0.5
+    act = b.tick(snap([ground], motion=26))                        # aimed 0.5 s, no dot anywhere: the sky
+    assert act["hold"] == ("rdown", "zl") and b.stats["sky_blind_ticks"] == 1
