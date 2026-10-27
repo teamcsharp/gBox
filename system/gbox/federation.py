@@ -20,6 +20,11 @@ from .store import canon, sha256
 from .worker_results import normalized_result
 
 LEASE_S = 30.
+# An older worker of the same local authority (the same PC install) unseen this long owns no live game any more: its
+# local authority restarted (a new epoch, a new worker id) and would report a game it still ran. 2026-10-24 16:51 the
+# i9-NUC's local scheduler started Mercenaries 3D, its app restarted, and that "running" row refused every later
+# snapshot ("An existing worker still owns a native game") for 49 hours.
+STALE_OWNER_S = 30 * 60.
 TERMINAL = {'succeeded', 'failed', 'invalid', 'rejected'}
 AUTHORITY = re.compile(r'[a-f0-9]{64}\Z')
 IDENTITY = re.compile(r'[a-f0-9]{16,64}\Z')
@@ -89,6 +94,24 @@ class Federation:
             raise HTTPException(409, 'Session has ended')
         return row
 
+    def _end_stale_owned(self, authority, others, wid):
+        """Running rows of this same authority's older workers, unseen for STALE_OWNER_S, end as stale (call under the
+        store lock). A worker of another authority, or one seen recently, keeps its game: the guard below refuses."""
+        now=self.clock()
+        for row in self.store.running_sessions():
+            owner_id=row['session_id'].split('-',1)[0]
+            if owner_id not in others:
+                continue
+            owner=self.store.get('worker',owner_id) or {}
+            mine=((owner.get('federation') or {}).get('authority')==authority
+                  and (row.get('federation') or {}).get('authority') in (None,authority))
+            if not mine or now-float(owner.get('last_seen') or 0)<STALE_OWNER_S:
+                continue
+            self.store.put('session',row['session_id'],row|{'state':'ended','ended':now,
+                'exit':{'via':'stale_owner','worker':owner_id,'superseded_by':wid}})
+            self.store.audit('desktop-federation','session.ended',row['session_id'],
+                             {'via':'stale_owner','worker':owner_id,'superseded_by':wid})
+
     def mappings(self, authority):
         return [{'central_job_id':r['id'],'local_job_id':r.get('local_job_id')}
                 for r in self.store.all('federation_command')
@@ -140,6 +163,7 @@ class Federation:
                 raise HTTPException(409,'This worker identity already has another owner')
             # Do not retire/adopt an older remote worker's still-owned emulator.
             others={w['id'] for w in self.store.all('worker') if w['name']==worker['name'] and w['id']!=wid}
+            self._end_stale_owned(authority,others,wid)
             if any(s['session_id'].split('-',1)[0] in others for s in self.store.running_sessions()):
                 raise HTTPException(409,'An existing worker still owns a native game; it was preserved')
             if old and old['worker_id']!=wid and any(s['session_id'].startswith(old['worker_id']+'-')
