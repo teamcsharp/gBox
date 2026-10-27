@@ -144,8 +144,12 @@ def test_template_ops_and_the_bombs_compose_and_revert_all_puts_every_block_back
     assert ids(g, 14)[1] == SM.MINE_ID and ids(g, 24)[1] == SM.MINE_ID and ids(g, 14)[3] == 0x10F   # bombs and bows
     SM.tool_run(ad, "weapon_override", None, False)
     assert ids(g, 14)[1] == SM.MINE_ID and ids(g, 14)[3] == 0x102          # the bombs outlive the override
+    SM.tool_run(ad, "weapon_override", None, True, weapon=0x0F, only=True)
+    out = SM.run(ad, "mine_loadout", on=True)                             # live 2026-10-27: Chris's block, bows in it
+    assert out["verified"] and out["blocks"] == [hex(o) for o in SM.CHRIS_TEMPLATES]
     out = SM.tool_run(ad, "revert_all")
-    assert out["verified"] and ids(g, 14)[1] == SM.GRENADE_ID and ids(g, 15)[1] == 0x10D
+    assert out["verified"] and all(out["reverted"].values())
+    assert ids(g, 14)[1] == SM.GRENADE_ID and ids(g, 14)[3] == 0x102 and ids(g, 15)[1] == 0x10D
 
 
 def test_unlimited_health_refills_a_living_player_to_the_boosted_maximum_never_a_dying_one():

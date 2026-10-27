@@ -224,6 +224,15 @@ def mine_loadout(g: RE5Switch, on: bool) -> dict:
     """Chris (BSAA)'s loadout template, both banks: record 1 the proximity bomb (on) or the hand grenades (off). Only the
     id word of a block whose records match is written; the round after builds its inventory from it."""
     want = MINE_ID if on else GRENADE_ID
+    if g.state.get("tpl_orig") is not None:              # the template ops own the blocks now: compose them
+        g.state["mine_loadout"] = bool(on)
+        res = compose_templates(g)
+        at = [g.base + off + MINE_SLOT * TEMPLATE_REC for off in CHRIS_TEMPLATES]
+        done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at) if g.u32(a) == want]
+        return {"mine_loadout": bool(on), "verified": bool(res["verified"] and done), "blocks": done,
+                "effective": "the next round's start",
+                "note": "Chris (BSAA)'s record 1 the proximity bomb x5 at grid 1" if on else
+                        "Chris (BSAA)'s hand grenades back at grid 1"}
     blocks, ok = [], True
     for off in CHRIS_TEMPLATES:
         if not chris_block(g, off):
@@ -547,11 +556,9 @@ def revert_all(g: RE5Switch) -> dict:
            "infinite_spray": infinite_spray(g, False)["verified"],
            "unlimited_health": unlimited_health(g, False)["verified"]}
     g.state.pop("mine_settings", None)
-    out["mine_loadout"] = mine_loadout(g, False)["verified"]
     for key in ("weapon_override", "loadout", "replace"):
         g.state.pop(key, None)
-    if g.state.get("tpl_orig") is not None:
-        out["loadout"] = compose_templates(g)["verified"]
+    out["mine_loadout"] = mine_loadout(g, False)["verified"]     # (composes every block from its original)
     return {"reverted": out, "verified": all(out.values()), "note": "a relaunch of the game is the full revert too"}
 
 
