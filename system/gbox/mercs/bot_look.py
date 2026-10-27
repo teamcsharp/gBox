@@ -56,7 +56,7 @@ def _num(v, nd: int = 1) -> float | None:
         v = float(v)
     except (TypeError, ValueError):
         return None
-    return round(v, nd) if math.isfinite(v) else None
+    return round(v, nd) + 0.0 if math.isfinite(v) else None           # (+ 0.0: never -0.0)
 
 
 def _int(v) -> int | None:

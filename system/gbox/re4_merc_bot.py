@@ -117,6 +117,7 @@ except ImportError:                              # a tree without it: vision onl
     re4_ram_prompts = None
 from . import re4_threats as threats_ram         # who is attacking right now, what is thrown at him (RAM)
 from .mercs.impact_lessons import DECAY_EVADE, EVADE_MAX, STEP_EVADE   # the evade margin learned from every hit
+from .mercs.bot_look import make_target as make_look_target   # a shot's target block in stats["look"]
 from .mercs import directives as operator_commands   # the chat's instant commands (fight, next area, explore ...)
 from .mercs import stalemate as stalemate_rule   # no Ganados for 15 s with time on the clock: the clock is cut
 from .mercs import round_map as roundmap         # round_gap_s: the seconds between two rounds (gap_end / gap_start)
@@ -260,6 +261,42 @@ ARRIVE = 650.0                                   # a waypoint this close (mm) is
 RUN_CLEAR, RUN_KNEE = 350.0, 500.0               # a clear run: three rays (his middle and his shoulders, this far to either
                                                  # side) at this height above his feet cross no wall of the disc's map,
                                                  # fences included (mm)
+# Steering (operator 2026-10-26: "instead of walking down a path, I'm watching him progress down a path in a sine wave";
+# today's runs strayed 0.75 m from a 2 s chord, p90 1.6 m): the run steers at the point LOOKAHEAD ahead on the planned
+# path (pure pursuit, never the next waypoint itself), takes the turn's own lag out (STEER_LAG_S at the turn rate the
+# runs measure) and pulses the stick in proportion inside STEER_PULSE - the old full-stick correction past a 10 deg
+# deadband every tick overshot into a limit cycle
+LOOKAHEAD, STEER_DEADBAND, STEER_PULSE, STEER_LAG_S, STEER_REVERSE = 1800.0, 0.06, 0.35, 0.10, 0.15
+# Doorways (operator: "always running into the entrances of locations instead of going inside"): a planned leg through a
+# passage narrower than DOOR_W gets a waypoint at the passage's centre, so the run goes through its middle, not along
+# its frame (rays DOOR_SCAN to either side, every DOOR_STEP along the leg)
+DOOR_W, DOOR_SCAN, DOOR_STEP = 2600.0, 1500.0, 300.0
+# Aim (operator: "he should basically raise his gun, aim it at the target, and shoot the target, but instead he's waving
+# the gun around randomly"; today 11.8 target switches a minute with the gun up): one target is locked until it dies or
+# leaves reach / sight; another is taken only when its attack lands within LOCK_BREAK_S and he stands nearer; the aim
+# slews with the stick pulsed in proportion inside AIM_PULSE and stops inside AIM_DEADBAND x the body's tolerance (no
+# hunting across him); it keeps tracking while the trigger is down
+LOCK_BREAK_S, AIM_DEADBAND, AIM_PULSE = 1.0, 0.6, 0.2
+# Time bonuses (operator: "walk past time bonuses"): one within BONUS_DETOUR_R whose path is at most BONUS_DETOUR_X the
+# straight line is taken now, before the tour's next one
+BONUS_DETOUR_R, BONUS_DETOUR_X, BONUS_DETOUR_EVERY_S = 3000.0, 1.6, 1.0
+# Chickens (operator: "if he's going to shoot these chickens, he's going to need to aim at these chickens"): a small
+# animal is a target only while his health is under CHICKEN_HP of its best this round (their eggs heal), and is fired at
+# only with the aim on it (CHICKEN_HALF_W to either side of it)
+CHICKEN_HP, CHICKEN_HALF_W = 0.5, 120.0
+ITEM_SCAN_S = 0.5                                # the room's items read this often (pickups, time bonuses passed by)
+# "look at the bot" (stats["look"], gbox.mercs.bot_look; operator 2026-10-26: "They are shooting at walls and just sitting
+# here amongst foes")
+LOOK_FOES_R = 5000.0                             # a live foe this near: "amongst foes"
+LOOK_BUSY_SPEED = 500.0                          # moving faster than this (mm/s) is doing something
+LOOK_BUSY_TURN = 0.6                             # ... or turning faster than this (rad/s)
+LOOK_SHOT_S = 1.0                                # a shot this recent is doing something
+LOOK_PUBLISH_S, LOOK_REFRESH_S = 0.25, 1.0       # stats["look"] refreshed at most / at least this often
+DOT_RANGE = 30000.0                              # the aim line (the laser dot) is followed this far
+FOE_H = 1800.0                                   # a standing foe's height (the aim line meets him below it)
+WALL_LINE_MARGIN = 300.0                         # a wall this much nearer than the target on the aim line: a wall shot
+WALL_HOLD_S = 1.5                                # the aim line on a wall this long at one target: he is left for
+                                                 # BLOCKED_SKIP_S and the next one taken (no standing there aiming)
 LEARNED_VERSION = 2                              # learned maps before it took the per-tick ray fan's hits as walls (r400:
 FLOOR_WALKED = 2                                 # 1814 "walls", 524 of them cells he walked): on load, a blocked cell he
 LEGACY_BLOCK_CAP = 3                             # stood in this often is floor again (a 40 cm cell crossed at a run holds
@@ -309,6 +346,16 @@ LOADOUT_OPS = ("merc_loadout", "weapon_mod")
 
 def ptr_ok(p: int) -> bool:
     return 0x80000000 <= p < 0x81800000
+
+
+def _seg_dist(p, a, b) -> float:
+    """The distance from point p to the segment a-b ((x, z) each)."""
+    dx, dz = b[0] - a[0], b[1] - a[1]
+    L2 = dx * dx + dz * dz
+    if L2 < 1e-6:
+        return math.hypot(p[0] - a[0], p[1] - a[1])
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / L2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz)
 
 
 class ShmMem:
@@ -672,6 +719,88 @@ class LearnedMap:
             pass
 
 
+class StageKnowledge:
+    """What a stage taught across runs, beside the learned walls and the impact lessons (operator 2026-10-26: "why has he
+    never learned anything about how to play the game over the course of playing"): every doorway's passes and bumps (a
+    portal bumped more often than passed gets its centre waypoint on every leg near it), every spot an ammo pickup
+    happened (no blind A there: the vault tap took it), every time bonus's takes and leave-behinds, the rounds played.
+    <learn_dir>/r<room>-knowledge.json, saved with the learned map."""
+
+    GRID = 200.0
+
+    def __init__(self, path: Path | None = None):
+        self.path = path
+        self.d: dict = {"v": 1, "rounds": 0, "portals": {}, "ammo_spots": {}, "bonuses": {}}
+        self.dirty = False
+        if path is not None and path.is_file():
+            try:
+                d = json.loads(path.read_text())
+                if isinstance(d, dict) and d.get("v") == 1:
+                    for k in ("portals", "ammo_spots", "bonuses"):
+                        if not isinstance(d.get(k), dict):
+                            d[k] = {}
+                    self.d = d
+            except (OSError, ValueError, TypeError):
+                pass
+
+    @classmethod
+    def key(cls, x: float, z: float) -> str:
+        return f"{round(x / cls.GRID) * cls.GRID:.0f},{round(z / cls.GRID) * cls.GRID:.0f}"
+
+    @staticmethod
+    def _xz(key: str) -> tuple:
+        x, z = key.split(",")
+        return float(x), float(z)
+
+    def portal(self, x: float, z: float, passes: int = 0, bumps: int = 0) -> None:
+        row = self.d["portals"].setdefault(self.key(x, z), {"passes": 0, "bumps": 0})
+        row["passes"] += passes
+        row["bumps"] += bumps
+        self.dirty = True
+
+    def bumped_portals(self) -> list:
+        """(x, z) of the doorways bumped more often than passed."""
+        return [self._xz(k) for k, r in self.d["portals"].items() if r.get("bumps", 0) > r.get("passes", 0)]
+
+    def ammo_spot(self, x: float, z: float) -> None:
+        k = self.key(x, z)
+        self.d["ammo_spots"][k] = self.d["ammo_spots"].get(k, 0) + 1
+        self.dirty = True
+
+    def near_ammo_spot(self, x: float, z: float, r: float = 800.0) -> bool:
+        return any(math.hypot(x - sx, z - sz) < r for sx, sz in map(self._xz, self.d["ammo_spots"]))
+
+    def bonus(self, x: float, z: float, taken: bool) -> None:
+        row = self.d["bonuses"].setdefault(self.key(x, z), {"taken": 0, "left": 0})
+        row["taken" if taken else "left"] += 1
+        self.dirty = True
+
+    def round_played(self) -> None:
+        self.d["rounds"] = int(self.d.get("rounds") or 0) + 1
+        self.dirty = True
+
+    def summary(self) -> dict:
+        p = self.d["portals"]
+        return {"rounds": self.d.get("rounds", 0), "portals": len(p),
+                "portal_passes": sum(r.get("passes", 0) for r in p.values()),
+                "portal_bumps": sum(r.get("bumps", 0) for r in p.values()),
+                "bumped_portals": len(self.bumped_portals()), "ammo_spots": len(self.d["ammo_spots"]),
+                "bonuses_taken": sum(r.get("taken", 0) for r in self.d["bonuses"].values()),
+                "bonuses_left": sum(r.get("left", 0) for r in self.d["bonuses"].values())}
+
+    def save(self) -> None:
+        if self.path is None or not self.dirty:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.d))
+            tmp.replace(self.path)
+            self.dirty = False
+        except OSError:
+            pass
+
+
 class Bot:
     """One decision per tick; the caller sends what it returns ({'hold': keys} / {'tap': key}) and sleeps. Pad only:
     the stick turns Leon, R aims, A fires / vaults, B runs."""
@@ -746,6 +875,21 @@ class Bot:
         from .mercs.round_audit import RoundAudit
         self.impacts = ImpactLessons(learn_dir / "impact_lessons.json" if learn_dir else None)   # learned per stage / attacker
         self.audit = RoundAudit("G4BE08")             # each round's own verdict (stats round_audit, the round map "audit")
+        from .mercs.behavior_metrics import BehaviorMetrics
+        self.metrics = BehaviorMetrics()              # the round's weave, aim, doorways, pickups ... (the round map "behavior")
+        self.lock = None                              # the slot the aim is locked on (LOCK_BREAK_S)
+        self.portals: dict = {}                       # this stage's doorway centres {key: (x, z)} (_centre_doors)
+        self.knowledge = None                         # StageKnowledge: what this stage taught across runs
+        self.hp_best = 0                              # his best health this round (the chicken rule)
+        self._items_at, self._items_seen = -math.inf, {}   # the room's items read at, {addr: (item id, pos, enabled)}
+        self._bonus_detour_at = -math.inf
+        from .mercs.bot_look import BotLook
+        self.look = BotLook(epoch=clock)              # the last shots and decisions (stats["look"]: "look at the bot")
+        self._look_pending: list = []                 # look entries of the shots Shots has not scored yet (same order)
+        self._look_n = 0                              # Shots' shot count already given a look entry
+        self._look_pub, self._look_ver = -math.inf, -1
+        self._look_pos = None                         # (now, x, z, rot) of the last idle check
+        self._wall_line = None                        # (slot, since): the aim line on a wall at this target
 
     def new_round(self) -> None:
         """A new round begins (play(): its first in-round frame): what the last round learned is saved, and everything
@@ -780,7 +924,18 @@ class Bot:
         self._death_logged = False
         self.dead_no = False                          # this round's death gets its own Continue answer
         self._ran, self._fire_frame = False, None     # no run or fire motion carried over (_go's stuck, _shot_seen)
-        # the held trigger (self.rapid), the round's audit and its loadout check start with its trace (trace_start)
+        self.portals = {}                             # the stage's doorways: _round() seeds them again (StageKnowledge)
+        self.lock, self._lateral = None, 0.0          # no aim lock or path offset from the last round
+        self._steer_last = self._steer_dir = 0        # the run's steering and the aim's slew start clean (_steer, _aim_turn)
+        self._steer_acc = self._aim_acc = 1.0
+        self._aim_last, self._steer_obs, self._aim_obs = 0, None, None
+        self._on_target = self._fire_held = self._target_small = False
+        self._items_at, self._items_seen, self._bonus_detour_at = float("-inf"), {}, float("-inf")
+        self.look.new_round()                         # walls shot / idle start over; the last shots stay in view
+        self._look_pending, self._look_n = [], self.shots.stats["shots"]
+        self._look_pos, self._wall_line = None, None
+        # the held trigger (self.rapid), the round's audit, its loadout check and its behaviour metrics start with its
+        # trace (trace_start); what the stage taught (StageKnowledge) was saved above and is read again with the stage
 
     def _stalemate_watch(self, s: dict, p: dict, now: float) -> None:
         """No living Ganado for STALEMATE_S while the clock shows more than STALEMATE_CLOCK_S: the clock is cut to the
@@ -806,6 +961,9 @@ class Bot:
                 if trace.out_dir is not None:
                     trace.out_dir = trace.out_dir.parent / trace.room
             self.learned = LearnedMap(self.learn_dir / f"r{room:03x}.json" if self.learn_dir else None)
+            self.knowledge = StageKnowledge(self.learn_dir / f"r{room:03x}-knowledge.json" if self.learn_dir else None)
+            self.portals = {StageKnowledge.key(x, z): (x, z) for x, z in self.knowledge.bumped_portals()}
+            self.stats["stage_knowledge"] = self.knowledge.summary()
             if self.learned.migrated:
                 self.stats["learned_walls_migrated"] = self.learned.migrated
                 self._new_walls += 1                  # saved in its new form with the next save
@@ -834,7 +992,8 @@ class Bot:
             try:
                 way = self.nav.path(self.st, start, goal, ladder_cost=LADDER_AVOID)
                 if way:
-                    return self._round_walls(start, [(w.x, w.z, w.action) if hasattr(w, "action") else tuple(w) for w in way])
+                    way = self._round_walls(start, [(w.x, w.z, w.action) if hasattr(w, "action") else tuple(w) for w in way])
+                    return self._centre_doors(start, way)
             except Exception:                         # noqa: BLE001
                 pass
         elif self.nav is not None and self.room is not None:
@@ -864,6 +1023,103 @@ class Bot:
                 self.stats["wall_detours"] += 1
             out.append(w)
             a = b
+        return out
+
+    def _walls_np(self):
+        """The disc's wall segments as an (N, 7) array (x0, z0, x1, z1, y_lo, y_hi, attr), cached on the stage; None
+        without them."""
+        if not isinstance(self.st, dict) or "walls" not in self.st:
+            return None
+        walls = self.st.get("_walls")
+        if walls is None:
+            walls = np.asarray(self.st["walls"], np.float64).reshape(-1, 7)
+            self.st["_walls"] = walls
+        return walls
+
+    @staticmethod
+    def _ray_dists(walls, origins, dirs, length: float, y: float):
+        """The first wall each ray (origin, unit direction, length; at height y; fences and windows included) meets, as a
+        distance (inf for none) - every ray against every wall at once."""
+        o, dv = np.asarray(origins, np.float64), np.asarray(dirs, np.float64) * length
+        ex, ez = (walls[:, 2] - walls[:, 0])[None, :], (walls[:, 3] - walls[:, 1])[None, :]
+        dx, dz = dv[:, 0:1], dv[:, 1:2]
+        den = dx * ez - dz * ex
+        ok = np.abs(den) > 1e-9
+        den = np.where(ok, den, 1.0)
+        wx, wz = walls[None, :, 0] - o[:, 0:1], walls[None, :, 1] - o[:, 1:2]
+        t = (wx * ez - wz * ex) / den
+        s_ = (wx * dz - wz * dx) / den
+        hit = ok & (t > 1e-6) & (t < 1.0) & (s_ >= 0) & (s_ <= 1) & (y >= walls[None, :, 4]) & (y <= walls[None, :, 5])
+        return np.where(hit, t * length, np.inf).min(axis=1)
+
+    def _narrow_centres(self, walls, a, b, y) -> list:
+        """The centres of the passages narrower than DOOR_W that the leg a -> b ((x, z)) runs through: rays DOOR_SCAN to
+        either side every DOOR_STEP (not within 400 of either end: a waypoint itself may sit at a corner); per narrow
+        stretch its narrowest point's middle, and for a stretch over 2 m (a corridor) its two ends' middles too."""
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < 1000.0:
+            return []
+        ux, uz = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        nx, nz = -uz, ux                                              # one side's normal (the other: its negative)
+        ts = np.arange(400.0, L - 400.0 + 1e-6, DOOR_STEP)
+        if not len(ts):
+            return []
+        pts = np.stack([a[0] + ux * ts, a[1] + uz * ts], axis=1)
+        left = self._ray_dists(walls, pts, np.tile([nx, nz], (len(ts), 1)), DOOR_SCAN, y)
+        right = self._ray_dists(walls, pts, np.tile([-nx, -nz], (len(ts), 1)), DOOR_SCAN, y)
+        width = left + right
+        narrow = np.isfinite(width) & (width < DOOR_W)
+        out, k = [], 0
+        while k < len(ts):
+            if not narrow[k]:
+                k += 1
+                continue
+            j = k
+            while j + 1 < len(ts) and narrow[j + 1]:
+                j += 1
+            picks = [int(k + np.argmin(width[k:j + 1]))]
+            if (j - k) * DOOR_STEP > 2000.0:
+                picks = [k, picks[0], j]
+            for i in sorted(set(picks)):
+                shift = (left[i] - right[i]) / 2.0
+                out.append((float(pts[i][0] + nx * shift), float(pts[i][1] + nz * shift)))
+            k = j + 1
+        return out
+
+    def _centre_doors(self, start, way: list) -> list:
+        """The planned path through the middle of every doorway (operator 2026-10-26: "always running into the entrances
+        of locations instead of going inside"): a leg through a passage narrower than DOOR_W gets a waypoint at the
+        passage's centre (_narrow_centres) before its own, and one near a doorway this stage has bumped more than passed
+        (StageKnowledge) gets that doorway's centre. A vault / ladder leg is left as it is. The centres join this stage's
+        portals (the round map's passes / bumps per doorway)."""
+        walls = self._walls_np()
+        if walls is None or not way:
+            return way
+        a = (start[0], start[2]) if len(start) == 3 else (start[0], start[1])
+        y = (start[1] if len(start) == 3 else 0.0) + RUN_KNEE
+        bumped = list(self.knowledge.bumped_portals()) if getattr(self, "knowledge", None) is not None else []
+        out = []
+        try:
+            for w in way:
+                b = (w[0], w[1])
+                if not (len(w) > 2 and w[2] in ("vault", "ladder")):
+                    centres = self._narrow_centres(walls, a, b, y)
+                    L = math.hypot(b[0] - a[0], b[1] - a[1])
+                    for cx, cz in bumped:                                 # a doorway known for bumps: its centre
+                        t = ((cx - a[0]) * (b[0] - a[0]) + (cz - a[1]) * (b[1] - a[1])) / max(L * L, 1.0)
+                        if 0.1 < t < 0.9 and abs((b[0] - a[0]) * (a[1] - cz) - (b[1] - a[1]) * (a[0] - cx)) / max(L, 1.0) < 400.0 \
+                                and all(math.hypot(cx - x, cz - z) > 600.0 for x, z in centres):
+                            centres.append((cx, cz))
+                    centres.sort(key=lambda c: math.hypot(c[0] - a[0], c[1] - a[1]))
+                    for c in centres:
+                        out.append(c)
+                        self.portals.setdefault(StageKnowledge.key(*c), c)
+                    if centres:
+                        self.stats["doors_centred"] = self.stats.get("doors_centred", 0) + len(centres)
+                out.append(w)
+                a = b
+        except Exception:                                 # noqa: BLE001 - a bad wall table never loses the path
+            return way
         return out
 
     def _sight(self, p, target_xyz) -> bool:
@@ -919,6 +1175,8 @@ class Bot:
         if self.learned is not None:
             self.learned.save()
             self._new_walls = 0
+        if getattr(self, "knowledge", None) is not None:
+            self.knowledge.save()
         if not self._stuck_pending:
             return
         if self.learn_dir is None or self.room is None:
@@ -1012,12 +1270,23 @@ class Bot:
                 self.r_since = None
                 return {"hold": {"down"}}
         deg = math.degrees(err)
-        if abs(err) > fire_tol(dist) or not level:
+        small = 0 < (tgt.get("hp_max") or 0) <= SMALL_HP                   # a chicken: the aim must be on the chicken
+        tol = max(FIRE_TOL * 0.5, math.atan2(CHICKEN_HALF_W, max(dist, 1.0))) if small else fire_tol(dist)
+        aim_keys = self._aim_turn(err, tol)                               # slew with a deadband, in proportion
+        self._aim_metric(p, err, aim_keys, tgt, now)
+        self._target_small = small
+        self._look_ctx = {"tgt": tgt, "kind": self._foe_kind(tgt)}         # what the next shots were fired at (the look)
+        if abs(err) > tol or not level:
             self.trigger["down"] = False
             self.rapid["since"] = None                                   # off him: the held trigger's proof starts over
             self.stats["combat"] = f"{tag}aiming slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} {'level' if level else 'pitch'}"
-            self.stats["fire_gate"] = "off target: hold" if abs(err) > fire_tol(dist) else "aim height: hold"
-            return {"hold": self._turn(err, aiming=True, tol=fire_tol(dist)) | height}   # aim, turn, raise onto him
+            self.stats["fire_gate"] = "off target: hold" if abs(err) > tol else "aim height: hold"
+            self._look_ctx["gate"] = self.stats["fire_gate"]
+            return {"hold": aim_keys | height}                           # aim, turn, raise onto him
+        line = self._aim_line(p, s, tgt)                                  # what the aim line meets first
+        if line[0] == "wall" and line[1] < dist - WALL_LINE_MARGIN and not tgt.get("thrown"):
+            return self._wall_hold(tgt, dist, line, aim_keys | height, tag, now)
+        self._wall_line = None
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         self.stats["combat"] = f"{tag}on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
         self.stats["fire_gate"] = "on him"
@@ -1025,7 +1294,222 @@ class Bot:
         keys = self._pull(now, tgt)
         if tag and "a" in keys and not was_down:                         # a fresh trigger press at a boss
             self.stats["boss_shots"] += 1
-        return {"hold": {"r"} | keys}                                    # on target: fire
+        self._on_target, self._fire_held = True, "a" in keys or self.trigger["down"]
+        self._look_ctx["gate"] = "on him" + (" (urgent)" if tgt.get("urgent") else "")
+        return {"hold": {"r"} | keys | aim_keys | height}                # on target: fire, and keep tracking him
+
+    def _wall_hold(self, tgt, dist, line, keys, tag, now) -> dict:
+        """The aim is on him but its line meets a wall first (the disc's walls; fences and windows let through, as the
+        game's bullets): the trigger waits while the aim keeps tracking. WALL_HOLD_S of that at one target and he is
+        left for BLOCKED_SKIP_S, the next one taken (operator 2026-10-26: "They are shooting at walls and just sitting
+        here amongst foes")."""
+        wl = self._wall_line
+        if wl is None or wl[0] != tgt["slot"]:
+            self._wall_line = wl = (tgt["slot"], now)
+        self.trigger["down"] = False
+        self.rapid["since"] = None
+        self.stats["wall_line_holds"] = self.stats.get("wall_line_holds", 0) + 1
+        if now - wl[1] > WALL_HOLD_S:
+            self.skip[tgt["slot"]] = now + BLOCKED_SKIP_S
+            self.stats["wall_line_skips"] = self.stats.get("wall_line_skips", 0) + 1
+            self._wall_line = None
+            self.r_since = None
+            self.stats["fire_gate"] = "aim line on a wall: target left"
+            self.stats["combat"] = f"{tag}slot {tgt['slot']} left for {BLOCKED_SKIP_S:g} s: a wall in the aim line"
+            return {"hold": set()}
+        self.stats["fire_gate"] = "aim line on a wall: hold"
+        self.stats["combat"] = f"{tag}wall {line[1]:.0f} away in the aim line to slot {tgt['slot']} d {dist:.0f}"
+        self._look_ctx["gate"] = self.stats["fire_gate"]
+        return {"hold": keys}
+
+    # -- the look (stats["look"], gbox.mercs.bot_look: "look at the bot") --
+    def _foe_kind(self, e) -> str:
+        """A target's kind for the look: thrown (a weapon in the air), chicken, boss / chainsaw, ganado."""
+        if not e:
+            return "none"
+        if e.get("thrown"):
+            return "thrown"
+        if 0 < (e.get("hp_max") or 0) <= SMALL_HP:
+            return "chicken"
+        return threats_ram.boss(e, self.room) or "ganado"
+
+    def _aim_line(self, p, s, tgt=None) -> tuple:
+        """What the aim line (the laser dot) meets first, from Leon's gun along where it points (aim_rot and the aim
+        pitch): ("target" | "wall" | "floor" | "none" | "off", the ground distance to it (mm; DOT_RANGE for none), the
+        foe's slot or None). "off": the gun is not up or no pitch was read. Foes are FOE_H tall (a chicken
+        SMALL_BODY[1]) and BODY_HALF_W wide (CHICKEN_HALF_W); a thrown weapon (tgt) is a 300 mm ball; the floor is level
+        with his feet; walls are the disc's (re4_collision.raycast: fences and windows let through, as the bullets)."""
+        pitch = p.get("pitch")
+        if self.r_since is None or pitch is None:
+            return "off", DOT_RANGE, None
+        px, py, pz = p["pos"]
+        yaw = p.get("aim_rot", p["rot"])
+        ux, uz = math.sin(yaw), math.cos(yaw)
+        gun, slope = py + GUN_H, math.tan(pitch)
+        best = ("none", DOT_RANGE, None)
+        if slope < -1e-6 and GUN_H / -slope < best[1]:
+            best = ("floor", GUN_H / -slope, None)
+        foes = [e for e in s.get("enemies") or () if not threats_ram.dying(e)]
+        if tgt is not None and tgt.get("thrown"):
+            foes.append(tgt)
+        for e in foes:
+            ex, ey, ez = e["pos"]
+            along = (ex - px) * ux + (ez - pz) * uz
+            if along <= 0 or along >= best[1]:
+                continue
+            small = 0 < (e.get("hp_max") or 0) <= SMALL_HP
+            half = 300.0 if e.get("thrown") else CHICKEN_HALF_W if small else BODY_HALF_W
+            lo, hi = (ey - 300.0, ey + 300.0) if e.get("thrown") else (ey - 100.0, ey + (SMALL_BODY[1] if small else FOE_H))
+            y = gun + along * slope
+            if abs((ex - px) * uz - (ez - pz) * ux) <= half and lo <= y <= hi:
+                best = ("target", along, e.get("slot"))
+        walls = self._walls_np()
+        if walls is not None and len(walls):
+            try:
+                from . import re4_collision as rc
+                L = best[1]
+                h = rc.raycast(walls, [px, gun, pz], [px + ux * L, gun + slope * L, pz + uz * L], see_through=True)
+                if h.blocked and h.distance * L < best[1]:
+                    best = ("wall", h.distance * L, None)
+            except Exception:                         # noqa: BLE001 - no wall test: what the foes and floor say
+                pass
+        return best
+
+    def _look_shots(self, p, s, now) -> None:
+        """Every shot Shots counted since the last tick gets a look entry: the target the last _fight aimed at (its id,
+        kind, distance and bearing now), the aim error, what the aim line meets, the fire gate. Entries are kept in
+        Shots' order (_look_pending) until _score resolves them."""
+        n = self.shots.stats["shots"]
+        new, self._look_n = n - self._look_n, n
+        if new > 0 and p:
+            ctx = getattr(self, "_look_ctx", None) or {}
+            tgt = ctx.get("tgt")
+            target, err_deg = None, None
+            if tgt is not None:
+                slot = tgt.get("slot")
+                e = next((x for x in s.get("enemies") or () if x["slot"] == slot), None) \
+                    if isinstance(slot, int) and slot >= 0 else None
+                pos = e["pos"] if e is not None else tgt.get("pos")
+                if pos is not None:
+                    dx, dz = pos[0] - p["pos"][0], pos[2] - p["pos"][2]
+                    h = heading(dx, dz)
+                    target = make_look_target(slot, ctx.get("kind"), math.hypot(dx, dz) / 1000.0,
+                                              -math.degrees(wrap(h - p["rot"])))          # + to his right
+                    err_deg = -math.degrees(wrap(h - p.get("aim_rot", p["rot"])))
+            line = self._aim_line(p, s, tgt)
+            weapon, gate = weapon_name(s.get("weapon")), ctx.get("gate") or self.stats.get("fire_gate") or ""
+            for _ in range(min(new, 30)):
+                self._look_pending.append(self.look.record_shot(weapon, gate, target, err_deg, line[0]))
+                self.metrics.shot_line(line[0])
+        extra = len(self._look_pending) - len(self.shots.pending)
+        if extra > 0:                                  # scored elsewhere (a new round cleared Shots): never resolved
+            del self._look_pending[:extra]
+        elif extra < 0:                                # more pending shots than entries: placeholders keep the order
+            self._look_pending[:0] = [None] * -extra
+
+    def _look_resolve(self, hits: int, misses: int, hurt: list, hp_before: dict, s) -> None:
+        """Shots scored this tick (Shots.update: one hit pops the oldest pending shot, then the expired ones are misses):
+        their look entries in the same order - 'hit:<kind of the foe hurt>' with its health change, or 'miss:<cause>'
+        from what the aim line met when it left the gun."""
+        for k in range(max(0, hits) + max(0, misses)):
+            if not self._look_pending:
+                break
+            shot = self._look_pending.pop(0)
+            if shot is None:
+                continue
+            if k < hits:
+                tid = shot["target"]["id"]
+                aimed = int(tid) if tid is not None and tid.lstrip("-").isdigit() else None
+                slot = aimed if aimed in hurt else (hurt[0] if hurt else None)
+                e = next((x for x in s.get("enemies") or () if x["slot"] == slot), None)
+                was = hp_before.get(slot)
+                delta = e["hp"] - was[0] if (e is not None and was and was[0] is not None
+                                             and e.get("hp") is not None) else None
+                outcome = f"hit:{self._foe_kind(e) if e is not None else 'foe'}"
+            else:
+                delta = None
+                outcome = "miss:" + {"wall": "wall", "floor": "floor", "off": "gun_down", "target": "no_damage"}.get(
+                    shot["dot_on"], "off_target" if shot["target"]["id"] is not None else "nothing")
+            self.look.resolve(shot, outcome, delta)
+            self.metrics.shot_result(outcome)
+
+    def _look_decide(self, act, p, s, now) -> None:
+        """What the bot does now and why (the look's decisions), whether it sits among foes (the idle streak), and
+        stats["look"] refreshed (LOOK_PUBLISH_S at most, LOOK_REFRESH_S at least)."""
+        keys = (act.get("hold") or set()) if isinstance(act, dict) else set()
+        tap = act.get("tap") if isinstance(act, dict) else None
+        phase, gate = self.stats.get("phase") or "", self.stats.get("fire_gate") or ""
+        operator = self.stats.get("operator_control") is True
+        px, pz = (p["pos"][0], p["pos"][2]) if p else (0.0, 0.0)
+        goal = self.goal or {}
+        gp = goal.get("pos")
+        to = (f"to {'a time bonus' if goal.get('item') or goal.get('shoot_since') is not None else 'its goal'} "
+              f"{math.hypot(gp[0] - px, gp[1] - pz) / 1000:.1f} m away") if gp else ""
+        if operator:
+            decision, reason = "operator", "the operator has the pad"
+        elif tap:
+            decision = f"press {tap}"
+            reason = ("pickup declined: infinite ammo" if tap == "b" and self.stats.get("pickups_declined") else
+                      self.stats.get("ram_action") or self.stats.get("continue_answer") or "a prompt is up")
+        elif "r" in keys:
+            decision = "fire" if gate.startswith("on him") else "hold fire" if gate.startswith("aim line") else "aim"
+            reason = self.stats.get("combat") or gate
+        elif "b" in keys and "down" in keys:
+            decision, reason = "quick turn", self.stats.get("combat") or "a foe behind him"
+        elif keys == {"down"}:
+            decision, reason = "step back", self.stats.get("combat") or "a target too low to aim at"
+        elif "up" in keys:
+            decision, reason = "run", to or self.stats.get("combat") or phase
+        elif keys & {"left", "right"}:
+            decision, reason = "turn", self.stats.get("combat") if phase == "fight" else (to or phase)
+        else:
+            decision, reason = "wait", self.stats.get("combat") if phase == "fight" else (to or "nothing to do")
+        self.look.record_decision(phase, decision, str(reason or ""))
+        if p:
+            foes = any(not threats_ram.dying(e) and not 0 < (e.get("hp_max") or 0) <= SMALL_HP
+                       and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < LOOK_FOES_R for e in s.get("enemies") or ())
+            last = self._look_pos
+            dt = now - last[0] if last is not None else 0.0
+            moving = last is not None and dt > 1e-3 and (math.hypot(px - last[1], pz - last[2]) / dt >= LOOK_BUSY_SPEED
+                                                         or abs(wrap(p["rot"] - last[3])) / dt >= LOOK_BUSY_TURN)
+            self._look_pos = (now, px, pz, p["rot"])
+            busy = (moving or now - self.shots.last_shot < LOOK_SHOT_S or bool(tap) or operator
+                    or (p.get("r") or (0,))[0] == 1)                  # (held / hit: the game has him, not a choice)
+            self.look.tick_idle(foes, busy, t=now)
+            self.metrics.idle_tick(min(dt, 1.0), foes and not busy)
+        if (self.look.version != self._look_ver and now - self._look_pub >= LOOK_PUBLISH_S) \
+                or now - self._look_pub >= LOOK_REFRESH_S:
+            self.stats["look"] = self.look.snapshot()
+            self._look_pub, self._look_ver = now, self.look.version
+
+    def _aim_turn(self, err: float, tol: float) -> set:
+        """R held; the aim slews onto the target (operator 2026-10-26: "raise his gun, aim it at the target, and shoot the
+        target" - not hunting across him): nothing inside AIM_DEADBAND x the shot's tolerance, the stick pulsed in
+        proportion inside AIM_PULSE (|err| / AIM_PULSE of the ticks), held beyond."""
+        keys = {"r"}
+        if abs(err) <= max(FIRE_TOL * 0.5, AIM_DEADBAND * tol):
+            self._aim_acc, self._aim_last = 1.0, 0                        # a fresh error gets the stick at once
+            return keys
+        if abs(err) < AIM_PULSE:
+            self._aim_acc = getattr(self, "_aim_acc", 1.0) + abs(err) / AIM_PULSE
+            if self._aim_acc < 1.0:
+                self._aim_last = 0
+                return keys
+            self._aim_acc -= 1.0
+        self._aim_last = 1 if err > 0 else -1
+        keys.add("left" if err > 0 else "right")
+        return keys
+
+    def _aim_metric(self, p, err, keys, tgt, now) -> None:
+        """The round's aim jitter (behavior_metrics): the error, the aim's angular speed, its stick, the target."""
+        last = getattr(self, "_aim_obs", None)
+        rate = None
+        if last is not None and 0.02 < now - last[0] < 0.3:
+            rate = abs(wrap(p.get("aim_rot", p["rot"]) - last[1])) / (now - last[0])
+        dt = now - last[0] if last is not None and now - last[0] < 0.3 else 0.0
+        self._aim_obs = (now, p.get("aim_rot", p["rot"]))
+        turn = 1 if "left" in keys else -1 if "right" in keys else 0
+        self.metrics.aim_tick(dt, err, rate, turn, tgt.get("slot"))
 
     def _pull(self, now, tgt) -> set:
         """The trigger: pressed for a moment, then let go, every PRESS_GAP while on target (a press while the gun is
@@ -1290,8 +1774,10 @@ class Bot:
         self._threats = threats
         self._last_enemies = s["enemies"]
         self._shot_seen(p, now)
+        self._look_shots(p, s, now)                                   # each new shot: its target, aim line, gate
         self._watch(p, s, threats, now)
         self._score(s, now)
+        self._shot_metrics(s, now)                                    # the shots this tick: on target? held? per class
         if s.get("hp") is not None and s["hp"] <= 0:                 # dead: say what did it, once per death (after the
             if not self._death_logged:                               # tracker saw this tick: the killing blow puts his
                 self._death_logged = True                            # routine at 1 and his health at 0 together)
@@ -1331,7 +1817,8 @@ class Bot:
             if t.kind in threats_ram.MELEE and t.dist < threats_ram.REACH.get(t.kind, 900.0) + 300.0 and late \
                     and not self._facing(p, t):                    # it lands first: out of its way - but one in
                 return self._evade(p, t, now)                      # front is still shot (running from him takes the
-            lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # quick turn: slower than the shot; a hit
+            t = self._locked(t, live, s)                           # the aim stays on its target unless t is about
+            lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # to hit (quick turn: slower than the shot; a hit
             tgt = self._as_target(t, lead)                         # staggers him)
             if t.kind in threats_ram.MELEE and t.eta < URGENT_BODY_S and t.dist < URGENT_BODY_R:
                 tgt["urgent"] = True                               # his swing lands first: any shot into his body
@@ -1347,13 +1834,54 @@ class Bot:
 
         def cost(t):                                           # near, and little to turn: a radian ~ TURN_COST units
             return t.dist + TURN_COST * abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"]))
-        small = lambda t: 0 < (t.enemy.get("hp_max") or 0) <= SMALL_HP           # a chicken: after every Ganado
-        near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R), key=lambda t: (small(t), cost(t)))
+        small = lambda t: 0 < (t.enemy.get("hp_max") or 0) <= SMALL_HP           # a chicken: after every Ganado, and
+        chickens = self._chicken_ok(s)                                           # only while his health is low
+        near = sorted((t for t in live if t.kind == "near" and t.dist < THREAT_R and (chickens or not small(t))),
+                      key=lambda t: (small(t), cost(t)))
         near += sorted((t for t in live if t.kind == "down" and t.dist < THREAT_R),   # knocked down: last - a downed
                        key=lambda t: (not t.boss, cost(t)))                            # boss before a downed Ganado
         if near:
-            return self._fight(p, self._as_target(near[0]), now, s)
+            return self._fight(p, self._as_target(self._locked(near[0], live, s)), now, s)
         return None
+
+    def _locked(self, t, live, s):
+        """The target the aim keeps (operator 2026-10-26: "he should basically raise his gun, aim it at the target, and
+        shoot the target, but instead he's waving the gun around"): the locked one while he is alive, on his feet or down,
+        in view and within ENGAGE (a chicken only while chickens are allowed) - unless t is about to hit (its attack lands
+        within LOCK_BREAK_S) and stands nearer: then t, locked from now (stats lock_breaks / lock_holds)."""
+        lk = self.lock
+        if lk is None or t.slot == lk:
+            self.lock = t.slot
+            return t
+        held = next((x for x in live if x.slot == lk and x.kind != "thrown"), None)
+        if held is None or threats_ram.dying(held.enemy) or held.dist >= ENGAGE \
+                or (0 < (held.enemy.get("hp_max") or 0) <= SMALL_HP and not self._chicken_ok(s)) \
+                or not self._sight(s["player"], (held.pos[0], held.pos[1] + HEAD_H, held.pos[2])):
+            self.lock = t.slot
+            return t
+        if t.kind not in ("near", "down") and t.eta < LOCK_BREAK_S and t.dist < held.dist:
+            self.stats["lock_breaks"] = self.stats.get("lock_breaks", 0) + 1
+            self.lock = t.slot
+            return t
+        self.stats["lock_holds"] = self.stats.get("lock_holds", 0) + 1
+        return held
+
+    def _shot_metrics(self, s, now) -> None:
+        """The shots the game fired since the last tick, credited to the decision that tick made (behavior_metrics): on
+        target or not, at a chicken or not; with the trigger held on target, the fire rate per weapon class. The flags
+        start the new tick clear (_fight sets them)."""
+        from .mercs.behavior_metrics import re4_weapon_class
+        n = self.shots.stats["shots"]
+        fired = n - getattr(self, "_shots_n", n)
+        self._shots_n = n
+        on, small = getattr(self, "_on_target", False), getattr(self, "_target_small", False)
+        for _ in range(max(0, min(fired, 60))):
+            self.metrics.shot(now, on, small)
+        dt = now - getattr(self, "_fire_at", now)
+        self.metrics.fire_tick(re4_weapon_class(s.get("weapon")), dt if 0.0 < dt < 0.3 else 0.0,
+                               getattr(self, "_fire_held", False), max(0, fired))
+        self._fire_at = now
+        self._on_target = self._fire_held = self._target_small = False
 
     def _boss_target(self, p, live):
         """The boss to fight now: the nearest one on his feet (kind chainsaw / boss, or in a known attack / hold) in
@@ -1416,9 +1944,12 @@ class Bot:
         Ganado that is not attacking: something stands between (live 2026-10-21: a water tank the level map's line of
         sight let through took a clip) - he is left for BLOCKED_SKIP_S, the next one taken."""
         before = self.shots.stats["misses"], self.shots.stats["hits"]
-        if self.shots.update(s["enemies"], now):
+        hp_before = dict(self.shots.hp)
+        hurt = self.shots.update(s["enemies"], now)
+        if hurt:
             self._hurt_at = now                               # a Ganado's health fell (the held trigger's proof)
         misses = self.shots.stats["misses"] - before[0]
+        self._look_resolve(self.shots.stats["hits"] - before[1], misses, hurt, hp_before, s)
         if self.shots.stats["hits"] > before[1]:
             self.miss_run = 0
             self.miss_by = {}
@@ -1606,12 +2137,39 @@ class Bot:
                 self.stats["vaults"] += 1
                 return {"tap": "a"}
             if len(way) > 1 and self._passed(p, way, d):
+                self.goal["leg_from"] = (w[0], w[1])
                 way.pop(0)
                 continue
             break
         w = way[0]
         self.r_since = None
-        return self._go(p, (w[0], w[1]), now)
+        a = self.goal.setdefault("leg_from", (px, pz))
+        self._lateral = _seg_dist((px, pz), a, (w[0], w[1]))             # off the planned leg (the round's weave)
+        target, last = self._lookahead(p, way)
+        return self._go(p, target, now, lookahead=not last)
+
+    def _lookahead(self, p, way) -> tuple:
+        """Where the run steers (pure pursuit; operator 2026-10-26: "progress down a path in a sine wave"): the point
+        LOOKAHEAD ahead along the planned path from Leon - along the leg to way[0] and on into the next legs while the
+        run to that point stays clear (_clear_run) - never past a vault / ladder waypoint (its press is there). (the point,
+        whether it is the path's last point)."""
+        px, _, pz = p["pos"]
+        left, prev = LOOKAHEAD, (px, pz)
+        for i, w in enumerate(way):
+            if len(w) > 2 and w[2] in ("vault", "ladder"):
+                return (w[0], w[1]), i == len(way) - 1
+            seg = math.hypot(w[0] - prev[0], w[1] - prev[1])
+            if seg >= left:
+                t = left / max(seg, 1e-6)
+                pt = (prev[0] + (w[0] - prev[0]) * t, prev[1] + (w[1] - prev[1]) * t)
+                if i == 0 or self._clear_run(p, pt):
+                    return pt, False
+                return (way[i - 1][0], way[i - 1][1]), False
+            if i > 0 and not self._clear_run(p, (w[0], w[1])):
+                return (way[i - 1][0], way[i - 1][1]), False
+            left -= seg
+            prev = (w[0], w[1])
+        return (way[-1][0], way[-1][1]), True
 
     def _passed(self, p, way, d) -> bool:
         """Is way[0] behind him: within ARRIVE, or - with the disc's map, looking ahead - the run to way[1] is already
@@ -1655,8 +2213,41 @@ class Bot:
         except Exception:                             # noqa: BLE001 - a bad read is no reason to hold a waypoint
             return True
 
-    def _go(self, p, goal_xz, now) -> dict:
+    def _steer(self, err: float) -> int:
+        """The running turn, damped (operator 2026-10-26: "a sine wave"): the heading keeps turning STEER_LAG_S after the
+        key is let go (the game's input lag and the turn's own ramp), so with the key held last tick that much comes off
+        the error first; inside STEER_DEADBAND nothing; inside STEER_PULSE the key in proportion (|err| / STEER_PULSE of
+        the ticks, an accumulator); beyond, held. +1 left, -1 right, 0 none."""
+        last = getattr(self, "_steer_last", 0)
+        pred = err - last * getattr(self, "run_turn_rate", TURN_RATE * 0.7) * STEER_LAG_S
+        if last and pred * err < 0:
+            pred = 0.0                                                    # the turn under way carries him there: coast
+        if abs(pred) <= STEER_DEADBAND:
+            self._steer_acc, turn = 1.0, 0                                # a fresh error gets the key at once
+        elif abs(pred) < STEER_PULSE:
+            self._steer_acc = getattr(self, "_steer_acc", 1.0) + abs(pred) / STEER_PULSE
+            turn = 0
+            if self._steer_acc >= 1.0:
+                self._steer_acc -= 1.0
+                turn = 1 if pred > 0 else -1
+        else:
+            self._steer_acc, turn = 0.0, (1 if pred > 0 else -1)
+        if turn and turn == -getattr(self, "_steer_dir", 0) and abs(pred) < STEER_REVERSE:
+            turn = 0                                                      # no flip-flop: the other way only for a real error
+        if turn:
+            self._steer_dir = turn
+        self._steer_last = turn
+        return turn
+
+    def _go(self, p, goal_xz, now, lookahead: bool = False) -> dict:
         px, py, pz = p["pos"]
+        obs = getattr(self, "_steer_obs", None)                           # the running turn rate the runs measure
+        if obs is not None and obs[2] and 0.02 < now - obs[0] < 0.3:
+            rate = abs(wrap(p["rot"] - obs[1])) / (now - obs[0])
+            if 0.3 < rate < 8.0:
+                self.run_turn_rate = 0.85 * getattr(self, "run_turn_rate", TURN_RATE * 0.7) + 0.15 * rate
+                self.stats["run_turn_rate"] = round(self.run_turn_rate, 2)
+        self._steer_obs = None
         if self.unstick and now < self.unstick["until"]:
             self._go_at, self._ran = now, self.unstick["stage"] == "detour"
             if self.unstick["stage"] == "detour":
@@ -1685,6 +2276,11 @@ class Bot:
                     self.goal["path"] = self._path((px, py, pz), self.goal["pos"])
                     self.stats["replans"] += 1
                     replanned = len(self.goal["path"])
+            take = self.stats.get("ram_action") == "TAKE" or (self.knowledge is not None
+                                                              and self.knowledge.near_ammo_spot(px, pz))
+            if self.stuck_n == 1 and take:
+                self.stuck_n = 2                                          # A here takes the item at his feet (ammo:
+                self.stats["vaults_skipped_for_pickup"] = self.stats.get("vaults_skipped_for_pickup", 0) + 1   # never)
             if self.stuck_n == 1:
                 self.stats["vaults"] += 1
                 act, action = {"tap": "a"}, "vault"                       # a fence / window: JUMP OVER
@@ -1698,9 +2294,13 @@ class Bot:
                 self.stats["detours"] += 1
                 act, action = {"hold": {"up", "b", "left" if self.detour_dir > 0 else "right"}}, "detour"
             self._stuck_event(p, now, goal_xz, cells, action, replanned)
+            pid = self.metrics.portal_bump(list(self.portals.items()), (px, pz))   # a doorway bumped (the round map)
+            if pid is not None and self.knowledge is not None:
+                self.knowledge.portal(*self.portals[pid], bumps=1)
             if self.learned is not None and self._new_walls >= WALLS_PER_SAVE:   # a crash mid-round keeps what he learned
                 self.save()
             self._ran = action == "detour"
+            self.metrics.run_break()
             return act
         if span >= STUCK_S and moved > 3 * STUCK_MOVE:
             self.stuck_n = 0                                              # running freely again
@@ -1708,8 +2308,8 @@ class Bot:
             self.learned.walk(px, pz)
             self.stats["learned_floor_cells"] = len(self.learned.walked)
             goal_xz = self._around(p, goal_xz, now)                       # a learned wall on the straight line: round it
-        final = getattr(self, "_detour", None) is None                   # the goal itself, not a corner on the way
-        gx, gz = goal_xz
+        final = not lookahead and getattr(self, "_detour", None) is None   # the goal itself, not a corner / a pursuit
+        gx, gz = goal_xz                                                    # point on the way
         self.go_target = (gx, gz)                                        # where this run steers (a corner or the goal)
         err = wrap(heading(gx - px, gz - pz) - p["rot"])
         if self._circling(p, (gx, gz), now):
@@ -1717,17 +2317,26 @@ class Bot:
                 self._ran = False
                 return {"hold": set()}
         keys = {"up", "b"}
-        if err > TURN_TOL / 2:
-            keys.add("left")
-        elif err < -TURN_TOL / 2:
-            keys.add("right")
+        turn = self._steer(err)                                          # damped, in proportion (no limit cycle)
+        if turn:
+            keys.add("left" if turn > 0 else "right")
         # inside his turning circle (radius ORBIT_R / 2): running while turning can never reach it, only orbit it
         inside = final and abs(err) > ORBIT_ERR and math.hypot(gx - px, gz - pz) < ORBIT_R * math.sin(min(abs(err), 1.57))
         if self.turn_first and abs(err) < TURN_TOL:
             self.turn_first = False
         if abs(err) > 1.6 or self.turn_first or inside:                  # behind him, circling, or inside his
             keys -= {"up", "b"}                                                     # turning circle: turn on the spot
+            keys -= {"left", "right"}
+            keys.add("left" if err > 0 else "right")
+            self._steer_last, self._steer_acc = 0, 0.0
         self._ran = "up" in keys
+        dt = now - getattr(self, "_run_at", -math.inf)
+        if self._ran and 0.0 < dt < 0.3:                                 # the round's weave (behavior_metrics)
+            self.metrics.run_tick(dt, getattr(self, "_lateral", None), turn if "up" in keys else 0)
+        elif not self._ran:
+            self.metrics.run_break()
+        self._run_at, self._lateral = now, None
+        self._steer_obs = (now, p["rot"], bool(self._ran and turn))
         return {"hold": keys}
 
     def _circling(self, p, goal_xz, now) -> bool:
@@ -1881,6 +2490,8 @@ class Bot:
         self.trace = RoundTrace(out, "G4BE08", room, round_id, CELL)
         self.trace.auditor = lambda summary, trace: self.audit.finish(summary, trace, self.stats)
         self.audit.start(self.stats)
+        self.metrics.reset()                          # this round's weave, aim, doorways, pickups, fire rate
+        self.lock, self.hp_best, self._items_seen = None, 0, {}
         self.rapid = {"mode": "hold", "since": None, "shots": 0, "hits": 0}   # each round proves its own trigger
         self.stats.pop("trigger_mode", None)
 
@@ -1893,13 +2504,26 @@ class Bot:
             if trace.out_dir is not None:
                 trace.out_dir = trace.out_dir.parent / trace.room
         lo = self.stats.get("round_loadout")
+        behavior = self.metrics.summary()
+        if self.knowledge is not None:                # what this round taught the stage (kept across runs)
+            for row in behavior["portals"]:
+                if row["passes"]:
+                    self.knowledge.portal(*row["pos"], passes=row["passes"])
+            for row in behavior["bonuses_passed_at"]:
+                self.knowledge.bonus(*row["at"], taken=False)
+            self.knowledge.round_played()
+        self.stats["behavior"] = {k: behavior[k] for k in ("path", "aim", "portal_passes", "portal_bumps", "pickups",
+                                                           "bonuses_passed", "chicken_shots", "fire_rate")}
         trace.annex.update(character=self.stats.get("character"), character_source=self.stats.get("character_source"),
                            round_loadout=lo if isinstance(lo, dict) else None,
                            trigger_mode=self.stats.get("trigger_mode"),
-                           impact_lessons=self.impacts.summary(trace.room))
+                           impact_lessons=self.impacts.summary(trace.room), behavior=behavior,
+                           stage_knowledge=self.knowledge.summary() if self.knowledge is not None else None)
         lm = self.learned
         summary = trace.finish(lm.walked if lm else (), lm.blocked if lm else ())
         self.impacts.save()
+        if self.knowledge is not None:                # the stage's lessons survive a crash / hot reload mid-run
+            self.knowledge.save()
         if summary:
             self.stats["last_round_map"] = (summary.get("files") or [None])[-1]
             self.stats["last_round_verdict"] = summary.get("verdict")
@@ -1915,10 +2539,11 @@ class Bot:
         px, py, pz = p["pos"]
         deg = round(math.degrees(p["rot"])) % 360
         room = f"r{self.room:03x}" if self.room is not None else "?"
+        goal = (self.goal or {}).get("pos") or goal_xz                  # the goal itself; where the run steered: "steer"
         ev = {"at": round(now, 2), "pos": [round(px), round(py), round(pz)], "rot": round(p["rot"], 3),
               "heading_deg": deg, "cell": list(cells[0]) if cells else None, "cells": [list(k) for k in cells],
-              "room": room, "goal": [round(g) for g in goal_xz], "action": action, "replanned": replanned,
-              "stuck_n": self.stuck_n}
+              "room": room, "goal": [round(g) for g in goal[:2]], "steer": [round(g) for g in goal_xz],
+              "action": action, "replanned": replanned, "stuck_n": self.stuck_n}
         self.stuck_log.append(ev)
         del self.stuck_log[:-STUCK_LOG_MAX]
         if getattr(self, "trace", None) is not None:
@@ -1969,7 +2594,88 @@ class Bot:
         turning = (keys & {"left", "right"}) and not (keys & {"r", "up", "down", "b"}) and len(keys & {"left", "right"}) == 1
         self._turn_obs = (now, p["rot"], bool(turning)) if p else None
         self._doing = f"{self.stats.get('phase')}: {self.stats.get('combat') or ''}"[:80]   # what a hit next tick interrupted
+        try:
+            self._look_decide(act, p, s, now)                            # stats["look"]: "look at the bot"
+        except Exception as exc:                      # noqa: BLE001 - the view never stops the bot
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        if self.r_since is not None:                                     # the gun up / down (behavior_metrics: the time
+            self.metrics.raise_gun(self.r_since)                         # from raising it to its first shot)
+        else:
+            self.metrics.lower_gun()
         return act
+
+    def _dialog_answer(self, p, now) -> str:
+        """A prompt stopped the clock ("Take the Handgun Ammo?"): Yes (A) only while he is taking a time bonus hourglass
+        (its item goal at hand); every other pickup No (B) - infinite ammo is on (operator 2026-10-26: "They should just
+        ignore ammo in Resident Evil Four"; the old answer was always A, so every A that opened a pickup took it); B too
+        once a dialog has been up 6 s (one A does not close)."""
+        h = (self.goal or {}).get("item")
+        px, _, pz = p["pos"]
+        taking = h is not None and math.hypot(h["stand"][0] - px, h["stand"][2] - pz) < 2 * TAKE_R
+        if taking and now - self.timer_since <= 6:
+            return "a"
+        if not taking:
+            self.stats["pickups_declined"] = self.stats.get("pickups_declined", 0) + 1
+        return "b"
+
+    def _chicken_ok(self, s) -> bool:
+        """A small animal (a chicken: its eggs heal) is a target only while his health is under CHICKEN_HP of its best
+        this round (operator 2026-10-26: "if he's going to shoot these chickens, he's going to need to aim at these
+        chickens")."""
+        hp = s.get("hp")
+        return isinstance(hp, (int, float)) and self.hp_best > 0 and hp < CHICKEN_HP * self.hp_best
+
+    def _bonus_detour(self, p, now) -> None:
+        """A time bonus the route passes by (operator 2026-10-26: "walk past time bonuses"): one within BONUS_DETOUR_R
+        whose planned path is at most BONUS_DETOUR_X the straight line (and climbs no ladder) is taken before the tour's
+        next one; looked for every BONUS_DETOUR_EVERY_S (stats bonus_detours)."""
+        if len(self.items) < 2 or now - self._bonus_detour_at < BONUS_DETOUR_EVERY_S:
+            return
+        self._bonus_detour_at = now
+        px, py, pz = p["pos"]
+        best = None
+        for h in self.items[1:]:
+            sx, sy, sz = h["stand"]
+            d = math.hypot(sx - px, sz - pz)
+            if d >= BONUS_DETOUR_R or (best is not None and d >= best[0]):
+                continue
+            way = self._path((px, py, pz), (sx, sy, sz))
+            if not way or any(len(w) > 2 and w[2] == "ladder" for w in way):
+                continue
+            pts = [(px, pz)] + [(w[0], w[1]) for w in way]
+            if sum(math.dist(a, b) for a, b in zip(pts, pts[1:])) <= BONUS_DETOUR_X * max(d, 1.0) + 300.0:
+                best = (d, h)
+        if best is not None and best[1] is not self.items[0]:
+            self.items.remove(best[1])
+            self.items.insert(0, best[1])
+            self.goal = None
+            self.stats["bonus_detours"] = self.stats.get("bonus_detours", 0) + 1
+
+    def _scan_items(self, p, now) -> None:
+        """Every ITEM_SCAN_S the room's items from RAM (re4_ram_prompts.items_from_ram): one that was there to take and
+        is gone while he stood within 2 m of it was picked up (the round map's pickups by kind; an ammo pickup also
+        teaches the stage its spot: no blind A there next time); the time bonuses still standing feed the passed-by count."""
+        if re4_ram_prompts is None or now - self._items_at < ITEM_SCAN_S:
+            return
+        self._items_at = now
+        try:
+            rows = re4_ram_prompts.items_from_ram(self.m)
+        except Exception:                                 # noqa: BLE001 - no item table this tick
+            return
+        from .mercs.behavior_metrics import RE4_TIME_BONUS, re4_item_kind
+        px, _, pz = p["pos"]
+        cur = {r["addr"]: (r.get("item_id"), tuple(r.get("pos") or (0.0, 0.0, 0.0)), bool(r.get("enabled")))
+               for r in rows if r.get("item_id") is not None}
+        for addr, (iid, pos, enabled) in self._items_seen.items():
+            row = cur.get(addr)
+            if enabled and (row is None or not row[2] or row[0] != iid) and math.hypot(pos[0] - px, pos[2] - pz) < 2000.0:
+                kind = re4_item_kind(iid)
+                self.metrics.pickup(kind, iid, (pos[0], pos[2]))
+                if kind == "ammo" and self.knowledge is not None:
+                    self.knowledge.ammo_spot(pos[0], pos[2])
+        self._items_seen = cur
+        self.metrics.bonus_tick((px, pz), [(f"{a:#x}", (pos[0], pos[2])) for a, (iid, pos, en) in cur.items()
+                                           if en and iid == RE4_TIME_BONUS])
 
     def _continue_answer(self) -> dict:
         """'You Are Dead': No (D-pad right, then A) - back through Select Player, where the menus draw a new character
@@ -1998,6 +2704,10 @@ class Bot:
             return {"hold": set()}
         self._round(s["room"])
         self._raycast_fan(p, now)
+        if isinstance(s.get("hp"), (int, float)):
+            self.hp_best = max(self.hp_best, s["hp"])
+        self._scan_items(p, now)                                          # pickups / time bonuses passed (the round map)
+        self.metrics.portal_tick(list(self.portals.items()), (p["pos"][0], p["pos"][2]))
         if s["timer"] != self.last_timer:
             if self.last_timer is not None and self.last_timer > 1 and 5 < s["timer"] - self.last_timer < BONUS_MAX and self.bonus:   # a time bonus (not the next round's clock)
                 px, _, pz = p["pos"]
@@ -2012,6 +2722,8 @@ class Bot:
                 got = min(pool, key=lambda h: (h["stand"][0] - px) ** 2 + (h["stand"][2] - pz) ** 2)
                 (self.items if got in self.items else self.combos).remove(got)
                 self.stats["time_bonus"] += 1
+                if self.knowledge is not None:
+                    self.knowledge.bonus(got["stand"][0], got["stand"][2], taken=True)
                 self.goal = None
             self.last_timer, self.timer_since = s["timer"], now
             self.dead = False
@@ -2022,7 +2734,7 @@ class Bot:
                     self.dead, self.dead_no = True, False
                     self.stats["deaths"] = self.stats.get("deaths", 0) + 1
                 return self._continue_answer()
-            return {"tap": "b" if now - self.timer_since > 6 else "a"}
+            return {"tap": self._dialog_answer(p, now)}
         self._stalemate_watch(s, p, now)                                  # no Ganados for a while: the clock is cut
         px, _, pz = p["pos"]
         act = self._combat(p, s, now)                                     # attacks, thrown weapons, a Ganado on him:
@@ -2031,7 +2743,9 @@ class Bot:
         act = self._ladder_descent(p, now)                                # up a ladder (the clock tower): down it first
         if act is not None:
             return act
-        pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now and not threats_ram.dying(e)]
+        chickens = self._chicken_ok(s)                                    # a small animal: only when his health is low
+        pool = [e for e in s["enemies"] if self.skip.get(e["slot"], float("-inf")) < now and not threats_ram.dying(e)
+                and (chickens or not 0 < (e.get("hp_max") or 0) <= SMALL_HP)]
         near = min(pool, key=lambda e: (e["pos"][0] - px) ** 2 + (e["pos"][2] - pz) ** 2) if pool else None
         dist = math.hypot(near["pos"][0] - px, near["pos"][2] - pz) if near else None
         order = self._operator(p, s, near, dist, now)                     # the operator's instant command, if any
@@ -2043,7 +2757,12 @@ class Bot:
             if math.hypot(c["stand"][0] - px, c["stand"][2] - pz) < 2 * COMBO_NEAR:
                 return self._take(p, c, now, self.combos)
         pending = bool(self.items or self.bonus)                          # time bonuses still on the field
+        held = next((e for e in pool if e["slot"] == self.lock), None) if self.lock is not None else None
+        if held is not None and held is not near and self._sight(p, (held["pos"][0], held["pos"][1] + HEAD_H, held["pos"][2])):
+            near, dist = held, math.hypot(held["pos"][0] - px, held["pos"][2] - pz)   # the aim keeps its target
         seen = bool(near) and self._sight(p, (near["pos"][0], near["pos"][1] + HEAD_H, near["pos"][2]))
+        if near is not None:
+            self.lock = near["slot"] if seen and dist < ENGAGE else self.lock
         if near and dist < ENGAGE and (seen if not pending else seen and dist < BONUS_FIGHT_R):
             return self._fight(p, near, now, s)                           # in view (and, with bonuses left, close)
         if self.st is not None:
@@ -2054,6 +2773,7 @@ class Bot:
                 except Exception:                     # noqa: BLE001
                     pass
                 self.ordered = True
+            self._bonus_detour(p, now)                                     # one the route passes by: now (cheap)
             if self.items:
                 return self._take(p, self.items[0], now, self.items)
         if self.bonus:                                                    # the time bonuses, nearest first
@@ -2080,9 +2800,13 @@ class Bot:
                 return {"hold": {"r", "a"} | (self._turn(err, aiming=True) - {"r"}) | height}
             way = self.goal["path"]
             while len(way) > 1 and self._passed(p, way, math.hypot(way[0][0] - px, way[0][1] - pz)):
+                self.goal["leg_from"] = (way[0][0], way[0][1])
                 way.pop(0)
             self.r_since = None
-            return self._go(p, way[0], now)
+            a = self.goal.setdefault("leg_from", (px, pz))
+            self._lateral = _seg_dist((px, pz), a, (way[0][0], way[0][1]))
+            target, last = self._lookahead(p, way)
+            return self._go(p, target, now, lookahead=not last)
         if near:                                                          # nothing in view: navigate to them, no shots
             self.r_since = None
             return self._go(p, (near["pos"][0], near["pos"][2]), now)

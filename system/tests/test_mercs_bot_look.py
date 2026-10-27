@@ -109,3 +109,32 @@ def test_the_snapshot_is_a_copy_the_server_can_hold():
     snap["shots"][0]["target"]["id"] = "changed"
     assert snap["shots"][0]["outcome"] == "unknown"                       # taken before the result
     assert look.snapshot()["shots"][0]["target"]["id"] == "1" and look.snapshot()["shots"][0]["outcome"] == "miss:no_damage"
+
+
+def test_the_worker_telemetry_carries_stats_look_and_only_within_its_bound(monkeypatch):
+    """The watch panel / "look at the bot" read the autoplay telemetry: stats["look"] goes with the scalar stats (other
+    dict stats stay out, as before); a look that would not fit the bound is left out, never the whole packet."""
+    from types import SimpleNamespace
+    from gbox import tools
+    threads, packets = [], []
+
+    class Thread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(tools.threading, "Thread", Thread)
+    monkeypatch.setattr(tools.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tools, "_ap_headers", lambda ctx: {})
+    monkeypatch.setattr(tools.httpx, "post", lambda *a, **kw: packets.append(kw["json"]))
+    look = L.BotLook(epoch=lambda: 3.0)
+    look.record_shot("Handgun (0x23)", "on him", L.make_target(1, "ganado", 2.0, 4.0), 0.5, "wall", "miss:wall")
+    live = {"phase": "fight", "look": look.snapshot(), "round_audit": {"verdict": "OK"}}
+    tools._telemetry({"sid": "s1", "live": live}, SimpleNamespace(server="http://test", job_id="j"))
+    threads[0].target()                                                   # the run is over: its last packet
+    assert packets[-1]["stats"] == {"phase": "fight", "look": live["look"]}
+    live["look"] = dict(live["look"], decisions=[{"t": 1.0, "phase": "x", "decision": "y", "reason": "z" * 50_000}])
+    assert "look" not in tools._telemetry_blocks(live)
