@@ -1,7 +1,7 @@
 """Each Mercenaries round's route on a 2D map: where the time went, and whether that was a wall."""
 import json
 
-from gbox.mercs.round_map import RoundTrace
+from gbox.mercs.round_map import RoundTrace, svg
 from gbox import re4_merc_bot as B
 
 
@@ -55,6 +55,25 @@ def test_re5_bot_writes_a_round_map_with_code_locations(tmp_path):
     bot = R.Bot(learn_dir=tmp_path / "lessons", clock=lambda: 0.0)
     m = __import__("gbox.mercs.round_map", fromlist=["code_map"]).code_map(R.PHASE_CODE, R.Bot, R.re5_combat.Combat)
     assert m["leave_proximity_bomb"].startswith("re5_ps3.py:") and "Bot._mine_retreat" in m["leave_proximity_bomb"]
+
+
+def test_the_last_shots_are_drawn_on_the_round_map():
+    t = RoundTrace(None, "BLUS30491", "Village", "e" * 32, 400.0)
+    now, shots = 0.0, 0
+    for i in range(12):
+        if i % 2:                                          # odd steps fire a shot; its result flips with i
+            shots += 1
+            res = "miss: the ray passed him" if i % 4 else "hit"
+        else:
+            res = "hit"
+        t.add(now, 100.0 + i, 0.0, state={"shots": shots, "combat": f"yaw +{i} pitch -1 FIRE",
+                                          "fire_gate": "threat: blasting", "last_shot": res})
+        now += 0.3
+    s = t.summary()
+    out = svg(t, s)
+    assert "shot 2 @0.9s yaw +3 pitch -1 FIRE" in out        # the shot's line, with its aim at the moment it fired
+    assert "miss: the ray passed him" in out
+    assert out.count("shot ") == len(s["last_shots"])
 
 
 def test_the_last_shots_carry_the_aim_the_gate_and_the_result():

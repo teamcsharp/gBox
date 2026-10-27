@@ -179,8 +179,8 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
     W, H = (x1 - x0) * scale, (z1 - z0) * scale
     X = lambda x: (x - x0) * scale
     Z = lambda z: (z1 - z) * scale                       # +z up the page
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + 60:.0f}" '
-           f'viewBox="0 0 {W:.0f} {H + 60:.0f}" font-family="sans-serif" font-size="13">',
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + 60 + 16 * len((s.get("last_shots") or ())[-SHOTS_KEPT:]):.0f}" '
+           f'viewBox="0 0 {W:.0f} {H + 60 + 16 * len((s.get("last_shots") or ())[-SHOTS_KEPT:]):.0f}" font-family="sans-serif" font-size="13">',
            f'<rect width="100%" height="100%" fill="#0e1116"/>']
     for k in walked:
         out.append(f'<rect x="{X(k[0] * c):.1f}" y="{Z((k[1] + 1) * c):.1f}" width="{c * scale:.1f}" height="{c * scale:.1f}" fill="#2a2f38"/>')
@@ -212,6 +212,15 @@ def svg(trace: RoundTrace, s: dict, walked=(), blocked=()) -> str:
              f'{s["cells_visited"]} cells, {s["stuck_events"]} stuck' + (f' - {s["verdict"]}' if s["verdict"] else ""))
     out.append(f'<text x="8" y="{H + 22:.0f}" fill="#e6e6e6">{_esc(label)}</text>')
     out.append(f'<text x="8" y="{H + 44:.0f}" fill="#9aa0a6">green start, white end, blue route, orange time spent, red learned wall, black stuck, yellow ring standing still (red: on a mine)</text>')
+    y = H + 66
+    for sh in (s.get("last_shots") or ())[-SHOTS_KEPT:]:
+        col = "#3ddc84" if (sh.get("last_shot") or "").startswith("hit") else "#ff6655"
+        aim = _esc(str(sh.get("combat") or ""))
+        gate = _esc(str(sh.get("fire_gate") or ""))
+        res = _esc(str(sh.get("last_shot") or ""))
+        out.append(f'<text x="8" y="{y:.0f}" fill="{col}" font-size="11">'
+                   f'shot {sh.get("shots")} @{sh.get("t")}s {aim} | {gate} | {res}</text>')
+        y += 16
     return "".join(out) + "</svg>"
 
 
