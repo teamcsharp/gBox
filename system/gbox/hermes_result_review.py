@@ -276,7 +276,7 @@ DEFAULT_PROXY_URL = 'http://127.0.0.1:8765/api/llm/local/v1'
 LOCAL_REVIEW_TIMEOUT_S = 1500   # a saturated local pool queues the call (proxy queue_wait_s 900) before a long prefill
 
 
-def _local_from_toml(hermes_local) -> dict | None:
+def _local_from_toml(hermes_local, pinned: str = '') -> dict | None:
     """The local reviewer from gbox.toml and local-nodes.json without the typed configuration (Hermes's own
     interpreter has no pydantic). Mirrors hermes_pool.node_settings: node rows inherit [hermes.local], the
     operator's switches in local-nodes.json override enabled/model/max_parallel_jobs, maintenance disables."""
@@ -303,6 +303,7 @@ def _local_from_toml(hermes_local) -> dict | None:
             row['enabled'] = False
         rows.append(row)
     enabled = [r for r in rows if r.get('enabled', True)]
+    enabled = [r for r in enabled if r['host_name'] == pinned] or enabled     # the policy's node, when it is on
     pick = (max(enabled, key=lambda r: (bool(r.get('allow_large_tasks')), int(r.get('max_parallel_jobs') or 1)))
             if enabled else base | {'host_name': base.get('host_name', 'lilspark'),
                                     'proxy_url': base.get('proxy_url') or DEFAULT_PROXY_URL})
@@ -323,25 +324,35 @@ def _local_only_flag(hermes_local) -> bool:
 def reviewer() -> dict:
     """Who reviews: DeepSeek (paid) unless the operator set Hermes to local only, then the local route through
     gBox's proxy, preferring the dedicated node that takes large tasks. A review must never wait for cloud credit
-    the operator has chosen not to use. Works under Hermes's own interpreter (no pydantic/fastapi) as well."""
+    the operator has chosen not to use. Works under Hermes's own interpreter (no pydantic/fastapi) as well.
+    The review policy's "reviewer" (result-review.json) pins it with paid routes still on for the tasks: "local" (the
+    local route above) or a node name ("sparkDeux", "kimi"); unset or "cloud" keeps the rule above (2026-10-27:
+    DeepSeek's credit ran out, every review failed and no Hermes PR merged after 10-26 17:58)."""
     cloud = dict(CLOUD_REVIEWER)
     try:
+        pinned = str(config().get('reviewer') or 'cloud')
+    except (OSError, ValueError):
+        pinned = 'cloud'
+    node = '' if pinned in ('cloud', 'local') else pinned
+    try:
         from . import hermes_local
-        try:
-            only = hermes_local.local_only()
-        except ImportError:
-            only = _local_only_flag(hermes_local)
-        if not only:
-            return cloud
+        if pinned == 'cloud':
+            try:
+                only = hermes_local.local_only()
+            except ImportError:
+                only = _local_only_flag(hermes_local)
+            if not only:
+                return cloud
         try:
             from . import hermes_pool
             nodes = [n for n in hermes_pool.node_settings().values() if n.enabled]
+            nodes = [n for n in nodes if n.host_name == node] or nodes          # the policy's node, when it is on
             s = max(nodes, key=lambda n: (n.allow_large_tasks, n.max_parallel_jobs)) if nodes else hermes_local.settings()
             proxy_url = s.proxy_url or hermes_local.settings().proxy_url or DEFAULT_PROXY_URL
             return {'provider': s.provider, 'model': s.model, 'local': True, 'label': 'Local (' + s.host_name + ')',
                     'proxy_url': proxy_url}
         except ImportError:
-            return _local_from_toml(hermes_local) or cloud
+            return _local_from_toml(hermes_local, node) or cloud
     except Exception:  # noqa: BLE001 - a broken local configuration falls back to the paid reviewer
         return cloud
 
