@@ -162,9 +162,41 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
     failed = mercs_bot.apply_ops(ad, [("infinite_ammo", {"on": True}), ("fire_rate", {"multiplier": 80})], prof)
     assert failed == [] and flag(g, 0x02) == 1 and SM.ORIG[id(ad)]["fire_rate"] == 80.0
     assert mercs_bot.apply_ops(ad, [("nonsense", {})], prof) == ["nonsense: re5_switch_mods: unknown op 'nonsense' "
-                                                                 "(status, infinite_ammo, fire_rate, revert_all)"]
+                                                                 "(status, infinite_ammo, fire_rate, infinite_spray, "
+                                                                 "revert_all)"]
 
 
 def test_the_profile_turns_both_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
     assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}]]
+
+
+def put_slot(g, k, idw, rounds, grid, hand=0):
+    slot = player(g) + R.P_INV + R.INV_SLOT * k
+    g.put(slot + R.INV_ID, struct.pack("<I", idw))
+    g.put(slot + R.INV_ROUNDS, struct.pack("<ii", rounds, rounds))
+    g.put(slot + R.INV_GRID, struct.pack("<ii", grid, hand))
+    return slot
+
+
+def test_infinite_spray_writes_the_round_s_spray_back_into_its_emptied_slot_only():
+    g = weapon_guest()
+    ad = Adapter(g)
+    put_slot(g, 0, 0x102, 50, 3, hand=1)
+    slot = put_slot(g, 2, SM.SPRAY_ID, 1, 7, hand=1)                   # in hand when first seen
+    assert SM.run(ad, "auto_first_aid", on=True)["infinite_spray"] is True
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0                # kept, nothing written
+    put_slot(g, 2, 0, 0, 0)                                            # used up: the slot empties
+    out = SM.maintain(ad, R.snapshot(g))
+    assert out["writes"] == 1 and out["spray_restored"] is True
+    inv = {s["slot"]: s for s in R.snapshot(g)["inventory"]}
+    assert inv[2]["id"] == SM.SPRAY_ID and inv[2]["rounds"] == 1 and inv[2]["grid"] == 7 and inv[2]["hand"] is False
+    put_slot(g, 2, 0x305, 1, 7)                                        # the slot holds a herb now: never written over
+    n = len(ad.writes)
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0 and len(ad.writes) == n
+    other = R.snapshot(g)
+    other["player"] = dict(other["player"], ptr=other["player"]["ptr"] + 0x10000)
+    put_slot(g, 2, 0, 0, 0)
+    assert SM.maintain(ad, other)["writes"] == 0                       # another round's player: nothing
+    SM.run(ad, "infinite_spray", on=False)
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0

@@ -195,6 +195,36 @@ The bot counts the replay as the next round: stats rounds +1, deaths_continued, 
 new _round_started marker for the engine, on the first tick alive with the clock within 3 s of its full time (a time
 bonus raising the clock is not a new round).
 
+## Survival (2026-10-27)
+
+**Baseline**, from the first MercMode RE5 Switch turn (22:46-22:58, the round notebook
+`mercs/curriculum/010018100CD46000/rounds.jsonl`): 6 rounds, of which 5 were deaths and 1 completed (0.83 deaths a round).
+Time alive in a death round, as 120 s minus the clock left (a floor, since time bonuses add): 81, 95, 72, 89, 93 s
+(mean 86 s). Kills a round 7-14 (mean 10.7), score mean 3,617; up to 7 holds and 4 dying episodes in a round; 18-28
+back-offs a round. Most deaths came swarmed.
+
+- **Crowd control** (live in the bot):
+  - A ring is 3 or more Majini within 3 m whose bearings leave no 150 deg gap. The bot runs out through the widest gap
+    for 1.2 s (left stick forward + B; B with the stick back is the quick turn), at most every 4 s, quick-turning first
+    when the gap is behind him.
+  - A crowd in front is 2 or more within 2.2 m inside 60 deg of his facing. The bot fires a 0.8 s burst, then lowers
+    the gun and backs off for 0.5 s (he cannot move while aiming), then fires the next burst; the rapid fire makes a
+    burst count.
+  - A back-off under way always finishes.
+- **Healing** (built, behind `HEAL_ENABLED`, off): the PS3 bot's rules. A heal starts below 40 % health with no Majini
+  within 4 m, or below 25 % anyway. The First Aid Spray (0x304) or a herb (0x305, 0x307, 0x309) comes up from its D-pad
+  slot (grid 1 / 3 / 5 / 7 = up / left / right / down), and `HEAL_USE_KEY` (Y, the PS3's Square by position) uses it,
+  every 0.35 s, for at most 4 s. It counts as done when the item's count falls or health rises by 50, then the gun
+  comes back from its slot. It stays off until a live run confirms the button: a wrong one would cost 4 s a try at
+  low health. The probe (Y, then ZL + ZR, then A; never X, the inventory) aborted twice on CPU (the Spark at 92-93 %
+  from other services).
+- **Infinite spray** (`re5_switch_mods` op `infinite_spray`, not in the profile yet): it keeps the round's own spray
+  slot record (in-hand cleared) and writes it back into that slot once the slot is empty or holds a spray of count 0,
+  never over another item. It waits for the same live run, which shows what a used-up slot looks like.
+- **A fix from #1253**: after each Continue Yes, the notebook got a phantom "ended" row (clock 119.9, no kills) about
+  22 s later. The engine already opens the replay's round when the death closes the old one; the bot then moved its
+  `_round_started` marker, so the engine closed and reopened it. The marker is now set once per bot.
+
 ## The RomFS: player models (for LayeredFS builds, docs/switch-mods.md)
 
 The program NCA (15af72f2..., 20.0 GB) holds the RomFS under `nativeNXx64/`. Each player costume is one MT Framework

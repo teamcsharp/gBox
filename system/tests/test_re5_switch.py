@@ -443,12 +443,12 @@ def test_a_replay_after_continue_yes_counts_as_the_next_round():
     clock[0] = 20.0
     b.tick(alive(119.6))                                                      # the replay's first tick: a full clock
     assert b.stats["rounds"] == 1 and b.stats["deaths_continued"] == 1 and b.stats["round_start_via"] == "dead/retry"
-    assert b._round_started == 20.0 != first                                 # the engine sees a new round
+    assert b._round_started == first        # set once: the death closed the round, the engine opens the replay's own
     clock[0] = 30.0
     b.tick(dict(bot_snap(hp=0), continue_cursor=None))                       # a death whose answer is not seen ...
     clock[0] = 40.0
     b.tick(alive(60.0))                                                       # ... and a clock far from full: no count
-    assert b.stats["rounds"] == 1 and b._round_started == 20.0
+    assert b.stats["rounds"] == 1 and b._round_started == first
 
 
 def test_the_continue_dialog_has_a_cursor_for_the_menus_walk():
