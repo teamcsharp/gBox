@@ -165,3 +165,83 @@ def test_aiming_without_shooting_with_a_majini_close_is_idle_among_foes():
         b.tick(snap([(foe, 800)], dot=(150.0 + k * 0.1, 110.0, 300.0)))
     assert b.doing == "aim" and b.stats["shots"] == 0
     assert b.stats["look_idle_among_foes_s"] == pytest.approx(1.1, abs=0.05)   # raising and steering, 1.1 s
+
+
+@pytest.fixture
+def k_calls(monkeypatch):
+    from gbox.mercs.brain import knowledge
+    calls = []
+    monkeypatch.setattr(knowledge, "record_shot", lambda *a, **kw: calls.append(("shot", a, kw)))
+    monkeypatch.setattr(knowledge, "record_damage", lambda *a, **kw: calls.append(("damage", a, kw)))
+    monkeypatch.setattr(knowledge, "observe", lambda *a, **kw: calls.append(("observe", a, kw)))
+    return calls
+
+
+def classed(s, cls="uEm10"):
+    for e in s["enemies"]:
+        e["class"] = cls
+    return s
+
+
+def test_every_resolved_pull_goes_to_the_enemy_knowledge_database(k_calls):
+    b, clock = bot()
+    foe = at(500, 0)
+    b.tick(classed(snap([(foe, 800)])))
+    for t, h, dot in ((0.2, 800, chest(foe)), (0.25, 700, chest(foe)), (0.3, 700, (100.0, 110.0, 500.0)),
+                      (0.8, 700, (99.0, 110.0, 500.0))):
+        clock[0] = t
+        b.tick(classed(snap([(foe, h)], dot=dot)))
+    shots = [c for c in k_calls if c[0] == "shot"]
+    assert len(shots) == 1
+    _, a, kw = shots[0]
+    assert a == (R.MAP_ID, "uEm10", None, 5.0, 0x02, chest(foe), "hit", -100)
+    assert kw["enemy_id"] == 10 and kw["zone"] == "body" and kw["fire_mode"] == "hold" and kw["units_per_m"] == 100.0
+    assert kw["enemy_pos"] == foe and kw["shooter_pos"] == (0.0, 0.0, 0.0) and kw["hp_max"] == 800
+
+
+def test_a_kill_and_a_ray_through_miss_are_told_apart(k_calls):
+    b, clock = bot()
+    foe = at(500, 0)
+    b.tick(classed(snap([(foe, 800)])))
+    for t, h in ((0.2, 800), (0.25, 0)):                               # he dies under the trigger
+        clock[0] = t
+        b.tick(classed(snap([(foe, h)], dot=chest(foe))))
+    clock[0] = 1.0
+    b.tick(classed(snap([(foe, 0)], dot=(chest(foe)[0], chest(foe)[1] + 5.0, chest(foe)[2]))))
+    kills = [c for c in k_calls if c[0] == "shot"]
+    assert kills and kills[0][1][6] == "kill" and kills[0][1][7] == -800
+    b, clock = bot()
+    k_calls.clear()
+    behind = along(MUZZLE, chest(foe), 1000.0)
+    b.tick(classed(snap([(foe, 800)])))
+    clock[0] = 0.2
+    b.tick(classed(snap([(foe, 800)], dot=behind)))
+    clock[0] = 0.25
+    b.tick(classed(snap([(foe, 800)], dot=(behind[0] + 300.0, behind[1], behind[2]))))
+    clock[0] = 0.9
+    b.tick(classed(snap([(foe, 800)], dot=(behind[0] + 301.0, behind[1], behind[2]))))
+    miss = [c for c in k_calls if c[0] == "shot"][0]
+    assert miss[1][5] is None and miss[1][6] == "miss" and miss[2]["zone"] is None   # no point: the dot was not on him
+
+
+def test_a_health_loss_is_blamed_and_the_majini_are_observed_ten_times_a_second(k_calls):
+    b, clock = bot()
+    close, far = at(150, 30), at(900, 0)
+    for k in range(11):                                                # 0.5 s of ticks every 0.05 s
+        clock[0] = 0.05 * k
+        b.tick(classed(snap([(close, 800), (far, 800)], hp=1000 if k < 5 else 880)))
+    dmg = [c for c in k_calls if c[0] == "damage"]
+    assert len(dmg) == 1
+    _, a, kw = dmg[0]
+    assert a == (R.MAP_ID, "uEm10", None, 1.5, "melee", 120) and kw["enemy_id"] == 10 and kw["hp_max"] == 1000
+    obs = [c for c in k_calls if c[0] == "observe"]
+    assert 5 <= len(obs) <= 7                                          # about 10 Hz, not every tick
+    assert obs[0][1][1] == [{"id": 10, "cls": "uEm10", "state": None, "dist_m": 1.5},
+                            {"id": 11, "cls": "uEm10", "state": None, "dist_m": 9.0}]
+    k_calls.clear()
+    b.tick(classed(snap([(close, 800)], hp=880)))
+    s = classed(snap([(close, 800)], hp=760))
+    s["player"]["motion"] = 106                                        # held: a grab
+    clock[0] = 1.0
+    b.tick(s)
+    assert [c[1][4] for c in k_calls if c[0] == "damage"] == ["grab"]

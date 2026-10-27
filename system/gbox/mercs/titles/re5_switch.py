@@ -243,6 +243,11 @@ BRAIN_COUNTERS = ("misses", "headshots", "miss_short", "miss_past", "miss_beside
 AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
                 "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("heal", "escape", "held", "backoff", "burst_backoff", "reload")
+# The enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge): every resolved pull is a
+# record_shot (his class, distance, the weapon, where the dot sat on him, hit / kill / miss and the health it took), every
+# health loss a record_damage (the nearest Majini, or the one holding him, and how: "grab" / "hold" / "melee"), and the
+# live Majini within K_OBSERVE_M go to observe about K_OBSERVE_HZ times a second (his exposure: the danger it learns)
+K_OBSERVE_HZ, K_OBSERVE_M = 10.0, 15.0
 
 
 def _rows(m):
@@ -783,6 +788,8 @@ class Bot:
         self._aimctx = None                       # the aim as the trigger was pulled (_decide)
         self._pulls: list = []                    # pulls whose hit window is still open
         self._raise_t = None                      # when the gun went up for the pulls to come (first_pull_s)
+        self._k_obs_at = None                     # the last observe() to the enemy knowledge database
+        self._hp_last = None                      # (player, health) at the last tick: a fall is a record_damage
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
@@ -1293,7 +1300,8 @@ class Bot:
             return {"hold": ("ldown",)}
         self._aimctx = {"target": tgt.get("ptr", tgt.get("slot")), "dist": dist, "bearing": body_err,
                         "yaw_err": yaw_err, "where": where, "laserless": False, "weapon": weapon, "origin": origin,
-                        "dot": dot, "py": py,
+                        "dot": dot, "py": py, "class": tgt.get("class"), "foot": tuple(foot), "hp_max": tgt.get("hp_max"),
+                        "item": gun.get("item") if gun else None, "shooter": tuple(p["pos"]),
                         "gate": f"dot on {where}" if where else "point blank" if point_blank else "ray through him"}
         self.doing = "fire" if on else "aim"
         self.why = (f"{where or ('point blank' if point_blank else 'ray')} at {dist / 100:.1f} m"
@@ -1346,7 +1354,8 @@ class Bot:
                                       dot_on="off" if ctx.get("laserless") else "target")
         self._pulls.append({"entry": entry, "start": now, "end": None, "drops": 0, "hp_delta": 0,
                             "target": ctx.get("target"), "where": ctx.get("where"),
-                            "laserless": bool(ctx.get("laserless")), "behind": self._behind(ctx)})
+                            "laserless": bool(ctx.get("laserless")), "behind": self._behind(ctx),
+                            "k": {k: ctx.get(k) for k in ("class", "dist", "item", "dot", "foot", "shooter", "hp_max")}})
         del self._pulls[:-4]                                 # (a pull resolves within HIT_S of its end)
 
     @staticmethod
@@ -1386,6 +1395,50 @@ class Bot:
             if pull["behind"]:
                 pull["entry"]["gate"] = f"{gate} (the dot on the {pull['behind']} behind him)"[:160]
             self.look.resolve(pull["entry"], out, pull["hp_delta"] or None)
+            self._k_shot(pull, out, now)
+
+    def _k_shot(self, pull, out, now) -> None:
+        """The pull for the enemy knowledge database: his class, the distance, the weapon, the dot's point on him (a world
+        point beside his feet and the shooter: the database takes up / across), kill / hit / miss, the health taken."""
+        from ..brain import knowledge
+        k = pull.get("k") or {}
+        dead = pull["drops"] and pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) <= 0
+        outcome = "kill" if dead else "hit" if pull["drops"] else "miss"
+        point = k.get("dot") if pull["where"] is not None else None   # the dot on him: where the shots went on him
+        knowledge.record_shot(MAP_ID, k.get("class"), None, (k.get("dist") or 0.0) / 100.0, k.get("item"),
+                              point, outcome, pull["hp_delta"] or None, enemy_id=pull["target"],
+                              zone=pull["where"], fire_mode="hold", enemy_pos=k.get("foot"),
+                              shooter_pos=k.get("shooter"), units_per_m=100.0, hp_max=k.get("hp_max"),
+                              round_id=self.stats.get("round_evidence_id"), t=now)
+
+    def _k_tick(self, snap, now) -> None:
+        """Each tick: a health fall -> record_damage (the Majini holding him, else the nearest, and how); the live
+        Majini within K_OBSERVE_M -> observe, about K_OBSERVE_HZ times a second."""
+        from ..brain import knowledge
+        p = snap.get("player")
+        if not p:
+            self._hp_last = None
+            return
+        px, py, pz = p["pos"]
+        live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        hp, last = p.get("hp"), self._hp_last
+        self._hp_last = (p.get("ptr"), hp)
+        if last is not None and last[0] == p.get("ptr") and isinstance(hp, int) and isinstance(last[1], int) \
+                and hp < last[1]:
+            near = min(live, key=flat, default=None)
+            motion = p.get("motion")
+            how = "grab" if motion in (106, 107) else "hold" if motion in MOTION_HELD else \
+                "melee" if near is not None and flat(near) <= THREAT_R else "unknown"
+            knowledge.record_damage(MAP_ID, near.get("class") if near else None, None,
+                                    flat(near) / 100.0 if near else None, how, last[1] - hp,
+                                    enemy_id=near.get("ptr") if near else None, hp_max=p.get("hp_max"),
+                                    player_state=motion, round_id=self.stats.get("round_evidence_id"), t=now)
+        if self._k_obs_at is None or now - self._k_obs_at >= 1.0 / K_OBSERVE_HZ:
+            self._k_obs_at = now
+            knowledge.observe(MAP_ID, [{"id": e.get("ptr"), "cls": e.get("class"), "state": None,
+                                        "dist_m": round(flat(e) / 100.0, 2)}
+                                       for e in live if flat(e) <= K_OBSERVE_M * 100.0], t=now)
 
     def _front_foe(self, p, snap) -> bool:
         """Another living Majini in front of him (inside BODY_AIM_TOL) within reach: one he could shoot without turning."""
@@ -1410,6 +1463,7 @@ class Bot:
             self.stats[key] = round(self._acc[key], 2)
         self._ran = (doing, bool(doing in ("turn", "unaim", "quick_turn") and p and self._front_foe(p, snap)))
         self._resolve_pulls(now)
+        self._k_tick(snap, now)
         if p and doing != "none":
             pos = p["pos"]
             moving = bool(self._look_at is not None and dt and

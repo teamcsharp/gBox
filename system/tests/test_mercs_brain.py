@@ -111,3 +111,57 @@ def test_abstract_actions_map_to_each_pad(pad, want):
     assert actions.keys({}, cm) == {"hold": ()} and actions.keys(None, cm) == {"hold": ()}
     assert actions.keys({"turn": -1}, cm)["hold"] == ("rright",)
     assert actions.keys({"wiggle": 2}, cm)["hold"] == ("lright",)
+
+
+def k_plan(learned=(), aim=(1.45, -0.05, "head"), rng=(1.5, 12.0), mode="tap", danger=0.8):
+    """An enemy_db.Plan whose fields in learned carry evidence; the rest are the title's defaults."""
+    from gbox.mercs import enemy_db as K
+    L = lambda name, value: K.Learned(value, 0.7, 40, "class") if name in learned else K.Learned(value)
+    return K.Plan(title="010018100CD46000", enemy_class="uEm10", state=None, band="5-10", family="humanoid",
+                  aim=L("aim", K.Aim(*aim)), range=L("range", rng), fire_mode=L("fire_mode", mode),
+                  danger=L("danger", danger), windup=L("windup", None), lead_s=L("lead_s", None),
+                  attack=L("attack", None), shots_to_kill=L("shots_to_kill", 6.0), hit_rate=L("hit_rate", 0.4))
+
+
+def test_the_adapter_takes_only_k_learned_fields_over_the_brains_constants(monkeypatch):
+    seen = []
+    fake = __import__("types").SimpleNamespace(
+        dispatch_plan=lambda *a, **kw: seen.append((a, kw)) or k_plan(),
+        record_outcome=lambda o: seen.append(("outcome", o)))
+    monkeypatch.setattr(knowledge, "_k", lambda: fake)
+    plan = knowledge.dispatch_plan("010018100CD46000", "uEm10", None, 600.0, 0x02, hp=800, hp_max=800)
+    assert plan == knowledge._DEFAULT.dispatch_plan("010018100CD46000", "uEm10", None, 600.0, 0x02)   # all defaults
+    assert seen[0] == (("010018100CD46000", "uEm10", None, 6.0, 0x02), {"hp": 800, "hp_max": 800})   # metres
+    fake.dispatch_plan = lambda *a, **kw: k_plan(learned=("aim", "fire_mode", "range", "shots_to_kill"))
+    plan = knowledge.dispatch_plan("010018100CD46000", "uEm10", None, 600.0, 0x02)
+    assert plan.aim_offset == (0.0, pytest.approx(145.0), 0.0) and plan.aim_lateral == pytest.approx(-5.0)
+    assert plan.zone == "head" and plan.fire_mode == "tap" and plan.range_cm == (150.0, 1200.0)
+    assert plan.shots_to_kill == 6.0 and plan.danger == round(1 - 600 / 800, 3)       # danger not learned: the default
+    assert plan.source == "enemy_db: aim_offset, range_cm, fire_mode, shots_to_kill" and plan.confidence == 0.7
+    knowledge.record({"kind": "shot", "hit": True})
+    assert seen[-1] == ("outcome", {"kind": "shot", "hit": True})
+    fake.dispatch_plan = lambda *a, **kw: 1 / 0
+    assert knowledge.dispatch_plan("010018100CD46000", distance=100.0).source == "default"
+    assert knowledge.last_error[0].startswith("enemy_db plan: ZeroDivisionError")
+
+
+def test_the_real_enemy_db_with_no_data_answers_exactly_the_defaults():
+    for title in ("010018100CD46000", "BLUS30491"):
+        for d in (90.0, 450.0, 1500.0):
+            assert knowledge.dispatch_plan(title, "uEm10", None, d, 0x02) == \
+                knowledge._DEFAULT.dispatch_plan(title, "uEm10", None, d, 0x02)
+
+
+def test_shots_damage_and_observations_pass_straight_through(monkeypatch):
+    calls = []
+    fake = __import__("types").SimpleNamespace(
+        record_shot=lambda *a, **kw: calls.append(("shot", a, kw)),
+        record_damage=lambda *a, **kw: calls.append(("damage", a, kw)),
+        observe=lambda *a, **kw: calls.append(("observe", a, kw)))
+    monkeypatch.setattr(knowledge, "_k", lambda: fake)
+    knowledge.record_shot("T", "uEm10", None, 5.0, 2, (1.1, 0.0), "hit", -250, enemy_id=7)
+    knowledge.record_damage("T", "uEm10", None, 1.0, "grab", 120, enemy_id=7)
+    knowledge.observe("T", [{"id": 7, "cls": "uEm10", "state": None, "dist_m": 1.0}], t=3.0)
+    assert [c[0] for c in calls] == ["shot", "damage", "observe"]
+    assert calls[0][1] == ("T", "uEm10", None, 5.0, 2, (1.1, 0.0), "hit", -250) and calls[0][2] == {"enemy_id": 7}
+    assert calls[2][1] == ("T", [{"id": 7, "cls": "uEm10", "state": None, "dist_m": 1.0}], 3.0)

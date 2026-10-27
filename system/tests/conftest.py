@@ -38,6 +38,22 @@ def _fresh_re5_pace(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_enemy_knowledge(tmp_path_factory):
+    """Tests never write the real enemy knowledge database (gbox.mercs.enemy_db): its default home is the deployment's
+    gbox-data/mercs/knowledge, and a bot test's shots and hits (re5_switch reports every pull) would land in the live
+    database of whatever checkout runs the tests (the Spark's share). Every test gets its own; a test that wants a
+    particular one configures it itself."""
+    try:
+        from gbox.mercs import enemy_db
+    except ImportError:
+        yield
+        return
+    enemy_db.configure(tmp_path_factory.mktemp("enemy_knowledge"))
+    yield
+    enemy_db.configure(tmp_path_factory.mktemp("enemy_knowledge_after"))
+
+
+@pytest.fixture(autouse=True)
 def _no_system_drive_rule(monkeypatch):
     """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
     folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it
