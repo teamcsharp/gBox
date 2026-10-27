@@ -21,6 +21,26 @@ ARM64_MAPS = [
     "5200000000-5200001000 r--p 00000000 fe:01 2 /usr/lib/aarch64-linux-gnu/libc.so.6",
     "ffff80000000-ffff80021000 rw-p 00000000 00:00 0 ",
 ]
+# Citron NEO's RE5 session as its maps read live 2026-10-27 (pid 245350: 3,341 rows, 2,325 of them HostMemory), cut down
+# to the rows that matter: the memfd rows are shared mappings (r--s, r-xs, rw-s), the walk from the first one stops at a
+# row that is not the reservation's (an anonymous placeholder with perms outside ARENA_PERMS), and the heap with the
+# player (0x5d47d700a0, fire_rate's time scale at +0x1A08) lies beyond it; the whole memfd is also mapped once, far up.
+SPLIT_MAPS = [
+    "aaaad0000000-aaaad0010000 r-xp 00000000 fe:01 1 /home/x/citron-linux/AppDir/bin/citron",
+    "3c27c00000-3ca7c00000 ---p 00000000 00:00 0 ",
+    "3ca7c00000-3ca7c04000 r--s 00000000 00:01 123 /memfd:HostMemory (deleted)",
+    "3ca7c04000-3ca9000000 r-xs 00004000 00:01 123 /memfd:HostMemory (deleted)",
+    "3ca9000000-3cab80f000 rw-s 01400000 00:01 123 /memfd:HostMemory (deleted)",
+    "3cab80f000-4cab804000 ---p 00000000 00:00 0 ",
+    "4cab804000-4cab808000 r--p 00000000 00:00 0 ",
+    "4cab808000-5d412ec000 ---p 00000000 00:00 0 ",
+    "5d412ec000-5d6b800000 rw-s 30000000 00:01 123 /memfd:HostMemory (deleted)",
+    "5d6b800000-7c27e00000 ---p 00000000 00:00 0 ",
+    "e07d7c000000-e07d7c400000 rw-p 00000000 00:00 0 ",
+    "e082cc000000-e083cc000000 rw-s 00000000 00:01 123 /memfd:HostMemory (deleted)",
+    "ffff80000000-ffff80021000 rw-p 00000000 00:00 0 ",
+]
+PLAYER_SCALE = 0x5d47d700a0 + 0x1A08                       # the address the live refusals named: 0x5d47d71aa8
 # A Dynarmic (JIT) host: the arena holds the guest's 39-bit space at an offset, the game's code at guest 0x8000000.
 X86_MAPS = [
     "7f0000000000-7f0008000000 rw-p 00000000 00:00 0 ",
@@ -307,6 +327,51 @@ def test_host_addresses_direct_and_offset_and_refusals():
     assert eden_memory.host_address(x86, 0x8000000, "offset") == 0x7f0008000000
     assert eden_memory.regions(x86, "offset") == [(0x8000000, 0x4000000)]
     assert eden_memory.regions(arena, "direct") == [(0x1208000000, 0xC000000)]   # adjacent rows merged
+
+
+def test_direct_mode_takes_any_hostmemory_row_when_the_walk_stops_short():
+    hole = [r for r in SPLIT_MAPS if not r.startswith("4cab804000-")]     # the same break as a gap between rows
+    for maps in (SPLIT_MAPS, hole):
+        arena = eden_memory.guest_arena(maps)
+        assert (arena["lo"], arena["hi"]) == (0x3c27c00000, 0x4cab804000)          # the walk ends at the break
+        assert PLAYER_SCALE == 0x5d47d71aa8 and not arena["lo"] <= PLAYER_SCALE < arena["hi"]
+        assert eden_memory.host_address(arena, PLAYER_SCALE, "direct") == PLAYER_SCALE    # was "outside the arena"
+        assert eden_memory.mapped(arena, PLAYER_SCALE, 4, "w")
+        assert eden_memory.mapped(arena, 0x3ca7c04000, 4, "x") and not eden_memory.mapped(arena, 0x3ca7c04000, 4, "w")
+        assert not eden_memory.mapped(arena, 0x5d6b7ffffe, 4)                     # straddling the heap row's end
+        for nowhere in (0x4cab804000, 0x4cab900000, 0x5d6b800000, 0x8000000):    # the break, placeholders, below all
+            with pytest.raises(ValueError, match="outside the guest arena"):
+                eden_memory.host_address(arena, nowhere, "direct")
+        with pytest.raises(ValueError, match="outside the guest arena"):          # offset mode keeps the arena check
+            eden_memory.host_address(arena, PLAYER_SCALE - arena["base"], "offset")
+        assert eden_memory.regions(arena, "direct") == [(0x3ca7c00000, 0x3cab80f000 - 0x3ca7c00000)]   # still the walk
+
+
+def test_writes_reach_a_hostmemory_row_beyond_the_walk_with_the_read_back(tmp_path, monkeypatch):
+    ad = adapters.CitronLinuxAdapter(cfg(tmp_path))
+    ad.nce, ad.address_mode = True, "direct"
+    ad.proc = SimpleNamespace(pid=77, poll=lambda: None)
+    monkeypatch.setattr(adapters, "_proc_tree", lambda pid: [pid, 78])
+    monkeypatch.setattr(ad, "_maps", lambda pid: SPLIT_MAPS if pid == 78 else [])
+    heap = bytearray(0x10000)                                                       # around the player
+    base = PLAYER_SCALE & ~0xFFFF
+
+    def rd(pid, host, n):
+        assert pid == 78 and base <= host and host + n <= base + len(heap)
+        return bytes(heap[host - base:host - base + n])
+
+    def wr(pid, host, data):
+        assert pid == 78 and base <= host and host + len(data) <= base + len(heap)
+        heap[host - base:host - base + len(data)] = data
+    monkeypatch.setattr(ad, "_read_host", rd)
+    monkeypatch.setattr(ad, "_write_host", wr)
+    out = ad.write_memory(PLAYER_SCALE, struct.pack("<f", 80.0))
+    assert out == {"address": PLAYER_SCALE, "written": 4, "verified": True, "address_mode": "direct"}
+    assert ad.read_memory(PLAYER_SCALE, 4) == struct.pack("<f", 80.0)
+    with pytest.raises(ValueError, match="outside the guest arena"):
+        ad.write_memory(0x4cab804000, b"\0\0\0\0")                                 # the break row itself: never
+    with pytest.raises(ValueError, match="not mapped"):
+        ad.write_memory(0x5d6b7ffffe, b"\0\0\0\0")                                 # past the heap row's end
 
 
 def test_read_and_write_memory_use_the_arena_and_refuse_unmapped(tmp_path, monkeypatch):
