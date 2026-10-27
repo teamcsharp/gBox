@@ -2429,7 +2429,8 @@ class DolphinAdapter(StandaloneAdapter):
     # The session's 1280x720 display (StandaloneAdapter.screen): Dolphin's fullscreen window fills it and pillarboxes a
     # 4:3 game. A title that letterboxes its picture inside the frame (Resident Evil 4) gets a 1280x993 window at y -137
     # instead, so its own black bars fall off the display (letterbox, gbox/session_display.py).
-    FIT_NAME = "^Dolphin [0-9]"                  # the render window ("Dolphin 2609a | JITARM64 SC | Vulkan | HLE | ...")
+    FIT_NAME = "^Dolphin.*[|]"                   # the render window ("Dolphin 2609a | JITARM64 SC | Vulkan | HLE | ..."),
+                                                 # never a message box (titled plain "Dolphin")
     checkpoint_state, state_glob = "dir", "*.s08"   # gBox's checkpoint ring lives in Dolphin's slot 8 (Shift+F8 / F8)
     # Demo jump states (gbox/jumpstate.py) are saved through Dolphin's slot 10, which only gBox's demos use: the operator
     # keeps slot 1 and the checkpoint ring slot 8. Only the save is bound: a jump state is loaded at boot (jump_boot),

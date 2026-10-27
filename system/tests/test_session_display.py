@@ -159,7 +159,10 @@ def test_the_fitter_moves_re4s_render_window_to_its_letterbox_geometry(tmp_path)
     g = {"7": geo(0, 0, 1280, 720)}                                        # Qt's fullscreen: the whole display
     moves, searches = fitter(ad, g)
     assert ad._fit_window_once() == 1
-    assert searches == [("search", "--onlyvisible", "--name", "^Dolphin [0-9]")]   # only the render window
+    assert searches == [("search", "--onlyvisible", "--name", "^Dolphin.*[|]")]    # only the render window
+    import re                                                              # (xdotool's regex is POSIX extended)
+    assert re.search(ad.FIT_NAME, "Dolphin 2609a | JITARM64 SC | Vulkan | HLE | Resident Evil 4 (G4BE08)")
+    assert not re.search(ad.FIT_NAME, "Dolphin") and not re.search(ad.FIT_NAME, "Warning")
     assert moves == [("windowmove", "7", "0", "-137"), ("windowsize", "7", "1280", "993")]
     moves.clear()
     g["7"] = geo(0, -137, 1280, 993)
