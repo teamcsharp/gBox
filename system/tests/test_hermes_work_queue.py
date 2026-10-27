@@ -1173,3 +1173,42 @@ def test_the_lite_view_admits_and_sizes_work_exactly_like_whole_requests(monkeyp
                            'inbox:' + '6' * 16: {'size': 'large', 'reason': 'native character or session work'},
                            'inbox:' + '7' * 16: {'size': 'large', 'reason': 'names 3 files'}}
     assert 'inbox:' + '5' * 16 in items and 'inbox:' + '3' * 16 not in items
+
+
+def test_prune_removes_settled_queue_jobs_only(monkeypatch):
+    removed = []
+    monkeypatch.setattr(q.mode, '_run', lambda *a: removed.append(a))
+    old, recent = '2026-10-27T08:00:00-06:00', '2026-10-27T09:50:00-06:00'
+    now = q._stamp('2026-10-27T10:00:00-06:00')
+    data = {'items': {
+        'done': {'job_id': 'j1', 'dispatch_state': 'finished'},
+        'queued': {'job_id': 'j2', 'dispatch_state': 'queued'},
+        'unposted': {'job_id': 'j3', 'dispatch_state': 'finished', 'report_run': 'r', 'report_posted_run': None},
+    }}
+    jobs = [{'id': 'j1', 'name': q.PREFIX + 'inbox a', 'enabled': False, 'last_run_at': old},
+            {'id': 'j2', 'name': q.PREFIX + 'inbox b', 'enabled': False, 'last_run_at': old},
+            {'id': 'j3', 'name': q.PREFIX + 'inbox c', 'enabled': False, 'last_run_at': old},
+            {'id': 'j4', 'name': q.PREFIX + 'inbox d', 'enabled': False, 'last_run_at': recent},
+            {'id': 'j5', 'name': q.PREFIX + 'inbox e', 'enabled': True, 'last_run_at': old},
+            {'id': 'j6', 'name': q.PREFIX + 'inbox f', 'enabled': False, 'last_run_at': old},
+            {'id': 'j7', 'name': q.PREFIX + 'inbox g', 'enabled': False, 'last_run_at': None},
+            {'id': 'j8', 'name': 'gBox DeepSeek result review', 'enabled': False, 'last_run_at': old},
+            {'id': 'j9', 'name': q.PREFIX + 'favorite h', 'enabled': False, 'last_run_at': old}]
+    assert q.prune(data, jobs, {'j6'}, now=now) == ['j1', 'j9']
+    assert removed == [('remove', 'j1'), ('remove', 'j9')]
+    assert 'job_id' not in data['items']['done'] and data['items']['queued']['job_id'] == 'j2'
+
+
+def test_prune_stops_at_its_per_tick_limit_and_skips_a_failed_remove(monkeypatch):
+    calls = []
+
+    def run(*a):
+        calls.append(a)
+        if a[1] == 'j0':
+            raise RuntimeError('Hermes cron command failed')
+    monkeypatch.setattr(q.mode, '_run', run)
+    monkeypatch.setattr(q, 'PRUNE_PER_TICK', 2)
+    jobs = [{'id': f'j{i}', 'name': q.PREFIX + f'inbox {i}', 'enabled': False,
+             'last_run_at': '2026-10-27T08:00:00-06:00'} for i in range(5)]
+    out = q.prune({'items': {}}, jobs, set(), now=q._stamp('2026-10-27T10:00:00-06:00'))
+    assert out == ['j1', 'j2'] and len(calls) == 3
