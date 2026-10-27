@@ -89,7 +89,7 @@ def continue_target() -> int:
     return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
 
 BOOT_KEY = "a"                          # a screen RAM can't name out of a round (PRESS ANY BUTTON)
-STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b"}
+STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b", "press_any_button": "a"}
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert_wait", "alert", "select_stage", "select_player",
                 "dead")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
@@ -371,6 +371,8 @@ def screen(m, merc=None, now: float | None = None) -> dict:
                 TITLE.since = now
             where = "title" if ready else "title_locked"
             out["title_wait_s"] = 0.0 if ready else round(now - TITLE.since, 1)
+        elif "uIdSignIn00" in ui:
+            where = "press_any_button"                      # the boot's sign-in: PRESS ANY BUTTON (no title unit yet)
         elif phase == PHASE_OVER and not ui.keys() - {"uIdAlert00", "uIdExtra"}:
             where = "loading"                               # between the results and the selects
     except (ValueError, OSError, struct.error):
@@ -430,8 +432,9 @@ WARM_RESCAN_S = 2.0                     # main not found yet (still booting): lo
 
 def warm_probe(m) -> dict:
     """gbox.mercs.warm_boot's boot observer for RE6 Switch (title_probe): a stable native menu where the warm pool may
-    pause the boot, read only (no input, no writes). The title counts only once its main-menu byte is set (the
-    unlock-on-load ran: A opens the main menu, not the Prologue). Each screen's unit is its token."""
+    pause the boot, read only (no input, no writes): the menus, "Load successful", the title once its main-menu byte is
+    set (the unlock-on-load ran: A opens the main menu, not the Prologue), or the boot's PRESS ANY BUTTON (uIdSignIn00),
+    where a boot without input stays. Each screen's unit is its token."""
     out = {"ready": False, "screen": "unknown", "title": MAP_ID}
     now = time.monotonic()
     if getattr(m, "_warm_miss", None) is not None and now - m._warm_miss < WARM_RESCAN_S:
@@ -465,6 +468,11 @@ def warm_probe(m) -> dict:
             open_ = False
         return out | ({"ready": True, "screen": "title", "token": ("uIdTitle00", title)} if open_
                       else {"screen": "title_locked"})
+    if "uIdSignIn00" in units:
+        # where a boot without input waits (live 2026-10-27, lilspark's warm prelaunch: uIdSignIn00 with uIdAlert00 down
+        # on line 0, nothing else; the first two RE6 prelaunches timed out there after 600 s): the round preparation
+        # presses A from here, the save loads ("Load successful") and the unlock-on-load opens the title's main menu
+        return out | {"ready": True, "screen": "press_any_button", "token": ("uIdSignIn00", units["uIdSignIn00"])}
     return out
 
 
