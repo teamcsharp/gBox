@@ -229,9 +229,15 @@ back-offs a round. Most deaths came swarmed.
   Y unassigned. Those buttons sit where the PS3's do (X = Triangle, A = Circle, B = Cross), so Y is the PS3 manual's
   Square, "use recovery item". A live press has not been seen yet, so the live telemetry watches heal_failures against
   heals; the bounded try gives the gun back after 4 s if the key were wrong.
-- **Infinite spray** (`re5_switch_mods` op `infinite_spray`, not in the profile yet): it keeps the round's own spray
-  slot record (in-hand cleared) and writes it back into that slot once the slot is empty or holds a spray of count 0,
-  never over another item. It waits for the same live run, which shows what a used-up slot looks like.
+- **Infinite spray** (`re5_switch_mods` op `infinite_spray`, off, not in the profile). A read-only look at the live
+  MercMode session around a heal (2026-10-27 23:55) settled the slot record: +0x00 a static class pointer into main,
+  +0x08 id, +0x0C count, +0x10 capacity (1 for the spray), +0x1C grid, +0x20 in hand, +0x2C a flag, +0x30 -> the item's
+  own object (heap). The heal took the count from 1 to 0 with the spray in hand, and two seconds later the game cleared
+  the slot (id 0, grid 13) and zeroed +0x30, releasing the object. So a replay of the saved record, as the PS3's
+  maintain_spray does, would point the slot at a freed object, and that version is gone. The op now keeps the round's
+  live spray (id 0x304, count 1 or more, +0x30 set) at count and capacity 2: a use leaves one, and the game never
+  clears the slot. It writes only those two ints, never a count of 0 (a use under way), an emptied slot or a slot
+  without its object. A private live run comes before it goes into the profile.
 - **A fix from #1253**: after each Continue Yes, the notebook got a phantom "ended" row (clock 119.9, no kills) about
   22 s later. The engine already opens the replay's round when the death closes the old one; the bot then moved its
   `_round_started` marker, so the engine closed and reopened it. The marker is now set once per bot.

@@ -48,6 +48,7 @@ MOTION_SHOT = 29
 FIRE_MAX = 80.0
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
+SPRAY_KEEP = 2                                               # infinite_spray keeps its count here (a use leaves one)
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")                              # a bot hot reload keeps the originals and the settings
@@ -165,38 +166,31 @@ def fire_rate(g: RE5Switch, mult) -> dict:
 
 def infinite_spray(g: RE5Switch, on: bool) -> dict:
     g.state["infinite_spray"] = bool(on)
-    if not on:
-        g.state.pop("spray", None)
     return {"infinite_spray": bool(on), "verified": True,
-            "note": "the round's own First Aid Spray record is kept and written back into its slot once the spray is "
-                    "used up (only into that emptied slot, never over another item): the bot heals with it again"}
+            "note": "the round's First Aid Spray is kept at %d while its slot is alive (count and capacity ints only), so "
+                    "a use leaves one and the game never clears the slot" % SPRAY_KEEP}
 
 
 def _maintain_spray(ad, st, snap) -> int:
-    """infinite_spray: keep the round's spray slot record (the game's own bytes, the in-hand flag cleared); once that
-    slot holds no spray any more (empty, or a spray of count 0), write the record back. Never into a slot holding
-    something else (the inventory moved), never for another round's player."""
-    p, inv = (snap or {}).get("player"), (snap or {}).get("inventory")
-    if not p or inv is None:
+    """infinite_spray: the round's First Aid Spray kept at SPRAY_KEEP while its slot is alive (id 0x304, count 1 or
+    more, its item object +0x30 set), so a use leaves one and the game never clears the slot or releases the item's
+    object. Only the count and capacity ints of that live slot are written. Never a cleared slot, never a count of 0
+    (a use under way), never a slot without its object: a replay of the saved record would put back a pointer to the
+    object the game released (live 2026-10-27: +0x30 zeroed two seconds after the last use)."""
+    if not (snap or {}).get("player"):
         return 0
-    spray = next((s for s in inv if s["id"] == SPRAY_ID and s["rounds"] >= 1), None)
-    saved = st.get("spray")
-    if spray is not None:
-        if not saved or saved["player"] != p.get("ptr") or saved["addr"] != spray["addr"]:
-            rec = bytearray(ad.read_memory(spray["addr"], R.INV_SLOT))
-            struct.pack_into("<i", rec, R.INV_HAND, 0)
-            st["spray"] = {"player": p.get("ptr"), "addr": spray["addr"], "record": bytes(rec)}
-        return 0
-    if not saved or saved["player"] != p.get("ptr"):
-        return 0
-    cur = ad.read_memory(saved["addr"], R.INV_SLOT)
-    idw = struct.unpack_from("<I", cur, R.INV_ID)[0]
-    count = struct.unpack_from("<i", cur, R.INV_ROUNDS)[0]
-    if idw in R.EMPTY_IDS or (idw == SPRAY_ID and count < 1):
-        ad.write_memory(saved["addr"], saved["record"])
-        st["sprays_restored"] = st.get("sprays_restored", 0) + 1
-        return 1
-    return 0
+    writes = 0
+    for s in (snap or {}).get("inventory") or ():
+        if s["id"] != SPRAY_ID or not 1 <= s["rounds"] < SPRAY_KEEP:
+            continue
+        rec = ad.read_memory(s["addr"], R.INV_SLOT)
+        idw, count, cap = struct.unpack_from("<Iii", rec, R.INV_ID)
+        if idw != SPRAY_ID or not 1 <= count < SPRAY_KEEP or not struct.unpack_from("<Q", rec, R.INV_OBJ)[0]:
+            continue                                         # changed since the snapshot, or no item object: leave it
+        ad.write_memory(s["addr"] + R.INV_ROUNDS, struct.pack("<ii", SPRAY_KEEP, max(SPRAY_KEEP, cap)))
+        writes += 1
+    st["sprays_kept"] = st.get("sprays_kept", 0) + writes
+    return writes
 
 
 def _restore_scale(ad, st) -> int:
@@ -247,10 +241,10 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                     out["ammo_restored"] = infinite_ammo(g, True)["verified"]
                     out["writes"] += 1
             if enabled and st.get("infinite_spray"):
-                restored = _maintain_spray(ad, st, snap)
-                out["writes"] += restored
-                if restored:
-                    out["spray_restored"] = True
+                kept = _maintain_spray(ad, st, snap)
+                out["writes"] += kept
+                if kept:
+                    out["spray_kept"] = True
         except Exception as e:                               # noqa: BLE001 - a missed update never stops a tick
             out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
         return out

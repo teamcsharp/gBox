@@ -171,32 +171,40 @@ def test_the_profile_turns_both_on_when_a_round_starts():
     assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}]]
 
 
-def put_slot(g, k, idw, rounds, grid, hand=0):
+def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):
     slot = player(g) + R.P_INV + R.INV_SLOT * k
     g.put(slot + R.INV_ID, struct.pack("<I", idw))
     g.put(slot + R.INV_ROUNDS, struct.pack("<ii", rounds, rounds))
     g.put(slot + R.INV_GRID, struct.pack("<ii", grid, hand))
+    g.put(slot + R.INV_OBJ, struct.pack("<Q", obj if idw else 0))
     return slot
 
 
-def test_infinite_spray_writes_the_round_s_spray_back_into_its_emptied_slot_only():
+def count_cap(g, slot):
+    return struct.unpack("<ii", g.rd(slot + R.INV_ROUNDS, 8))
+
+
+def test_infinite_spray_keeps_the_live_spray_at_two_and_writes_nothing_else():
     g = weapon_guest()
     ad = Adapter(g)
     put_slot(g, 0, 0x102, 50, 3, hand=1)
-    slot = put_slot(g, 2, SM.SPRAY_ID, 1, 7, hand=1)                   # in hand when first seen
+    slot = put_slot(g, 2, SM.SPRAY_ID, 1, 7)
     assert SM.run(ad, "auto_first_aid", on=True)["infinite_spray"] is True
-    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0                # kept, nothing written
-    put_slot(g, 2, 0, 0, 0)                                            # used up: the slot empties
     out = SM.maintain(ad, R.snapshot(g))
-    assert out["writes"] == 1 and out["spray_restored"] is True
-    inv = {s["slot"]: s for s in R.snapshot(g)["inventory"]}
-    assert inv[2]["id"] == SM.SPRAY_ID and inv[2]["rounds"] == 1 and inv[2]["grid"] == 7 and inv[2]["hand"] is False
-    put_slot(g, 2, 0x305, 1, 7)                                        # the slot holds a herb now: never written over
-    n = len(ad.writes)
-    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0 and len(ad.writes) == n
-    other = R.snapshot(g)
-    other["player"] = dict(other["player"], ptr=other["player"]["ptr"] + 0x10000)
-    put_slot(g, 2, 0, 0, 0)
-    assert SM.maintain(ad, other)["writes"] == 0                       # another round's player: nothing
+    assert out["writes"] == 1 and out["spray_kept"] is True and count_cap(g, slot) == (SM.SPRAY_KEEP, SM.SPRAY_KEEP)
+    assert ad.writes[-1][0] == slot + R.INV_ROUNDS and len(ad.writes[-1][1]) == 8      # the two ints only
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0                             # already at two
+    put_slot(g, 2, SM.SPRAY_ID, 0, 7, hand=1)                                         # a use under way (count 0)
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0
+    put_slot(g, 2, 0, 0, 13)                                                          # the game cleared it: never
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0
+    put_slot(g, 2, SM.SPRAY_ID, 1, 7, obj=0)                                          # no item object: never
+    assert SM.maintain(ad, R.snapshot(g))["writes"] == 0
+    put_slot(g, 2, SM.SPRAY_ID, 1, 7)
     SM.run(ad, "infinite_spray", on=False)
     assert SM.maintain(ad, R.snapshot(g))["writes"] == 0
+    spray_writes = [(a, d) for a, d in ad.writes if slot <= a < slot + R.INV_SLOT]
+    assert spray_writes and all(slot + R.INV_ROUNDS <= a and a + len(d) <= slot + R.INV_CAP + 4
+                                for a, d in spray_writes)               # the count / capacity ints, never a pointer
+    assert not [a for a, d in ad.writes if player(g) + R.P_INV <= a < player(g) + R.P_INV + R.INV_SLOT * R.INV_SLOTS
+                and not slot <= a < slot + R.INV_SLOT]                   # never another (or an empty) slot
