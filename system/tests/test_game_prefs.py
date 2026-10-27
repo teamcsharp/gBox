@@ -305,3 +305,18 @@ def test_a_worker_result_for_an_operator_change_is_kept_and_shown_by_the_menu_ro
         forgot = client.delete(f'/api/game-prefs/{RE5}', params={'panel': 're5_mods', 'name': 'bullet_damage'})
         assert forgot.json()['panels'] == {'pip': {'save_slot': 4}}
         assert client.get('/api/game-prefs').json()[0]['key'] == RE5
+
+
+def test_the_switch_edition_of_re5_keeps_its_own_settings_and_receives_them(tmp_path):
+    """RE5 on Switch (re5_mods routes it to re5_switch_mods): its menu changes are its own game's settings, and a
+    running Switch session gets them back; the PS3 edition's settings never cross over."""
+    sw = P.RE5_SWITCH
+    store = store_with(tmp_path, ('w1-sw', sw, 'citron'), ('w1-ps3', RE5, 'rpcs3'))
+    save(store, sw, {'re5_mods': {'weapon_override': {'on': True, 'weapon': 15, 'only': True}}})
+    save(store, RE5, {'re5_mods': {'infinite_ammo': {'on': False}}})
+    assert P.receives('re5_mods', {'game_id': sw, 'adapter': 'citron'}, 'operator')
+    assert P.receives('re5_mods', {'game_id': sw, 'adapter': 'eden'}, 'operator')
+    assert not P.receives('re5_mods', {'game_id': sw, 'adapter': 'retroarch'}, 'operator')
+    out = Rig(store).tick()
+    assert out == {'w1-sw': {'re5_mods': ['weapon_override']}, 'w1-ps3': {'re5_mods': ['infinite_ammo']}}
+    assert P.key_for(sw) != P.key_for(RE5)

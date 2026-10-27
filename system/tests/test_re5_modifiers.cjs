@@ -901,3 +901,44 @@ test('mounted clock inputs preview without a job and the buttons send the chosen
   assert.match(host.innerHTML, /data-clock-delta[^>]*value="-12"/, 'the repaint keeps the slider where the operator left it');
   control.stop();
 });
+
+test('RE5 on Switch gets the same panel: eligible on Citron / Eden, no team controls, not-yet ops disabled with their reason', async () => {
+  const sw = { session_id: 'lilspark-re5sw', game_id: M.SWITCH, state: 'running', adapter: 'citron' };
+  assert.equal(M.eligible(sw), true);
+  assert.equal(M.eligible({ ...sw, adapter: 'eden' }), true);
+  assert.equal(M.panelEligible(sw), true);
+  for (const change of [{ adapter: 'rpcs3' }, { adapter: 'retroarch' }, { state: 'ended' }, { stopping: true }, { session_id: 'x' }])
+    assert.equal(M.eligible({ ...sw, ...change }), false);
+  assert.equal(M.eligible({ ...SESSION, adapter: 'citron' }), false);          // the PS3 game on a Switch emulator: no
+  const status = { ...structuredClone(BASE), edition: 'switch', turn_speed_x: null,
+    capabilities: { ...structuredClone(BASE.capabilities),
+      turn_speed: { available: false, reason: 'not yet on Switch: sParameter’s turn rates are not mapped' } } };
+  const calls = [];
+  const api = async (path, body) => {
+    calls.push({ path, body });
+    if (path.startsWith('/api/sessions')) return [sw];
+    if (path.startsWith('/api/jobs?')) return [];
+    return { id: 'job', state: 'succeeded', output: { result: { status: structuredClone(status) } } };
+  };
+  let painted;
+  const control = M.create({ session: sw, api, render: s => { painted = s; }, delay: async () => {}, teamControls: true });
+  await control.refresh();
+  assert.equal(control.state().error, false);
+  assert.ok(!calls.some(c => c.body?.tool === 'mercs_team'), 'no team read for the Switch edition');
+  assert.equal(calls.find(c => c.body?.tool)?.body.input.session_id, 'lilspark-re5sw');
+  const html = M.html(painted);
+  assert.match(html, /RE5 modifiers \(Switch\)/);
+  assert.doesNotMatch(html, /Team and training/);
+  const turn = M.rows(painted).find(r => r.op === 'turn_speed');
+  assert.equal(turn.disabled, true);
+  assert.match(html, /not yet on Switch: sParameter/);
+  const fire = M.rows(painted).find(r => r.op === 'fire_rate');
+  assert.equal(fire.disabled, false);
+  // the next-round weapon (a loadout template change) stays usable where the live gun choice is not yet
+  const live = { ...painted, status: { ...painted.status, capabilities: { ...painted.status.capabilities,
+    select_weapon: { available: false, reason: 'not yet on Switch: the Switch bot’s weapon choice is not wired yet' },
+    weapon_override: { available: true } } } };
+  const page = M.html(live);
+  assert.match(page, /<fieldset class="re5-mine-controls" ><legend>Next-round weapon<\/legend>/);
+  assert.match(page, /<fieldset class="re5-mine-controls" disabled><legend>Preferred gun<\/legend>/);
+});
