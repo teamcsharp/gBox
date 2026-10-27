@@ -1029,10 +1029,17 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             ctx.progress(100, f"Unlock-on-load: {', '.join(held['held'])}" if held['held'] else "Unlock-on-load codes failed")
     except Exception as error:                         # noqa: BLE001 - never turns a running game into a failed launch
         detail['unlocks'] = {**(detail.get('unlocks') or {}), 'state': 'failed', 'reason': str(error)[:240]}
+    try:                                               # unlock-on-load in game memory once the save loads (RE6 Switch)
+        from . import game_unlocks
+        watch = game_unlocks.session_start(sid, gd, ad, ctx)
+        if watch:
+            detail['unlock_watch'] = watch
+    except Exception as error:                         # noqa: BLE001 - never turns a running game into a failed launch
+        detail['unlock_watch'] = {'state': 'failed', 'reason': str(error)[:240]}
     if not inp.capture_backend:
         from . import custom_build_unlocks
         detail['unlocks'] = custom_build_unlocks.on_launch(sid, ctx, requested_mod=inp.mod)
-        if g.platform == "ps4":
+        if g.platform in ("ps4", "switch"):
             detail['unlocks']['edition_profile'] = unlock_result
     if not inp.capture_backend:
         try:
