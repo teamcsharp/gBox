@@ -568,7 +568,9 @@ def test_registered_prepare_uses_real_typed_catalog_path_for_each_verified_disc(
     cfg=Config(data_dir=tmp_path/'data',cache_dir=tmp_path/'cache')
     result=mercmode(MercModeIn(op='prepare'),SimpleNamespace(server='http://fixture',headers={},worker='w1',config=cfg))
     assert result['result']['saved'] is True
-    assert requests==[('GET','/api/catalog/'+gid) for gid in (RE4,alternate,RE5)]+[('POST','/api/mercmode/preparation')]
+    from gbox import re_switch
+    switch=(re_switch.RE5_GAME_ID,re_switch.RE6_GAME_ID)   # the Switch No Mercy editions a host may prefer
+    assert requests==[('GET','/api/catalog/'+gid) for gid in (RE4,alternate,RE5,*switch)]+[('POST','/api/mercmode/preparation')]
     assert posted[0]['worker_id']=='w1' and posted[0]['result']['games'][alternate]['reachable'] is True
     assert posted[0]['result']['emulator_launched'] is False
     assert posted[0]['result']['configuration_changed'] is False

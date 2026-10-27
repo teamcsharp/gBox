@@ -53,7 +53,7 @@ def test_re6_switch_is_pinned_with_a_verified_post_launch_ram_profile():
         info = S.capabilities(game)
         assert info['edition'] == 're6' and info['no_mercy_in_release']
         assert info['unlock_on_load']['available'] and info['unlock_on_load']['needed']
-        assert info['autoplay']['available'] is False                  # no RE6 Switch driver yet
+        assert info['autoplay']['available'] is True and info['autoplay']['driver'] == 'gbox.mercs.titles.re6_switch'
     profile = game_unlocks.profile_for(re6_game())
     assert profile['verified'] is True and profile['status'] == 'verified_profile'
     assert profile['apply'] == game_unlocks.POST_LAUNCH_RAM and profile['profile'] == 're6-switch-prologue-gate-ram-v1'

@@ -3235,6 +3235,8 @@ def _prepare_title(g: dict) -> str:
     gid = (g or {}).get("game_id")
     if gid == re_switch.RE5_GAME_ID:                     # RE5 Switch No Mercy (gbox.re_switch.preferred_spec)
         return re_switch.RE5_TITLE_ID
+    if gid == re_switch.RE6_GAME_ID:                     # RE6 Switch No Mercy
+        return re_switch.RE6_TITLE_ID
     return next((t["map_id"] for t in TITLES.values() if gid in t.get("game_ids", ())), (g or {}).get("title") or "")
 
 

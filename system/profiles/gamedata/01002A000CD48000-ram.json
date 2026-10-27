@@ -1,0 +1,79 @@
+{
+  "format": "gbox-ram-map/1",
+  "id": "01002A000CD48000",
+  "title": "Resident Evil 6 (Nintendo Switch, update v131072 = 1.0.2, main build 061D2A06CD700785E987C42CE2D72231)",
+  "platform": "switch",
+  "endian": "little",
+  "pointer_size": 8,
+  "match": {
+    "title_id": "01002A000CD48000",
+    "game_ids": [
+      "115f9cdbba115432"
+    ]
+  },
+  "regions": [],
+  "notes": [
+    "MT Framework, 64-bit: every manager is a singleton next to its class descriptor (MtDTI); RE6 builds its DTIs inline in the static initialisers. An object's class is the name its vtable's slot 5 (getDTI) returns.",
+    "ASLR may move main: every address is main's base (gbox.mercs.titles.re6_switch.module_base: 64 bytes of main's read-only data at +0x2151000) plus an offset, so this map holds no absolute fields; the driver reads them.",
+    "Measured live 2026-10-26 on the Spark (Citron NEO, NCE: a guest address is the host address) in THE MERCENARIES NO MERCY, Urban Chaos, Leon: sGameMan base+0x28E9B10 (+0x54 mode, +0x3DEC phase, +0x3DF0 seconds left, +0x408C kills, +0x4094 combo, +0x4098 max combo, +0x409C combo window, +0x40B0 score); sPlayer base+0x28EAC10 +0x30 -> the player (+0x60 pos, +0x70 quaternion, +0x1368 s16 health, +0x136A maximum); sEnemy base+0x28E9AA8 (+0x40 count, +0x50 -> enemy pointers; +0x60 pos, +0x1368 health); sUnit base+0x2A60780 (an sBioUnit: line N at +0x268 + 0x30 N, next unit +0x20).",
+    "The HUD agreed with sGameMan: 009/300, Score 3,890 rolling to 4,540, 002 COMBO (docs/research/re6-switch-ram.md).",
+    "A fresh save opens the main menu only after gbox.re6_switch_unlock set the save's Prologue-cleared bit at the title (game_unlocks.session_start on launch); the menus press A at the title only when uIdTitle00 +0x20A = 1.",
+    "Live mods (gbox.mercs.titles.re6_switch_mods, the playing_ops): infinite_ammo keeps every gun's magazine at its capacity (the inventory's cItem slots at player +0x5070, 0x28 each: +0xA item id, +0xE rounds, +0x14 capacity; slots 0-6 the weapons, 7-11 the items, left alone: slot 7 the tablets, id 0x1D). RE6 shows no game-side fire-rate multiplier (the shot motion's layer speed leaves the pace alone); the bot presses ZR on every other tick on target and every press is a shot."
+  ],
+  "mercs": {
+    "driver": "gbox.mercs.titles.re6_switch",
+    "menus": "gbox.mercs.titles.re6_switch",
+    "ready": true,
+    "jump_at": "select_player",
+    "package": [],
+    "playing_ops": [
+      [
+        "infinite_ammo",
+        {
+          "on": true
+        }
+      ]
+    ],
+    "vocab": {
+      "screen": "driver",
+      "merc.stage": null,
+      "merc.timer": "driver",
+      "merc.combo": "driver",
+      "merc.combo_timer": "driver",
+      "merc.score": "driver",
+      "merc.kills": "driver",
+      "player.pos": "driver",
+      "player.facing": "driver",
+      "player.hp": "driver",
+      "player.hp_max": "driver",
+      "player.state": null,
+      "player.aim_pitch": null,
+      "player.weapon": null,
+      "player.ammo": null,
+      "enemies": "driver",
+      "enemies.pos": "driver",
+      "enemies.hp": "driver",
+      "enemies.hp_max": "driver",
+      "enemies.type": null,
+      "enemies.state": null,
+      "enemies.act": null,
+      "projectiles": null,
+      "prompt.kind": null,
+      "prompt.button": null,
+      "bonuses": null,
+      "drops": null,
+      "partner.pos": null
+    },
+    "units_per_m": 100,
+    "heading": {
+      "zero": "+z",
+      "positive": "toward +x"
+    },
+    "rules": {
+      "mode": "no_mercy",
+      "round_time_s": 120
+    }
+  },
+  "groups": {},
+  "fields": {}
+}

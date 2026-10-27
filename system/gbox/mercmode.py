@@ -61,6 +61,10 @@ TITLES = {
                 'ps3': {'game_id': '6fc93ff62e4eb868', 'title_id': 'BLUS30855', 'app_ver': '01.00',
                         'adapter': 'rpcs3', 'verified': True,
                         'eboot_sha256': 'ddd022477e679cb1125dc327b0e43c5aeb4d8fa84352a7c8ae98ec74271d41ed'},
+                # the Switch No Mercy edition, chosen per host through preferred_editions (gbox.re_switch.preferred_spec)
+                'switch': {'game_id': '115f9cdbba115432', 'title_id': '01002A000CD48000', 'update': 'v131072',
+                           'adapter': 'citron', 'verified': True, 'mode': 'no_mercy',
+                           'driver': 'gbox.mercs.titles.re6_switch', 'selected_by': 'preferred_editions'},
             },
             'reason': 'RE6 PS3 (BLUS30855) has a verified native RPCS3 launch but no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
     'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': 'CTR-ABRE', 'platform': '3ds',
@@ -623,9 +627,11 @@ def inventory(store, worker, cfg=None, sessions=None):
 def preparation(platform):
     if platform == 'switch':
         return {'strategy': 'native_menus_from_boot', 'instant_state_supported': False,
-                'reason': 'Eden has no save states: every launch boots the title and gbox.mercs.titles.re5_switch walks '
-                          'its native menus to No Mercy from RAM (title, PLAY GAME, EXTRA CONTENT, THE MERCENARIES '
-                          'UNITED, NO MERCY, stage, character); between rounds the results lead back to the selects.'}
+                'reason': 'Citron (and Eden) have no save states: every launch boots the title and its driver walks the '
+                          'native menus to No Mercy from RAM (gbox.mercs.titles.re5_switch: PLAY GAME, EXTRA CONTENT, '
+                          'THE MERCENARIES UNITED, NO MERCY, stage, character; gbox.mercs.titles.re6_switch: the title '
+                          'once its unlock-on-load opened the main menu, PLAY GAME, EXTRA CONTENT, THE MERCENARIES NO '
+                          'MERCY, SOLO, stage, character); between rounds the results lead back to the selects.'}
     return ({'strategy': 'persistent_install_and_shader_cache', 'instant_state_supported': False,
              'reason': 'RPCS3 uses its installed data and retained caches, then verified native menus. '
                        'No save-state capture/reload. With keep_warm the next title boots paused in the round\'s last '
