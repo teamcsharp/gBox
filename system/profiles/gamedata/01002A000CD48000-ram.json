@@ -97,13 +97,20 @@
         "bot_options",
         {
           "nades": false,
-          "bomb_drop": true
+          "bomb_drop": true,
+          "aim_lock": true
         }
       ],
       [
         "quick_attack",
         {
           "multiplier": 10
+        }
+      ],
+      [
+        "down_fire",
+        {
+          "multiplier": 3
         }
       ]
     ],

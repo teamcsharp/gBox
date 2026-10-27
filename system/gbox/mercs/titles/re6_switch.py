@@ -543,6 +543,7 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["camera"] = own_camera(m, p) if coop else camera(m, base, snap["player"]["pos"])
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base, snap["player"]["pos"])
+            snap["aim_cam"] = aim_cam(m, base, p)                # this player's own camera state (the aim lock)
             if (snap["player"].get("bomb") or {}).get("out"):
                 snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
@@ -893,6 +894,58 @@ def laser(m, base: int, near=None) -> dict | None:
     return {"at": at, "from": frm, "up": up_now, "alpha": round(up, 3)}
 
 
+def aim_cam(m, base: int, player: int) -> dict | None:
+    """P1's player camera state: {addr (the uCameraQFPS inside his own uCameraCtrl), pitch (-1..1), yaw}; None when the
+    camera is not his (owner +0xB0) or the object there is not uCameraQFPS (its vtable)."""
+    try:
+        cam = u64(m, player + CAM_OWNED)
+        if not ptr_ok(cam) or u64(m, cam + CAM_OWNER) != player or u64(m, cam + QFPS_OFF) != base + QFPS_VT:
+            return None
+        pitch, yaw = struct.unpack("<2f", m.rd(cam + QFPS_OFF + QFPS_PITCH, 8))
+    except (ValueError, OSError):
+        return None
+    if not (math.isfinite(pitch) and math.isfinite(yaw) and -1.001 <= pitch <= 1.001 and abs(yaw) <= 3.1417):
+        return None
+    return {"addr": cam + QFPS_OFF + QFPS_PITCH, "pitch": pitch, "yaw": yaw}
+
+
+def aim_writer(m):
+    """The aim lock's writer for this session: write(addr, pitch, yaw) -> True once both floats are written and read
+    back (within LOCK_TOL: the game's frame may ease them). None without the session's adapter or with modifications
+    off (the keys aim)."""
+    ad = getattr(m, "adapter", None)
+    if ad is None or getattr(m, "mercs_no_modifications", False):
+        return None
+
+    def write(addr: int, pitch: float, yaw: float) -> bool:
+        try:
+            ad.write_memory(addr, struct.pack("<2f", pitch, yaw))
+            back = struct.unpack("<2f", ad.read_memory(addr, 8))
+        except (RuntimeError, ValueError, OSError):
+            return False
+        return abs(back[0] - pitch) <= LOCK_TOL and abs(wrap(back[1] - yaw)) <= LOCK_TOL
+    return write
+
+
+def aim_point(e, ppos) -> tuple:
+    """Where to aim at e: his chest on (or near) his floor; one off it (a ceiling's, a hanging one) at its own position
+    OFF_FLOOR_AIM_H up."""
+    x, y, z = e["pos"]
+    return (x, y + (CHEST_H if abs(y - ppos[1]) <= MAX_DY else OFF_FLOOR_AIM_H), z)
+
+
+def near_line(origin, toward, pt, r: float, reach: float = 1e9) -> bool:
+    """Whether the line origin -> toward passes within r of pt, ahead of origin and within reach."""
+    have = math.dist(origin, toward)
+    if have < 1.0:
+        return False
+    d = tuple((toward[k] - origin[k]) / have for k in range(3))
+    along = sum((pt[k] - origin[k]) * d[k] for k in range(3))
+    if not 0.0 < along <= reach:
+        return False
+    return math.dist(pt, tuple(origin[k] + along * d[k] for k in range(3))) <= r
+
+
 # --- the shot's geometry (a zombie's body; RE6's are human-sized like RE5's Majini) ---------------------------------------
 HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 36.0, 115.0
 FIRE_SLACK = 60.0                       # a ray ending this much short of him ends on something in front of him
@@ -1094,7 +1147,7 @@ QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(130), 1.5, 0.45
 MELEE_R, MELEE_CONE, MELEE_GAP_S = 140.0, math.radians(40), 0.7
 CROWD_R, CROWD_N = 260.0, 2             # this many this near, or one within KEEP_R: he steps back while he fires
 KEEP_R = 200.0
-QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 450.0, math.radians(35), 1.5
+QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 200.0, math.radians(35), 1.5   # point blank only (450 until 16:30)
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -1118,7 +1171,8 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 # gauge is kept full by re6_switch_mods.infinite_stamina): a zombie within CC_R in front or flanking (CC_CONE) puts the
 # gun down for the game's quick shot every CC_QSHOT_GAP_S and a kick at arm's length every CC_KICK_GAP_S, before it can
 # grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
-CC_R, CC_CONE = 350.0, math.radians(100)   # (5 m all round was tried live 2026-10-27 13:43 / 13:53: more holds, fewer kills)
+CC_R, CC_CONE = 200.0, math.radians(100)   # point blank only (operator 16:30; 350 until then; 5 m all round was tried live
+                                        # 2026-10-27 13:43 / 13:53: more holds, fewer kills)
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
 QA_FAST, CC_FAST_GAP_S = False, 0.15    # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
                                         # back: this often, the gauge kept full by infinite_stamina
@@ -1267,10 +1321,59 @@ PURSUE_STUCK_CM, PURSUE_STUCK_S, PURSUE_SIDE_S = 30.0, 1.0, 0.8
 # TAUNT_BLAST, or a boss down (one of at least BOSS_HP gone), with nobody within TAUNT_CLEAR_R and not more often than
 # TAUNT_GAP_S: one click (a tap, or held TAUNT_HOLD_S for the other call, picked at random). stats taunts (by trigger:
 # taunt_multi / taunt_blast / taunt_boss), taunts_seen (his action turned emotion within TAUNT_SEEN_S of the click).
-TAUNTS = True
+TAUNTS = False                          # (off: in solo Mercenaries R3 never put him in the emotion action - 0 of 5
+                                        # live 16:13-16:25; a RAM emotion request is the follow-up)
 TAUNT_KILLS, TAUNT_KILLS_S, TAUNT_BLAST, BOSS_HP = 4, 2.0, 3, 1500
 TAUNT_CLEAR_R, TAUNT_GAP_S, TAUNT_HOLD_S, TAUNT_SEEN_S = 400.0, 8.0, 0.6, 1.5
 EMOTION_ACTION = "cPlAction_pl_act_emotion"
+# RAM aim lock (operator 16:30, a frame with a boss hanging top right, the laser pointing away from it and Chris in boss
+# smoke: "surely the ghidra hook can inform the bot as to where the enemy is on screen so that they can aim at them and
+# deal with them ... These are life or death situations."). Ghidra: P1's camera [player + 0x3A28] (its owner [camera +
+# 0xB0] == player) embeds the player camera uCameraQFPS at +0x16A0 (vtable main+0x25C4080). Its +0x2C4 yaw (radians,
+# wrapped, the heading convention atan2(x, z)) and +0x2C0 pitch (-1..1) are the state the right stick turns:
+# main+0x48A3F0 eases them toward a look request, clamps the pitch and wraps the yaw every frame (+0x2C8 / +0x2CC keep
+# the last frame's). Read-only in MercMode's RE6 (16:15-16:40, 495 + 288 samples): the view's yaw equals +0x2C4 at rest
+# (36.2 deg / 0.631 rad, -2.1 / -0.036, 168.2 / 2.936); the view's pitch runs about PITCH_DEG_PER_UNIT a unit of +0x2C0
+# (PITCH_DEG_AT_0 at 0). Each tick the bot has a target it writes both - the yaw onto the camera's line through the
+# target's aim point, the pitch from that line's slope plus a correction learned once the view settles - and reads them
+# back: no camera keys for the aim. A write that fails or does not stick (LOCK_FAIL_N within LOCK_FAIL_S) puts the keys
+# back for LOCK_OFF_S. stats aim_locks (a new target locked), lock_write_ok / lock_write_fail / lock_overwritten,
+# lock_fallbacks, aimed_shots / aimed_hits (a locked shot, and its target's health falling within LOCK_HIT_S),
+# boss_damage (health the big ones lost while locked), cc_vs_aimed (crowd-control quick shots per aimed shot).
+AIM_LOCK = True
+CAM_OWNED, QFPS_OFF, QFPS_VT, QFPS_PITCH = P_CAMERA, 0x16A0, 0x25C4080, 0x2C0   # (P_CAMERA / CAM_OWNER: the co-op readers')
+PITCH_DEG_PER_UNIT, PITCH_DEG_AT_0 = 23.0, -1.5
+LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.5, math.radians(1.5), math.radians(0.4)
+LOCK_FAIL_N, LOCK_FAIL_S, LOCK_OFF_S, LOCK_HIT_S, LOCK_TOL = 5, 2.0, 3.0, 0.6, 0.02
+# Aimed fire (the same message: "any enemy on screen or within ~15 m in line of sight, including ceiling or hanging
+# enemies and bosses ... gets locked and shot at the magnum's rapid rate until dead; crowd-control quick shots only at
+# point blank; bosses and large enemies get priority focus fire"): with the lock, every one alive within AIM_LOCK_R
+# (3D - a ceiling's, a hanging one: no floor filter) or on his floor within ENGAGE_R is a target at any bearing (the
+# lock turns the camera); the big ones (BIG_HP max health and more: uEm2100 / 2210 / 2300 hold 1000 in MercMode's
+# census, the hordes 100-500) first. One off his floor is aimed at its own position (OFF_FLOOR_AIM_H up) and counted
+# on the line within OFF_FLOOR_HIT_R of it.
+AIM_LOCK_R, BIG_HP, OFF_FLOOR_AIM_H, OFF_FLOOR_HIT_R = 1500.0, 900, 60.0, 90.0
+# Down (operator 16:22: "when the character is down, They need to raise their weapon and blast like mad, nailing each
+# and every target nearby to clear the area ... fire rate tripled ... so they can rise again"). MercMode 16:30, read
+# only (player +0x13F0): knocked to 1 health he went buttobi_damage_common -> dying_loop, and from there RE6 fires -
+# motion_ex -> lying_down_weapon_ready_loop -> weapon_fire (a kill at 16:30:13), kicks (attack_ex) and crawls
+# (creeping_move) - until gets_up 15 s later, at 1 health; he died 2 s after it with no tablet (the tablet rule wanted
+# more than 1 health). Down (DOWN_ACTIONS, held through DOWN_KEEP's while down): no tablet, no stick; the nearest within
+# DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R); nobody near: the stick up to rise. Up at 1 health:
+# a tablet at once. re6_switch_mods.down_fire triples the fire table while he is down. stats down_s, down_shots,
+# down_kills, down_recoveries (gets_up after a down), dying_deaths (died at 1 health after dying, never above it since).
+DOWN_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in (
+    "dying_loop", "creeping_move", "stand_to_creeping", "lying_down_weapon_ready_loop", "lying_down_weapon_ready_move",
+    "lying_down_weapon_ready_turn", "damage_lying_loop", "go_lying_down", "buttobi_damage_to_lying", "go_any_down",
+    "down"))
+DOWN_KEEP = frozenset("cPlAction_pl_act_" + n for n in ("motion_ex", "weapon_fire", "attack_ex", "weapon_reload",
+                                                        "weapon_comn_quick_shot"))
+GETUP_ACTIONS = frozenset("cPlAction_pl_act_" + n for n in ("gets_up", "damage_gets_up"))
+DOWN_FIGHT_R = 900.0
+# Hazards (the same frame: "standing in boss smoke"): his health falling with nobody within HAZARD_CONTACT_R, not held,
+# not his own blast - smoke, gas, fire, acid - marks his spot (HAZARD_R, for HAZARD_S); inside a mark he moves out
+# toward open space while he keeps firing. stats hazard_marks, hazard_s.
+HAZARD_CONTACT_R, HAZARD_R, HAZARD_S = 250.0, 400.0, 6.0
 AIM_WALK_R, AIM_WALK_S = 800.0, 0.8     # aiming this long without the line on one this near: he walks at him
 TICK_S = 0.05                           # the engine's tick (gbox.mercs.engine tick_s)
 BOMB_FIGHT_R, BOMB_DET_NEAR_R, BOMB_FACE_CLEAR_R, BOMB_FACE_MAX_S = 200.0, 400.0, 400.0, 0.4
@@ -1345,7 +1448,7 @@ class Bot:
     tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
     again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None):
         from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
@@ -1362,11 +1465,24 @@ class Bot:
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
                   "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots",
                   "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor",
-                  "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee"):
+                  "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee",
+                  "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "aimed_shots",
+                  "aimed_hits", "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths",
+                  "hazard_marks"):
             self.stats.setdefault(k, 0)
-        for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s"):
+        for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s", "down_s", "hazard_s",
+                  "cc_vs_aimed"):
             self.stats.setdefault(k, 0.0)
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
+        self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
+        self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
+        self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
+        self.lock_shots: list = []                           # aimed shots waiting for their target's health to fall
+        self.down, self.down_dying, self.down_kills_k = False, False, None   # down now; a dying one; kills when it began
+        self.since_dying = False                             # rose from dying and never above 1 health since
+        self.hazards: list = []                              # [(x, z, until)]
+        self.hazard = None                                   # the mark he stands in (x, z), or None
+        self._hz_hp, self._big_hp = None, {}
         self.target, self.target_at = None, -1e9
         self.aim_since = None
         self.reraised = False                     # this raise already looked for the laser unit again
@@ -1476,6 +1592,13 @@ class Bot:
         return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)) / math.pi)
 
     def _choose(self, p, yaw, live, now):
+        big = [e for e in live if (e.get("hp_max") or 0) >= BIG_HP and math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R]
+        if big and self._lock_ready(getattr(self, "_snap", {}) or {}, now):   # priority focus fire on the big ones
+            best = min(big, key=lambda e: math.dist(p["pos"], e["pos"]))
+            if self.target != best.get("ptr", best.get("slot")):
+                self.target_at = now
+            self.target = best.get("ptr", best.get("slot"))
+            return best
         best = min(live, key=lambda e: self._cost(p, yaw, e))
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         px, _, pz = p["pos"]
@@ -1639,6 +1762,7 @@ class Bot:
 
     def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
+        self._snap = snap
         if snap.get("mercenaries_phase") != PHASE_PLAYING:
             self._bonus_close()
         if not p:
@@ -1650,6 +1774,9 @@ class Bot:
             if self.dead_since is None:
                 self.dead_since = now
                 self.stats["deaths"] += 1
+                if self.down_dying or self.since_dying:
+                    self.stats["dying_deaths"] += 1
+                self.down = self.down_dying = self.since_dying = False
                 self._death(p, snap, now)
             if now - self.dead_since < DEAD_WAIT_S:
                 return self._go("dead", "dead_wait", {"hold": ()}, "dead: the Continue? screen comes up")
@@ -1700,6 +1827,9 @@ class Bot:
         self._quick_tick(p, snap, now)
         self._census_tick(p, snap, live)
         self._taunt_watch(snap, now)
+        self._down_tick(p, snap, now)
+        self._hazard_tick(p, live, flat, now)
+        self._lock_tick(snap, now)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
         if within >= SURROUND_N and not self.surrounded:
@@ -1765,10 +1895,18 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        if self.down:
+            return self._down_fight(p, snap, now)
         ran = self._bonus_run(p, live, flat, snap, now)          # phase 1: the bonuses first
         if ran is not None:
             return ran
-        if not live:
+        high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
+        if self.hazard is not None and not live:                 # nobody to fight and in smoke: out of it
+            cam = snap.get("camera")
+            return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
+                                                                       cam["yaw"] if cam else p["rot"])},
+                            "in a hazard: moving out")
+        if not live and not high:
             taunt = self._taunt(p, live, flat, now)
             if taunt is not None:
                 return taunt
@@ -1788,13 +1926,19 @@ class Bot:
         front = [e for e in vis if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
         if not front:                                            # nobody near: one in front far off - a long shot
             front = [e for e in vis if flat(e) <= LONG_R and abs(bearing(e)) <= FRONT_CONE]
+        self._aimable = vis + self._off_floor(p, snap, now)
+        if self._lock_ready(snap, now):                          # the lock turns the camera: any bearing, any floor
+            near_all = [e for e in self._aimable if math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R or flat(e) <= ENGAGE_R]
+            if near_all:
+                front = near_all
         tgt = self._choose(p, yaw, front or vis or live, now)
         foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         self.stats["target_dist"] = round(dist)
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
         gap = TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
-        if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
+        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
+                and p.get("state") in (0, None)
                 and self.tablet_wait is None and now - self.tablet_at >= gap
                 and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
@@ -1825,7 +1969,7 @@ class Bot:
         took = self._bonus(p, live, flat, snap, now)
         if took is not None:
             return took
-        if not vis:                                              # every one in reach out of sight: a way round
+        if not self._aimable:                                    # every one in reach out of sight: a way round
             self._gun_down()
             if now - self.detour_at >= DETOUR_S:
                 self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
@@ -1833,7 +1977,7 @@ class Bot:
             return self._go("walk", "walk_detour", {"hold": ("lup", self.detour) + self._turn(err, TURN_TOL)},
                             f"the nearest at {dist:.0f} cm is out of sight: walking round ({self.detour})")
         if self.aim_since is None:
-            near_err = bearing(near_e)
+            near_err = bearing(near_e) if near_e is not None else math.pi
             if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
                 self.melee_at = now                              # one at arm's length in front: a kick
                 self.stats["melee"] += 1
@@ -1865,6 +2009,9 @@ class Bot:
         if sum(1 for e in live if flat(e) < KITE_R) >= KITE_N:  # 3+ closing: toward open space as he fires
             back = self._stick(self._open_heading(p, live), yaw)
             self.stats["kite_s"] = round(self.stats["kite_s"] + TICK_S, 2)
+        if self.hazard is not None:                              # in smoke: out of it as he fires
+            back = self._stick(self._open_heading(p, live, self.hazard), yaw)
+        self._locked = (self._lock(p, tgt, snap, now), tgt.get("ptr", tgt.get("slot")))   # the lock from the raise on
         if p.get("ammo") == 0 and now - self.reload_at > RELOAD_GAP_S:
             self.reload_at = now                                 # empty: reload (Y)
             self.stats["reloads"] += 1
@@ -1894,7 +2041,8 @@ class Bot:
             if cam is None or now - self.aim_since < LASER_WAIT_S:
                 return self._go("raise", "raise", {"hold": ("zl",) + back}, "the gun comes up (no laser yet)")
             origin, dot, source = cam["pos"], cam["target"], "camera"
-        on_e = self._on_line(origin, dot, source, vis if source == "laser" else (front or vis), now)
+        cands = self._aimable if source == "laser" else (front or self._aimable)
+        on_e = self._on_line(origin, dot, source, cands, now)
         if source == "laser" and on_e is None and self._ray_short(origin, dot, tgt):
             self._block(tgt, now, "los_blocks")                  # the ray ends on something in front of him: a wall
         if on_e is not None and on_e is not tgt:                 # the line is on another one: he is the target now
@@ -1913,7 +2061,12 @@ class Bot:
             foot = e["pos"]
             if self.is_blocked(e, now):
                 continue
-            if source == "laser":
+            ppos = self._ppos or origin
+            if abs(foot[1] - ppos[1]) > MAX_DY:                  # off his floor: near its aim point
+                hit = near_line(origin, dot, aim_point(e, ppos), OFF_FLOOR_HIT_R, AIM_LOCK_R + 600.0)
+                if hit and source == "laser":
+                    self.laser_seen[e.get("ptr", e.get("slot"))] = now
+            elif source == "laser":
                 hit = dot_on(dot, foot) is not None or through(origin, dot, foot)
                 if hit:                                          # the laser reaches him: in sight (LASER_SEEN_S)
                     self.laser_seen[e.get("ptr", e.get("slot"))] = now
@@ -1933,9 +2086,12 @@ class Bot:
         return best
 
     def _aim(self, p, tgt, foot, dist, origin, dot, source, on_e, front, back, now) -> dict:
-        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        chest = aim_point(tgt, p["pos"])
         yaw_err, pitch_err = ray_error(origin, dot, chest)
-        if abs(yaw_err) > UNAIM_ERR and on_e is None:
+        aim_at = on_e or tgt
+        done, done_id = getattr(self, "_locked", (False, None))
+        locked = done if done_id == aim_at.get("ptr", aim_at.get("slot")) else self._lock(p, aim_at, self._snap, now)
+        if abs(yaw_err) > UNAIM_ERR and on_e is None and not locked:
             line_yaw = heading(dot[0] - origin[0], dot[2] - origin[2])
             px, _, pz = p["pos"]
             alt = [e for e in front if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - line_yaw)) <= FRONT_CONE]
@@ -1963,12 +2119,17 @@ class Bot:
             if self.fire_track is None or self.fire_track[0] != tid:
                 self.fire_track = [tid, now, on_e.get("hp") or 0, now]
             self.fire_track[3] = now
-        keys = {"zl"} | self._yaw(yaw_err) | self._pitch(pitch_err) | trig | set(back)
+        if trig and locked:
+            self._aimed_shot(on_e or tgt, now)
+        steer = set() if locked else self._yaw(yaw_err) | self._pitch(pitch_err)
+        keys = {"zl"} | steer | trig | set(back)
         self._aimctx = {"target": (on_e or tgt).get("ptr", (on_e or tgt).get("slot")), "dist": dist,
-                        "yaw_err": yaw_err, "source": source, "where": dot_on(dot, foot) if source == "laser" else None}
+                        "yaw_err": yaw_err, "source": source, "where": dot_on(dot, foot) if source == "laser" else None,
+                        "locked": locked}
         where = self._aimctx["where"]
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
-                             f"on {where or ('line' if on else '-')} via {source} keys {','.join(sorted(keys))}")
+                             f"on {where or ('line' if on else '-')} via {source}{' LOCK' if locked else ''} "
+                             f"keys {','.join(sorted(keys))}")
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
@@ -1990,6 +2151,169 @@ class Bot:
         if quick and isinstance(k, int) and isinstance(self.qa_kills_k, int) and k > self.qa_kills_k:
             self.stats["quick_attack_kills"] += k - self.qa_kills_k
         self.qa_in, self.qa_kills_k = quick, k
+
+    # --- the RAM aim lock --------------------------------------------------------------------------------------------
+    def _lock_ready(self, snap, now) -> bool:
+        return bool(AIM_LOCK and self.ram is not None and snap.get("aim_cam") and snap.get("camera")
+                    and now >= self.lock_off_until)
+
+    def _off_floor(self, p, snap, now) -> list:
+        """The living ones off his floor within AIM_LOCK_R (3D) and in sight: a ceiling's, a hanging one, a boss."""
+        if not self._lock_ready(snap, now):
+            return []
+        py = p["pos"][1]
+        return [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) > MAX_DY
+                and math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R and not self.is_blocked(e, now)]
+
+    def _lock_fail(self, now, why: str) -> None:
+        self.stats[why] += 1
+        self.lock_fails = [t for t in self.lock_fails if now - t <= LOCK_FAIL_S] + [now]
+        if len(self.lock_fails) >= LOCK_FAIL_N:                  # it does not stick: the keys for a while
+            self.lock_off_until, self.lock_fails = now + LOCK_OFF_S, []
+            self.lock_w = None
+            self.stats["lock_fallbacks"] += 1
+
+    def _lock(self, p, tgt, snap, now) -> bool:
+        """The player camera's yaw onto the camera's line through tgt's aim point, its pitch from that line's slope plus
+        the learned correction; written and read back. True: written this tick (no camera keys)."""
+        if tgt is None or not self._lock_ready(snap, now):
+            self.lock_w = None
+            return False
+        ac, cam = snap["aim_cam"], snap["camera"]
+        pt, c = aim_point(tgt, p["pos"]), cam["pos"]
+        want_yaw = heading(pt[0] - c[0], pt[2] - c[2])
+        want_pitch = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
+        tid = tgt.get("ptr", tgt.get("slot"))
+        if tid != self.lock_tid:
+            self.lock_tid = tid
+            self.stats["aim_locks"] += 1
+        view, w = (cam["yaw"], cam["pitch"]), self.lock_w
+        if w is not None:
+            if abs(wrap(ac["yaw"] - w[1])) > 0.05:               # not what was written: the game set it since
+                self._lock_fail(now, "lock_overwritten")
+                if now < self.lock_off_until:                    # one too many: the keys for a while
+                    return False
+            settled = abs(wrap(view[0] - ac["yaw"])) <= LOCK_SETTLE and self.lock_view is not None \
+                and abs(view[1] - self.lock_view[1]) <= LOCK_STILL
+            if settled:                                          # the view at rest: learn the pitch's correction
+                err_units = math.degrees(w[2] - view[1]) / PITCH_DEG_PER_UNIT
+                self.pitch_bias = max(-LOCK_BIAS_MAX, min(LOCK_BIAS_MAX, self.pitch_bias + LOCK_BIAS_GAIN * err_units))
+        self.lock_view = view
+        pitch = (math.degrees(want_pitch) - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + self.pitch_bias
+        pitch = max(-1.0, min(1.0, pitch))
+        if not self.ram(ac["addr"], pitch, want_yaw):
+            self._lock_fail(now, "lock_write_fail")
+            self.lock_w = None
+            return False
+        self.stats["lock_write_ok"] += 1
+        self.lock_w = (pitch, want_yaw, want_pitch)
+        return True
+
+    def _aimed_shot(self, tgt, now) -> None:
+        self.stats["aimed_shots"] += 1
+        self.lock_shots.append((tgt.get("ptr", tgt.get("slot")), now, tgt.get("hp") or 0))
+        self.stats["cc_vs_aimed"] = round(self.stats.get("cc_quick_shots", 0) / max(1, self.stats["aimed_shots"]), 2)
+
+    def _lock_tick(self, snap, now) -> None:
+        """aimed_hits: an aimed shot's target's health fell within LOCK_HIT_S; boss_damage: the big ones' health lost
+        while locked on."""
+        hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
+        keep = []
+        for tid, t, h in self.lock_shots:
+            if tid in hp and hp[tid] < h:
+                self.stats["aimed_hits"] += 1
+            elif now - t <= LOCK_HIT_S and tid in hp:
+                keep.append((tid, t, h))
+        self.lock_shots = keep
+        big = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()
+               if (e.get("hp_max") or 0) >= BIG_HP}
+        if self.lock_tid in big and self.lock_tid in self._big_hp and big[self.lock_tid] < self._big_hp[self.lock_tid]:
+            self.stats["boss_damage"] += self._big_hp[self.lock_tid] - big[self.lock_tid]
+        self._big_hp = big
+
+    # --- down ---------------------------------------------------------------------------------------------------------
+    def _down_tick(self, p, snap, now) -> None:
+        """Down (DOWN_ACTIONS, kept through DOWN_KEEP's) or up; down_s, down_kills, down_recoveries, since_dying."""
+        act, hp, k = p.get("action"), p.get("hp"), snap.get("kills")
+        was = self.down
+        if act in DOWN_ACTIONS:
+            self.down = True
+        elif act not in DOWN_KEEP:
+            self.down = False
+        if self.down and not was:
+            self.down_dying, self.down_kills_k = hp == DYING_HP, k
+            self._gun_down()
+        if self.down:
+            self.down_dying = self.down_dying or hp == DYING_HP
+            self.stats["down_s"] = round(self.stats["down_s"] + TICK_S, 2)
+            if isinstance(k, int) and isinstance(self.down_kills_k, int) and k > self.down_kills_k:
+                self.stats["down_kills"] += k - self.down_kills_k
+            self.down_kills_k = k
+        if was and not self.down:
+            if act in GETUP_ACTIONS or (hp or 0) > 0:
+                self.stats["down_recoveries"] += 1
+            self.since_dying = self.down_dying
+        if isinstance(hp, int) and hp > DYING_HP:
+            self.since_dying = False
+
+    def _down_fight(self, p, snap, now) -> dict:
+        """Down: the nearest within DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R), no tablet, no
+        stick; nobody near: the stick up to rise."""
+        me = p["pos"]
+        near = sorted((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
+                       and math.dist(me, e["pos"]) <= DOWN_FIGHT_R and not self.is_blocked(e, now)),
+                      key=lambda e: math.dist(me, e["pos"]))
+        if not near:
+            self._gun_down()
+            return self._go("down", "down_rise", {"hold": ("lup",)}, "down, nobody near: rising")
+        e = near[0]
+        d = math.dist(me, e["pos"])
+        if d < MELEE_R and now - self.melee_at >= MELEE_GAP_S:
+            self.melee_at = now
+            self.stats["melee"] += 1
+            return self._go("down", "down_kick", {"tap": "zr"}, f"down: a kick at the one at {d:.0f} cm")
+        if self.aim_since is None:
+            self.aim_since = now
+        locked = self._lock(p, e, snap, now)
+        origin = dot = None
+        source = "laser"
+        lz, cam = snap.get("laser"), snap.get("camera")
+        if lz is not None and lz.get("up"):
+            origin, dot = tuple(lz["from"]), tuple(lz["at"])
+        elif cam is not None:
+            origin, dot, source = cam["pos"], cam["target"], "camera"
+        on_e = self._on_line(origin, dot, source, near, now) if origin is not None else None
+        trig = self._trigger(on_e is not None, now, p.get("weapon_id") in AUTO_IDS)
+        steer = set()
+        if not locked and origin is not None:
+            yaw_err, pitch_err = ray_error(origin, dot, aim_point(e, me))
+            steer = self._yaw(yaw_err) | self._pitch(pitch_err)
+        if trig:
+            self.stats["down_shots"] += 1
+            if locked:
+                self._aimed_shot(on_e, now)
+        keys = {"zl"} | trig | steer
+        return self._go("down", "down_fire" if on_e is not None else "down_aim", {"hold": tuple(sorted(keys))},
+                        f"down: {'firing at' if on_e is not None else 'aiming at'} the one at {d:.0f} cm"
+                        + (" (lock)" if locked else ""))
+
+    # --- hazards ------------------------------------------------------------------------------------------------------
+    def _hazard_tick(self, p, live, flat, now) -> None:
+        """His health falling with nobody within HAZARD_CONTACT_R, not held and not his blast: a hazard marked at his
+        spot (HAZARD_R, HAZARD_S); hazard the mark he stands in; hazard_s the time in one."""
+        hp, px, pz = p.get("hp"), p["pos"][0], p["pos"][2]
+        if (isinstance(hp, int) and isinstance(self._hz_hp, int) and hp < self._hz_hp and not self.in_hold
+                and p.get("state") not in HELD_STATES and self.doing != "bomb"
+                and not any(flat(e) <= HAZARD_CONTACT_R for e in live)):
+            if not any(math.hypot(px - x, pz - z) <= HAZARD_R * 0.5 for x, z, _u in self.hazards):
+                self.stats["hazard_marks"] += 1
+            self.hazards.append((px, pz, now + HAZARD_S))
+        self._hz_hp = hp if isinstance(hp, int) else self._hz_hp
+        self.hazards = [h for h in self.hazards if h[2] > now][-12:]
+        inside = [(x, z) for x, z, _u in self.hazards if math.hypot(px - x, pz - z) <= HAZARD_R]
+        self.hazard = min(inside, key=lambda h: math.hypot(px - h[0], pz - h[1])) if inside else None
+        if self.hazard is not None:
+            self.stats["hazard_s"] = round(self.stats["hazard_s"] + TICK_S, 2)
 
     # --- taunts -----------------------------------------------------------------------------------------------------
     def _taunt_watch(self, snap, now) -> None:
@@ -2946,6 +3270,8 @@ class RE6Switch(Driver):
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
                       "quick_attacks", "quick_attack_kills", "pursuits", "pursuit_kills", "pursuit_lapses", "taunts",
+                      "aim_locks", "lock_write_ok", "lock_write_fail", "lock_fallbacks", "aimed_shots", "aimed_hits",
+                      "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths", "hazard_marks",
                       "taunts_seen",
                       "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
@@ -3038,7 +3364,7 @@ class RE6Switch(Driver):
         if learn_dir is None:                                    # the deployment: gbox-data/mercs/learned/<title>
             from .. import lessons as L
             learn_dir = L.ROOT.parent / "learned" / MAP_ID
-        return Bot(stats=stats, clock=clock, learn_dir=learn_dir)
+        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m))
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]
