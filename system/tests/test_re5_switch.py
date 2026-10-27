@@ -410,23 +410,54 @@ def test_bot_without_a_laser_unit_aims_by_heading():
     assert b.tick(snap_with(None))["hold"] == ()
 
 
-def test_bot_answers_continue_no_by_the_cursor_in_ram():
+def test_bot_answers_continue_by_the_cursor_in_ram_yes_for_the_pace():
     b, clock = brain()
     dead = lambda cursor: dict(bot_snap(hp=0), continue_cursor=cursor)
     assert b.tick(dead(None)) == {"hold": ()}                                 # the death animation
     clock[0] = R.DEAD_WAIT_S
     assert b.tick(dead(None)) == {"hold": ()}                                 # "Continue?" not up yet: no press
-    assert b.tick(dead(0)) == {"tap": "dright"}                               # on Yes: to No first, never A
-    assert b.tick(dead(R.CONTINUE_NO)) == {"tap": "a"}                        # on No: confirm
+    assert b.tick(dead(R.CONTINUE_NO)) == {"tap": "dleft"}                    # on No: to Yes first, never A
+    assert b.tick(dead(R.CONTINUE_YES)) == {"tap": "a"} and b.continued == "yes"   # Yes: the same round again
+
+
+def test_bot_answers_continue_no_when_replays_are_off(monkeypatch):
+    monkeypatch.setattr(R, "REPLAY_ON_DEATH", False)
+    b, clock = brain()
+    dead = lambda cursor: dict(bot_snap(hp=0), continue_cursor=cursor)
+    b.tick(dead(None))
+    clock[0] = R.DEAD_WAIT_S
+    assert b.tick(dead(R.CONTINUE_YES)) == {"tap": "dright"} and b.tick(dead(R.CONTINUE_NO)) == {"tap": "a"}
+    assert b.continued == "no"
+
+
+def test_a_replay_after_continue_yes_counts_as_the_next_round():
+    b, clock = brain()
+    alive = lambda timer: dict(bot_snap(), timer=timer, timer_start=120.0)
+    b.tick(alive(80.0))
+    first = b._round_started
+    assert first == 0.0 and "deaths_continued" not in b.stats
+    clock[0] = 1.0
+    b.tick(dict(bot_snap(hp=0), continue_cursor=None))                       # he dies
+    clock[0] = 1.0 + R.DEAD_WAIT_S
+    b.tick(dict(bot_snap(hp=0), continue_cursor=R.CONTINUE_YES))              # Yes
+    clock[0] = 20.0
+    b.tick(alive(119.6))                                                      # the replay's first tick: a full clock
+    assert b.stats["rounds"] == 1 and b.stats["deaths_continued"] == 1 and b.stats["round_start_via"] == "dead/retry"
+    assert b._round_started == 20.0 != first                                 # the engine sees a new round
+    clock[0] = 30.0
+    b.tick(dict(bot_snap(hp=0), continue_cursor=None))                       # a death whose answer is not seen ...
+    clock[0] = 40.0
+    b.tick(alive(60.0))                                                       # ... and a clock far from full: no count
+    assert b.stats["rounds"] == 1 and b._round_started == 20.0
 
 
 def test_the_continue_dialog_has_a_cursor_for_the_menus_walk():
     g = round_guest(phase=R.PHASE_PLAYING, hp=0, units=((28, "uIdGameover00"),))
     scr = R.screen(g)
-    assert (scr["where"], scr["cursor"], scr["target"]) == ("dead", 0, R.CONTINUE_NO) and R.step(scr) == "dright"
+    assert (scr["where"], scr["cursor"], scr["target"]) == ("dead", 0, R.CONTINUE_YES) and R.step(scr) == "a"
     u = R.ui_units(g)["uIdGameover00"]
     g.i32(u + R.CONTINUE_CURSOR, R.CONTINUE_NO)
-    assert R.step(R.screen(g)) == "a" and R.snapshot(g)["continue_cursor"] == R.CONTINUE_NO
+    assert R.step(R.screen(g)) == "dleft" and R.snapshot(g)["continue_cursor"] == R.CONTINUE_NO
     assert "continue_cursor" not in R.snapshot(round_guest())                 # alive: no dialog read
 
 

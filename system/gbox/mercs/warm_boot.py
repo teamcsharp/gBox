@@ -32,20 +32,42 @@ def _confirmed_resume(result) -> bool:
                                          or result.get('state') in ('PLAYING', 'RUNNING'))
 
 
+def title_probe(adapter, game):
+    """A title's own warm-readiness reader: warm_probe(m) in its RAM map's mercs menus module (RE5 Switch:
+    gbox.mercs.titles.re5_switch), for the titles without a reader here. Found from the catalog game alone (never by
+    reading guest memory) and only for a map of the session's own platform. It lives in a bot module, so it
+    hot-reloads with the bot; None when the game has no such reader."""
+    import importlib
+    from .. import ram_map
+    game = game or {}
+    try:
+        rm = ram_map.find({k: game[k] for k in ('game_id', 'ram_map') if game.get(k)})
+        menus = ((rm.spec or {}).get('mercs') or {}).get('menus') if rm is not None else None
+        if not menus or rm.platform != game.get('platform'):
+            return None
+        reader = getattr(importlib.import_module(menus), 'warm_probe', None)
+    except Exception:  # noqa: BLE001 - no map, a module that does not import: no reader
+        return None
+    return reader if callable(reader) else None
+
+
 def native_probe(adapter, game):
     """Use measured readers only; guest mappings and process life are not ready."""
     from .. import mercs_bot
     memory = None
+    re4 = game.get('game_id') in RE4_IDS and game.get('platform') == 'gamecube'
+    re5 = game.get('game_id') == RE5_ID and game.get('platform') == 'ps3'
+    reader = None if re4 or re5 else title_probe(adapter, game)
 
     def probe():
         nonlocal memory
-        re4 = game.get('game_id') in RE4_IDS and game.get('platform') == 'gamecube'
-        re5 = game.get('game_id') == RE5_ID and game.get('platform') == 'ps3'
-        if not re4 and not re5:
+        if not re4 and not re5 and reader is None:
             return {'ready': False, 'unsupported': True, 'screen': 'unknown',
                     'reason': 'No verified native warm-readiness reader for this exact game/platform.'}
         if memory is None:
             memory = mercs_bot._memory(adapter)
+        if reader is not None:
+            return reader(memory)
         if re4:
             from .. import re4_menus as menus
             # screen() also checks these signatures, but caches a success on

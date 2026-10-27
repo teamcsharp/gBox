@@ -185,3 +185,49 @@ round at once, and No saves ("Save successful") and goes on to the results flow.
 only with the cursor read on No. A forced death (health 0 in the private session) went dialog, D-pad right until the
 cursor read No, A, "Save successful". Dying (health 1) shows "Resuscitate" with A: the bot mashes A then; a hold shows
 "Break free" with the left stick, which it shakes.
+
+**The pace** (re5_switch.REPLAY_ON_DEATH, as re5_ps3.Pace does on PS3; operator: "match to match to match without
+these loading screens and waiting"): No Mercy here is always the same stage and character, so a death now answers
+**Yes**. That is the same round again at once, with no save, no selects and no loading; No would cost the save and
+both selects. The answer still goes in only with the cursor read on it, for the bot and for the menus walk alike. The
+engine publishes MercMode's round boundary at the death (terminal witness "dead") and closes that round's evidence.
+The bot counts the replay as the next round: stats rounds +1, deaths_continued, round_start_via "dead/retry", and a
+new _round_started marker for the engine, on the first tick alive with the clock within 3 s of its full time (a time
+bonus raising the clock is not a new round).
+
+## The RomFS: player models (for LayeredFS builds, docs/switch-mods.md)
+
+The program NCA (15af72f2..., 20.0 GB) holds the RomFS under `nativeNXx64/`. Each player costume is one MT Framework
+ARC v7 (header `ARC\0`, version 7, a count, then 0x50-byte entries: a 64-byte path, the type hash, the compressed and
+decompressed sizes (top 3 bits flags), the offset; zlib blobs packed back to back from 0x8000). The files are named
+after the player classes the RAM shows: `ImgNX/Archive/uPl00ChrisNormal.arc` (Chris BSAA, 327 entries, 43 MB),
+uPl00ChrisCos1-4 / Plain / Ep1 / ArmorA-F, uPl01ShebaNormal.arc (332 entries) and her costumes, uPl02Jill, uPl03Wesker,
+uPl04Josh, uPl05Excella, uPl06Barry and uPl07Rebecca. Inside, resources are named by path (`pawn\pl\pl00\model\pl00arm_BM`
+...), and Chris's code asks for `pl00` names, so another character's archive under his name would miss them. Of Chris's
+own costumes, Cos1 shares 323 of the 327 entries byte for byte; only the model entries differ (`pawn\pl\pl00\model\pl00`,
+`pl0000`). A texture swap of equal size (same TEX header) is safe. For the #1227 live check, Chris's shirt (`pl00Shats_BM`)
+got Sheva's arm skin (`pl0100_05Arm_BM`), and his face got hers, both 1,400,384 bytes. The files were read from the NSP with
+a scratch reader using the Spark's own prod.keys (gBox itself has no NCA decryption).
+
+## MercMode's warm pool (2026-10-26, one private Citron run of 162 s)
+
+`gbox.mercs.warm_boot` boots the next MercMode game in the background, pauses it (SIGSTOP) at a stable native menu,
+and later drives its menus to a round's first frame and parks it there paused, so the swap lands in a round. RE5 Switch
+has its own reader, `re5_switch.warm_probe`, which warm_boot finds through the RAM map (`title_probe`). It pins the
+build by main's 64-byte signature and calls these ready: the title (below), "Load successful", main menu, PLAY GAME,
+The Mercenaries United, and the stage and character selects. Each is tokened by its unit, never while NOW LOADING is up.
+
+- **Boot**: uIdAlert00 (8.6 s), + uIdNowLoading00 (9.6 s), then uIdAlert00 + uIdTitle00 (10.6 s), with the screen still
+  black (frame at 18.7 s). The only state change while it waits is a pointer at uIdTitle00 +0x18, set about 6 s after
+  the unit (+0x28 is a float that animates throughout). Title ready = the unit with +0x18 set; nothing is pressed there.
+  The menus need 0.3 s presses: a 0.15 s A after the title pause did nothing, and the walk's 0.3 s presses went title,
+  "Load successful", the menus, the intro in 28 s.
+- **The park**: the menus' `screen()` calls the round's intro "playing" (player in the stage, phase 0, no NOW LOADING;
+  the HUD units are up, the timer reads 120.0). The prepare walk stops there, before the clock runs, as on the PS3. The
+  engine's own screen keeps "loading" for the intro and waits through it.
+- **Pause and resume** (the adapter's SIGSTOP / SIGCONT): 20 s at the title and 60 s in the intro were both clean.
+  After the long pause the intro carried on for 10.5 s, then phase 1 started at 119.84 and counted at the normal rate.
+  There is no clock jump: the paused minute does not come off the round. PulseAudio's sink inputs (PipeWire) were the
+  same before and after (the stream survived), and Citron's log had no error, audio, Vulkan or "lost" line.
+  Frames (black title at 18.7 s, the parked intro, 15 s after resume):
+  docs/evidence/switch-citron/re5-switch-warm-park.jpg.

@@ -180,6 +180,18 @@ yet; only the tests above have.
 
 1. Eden on the Spark boots RE5 with an overlay build enabled, and `eden_log.txt` shows
    `RomFS: LayeredFS patches applied successfully`. With the original selected that line is absent.
+   **Checked live 2026-10-26 on Citron NEO** (now the canonical Switch emulator; the same LayeredFS code as Eden), in a
+   private Citron home on the Spark (its own Xvfb, never a gBox session). This module's own calls made the overlay:
+   `write_files` built `sheva_textures` (one file, `romfs/nativeNXx64/ImgNX/Archive/uPl00ChrisNormal.arc`, 43,488,626
+   bytes, edit applied) in a scratch cache. `prepare_launch` linked it into `load/010018100CD46000/sheva_textures`
+   (mode link, enabled, nothing disabled, config unchanged), and the archive was reachable through the link.
+   The archive is Chris's own with two texture blobs from Sheva's (her arm skin in his shirt slot, her face in his face
+   slot; byte-identical TEX headers, every entry inflating to its size). Citron booted with it and the bot's menu walk
+   took it to a round in 29 s. **Chris's shirt shows Sheva's skin texture** in the intro and the round
+   (docs/evidence/switch-citron/re5-switch-layeredfs-before-after.jpg, real frames: vanilla from the same day beside the
+   overlay run; re5-switch-layeredfs-frames.jpg). The log line itself is not in `citron_log.txt`: Citron's default
+   `log_filter` is `*:Warning`, which drops Info messages like the LayeredFS one. A run with `log_filter="*:Info"`
+   should record it; that run has not been made yet.
 2. The symlinked build folder is listed in Eden's per-game Add-Ons tab, with the right box checked after a gBox start.
 3. `restart_title` on the Spark: the same session keeps streaming, the pump re-docks the new pid, audio follows
    (broadcast taps by `detail.pid`), and RE5 boots with the edited file.
