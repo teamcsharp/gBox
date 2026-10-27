@@ -154,6 +154,14 @@ SHOOT_KEEP = 3800.0                              # ... and with the gun already 
                                                  # (today 30 % of the raises that never fired came down as he stepped past
                                                  # 2.4 m - median 2.15 m at the last aim - for a run at him; 14 % for a bonus)
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
+# the fight or the bonus run, one at a time (operator 2026-10-26 live: "hold fire: wall in the aim line" -> "run to a time
+# bonus 2.6 m" -> "turning to slot 71 (gun down)" -> "run to a time bonus 2.5 m", a flip every second or two)
+BONUS_SAFE_R = 2000.0                            # a bonus run gives way to a Ganado in view this close (about to reach him)
+BONUS_SAFE_S = 1.5                               # ... or to an attack / a thrown weapon landing within this
+BONUS_BREAK_R = 3000.0                           # a fight is broken off for a time bonus only with no Ganado in view this
+                                                 # close (2.0 .. 3.0 m: the hysteresis band - no flipping on its edge)
+FIGHT_KEEP_S = 1.5                               # a fight holds this long after its last Ganado in view (regain sight)
+COMMIT_MIN_S = 1.0                               # either one lasts at least this long, unless an attack is landing
 PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick down, one up - ~10 presses a second, the loop's
                                                  # limit (operator 2026-10-26: "leon needs to fire about 20x faster"; the gun's
                                                  # own interval is already /20, so presses were the cap at 0.30/0.40 = 1.4 a second)
@@ -162,15 +170,19 @@ PRESS_HOLD, PRESS_GAP = 0.04, 0.09               # the trigger: one 50 ms tick d
 # shot at the gun's own, now ~1-frame, interval - instead of ~6 presses a second. Held for RAPID_PROOF_S with no shot and
 # no Ganado's health falling: this gun wants presses after all, and the round taps (stats trigger_mode says so).
 RAPID_FIRE, RAPID_PROOF_S = True, 0.8
+FIRE_FRESH_F = 2.0            # the fire motion's frame this low as the routine enters 00 06 02: the motion has started
+                              # (else its start - the frame dropping to 1 a frame or two later - is this shot's own)
 TRIGGER_LEARN_S = 2.0         # a weapon class's held (or pressed) trigger on target this long measures its shots a second
 TRIGGER_MIN_RATE = 3.0        # held fire under this many shots a second is not auto-repeating: rapid presses instead
 TRIGGER_DECAY = 0.8           # each round a class fired in keeps this share of its measurements (newer rounds count more;
                               # a class pressed for long enough gets its held trigger tried again)
 TRIGGER_FILE = "trigger_classes.json"
 TRIGGER_PRIOR = {             # live 2026-10-26, MercMode on the Spark (its RAM read at 120 Hz, read-only, and the round
-                              # maps): held A does not repeat these; pressed on target they fire about every other press
-    "shotgun": {"hold": [4.0, 0], "tap": [4.0, 26]},     # held 0.7 s: nothing; presses 12.2/s -> 6.7 shots/s
-    "rifle": {"hold": [4.0, 1], "tap": [4.0, 24]},       # held on target: 2 shots in 31 s; presses 11.1/s -> 5.9 shots/s
+                              # maps): held A does not repeat these; pressed on target, one shot per 3-4 presses (the
+                              # game takes a press only once the gun is ready again)
+    "shotgun": {"hold": [4.0, 0], "tap": [4.0, 16]},     # held 0.7 s: nothing; presses 12.2/s -> 3.4-4.6 shots/s (each
+    "rifle": {"hold": [4.0, 1], "tap": [4.0, 13]},       # shot counted once); held on target: 2 shots in 31 s; presses
+                                                         # 11.2/s -> 3.1 shots/s (its aim motion reaches frame ~9 first)
     "handcannon": {"hold": [4.0, 1]},                    # "A held for 0.8 s fired nothing" (2 rounds, 18:55 and 19:37)
 }
 URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing this soon this close: any shot into his
@@ -484,6 +496,18 @@ def aim_of(m, pl: int, rot: float, r: tuple) -> tuple:
     return wrap(rot + off), off, pitch
 
 
+def aim_live(m, pl: int, r: tuple) -> bool:
+    """The game's aim readings (AIM_YAW_OFF, AIM_PITCH) follow the stick now: False while he aims with the yaw offset
+    holding the game's marker (123.0, out of its range). That is the semi-auto rifle's scope aim. Live 2026-10-26
+    (MercMode's RAM at 120 Hz, read-only): in 1088 aim samples with the marker the pitch never moved, stick pushes
+    included; in 239 without it, it moved 58 times. Real rifle shots with a stale pitch far off level hit 13 %; near
+    level, 40 %."""
+    if len(r) < 2 or r[0] != 0 or r[1] != AIM_R1:
+        return True
+    off = struct.unpack(">f", m.rd(pl + AIM_YAW_OFF, 4))[0]
+    return math.isfinite(off) and abs(off) <= 0.5
+
+
 def snapshot(m) -> dict:
     """room, Merc clock (s), combo, Leon's health, Leon {ptr, pos, rot (his facing), aim_rot (where the gun points:
     facing + the aim's offset), aim_off, pitch (the aim's, radians), r (his routine bytes), stick (the game's pad x,
@@ -501,7 +525,8 @@ def snapshot(m) -> dict:
         r = tuple(m.rd(pl + threats_ram.EM_ROUTINE, 4))
         aim_rot, aim_off, pitch = aim_of(m, pl, rot, r)
         player = {"ptr": pl, "pos": struct.unpack(">3f", m.rd(pl + 0x94, 12)), "rot": rot, "aim_rot": aim_rot,
-                  "aim_off": aim_off, "pitch": pitch, "r": r, "stick": struct.unpack(">bb", m.rd(GAME_PAD, 2))}
+                  "aim_off": aim_off, "pitch": pitch, "aim_live": aim_live(m, pl, r), "r": r,
+                  "stick": struct.unpack(">bb", m.rd(GAME_PAD, 2))}
         # his main motion's frame (the cEm MOTION_INFO the Ganados have at the same offsets): each shot restarts the fire
         # motion, so with A held a frame running backwards in 00 06 02 is the next shot (Bot._shot_seen)
         frame, frames = struct.unpack(">fH", m.rd(pl + threats_ram.EM_FRAME, 6))
@@ -985,6 +1010,8 @@ class Bot:
         self._look_pub, self._look_ver = -math.inf, -1
         self._look_pos = None                         # (now, x, z, rot) of the last idle check
         self._wall_line = None                        # (slot, since): the aim line on a wall at this target
+        self.commit = None                            # ("fight" | "bonus", since, why): what he is committed to now
+        self._fight_seen_at = -math.inf               # the last time a Ganado was in view to fight
 
     def new_round(self) -> None:
         """A new round begins (play(): its first in-round frame): what the last round learned is saved, and everything
@@ -1019,6 +1046,8 @@ class Bot:
         self._death_logged = False
         self.dead_no = False                          # this round's death gets its own Continue answer
         self._ran, self._fire_frame = False, None     # no run or fire motion carried over (_go's stuck, _shot_seen)
+        self._fire_started = True
+        self.commit, self._fight_seen_at = None, float("-inf")   # neither a fight nor a bonus run carried over
         self.portals = {}                             # the stage's doorways: _round() seeds them again (StageKnowledge)
         self.lock, self._lateral = None, 0.0          # no aim lock or path offset from the last round
         self._steer_last = self._steer_dir = 0        # the run's steering and the aim's slew start clean (_steer, _aim_turn)
@@ -1385,6 +1414,7 @@ class Bot:
         if line[0] == "wall" and line[1] < dist - WALL_LINE_MARGIN and not tgt.get("thrown"):
             return self._wall_hold(tgt, dist, line, aim_keys | height, tag, now)
         self._wall_line = None
+        self._look_ctx["line"] = (line, now)                              # the line the trigger was pulled on (the look)
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         self.stats["combat"] = f"{tag}on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
         self.stats["fire_gate"] = "on him"
@@ -1437,7 +1467,7 @@ class Bot:
         foe's slot or None). "off": the gun is not up or no pitch was read. Foes are FOE_H tall (a chicken
         SMALL_BODY[1]) and BODY_HALF_W wide (CHICKEN_HALF_W); a thrown weapon (tgt) is a 300 mm ball; the floor is level
         with his feet; walls are the disc's (re4_collision.raycast: fences and windows let through, as the bullets)."""
-        pitch = p.get("pitch")
+        pitch = 0.0 if p.get("aim_live") is False else p.get("pitch")   # (stale readings: level, as raised)
         if self.r_since is None or pitch is None:
             return "off", DOT_RANGE, None
         px, py, pz = p["pos"]
@@ -1494,8 +1524,11 @@ class Bot:
                     target = make_look_target(slot, ctx.get("kind"), math.hypot(dx, dz) / 1000.0,
                                               -math.degrees(wrap(h - p["rot"])))          # + to his right
                     err_deg = -math.degrees(wrap(h - p.get("aim_rot", p["rot"])))
-            line = self._aim_line(p, s, tgt)
-            weapon, gate = weapon_name(s.get("weapon")), ctx.get("gate") or self.stats.get("fire_gate") or ""
+            fired_on = ctx.get("line")                  # the line the trigger was pulled on (a tick ago), not the one
+            line = fired_on[0] if fired_on and now - fired_on[1] < 0.3 else self._aim_line(p, s, tgt)   # now: a target
+            weapon, gate = weapon_name(s.get("weapon")), ctx.get("gate") or self.stats.get("fire_gate") or ""   # killed
+                                                        # by the shot no longer stands in it (live: "wall" right after
+                                                        # "hit:ganado")
             for _ in range(min(new, 30)):
                 self._look_pending.append(self.look.record_shot(weapon, gate, target, err_deg, line[0]))
                 self.metrics.shot_line(line[0])
@@ -1664,8 +1697,13 @@ class Bot:
         return mode == "hold"
 
     def _shot_seen(self, p, now):
-        """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20), or - A held at
-        the x80 interval keeps him in it - the fire motion's frame running backwards there (the motion restarted)."""
+        """A shot as the game fires it: his routine entering 00 06 02 (the fire motion; live 2026-10-20), or - a gun that
+        repeats while A is held keeps him in it - the fire motion's frame running backwards there (the motion restarted).
+        The motion's own start is not a second shot. The routine enters 00 06 02 with the aim motion's frame (9-28), and
+        a frame or two later the fire motion starts over at 1. Live 2026-10-26, with MercMode's RAM read at 120 Hz, that
+        drop came right after the entry in 63 of 68 semi-auto rifle shots and 26 of 27 shotgun shots. Counting it doubled
+        the shots: each real one was followed 70 ms later by a 'miss:no_damage' in stats.look, and the trigger book's
+        rates were inflated."""
         r = p.get("r")
         if not r or len(r) < 3:
             return
@@ -1673,11 +1711,20 @@ class Bot:
             self.shot_ram = True                            # this RAM shows the aim states: count shots from it
         firing = r[0] == 0 and r[1] == AIM_R1 and r[2] == 2
         frame, last = p.get("mframe"), getattr(self, "_fire_frame", None)
-        restarted = firing and self._was_firing and frame is not None and last is not None and frame < last - 0.5
-        if (firing and not self._was_firing) or restarted:
-            self.shots.fired(now)
-            if restarted:
+        dropped = firing and self._was_firing and frame is not None and last is not None and frame < last - 0.5
+        shot = False
+        if firing and not self._was_firing:
+            shot = True
+            self._fire_started = frame is not None and frame <= FIRE_FRESH_F   # its motion already under way
+        elif dropped:
+            if getattr(self, "_fire_started", True):
+                shot = True                                 # the motion restarted: a repeat (held auto-fire)
                 self.stats["shots_held"] = self.stats.get("shots_held", 0) + 1
+            else:
+                self._fire_started = True                   # the entry shot's own motion starting: the same shot
+                self.stats["fire_motion_starts"] = self.stats.get("fire_motion_starts", 0) + 1
+        if shot:
+            self.shots.fired(now)
             if getattr(self, "target_thrown", False):
                 self.stats["thrown_shot"] += 1
         self._was_firing = firing
@@ -2100,6 +2147,8 @@ class Bot:
         brings the aim to HEAD_AIM_H and holds it there, steady. band: (lo, hi, aim) above his feet for a target that is
         not standing head-high (body_band: on the ground, a chicken)."""
         band_lo, band_hi, band_aim = band or BODY_BAND
+        if p.get("aim_live") is False and self.r_since is not None and self._pose_up(p, now):
+            return self._scope_level()                # the stale pitch is no guide: level, as raised
         cur = p.get("pitch")
         if cur is None or self.r_since is None or not self._pose_up(p, now):
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
@@ -2117,11 +2166,21 @@ class Bot:
             return keys, False                        # at the game's pitch limit and still above him: no shot over him
         return keys, level
 
+    def _scope_level(self) -> tuple[set, bool]:
+        """The aim readings are stale (aim_live False: the rifle's scope aim). Nothing pushes the stick up or down from
+        them: they had steered the aim off level blind, then fired at "the game's limit". The shot goes level, as the aim
+        was raised (stats aim_scope_level)."""
+        self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
+        self.stats["aim_scope_level"] = self.stats.get("aim_scope_level", 0) + 1
+        return set(), True
+
     def _aim_height(self, p, target_y: float, dist: float, now: float, offset: bool = True) -> tuple[set, bool]:
         """The stick key that moves the aim towards target_y while R is held, and whether the aim is there. Reads the
         game's own pitch (AIM_PITCH) and never writes it: the game keeps the pose and its limits. Which direction raises
         it is learned from what the last push did (two contradicting pushes in a row flip it). offset: add the aim
         height learned from misses (not for a level shot at the chest)."""
+        if p.get("aim_live") is False and self.r_since is not None and now - self.r_since >= PITCH_AFTER:
+            return self._scope_level()                # the stale pitch is no guide: level, as raised
         cur = p.get("pitch")
         if cur is None or self.r_since is None or now - self.r_since < PITCH_AFTER:
             self.pitch_key, self.pitch_seen, self.pitch_push = None, None, None
@@ -2722,6 +2781,103 @@ class Bot:
             self.metrics.lower_gun()
         return act
 
+    def _commit(self, mode: str, why: str, now: float, force: bool = False) -> bool:
+        """Commit to the fight or to the bonus run (stats commit / commit_changes; a decision in stats.look when it
+        changes). A change inside COMMIT_MIN_S is refused unless forced (an attack landing). True when committed."""
+        cur = self.commit
+        if cur is not None and cur[0] == mode:
+            return True
+        if cur is not None and not force and now - cur[1] < COMMIT_MIN_S:
+            return False
+        self.commit = (mode, now, why)
+        self.stats["commit"] = f"{mode}: {why}"[:160]
+        self.stats["commit_changes"] = self.stats.get("commit_changes", 0) + 1
+        try:
+            self.look.record_decision("fight" if mode == "fight" else "take_bonus",
+                                      "engage" if mode == "fight" else "break off for the bonus", why, t=now)
+        except Exception:                             # noqa: BLE001 - the view never stops the bot
+            pass
+        return True
+
+    def _danger(self, p, s, within: float, now: float) -> str | None:
+        """Why a Ganado is about to reach him: an attack or a thrown weapon landing within BONUS_SAFE_S, or a live
+        Ganado (not a chicken) in view within `within`; None when none is (self._danger_foe: that Ganado, if one)."""
+        self._danger_foe = None
+        for t in getattr(self, "_threats", None) or ():
+            if t.kind not in ("near", "down") and t.eta < BONUS_SAFE_S:
+                return f"{t.kind} from slot {t.slot} lands in {t.eta:.1f} s"
+        px, _, pz = p["pos"]
+        best = None
+        for e in s.get("enemies") or ():
+            if threats_ram.dying(e) or 0 < (e.get("hp_max") or 0) <= SMALL_HP:
+                continue
+            d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            if d < within and (best is None or d < best[0]) \
+                    and self._sight(p, (e["pos"][0], e["pos"][1] + HEAD_H, e["pos"][2])):
+                best = (d, e)
+        if best is None:
+            return None
+        self._danger_foe = best[1]
+        return f"slot {best[1]['slot']} {best[0] / 1000:.1f} m away"
+
+    def _fight_or_bonus(self, p, s, near, dist, fight_ok, fight_r, pending, now):
+        """One at a time: the fight, or the bonus run (operator 2026-10-26: "commit to one: finish or break off the fight
+        with a reason, and take a bonus only when no Ganado is about to reach him"). Without time bonuses left, any
+        Ganado in view within ENGAGE is fought. With them:
+          * a bonus run gives way only to a Ganado in view within BONUS_SAFE_R, or to an attack landing within
+            BONUS_SAFE_S (an attack itself is _combat's, before this);
+          * a fight goes on while a Ganado in view is within BONUS_BREAK_R (or the gun is up on its target), and for
+            FIGHT_KEEP_S after the last such moment, with nothing about to reach him. Meanwhile it regains sight of
+            the target, and a bonus run never cuts in. After that it is broken off for the bonus, with the reason;
+          * with neither, a Ganado in view within fight_r (or about to reach him) starts the fight, else the bonus run.
+        Either one lasts COMMIT_MIN_S at least (no flip each tick). Returns the fight's action, or None: the bonus
+        route / the navigation below goes on."""
+        mode = self.commit[0] if self.commit else None
+        if not pending:
+            if fight_ok:
+                self._fight_seen_at = now
+                self._commit("fight", f"slot {near['slot']} in view {dist / 1000:.1f} m away", now, force=True)
+                return self._fight(p, near, now, s)
+            return None
+        hot = fight_ok and (dist < BONUS_BREAK_R or (self.r_since is not None and near["slot"] == self.lock))
+        if mode == "bonus":
+            danger = self._danger(p, s, BONUS_SAFE_R, now)
+            if not danger and fight_ok and 0 < (near.get("hp_max") or 0) <= SMALL_HP and dist < fight_r:
+                danger = f"low health: the chicken in slot {near['slot']} first (its egg heals)"   # (a target only then)
+            if danger and fight_ok and self._commit("fight", f"{danger}: the bonus run gives way", now,
+                                                    force="lands" in danger):
+                self._fight_seen_at = now
+                return self._fight(p, near, now, s)
+            return None                                                   # the bonus run goes on
+        if mode == "fight":
+            if hot:
+                self._fight_seen_at = now
+                return self._fight(p, near, now, s)
+            danger = self._danger(p, s, BONUS_BREAK_R, now)
+            lost = now - self._fight_seen_at
+            if danger or lost < FIGHT_KEEP_S or not self._commit(
+                    "bonus", f"no Ganado in view within {BONUS_BREAK_R / 1000:.0f} m for {lost:.1f} s: "
+                             "off to the time bonus", now):
+                if fight_ok:                                              # one in view further off: shot meanwhile
+                    return self._fight(p, near, now, s)
+                self.stats["phase"] = "fight"
+                foe = near if near is not None else (getattr(self, "_danger_foe", None) if danger else None)
+                if foe is not None:                                       # out of sight, or left for a wall in the
+                    fd = math.hypot(foe["pos"][0] - p["pos"][0], foe["pos"][2] - p["pos"][2])   # aim line: a line on him
+                    self.stats["combat"] = f"regaining a line on slot {foe['slot']} d {fd:.0f}"
+                    self.r_since = None
+                    return self._run_to(p, (foe["pos"][0], foe["pos"][1], foe["pos"][2]), now)
+                self.stats["combat"] = "the fight: waiting for a Ganado to show"
+                return {"hold": set()}
+            return None
+        if fight_ok and (dist < fight_r or self._danger(p, s, BONUS_SAFE_R, now)):
+            self._fight_seen_at = now
+            self._commit("fight", f"slot {near['slot']} in view {dist / 1000:.1f} m away", now, force=True)
+            return self._fight(p, near, now, s)
+        self._commit("bonus", "no Ganado about to reach him" if not fight_ok else
+                     f"slot {near['slot']} {dist / 1000:.1f} m away, not coming: the time bonus first", now, force=True)
+        return None
+
     def _dialog_answer(self, p, now) -> str:
         """A prompt stopped the clock ("Take the Handgun Ammo?"): Yes (A) only while he is taking a time bonus hourglass
         (its item goal at hand); every other pickup No (B) - infinite ammo is on (operator 2026-10-26: "They should just
@@ -2857,6 +3013,10 @@ class Bot:
         px, _, pz = p["pos"]
         act = self._combat(p, s, now)                                     # attacks, thrown weapons, a Ganado on him:
         if act is not None:                                               # before any bonus or route
+            if self.stats.get("phase") in ("fight", "evade", "run_out"):  # a threat answered: that is the fight now
+                self._fight_seen_at = now
+                self._commit("fight", "threat: " + str(self.stats.get("combat") or self.stats.get("phase"))[:80], now,
+                             force=True)
             return act
         act = self._ladder_descent(p, now)                                # up a ladder (the clock tower): down it first
         if act is not None:
@@ -2883,8 +3043,10 @@ class Bot:
             self.lock = near["slot"] if seen and dist < ENGAGE else self.lock
         fight_r = SHOOT_KEEP if self.r_since is not None and near is not None and near["slot"] == self.lock \
             else BONUS_FIGHT_R                                             # the gun up on him: no bonus detour mid-aim
-        if near and dist < ENGAGE and (seen if not pending else seen and dist < fight_r):
-            return self._fight(p, near, now, s)                           # in view (and, with bonuses left, close)
+        fight_ok = bool(near) and dist < ENGAGE and seen
+        act = self._fight_or_bonus(p, s, near, dist, fight_ok, fight_r, pending, now)
+        if act is not None:
+            return act
         if self.st is not None:
             if self.items and not self.ordered:                            # the round's route: best order from here
                 try:
