@@ -83,6 +83,23 @@ class Latency:
             self.onset.pop(k, None)
 
 
+def _enemy_round(title, stats=None) -> dict:
+    """The enemy knowledge database's round (gbox.mercs.enemy_db): stats None opens one, else closes it - its numbers
+    into stats and returned for the round's row (Notebook, round report). Never costs the round."""
+    if not title:
+        return {}
+    try:
+        from . import enemy_db
+        if stats is None:
+            enemy_db.round_begin(title)
+            return {}
+        return enemy_db.round_end(title, stats)
+    except Exception as exc:                          # noqa: BLE001 - the database never stops a round
+        if stats is not None:
+            stats["enemy_db_error"] = str(exc)[:200]
+        return {}
+
+
 def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sleep, clock=time.time,
                tick_s: float = 0.05, driver=None, brain=None, learn_dir=None, tactical=None, damage=None,
                session_runtime=None, observe_only=False) -> str:
@@ -204,6 +221,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 row['round_'+key] = round(max(0, end - (start if type(start) in (int, float) else 0)), 3)
         if row.get('round_accuracy') is not None:
             row['accuracy'] = row['round_accuracy']
+        row.update(_enemy_round(prof.get('map_id') if isinstance(prof, dict) else None, stats))
         if trace is not None:
             try:
                 # The writer owns this detached metric snapshot. Attaching its
@@ -259,6 +277,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     "completed_score_rank_source","finished_naturally"):
             stats.pop(key,None)
         stats.update(round_evidence_id=round_id,round_evidence_closed=False)
+        _enemy_round(prof.get("map_id") if isinstance(prof, dict) else None)
         if prof.get("map_id") == "BLUS30491":
             from .route_trace import Recorder
             from . import lessons as lesson_store
@@ -266,6 +285,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                              provenance=provenance)
 
     stats.update(round_evidence_id=round_id,round_evidence_closed=False)
+    _enemy_round(prof.get("map_id") if isinstance(prof, dict) else None)
 
     try:
         while not stopped():

@@ -64,7 +64,13 @@ METRICS = {
     'survival': ('round_holds', 'round_escapes', 'round_burst_backoffs', 'round_heals', 'round_heal_starts',
                  'round_heal_failures', 'round_dying', 'round_deaths', 'round_tablets', 'round_tablet_presses',
                  'round_tablet_misses', 'timer'),
+    # the enemy knowledge database (gbox.mercs.enemy_db): the shots / hits taken this round fed it, and what it knows
+    # for the title (classes, the samples behind them, classes learned with confidence >= 0.5); the report's
+    # enemy_knowledge line names the top classes' learned aim, range, shots to kill and danger
+    'enemy_knowledge': ('enemy_db_shots', 'enemy_db_hits', 'enemy_db_kills', 'enemy_db_damage', 'enemy_db_classes_seen',
+                        'enemy_db_classes', 'enemy_db_samples', 'enemy_db_learned'),
 }
+ENEMY_SUMMARY_MAX = 600
 
 
 def encoded(value):
@@ -161,6 +167,8 @@ def report_for(title, row, atlas, session, provenance=None):
                        'verified': assistance.get('verified') is True,
                        'effects': [str(x)[:80] for x in assistance.get('effects', [])[:20]]},
         'metrics': {group: {key: scalar(data.get(key)) for key in keys} for group, keys in METRICS.items()},
+        'enemy_knowledge': str(data['enemy_db_summary'])[:ENEMY_SUMMARY_MAX]
+            if isinstance(data.get('enemy_db_summary'), str) and data['enemy_db_summary'] else None,
         'last_obstruction': {k:v for k,v in (data.get('nav_obstruction_context') or {}).items()
             if k in ('floor','pos','goal','reason','source','collision_class','at')}
             if isinstance(data.get('nav_obstruction_context'),dict) else None,
@@ -188,6 +196,10 @@ def request_document(report, number, now):
         + (FOCUS.get(report['title']) or 'measured navigation, checkpoint, damage, mine-retreat and aim failures') + '. '
         + ('This title records no navigation atlas, checkpoints or mines: name them unknown, never infer them. '
            if report['title'] in NO_ATLAS else '')
+        + ('metrics.enemy_knowledge and enemy_knowledge are the enemy knowledge database: what this round fed it and '
+           'the learned per-class aim, range and danger; evaluate_aim may cite them. '
+           if report.get('enemy_knowledge') or any(v for v in (report['metrics'].get('enemy_knowledge') or {}).values())
+           else '')
         + 'Recommend at most three evidence-backed changes for independent review; '
         'no arbitrary coordinates or executable policy. The existing validated learner is separate. '
         'Do not claim improvement or policy application from this task. Post a concise analysis to this request '

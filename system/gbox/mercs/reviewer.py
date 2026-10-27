@@ -599,3 +599,14 @@ def routes(app, config, auth):
     @app.post("/api/mercs/reviewer/demonstrations/{identifier}/adopt")
     def adopt(identifier: str, body: dict, actor=Depends(auth)):
         return call(service.adopt,identifier,body.get("adopted"))
+
+    @app.get("/api/mercs/enemy-knowledge")
+    def enemy_knowledge(title: str = "", enemy_class: str = "", recent: int = 20, actor=Depends(auth)):
+        # The enemy knowledge database, read only (gbox.mercs.enemy_db.inspect): without a title the titles it holds;
+        # with one, per enemy class the learned plan, its sample counts and the recent outcomes. Imported here, not
+        # at the top: enemy_db is a bot module that reloads in place, this route module is not.
+        from . import enemy_db
+        if title and not TITLE.fullmatch(title):
+            raise HTTPException(400, "invalid title identifier")
+        return call(enemy_db.inspect, title or None, root_dir=service.root / "knowledge",
+                    enemy_class=enemy_class or None, recent=max(0, min(100, recent)))
