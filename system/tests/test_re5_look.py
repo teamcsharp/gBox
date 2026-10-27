@@ -256,3 +256,20 @@ def test_every_decision_change_is_kept_with_its_reason(tmp_path):
     assert decisions[-1]["reason"].startswith(f"Majini {hex(ENEMY)} 3.0 m +0 deg")
     assert all(d["phase"] == "clear_nearby" for d in decisions[-2:])
     assert math.isclose(decisions[-1]["t"], 10.1)
+
+
+def test_a_dropped_laser_read_guards_only_its_own_tick(tmp_path):
+    """The driver drops a torn read from the snapshot (laser_dropped says why): that tick's aim says so (aim_guard
+    "wild: ray dropped ..."), the next tick without a read does not carry it on."""
+    now = [10.0]
+    m, bot = bot_at(tmp_path, now)
+
+    def frame(laser):
+        s = snap(m, enemy=(0.0, 0.0, 300.0))
+        s.update(ground_mines={}, laser=laser, player=dict(s["player"], pitch=0.0))
+        return s
+    bot.tick(frame({"from": (900.0, 149.0, 46.0), "at": (900.0, 110.0, 400.0)}))
+    assert bot.stats["aim_guard"].startswith("wild: ray dropped (origin")
+    now[0] = 10.05
+    bot.tick(frame(None))
+    assert "aim_guard" not in bot.stats and bot.stats["laser_rejected"] == 1

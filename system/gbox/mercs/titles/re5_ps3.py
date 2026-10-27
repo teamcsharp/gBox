@@ -1995,11 +1995,9 @@ class Bot:
         ok, why = re5_engage.plausible(ray, snap.get("player") or {}, on_majini=re5_engage.under_dot(
             ray, snap.get("enemies") or (), re5_combat.dot_on) is not None)
         if not ok:
-            snap["laser_raw"], snap["laser"] = lz, None
+            snap["laser_raw"], snap["laser"], snap["laser_dropped"] = lz, None, why
             self.stats["laser_rejected"] = self.stats.get("laser_rejected", 0) + 1
             self.stats["laser_rejected_why"] = why
-            if self.combat is not None:
-                self.combat.ray_rejected = why
 
     @staticmethod
     def _look_round_new() -> dict:

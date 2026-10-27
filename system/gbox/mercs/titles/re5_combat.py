@@ -9,9 +9,13 @@ anything but the dot misses. So every tick:
     = the ray hits something else first (the floor, a wall, a prop) or passes him;
   * the aim approaches a preferred anatomical zone until any body region is exposed, then keeps that exposed
     region under the dot. Stick correction follows the measured shot ray rather than the camera ray;
-  * a loaded direct-fire gun holds L1 + R1 during acquisition and tracking, including off-reticle frames. This is
-    the operator's later continuous-fire policy, not a claim that every shot will land. Confirmed cover lowers the
-    gun for repositioning. Splash weapons still require first-hit overlap and safe impact clearance;
+  * one straight sequence per Majini (operator 2026-10-26: "raise his gun, aim it at the target, and shoot the target";
+    re5_engage): the gun comes up, the aim slews onto him with a deadband inside his body's window, the trigger is down
+    while the dot is on any Majini or (within re5_engage.CLOSE_R) the aim is inside his window - with 80x fire that is
+    the operator's "blasting" - and up while the dot is on a wall or the floor short of him or the gun is still coming
+    up (a Majini at arm's length in front excepted); the gun comes down to turn only with nothing threatening in front.
+    A laser read that cannot be the gun's (re5_engage.plausible) never steers or fires. Measured cover turns to another
+    Majini in sight, else one sidestep. Splash weapons still require first-hit overlap and safe impact clearance;
   * direct-gun firing is observed in RAM (the player's current action object, player +0x1238, entering the
     weapon-fire action 0x0163DFC0 / its frame counter +0x20 starting over) and scored: a hit when any Majini's health
     fell within HIT_S, a headshot when the dot was on the head as it left; a miss is classified by what the dot was on
@@ -786,6 +790,8 @@ class Combat:
                 ray = None
             else:
                 self.ray_rejected = None
+        else:                                   # no read this tick - or one the driver dropped from the snapshot
+            self.ray_rejected = snap.get("laser_dropped")
         self._ray_checked = (snap, now, ray, snap.get("laser"))
         return ray
 
@@ -1679,7 +1685,9 @@ class Combat:
             self.stats['bow_aim_phase'] = 'turning to target' if swing else 'tracking with aim held'
         else:
             swing = abs(facing) > E.SWING_TURN and not aligned
-            threat = E.front_threat(p, snap.get("enemies") or (), exclude=tgt.get("ptr", tgt.get("slot")))                 if swing and depth == 0 and p.get("action") != 4 else None
+            threat = None
+            if swing and depth == 0 and p.get("action") != 4:
+                threat = E.front_threat(p, snap.get("enemies") or (), exclude=tgt.get("ptr", tgt.get("slot")))
             if threat is not None:            # a threat in front: he is fought now, the gun stays up
                 self.target_key = E.key(threat)
                 self.stats["front_first"] = self.stats.get("front_first", 0) + 1
