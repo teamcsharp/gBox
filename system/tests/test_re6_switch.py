@@ -456,18 +456,22 @@ def test_after_a_bomb_he_walks_off_it_and_never_sets_it_off_near_himself():
     assert bot.stats["bomb_escapes"] == 1
 
 
-def test_inside_the_bombs_reach_he_walks_out_before_anything_and_outside_it_kicks_and_stops_for_a_crowd():
+def test_a_bomb_out_he_backs_off_it_and_kicks_the_ones_on_him_in_the_same_ticks_never_standing():
     six = (0.0, 0.0, R.BOMB_AHEAD - 600.0)                                    # 6 m from it: outside 5 m, inside 7 m
     bot, clock, snap = bomb_out(((0.0, 0.0, 100.0, 700),))                   # 3 m from it, one at arm's length
-    snap["player"]["hp"] = 200                                                # and hurt: the tablet waits too
+    snap["player"]["hp"] = 200                                                # and hurt: the tablet waits
     act = run(bot, snap, clock, 1)[0]
-    assert "ldown" in act["hold"] and bot.stats["act"] == "bomb_escape" and bot.stats["melee"] == 0
-    bot, clock, snap = bomb_out(((0.0, 0.0, six[2] + 100.0, 700),), me=six)  # outside the reach: a kick (ZR alone)
+    assert set(act["hold"]) >= {"ldown", "zr"} and bot.stats["act"] == "bomb_escape"   # off it and a kick at once
+    assert bot.stats["bomb_kicks"] == 1 and "zl" not in act["hold"]           # ZR alone: ZL + ZR would set it off
+    acts = run(bot, snap, clock, int(R.CC_KICK_GAP_S / 0.05) + 1)
+    assert all("ldown" in a["hold"] for a in acts) and bot.stats["bomb_kicks"] == 2   # still going, kicking again
+    bot, clock, snap = bomb_out(((0.0, 0.0, six[2] + 100.0, 700),), me=six)  # outside the reach, one on him
     act = run(bot, snap, clock, 1)[0]
-    assert act == {"tap": "zr"} and bot.stats["melee"] == 1
-    bot, clock, snap = bomb_out(((150.0, 0.0, six[2] - 150.0, 700), (-150.0, 0.0, six[2] - 150.0, 700)), me=six)
-    acts = run(bot, snap, clock, 4)                                           # two behind him: not backing into them
-    assert all("ldown" not in a.get("hold", ()) for a in acts) and bot.doing == "bomb"
+    assert set(act["hold"]) >= {"ldown", "zr"} and bot.stats["melee"] == 1
+    bot, clock, snap = bomb_out(((150.0, 0.0, six[2] - 100.0, 700), (-150.0, 0.0, six[2] - 100.0, 700)), me=six)
+    acts = run(bot, snap, clock, 20)                                          # two at his back: never standing
+    assert all("ldown" in a.get("hold", ()) for a in acts) and bot.stats["bomb_face_s"] == 0.0
+    assert bot.stats["bomb_kicks"] >= 2
     on_it = ((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700))
     bot, clock, snap = bomb_out(on_it, me=six)
     acts = run(bot, snap, clock, int(30.0 / 0.05))                            # 30 s at 6 m (a wall behind)
@@ -559,7 +563,7 @@ def test_a_zombie_at_his_elbow_is_not_the_blasts_and_old_records_do_not_count(tm
     bot.held = lambda p, now: False
     snap = R.snapshot(round_guest(enemies=()))
     me_z = R.BOMB_AHEAD - 760.0
-    blast(bot, clock, snap, me_z, [(300.0 + 300.0, True), (me_z + 100.0, True)])   # one by the bomb, one at his elbow
+    blast(bot, clock, snap, me_z, [(300.0 + 300.0, True), (me_z + 250.0, True)])   # one by the bomb, one at his elbow
     rec = bot.stats["bomb_blast_log"][-1]
     assert rec["hit_cm"] == [300] and rec["v"] == R.BOMB_BOOK_V and bot.book.radius == R.BOMB_RADIUS_CM
 
@@ -579,8 +583,19 @@ def test_a_blast_that_hurts_him_inside_its_reach_is_a_self_hit_and_teaches_the_r
     # one at his elbow when his health fell outside the reach: the zombie takes the blame, not booked as his
     bot2 = R.Bot(stats={}, clock=lambda: clock[0])
     bot2.held = lambda p, now: False
-    blast(bot2, clock, snap, R.BOMB_AHEAD - 900.0, [(300.0 + 100.0, True), (R.BOMB_AHEAD - 900.0 + 100.0, False)],
-          hp_after=800)
+    me_z = R.BOMB_AHEAD - 900.0
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, me_z), hp=900)
+    snap["enemies"] = [{"slot": 0, "ptr": 0x9000, "pos": (0.0, 0.0, 400.0), "hp": 700, "hp_max": 700},
+                       {"slot": 1, "ptr": 0x9001, "pos": (0.0, 0.0, me_z + 250.0), "hp": 700, "hp_max": 700}]
+    snap["bomb_pos"] = (0.0, 0.0, R.BOMB_AHEAD)
+    bot2.bomb_at, bot2.bomb_since, bot2.bomb_from, bot2.bomb_phase = (0.0, R.BOMB_AHEAD), clock[0] - 20, (0.0, 0.0), "wait"
+    run(bot2, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)                      # set off as that one came
+    snap["enemies"][1]["pos"] = (0.0, 0.0, me_z + 150.0)                      # it reached his elbow meanwhile
+    run(bot2, snap, clock, 1)
+    snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=800)
+    snap.pop("bomb_pos", None)
+    snap["enemies"][0]["hp"] = 100
+    run(bot2, snap, clock, int(R.BOMB_LEARN_S / 0.05) + 3)
     assert bot2.stats["bomb_self_hits"] == 0 and bot2.stats["bomb_blast_log"][-1]["near_him"] == 1
 
 
@@ -593,6 +608,34 @@ def test_readying_a_bomb_is_given_up_when_one_comes_close():
     snap["enemies"][0]["pos"] = (0.0, 0.0, 150.0)                             # one at 1.5 m while the wheel turns
     run(bot, snap, clock, 1)
     assert bot.bomb_phase is None and bot.stats["bomb_aborts"] == 1 and bot.doing == "crowd"
+
+
+def test_clear_of_the_bomb_he_sets_it_off_as_they_come_and_faces_it_only_briefly_with_nobody_near():
+    far = (0.0, 0.0, R.BOMB_AHEAD - 900.0)                                    # 9 m from it
+    bot, clock, snap = bomb_out(((0.0, 0.0, far[2] + 350.0, 700),), me=far)  # one coming at 3.5 m, none on the bomb
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts                                     # set off now: the gun comes back
+    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-900.0, 0.0, R.BOMB_AHEAD))   # it 9 m to his right
+    acts = run(bot, snap, clock, 30)
+    faced = [a for a in acts if a.get("hold") and set(a["hold"]) <= {"rleft", "rright"} and a["hold"]]
+    assert 0 < len(faced) * 0.05 <= R.BOMB_FACE_MAX_S + 0.05 and bot.stats["bomb_face_s"] <= R.BOMB_FACE_MAX_S + 0.1
+
+
+def test_bomb_hits_taken_counts_the_health_he_loses_in_a_bomb_act():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),))
+    run(bot, snap, clock, 2)
+    snap["player"]["hp"] = 700                                                # hit while walking off it
+    run(bot, snap, clock, 1)
+    assert bot.stats["bomb_hits_taken"] == 200
+
+
+def test_no_bomb_readied_with_two_within_three_metres():
+    crowd = ((0.0, 0.0, 280.0, 700), (60.0, 0.0, 290.0, 700), (0.0, 0.0, 800.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=crowd))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+    run(bot, snap, clock, 3)
+    assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0
 
 
 def test_no_new_bomb_under_half_health():
