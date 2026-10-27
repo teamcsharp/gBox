@@ -638,20 +638,92 @@ def test_no_bomb_readied_with_two_within_three_metres():
     assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0
 
 
-def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_the_bombs_own():
+def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
+    near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))   # three at 4.5-5.2 m
+    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100                              # (no crowd-control press in the way)
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    acts = run(bot, snap, clock, 3)
+    assert {"tap": "ddown"} in acts and bot.nade["kind"] == "flash"          # the wheel to the flash grenade
+    snap["player"]["equipped"] = 11
+    acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
+    acts = run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    assert {"tap": "dright"} in acts                                          # the gun back
+    snap["player"]["equipped"] = 0
+    bot.melee_at = -1e9
+    acts = run(bot, snap, clock, 4)
+    assert bot.nade is None and bot.stats["act"] in ("fever_close", "fever_kick")
+    assert any("lup" in a.get("hold", ()) for a in acts)                      # in among them
+    snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)
+    acts = run(bot, snap, clock, 2)
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["fever_kicks"] >= 1
+    assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
+
+
+def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
+    run(bot, snap, clock, 2)
+    assert bot.nade["kind"] == "frag"
+    snap["player"]["equipped"] = 9
+    acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["frags"] == 1
+    snap["kills"] = (snap.get("kills") or 0) + 3
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, int(R.NADE_KILLS_S / 0.05) + 2)
+    assert bot.stats["grenade_kills"] == 3
+
+
+def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
+    near = ((0.0, 0.0, 450.0, 700), (100.0, 0.0, 500.0, 700), (-100.0, 0.0, 520.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x115: (11, 5)})
+    run(bot, snap, clock, 2)
+    snap["player"]["equipped"] = 11                                           # the flash in hand ...
+    snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)                             # ... and one at arm's length
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "dright"} in acts and bot.stats["nade_aborts"] == 1        # the gun back before anything
+    assert all(a.get("hold") != ("zl", "zr") for a in acts)                   # never ZL + ZR with it in hand
+
+
+def test_the_combo_running_down_makes_the_nearest_the_target_and_a_lapse_is_counted():
+    two = ((0.0, 0.0, 1500.0, 700), (800.0, 0.0, 600.0, 700))                 # one far ahead, one nearer to the right
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap.update(combo=6, combo_timer=2.0)
+    run(bot, snap, clock, 1)
+    assert bot.combo_urgent and bot.target == snap["enemies"][1]["ptr"] and bot.stats["combo_pushes"] == 1
+    snap.update(combo=0, combo_timer=0.0)
+    run(bot, snap, clock, 1)
+    assert bot.stats["combo_breaks"] == 1 and bot.stats["combo_best"] == 6
+
+
+def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -300.0, 700),), cam_yaw=0.0))   # 3 m behind him
+    bot.held = lambda p, now: False
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"hold": ("ldown",)} and bot.quick == 2 and bot.stats["quick_turns"] == 1
+
+
+def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False
     snap["player"]["equipped"] = 12                                           # the remote bomb in hand
     acts = run(bot, snap, clock, 6)
     assert all(not ({"zl", "zr"} <= set(a.get("hold", ()))) for a in acts)
     assert {"tap": "dright"} in acts and bot.stats["unsafe_trigger_blocks"] >= 1
-    snap["player"]["equipped"] = 0                                            # the gun back: the quick shot goes out
-    bot.qshot_at = -1e9
-    acts = run(bot, snap, clock, 2)
-    assert {"hold": ("zl", "zr")} in acts
 
 
-def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took():
+def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(monkeypatch):
+    monkeypatch.setattr(R, "DYING_TABLETS", True)                             # (off in play: the game takes none)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 800.0, 700),), hp=1, state=3))
     act = run(bot, snap, clock, 1)[0]
     assert act == {"tap": "r"} and bot.stats["act"] == "tablet_dying" and bot.stats["dying_states"] == [3]
@@ -661,6 +733,18 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     snap["player"].update(tablets=7, hp=300)                                  # this one took: back up
     run(bot, snap, clock, 1)
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
+
+
+def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks():
+    four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m
+    bot.held = lambda p, now: False
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a tablet already
+    bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    attacks = [a for a in acts if "zr" in a.get("hold", ())]
+    assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
 def test_no_new_bomb_under_half_health():
@@ -922,7 +1006,7 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # dying: R for one (DYING_TABLETS)
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: RE6 takes none (DYING_TABLETS off)
     bot, clock, snap = brain(round_guest(hp=300, state=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
 
@@ -1303,6 +1387,36 @@ def test_merc_loadout_swaps_the_rocket_launcher_and_gives_the_remote_bomb_and_gr
                for i, (_, w, x) in enumerate(mods.LOADOUTS))
     with pytest.raises(ValueError):
         mods.run(ad, "merc_loadout", thrown=9)
+
+
+def test_merc_loadout_magnum_puts_a_magnum_in_his_hand_at_the_start(mods):
+    import random
+    w, _x = mods.loadout_plan(4, True, 5, random.Random(1), magnum=True)      # Chris (0x0002): his own magnum first
+    assert w[0] == (0x107, 7) and w[1] == (0x10F, 30) and w[2] == (0x119, 0xFFFF)
+    w, _x = mods.loadout_plan(0, True, 5, random.Random(1), magnum=True)      # Leon (0x0000): no magnum - 0x107 given
+    assert w[0] == (0x107, 7) and w[1] == (0x104, 8) and w[2] == (0x103, 18)  # his handgun moved to the first free slot
+    g = round_guest()
+    table = loadout_table(g)
+    ad = Adapter(g)
+    out = mods.run(ad, "merc_loadout", seed=3, magnum=True)
+    assert out["verified"] and out["magnum_first"] and out["writes"] > 0
+    first = [struct.unpack("<2H", g.rd(table + mods.LOADOUT_SIZE * i + mods.L_WEAPONS, 4)) for i in range(len(mods.LOADOUTS))]
+    assert all(pair in mods.MAGNUMS for pair in first)                        # every entry starts with a magnum
+    again = mods.run(ad, "merc_loadout", seed=3, magnum=True)                 # the table is still recognised: no writes
+    assert again["verified"] and again["writes"] == 0
+
+
+def test_fire_rate_magnum_and_throw_multipliers(mods):
+    g = round_guest()
+    table = weapon_table(g)
+    ad = Adapter(g)
+    iv = lambda i: struct.unpack("<f", g.rd(table + mods.FIRE_STRIDE * i + mods.FIRE_INTERVAL, 4))[0]
+    out = mods.run(ad, "fire_rate", multiplier=4, magnum=8, throw=16)
+    assert out["verified"] and out["magnum_x"] == 8 and out["throw_x"] == 16
+    assert iv(0x07) == pytest.approx(0.1) and iv(0x08) == pytest.approx(0.15)   # the magnums: / 8
+    assert iv(0x13) == pytest.approx(0.125) and iv(0x15) == pytest.approx(0.125)   # the grenades: 2.0 / 16
+    assert iv(0x16) == 2.0 and iv(0x0F) == pytest.approx(0.025)               # the remote bomb its own; the rifle / 4
+    assert mods.run(ad, "fire_rate", on=False)["writes"] > 0 and iv(0x13) == 2.0 and iv(0x07) == pytest.approx(0.8)
 
 
 def test_merc_loadout_writes_nothing_into_a_table_that_is_not_this_builds(mods):

@@ -81,7 +81,8 @@
       [
         "fire_rate",
         {
-          "multiplier": 4
+          "multiplier": 4,
+          "magnum": 8
         }
       ]
     ],
@@ -128,7 +129,8 @@
       [
         "merc_loadout",
         {
-          "thrown": 5
+          "thrown": 5,
+          "magnum": true
         }
       ]
     ]
