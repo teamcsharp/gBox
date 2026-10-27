@@ -173,6 +173,17 @@ COMMIT_S = 1.0                           # a new target is kept this long (a cro
 # with #1327: 4 in 5, against 1-3 in 5 before), while kills came back (19.6-19.8). K_PLAN stays on. The pieces return one
 # at a time, each with its own turn of numbers.
 SMOOTH = False
+# The pieces, back one RE5 turn at a time, each with its own numbers (a piece that raises deaths is dropped); each is on
+# when its flag is True or SMOOTH is:
+SMOOTH_FAR = True        # the far-aim unaim hold and the re-raise hysteresis, only with nobody within THREAT_R (13:25)
+SMOOTH_FLIP = False      # no flip back to the Majini he just left within FLIP_S
+SMOOTH_DOT = False       # the dot takes another Majini after DOT_SWITCH_TICKS (and fires on him at once meanwhile)
+SMOOTH_LEVEL = False     # his own level first, no pitch swings to roofs while ground Majini come
+SMOOTH_CLOSE = False     # up close the target is kept until it dies or leaves THREAT_R
+
+
+def piece(flag: bool) -> bool:
+    return bool(flag or SMOOTH)
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
 UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
 MOTION_COUNTERS = ("target_switches", "target_flips", "aim_reversals", "stick_onsets", "raises", "unaims")
@@ -185,6 +196,14 @@ LEVEL_COST, LEVEL_DY = 1.5, 120.0
 # leaves THREAT_R unless another gets within GRAB_THREAT_R and nearer (no re-pick every tick among equal threats).
 PITCH_SWING, PITCH_GUARD_R, MUZZLE_H = math.radians(25), 600.0, 140.0
 LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
+# Combo time (operator 2026-10-27 13:10: "There should never be him chilling surrounded by enemies ... It is essential to
+# be proactive with combo time"): the Mercenaries combo (cGameSys +0x974 count, +0x97C the window's seconds left). Each
+# combo that falls is counted (combo_breaks), and one whose window had run out (COMBO_LAPSE_S or less left at the last
+# read: the next Majini not dispatched in time) is a combo_lapse, as the PS3 bot counts them. COMBO_PUSH: with a combo
+# running and its window under COMBO_URGENT_S, the target is the quickest kill (the cheapest in reach, his level first,
+# no stickiness), and with nobody within COMBO_REACH he walks to the nearest (combo_pushes counts the ticks).
+COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = False, 3.0, 0.6, 900.0
+COMBO_COUNTERS = ("combo_breaks", "combo_lapses", "combo_pushes")
 # The enemy knowledge database at work (brain step 4, operator 2026-10-27: "not utilizing any of the lessons learned";
 # Hermes #4484): the fight asks gbox.mercs.brain.knowledge.dispatch_plan (K's learned fields over the defaults) for its
 # target's class, distance and weapon, and uses a learned field only at K_MIN_CONF and K_MIN_SAMPLES: the aim height
@@ -819,8 +838,9 @@ class Bot:
         self.turning = False                      # turning with the gun down (RERAISE_FRAC)
         self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
         self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
-        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS:
+        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS:
             self.stats.setdefault(k, 0)
+        self._combo_prev, self._combo_window = 0, None   # the last combo count and its window (combo_breaks / lapses)
         self._plans: dict = {}                    # (class, 2 m band, weapon) -> (at, plan): K's plans, cached
         self._item = None                         # the weapon in hand this tick (K's plans are per weapon)
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
@@ -873,7 +893,7 @@ class Bot:
     def _cost(p, e) -> float:
         px, py, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
-        level = 1.0 + (LEVEL_COST * min(abs(e["pos"][1] - py), MAX_DY) / MAX_DY if SMOOTH else 0.0)
+        level = 1.0 + (LEVEL_COST * min(abs(e["pos"][1] - py), MAX_DY) / MAX_DY if piece(SMOOTH_LEVEL) else 0.0)
         return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) / math.pi) * level
 
     @staticmethod
@@ -916,7 +936,7 @@ class Bot:
         THREAT_R first."""
         px, py, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
-        if SMOOTH:                                           # no pitching up at a roof while ground Majini come
+        if piece(SMOOTH_LEVEL):                              # no pitching up at a roof while ground Majini come
             ground_near = any(flat(e) <= PITCH_GUARD_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
             calm = [e for e in live
                     if not (ground_near and flat(e) >= GRAB_THREAT_R and self._pitch_to(p, e) > PITCH_SWING)]
@@ -928,9 +948,10 @@ class Bot:
         nearest = min(live, key=flat)
         front = [e for e in live if flat(e) <= ENGAGE_R
                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
-        if SMOOTH:
+        if piece(SMOOTH_LEVEL):
             level = [e for e in front if abs(e["pos"][1] - py) <= LEVEL_DY]
             front = level or front                           # his own level first
+        if piece(SMOOTH_CLOSE):
             if cur is not None and flat(cur) < THREAT_R and (cur.get("hp") or 0) > 0:
                 grab = min((e for e in live if e is not cur and flat(e) < GRAB_THREAT_R), key=flat, default=None)
                 if grab is None or flat(grab) > 0.7 * flat(cur):
@@ -947,7 +968,8 @@ class Bot:
             best = nearest
         elif cur is not None and self._kcost(p, cur, now) <= KEEP_TARGET * self._kcost(p, best, now):
             best = cur
-        if SMOOTH and cur is not None and best is not cur and best.get("ptr", best.get("slot")) == self.prev_target \
+        if piece(SMOOTH_FLIP) and cur is not None and best is not cur \
+                and best.get("ptr", best.get("slot")) == self.prev_target \
                 and now - self.switch_at < FLIP_S and flat(best) >= GRAB_THREAT_R:
             best = cur                                       # not back to the one he just left (a flip-flop)
         if best is not cur:
@@ -1001,6 +1023,23 @@ class Bot:
     def _sure(plan, field) -> bool:
         return plan is not None and plan.conf(field) >= K_MIN_CONF \
             and dict(plan.field_samples).get(field, 0) >= K_MIN_SAMPLES
+
+    def _track_combo(self, snap) -> None:
+        """A combo that falls to 0 is a break; one whose window had run out at the last read is a lapse."""
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        if type(combo) is not int or not 0 <= combo < 100000:
+            return
+        if self._combo_prev > 0 and (combo == 0 or combo < self._combo_prev):
+            self.stats["combo_breaks"] += 1
+            if isinstance(self._combo_window, (int, float)) and self._combo_window <= COMBO_LAPSE_S:
+                self.stats["combo_lapses"] += 1
+        self._combo_prev = combo
+        self._combo_window = window if combo > 0 else None
+
+    def _combo_urgent(self, snap) -> bool:
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        return bool(COMBO_PUSH and type(combo) is int and combo > 0 and isinstance(window, (int, float))
+                    and not isinstance(window, bool) and 0.0 < window <= COMBO_URGENT_S)
 
     def _set_target(self, key, now) -> None:
         """The target from here on: a change is counted (target_switches), and a change back to the one he left within
@@ -1423,7 +1462,20 @@ class Bot:
             self.doing, self.why = "walk", f"hunt: the nearest {near / 100:.1f} m"
             self._gun_down()
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
-        tgt = self._choose(p, live, now) if self.mode != "score" else min(live, key=flat)   # score: the nearest, fast
+        urgent = self._combo_urgent(snap)
+        if urgent:                                           # the combo window runs down: the quickest kill
+            self.stats["combo_pushes"] += 1
+            reach = [e for e in live if flat(e) <= COMBO_REACH]
+            if not reach and self.aim_since is None:         # nobody in reach: run to the nearest, the gun down
+                err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+                self.doing, self.why = "walk", f"combo {snap.get('combo')}: the nearest {near / 100:.1f} m"
+                self._gun_down()
+                return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
+        if urgent and reach:
+            tgt = min(reach, key=lambda e: self._cost(p, e))
+            self._set_target(tgt.get("ptr", tgt.get("slot")), now)
+        else:
+            tgt = self._choose(p, live, now) if self.mode != "score" else min(live, key=flat)   # score: the nearest
         if self.mode == "score":
             self.target = tgt.get("ptr", tgt.get("slot"))
         foot = tgt["pos"]
@@ -1452,7 +1504,7 @@ class Bot:
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
-            tol = self.raise_tol(dist) * (RERAISE_FRAC if SMOOTH and self.turning and near > THREAT_R else 1.0)
+            tol = self.raise_tol(dist) * (RERAISE_FRAC if piece(SMOOTH_FAR) and self.turning and near > THREAT_R else 1.0)
             if abs(body_err) > tol:                          # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
                 self.stats["turns"] += 1
@@ -1506,7 +1558,8 @@ class Bot:
         other = on_e.get("ptr", on_e.get("slot")) if on_e is not None and on_e is not tgt else None
         self.dot_other = (other, self.dot_other[1] + 1 if other is not None and other == self.dot_other[0] else
                           (1 if other is not None else 0))
-        if other is not None and (not SMOOTH or self.dot_other[1] >= DOT_SWITCH_TICKS or flat(on_e) < GRAB_THREAT_R):
+        if other is not None and (not piece(SMOOTH_DOT) or self.dot_other[1] >= DOT_SWITCH_TICKS
+                                  or flat(on_e) < GRAB_THREAT_R):
             tgt, foot = on_e, on_e["pos"]                    # the dot stays on another one: he is the target now
             self._set_target(other, now)
             dist = flat(tgt)
@@ -1520,7 +1573,7 @@ class Bot:
         self.unaim_since = (self.unaim_since or now) if far_off else None
         if far_off:                                          # the aim is far off him
             alt = self._near_aim(origin, dot, live, flat) if ray_len >= STEER_RAY_CM else None
-            hold = SMOOTH and near > THREAT_R and abs(yaw_err) <= UNAIM_HARD \
+            hold = piece(SMOOTH_FAR) and near > THREAT_R and abs(yaw_err) <= UNAIM_HARD \
                 and (now - self.unaim_since < UNAIM_HOLD_S or now - self.aim_since < MIN_UP_S)
             if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
                 far_off = False
@@ -1541,7 +1594,7 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
-        if SMOOTH and not on and other is not None and self.target != other:
+        if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
             other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
             if other_where is not None:                      # now (the trigger), the aim kept where it is (no swing)
                 tgt, foot, where, on = on_e, on_e["pos"], other_where, True
@@ -1731,6 +1784,8 @@ class Bot:
         self._ran = (doing, bool(doing in ("turn", "unaim", "quick_turn") and p and self._front_foe(p, snap)))
         self._resolve_pulls(now)
         self._k_tick(snap, now)
+        if snap.get("player"):
+            self._track_combo(snap)
         if self.mines is not None and p:
             self.mines.watch(p, snap, now)                   # the bombs and their blasts, whatever ran this tick
         if p and doing != "none":
@@ -1794,7 +1849,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
