@@ -73,7 +73,8 @@ NO_AMMO_SKIP = ("NONE", "Empty", "KNIFE", "STUNROD")         # no rounds to spen
 UPG_TABLE, UPG_STRIDE = 0x1D13B28, 0x210
 P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
-FIRE_MAX = 80.0
+FIRE_MAX = 80.0                                              # the default (the operator's x80)
+FIRE_TOP = 1000.0                                            # the PS3 panel's top; the frame rate caps it long before
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
 SPRAY_KEEP = 2                                               # infinite_spray keeps its count here (a use leaves one)
@@ -194,9 +195,11 @@ def fire_rate(g: RE5Switch, mult) -> dict:
     try:
         k = float(mult if mult is not None else FIRE_MAX)
     except (TypeError, ValueError):
-        raise ValueError("fire_rate multiplier: a number 1..80 (1 = the game's)") from None
-    if not 1.0 <= k <= FIRE_MAX:
-        raise ValueError("fire_rate multiplier: 1..80 (1 = the game's)")
+        raise ValueError(f"fire_rate multiplier: a number 1..{FIRE_TOP:g} (1 = the game's)") from None
+    if 0.1 <= k < 1.0:
+        raise ValueError("fire_rate multiplier: not yet on Switch: slower than the game's own rate (1..%g)" % FIRE_TOP)
+    if not 1.0 <= k <= FIRE_TOP:
+        raise ValueError(f"fire_rate multiplier: 1..{FIRE_TOP:g} (1 = the game's)")
     g.state["fire_rate"] = k
     restored = 0
     if k == 1.0 and g.state.get("scaled"):                   # off: the player's own pace back now (his round's player)
@@ -482,6 +485,209 @@ def mines(g: RE5Switch, interval=None, on: bool = True) -> dict:
     return out
 
 
+def mercs_select(g: RE5Switch, mode=None, character=None, stage=None) -> dict:
+    """The PS3 tool's mercs_select: the next round's stage and character. The Switch's own menus (re5_switch.screen)
+    walk the stage and character selects to them at the next menu boundary; the current round goes on. No Mercy's
+    original roster (re5_switch.CHARACTERS); the Reunion roster's select positions are not mapped here yet."""
+    m = str(mode or "no_mercy").strip().lower().replace(" ", "_")
+    if m in ("reunion", "mercenaries_reunion"):
+        return {"verified": False, "queued": False,
+                "reason": "not yet on Switch: the Reunion roster's select positions are not mapped"}
+    if m not in ("no_mercy", "mercenaries", "mercenaries_united", "united"):
+        raise ValueError("mercs_select mode: no_mercy (mercenaries) on Switch")
+    if stage in (None, ""):
+        st = R.stage_target()
+    elif isinstance(stage, str) and not stage.strip().isdigit():
+        names = [n.lower() for n in R.STAGE_NAMES]
+        if stage.strip().lower() not in names:
+            raise ValueError("mercs_select stage: 0..7 or one of " + ", ".join(R.STAGE_NAMES))
+        st = names.index(stage.strip().lower())
+    else:
+        st = int(stage)
+    if not 0 <= st < len(R.STAGE_NAMES):
+        raise ValueError("mercs_select stage: 0..7")
+    if character in (None, ""):
+        ch = R.player_target()
+    elif isinstance(character, int) or str(character).strip().isdigit():
+        ch = int(character)
+    else:
+        names = [n.lower() for n in R.CHARACTERS]
+        if str(character).strip().lower() not in names:
+            return {"verified": False, "queued": False,
+                    "reason": f"not yet on Switch: {character!r} is not on No Mercy's original roster here "
+                              f"({', '.join(R.CHARACTERS)})"}
+        ch = names.index(str(character).strip().lower())
+    if not 0 <= ch < len(R.CHARACTERS):
+        raise ValueError("mercs_select character: 0..9")
+    R.SELECTION.update(stage=st, character=ch)
+    sel = {"mode": "no_mercy", "stage": st, "stage_name": R.STAGE_NAMES[st], "character": R.CHARACTERS[ch]}
+    return {"verified": True, "queued": True, "selection": sel, "effective_next_round": True,
+            "native_start_verified": False,
+            "note": "Selection saved for the next native menu boundary; current round continues."}
+
+
+# --- the operator's gun: select_weapon / random_weapon (the PS3 tool's, re5_controls) ------------------------------------
+GUN_FAMILIES = frozenset({"handgun", "automatic", "shotgun", "magnum", "bow"})   # the PS3's: no rockets or sniper rifles
+WEAPON_REQUEST_S = 30.0
+
+
+def eligible_guns(inv) -> list:
+    """The round's guns the bot can equip by one D-pad tap (the PS3's eligible families, loaded or with no-ammo)."""
+    from . import re5_weapons
+    out = []
+    for s in inv or ():
+        spec = re5_weapons.WEAPONS.get(s.get("item"))
+        if s.get("type") == 1 and s.get("grid") in R.QUICK and spec is not None and spec.family in GUN_FAMILIES:
+            out.append({"item": s["item"], "weapon": spec.name, "slot": s.get("slot"), "grid": s.get("grid"),
+                        "rounds": s.get("rounds"), "equipped": bool(s.get("hand"))})
+    return out
+
+
+def select_weapon(g: RE5Switch, weapon=None, on: bool = True, *, random_pick: bool = False) -> dict:
+    """The operator's gun from the round's inventory: the bot equips it with its D-pad slot (re5_switch.Bot._gun_back)
+    and keeps to it for the session; on=False: the bot's own choice again. A request is confirmed when the snapshot
+    shows that gun in hand (maintain), rejected after WEAPON_REQUEST_S."""
+    import random
+    import uuid
+    if not on:
+        g.state.pop("preferred_weapon", None)
+        req = g.state.get("weapon_request")
+        if req and req.get("state") == "pending":
+            req.update(state="rejected", reason="Automatic gun selection resumed.")
+        return {"verified": True, "preference_saved": True, "automatic": True}
+    guns = eligible_guns(R.snapshot(g.m).get("inventory"))
+    if not guns:
+        return {"queued": False, "verified": False, "reason": "No loaded quick-slot gun or longbow in this round."}
+    if random_pick:
+        pool = [w for w in guns if not w["equipped"]] or guns
+        pick = random.SystemRandom().choice(pool)
+    else:
+        if type(weapon) is not int:
+            raise ValueError("select_weapon requires an available native weapon ID")
+        pick = next((w for w in guns if w["item"] == weapon), None)
+        if pick is None:
+            return {"queued": False, "verified": False, "reason": "The selected gun is not currently available."}
+    req = {"id": uuid.uuid4().hex, "state": "pending", "weapon": pick["weapon"], "item": pick["item"],
+           "expires": time.monotonic() + WEAPON_REQUEST_S}
+    g.state["weapon_request"] = req
+    g.state["preferred_weapon"] = {"item": pick["item"], "weapon": pick["weapon"]}
+    return {"queued": True, "verified": False, "request": {k: v for k, v in req.items() if k != "expires"},
+            "preference_saved": True, "deferred": False}
+
+
+def preferred_weapon(ad) -> dict | None:
+    st = ORIG.get(id(ad)) or {}
+    return dict(st["preferred_weapon"]) if st.get("preferred_weapon") else None
+
+
+def _confirm_weapon(st, snap) -> None:
+    """A pending gun request: confirmed when its gun is in hand, rejected when it expires."""
+    req = st.get("weapon_request")
+    if not req or req.get("state") != "pending":
+        return
+    held = next((s for s in (snap or {}).get("inventory") or () if s.get("hand")), None)
+    if held is not None and held.get("item") == req["item"]:
+        req["state"] = "confirmed"
+    elif time.monotonic() >= req["expires"]:
+        req.update(state="rejected", reason="No equipment confirmation before the request expired.")
+
+
+# --- bullet_damage and turn_speed (the PS3 tool's, on this edition's tables; live 2026-10-27 10:43) ---------------------
+# sParameter::WEAPON_LEVEL_STRUCT (UPG_TABLE, 0x210 a weapon): 8 groups 0x40 apart from +0x10, each two header words
+# then 14 levels; group 0 firepower (the M92F's 150 / 170 / 190 / 210 / 230 / 250 at +0x18, the PS3's 150 at level 0),
+# group 1 firing speed (+0x58, the M92F's 26 frames). sParameter (its pointer at main+0x1CF1C30): +0x34 the walk / run
+# turn deg/s (110), +0x70 / +0x74 the stick range (0.2 / 1.2), +0x2D0 / +0x2D4 aim pitch / yaw deg/s (57.9): the PS3's
+# fields (its +0x2C / +0x68 / +0x6C / +0x2D0 / +0x2D4).
+UPG_GROUP0, UPG_GROUP, UPG_LEVELS, G_DAMAGE = 0x10 + 8, 0x40, 14, 0
+M92F_FIREPOWER = 150.0
+S_PARAM_PTR = 0x1CF1C30
+TURN = {0x34: ("turn_deg_s", 110.0), 0x70: ("stick_min", 0.2), 0x74: ("stick_max", 1.2),
+        0x2D0: ("aim_pitch_deg_s", 57.9), 0x2D4: ("aim_yaw_deg_s", 57.9)}
+TURN_MAX = 10.0
+
+
+def _mult(v, default) -> float:
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("max", "maximum", "unlimited"):
+            return TURN_MAX
+        v = float(s or default)
+    return float(v if v is not None else default)
+
+
+def _firepower_at(g: RE5Switch, wid: int) -> int:
+    return g.base + UPG_TABLE + UPG_STRIDE * wid + UPG_GROUP0 + UPG_GROUP * G_DAMAGE
+
+
+def bullet_damage(g: RE5Switch, mult) -> dict:
+    """Every weapon's firepower x N at every upgrade level (the PS3 tool's), from the originals kept on first use."""
+    k = _mult(mult, 10.0)
+    if not 0.1 <= k <= 1000:
+        raise ValueError("bullet_damage multiplier: 0.1 .. 1000 (1 = the game's)")
+    orig = g.state.setdefault("firepower", {})
+    if not orig:
+        m92 = struct.unpack(f"<{UPG_LEVELS}f", g.rd(_firepower_at(g, 0x02), 4 * UPG_LEVELS))
+        if abs(m92[0] - M92F_FIREPOWER) > 0.5:
+            raise RuntimeError(f"the upgrade table does not hold this build's firepower (M92F level 0: {m92[0]})")
+        for wid in range(N_WEAPONS):
+            orig[wid] = g.rd(_firepower_at(g, wid), 4 * UPG_LEVELS)
+    ok = True
+    for wid, raw in orig.items():
+        vals = struct.unpack(f"<{UPG_LEVELS}f", raw)
+        want = struct.pack(f"<{UPG_LEVELS}f", *[v * k for v in vals])
+        at = _firepower_at(g, wid)
+        if g.rd(at, len(want)) != want:
+            ok = g.wr(at, want) and ok
+        ok = ok and g.rd(at, len(want)) == want
+    g.state["bullet_damage"] = k
+    m92 = struct.unpack("<f", g.rd(_firepower_at(g, 0x02), 4))[0]
+    return {"bullet_damage_x": k, "verified": bool(ok), "m92f_firepower_level0": round(m92, 1),
+            "note": "every weapon's firepower x N at every upgrade level; 1 restores the game's values"}
+
+
+def _param(g: RE5Switch) -> int:
+    p = struct.unpack("<Q", g.rd(g.base + S_PARAM_PTR, 8))[0]
+    if not R.ptr_ok(p):
+        raise RuntimeError("sParameter is not up yet (the game is still booting)")
+    return p
+
+
+def turn_speed(g: RE5Switch, mult) -> dict:
+    """The stick turns the player N times faster, aimed and not (the PS3 tool's: sParameter's turn and aim rates)."""
+    k = _mult(mult, 2.0)
+    if not 0.25 <= k <= 50:
+        raise ValueError("turn_speed multiplier: 0.25 .. 50 (1 = the game's; 2 = default; max = 10)")
+    p = _param(g)
+    live = {o: struct.unpack("<f", g.rd(p + o, 4))[0] for o in TURN}
+    bad = {TURN[o][0]: v for o, v in live.items() if not 0.2 <= v / TURN[o][1] <= 60}
+    if bad:
+        raise RuntimeError(f"sParameter does not hold this build's turn rates ({bad}); not writing")
+    out, ok = {}, True
+    for o, (name, base) in TURN.items():
+        want = struct.pack("<f", base * k)
+        ok = g.wr(p + o, want) and ok
+        got = struct.unpack("<f", g.rd(p + o, 4))[0]
+        ok = ok and abs(got - base * k) < 1e-3
+        out[name] = round(got, 4)
+    g.state["turn_speed"] = k
+    return {"turn_speed_x": k, "values": out, "verified": bool(ok), "sParameter": hex(p),
+            "note": "the stick turns the player this many times faster, aiming (yaw and pitch) and not"}
+
+
+def turn_speed_x(g: RE5Switch):
+    try:
+        return round(struct.unpack("<f", g.rd(_param(g) + 0x2D4, 4))[0] / TURN[0x2D4][1], 2)
+    except (RuntimeError, ValueError, OSError, struct.error):
+        return None
+
+
+def bullet_damage_x(g: RE5Switch):
+    try:
+        return round(struct.unpack("<f", g.rd(_firepower_at(g, 0x02), 4))[0] / M92F_FIREPOWER, 2)
+    except (ValueError, OSError, struct.error):
+        return None
+
+
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
@@ -540,6 +746,7 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 out["writes"] += kept
                 if kept:
                     out["spray_kept"] = True
+            _confirm_weapon(st, snap)
             hs = st.get("health")
             if enabled and hs and hs.get("on"):
                 hs["last"] = res = _maintain_health(ad, hs, snap)
@@ -553,22 +760,29 @@ def revert_all(g: RE5Switch) -> dict:
     """Every op off: the no-ammo flags and the fire rate back, the spray and health upkeep off (the original maximum
     back), the bombs and every template op gone (the original loadouts written back)."""
     out = {"infinite_ammo": infinite_ammo(g, False)["verified"], "fire_rate": fire_rate(g, 1.0)["verified"],
+           **({"bullet_damage": bullet_damage(g, 1.0)["verified"]} if g.state.get("firepower") else {}),
+           **({"turn_speed": turn_speed(g, 1.0)["verified"]} if g.state.get("turn_speed") else {}),
            "infinite_spray": infinite_spray(g, False)["verified"],
            "unlimited_health": unlimited_health(g, False)["verified"]}
     g.state.pop("mine_settings", None)
-    for key in ("weapon_override", "loadout", "replace"):
+    for key in ("weapon_override", "loadout", "replace", "preferred_weapon"):
         g.state.pop(key, None)
+    req = g.state.get("weapon_request")
+    if req and req.get("state") == "pending":
+        req.update(state="rejected", reason="Cancelled by revert all.")
     out["mine_loadout"] = mine_loadout(g, False)["verified"]     # (composes every block from its original)
     return {"reverted": out, "verified": all(out.values()), "note": "a relaunch of the game is the full revert too"}
 
 
 def random_cheats(g: RE5Switch, seed=None) -> dict:
-    """The PS3 tool's per-round randomizer with what this edition has: fire_rate x80, infinite ammo, the loadout
-    re-drawn three rounds in four, the long guns replaced (turn speed and bullet damage: not on Switch yet)."""
+    """The PS3 tool's per-round randomizer: fire_rate x80, the game's turn speed, bullet damage x10, infinite ammo,
+    the loadout re-drawn three rounds in four, the long guns replaced."""
     import random
     rng = random.Random(seed)
-    picked = {"fire_rate_x": 80.0, "infinite_ammo": True, "loadout": rng.random() < 0.75}
-    out = {"fire_rate": fire_rate(g, 80.0)["verified"], "infinite_ammo": infinite_ammo(g, True)["verified"]}
+    picked = {"fire_rate_x": 80.0, "turn_speed_x": 1.0, "bullet_damage_x": 10.0, "infinite_ammo": True,
+              "loadout": rng.random() < 0.75}
+    out = {"fire_rate": fire_rate(g, 80.0)["verified"], "infinite_ammo": infinite_ammo(g, True)["verified"],
+           "turn_speed": turn_speed(g, 1.0)["verified"], "bullet_damage": bullet_damage(g, 10.0)["verified"]}
     if picked["loadout"] or g.state.get("weapon_override"):
         out["loadout"] = loadout(g, seed=rng.random())["verified"]
         if g.state.get("weapon_override"):
@@ -576,8 +790,7 @@ def random_cheats(g: RE5Switch, seed=None) -> dict:
     else:
         out["loadout"] = loadout(g, on=False)["verified"]
     out["weapon_replacement"] = replace_long_guns(g, rng.random())["verified"]
-    return {"telemetry": picked, "verified": all(out.values()), "applied": out,
-            "note": "turn_speed and bullet_damage are not on Switch yet"}
+    return {"telemetry": picked, "verified": all(out.values()), "applied": out}
 
 
 ADDRESSES = {
@@ -598,19 +811,13 @@ ADDRESSES = {
 
 # What the PS3 tool has and this edition does not yet, and why (the panel shows these on its buttons).
 NOT_YET = {
-    "turn_speed": "sParameter's turn and aim rates (the PS3's +0x2C / +0x68 / +0x2D4) are not mapped on Switch yet",
-    "bullet_damage": "the firepower group of the upgrade table (sParameter::WEAPON_LEVEL_STRUCT) is not verified on "
-                     "Switch yet",
     "kill_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
     "add_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
     "set_time": "the authoritative Mercenaries countdown (the PS3's sArea -> aGame) is not mapped on Switch yet",
     "time_bonus_multiplier": "the hourglass's seconds (uOmHourGlass) are not mapped on Switch yet",
     "instant_qte": "the QTE progress fields are not mapped on Switch yet",
     "rotten_egg_only": "the rotten egg loadout and supply are not ported to Switch yet",
-    "mercs_select": "the next round's stage, character and mode through the Switch menus are not wired yet",
     "live_weapon": "the native pickup that builds a weapon mid-round (the PS3's 1AEE90 path) is not found on Switch yet",
-    "select_weapon": "the Switch bot's weapon choice is not wired yet",
-    "random_weapon": "the Switch bot's weapon choice is not wired yet",
     "aimbot": "no verified live control for this hook",
     "auto_parry": "no verified live control for this hook",
     "knife_knockback": "no verified live control for this hook",
@@ -625,7 +832,12 @@ AVAILABLE = {
     "loadout": "Loadout template; takes effect next round.",
     "replace_rockets": "Loadout template; takes effect next round.",
     "replace_long_guns": "Loadout template; takes effect next round.",
-    "random_cheats": "fire rate, infinite ammo, the loadout and the long guns (no turn speed or damage yet)",
+    "random_cheats": "fire rate, turn speed, damage, infinite ammo, the loadout and the long guns",
+    "mercs_select": "Choose the next Mercenaries round (No Mercy's original roster; Reunion not yet on Switch).",
+    "select_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
+    "turn_speed": "sParameter's turn and aim rates (main+0x1CF1C30), read back",
+    "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
+    "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
 }
 
 
@@ -640,7 +852,7 @@ def full_status(g: RE5Switch) -> dict:
     from . import re5_weapons
     st = g.status()
     hs = g.state.get("health") or {}
-    st.update(turn_speed_x=None, bullet_damage_x=None, unlimited_health=bool(hs.get("on")),
+    st.update(turn_speed_x=turn_speed_x(g), bullet_damage_x=bullet_damage_x(g), unlimited_health=bool(hs.get("on")),
               health_maintenance=hs.get("last"), hit_immunity=False,
               infinite_spray=bool(g.state.get("infinite_spray")), mine_loadout=bool(g.state.get("mine_loadout")),
               mine_settings=g.state.get("mine_settings") or {"enabled": bool(g.state.get("mine_loadout")),
@@ -651,7 +863,14 @@ def full_status(g: RE5Switch) -> dict:
               kill_time_on=False, kill_time_s=0.0, rotten_egg_only=False,
               all_weapons=[{"item": k, "weapon": w.name, "family": w.family}
                            for k, w in sorted(re5_weapons.WEAPONS.items())],
-              capabilities=capabilities(), edition="switch")
+              capabilities=capabilities(), edition="switch",
+              mercs_selection={"stage": R.STAGE_NAMES[R.stage_target()], "character": R.CHARACTERS[R.player_target()]}
+              if 0 <= R.stage_target() < 8 and 0 <= R.player_target() < 10 else None,
+              mercs_catalog={"rosters": {"mercenaries": list(R.CHARACTERS)}, "stages": list(R.STAGE_NAMES)})
+    nxt = {"mode": "mercenaries", "character": R.CHARACTERS[R.player_target() % len(R.CHARACTERS)],
+           "stage": R.stage_target() % len(R.STAGE_NAMES)}
+    st["mercs_rotation"] = {"next": nxt, "combinations_played": 0, "combinations_total": len(R.CHARACTERS) * 8,
+                            "selection_request": {"selection": nxt, "state": "queued"} if R.SELECTION else None}
     snap = R.snapshot(g.m)
     st["merc_seconds_left"] = snap.get("timer")
     inv = snap.get("inventory") or []
@@ -660,6 +879,17 @@ def full_status(g: RE5Switch) -> dict:
                         "weapon": re5_weapons.WEAPONS[s["item"]].name if s["type"] == 1 and s["item"] in
                         re5_weapons.WEAPONS else None} for s in inv]
     st["in_hand"] = next((x for x in st["inventory"] if x["in_hand"]), None)
+    guns = eligible_guns(inv)
+    st["available_weapons"] = guns
+    pw = g.state.get("preferred_weapon")
+    st["preferred_weapon"] = {**pw, "persistent": True, "available": any(w["item"] == pw["item"] for w in guns),
+                              "equipped": any(w["item"] == pw["item"] and w["equipped"] for w in guns)} if pw else None
+    req = g.state.get("weapon_request")
+    st["random_weapon_request"] = {k: v for k, v in req.items() if k != "expires"} if req else None
+    caps = st["capabilities"]
+    if not guns:
+        for op in ("select_weapon", "random_weapon"):
+            caps[op] = {"available": False, "reason": "No supported loaded gun or longbow in a quick slot (no round up?)."}
     return st
 
 
@@ -699,6 +929,10 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(run(ad, op, multiplier, on, g=g))
         elif op == "unlimited_health":
             res.update(unlimited_health(g, bool(on)))
+        elif op == "turn_speed":
+            res.update(turn_speed(g, multiplier if on else 1.0))
+        elif op == "bullet_damage":
+            res.update(bullet_damage(g, (multiplier if multiplier is not None else 10.0) if on else 1.0))
         elif op == "mines":
             res.update(mines(g, multiplier, bool(on)))
         elif op == "weapon_override":
@@ -711,6 +945,10 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(replace_long_guns(g, extra.get("seed")))
         elif op == "random_cheats":
             res.update(random_cheats(g, extra.get("seed")))
+        elif op in ("select_weapon", "random_weapon"):
+            res.update(select_weapon(g, extra.get("weapon"), bool(on), random_pick=op == "random_weapon"))
+        elif op == "mercs_select":
+            res.update(mercs_select(g, extra.get("mode"), extra.get("character"), extra.get("stage")))
         elif op == "revert_all":
             res.update(revert_all(g))
         else:

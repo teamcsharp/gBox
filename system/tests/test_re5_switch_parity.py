@@ -49,6 +49,13 @@ def parity_guest(**kw):
             g.put(at + 0x30 * 3 + 0x18, struct.pack("<II", 1, 0x0A000005))      # the M92F in hand, its upgrades
         else:
             put_block(g, at, SAFARI if i == 15 else GENERIC)
+    par = g.alloc(0x600)                                                   # sParameter, its turn and aim rates
+    g.q(BASE + SM.S_PARAM_PTR, par)
+    for off, (_name, value) in SM.TURN.items():
+        g.put(par + off, struct.pack("<f", value))
+    for wid, fp in ((0x02, 150.0), (0x04, 300.0)):                         # the firepower groups (levels 0-5)
+        g.put(BASE + SM.UPG_TABLE + SM.UPG_STRIDE * wid + SM.UPG_GROUP0,
+              struct.pack("<14f", *[fp + 20 * k for k in range(6)], *[1.0] * 8))
     return g
 
 
@@ -70,7 +77,7 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
     assert out["op"] == "status" and out["edition"] == "switch"
     caps = out["status"]["capabilities"]
     assert caps["weapon_override"]["available"] and caps["unlimited_health"]["available"]
-    assert not caps["turn_speed"]["available"] and caps["turn_speed"]["reason"].startswith("not yet on Switch: ")
+    assert not caps["add_time"]["available"] and caps["add_time"]["reason"].startswith("not yet on Switch: ")
     out = T.re5_mods(T.RE5ModsIn(session_id="lilspark-re5", op="fire_rate", multiplier=40), None)["result"]
     assert out["op"] == "fire_rate" and out["fire_rate_x"] == 40.0 and out["status"]["fire_rate_x"] == 40.0
     assert T.is_switch_re5({"game_id": "52d15709be0fda1a"}) and T.is_switch_re5({"title_id": "010018100cd46000"})
@@ -80,7 +87,7 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
 def test_an_op_this_edition_has_not_yet_says_why_and_is_never_a_silent_no_op():
     g = parity_guest()
     ad = Adapter(g)
-    for op in ("turn_speed", "add_time", "rotten_egg_only", "mercs_select", "live_weapon", "instant_qte"):
+    for op in ("add_time", "rotten_egg_only", "live_weapon", "instant_qte"):
         out = SM.tool_run(ad, op, 3, True)
         assert out["verified"] is False and out["reason"].startswith("not yet on Switch: ") and out["op"] == op
     assert SM.tool_run(ad, "clock", None, True, seconds=60)["op"] == "set_time"            # the PS3's aliases too
@@ -193,6 +200,76 @@ def test_apply_saved_answers_each_item_with_its_own_reason():
     g = parity_guest()
     out = SM.apply_saved(Adapter(g), [{"op": "fire_rate", "multiplier": 80, "on": True},
                                       {"op": "turn_speed", "multiplier": 3, "on": True},
+                                      {"op": "instant_qte", "on": True},
                                       {"op": "weapon_override", "weapon": 15, "only": True, "name": "bow"}])
     assert out["results"]["fire_rate"]["verified"] and out["results"]["bow"]["verified"]
-    assert out["results"]["turn_speed"]["reason"].startswith("not yet on Switch: ") and out["verified"] is False
+    assert out["results"]["turn_speed"]["verified"]
+    assert out["results"]["instant_qte"]["reason"].startswith("not yet on Switch: ") and out["verified"] is False
+
+
+def test_mercs_select_steers_the_switch_menus_to_the_next_rounds_stage_and_character(monkeypatch):
+    monkeypatch.setattr(R, "SELECTION", {})
+    g = parity_guest()
+    ad = Adapter(g)
+    out = SM.tool_run(ad, "mercs_select", None, True, mode="no_mercy", character="Sheva (Tribal)", stage="Village")
+    assert out["verified"] and out["queued"] and out["selection"]["stage"] == 2 and out["selection"]["character"] ==         "Sheva (Tribal)"
+    assert R.stage_target() == 2 and R.player_target() == 5
+    assert out["status"]["mercs_selection"] == {"stage": "Village", "character": "Sheva (Tribal)"}
+    gs = __import__("tests.test_re5_switch", fromlist=["round_guest"]).round_guest(
+        phase=R.PHASE_INTRO, player=False, units=((1, "uIdStartUp21"),), cursors={"uIdStartUp21": {R.MENU_CURSOR: 0}})
+    scr = R.screen(gs)
+    assert scr["where"] == "select_stage" and scr["target"] == 2 and R.step(scr) == "dright"
+    bad = SM.tool_run(ad, "mercs_select", None, True, mode="reunion", character="Barry", stage=0)
+    assert bad["verified"] is False and bad["reason"].startswith("not yet on Switch: ")
+    assert SM.tool_run(ad, "mercs_select", None, True, mode="no_mercy", character="Barry")["verified"] is False
+    assert R.player_target() == 5                                          # a refused choice changes nothing
+
+
+def test_select_and_random_weapon_set_the_operators_gun_the_bot_equips_and_maintain_confirms():
+    from tests.test_re5_switch_mods import put_slot
+    g = parity_guest()
+    ad = Adapter(g)
+    put_slot(g, 0, 0x102, 15, 3, hand=1)                                  # the M92F in hand
+    put_slot(g, 1, 0x104, 7, 5)                                           # the Ithaca at grid 5 (D-pad right)
+    put_slot(g, 2, 0x10D, 1, 7)                                           # a rocket launcher: never offered
+    st = SM.tool_run(ad, "status")["status"]
+    assert [w["item"] for w in st["available_weapons"]] == [0x02, 0x04] and st["capabilities"]["select_weapon"]["available"]
+    out = SM.tool_run(ad, "select_weapon", None, True, weapon=0x04)
+    assert out["queued"] and out["preference_saved"] and out["request"]["weapon"] == "Ithaca M37"
+    assert out["status"]["random_weapon_request"]["state"] == "pending"
+    snap = R.snapshot(g)
+    R.RE5Switch()._mods(SimpleNamespace(adapter=ad), snap, True)
+    assert snap["preferred_weapon"] == {"item": 0x04, "weapon": "Ithaca M37"}
+    b = R.Bot(stats={}, clock=lambda: 5.0)
+    assert b._gun_back(snap, 5.0) == {"tap": "dright"}                   # the bot's D-pad for the Ithaca
+    put_slot(g, 0, 0x102, 15, 3, hand=0)
+    put_slot(g, 1, 0x104, 7, 5, hand=1)
+    SM.maintain(ad, R.snapshot(g))
+    st = SM.tool_run(ad, "status")["status"]
+    assert st["random_weapon_request"]["state"] == "confirmed" and st["preferred_weapon"]["equipped"]
+    assert SM.tool_run(ad, "select_weapon", None, True, weapon=0x0D)["reason"].startswith("The selected gun")
+    rnd = SM.tool_run(ad, "random_weapon")
+    assert rnd["queued"] and rnd["request"]["item"] == 0x02                # the one not in hand
+    assert SM.tool_run(ad, "select_weapon", None, False)["automatic"] and SM.preferred_weapon(ad) is None
+
+
+def test_bullet_damage_scales_every_firepower_level_and_turn_speed_the_turn_and_aim_rates():
+    g = parity_guest()
+    ad = Adapter(g)
+    fp = lambda wid: struct.unpack("<14f", g.rd(BASE + SM.UPG_TABLE + SM.UPG_STRIDE * wid + SM.UPG_GROUP0, 56))
+    out = SM.tool_run(ad, "bullet_damage", 10, True)
+    assert out["verified"] and out["m92f_firepower_level0"] == 1500.0 and out["status"]["bullet_damage_x"] == 10.0
+    assert fp(0x02)[:3] == (1500.0, 1700.0, 1900.0) and fp(0x04)[0] == 3000.0
+    SM.tool_run(ad, "bullet_damage", 10, False)
+    assert fp(0x02)[0] == 150.0
+    par = struct.unpack("<Q", g.rd(BASE + SM.S_PARAM_PTR, 8))[0]
+    out = SM.tool_run(ad, "turn_speed", 3, True)
+    assert out["verified"] and out["values"]["aim_yaw_deg_s"] == pytest.approx(173.7) and out["status"]["turn_speed_x"] == 3.0
+    assert struct.unpack("<f", g.rd(par + 0x34, 4))[0] == pytest.approx(330.0)
+    assert SM.tool_run(ad, "turn_speed", "max", True)["turn_speed_x"] == SM.TURN_MAX
+    assert SM.tool_run(ad, "revert_all")["verified"]
+    assert struct.unpack("<f", g.rd(par + 0x2D4, 4))[0] == pytest.approx(57.9) and fp(0x02)[0] == 150.0
+    g.put(BASE + SM.UPG_TABLE + SM.UPG_STRIDE * 2 + SM.UPG_GROUP0, struct.pack("<f", 77.0))
+    SM.ORIG.clear()
+    with pytest.raises(RuntimeError, match="firepower"):
+        SM.tool_run(Adapter(g), "bullet_damage", 10, True)               # not this build's table: nothing written

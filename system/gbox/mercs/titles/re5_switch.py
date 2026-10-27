@@ -95,6 +95,22 @@ def continue_target() -> int:
     return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_MERCENARIES, MODE_NO_MERCY = 0, 1, 0, 3
 STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the selects' first entries
+# The operator's next-round choice (the PS3 tool's mercs_select, re5_switch_mods.mercs_select): the stage and character
+# selects walk to these instead (STAGE_NAMES / CHARACTERS index); kept across a bot reload
+SELECTION: dict = {}
+STAGE_NAMES = ("Public Assembly", "The Mines", "Village", "Ancient Ruins", "Experimental Facility", "Missile Area",
+               "Ship Deck", "Prison")
+CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)", "Sheva (Clubbin)", "Sheva (Tribal)",
+              "Jill (BSAA)", "Jill (Battle Suit)", "Wesker (Midnight)", "Wesker (STARS)")
+RELOAD_KEEP = ("SELECTION",)
+
+
+def stage_target() -> int:
+    return int(SELECTION.get("stage", STAGE_TARGET))
+
+
+def player_target() -> int:
+    return int(SELECTION.get("character", PLAYER_TARGET))
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
 STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a"}
@@ -594,9 +610,9 @@ def screen(m, merc=None) -> dict:
     where, cursor, target = "unknown", None, None
     try:
         if "uIdStartUp22" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), PLAYER_TARGET
+            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), player_target()
         elif "uIdStartUp21" in ui:
-            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), STAGE_TARGET
+            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), stage_target()
         elif "uIdStartUp29" in ui:
             u = ui["uIdStartUp29"]
             if _i32(m, u + MENU_SUB) == 1:
@@ -1017,6 +1033,15 @@ class Bot:
         bomb in hand sets one down at his feet."""
         inv = snap.get("inventory") or ()
         held = next((s for s in inv if s.get("hand")), None)
+        want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
+        choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
+                       and s.get("item") not in KNIVES and s.get("item") not in THROWN), None) if want else None
+        if choice is not None and not choice.get("hand") and self.aim_since is None:
+            if now - self._gun_back_at < GUN_BACK_GAP_S:
+                return {"hold": ()}
+            self._gun_back_at = now
+            self.stats["gun_choices"] = self.stats.get("gun_choices", 0) + 1
+            return {"tap": QUICK[choice["grid"]]}
         if held is None or held.get("type") != 1 or held.get("item") not in THROWN:
             return None
         if self._rearm(inv, None) is None:
@@ -1025,7 +1050,7 @@ class Bot:
             return {"hold": ()}
         self._gun_back_at = now
         self.stats["gun_backs"] += 1
-        return self._rearm(inv, None)
+        return self._rearm(inv, choice["grid"] if choice else None)
 
     def _rearm(self, inv, grid) -> dict | None:
         """The gun back in his hands after a heal: the one he held (its D-pad slot), else the first gun on one."""
@@ -1170,7 +1195,7 @@ class Bot:
                 self.doing, self.why = "escape", f"{self.round_escapes} this round"
             elif (act := self._gun_back(snap, now)) is not None:
                 self._gun_down()
-                self.doing, self.why = "rearm", "a grenade or bomb in hand: the gun back first"
+                self.doing, self.why = "rearm", "the gun back first (a grenade or bomb in hand, or the operator's gun)"
             elif self.fighter is not None:
                 act = self._fight(live, snap, now)
             else:
@@ -1563,6 +1588,7 @@ class RE5Switch(Driver):
         res = re5_switch_mods.maintain(ad, snap, enabled=playing)
         if snap is not None:
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
+            snap["preferred_weapon"] = re5_switch_mods.preferred_weapon(ad)   # select_weapon / random_weapon
         if self.stats is not None:
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
