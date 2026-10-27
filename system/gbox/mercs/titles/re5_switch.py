@@ -164,7 +164,9 @@ COMMIT_S = 1.0                           # a new target is kept this long (a cro
 # stream), 9 body turns and 5 quick turns a minute. Now: the target is not flipped back to the one he just left within
 # FLIP_S (a grab threat still wins), the dot on another Majini makes him the target only after DOT_SWITCH_TICKS ticks,
 # the gun goes down for a far-off aim only after UNAIM_HOLD_S of it (or past UNAIM_HARD), never within MIN_UP_S of
-# coming up, and once turning with the gun down it comes up again inside RERAISE_FRAC of the raise tolerance. Both
+# coming up, and once turning with the gun down it comes up again inside RERAISE_FRAC of the raise tolerance. The dot
+# resting on another Majini before he becomes the target still pulls the trigger on him (as before: opportunistic fire
+# in a crowd; live 11:42-11:54 without it: 13.8 kills a round, 5 deaths in 6), the aim held where it is. Both
 # holds only with nobody within THREAT_R (live 11:42, the first turn: ringed at arm's length, two deaths in two
 # rounds): up close he turns at once, as before.
 SMOOTH = True
@@ -1502,6 +1504,13 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
+        if SMOOTH and not on and other is not None and self.target != other:
+            other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
+            if other_where is not None:                      # now (the trigger), the aim kept where it is (no swing)
+                tgt, foot, where, on = on_e, on_e["pos"], other_where, True
+                dist = flat(tgt)
+                body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
+                self.stats["dot_shots"] = self.stats.get("dot_shots", 0) + 1
         key = tgt.get("ptr", tgt.get("slot"))
         self.on_ticks = self.on_ticks + 1 if on and key == self.on_key else (1 if on else 0)
         self.on_key = key if on else None
