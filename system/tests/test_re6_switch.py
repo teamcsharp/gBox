@@ -638,6 +638,31 @@ def test_no_bomb_readied_with_two_within_three_metres():
     assert bot.bomb_phase is None and bot.stats["bombs_placed"] == 0
 
 
+def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_the_bombs_own():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # a quick shot's distance
+    bot.held = lambda p, now: False
+    snap["player"]["equipped"] = 12                                           # the remote bomb in hand
+    acts = run(bot, snap, clock, 6)
+    assert all(not ({"zl", "zr"} <= set(a.get("hold", ()))) for a in acts)
+    assert {"tap": "dright"} in acts and bot.stats["unsafe_trigger_blocks"] >= 1
+    snap["player"]["equipped"] = 0                                            # the gun back: the quick shot goes out
+    bot.qshot_at = -1e9
+    acts = run(bot, snap, clock, 2)
+    assert {"hold": ("zl", "zr")} in acts
+
+
+def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 800.0, 700),), hp=1, state=3))
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"tap": "r"} and bot.stats["act"] == "tablet_dying" and bot.stats["dying_states"] == [3]
+    acts = run(bot, snap, clock, int(R.TABLET_CONFIRM_S / 0.05) + 1)          # the count stayed: the game ignored it
+    assert bot.stats["tablet_misses"] == 1 and bot.stats["tablet_dying_taken"] == 0
+    assert {"tap": "r"} in acts and bot.stats["tablet_dying_presses"] == 2    # pressed again at once
+    snap["player"].update(tablets=7, hp=300)                                  # this one took: back up
+    run(bot, snap, clock, 1)
+    assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
@@ -897,7 +922,7 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: no tablet (not measured)
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # dying: R for one (DYING_TABLETS)
     bot, clock, snap = brain(round_guest(hp=300, state=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
 
