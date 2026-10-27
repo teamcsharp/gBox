@@ -109,3 +109,4 @@ def test_the_snapshot_is_a_copy_the_server_can_hold():
     snap["shots"][0]["target"]["id"] = "changed"
     assert snap["shots"][0]["outcome"] == "unknown"                       # taken before the result
     assert look.snapshot()["shots"][0]["target"]["id"] == "1" and look.snapshot()["shots"][0]["outcome"] == "miss:no_damage"
+

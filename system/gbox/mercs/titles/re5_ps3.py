@@ -178,22 +178,9 @@ DOT_MEMORY_S = 1.0                     # the dot on him this recently: in sight,
 HARD_REFUSALS = ("dispatch nearby exposed threat first", "clock expires before pickup",
                  "inactive, unknown ETA, or unsafe route")   # the only strategy refusals a time bonus respects
 # "look at the bot" (gbox.mercs.bot_look): a foe this near on his level makes standing without shooting or walking "idle
-# among foes"; walking is this fast at least; the view is republished this often (at once on a new shot / decision); its
-# JSON copy (look_json, for the 5 s telemetry post that keeps only scalar stats under 64 KiB) is held under this size
-LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_JSON_MAX = 400.0, 40.0, 0.25, 24000
-
-
-def look_json(view: dict) -> str:
-    """stats look_json: the look as one compact JSON string, its oldest shots / decisions dropped until it fits
-    LOOK_JSON_MAX (the telemetry post fails as a whole over 64 KiB)."""
-    view = {"shots": list(view.get("shots") or ()), "decisions": list(view.get("decisions") or ()),
-            "idle_among_foes_s": view.get("idle_among_foes_s", 0.0), "walls_shot": view.get("walls_shot", 0)}
-    while True:
-        text = json.dumps(view, separators=(",", ":"), allow_nan=False)
-        if len(text) <= LOOK_JSON_MAX or not (view["shots"] or view["decisions"]):
-            return text
-        longer = "shots" if len(view["shots"]) >= len(view["decisions"]) else "decisions"
-        view[longer] = view[longer][1:]
+# among foes"; walking is this fast at least; stats["look"] is republished this often (at once on a new shot, outcome or
+# decision: a decision's reason changes every tick)
+LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S = 400.0, 40.0, 0.25
 
 
 RANK_SCORES = (("SS", 90000), ("S", 60000), ("A", 40000), ("B", 20000), ("C", 10000), ("D", 0))   # Reunion solo
@@ -1347,12 +1334,16 @@ class Bot:
         self._hp_seen = None                    # (player ptr, hp) at the last tick: a fall is a hit taken
         # "look at the bot" (operator 2026-10-26: "i want you able to see the last things and results of the last bullets
         # being fired by the bot. They are shooting at walls and just sitting here amongst foes"): the last shots and
-        # decisions (gbox.mercs.bot_look, stats look / look_json), the idle streak among foes, the walls shot
+        # decisions (gbox.mercs.bot_look, stats look), the idle streak among foes, the walls shot; and the round's
+        # behaviour block (gbox.mercs.behavior_metrics: the aim jitter, what the shots met and how they ended, the idle
+        # time among foes - the round map's "behavior", checked by gbox.mercs.round_audit as for every title)
+        from ..behavior_metrics import BehaviorMetrics
         from ..bot_look import BotLook
         self.look = BotLook(epoch=clock)
+        self.metrics = BehaviorMetrics()
         if self.combat is not None:
-            self.combat.look = self.look
-        self._look_at = None                    # (t, pos) at the last look tick
+            self.combat.look, self.combat.metrics = self.look, self.metrics
+        self._look_at = None                    # (t, pos, rot) at the last look tick
         self._look_pub = (-1, -math.inf)        # (look version, t) last published
         self.look_round = self._look_round_new()
 
@@ -1595,6 +1586,7 @@ class Bot:
             self._round_started = now
             self.look.new_round()                           # walls shot / idle streaks start over; the last shots stay
             self.look_round = self._look_round_new()
+            self.metrics.reset()
             for k in ("aim_guard", "laserless_visibility", "last_shot"):   # never last round's in this round's telemetry
                 self.stats.pop(k, None)
             round_map.gap_start(self.stats, now, "menus")  # round_gap_s: since the last round ended (results / death)
@@ -1941,6 +1933,12 @@ class Bot:
         trace.room = stage
         if trace.out_dir is not None:
             trace.out_dir = trace.out_dir.parent / stage
+        metrics = getattr(self, "metrics", None)
+        if metrics is not None:                              # the round's behaviour block (gbox.mercs.behavior_metrics)
+            behavior = metrics.summary()
+            trace.annex["behavior"] = behavior
+            self.stats["behavior"] = {k: behavior[k] for k in ("aim", "shot_lines", "walls_shot", "shot_outcomes",
+                                                              "idle_among_foes")}
         impacts = getattr(self, "impacts", None)
         if impacts is not None:
             trace.annex["impact_lessons"] = impacts.summary(self._stage_key())
@@ -1962,8 +1960,8 @@ class Bot:
 
     def tick(self, snap: dict) -> dict:
         """One tick (_tick_main), then the look (gbox.mercs.bot_look): this tick's decision and why, the idle streak among
-        foes, the gun-down turning with a foe close; published as stats look (the shared schema) and look_json (the same
-        as one string: the 5 s telemetry post keeps only scalar stats)."""
+        foes, the gun-down turning with a foe close, the aim jitter (behavior_metrics); published as stats look (the shared
+        schema; the worker's telemetry posts it as stats.look, gbox.tools.TELEMETRY_BLOCKS)."""
         self._sanitize_laser(snap)
         n0 = getattr(self.combat, "decisions_n", 0)
         act = self._tick_main(snap)
@@ -2011,8 +2009,9 @@ class Bot:
     def _look_tick(self, snap, act, n0) -> None:
         """The look after this tick: the decision (the combat layer's own when it decided this tick, else the phase's),
         tick_idle (a living Majini within LOOK_FOE_R on his level while he neither walks nor shoots with the gun up nor is
-        held by the game), the round's idle and gun-down-with-a-foe-close seconds; stats look / look_json at most every
-        LOOK_PUBLISH_S (at once when a shot or a decision came in)."""
+        held by the game), the round's idle and gun-down-with-a-foe-close seconds, the aim jitter while the gun is up
+        (behavior_metrics.aim_tick); stats look at most every LOOK_PUBLISH_S (at once on a new shot, outcome or
+        decision)."""
         now = self.clock()
         p = snap.get("player") or {}
         act = act if isinstance(act, dict) else {}
@@ -2024,12 +2023,14 @@ class Bot:
             decision, reason = self._phase_decision(phase, held, tap)
         self.look.record_decision(phase, decision, reason, t=now)
         pos = p.get("pos")
-        dt, moving = 0.0, False
+        dt, moving, rate = 0.0, False, None
         if self._look_at is not None and pos:
             dt = max(0.0, min(0.5, now - self._look_at[0]))
             if dt > 0:
                 moving = math.hypot(pos[0] - self._look_at[1][0], pos[2] - self._look_at[1][2]) / dt >= LOOK_MOVE_CM_S
-        self._look_at = (now, tuple(pos)) if pos else None
+                if isinstance(p.get("rot"), (int, float)) and self._look_at[2] is not None:
+                    rate = abs(re5_engage.wrap(p["rot"] - self._look_at[2])) / dt
+        self._look_at = (now, tuple(pos), p.get("rot")) if pos else None
         foes = [e for e in snap.get("enemies") or () if re5_engage.living(e) and pos and re5_engage.on_level(p, e)
                 and re5_engage.flat(pos, e["pos"]) <= LOOK_FOE_R] if pos else []
         ready = callable(getattr(self.combat, "_ready", None)) and self.combat._ready(p)
@@ -2038,6 +2039,16 @@ class Bot:
                       or (p.get("hp") or 0) <= 0 or own_screen(snap) != "playing")
         busy = bool(moving or firing or forced or tap)
         streak = self.look.tick_idle(bool(foes), busy, t=now)
+        self.metrics.idle_tick(dt, bool(foes) and not busy)
+        if ready and own_screen(snap) == "playing":           # the aim jitter while the gun is up
+            self.metrics.raise_gun(now)
+            if getattr(self.combat, "decisions_n", n0) != n0:
+                aim = getattr(self.combat, "last_aim", None) or {}
+                yaw = aim.get("yaw_err") if aim.get("yaw_err") is not None else aim.get("est_yaw")
+                self.metrics.aim_tick(dt, math.radians(yaw) if isinstance(yaw, (int, float)) else None, rate,
+                                      1 if "rleft" in held else -1 if "rright" in held else 0, aim.get("target"))
+        else:
+            self.metrics.lower_gun()
         r = self.look_round
         if foes and own_screen(snap) == "playing":
             r["foes_close_s"] += dt
@@ -2050,16 +2061,24 @@ class Bot:
                 r["gun_down_close_s"] += dt
         dots = getattr(self.combat, "round_dots", None) or {}
         r["walls_shot"], r["floor_shots"] = int(dots.get("wall", 0)), int(dots.get("floor", 0))
-        if self._trace is not None:                          # the round's look flags (gbox.mercs.round_audit reads them)
+        if self._trace is not None:                          # the round's flags (gbox.mercs.round_audit reads them)
             self._trace.annex["combat_look"] = {k: round(v, 1) if isinstance(v, float) else v for k, v in r.items()}
+            if now - getattr(self, "_behavior_at", -math.inf) >= 1.0:
+                self._behavior_at = now
+                self._trace.annex["behavior"] = self.metrics.summary()
         self.stats.update(look_idle_among_foes_s=round(self.look.idle_s, 1), look_walls_shot=self.look.walls_shot,
                           round_idle_among_foes_s=round(r["idle_among_foes_s"], 1),
                           round_gun_down_close_s=round(r["gun_down_close_s"], 1),
                           round_walls_shot=r["walls_shot"], round_floor_shots=r["floor_shots"])
-        if self.look.version != self._look_pub[0] or now - self._look_pub[1] >= LOOK_PUBLISH_S:
-            view = self.look.snapshot()
-            self.stats["look"] = view
-            self.stats["look_json"] = look_json(view)
+        # a new shot, a shot's outcome or a new decision: at once; a decision's reason (it changes every tick): at most
+        # every LOOK_PUBLISH_S
+        last = self.look.decisions[-1] if self.look.decisions else None
+        key = (tuple((id(x), x["outcome"]) for x in list(self.look.shots)[-3:]), self.look.walls_shot,
+               id(last) if last is not None else None)
+        if (now - self._look_pub[1] >= LOOK_PUBLISH_S and self.look.version != self._look_pub[0]) \
+                or key != getattr(self, "_look_key_pub", None) or "look" not in self.stats:
+            self._look_key_pub = key
+            self.stats["look"] = self.look.snapshot()
             self._look_pub = (self.look.version, now)
 
     def _phase_decision(self, phase, held, tap) -> tuple[str, str]:

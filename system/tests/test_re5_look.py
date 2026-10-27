@@ -1,5 +1,6 @@
-"""RE5 "look at the bot" (gbox.mercs.bot_look in the RE5 driver): stats look / look_json, every shot with what the dot was
-on and what it did, every decision change, the idle streak among foes, the round's audit flags (operator 2026-10-26:
+"""RE5 "look at the bot" (gbox.mercs.bot_look in the RE5 driver): stats look, every shot with what the dot was on and
+what it did, every decision change, the idle streak among foes, the round's behaviour block (gbox.mercs.behavior_metrics)
+and audit flags (operator 2026-10-26:
 "when i say 'look at the bot' i want you able to see the last things and results of the last bullets being fired by
 the bot. They are shooting at walls and just sitting here amongst foes")."""
 import json
@@ -46,7 +47,10 @@ def test_stats_look_has_the_shared_schema_and_follows_a_shot_to_its_hit(tmp_path
     assert shot["outcome"] == "hit:majini" and shot["hp_delta"] == -200 and shot["t"] == 10.05
     assert isinstance(shot["aim_err_deg"], float) and abs(shot["aim_err_deg"]) < 1.0
     assert look["decisions"][-1]["phase"] == "fight" and look["decisions"][-1]["decision"] == "fire"   # 4 m: fight
-    assert json.loads(bot.stats["look_json"]) == look                   # the telemetry-visible copy (scalar stats)
+    assert len(json.dumps(look, separators=(",", ":"))) <= 40 * 1024    # gbox.tools.TELEMETRY_BLOCK_MAX: posted as is
+    behavior = bot.metrics.summary()                                    # the round's behaviour block
+    assert behavior["shot_lines"] == {"target": 1} and behavior["shot_outcomes"] == {"hit": 1}
+    assert behavior["aim"]["shots_on_target"] == 1 and behavior["aim"]["shots_off_target"] == 0
 
 
 def test_a_shot_into_a_wall_is_counted_and_resolved_as_a_wall_miss(tmp_path):
@@ -107,50 +111,72 @@ def test_turning_gun_down_with_a_majini_close_is_counted_per_round(tmp_path):
     assert bot.stats["look"]["decisions"][-1]["decision"] == "swing (gun down)"
 
 
-def test_look_json_drops_the_oldest_entries_to_stay_under_its_bound(monkeypatch):
-    monkeypatch.setattr(R, "LOOK_JSON_MAX", 2500)
-    look = BotLook(epoch=lambda: 1.0)
-    for k in range(30):
-        look.record_shot(f"gun {k}", "on him " + "x" * 60, {"id": str(k), "kind": "majini", "dist_m": 2.0,
-                                                            "bearing_deg": 0.0}, dot_on="target")
-        look.record_decision("fight", f"d{k}", "y" * 80)
-    text = R.look_json(look.snapshot())
-    view = json.loads(text)
-    assert len(text) <= 2500 and view["shots"][-1]["weapon"] == "gun 29" and view["decisions"][-1]["decision"] == "d29"
-    assert len(view["shots"]) < 30 and set(view) == {"shots", "decisions", "idle_among_foes_s", "walls_shot"}
+def test_a_full_look_fits_the_telemetry_block_bound():
+    """gbox.tools posts stats["look"] when it encodes within TELEMETRY_BLOCK_MAX (40 KB): full rings of the longest RE5
+    entries (the gate and the reason capped at bot_look.REASON_MAX) stay well under it."""
+    look = BotLook(epoch=lambda: 1793064177.67)
+    for k in range(40):
+        look.record_shot("Lightning Hawk (0x1a)", "x" * 300, {"id": hex(0x30800000 + k), "kind": "majini",
+                                                                "dist_m": 12.34, "bearing_deg": -123.4},
+                         aim_err_deg=-12.3, dot_on="target", outcome="miss:off_target", hp_delta=-331)
+        look.record_decision("clear_nearby", f"swing (gun down) {k}", "y" * 300)
+    assert len(json.dumps(look.snapshot(), separators=(",", ":"))) < 25 * 1024
 
 
-def test_the_round_audit_flags_walls_shot_idle_among_foes_and_gun_down_turning_close():
+def test_the_round_audit_flags_the_floor_shot_and_gun_down_turning_close_and_keeps_the_look_metrics():
     audit, stats = RoundAudit("BLUS30491"), {"rounds": 1, "character": "Chris"}
     audit.start(stats)
     trace = RoundTrace(None, "BLUS30491", "Village", "r1", 400.0)
     for k in range(120):
         trace.add(k * 0.25, k * 30.0, 0.0, 0.0, {"phase": "clear_nearby"})
-    trace.annex["combat_look"] = {"walls_shot": 3, "floor_shots": 1, "idle_among_foes_s": 12.5, "idle_max_s": 6.0,
+    trace.annex["combat_look"] = {"walls_shot": 3, "floor_shots": 6, "idle_among_foes_s": 12.5, "idle_max_s": 6.0,
                                   "gun_down_close_s": 9.0, "foes_close_s": 30.0}
+    trace.annex["behavior"] = {"shot_lines": {"target": 20, "wall": 3, "floor": 6}}
     trace.auditor = lambda summary, tr: audit.finish(summary, tr, stats)
     a = trace.finish()["audit"]
     probs = " | ".join(a["problems"])
-    assert "shots into walls 3, into the floor 1" in probs
-    assert "idle among foes 12.5 s (longest 6 s)" in probs
+    assert "shooting the floor: 6 of 29 shots" in probs
     assert "gun-down turning with a Majini within 4 m: 9 s of 30 s" in probs
     assert a["metrics"]["walls_shot"] == 3 and a["metrics"]["gun_down_close_s"] == 9.0
+    assert a["metrics"]["idle_among_foes_s"] == 12.5 and a["metrics"]["floor_shots"] == 6
     clean = RoundAudit("BLUS30491")
     clean.start(stats)
     trace.annex["combat_look"] = {"walls_shot": 0, "floor_shots": 0, "idle_among_foes_s": 2.0, "idle_max_s": 1.0,
                                   "gun_down_close_s": 1.5, "foes_close_s": 30.0}
     trace.auditor = lambda summary, tr: clean.finish(summary, tr, stats)
     probs = " | ".join(trace.finish()["audit"]["problems"])
-    assert "walls" not in probs and "idle among foes" not in probs and "gun-down turning with" not in probs
+    assert "floor" not in probs and "gun-down turning with" not in probs
 
 
-def test_the_driver_keeps_the_rounds_look_flags_in_its_round_map(tmp_path):
+def test_the_driver_keeps_the_rounds_look_flags_and_behaviour_block_in_its_round_map(tmp_path):
     now = [10.0]
     m, bot = bot_at(tmp_path, now)
     bot._trace = RoundTrace(None, "BLUS30491", "stage", "r1", 400.0)
     bot._look_tick(snap(m, enemy=(0.0, 0.0, 300.0)), {"hold": set()}, bot.combat.decisions_n)
     assert set(bot._trace.annex["combat_look"]) == {"walls_shot", "floor_shots", "idle_among_foes_s", "idle_max_s",
                                                     "gun_down_close_s", "foes_close_s"}
+    assert set(bot._trace.annex["behavior"]) >= {"aim", "shot_lines", "walls_shot", "shot_outcomes", "idle_among_foes"}
+
+
+def test_the_rounds_behaviour_block_flags_walls_and_sitting_among_foes_as_for_every_title():
+    """The RE5 bot feeds gbox.mercs.behavior_metrics: the shared audit (RoundAudit._behavior) flags the walls shot and
+    the idle streak among foes for RE5 as for RE4."""
+    from gbox.mercs.behavior_metrics import BehaviorMetrics
+    metrics = BehaviorMetrics()
+    for k in range(20):
+        metrics.shot_line("wall" if k < 6 else "target")
+        metrics.shot_result("miss:wall" if k < 6 else "hit:majini")
+    for k in range(40):                                                   # 4 s among foes, no step, no shot
+        metrics.idle_tick(0.1, True)
+    audit, stats = RoundAudit("BLUS30491"), {"rounds": 1, "character": "Chris"}
+    audit.start(stats)
+    trace = RoundTrace(None, "BLUS30491", "Village", "r1", 400.0)
+    for k in range(120):
+        trace.add(k * 0.25, k * 30.0, 0.0, 0.0, {"phase": "clear_nearby"})
+    trace.annex["behavior"] = metrics.summary()
+    trace.auditor = lambda summary, tr: audit.finish(summary, tr, stats)
+    probs = " | ".join(trace.finish()["audit"]["problems"])
+    assert "shooting walls: 6 of 20 shots" in probs and "sat among foes: 4 s" in probs
 
 
 def test_the_driver_drops_an_implausible_laser_read_from_the_snapshot(tmp_path):

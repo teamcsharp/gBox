@@ -1,5 +1,6 @@
 """Runtime/emulator adapters behind one capability interface (plan §6). Unsupported ops raise Unsupported."""
 import collections
+import hashlib
 import json
 import os
 import re
@@ -4408,6 +4409,69 @@ EDEN_TITLE_SETTINGS = {
 EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)
 KEEP_OVERLAY = object()                                  # restart_title: keep the LayeredFS build the title runs with
+# Citron NEO (gbox.provision.ensure_citron_linux): Eden's settings with Citron's renderer enum {Vulkan=0, Null=1}; it
+# runs RE5 / RE6 multi-core (live 2026-10-26: RE5 No Mercy at 60 FPS), so its per-title file only adds async shaders.
+CITRON_SETTINGS = {
+    "UI": dict(EDEN_SETTINGS["UI"]),
+    "Renderer": {"backend": "0"},                        # Vulkan (Citron dropped OpenGL: 1 is the Null renderer)
+    "Core": {"use_multi_core": "true"},
+}
+_MT_FRAMEWORK_CITRON = {"Renderer": {"use_asynchronous_shaders": "true", "async_presentation": "true"}}
+CITRON_TITLE_SETTINGS = {
+    "010018100CD46000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 5
+    "01002A000CD48000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 6
+}
+CITRON_LOG = ("log", "citron_log.txt")
+# Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
+# Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
+SWITCH_CITRON_TITLES = frozenset({"010018100CD46000", "01002A000CD48000"})
+# A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
+# "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
+BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000"})
+BOOT_WATCH_S, BOOT_WATCH_SETTLE_S, BOOT_WATCH_EVERY_S, BOOT_RETRIES = 45.0, 8.0, 1.5, 1
+
+
+class BootHung(RuntimeError):
+    """A Switch title that mapped its memory but never drew a changing frame (or whose emulator died) during boot."""
+
+
+_SWITCH_TID_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
+# Catalog rows that carry no serial (the share's "Resident Evil 5.nsp" has no [TITLEID] tag and the catalog does not read
+# its ticket): named by title, the way gbox.re_switch.capabilities does.
+_SWITCH_TITLES_BY_NAME = ((re.compile(r"(?:resident\s+evil|biohazard)\s*5", re.I), "010018100CD46000"),
+                          (re.compile(r"(?:resident\s+evil|biohazard)\s*6", re.I), "01002A000CD48000"))
+
+
+def _switch_title_id(game: dict) -> str:
+    """The game's base title id: its serial or launch title id, else a [TITLEID] tag in its file name, else its title
+    for the titles gBox knows by name (RE5 / RE6); "" when nothing says."""
+    launch = game.get("launch") or {}
+    serial = str(game.get("serial") or launch.get("title_id") or "").removeprefix("0x").removeprefix("0X").upper()
+    if re.fullmatch(r"[0-9A-F]{16}", serial):
+        return serial
+    names = [launch.get("path"), game.get("rel_path"), *(game.get("source_paths") or [])]
+    for name in names:
+        m = _SWITCH_TID_TAG.search(str(name or ""))
+        if m:
+            tid = m[1].upper()
+            return f"{int(tid, 16) & ~0xFFF:016X}" if (int(tid, 16) & 0xFFF) == 0x800 else tid
+    if str(game.get("platform") or "").casefold() == "switch":
+        title = re.split(r"[\[(]", str(game.get("title") or ""), maxsplit=1)[0]
+        for rx, tid in _SWITCH_TITLES_BY_NAME:
+            if rx.fullmatch(title.strip()):
+                return tid
+    return serial
+
+
+def switch_linux_kind(game: dict, config: Config) -> str:
+    """eden | citron: the emulator a Linux node starts this Switch game in (switch_linux_emulator, else auto: Citron for
+    SWITCH_CITRON_TITLES once it is configured on this node, Eden for the rest)."""
+    choice = str(getattr(config, "switch_linux_emulator", "auto") or "auto").casefold()
+    if choice in ("eden", "citron"):
+        return choice
+    if _switch_title_id(game) in SWITCH_CITRON_TITLES and provision.citron_linux_available(config):
+        return "citron"
+    return "eden"
 
 
 class _EdenRestarting:
@@ -4493,11 +4557,38 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     BOOT_S = 180.0                                        # first boots build shader caches before the guest shows
     RESTART_GRACE_S = 6.0                                 # restart_title: SIGTERM, then SIGKILL what is left
     overlay_build: str | None = None                      # the LayeredFS build folder this session starts with
+    LOG = EDEN_LOG
+
+    # --- what differs between Eden and Citron (CitronLinuxAdapter overrides these) ---
+    def _env(self, config) -> dict:
+        return provision.switch_linux_env(config)
+
+    def _home(self, config) -> Path:
+        return provision.switch_linux_dir(config)        # keys/, nand/, sdmc/, load/, log/eden_log.txt
+
+    def _config_path(self) -> Path:
+        return provision.switch_linux_config(self.config)
+
+    def _exe(self) -> Path:
+        return provision.switch_linux_exe(self.config)
+
+    def _provision(self, progress=None) -> dict:
+        return provision.ensure_switch_linux(self.config, progress)
+
+    def _emu(self):
+        from . import switch_mods
+        return switch_mods.eden(self.config)
+
+    def _settings(self) -> dict:
+        return EDEN_SETTINGS
+
+    def _title_table(self) -> dict:
+        return EDEN_TITLE_SETTINGS
 
     def __init__(self, config: Config, platform: str = "switch"):
         super().__init__(config, platform)
-        self.env = provision.switch_linux_env(config)
-        self.home = provision.switch_linux_dir(config)   # keys/, nand/, sdmc/, load/, log/eden_log.txt
+        self.env = self._env(config)
+        self.home = self._home(config)
         self.debug, self.paused, self.rom = False, False, None
         self.title_settings: dict = {}                    # the per-title overrides this launch applied
         self.content_dirs: list[str] = []                 # Eden's external content folders for this launch
@@ -4513,7 +4604,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
 
     def _ensure(self):
         self.write_settings()                             # before the first start: no callouts, Vulkan, the stub
-        provision.ensure_switch_linux(self.config, getattr(self, "progress", None))
+        self._provision(getattr(self, "progress", None))
         self.overlay_state = self.select_overlay()        # Eden reads its mods and [DisabledAddOns] when it starts
 
     def select_overlay(self) -> dict:
@@ -4523,7 +4614,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         asked for a build."""
         from . import switch_mods
         try:
-            return switch_mods.prepare_launch(self.config, switch_mods.eden(self.config), getattr(self, "game_id", None),
+            return switch_mods.prepare_launch(self.config, self._emu(), getattr(self, "game_id", None),
                                               self.rom, self.overlay_build, serial=getattr(self, "serial", None))
         except Exception as e:                            # noqa: BLE001
             if self.overlay_build:
@@ -4535,11 +4626,11 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         being launched (self.rom), Eden's external content folders; every other line in the file is kept. Then the
         game's per-title overrides (write_title_settings). Also fixes the address mode the guest-memory reads use for
         this launch."""
-        path = provision.switch_linux_config(self.config)
+        path = self._config_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         self.address_mode = eden_memory.mode_for(self.use_nce)
-        values = {s: dict(kv) for s, kv in EDEN_SETTINGS.items()}
+        values = {s: dict(kv) for s, kv in self._settings().items()}
         values["Cpu"] = {"cpu_backend": "1" if self.use_nce else "0"}
         values["Debugging"] = {"use_gdbstub": "true" if self.debug else "false", "gdbstub_port": str(self.port)}
         for section, kv in values.items():
@@ -4578,12 +4669,13 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         each with its \\use_global=false and \\default=false twins; a key gBox manages that this title does not list
         goes back to the global value. No file is created for a title without overrides. Returns what was applied."""
         tid = (title_id or "").upper()
-        wanted = EDEN_TITLE_SETTINGS.get(tid, {})
-        path = provision.switch_linux_config(self.config).parent / "custom" / f"{tid}.ini"
+        table = self._title_table()
+        wanted = table.get(tid, {})
+        path = self._config_path().parent / "custom" / f"{tid}.ini"
         if not tid or (not wanted and not path.exists()):
             return {}
         text = path.read_text(encoding="utf-8") if path.exists() else ""
-        managed = sorted({(s, k) for kv in EDEN_TITLE_SETTINGS.values() for s, d in kv.items() for k in d})
+        managed = sorted({(s, k) for kv in table.values() for s, d in kv.items() for k in d})
         for section, key in managed:
             value = wanted.get(section, {}).get(key)
             if value is not None:
@@ -4598,7 +4690,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
 
     def _argv(self, rom: str) -> list[str]:
         self.rom = rom
-        return [str(provision.switch_linux_exe(self.config)), "-f", "-g", rom]   # src/core/launch_params.cpp
+        return [str(self._exe()), "-f", "-g", rom]       # src/core/launch_params.cpp (Citron: the same)
 
     def _debugger(self):
         if not self.debug:
@@ -4614,23 +4706,60 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         ok, why = switch_nsp.launchable(rom)
         if not ok:
             raise ToolUnavailable(why)
-        self._mem, self._stopped = None, False
-        self.rom = rom                                    # _ensure: the game's overrides and its LayeredFS selection
-        try:
-            d = super().launch_game(rom)
-            if self.dbg:
-                self.supported = self.supported | {"set_breakpoint", "remove_breakpoint"}
-            arena = self._wait_guest_ready()
-            self._park_pointer()
-            return d | {"emulator": "eden (linux)", "ready": "guest_memory", "address_mode": self.address_mode,
-                        "cpu_backend": "nce" if self.use_nce else "dynarmic",
-                        "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": switch_nsp.title_id(rom),
-                        "title_settings": self.title_settings, "content_dirs": self.content_dirs,
-                        "eden_log": str(self.eden_log()), "overlay": self.overlay_state,
-                        "validation": "guest memory mapped; gameplay not yet verified"}
-        except BaseException:
-            self.stop_game()                              # only this session's process and display
-            raise
+        tid = (switch_nsp.title_id(rom) or "").upper()
+        watched = tid in BOOT_WATCH_TITLES and not self.debug
+        attempts = 1 + (BOOT_RETRIES if watched else 0)
+        failures: list[str] = []
+        for attempt in range(attempts):
+            self._mem, self._stopped = None, False
+            self.rom = rom                                # _ensure: the game's overrides and its LayeredFS selection
+            try:
+                d = super().launch_game(rom)
+                if self.dbg:
+                    self.supported = self.supported | {"set_breakpoint", "remove_breakpoint"}
+                arena = self._wait_guest_ready()
+                self._park_pointer()
+                watch = self._boot_watch() if watched else {"watched": False}
+                return d | {"emulator": f"{self.name} (linux)", "ready": "guest_memory",
+                            "address_mode": self.address_mode, "cpu_backend": "nce" if self.use_nce else "dynarmic",
+                            "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": tid or None,
+                            "title_settings": self.title_settings, "content_dirs": self.content_dirs,
+                            "eden_log": str(self.eden_log()), "overlay": self.overlay_state,
+                            "boot_watch": watch, "boot_attempts": attempt + 1,
+                            "boot_failures": failures,
+                            "validation": "guest memory mapped and the boot drew changing frames; gameplay not yet "
+                                          "verified" if watch.get("watched") else
+                                          "guest memory mapped; gameplay not yet verified"}
+            except (BootHung, RuntimeError) as e:
+                self.stop_game()                          # only this session's process and display
+                failures.append(f"attempt {attempt + 1}: {str(e)[:300]}")
+                if attempt + 1 >= attempts:
+                    raise
+                self._p(30, f"Boot attempt {attempt + 1} failed ({str(e)[:80]}); starting {self.name} again")
+            except BaseException:
+                self.stop_game()
+                raise
+
+    def _boot_watch(self) -> dict:
+        """After the memory map: BOOT_WATCH_SETTLE_S past the emulator's own loading overlay, then frames until three
+        differ (the title's logos and intro) inside BOOT_WATCH_S; a still screen or an emulator that died raises
+        BootHung, which launch_game answers with one more start."""
+        start = time.monotonic()
+        seen: set = set()
+        while time.monotonic() - start < BOOT_WATCH_S:
+            if not self.proc or self.proc.poll() is not None:
+                raise BootHung(f"{self.name} exited during boot: {self.log_tail(600)}")
+            if time.monotonic() - start >= BOOT_WATCH_SETTLE_S:
+                try:
+                    frame = self.get_frame()
+                except Exception:                         # noqa: BLE001 - the display may be busy
+                    frame = b""
+                if frame:
+                    seen.add(hashlib.sha1(frame).digest())
+                    if len(seen) >= 3:
+                        return {"watched": True, "frames": len(seen), "after_s": round(time.monotonic() - start, 1)}
+            time.sleep(BOOT_WATCH_EVERY_S)
+        raise BootHung(f"{self.name} drew no changing frame in {BOOT_WATCH_S:.0f} s after mapping the game (a hung boot)")
 
     # --- an in-game swap: the same title again in this session (LayeredFS is applied at boot) ---
     def _check_overlay(self, overlay) -> None:
@@ -4740,7 +4869,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         return self.restart_title(wait=False) | {"reset": True, "via": "Eden restarted in this session"}
 
     def eden_log(self) -> Path:
-        return self.home.joinpath(*EDEN_LOG)
+        return self.home.joinpath(*self.LOG)
 
     def log_tail(self, n: int = 60000) -> str:
         try:
@@ -4900,6 +5029,45 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         out = super().send_input(known)
         skipped = sorted({str(ev.get("key")) for ev in events if str(ev.get("key", "")).casefold() not in self.keys})
         return out | ({"skipped": skipped} if skipped else {})
+
+
+class CitronLinuxAdapter(SwitchLinuxAdapter):
+    """Switch games in Citron NEO on a Linux node (provision.ensure_citron_linux): everything SwitchLinuxAdapter does
+    for Eden (its own Xvfb display and stream, the keyboard pad, guest memory through /proc/<pid>/mem with the same
+    HostMemory arena, external content folders for updates, per-title settings, LayeredFS in its own load folder and
+    [DisabledAddOns], restart_title, the boot watch), with Citron's folders and renderer enum (Vulkan = 0), and the
+    libusb_init shim on LD_PRELOAD. The shim is built from gbox/native/libusb_noinit.c and let through sharun with
+    SHARUN_ALLOW_LD_PRELOAD=1. Without it, Citron's main thread blocks on the Spark's hung usb4 sysfs and never opens a
+    window. The canonical emulator for RE5 / RE6 on Switch (SWITCH_CITRON_TITLES): multi-core, RE5 No Mercy at
+    60 FPS live on 2026-10-26."""
+    name = "citron"
+    checkpoint_reason = "Citron (yuzu) has no save states"
+    LOG = CITRON_LOG
+
+    def _env(self, config) -> dict:
+        return provision.citron_linux_env(config)
+
+    def _home(self, config) -> Path:
+        return provision.citron_linux_dir(config)
+
+    def _config_path(self) -> Path:
+        return provision.citron_linux_config(self.config)
+
+    def _exe(self) -> Path:
+        return provision.citron_linux_exe(self.config)
+
+    def _provision(self, progress=None) -> dict:
+        return provision.ensure_citron_linux(self.config, progress)
+
+    def _emu(self):
+        from . import switch_mods
+        return switch_mods.citron(self.config)
+
+    def _settings(self) -> dict:
+        return CITRON_SETTINGS
+
+    def _title_table(self) -> dict:
+        return CITRON_TITLE_SETTINGS
 
 
 class SteamAdapter(Adapter):
@@ -5063,7 +5231,8 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         from .xenia import XeniaAdapter
         return XeniaAdapter(config, plat)
     if plat == "switch" and HOST_OS == "linux":
-        ad = SwitchLinuxAdapter(config, plat)              # Eden's AppImage on the session's Xvfb display (streamed)
+        cls = CitronLinuxAdapter if switch_linux_kind(game, config) == "citron" else SwitchLinuxAdapter
+        ad = cls(config, plat)                             # Eden's / Citron's AppImage on the session's Xvfb display
         ad.debug = bool(debug)
         return ad
     if plat == "switch" and HOST_OS == "windows":

@@ -62,6 +62,7 @@ STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the se
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
 STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "dead": "a", "mercs_title": "a"}
+MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert", "select_stage", "select_player")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
             "mercs_mode": ("dup", "ddown"), "select_stage": ("dleft", "dright"), "select_player": ("dleft", "dright")}
 
@@ -439,6 +440,18 @@ class RE5Switch(Driver):
             elif now - self._timer[1] > HANG_S:
                 return "loading"                            # the clock stopped: frozen (the engine calls it lost)
         return where
+
+    def menu_handoff(self, m, snap, where) -> bool:
+        """The engine hands a finished round back to the menus only when RAM names a native screen. That means the
+        results unit, a dialog (Save successful after Continue? No, the Leaderboards prompt) or the selects. Without
+        this, a round that ended on "Save successful" read as a lost one (no player for 20 s), and mercs_bot stopped the
+        run as hung (live in gBox on Citron, 2026-10-26)."""
+        if where != "results":
+            return False
+        try:
+            return screen(m).get("where") in MENU_HANDOFF
+        except (ValueError, OSError, struct.error):
+            return False
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         return Bot(stats=stats, clock=clock)

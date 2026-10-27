@@ -170,6 +170,8 @@ READY_FIRE_FACING = math.radians(25)  # ... faced within this (2026-10-26: shots
                                       # "shot at his feet")
 REPOSITION_S = 0.7                   # a blocked line: one sidestep this long, the next one the other way (was 0.25 s
                                      # each way: standing among foes jittering left / right)
+WINDOW_GATES = frozenset({"on him", "on another Majini", "point blank", "threat: blasting", "line to him"})
+                                     # the gates that fire inside the target's window (behavior_metrics: on target)
 
 
 def bow_tolerance(distance):
@@ -524,6 +526,7 @@ class Combat:
         self._rot_seen = None
         self._pos_seen: dict = {}
         self.look = None                      # gbox.mercs.bot_look.BotLook (the driver's Bot sets it): "look at the bot"
+        self.metrics = None                   # gbox.mercs.behavior_metrics.BehaviorMetrics (the Bot's): the shots' lines
         self._look_pending: dict = {}         # id(shot record) -> (its look entry, target ptr, enemy hp at the shot)
         self.round_dots: dict = {}            # this round's shots by what the dot was on (re5_engage.dot_class)
         self.decisions_n = 0                  # one more per decision (the Bot tells this tick's decision from a stale one)
@@ -1918,6 +1921,9 @@ class Combat:
         dot = E.dot_class(lz, foot, p, enemies, dot_on) if p.get("pos") else ("off" if lz is None else "none")
         rec["dot_on"] = dot
         self.round_dots[dot] = self.round_dots.get(dot, 0) + 1
+        if self.metrics is not None:                # the round's behaviour block: what the line met, on the window or not
+            self.metrics.shot_line(dot)
+            self.metrics.shot(now, dot == "target" or rec.get("gate") in WINDOW_GATES)
         if self.look is None:
             return
         tgt = next((e for e in enemies if e.get("ptr", e.get("slot")) == ptr), None) if ptr is not None else None
@@ -1968,9 +1974,15 @@ class Combat:
             k = ptr if ptr in drops else (max(drops, key=drops.get) if drops else None)
             e = cur.get(k) if k is not None else None
             kind = "boss" if e is not None and (e.get("hp_max") or 0) > BOSS_HP else "majini"
-            self.look.resolve(entry, f"hit:{kind}", -int(drops[k]) if k is not None else None)
+            outcome = f"hit:{kind}"
+            self.look.resolve(entry, outcome, -int(drops[k]) if k is not None else None)
         elif result == "miss":
-            self.look.resolve(entry, "miss:" + self._look_cause(rec))
+            outcome = "miss:" + self._look_cause(rec)
+            self.look.resolve(entry, outcome)
+        else:
+            return
+        if self.metrics is not None:
+            self.metrics.shot_result(outcome)
 
     def _shot_record(self, now, where, reach) -> dict:
         """The shot's record (gbox.mercs.ballistics): the aim decided at the last tick - when it is that fresh - and

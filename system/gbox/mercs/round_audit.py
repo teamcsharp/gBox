@@ -11,9 +11,10 @@ which the round map keeps as "audit" and the bot as stats["round_audit"]. The ch
   * the character unchanged from the last round (both known), or unknown;
   * RE4: the round's loadout not verified in his hands, its x80 fire interval not applied, no gun in his hands;
   * RE5: the laser read missing for more than LASERLESS_MAX of the gun-up time (the aim is blind then), the rapid-fire
-    package not verified, gun-down turning more than SWING_MAX of the fighting; from the round's look (the bot's
-    "combat_look", gbox.mercs.bot_look): shots into walls or the floor (WALLS_MAX), standing among foes without shooting
-    or moving (IDLE_FOES_MAX seconds), the gun down turning with a Majini within 4 m (GUN_DOWN_CLOSE_MAX seconds);
+    package not verified, gun-down turning more than SWING_MAX of the fighting; from the round's "combat_look" (the
+    bot's own): the gun down turning with a Majini within 4 m over GUN_DOWN_CLOSE_MAX seconds, shots with the dot on the
+    floor short of him (WALLS_MIN / WALLS_SHARE, as the walls); the walls shot and the idle streak among foes come from
+    the behaviour block (gbox.mercs.behavior_metrics, below), the same for every title;
   * accuracy under ACCURACY_MIN (with at least MIN_SHOTS shots), more than DAMAGE_MAX hits taken, every standstill
     over STILL_S, wall bumps (stuck events) over BUMPS_PER_MIN a minute, a death (with its cause).
 Nothing here reads or writes the game.
@@ -29,10 +30,14 @@ STILL_S = 5.0                         # a standstill this long is a problem
 BUMPS_PER_MIN = 3.0                   # stuck events a minute
 LASERLESS_MAX = 0.25                  # RE5: share of gun-up samples without a laser ray
 SWING_MAX = 0.30                      # RE5: share of fighting spent turning with the gun down
-WALLS_MAX = 0                         # RE5: shots into a wall or the floor short of the target (operator 2026-10-26: "They
-                                      # are shooting at walls and just sitting here amongst foes")
-IDLE_FOES_MAX = 5.0                   # RE5: seconds standing among foes neither shooting nor moving, in the round
-GUN_DOWN_CLOSE_MAX = 5.0              # RE5: seconds turning with the gun down while a Majini stood within 4 m
+# the behaviour block (gbox.mercs.behavior_metrics): a sine-wave run, a waving gun, shots off target, a slow trigger
+WEAVE_P90_MM, STICK_REV_S = 900.0, 1.0
+AIM_REV_S, SWITCHES_MIN, OFF_TARGET_SHARE = 1.5, 6.0, 0.30
+BLAST_MIN_S = 5.0                     # shots a second with the trigger held on target: under it, no "blasting like mad"
+WALLS_MIN, WALLS_SHARE = 5, 0.10      # this many shots (and this share of them) with the aim line on a wall
+IDLE_AMONG_FOES_S = 3.0               # standing this long among foes without moving or shooting
+GUN_DOWN_CLOSE_MAX = 5.0              # RE5 (the round's "combat_look"): seconds turning with the gun down while a Majini
+                                      # stood within 4 m (operator 2026-10-26: "she lowered her gun ... circled around him")
 COUNTERS = ("shots", "hits", "misses", "kills", "hits_taken", "player_damage_events", "deaths", "stuck_events", "stuck",
             "vaults", "detours", "backoffs", "evades", "quick_turns")
 UNKNOWN = (None, "", "Unknown", "unknown", "?")
@@ -137,11 +142,61 @@ class RoundAudit:
             self._re4(stats, states, problems, metrics)
         elif self.title == "BLUS30491":
             self._re5(summary, stats, states, problems, metrics)
+        if isinstance(summary.get("behavior"), dict):
+            self._behavior(summary["behavior"], problems, metrics)
 
         out = {"verdict": "problems" if problems else "OK", "problems": problems, "metrics": metrics}
         self.prev = {"character": character if character not in UNKNOWN else None, "weapon": weapon}
         self.last = out
         return out
+
+    @staticmethod
+    def _behavior(b: dict, problems: list, metrics: dict) -> None:
+        """The round map's "behavior" block (gbox.mercs.behavior_metrics): the weave, the aim, the doorways, pickups, time
+        bonuses passed, chicken shots and the fire rate per weapon class."""
+        path, aim = b.get("path") or {}, b.get("aim") or {}
+        metrics["behavior"] = {"lateral_mm_p90": path.get("lateral_mm_p90"),
+                               "stick_reversals_per_s": path.get("stick_reversals_per_s"),
+                               "aim_reversals_per_s": aim.get("reversals_per_s"),
+                               "switches_per_min": aim.get("switches_per_min"),
+                               "shots_off_target": aim.get("shots_off_target"),
+                               "portal_passes": b.get("portal_passes"), "portal_bumps": b.get("portal_bumps"),
+                               "ammo_pickups": b.get("ammo_pickups"), "bonuses_passed": b.get("bonuses_passed"),
+                               "fire_rate": {k: v.get("shots_per_s") for k, v in (b.get("fire_rate") or {}).items()},
+                               "walls_shot": b.get("walls_shot"),
+                               "idle_among_foes_max_s": (b.get("idle_among_foes") or {}).get("max_s")}
+        if (path.get("lateral_mm_p90") or 0) > WEAVE_P90_MM or (path.get("stick_reversals_per_s") or 0) > STICK_REV_S:
+            problems.append(f"path weave: {path.get('lateral_mm_p90')} mm off the planned path (p90), "
+                            f"{path.get('stick_reversals_per_s')} stick reversals a second")
+        if (aim.get("reversals_per_s") or 0) > AIM_REV_S or (aim.get("switches_per_min") or 0) > SWITCHES_MIN:
+            problems.append(f"gun waving: {aim.get('reversals_per_s')} aim reversals a second, "
+                            f"{aim.get('switches_per_min')} target switches a minute with the gun up")
+        on, off = aim.get("shots_on_target") or 0, aim.get("shots_off_target") or 0
+        if on + off >= 10 and off / (on + off) > OFF_TARGET_SHARE:
+            problems.append(f"{off} of {on + off} shots outside the on-target window")
+        bad = [p for p in b.get("portals") or () if p.get("bumps", 0) >= 2 and p["bumps"] > p.get("passes", 0)]
+        if bad:
+            problems.append(f"doorways: {len(bad)} portal(s) bumped more than passed (worst {max(p['bumps'] for p in bad)} "
+                            f"bumps at {bad[0].get('pos')})")
+        if b.get("ammo_pickups"):
+            problems.append(f"{b['ammo_pickups']} ammo pickup(s) (infinite ammo: never needed)")
+        if b.get("bonuses_passed"):
+            problems.append(f"{b['bonuses_passed']} time bonus(es) passed within reach and not taken")
+        chick = b.get("chicken_shots") or {}
+        if chick.get("unaimed"):
+            problems.append(f"{chick['unaimed']} chicken shot(s) without the aim on the chicken")
+        slow = {k: v.get("shots_per_s") for k, v in (b.get("fire_rate") or {}).items()
+                if (v.get("held_s") or 0) >= 2 and v.get("shots_per_s") is not None and v["shots_per_s"] < BLAST_MIN_S}
+        if slow:
+            problems.append("not blasting: " + ", ".join(f"{k} {v:g} shots/s held" for k, v in slow.items()))
+        lines = b.get("shot_lines") or {}
+        walls, fired = b.get("walls_shot") or 0, sum(v for v in lines.values() if isinstance(v, (int, float)))
+        if walls >= WALLS_MIN and fired and walls / fired >= WALLS_SHARE:
+            problems.append(f"shooting walls: {walls} of {fired} shots had the aim line on a wall")
+        idle = b.get("idle_among_foes") or {}
+        if (idle.get("max_s") or 0) >= IDLE_AMONG_FOES_S:
+            problems.append(f"sat among foes: {idle['max_s']:g} s without moving or shooting with a foe near "
+                            f"({idle.get('total_s'):g} s in the round)")
 
     @staticmethod
     def _re4(stats, states, problems, metrics):
@@ -188,9 +243,9 @@ class RoundAudit:
         metrics.update(walls_shot=walls, floor_shots=floor, idle_among_foes_s=round(idle, 1),
                        idle_among_foes_max_s=round(idle_max, 1), gun_down_close_s=round(down, 1),
                        foes_close_s=round(close, 1))
-        if walls + floor > WALLS_MAX:
-            problems.append(f"shots into walls {walls}, into the floor {floor} (the dot short of the target)")
-        if idle > IDLE_FOES_MAX:
-            problems.append(f"idle among foes {idle:g} s (longest {idle_max:g} s): a Majini within 4 m, no shot, no step")
+        lines = (summary.get("behavior") or {}).get("shot_lines") or {}
+        fired = sum(v for v in lines.values() if isinstance(v, (int, float))) or metrics.get("shots") or 0
+        if floor >= WALLS_MIN and fired and floor / fired >= WALLS_SHARE:
+            problems.append(f"shooting the floor: {floor} of {int(fired)} shots had the dot on the floor short of him")
         if down > GUN_DOWN_CLOSE_MAX:
             problems.append(f"gun-down turning with a Majini within 4 m: {down:g} s of {close:g} s with one that close")
