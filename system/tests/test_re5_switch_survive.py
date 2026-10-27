@@ -99,7 +99,7 @@ def test_a_heal_that_does_not_take_gives_up_and_rearms():
 
 def test_a_ring_is_left_through_its_widest_gap():
     b, clock = brain()
-    ring = [at(200, 10), at(200, 130), at(200, -110)]                              # gaps 120, 120, 120 deg: ringed
+    ring = [at(150, 10), at(150, 130), at(150, -110)]                              # 3 within 1.8 m, no gap of 150 deg
     act = b.tick(snap(enemies=ring, inv=()))
     assert b.stats["escapes"] == 1
     out = b.escape[0]
@@ -107,9 +107,30 @@ def test_a_ring_is_left_through_its_widest_gap():
     assert any(abs(math.degrees(out) - g) < 1 for g in gaps)                       # the middle of a gap
     assert act["hold"][:2] == R.RUN or act["hold"] == ("ldown",)                   # run, or the quick turn first
     b, clock = brain()
-    open_side = [at(200, 0), at(200, 30), at(200, 60)]                             # a 300 deg gap: not a ring
+    open_side = [at(150, 0), at(150, 30), at(150, 60)]                             # a 300 deg gap: not a ring
     b.tick(snap(enemies=open_side, inv=()))
     assert b.stats["escapes"] == 0
+
+
+@pytest.mark.parametrize("enemies,hp,escapes", [
+    ([at(200, 10), at(200, 130), at(200, -110)], 1000, 0),                         # loose (3 within 2 m), healthy: fight
+    ([at(200, 10), at(200, 130), at(200, -110)], 500, 1),                          # the same ring, hurt (50 %): escape
+    ([at(230, 0), at(230, 90), at(230, 180), at(230, -90)], 1000, 1)])             # 4 within 2.5 m: tight
+def test_only_a_tight_ring_or_a_hurt_player_escapes(enemies, hp, escapes):
+    b, clock = brain()
+    b.tick(snap(enemies=enemies, hp=hp, inv=()))
+    assert b.stats["escapes"] == escapes
+
+
+def test_escapes_are_capped_each_round():
+    b, clock = brain()
+    ring = [at(150, 10), at(150, 130), at(150, -110)]
+    for k in range(40):
+        clock[0] = k * (R.ESCAPE_GAP_S + R.ESCAPE_S + 1)
+        b.escape = None
+        b.quick, b.quick_at = 0, -1e9
+        b.tick(snap(enemies=ring, inv=()))
+    assert b.stats["escapes"] == R.ESCAPES_MAX
 
 
 def test_an_escape_runs_for_its_time_then_fights_again():
@@ -131,8 +152,11 @@ def test_a_crowd_in_front_gets_a_burst_then_a_back_off():
     b.tick(snap(enemies=crowd, inv=()))                                            # the gun comes up
     clock[0] = 0.3
     assert "zr" in b.tick(snap(enemies=crowd, inv=(), laser=on))["hold"]          # the burst begins
+    clock[0] = 0.5
+    off = dict(on, at=(-60.0, 110.0, 170.0))                                      # off him, inside the aim cone
+    assert "zr" not in b.tick(snap(enemies=crowd, inv=(), laser=off))["hold"]     # between two targets: no pull ...
     clock[0] = 0.3 + R.BURST_S
     act = b.tick(snap(enemies=crowd, inv=(), laser=dict(on, at=(0.0, 111.0, 170.0))))
-    assert act == {"hold": ("ldown",)} and b.stats["burst_backoffs"] == 1          # burst done: step back
+    assert act == {"hold": ("ldown",)} and b.stats["burst_backoffs"] == 1          # ... the burst still ends on time
     clock[0] += 0.2
     assert b.tick(snap(enemies=crowd, inv=()))["hold"][0] == "ldown"               # still backing off
