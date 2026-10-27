@@ -932,6 +932,15 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 CC_R, CC_CONE = 350.0, math.radians(100)
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
+# Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
+# more): R pressed for a tablet every DYING_GAP_S while the case holds one; stats tablet_dying_presses / _taken (the
+# count fell) say whether the game takes it there, dying_states the action bytes seen while dying.
+DYING_TABLETS, DYING_HP, DYING_GAP_S = True, 1, 1.0
+# The trigger's safety (live 2026-10-27 13:43: a crowd-control quick shot with the remote bomb in hand threw it and set it
+# off at his feet): ZL + ZR goes out only with a gun in hand (wheel index < WEAPON_INDEXES) or in the bomb's own throw and
+# set-off; otherwise the D-pad's right brings the gun back first (stats unsafe_trigger_blocks).
+WEAPON_INDEXES = 7                      # wheel indexes 0-6 the weapons, 7-12 the items (the remote bomb 12)
+THROW_ACTS = ("bomb_place", "bomb_det")
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -1053,7 +1062,7 @@ class Bot:
                   "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks",
                   "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
-                  "bomb_hits_taken"):
+                  "bomb_hits_taken", "unsafe_trigger_blocks", "dyings", "tablet_dying_presses", "tablet_dying_taken"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s"):
             self.stats.setdefault(k, 0.0)
@@ -1066,6 +1075,7 @@ class Bot:
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when) after an R press, until it falls
+        self.tablet_dying, self.dying_since = False, None    # that press made while dying; dying since when
         self.keeping_off = False
         self.qshot_release = False
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
@@ -1183,10 +1193,30 @@ class Bot:
         n = p.get("tablets")
         if isinstance(n, int) and isinstance(before, int) and n < before:
             self.stats["tablets"] += 1
-            self.tablet_wait, self.tablet_missed = None, False
+            if self.tablet_dying:
+                self.stats["tablet_dying_taken"] += 1
+            self.tablet_wait, self.tablet_missed, self.tablet_dying = None, False, False
         elif now - at >= TABLET_CONFIRM_S:
             self.stats["tablet_misses"] += 1
-            self.tablet_wait, self.tablet_missed = None, True
+            self.tablet_wait, self.tablet_missed, self.tablet_dying = None, True, False
+
+    def _dying(self, p, now) -> dict | None:
+        """At 1 health (RE6's dying crawl): R for a tablet every DYING_GAP_S while the case holds one. None: no press
+        this tick (the rest of the decision goes on)."""
+        if self.dying_since is None:
+            self.dying_since = now
+            self.stats["dyings"] += 1
+        st = p.get("state")
+        seen = self.stats.setdefault("dying_states", [])
+        if st is not None and st not in seen and len(seen) < 8:
+            seen.append(st)
+        if (p.get("tablets") or 0) <= 0 or self.tablet_wait is not None or now - self.tablet_at < DYING_GAP_S:
+            return None
+        self._gun_down()
+        self.tablet_at, self.tablet_wait, self.tablet_dying = now, (p.get("tablets"), now), True
+        self.stats["tablet_presses"] += 1
+        self.stats["tablet_dying_presses"] += 1
+        return self._go("tablet", "tablet_dying", {"tap": "r"}, "dying at 1 health: a tablet")
 
     def _score_hits(self, snap, now) -> None:
         """A zombie's health falling within HIT_S of a shot is that shot's hit (accuracy = hits / shots)."""
@@ -1263,6 +1293,13 @@ class Bot:
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         out = self._tick(snap, now)
+        hold = set(out.get("hold") or ())
+        eq = (snap.get("player") or {}).get("equipped")
+        if ({"zl", "zr"} <= hold and isinstance(eq, int) and eq >= WEAPON_INDEXES
+                and self.stats.get("act") not in THROW_ACTS):     # an item in hand: ZL + ZR would throw it or set it off
+            self.stats["unsafe_trigger_blocks"] += 1
+            self.qshot_release, self.fire_down = False, False
+            out = self._go("bomb", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back first")
         try:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
@@ -1329,6 +1366,12 @@ class Bot:
         held = state in HELD_STATES
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
             self._hold_ended(now, snap)
+        if p.get("hp") != DYING_HP:
+            self.dying_since = None
+        elif DYING_TABLETS and not held:                     # dying: a tablet before anything else
+            dying = self._dying(p, now)
+            if dying is not None:
+                return dying
         if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
@@ -2017,7 +2060,8 @@ class RE6Switch(Driver):
                       "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
                       "holds_shaken", "cc_quick_shots", "cc_kicks", "los_blocks", "nohit_blocks", "cc_blocks",
                       "camera_far_holds", "detours", "bomb_walks", "bomb_self_hits", "bomb_aborts", "bomb_escapes",
-                      "bomb_det_holds", "bomb_kicks", "bomb_hits_taken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "unsafe_trigger_blocks", "tablet_dying_presses",
+                      "tablet_dying_taken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
