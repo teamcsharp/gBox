@@ -179,6 +179,7 @@ MGR_UNITS, UNIT_ACTIVE, UNIT_BUTTON, UNIT_TARGET, UNIT_PROGRESS = (0x248, 0x2E0)
 # auto_qte_ram writes the outcome the game itself can roll: 0, free at once.
 UNIT_OUTCOME, UNIT_NEW, UNIT_TYPE = 0x8, 0xD, 0x1C
 CHANCE_TYPES = frozenset({0x8, 0x12, 0x13, 0x17, 0x18, 0x19})
+QTE_ROLLED_N = 20                       # status qte_rolled: the last outcomes the game had rolled for the grabs freed
 QTE_TARGET_MAX = 1000.0                                  # a target above this is not a struggle's
 ORIG: dict = {}                                          # id(adapter) -> this boot's settings
 _LOCK = threading.RLock()
@@ -277,7 +278,8 @@ class RE6Switch:
               "kill_time_s": (self.state.get("kill_time") or {}).get("seconds", KILL_TIME_S),
               "kill_time_added": self.state.get("kill_time_added", 0.0),
               "auto_qte_ram": bool(self.state.get("auto_qte_ram")),
-              "struggles_completed": self.state.get("struggles_completed", 0)}
+              "struggles_completed": self.state.get("struggles_completed", 0),
+              "qte_rolled": list(self.state.get("qte_rolled") or ())}
         snap = R.snapshot(self.m)
         p = snap.get("player")
         if p:
@@ -719,6 +721,9 @@ def _complete_struggle(ad, g: RE6Switch, player: int) -> int:
             if x["new"] or x["outcome"] == 0 or x["outcome"] > 4:
                 continue
             addr, data = x["unit"] + UNIT_OUTCOME, struct.pack("<I", 0)
+            rolled = g.state.setdefault("qte_rolled", [])    # what the game had rolled (4: the bite)
+            rolled.append(x["outcome"])
+            del rolled[:-QTE_ROLLED_N]
         elif (x["target"] is not None and x["progress"] is not None and 0.0 < x["target"] <= QTE_TARGET_MAX
               and x["progress"] < x["target"]):
             addr, data = x["unit"] + UNIT_PROGRESS, struct.pack("<f", x["target"])
