@@ -144,3 +144,11 @@ def test_the_rotation_plays_the_title_picked_longest_ago_so_a_new_edition_is_not
     store.put(M.PICKS,w['name'],{'re4':5.0,'re5':6.0})                # re6 never picked: it goes next
     store.put(M.HISTORY,w['name'],{'last_game_id':M.TITLES['re4']['game_ids'][0]})
     assert M.choose(store,w,rng,cfg)['title']=='re6'
+    # a title the DJ queued counts as picked too (2026-10-27: RE6 played from the queue, stayed "never picked" and came
+    # next again while RE4 waited ready)
+    store.put(M.PICKS,w['name'],{'re4':1,'re5':3})
+    M.configure(store,w['name'],{'queue':[{'title':'re6'}]})
+    assert M.choose(store,w,rng,cfg|{'queue':[{'title':'re6'}]})['title']=='re6'
+    M.configure(store,w['name'],{'queue':[]})
+    store.put(M.HISTORY,w['name'],{'last_game_id':M.TITLES['re5']['game_ids'][0]})
+    assert M.choose(store,w,rng,M.settings(store,w['name']))['title']=='re4'   # re4, picked longest ago, not re6 again
