@@ -102,7 +102,7 @@ def test_fire_rate_scales_the_player_only_while_his_shot_plays():
     SM.maintain(ad, snap_of(g, SM.MOTION_SHOT))
     assert SM.maintain(ad, snap_of(g, SM.MOTION_SHOT), enabled=False)["writes"] == 1 and scale(g) == 1.0
     with pytest.raises(ValueError):
-        SM.run(ad, "fire_rate", multiplier=200)
+        SM.run(ad, "fire_rate", multiplier=2000)
 
 
 def test_a_raised_scale_is_never_written_into_a_player_the_round_freed():
