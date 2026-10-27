@@ -1066,7 +1066,9 @@ def test_the_snapshot_finds_the_time_and_combo_bonuses_by_their_action():
     assert "bonuses" not in R.snapshot(g)
 
 
-def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken():
+def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch):
+    monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
+    monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
     u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                   # 10 m ahead
     bot, clock, snap = brain(g)
@@ -1082,7 +1084,9 @@ def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken():
     assert bot.stats["bonuses_missed"] == 0 and u
 
 
-def test_no_bonus_shot_with_a_bomb_out():
+def test_no_bonus_shot_with_a_bomb_out(monkeypatch):
+    monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
+    monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
     bot, clock, snap = brain(g)
@@ -1092,7 +1096,9 @@ def test_no_bonus_shot_with_a_bomb_out():
     assert bot.doing != "bonus" and all("zr" not in a.get("hold", ()) for a in acts)
 
 
-def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed():
+def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(monkeypatch):
+    monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
+    monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))                               # a zombie 4 m ahead
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
     bot, clock, snap = brain(g)
@@ -1108,6 +1114,44 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed():
     snap["mercenaries_phase"] = R.PHASE_OVER
     run(bot, snap, clock, 1)
     assert bot.stats["bonuses_missed"] == 1 and bot.stats["bonus_log"][-1]["missed"] == 1
+
+
+def test_the_bonus_run_walks_to_the_nearest_bonus_and_breaks_it_with_the_physical_attack():
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),))                       # a zombie far off: no blocker
+    near = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 800.0))          # 8 m ahead
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 3000.0))
+    bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 700.0, 500.0), cls="uSm5924")   # a floor up: later
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["phase"] == "bonus_run" and bot.run_target == near and all("lup" in a["hold"] for a in acts)
+    assert all("zl" not in a["hold"] and "zr" not in a["hold"] for a in acts)   # no shooting at it
+    snap["player"]["pos"] = (0.0, 0.0, 700.0)                                 # at it
+    acts = run(bot, snap, clock, 12)
+    assert {"tap": "zr"} in acts and bot.stats["bonus_melee"] >= 2 and bot.stats["shots"] == 0
+    snap["bonuses"] = [b for b in snap["bonuses"] if b["ptr"] != near]       # it broke
+    acts = run(bot, snap, clock, 2)
+    assert bot.stats["bonuses_taken"] == 1 and bot.run_target != near and "lup" in acts[-1]["hold"]
+    assert bot.stats["bonus_time_s"] > 0
+    snap["bonuses"] = []                                                      # every one taken: the match
+    run(bot, snap, clock, 2)
+    assert bot.stats["phase"] == "match" and bot.doing != "bonus"
+
+
+def test_the_bonus_run_fights_a_blocker_first_and_leaves_one_that_will_not_break():
+    g = round_guest(enemies=((0.0, 0.0, 200.0, 700),))                        # one at 2 m: in the way
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 800.0))
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 3)
+    assert bot.doing != "bonus" and bot.stats["bonus_time_s"] > 0
+    R._BONUS.update(base=None)
+    g = round_guest(enemies=())
+    stuck = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 100.0))         # at arm's length, never breaking
+    bot, clock, snap = brain(g)
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, int(R.BONUS_HIT_S / 0.05) + 6)
+    assert bot.stats["bonus_skips"] == 1 and bot.bonus_skip.get(stuck) and bot.stats["phase"] == "match"
 
 
 def test_a_replay_is_not_every_bonus_taken():

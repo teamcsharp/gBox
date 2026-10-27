@@ -1222,12 +1222,24 @@ REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long a
 # passes within BONUS_HIT_R of it and does not end short of it. Aimed at BONUS_TRY_S without breaking (out of sight):
 # left for BONUS_SKIP_S. Every break (his shot, a bomb, a kick) counts as taken, a bonus still waiting when the round
 # ends as missed: stats bonuses_taken / bonuses_missed (per round: round_*, bonus_log).
-BONUS_PURSUIT = True
+BONUS_PURSUIT = False                   # (shooting them: off - operator 16:52, they break only to a physical attack)
 BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
 BONUS_H, BONUS_HIT_R = 40.0, 45.0
 BONUS_TRY_S, BONUS_SKIP_S = 2.5, 30.0   # (5 s a try wasted 20 s on 4 out of sight live 14:41)
 BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
 BONUS_LOG_N = 12
+# The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
+# and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
+# grabbing all the time bonuses, that's when the match truly begins and they can begin to make a stand"; 16:55: a round
+# ended almost at once with them untaken). While any bonus waits: the nearest next (his floor first, then the nearest),
+# walked to along the camera turned to it (a side step when the walk stalls: PURSUE_STUCK_*), and within BONUS_MELEE_R
+# the gun down and the physical attack (ZR alone) every BONUS_MELEE_GAP_S until it breaks. Only a zombie within
+# BONUS_BLOCK_R is fought on the way (a grab's escape comes first as always). One walked to for BONUS_WALK_S or attacked
+# for BONUS_HIT_S without breaking is left for BONUS_SKIP_S. Phase 2, the match: everything else as before. stats phase
+# ("bonus_run" / "match"), bonus_time_s (the seconds of bonus runs), bonus_melee (the attacks on bonuses), bonus_skips.
+BONUS_RUN = True
+BONUS_MELEE_R, BONUS_MELEE_CONE, BONUS_MELEE_GAP_S, BONUS_BLOCK_R = 150.0, math.radians(30), 0.45, 300.0
+BONUS_WALK_S, BONUS_HIT_S = 25.0, 4.0
 HANG_S = 6.0
 # "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the
 # decisions and why, the idle streak among zombies) and the round counters below, whose per-round amounts the engine
@@ -1277,10 +1289,11 @@ class Bot:
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
                   "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots",
                   "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor",
-                  "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss"):
+                  "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee"):
             self.stats.setdefault(k, 0)
-        for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s"):
+        for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s"):
             self.stats.setdefault(k, 0.0)
+        self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
         self.target, self.target_at = None, -1e9
         self.aim_since = None
         self.reraised = False                     # this raise already looked for the laser unit again
@@ -1679,6 +1692,9 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        ran = self._bonus_run(p, live, flat, snap, now)          # phase 1: the bonuses first
+        if ran is not None:
+            return ran
         if not live:
             taunt = self._taunt(p, live, flat, now)
             if taunt is not None:
@@ -2341,6 +2357,66 @@ class Bot:
         log.append({"seen": len(r["seen"]), "taken": len(kinds), "time": kinds.count("time"),
                     "combo": kinds.count("combo"), "missed": len(missed)})
         del log[:-BONUS_LOG_N]
+
+    def _bonus_run(self, p, live, flat, snap, now) -> dict | None:
+        """Phase 1 (BONUS_RUN): while a bonus waits, the nearest one next (his floor first), walked to and attacked
+        physically within BONUS_MELEE_R; only a zombie within BONUS_BLOCK_R is fought. None: phase 2 this tick (no bonus
+        waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
+        bs = snap.get("bonuses")
+        px, py, pz = p["pos"]
+        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now]
+        self.stats["phase"] = "bonus_run" if cands else "match"
+        eq = p.get("equipped")
+        if (not BONUS_RUN or not cands or (p.get("bomb") or {}).get("out") or self.nade is not None
+                or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.bomb_phase is not None):
+            self.run_target = None
+            return None
+        self.stats["bonus_time_s"] = round(self.stats["bonus_time_s"] + TICK_S, 2)
+        if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
+            self.run_hit_since = None
+            return None
+        reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
+        b = next((c for c in cands if c["ptr"] == self.run_target), None)
+        if b is not None and (now - self.run_since > BONUS_WALK_S
+                              or (self.run_hit_since is not None and now - self.run_hit_since > BONUS_HIT_S)):
+            self.bonus_skip[b["ptr"]] = now + BONUS_SKIP_S       # not reached / not breaking: left for now
+            self.stats["bonus_skips"] += 1
+            cands.remove(b)
+            b = None
+            if not cands:
+                self.run_target = None
+                return None
+        if b is None:
+            b = min(cands, key=lambda c: (abs(c["pos"][1] - py) > BONUS_DY, reach(c)))
+            self.run_target, self.run_since, self.run_hit_since = b["ptr"], now, None
+            self.pursue_spot = None
+        self._gun_down()
+        d, kind = reach(b), b["kind"]
+        cam = snap.get("camera")
+        err = wrap(heading(b["pos"][0] - px, b["pos"][2] - pz) - (cam["yaw"] if cam else p["rot"]))
+        if d <= BONUS_MELEE_R:                                   # at it: face it, the physical attack
+            if abs(err) > BONUS_MELEE_CONE:
+                return self._go("bonus", "bonus_face", {"hold": self._turn(err)},
+                                f"a {kind} bonus at {d:.0f} cm: facing it")
+            if self.run_hit_since is None:
+                self.run_hit_since = now
+            if now - self.melee_at >= BONUS_MELEE_GAP_S:
+                self.melee_at = now
+                self.stats["bonus_melee"] += 1
+                return self._go("bonus", "bonus_melee", {"tap": "zr"}, f"a {kind} bonus at {d:.0f} cm: the attack")
+            return self._go("bonus", "bonus_wait", {"hold": ()}, f"a {kind} bonus at {d:.0f} cm: the next attack")
+        self.run_hit_since = None
+        if self.pursue_spot is None or math.hypot(px - self.pursue_spot[1][0], pz - self.pursue_spot[1][1]) > PURSUE_STUCK_CM:
+            self.pursue_spot = (now, (px, pz))
+        elif now - self.pursue_spot[0] > PURSUE_STUCK_S and now >= self.pursue_side_until:
+            self.stats["pursuit_stuck"] += 1                     # against something: a side step
+            self.pursue_side_until = now + PURSUE_SIDE_S
+            self.detour = "lright" if self.detour == "lleft" else "lleft"
+            self.pursue_spot = (now, (px, pz))
+        side = (self.detour,) if now < self.pursue_side_until else ()
+        walk = ("lup",) if abs(err) < math.radians(60) or d > 3 * BONUS_MELEE_R else ()
+        return self._go("bonus", "bonus_run", {"hold": walk + side + self._turn(err, TURN_TOL)},
+                        f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
 
     def _bonus(self, p, live, flat, snap, now) -> dict | None:
         """A time / combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
