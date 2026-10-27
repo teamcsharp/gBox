@@ -218,7 +218,11 @@ TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # r
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
-          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition")
+          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine")
+# Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
+# inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack)
+MINES, MINE_EVERY_S = True, 9.0
+MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -745,6 +749,8 @@ class Bot:
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
+        from .re5_switch_mines import Mines
+        self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
         self._fire_t = None                       # the last tick the fighter held the trigger (trigger_s)
         if PS3_BRAIN:
             from .re5_switch_brain import Fighter
@@ -898,6 +904,8 @@ class Bot:
         if self._round_started is None:
             self._round_started = now
             self.look.new_round()
+            if self.mines is not None:
+                self.mines.new_round(now)
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -1087,6 +1095,10 @@ class Bot:
         act = self._heal(p, snap, live, flat, now)
         if act is not None:
             self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+        elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
+                                                                  busy=self.escape is not None)) is not None:
+            self._gun_down()
+            self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
         else:
             act = self._escape(p, live, flat, now)
             if act is not None:
@@ -1400,7 +1412,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
