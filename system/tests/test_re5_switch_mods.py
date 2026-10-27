@@ -161,9 +161,9 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
     prof = {"map_id": "010018100CD46000", "platform": "switch"}
     failed = mercs_bot.apply_ops(ad, [("infinite_ammo", {"on": True}), ("fire_rate", {"multiplier": 80})], prof)
     assert failed == [] and flag(g, 0x02) == 1 and SM.ORIG[id(ad)]["fire_rate"] == 80.0
-    assert mercs_bot.apply_ops(ad, [("nonsense", {})], prof) == ["nonsense: re5_switch_mods: unknown op 'nonsense' "
-                                                                 "(status, infinite_ammo, fire_rate, infinite_spray, "
-                                                                 "mine_loadout, revert_all)"]
+    failed = mercs_bot.apply_ops(ad, [("nonsense", {})], prof)
+    assert len(failed) == 1 and failed[0].startswith("nonsense: re5_mods on Switch: unknown op 'nonsense' (")
+    assert "weapon_override" in failed[0] and "mines" in failed[0]               # the PS3 tool's ops, listed
 
 
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():

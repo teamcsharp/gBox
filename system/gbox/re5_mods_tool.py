@@ -53,6 +53,17 @@ from .registry import Unsupported, tool
 
 GAME = "Resident Evil 5 Gold Edition (BLUS30491 app 01.01, PPU-a9b0ce57ebd318bd02879751067ceca83b508dd1)"
 GAME_IDS = {"e7ca89bbeb67360d"}
+# RE5 on Switch (Citron / Eden, title 010018100CD46000): the same ops through gbox.mercs.titles.re5_switch_mods
+# (tool_run: the same parameters and result shape; an op not there yet answers "not yet on Switch: why")
+SWITCH_GAME_IDS, SWITCH_TITLE = {"52d15709be0fda1a"}, "010018100CD46000"
+
+
+def is_switch_re5(g) -> bool:
+    """A session of RE5 on Switch (its game id, or its Switch title id)."""
+    if not isinstance(g, dict):
+        return False
+    ids = {str(g.get(k) or "") for k in ("game_id", "title_id", "map_id")}
+    return bool(ids & SWITCH_GAME_IDS) or SWITCH_TITLE in {i.upper() for i in ids}
 S_PARAM_PTR = 0x017FEB08
 TURN = {0x2C: ("turn_deg_s", 110.0), 0x68: ("stick_min", 0.2), 0x6C: ("stick_max", 1.2),
         0x2D0: ("aim_pitch_deg_s", 57.9), 0x2D4: ("aim_yaw_deg_s", 57.9)}
@@ -1507,7 +1518,8 @@ class RE5ModsOut(BaseModel):
 @tool("re5_mods", "1.0", RE5ModsIn, RE5ModsOut, capabilities=["runtime", "memory"], permissions=[P.MEMORY_WRITE],
       timeout_s=120)
 def re5_mods(inp: RE5ModsIn, ctx):
-    """Resident Evil 5 Gold (PS3, RPCS3) live mods, each write read back: turn_speed multiplier=N (the stick turns N
+    """Resident Evil 5 live mods (PS3 RPCS3; on Switch the same ops through re5_switch_mods, each answering "not yet
+    on Switch: why" where that edition has no mapping yet), each write read back: turn_speed multiplier=N (the stick turns N
     times faster, aimed and not; "max" = 10), fire_rate multiplier=N (firing tables and timer scaling; 80 is not
     measured shots per second; guarded magnum animation capped at8x), infinite_ammo on= (no rounds spent, the HUD's infinity sign), unlimited_health on=
     (living HP refill and signature-verified Muteki incoming-hit immunity each snapshot), bullet_damage multiplier=N,
@@ -1516,8 +1528,16 @@ def re5_mods(inp: RE5ModsIn, ctx):
     playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if is_switch_re5(g):                                 # RE5 on Switch: the same ops, routed to its own mods
+        from .mercs.titles import re5_switch_mods as SW
+        if (inp.op or "").strip().lower() == "apply_saved":
+            return {"result": SW.apply_saved(ad, inp.ops)}
+        return {"result": SW.tool_run(ad, inp.op, inp.multiplier, inp.on, operator=True, mode=inp.mode,
+                                      character=inp.character, stage=inp.stage, weapon=inp.weapon, only=inp.only,
+                                      **({"seconds": inp.seconds} if inp.seconds is not None else {}))}
     if g.get("platform") != "ps3":
-        raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3); this session is {g.get('title')} ({g.get('platform')})")
+        raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3) or Switch; this session is {g.get('title')} "
+                          f"({g.get('platform')})")
     if (inp.op or "").strip().lower() == "apply_saved":
         return {"result": apply_saved(ad, inp.ops)}
     return {"result": run(ad, inp.op, inp.multiplier, inp.on, operator=True,
