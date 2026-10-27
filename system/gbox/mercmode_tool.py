@@ -34,12 +34,13 @@ def mercmode(inp: MercModeIn,ctx):
         if inp.op=='prepare':
             result=M.inspect_preparation(ctx.config.runtime)
             result['games']={}
-            for title in ('re4','re5'):
-                for gid in M.TITLES[title]['game_ids']:
-                    catalog=client.get('/api/catalog/'+gid)
-                    if catalog.status_code==404:continue
-                    catalog.raise_for_status()
-                    result['games'][gid]=M.inspect_rom_access(ctx.config,catalog.json())
+            from . import re_switch as RS
+            # the native discs and the Switch No Mercy editions a host may prefer (preferred_editions)
+            for gid in (*M.TITLES['re4']['game_ids'],*M.TITLES['re5']['game_ids'],RS.RE5_GAME_ID,RS.RE6_GAME_ID):
+                catalog=client.get('/api/catalog/'+gid)
+                if catalog.status_code==404:continue
+                catalog.raise_for_status()
+                result['games'][gid]=M.inspect_rom_access(ctx.config,catalog.json())
             response=client.post('/api/mercmode/preparation',json={'worker_id':ctx.worker,'result':result})
         elif inp.op=='configure':
             if not inp.host:raise ValueError('Choose an exact registered host name')
