@@ -413,16 +413,64 @@ def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it(
         e["pos"] = (bx + 50.0, 0.0, bz + 30.0)
     acts = run(bot, snap, clock, 4)
     assert bot.bomb_phase == "wait" and all(a == {"hold": ("ldown",)} for a in acts)   # too near his own blast: back off
-    snap["player"]["pos"] = (-bx * 1.2, 0.0, -bz * 1.2)                        # 6.6 m clear of it
+    snap["player"]["pos"] = (-bx * 1.6, 0.0, -bz * 1.6)                        # 7.8 m clear of it
     acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
     assert {"hold": ("zl", "zr")} in acts and bot.bomb_phase in ("det", "det_wait")
+    assert bot.stats["bomb_det_cm"] == [780]
     snap["player"].update(bomb={"count": 5, "out": False}, equipped=0)        # the blast; the game gave the gun back
     run(bot, snap, clock, 1)
     assert bot.stats["bombs_detonated"] == 1 and bot.bomb_phase is None
+    run(bot, snap, clock, int(R.BOMB_HURT_S / 0.05) + 2)
+    assert bot.stats["bomb_self_hits"] == 0                                   # clear of it: the blast cost him nothing
     snap["kills"] = (snap.get("kills") or 0) + 10                             # ten of them, and nobody left standing
     snap["enemies"] = []
     run(bot, snap, clock, int(R.BOMB_KILLS_S / 0.05) + 2)
     assert bot.stats["bomb_kills"] == 10
+
+
+def bomb_out(enemies, me=(0.0, 0.0, 0.0)):
+    """A bomb out 3 m ahead of where he stood (at the origin, facing +z) and the bot waiting on it."""
+    bot, clock, snap = brain(round_guest(enemies=enemies))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=me)
+    bot.bomb_at, bot.bomb_since, bot.bomb_from, bot.bomb_phase = (0.0, R.BOMB_AHEAD), clock[0], (0.0, 0.0), "wait"
+    return bot, clock, snap
+
+
+def test_after_a_bomb_he_walks_off_it_and_never_sets_it_off_near_himself():
+    on_it = ((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700))               # two on the bomb, him 3 m from it
+    bot, clock, snap = bomb_out(on_it)
+    acts = run(bot, snap, clock, int(30.0 / 0.05))                            # 30 s pinned there (a wall behind)
+    assert all("zr" not in a.get("hold", ()) for a in acts)                   # never set off from 3 m, however long
+    assert bot.doing == "bomb" and bot.stats["bomb_walks"] == 1
+    holds = [set(a.get("hold", ())) for a in acts]
+    assert all("ldown" in h for h in holds)                                   # the stick back: away from it
+    assert any("lleft" in h for h in holds) and any("lright" in h for h in holds)   # stuck: side steps, both ways
+    snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 50.0)   # clear of it now: set off
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["bomb_det_cm"] == [R.BOMB_SELF_R + 50]
+
+
+def test_the_bomb_walk_turns_the_camera_to_the_bomb_and_a_blast_that_hurts_him_is_counted():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-300.0, 0.0, R.BOMB_AHEAD))   # the bomb 3 m to his right
+    act = run(bot, snap, clock, 1)[0]
+    assert act["hold"][0] == "ldown" and act["hold"][1:] == bot._turn(R.heading(300.0, 0.0))  # the camera to it
+    bot, clock, snap = bomb_out(((0.0, 0.0, 300.0, 700),) * 2, me=(0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 10.0))
+    run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)                       # set off from 7.1 m
+    snap["player"].update(bomb={"count": 5, "out": False}, equipped=0, hp=600)   # the blast took 300 of his health
+    run(bot, snap, clock, 3)
+    assert bot.stats["bombs_detonated"] == 1 and bot.stats["bomb_self_hits"] == 1
+
+
+def test_readying_a_bomb_is_given_up_when_one_comes_close():
+    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=crowd))
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+    run(bot, snap, clock, 1)
+    assert bot.bomb_phase == "equip"
+    snap["enemies"][0]["pos"] = (0.0, 0.0, 150.0)                             # one at 1.5 m while the wheel turns
+    run(bot, snap, clock, 1)
+    assert bot.bomb_phase is None and bot.stats["bomb_aborts"] == 1 and bot.doing == "crowd"
 
 
 def test_no_bomb_without_one_a_crowd_or_room():
@@ -434,6 +482,57 @@ def test_no_bomb_without_one_a_crowd_or_room():
         snap["player"].update(equipped=0, bomb=kw)
         acts = run(bot, snap, clock, 3)
         assert bot.doing != "bomb" and {"tap": "ddown"} not in acts and bot.bomb_phase is None
+
+
+def test_a_zombie_behind_a_wall_is_not_fired_at_and_the_next_one_is_the_target():
+    wall = ((16.0, 139.0, 260.0), (20.0, 145.0, 30.0), 0.86)             # the ray at him ends 2.3 m out: a wall
+    two = ((0.0, 0.0, 1200.0, 700), (600.0, 0.0, 1300.0, 700))            # one straight ahead behind it, one off right
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0, laser=wall))
+    acts = run(bot, snap, clock, 8)
+    assert bot.stats["los_blocks"] == 1 and all("zr" not in a.get("hold", ()) for a in acts)
+    hidden = snap["enemies"][0]["ptr"]
+    assert bot.is_blocked(snap["enemies"][0], clock[0]) and bot.target != hidden   # the next one is the target
+    assert bot.target == snap["enemies"][1]["ptr"]
+    clock[0] += R.BLOCK_S + 0.1                                               # out of sight only for BLOCK_S
+    assert not bot.is_blocked(snap["enemies"][0], clock[0])
+
+
+def test_the_cameras_line_fires_only_near_unless_the_zombie_was_hit():
+    far = ((0.0, 0.0, 1500.0, 700),)                                      # 15 m along the camera's line, no laser
+    bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
+    acts = run(bot, snap, clock, 30)
+    assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["camera_far_holds"] > 0
+    bot.seen[snap["enemies"][0]["ptr"]] = clock[0]                           # his health fell to a shot just now
+    acts = run(bot, snap, clock, 6)
+    assert any("zr" in a.get("hold", ()) for a in acts)
+    near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: within CAM_FIRE_R
+    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    acts = run(bot, snap, clock, 30)
+    assert any("zr" in a.get("hold", ()) for a in acts)
+
+
+def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
+    on = ((0.0, R.CHEST_H, 900.0), (20.0, 145.0, 30.0), 0.86)             # the dot on him, 9 m ahead
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 900.0, 700),), cam_yaw=0.0, laser=on))
+    bot.held = lambda p, now: False                                          # (the frozen snapshot never moves him)
+    acts = run(bot, snap, clock, int(R.NOHIT_S / 0.05) + 4)                  # the trigger on him, his health never falls
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["nohit_blocks"] == 1
+    acts = run(bot, snap, clock, 10)
+    assert all("zr" not in a.get("hold", ()) for a in acts)                   # out of sight: not fired at
+    assert bot.doing == "walk"                                                # all out of sight: walking round
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 900.0, 700),), cam_yaw=0.0, laser=on))
+    for _ in range(int(R.NOHIT_S / 0.05) + 4):                               # his health falls to the shots: kept
+        snap["enemies"][0]["hp"] -= 10
+        run(bot, snap, clock, 1)
+    assert bot.stats["nohit_blocks"] == 0 and bot.seen
+
+
+def test_quick_shots_that_never_hurt_a_close_one_leave_him():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # 3 m ahead (a wall between)
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, int(R.CC_MISS_N * R.CC_QSHOT_GAP_S / 0.05) + 12)
+    assert bot.stats["cc_quick_shots"] == R.CC_MISS_N and bot.stats["cc_blocks"] == 1
+    assert bot.doing != "crowd"
 
 
 def test_it_aims_along_the_laser_and_fires_when_the_dot_is_on_him():
