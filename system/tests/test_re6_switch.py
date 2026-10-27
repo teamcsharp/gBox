@@ -505,6 +505,10 @@ def test_the_cameras_line_fires_only_near_unless_the_zombie_was_hit():
     bot.seen[snap["enemies"][0]["ptr"]] = clock[0]                           # his health fell to a shot just now
     acts = run(bot, snap, clock, 6)
     assert any("zr" in a.get("hold", ()) for a in acts)
+    bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
+    bot.laser_seen[snap["enemies"][0]["ptr"]] = 0.0                          # the laser reached him a moment ago
+    acts = run(bot, snap, clock, 16)
+    assert any("zr" in a.get("hold", ()) for a in acts[:16])
     near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: within CAM_FIRE_R
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
@@ -527,12 +531,18 @@ def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
     assert bot.stats["nohit_blocks"] == 0 and bot.seen
 
 
-def test_quick_shots_that_never_hurt_a_close_one_leave_him():
+def test_quick_shots_that_never_hurt_a_close_one_leave_him_but_never_one_at_arms_length():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 300.0, 700),), cam_yaw=0.0))   # 3 m ahead (a wall between)
     bot.held = lambda p, now: False
     run(bot, snap, clock, int(R.CC_MISS_N * R.CC_QSHOT_GAP_S / 0.05) + 12)
     assert bot.stats["cc_quick_shots"] == R.CC_MISS_N and bot.stats["cc_blocks"] == 1
     assert bot.doing != "crowd"
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))   # 1.5 m: always fought
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, int(4 * R.CC_QSHOT_GAP_S / 0.05))
+    assert bot.stats["cc_blocks"] == 0 and bot.doing == "crowd" and bot.stats["cc_quick_shots"] >= 4
+    bot._block(snap["enemies"][0], clock[0], "los_blocks")                    # whatever said so
+    assert not bot.is_blocked(snap["enemies"][0], clock[0]) and bot.stats["los_blocks"] == 0
 
 
 def test_it_aims_along_the_laser_and_fires_when_the_dot_is_on_him():

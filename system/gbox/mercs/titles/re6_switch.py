@@ -884,6 +884,9 @@ AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, no
 # out of sight: he walks at the nearest with a side step swapped every DETOUR_S (a way round). A still laser is stale
 # only once the camera turned RAY_STALE_TURN under it (standing still behind a wall freezes it too).
 BLOCK_S, NOHIT_S, SEEN_S, NOHIT_GAP_S = 2.5, 1.0, 3.0, 0.5
+BLOCK_MIN_R = 200.0                     # never out of sight this near: crowd control always works on him (live 11:37:
+                                        # quick shots that took no health marked ones at 87-92 cm, and he died twice)
+LASER_SEEN_S = 1.0                      # the laser's ray on him this recently: the camera's line may fire at him too
 CAM_FIRE_R = 1000.0
 LOS_YAW, LOS_PITCH = math.radians(3), math.radians(3)
 RAY_STALE_TURN = math.radians(5)
@@ -1004,11 +1007,13 @@ class Bot:
         # line of sight
         self.blocked: dict = {}                              # zombie -> until when he is out of sight (never fired at)
         self.seen: dict = {}                                 # zombie -> when his health last fell to a shot
+        self.laser_seen: dict = {}                           # zombie -> when the laser's ray last reached him
         self.fire_track = None                               # [zombie, since, his health then, last on the line]
         self.ray_yaw = None                                  # the camera's yaw when the laser's ray last moved
         self.cc_shot = None                                  # (zombie, when, {zombie: health} within CC_R)
         self.cc_miss: dict = {}
         self.detour, self.detour_at = "lleft", -1e9
+        self._ppos, self._pos_of = None, {}                  # his position this tick, the zombies' by id
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -1187,6 +1192,8 @@ class Bot:
         self.dead_since = None
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        self._ppos = p["pos"]
+        self._pos_of = {e.get("ptr", e.get("slot")): e["pos"] for e in snap.get("enemies") or ()}
         self._los_tick(snap, now)
         self._tablet_check(p, now)
         self._bomb_kills_tick(snap, now)
@@ -1364,10 +1371,13 @@ class Bot:
                 continue
             if source == "laser":
                 hit = dot_on(dot, foot) is not None or through(origin, dot, foot)
+                if hit:                                          # the laser reaches him: in sight (LASER_SEEN_S)
+                    self.laser_seen[e.get("ptr", e.get("slot"))] = now
             else:
                 hit = line_hits(origin, dot, foot, ENGAGE_R + 300.0)
-                if hit and math.dist(origin, foot) > CAM_FIRE_R and \
-                        now - self.seen.get(e.get("ptr", e.get("slot")), -1e9) > SEEN_S:
+                tid = e.get("ptr", e.get("slot"))
+                if hit and math.dist(origin, foot) > CAM_FIRE_R and now - self.seen.get(tid, -1e9) > SEEN_S \
+                        and now - self.laser_seen.get(tid, -1e9) > LASER_SEEN_S:
                     self.stats["camera_far_holds"] += 1          # far along the camera's line, never hit: not fired at
                     hit = False
             if hit:
@@ -1410,11 +1420,19 @@ class Bot:
 
     # --- line of sight ---------------------------------------------------------------------------------------------
     def is_blocked(self, e, now) -> bool:
-        return self.blocked.get(e.get("ptr", e.get("slot")), -1e9) > now
+        """Out of sight: blocked within BLOCK_S and not within BLOCK_MIN_R of him (one that close is always fought)."""
+        if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) <= now:
+            return False
+        me = self._ppos
+        return me is None or math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) >= BLOCK_MIN_R
 
     def _block(self, e, now, why: str) -> None:
         """A zombie out of sight for BLOCK_S (stats <why>): never fired at, never the target while another is open."""
         tid = e if not isinstance(e, dict) else e.get("ptr", e.get("slot"))
+        pos = e.get("pos") if isinstance(e, dict) else self._pos_of.get(tid)
+        me = self._ppos
+        if pos is not None and me is not None and math.hypot(pos[0] - me[0], pos[2] - me[2]) < BLOCK_MIN_R:
+            return                                               # that close: never out of sight
         if self.blocked.get(tid, -1e9) <= now:
             self.stats[why] += 1
         self.blocked[tid] = now + BLOCK_S
@@ -1467,6 +1485,8 @@ class Bot:
                     self._block(tid, now, "cc_blocks")
         if len(self.seen) > 256:
             self.seen = {k: t for k, t in self.seen.items() if now - t <= SEEN_S}
+        if len(self.laser_seen) > 256:
+            self.laser_seen = {k: t for k, t in self.laser_seen.items() if now - t <= LASER_SEEN_S}
 
     # --- crowd control ---------------------------------------------------------------------------------------------
     def _crowd_control(self, live, flat, bearing, now) -> dict | None:
