@@ -875,7 +875,8 @@ STAGE_PICK = StagePick()
 # --- between two rounds: the fastest way to the next one ----------------------------------------------------------------
 # RE5 Gold's own flow after a round (BLUS30491 app 01.01, read from the ELF and timed live on the Spark 2026-10-26):
 #   time up / quota: uIdMerceEd00's tally runs on timers and saves the records (outer states 1-7 read no button; only its
-#     notices take cross), then outer 10 takes START alone (offline; mode 1's results menu is online) -> STAGE SELECT
+#     notices take cross), then outer 10 takes START alone (cGameSys +0x58 = 2 / 5, Mercenaries / Reunion; only a
+#     mode 1 gets a results menu, 0x5CFD9C) -> STAGE SELECT
 #     (uIdStartUp21) -> CHARACTER SELECT (uIdStartUp22) -> NOW LOADING. No Retry: the results always go to the selects.
 #   death: "Continue?" Yes (event 5,1) replays the same stage and character at once (no save, no selects); No (event
 #     5,2) saves ("Please wait a moment" + "Saving content", ~6 s, then "Save successful" OK) and goes to STAGE SELECT.

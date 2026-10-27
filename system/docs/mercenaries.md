@@ -206,7 +206,8 @@ the title screen (RPCS3 rereads the host DATA0.DAT at each load) and read off th
     waiting"). RE5 Gold's own flow, read from the ELF (BLUS30491 app 01.01) and timed live on the Spark:
     * Time up: the results tally (uIdMerceEd00 outer 1-7: fade-in and timers, the records' save, the unlock pages)
       reads no button but the unlock pages' cross, so nothing skips it (~13 s on RPCS3). Outer 10 then takes START
-      alone (offline; mode 1's menu is online), and the results always go on to STAGE SELECT: there is no Retry.
+      alone (cGameSys +0x58 = 2 / 5: only a mode 1 gets a results menu), and the results always go on to STAGE
+      SELECT: there is no Retry.
     * Death: "Continue?" Yes replays the same stage and character at once; No saves ("Please wait a moment",
       "Saving content", "Save successful" OK, ~8.6 s) and goes to STAGE SELECT.
     * The selects fade in in ~0.3 s (state 0/1), take input in state 2, and leave in ~0.8 s (STAGE) / ~1.5 s
