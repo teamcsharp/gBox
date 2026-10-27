@@ -164,7 +164,9 @@ COMMIT_S = 1.0                           # a new target is kept this long (a cro
 # stream), 9 body turns and 5 quick turns a minute. Now: the target is not flipped back to the one he just left within
 # FLIP_S (a grab threat still wins), the dot on another Majini makes him the target only after DOT_SWITCH_TICKS ticks,
 # the gun goes down for a far-off aim only after UNAIM_HOLD_S of it (or past UNAIM_HARD), never within MIN_UP_S of
-# coming up, and once turning with the gun down it comes up again inside RERAISE_FRAC of the raise tolerance.
+# coming up, and once turning with the gun down it comes up again inside RERAISE_FRAC of the raise tolerance. Both
+# holds only with nobody within THREAT_R (live 11:42, the first turn: ringed at arm's length, two deaths in two
+# rounds): up close he turns at once, as before.
 SMOOTH = True
 FLIP_S, DOT_SWITCH_TICKS = 1.5, 2
 UNAIM_HOLD_S, UNAIM_HARD, MIN_UP_S, RERAISE_FRAC = 0.25, math.radians(75), 0.5, 0.75
@@ -867,7 +869,10 @@ class Bot:
 
     def _aim_h(self, tgt, dist, now) -> float:
         """The height on him to aim at: K's learned aim for his class at this distance and weapon (sure), else CHEST_H;
-        kept inside his body (KNEE_H .. HEAD_H)."""
+        kept inside his body (KNEE_H .. HEAD_H). Within GRAB_THREAT_R (a grab or a lunge: the Switch reads no enemy
+        state) always CHEST_H, the bot's own rule."""
+        if dist < GRAB_THREAT_R:
+            return CHEST_H                                   # at grabbing / lunging range: the old rule, whatever K says
         plan = self._plan(tgt, dist, self._item, now)
         if self._sure(plan, "aim_offset"):
             self.stats["k_aim_ticks"] += 1
@@ -1408,7 +1413,7 @@ class Bot:
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
-            tol = self.raise_tol(dist) * (RERAISE_FRAC if SMOOTH and self.turning else 1.0)
+            tol = self.raise_tol(dist) * (RERAISE_FRAC if SMOOTH and self.turning and near > THREAT_R else 1.0)
             if abs(body_err) > tol:                          # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
                 self.stats["turns"] += 1
@@ -1476,8 +1481,8 @@ class Bot:
         self.unaim_since = (self.unaim_since or now) if far_off else None
         if far_off:                                          # the aim is far off him
             alt = self._near_aim(origin, dot, live, flat) if ray_len >= STEER_RAY_CM else None
-            hold = SMOOTH and abs(yaw_err) <= UNAIM_HARD and (now - self.unaim_since < UNAIM_HOLD_S
-                                                              or now - self.aim_since < MIN_UP_S)
+            hold = SMOOTH and near > THREAT_R and abs(yaw_err) <= UNAIM_HARD \
+                and (now - self.unaim_since < UNAIM_HOLD_S or now - self.aim_since < MIN_UP_S)
             if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
                 far_off = False
         if far_off:

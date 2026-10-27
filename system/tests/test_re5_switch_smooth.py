@@ -94,3 +94,28 @@ def test_smoothness_off_keeps_the_old_immediate_dot_switch(monkeypatch):
     assert b.target == 11
     for k in R.MOTION_COUNTERS:
         assert k in R.RE5Switch.round_counters
+
+
+def test_up_close_the_gun_goes_down_for_a_far_off_aim_at_once_as_before():
+    b, clock = bot()
+    target, behind = at(200, 0), at(180, 120)                     # one in front, one at arm's length behind
+    chest = lambda f, dx=0.0: (f[0] + dx, f[1] + R.CHEST_H, f[2])
+    s = lambda dot, enemies: {"player": p(), "enemies": [{"ptr": 10 + i, "pos": e, "hp": 800, "hp_max": 800}
+                                                         for i, e in enumerate(enemies)],
+                              "inventory": [], "laser": {"from": (0.0, 140.0, 30.0), "at": dot, "up": dot is not None},
+                              "motion": 26}
+    b.tick({**s(None, [at(600, 0)]), "laser": {"from": (0, 0, 0), "at": (0, 0, 0), "up": False}})
+    clock[0] = 0.3                                                 # just raised, the aim 50 deg off a target 2.5 m out
+    far = at(250, 50)
+    b.tick(s(chest(at(600, 0)), [far, behind]))
+    assert b.doing == "unaim"                                      # one within THREAT_R: no hold
+    b2, clock2 = bot()
+    R_thr = R.THREAT_R
+    try:
+        R.THREAT_R = 100.0                                         # nobody "close": the hold applies (the control case)
+        b2.tick({**s(None, [at(600, 0)]), "laser": {"from": (0, 0, 0), "at": (0, 0, 0), "up": False}})
+        clock2[0] = 0.3
+        b2.tick(s(chest(at(600, 0)), [far, behind]))
+        assert b2.doing != "unaim"
+    finally:
+        R.THREAT_R = R_thr
