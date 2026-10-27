@@ -531,6 +531,17 @@ def observation(store,worker):
     return {}
 
 
+def known_game_ids() -> set:
+    """Every game a host's prepare may probe: each title's discs, its backends' editions and the Switch No Mercy
+    editions a host may prefer (re_switch; mercmode_tool's prepare probes them since #1265, and a receipt naming them was
+    refused with 422 until they were known here)."""
+    from . import re_switch as RS
+    ids = {gid for title in TITLES.values() for gid in title['game_ids']}
+    ids |= {b['game_id'] for title in TITLES.values() for b in (title.get('backends') or {}).values()
+            if isinstance(b, dict) and isinstance(b.get('game_id'), str)}
+    return ids | {RS.RE5_GAME_ID, RS.RE6_GAME_ID}
+
+
 def valid_preparation(receipt):
     """Finite, fresh local file probes; these flags cannot authorize game writes."""
     if not isinstance(receipt,dict):return False
@@ -541,7 +552,7 @@ def valid_preparation(receipt):
         return False
     now=time.time();checked=receipt.get('checked_at')
     games=receipt.get('games')
-    known={gid for title in TITLES.values() for gid in title['game_ids']}
+    known=known_game_ids()
     if (receipt.get('emulator_launched') is not False or receipt.get('configuration_changed') is not False
             or type(checked) not in (int,float) or not 0<=now-checked<=1800
             or not isinstance(games,dict) or set(games)-known):
