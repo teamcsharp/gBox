@@ -360,6 +360,7 @@ const GLYPH_OF = {
   psx: "ds1", ps1: "ds1", playstation: "ds1", dualshock: "ds1", psxdigital: "ps1", ps1digital: "ps1",
   ps2: "ps2", ps3: "ps3", psp: "psp",
   xbox: "xbox", xbox360: "x360", x360: "x360", xinput: "xinput", xboxone: "xinput", xboxseries: "xinput", pc: "xinput", windows: "xinput",
+  quest: "xinput",            // Refract maps the Xbox pad onto the Quest Touch controllers (gbox/refract.py)
 };
 const GLYPH_RX = [            // long system names ("Sega Dreamcast", "Sony PlayStation 2", ...)
   [/dreamcast/, "dc"], [/naomi|atomiswave|arcade|mame|fbneo|neogeo|cps\d/, "arcade"], [/saturn/, "saturn"],

@@ -7,7 +7,7 @@ api_port = 8765
 public_url = "http://10.89.1.246:8765"
 cache_limit_gb = 200
 sync_mod_builds_on_startup = false # do not send local game builds to the control plane automatically
-preferred_launch_workers = { ps4 = "i9-NUC" } # automatic PS4 Play stays on this PC; choose another node explicitly to override
+preferred_launch_workers = { ps4 = "i9-NUC", quest = "i9-NUC" } # automatic PS4 / Quest Play stays on this PC; choose another node explicitly to override
 stage_min_mb = 32                 # disc images above this are copied to the node's local cache before launch
 cache_dirs = { linux = "/home/ehm_eckx/gBox_alt/gbox-cache", windows = "D:/gBox/cache" }   # fast local disk per node (LRU, bounded; originals never modified); the Spark: the NVMe hot tier
 cache_limits_gb = { linux = 150, windows = 250 }   # ceiling for staged library copies on that disk (LRU eviction; never mods, bases, libraries or cold data)
@@ -259,6 +259,14 @@ mount = "//10.89.1.125/QuickSwap2"
 mount_root = "/mnt/gbox/quickswap2"
 paths = { linux = "/mnt/gbox/quickswap2/Emulation/_switch", windows = "//10.89.1.125/QuickSwap2/Emulation/_switch" }
 
+[[libraries]]
+id = "quest"
+kind = "quest"                    # Meta Quest packages (APK + main/patch OBBs), one zip or folder per game; played in
+                                  # Refract Native on the [quest] workers below (gbox/refract.py)
+mount = "//10.89.1.125/QuickSwap2"
+mount_root = "/mnt/gbox/quickswap2"
+paths = { linux = "/mnt/gbox/quickswap2/Emulation/Occulus", windows = "//10.89.1.125/QuickSwap2/Emulation/Occulus" }
+
 [rewind]
 checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not to stall Flycast/Dolphin (operator saw 2 fps, #1489)
 
@@ -266,3 +274,17 @@ checkpoints = false   # 2026-10-13: off until the checkpoint ring is proven not 
 # operator 2026-10-26: a build reaches a PC only when the operator downloads it there (Builds > download icon).
 # Agent, Hermes, background-testing, screensaver/MercMode/roulette and launch-failure work never copies one over.
 auto_send = false
+
+[quest]
+# Meta Quest games in Refract Native (gbox/refract.py; Based on Refract: https://github.com/MIXIDtheSilly/Refract).
+# Only these PCs download Refract, Google's Android files and a private copy of each game (~10 GB a game, on D:).
+workers = ["i9-NUC"]
+root = { windows = "D:/gBox/refract" }
+# A Quest game starts only with the operator's own [quest.owned."<package>"] declaration below (declared_by and
+# declared_at required; gBox never writes it) or when Refract's Meta sign-in on that PC lists it as owned.
+
+[quest.owned."com.Armature.VR4"]
+title = "Resident Evil 4 VR"
+declared_by = "mx1001"
+declared_at = "2026-10-27"
+statement = "I own the game. I pulled it from a headset and it's a product I purchased."

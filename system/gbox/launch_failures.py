@@ -47,10 +47,10 @@ DEFAULTS = {"auto_remedy": True, "investigate": True, "verify": True}
 
 ADAPTERS = ("retroarch", "dolphin", "flycast", "pcsx2", "duckstation", "rpcs3", "shadps4", "ppsspp", "xenia", "cemu", "mame",
             "redream", "xemu", "cxbx", "melonds", "citra", "ryujinx", "yuzu", "eden", "citron", "mupen64plus", "mgba", "steam",
-            "rocketlauncher")
+            "rocketlauncher", "refract")
 ADAPTER_RX = re.compile(r"\b(" + "|".join(ADAPTERS) + r")\b", re.I)
 PLATFORM_ADAPTER = {"gamecube": "dolphin", "wii": "dolphin", "ps3": "rpcs3", "ps4": "shadps4", "xbox360": "xenia", "switch": "yuzu",
-                    "xbox": "cxbx", "pc_steam": "steam"}
+                    "xbox": "cxbx", "pc_steam": "steam", "quest": "refract"}
 
 CANCELLED_RX = re.compile(r"cancelled by the operator|cancelled with its parent|^cancelled\b|stopped by the operator", re.I)
 TRANSIENT_VERIFY_RX = re.compile(r"No idle node|Can't capture on|yielded|already running|server restarted|Interrupted|"
@@ -433,6 +433,9 @@ class Ledger:
         from .storage_policy import POLICY_RX
         if POLICY_RX.search(err):
             return "refused by the storage policy (a build not downloaded to that PC, or game data on its system drive)"
+        from .refract import NOT_A_FAILURE_RX
+        if NOT_A_FAILURE_RX.search(err):
+            return "a Quest game's ownership is not confirmed yet, or its Refract setup is still running on that PC"
         if job.get("agent_use"):
             return "agent test launch (evidence capture / investigation): reported by its own task"
         if job.get("parent_request_id"):

@@ -1,0 +1,317 @@
+"""Installs an Android APK for refract_native (no emulator).
+
+Creates <apps>/<package>/ with:
+  lib/arm64/*.so     the APK's ARM64 native libraries
+  classes.jar        the APK's dex code as JVM bytecode (dex2jar + ShimBuilder app)
+  app.properties     package, launch activity, Application class, meta-data
+
+usage: python install_apk.py app.apk --refract-root DIR [--apps DIR] [--sdk DIR] [--jdk DIR] [--no-libcxx-rebind]
+
+    Based on Refract: https://github.com/MIXIDtheSilly/Refract
+
+gBox fork of Refract's native/tools/install_apk.py, Refract 1.0.2 (tag v1.0.2, commit
+c0e83a847d74aef67379607d79413cd349503d97, upstream file sha256 ca98f92946fad74c2739a6375583ca7e9ea2fc571615a7edede4b590b2d4f5bc).
+Copyright (C) 2026 Refract contributors; modifications copyright (C) 2026 the gBox authors.
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
+version, together with Refract's additional term (GPL-3.0 Section 7(b), visible credit). See LICENSE and NOTICE in
+this folder. This program is distributed WITHOUT ANY WARRANTY.
+
+Changes made by gBox on 2026-10-27 (marked "gBox:" below):
+  1. --refract-root DIR (or REFRACT_ROOT): the Refract release folder. This copy lives in gBox's tree, not at
+     <release>/native/tools, so every path upstream derived from its own location now comes from that folder.
+  2. Refract issue #38 (https://github.com/MIXIDtheSilly/Refract/issues/38, open and unmerged in 1.0.3): right after
+     the APK's ARM64 libraries are extracted, private_libcxx.py points the PLT stubs of a library with a private
+     static libc++ at its own definitions, so Resident Evil 4 VR's libovrplatformloader.so stops freeing its strings
+     through libUE4's allocator (SIGSEGV in FMallocBinned2::Free during dlopen). The report goes to
+     <apps>/<package>/gbox-private-libcxx.json. --no-libcxx-rebind installs exactly as upstream does.
+Everything else is upstream's code, unchanged.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+# gBox: REPO, NATIVE and QUEST are set from --refract-root in main() (upstream: this file's own location).
+REPO = NATIVE = QUEST = None
+
+
+def default_jdk() -> Path:
+    """The release package's jdk/ (tools/package_release.ps1), else JAVA_HOME, else the developer JDK."""
+    for jdk in (REPO / "jdk", Path(os.environ.get("JAVA_HOME", "")), Path("C:/Program Files/Java/jdk-27")):
+        if (jdk / "bin" / "javac.exe").exists():
+            return jdk
+    return REPO / "jdk"
+
+
+def default_dex2jar() -> Path:
+    for d2j in (REPO / "tools" / "dex2jar" / "d2j-dex2jar.bat", QUEST / "external" / "dex2jar" / "d2j-dex2jar.bat"):
+        if d2j.exists():
+            return d2j
+    return QUEST / "external" / "dex2jar" / "d2j-dex2jar.bat"
+
+
+def rebind_private_libcxx(libdir: Path, dest: Path) -> list[dict]:
+    """gBox: the Refract issue #38 fix on the freshly extracted game libraries (private_libcxx.py in this folder)."""
+    sys.path.insert(0, str(HERE))
+    import private_libcxx
+    reports = [private_libcxx.rebind(so) for so in sorted(libdir.glob("lib*.so"))]
+    (dest / "gbox-private-libcxx.json").write_text(json.dumps(reports, indent=1), encoding="utf-8")
+    for report in reports:
+        if report.get("eligible"):
+            print(f"  {report['library']}: private libc++, {report['applied']} PLT stub(s) rebound to its own "
+                  f"definitions, {len(report.get('already') or [])} already, {len(report.get('skipped') or [])} skipped"
+                  " (Refract issue #38)")
+    return reports
+
+
+def find_aapt2(sdk: Path) -> Path:
+    tools = sorted((sdk / "build-tools").glob("*/aapt2.exe"), reverse=True)
+    if not tools:
+        sys.exit(f"aapt2 not found under {sdk}/build-tools")
+    return tools[0]
+
+
+def parse_value(raw: str) -> str:
+    """aapt2 xmltree attribute value -> 'type:value' for app.properties."""
+    raw = raw.strip()
+    m = re.match(r'^"(.*)" \(Raw: ".*"\)$', raw)
+    if m:
+        return "string:" + m.group(1)
+    if raw in ("true", "false"):
+        return "boolean:" + raw
+    if re.match(r"^-?(0x[0-9a-fA-F]+|\d+)$", raw):
+        return "int:" + raw
+    if re.match(r"^-?\d+\.\d+$", raw):
+        return "float:" + raw
+    if raw.startswith("@"):
+        return "ref:" + raw[1:]  # resolved against resources.arsc at run time, as PackageParser does
+    return "string:" + raw.strip('"')
+
+
+def meta_value(out: dict, el: dict) -> None:
+    """<meta-data>: android:resource is the resource id, android:value the (resolved) value."""
+    name = re.match(r'^"([^"]*)"', el["attrs"].get("name", ""))
+    name = name.group(1) if name else el["attrs"].get("name", "")
+    if "resource" in el["attrs"] and el["attrs"]["resource"].startswith("@"):
+        out[name] = "int:" + el["attrs"]["resource"][1:]
+    elif "value" in el["attrs"]:
+        out[name] = parse_value(el["attrs"]["value"])
+
+
+def manifest(aapt2: Path, apk: Path) -> dict:
+    badging = subprocess.run([str(aapt2), "dump", "badging", str(apk)], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace").stdout
+    info = {"meta": {}, "activity_meta": {}}
+    m = re.search(r"package: name='([^']+)' versionCode='([^']*)' versionName='([^']*)'", badging)
+    info["package"], info["versionCode"], info["versionName"] = m.group(1), m.group(2) or "1", m.group(3) or "1.0"
+    m = re.search(r"application-label:'([^']*)'", badging)
+    info["label"] = m.group(1) if m else info["package"]
+    m = re.search(r"targetSdkVersion:'(\d+)'", badging)
+    info["targetSdk"] = m.group(1) if m else "32"
+    m = re.search(r"launchable-activity: name='([^']+)'", badging)
+    info["activity"] = m.group(1) if m else None
+
+    tree = subprocess.run([str(aapt2), "dump", "xmltree", "--file", "AndroidManifest.xml", str(apk)],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    # Walk elements by indentation.
+    stack = []  # (indent, element dict)
+    activities = []
+    for line in tree.splitlines():
+        em = re.match(r"^(\s*)E: ([\w-]+)", line)
+        if em:
+            indent = len(em.group(1))
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            el = {"tag": em.group(2), "attrs": {}, "children": []}
+            if stack:
+                stack[-1][1]["children"].append(el)
+            stack.append((indent, el))
+            if el["tag"] in ("activity", "activity-alias"):
+                activities.append(el)
+            if el["tag"] == "application":
+                info["application_el"] = el
+            continue
+        am = re.match(r"^\s*A: (?:http://schemas.android.com/apk/res/android:)?(\w+)(?:\(0x[0-9a-f]+\))?=(.*)$", line)
+        if am and stack:
+            stack[-1][1]["attrs"][am.group(1)] = am.group(2)
+
+    def name_of(el):
+        v = el["attrs"].get("name", "")
+        m = re.match(r'^"([^"]*)"', v)
+        return m.group(1) if m else v
+
+    app_el = info.pop("application_el", None)
+    if app_el:
+        cls = name_of(app_el)
+        if cls:
+            info["application"] = cls if not cls.startswith(".") else info["package"] + cls
+        if app_el["attrs"].get("theme", "").startswith("@"):
+            info["theme"] = app_el["attrs"]["theme"][1:]
+        for c in app_el["children"]:
+            if c["tag"] == "meta-data":
+                meta_value(info["meta"], c)
+    launch = None
+    for a in activities:
+        for f in (c for c in a["children"] if c["tag"] == "intent-filter"):
+            names = [name_of(x) for x in f["children"]]
+            if "android.intent.action.MAIN" in names and any(
+                    n in names for n in ("android.intent.category.LAUNCHER", "com.oculus.intent.category.VR")):
+                if not launch:
+                    launch = a
+                    # queryIntentActivities answers for these (UE4 finds its VR mode by category.VR).
+                    info["activity_categories"] = [name_of(x) for x in f["children"] if x["tag"] == "category"]
+    if launch:
+        if not info["activity"]:
+            n = name_of(launch)
+            info["activity"] = n if not n.startswith(".") else info["package"] + n
+        if launch["attrs"].get("theme", "").startswith("@"):
+            info["activity_theme"] = launch["attrs"]["theme"][1:]
+        for c in launch["children"]:
+            if c["tag"] == "meta-data":
+                meta_value(info["activity_meta"], c)
+    if not info["activity"]:
+        sys.exit("no launchable activity found in the manifest")
+    return info
+
+
+def main() -> int:
+    # gBox: the Refract release folder replaces upstream's "this file's location" (REPO/NATIVE/QUEST).
+    global REPO, NATIVE, QUEST
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--refract-root", type=Path, default=os.environ.get("REFRACT_ROOT") or None)
+    known, _ = pre.parse_known_args()
+    if not known.refract_root or not (Path(known.refract_root) / "build-native" / "java" / "refract-android.jar").is_file():
+        sys.exit("--refract-root must name a Refract release folder (it has build-native/java/refract-android.jar)")
+    REPO = Path(known.refract_root).resolve()
+    NATIVE, QUEST = REPO / "native", REPO.parent
+    ap = argparse.ArgumentParser()
+    ap.add_argument("apk", type=Path)
+    ap.add_argument("--refract-root", type=Path, help="the Refract release folder (gBox; env REFRACT_ROOT)")
+    ap.add_argument("--no-libcxx-rebind", action="store_true",
+                    help="gBox: skip the Refract issue #38 fix and install exactly as upstream does")
+    ap.add_argument("--apps", type=Path, default=Path(os.environ.get("LOCALAPPDATA", ".")) / "Refract" / "native" / "apps")
+    ap.add_argument("--sdk", type=Path, default=Path(os.environ.get("USERPROFILE", ".")) / "Android" / "Sdk")
+    ap.add_argument("--jdk", type=Path, default=default_jdk())
+    ap.add_argument("--dex2jar", type=Path, default=default_dex2jar())
+    ap.add_argument("--runtime", type=Path,
+                    default=REPO / "build-android-runtime-windows-arm64-v8a" / "systemdriver" / "package" / "lib" / "arm64-v8a",
+                    help="Refract's ARM64 libopenxr_runtime.so + librefract_driver.so (android-runtime-apk/build_apk.ps1 -Abi arm64-v8a)")
+    ap.add_argument("--platform", type=Path, default=REPO / "build-platform-sdk" / "package" / "lib" / "arm64-v8a",
+                    help="Refract's Meta Platform SDK stand-in, librefract_ovrplatform.so (platform-sdk/build_apk.ps1)")
+    args = ap.parse_args()
+    apk = args.apk.resolve()
+
+    info = manifest(find_aapt2(args.sdk), apk)
+    dest = args.apps / info["package"]
+    print(f"installing {info['package']} ({info['label']}) -> {dest}")
+    libdir = dest / "lib" / "arm64"
+    if libdir.exists():
+        shutil.rmtree(libdir)
+    libdir.mkdir(parents=True)
+
+    with zipfile.ZipFile(apk) as z, tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        n = 0
+        for e in z.infolist():
+            if e.filename.startswith("lib/arm64-v8a/") and e.filename.endswith(".so"):
+                with z.open(e) as src, open(libdir / Path(e.filename).name, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                n += 1
+        print(f"  {n} native libraries")
+        if not args.no_libcxx_rebind:                     # gBox: Refract issue #38, the game's own libraries only
+            rebind_private_libcxx(libdir, dest)
+        # Refract's OpenXR runtime, reached the way a Quest game reaches Horizon's: Meta's loader
+        # calls com.oculus.systemdriver.DriverLoader (Refract's stand-in, android-runtime-apk/systemdriver).
+        for name in ("libopenxr_runtime.so", "librefract_driver.so"):
+            if not (args.runtime / name).exists():
+                sys.exit(f"{args.runtime / name} missing: run android-runtime-apk/build_apk.ps1 -Abi arm64-v8a")
+            shutil.copy2(args.runtime / name, libdir / name)
+        # VrApi games: Meta's libvrapi.so gets Refract's VrApi driver from the same DriverLoader (load64).
+        if (args.runtime / "libvrapiimpl.so").exists():
+            shutil.copy2(args.runtime / "libvrapiimpl.so", libdir / "libvrapiimpl.so")
+        print("  Refract OpenXR runtime (com.oculus.systemdriver stand-in)")
+        # Refract's Meta Platform SDK stand-in (package com.oculus.horizon on the emulator): the game's
+        # libovrplatformloader.so loads its EntryPoint through createPackageContext, which is this app here.
+        if not (args.platform / "librefract_ovrplatform.so").exists():
+            sys.exit(f"{args.platform / 'librefract_ovrplatform.so'} missing: run platform-sdk/build_apk.ps1")
+        shutil.copy2(args.platform / "librefract_ovrplatform.so", libdir / "librefract_ovrplatform.so")
+        print("  Refract Platform SDK (com.oculus.horizon stand-in)")
+        # Unity dlopen()s plugins by bare name ("OculusXRPlugin"); the same file under that name
+        # lets the linker match it with the already loaded library (same inode).
+        for so in sorted(libdir.glob("lib*.so")):
+            alias = libdir / so.name[3:-3]
+            if not alias.exists():
+                os.link(so, alias)
+        dexes = sorted((e for e in z.namelist() if re.match(r"^classes\d*\.dex$", e)),
+                       key=lambda s: int(re.sub(r"\D", "", s) or 1))
+        jars = []
+        # dex2jar runs the first java on the PATH; a PC without one (or with an old one) gets this JDK's.
+        d2j_env = {**os.environ, "PATH": str(args.jdk / "bin") + os.pathsep + os.environ.get("PATH", "")}
+        for d in dexes:
+            z.extract(d, tmp)
+            out = tmp / (d + ".jar")
+            subprocess.run([str(args.dex2jar), "-f", "-o", str(out), str(tmp / d)], check=True,
+                           capture_output=True, env=d2j_env)
+            jars.append(out)
+        java = args.jdk / "bin" / "java.exe"
+        shim = REPO / "build-native" / "java" / "refract-android.jar"
+        # DriverLoader and the Platform SDK EntryPoint join the app's classes, so the app rewrite below
+        # sends their loadLibrary calls to the guest linker like the app's own.
+        driver_src = [REPO / "android-runtime-apk" / "systemdriver" / "src", REPO / "platform-sdk" / "apk" / "src"]
+        driver_classes = tmp / "systemdriver"
+        subprocess.run([str(args.jdk / "bin" / "javac.exe"), "-nowarn", "--release", "21", "-proc:none",
+                        "-cp", str(shim), "-d", str(driver_classes)]
+                       + [str(p) for d in driver_src for p in d.rglob("*.java")], check=True)
+        driver_jar = tmp / "systemdriver.jar"
+        with zipfile.ZipFile(driver_jar, "w") as dz:
+            for p in driver_classes.rglob("*.class"):
+                dz.write(p, p.relative_to(driver_classes).as_posix())
+        jars.append(driver_jar)
+        # Merge dex jars (first one wins for duplicates, like ART's class loading order).
+        merged = tmp / "merged.jar"
+        seen = set()
+        with zipfile.ZipFile(merged, "w", zipfile.ZIP_DEFLATED) as mz:
+            for j in jars:
+                with zipfile.ZipFile(j) as jz:
+                    for e in jz.infolist():
+                        if e.filename in seen or e.is_dir():
+                            continue
+                        seen.add(e.filename)
+                        mz.writestr(e.filename, jz.read(e))
+        subprocess.run([str(java), "-cp", str(NATIVE / "java" / "tools" / "lib" / "asm-9.8.jar"), f"-Drefract.shim={shim}", str(NATIVE / "java" / "tools" / "ShimBuilder.java"), "app", str(merged),
+                        str(dest / "classes.jar")], check=True)
+
+    props = [
+        f"package={info['package']}",
+        f"activity={info['activity']}",
+        f"label={info['label']}",
+        f"versionCode={info['versionCode']}",
+        f"versionName={info['versionName']}",
+        f"targetSdk={info['targetSdk']}",
+        f"apk={apk}".replace("\\", "/"),
+    ]
+    if info.get("application"):
+        props.append(f"application={info['application']}")
+    for key in ("theme", "activity_theme"):
+        if info.get(key):
+            props.append(f"{key.replace('_', '.')}={info[key]}")
+    if info.get("activity_categories"):
+        props.append("activity.categories=" + ",".join(info["activity_categories"]))
+    props += [f"meta.{k}={v}" for k, v in sorted(info["meta"].items())]
+    props += [f"activity.meta.{k}={v}" for k, v in sorted(info["activity_meta"].items())]
+    (dest / "app.properties").write_text("\n".join(props) + "\n", encoding="utf-8")
+    print(f"  launch activity {info['activity']}")
+    print(f"run: refract_native --sysroot <dump fs> --app {dest}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

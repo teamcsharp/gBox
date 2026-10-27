@@ -1,0 +1,48 @@
+# private_libcxx.py dry run on the RE4 VR v203 APK libraries (lib/arm64-v8a), 2026-10-27, on the Spark
+libbink2androidarm64.so          eligible=False patches=0 already=0 skipped=0 defines no std::__ndk1 symbols
+libbinkpluginandroidarm64.so     eligible=False patches=0 already=0 skipped=0 defines no std::__ndk1 symbols
+libc++_shared.so                 eligible=False patches=0 already=0 skipped=0 exports or imports operator new/delete: _ZdaPv, _ZdlPv, _Znam, _Znwm
+libovraudio64.so                 eligible=False patches=0 already=0 skipped=0 exports or imports operator new/delete: _ZdaPv, _ZdlPv, _Znam, _Znwm
+libovrplatformloader.so          eligible=True  patches=21 already=0 skipped=0 
+libOVRPlugin.so                  eligible=False patches=0 already=0 skipped=0 defines no std::__ndk1 symbols
+libplaycore.so                   eligible=False patches=0 already=0 skipped=0 exports or imports operator new/delete: _ZdaPv, _ZdlPv, _Znam, _Znwm
+libUE4.so                        eligible=False patches=0 already=0 skipped=0 exports or imports operator new/delete: _ZdaPv, _ZdlPv, _Znam, _Znwm
+libvrapi.so                      eligible=False patches=0 already=0 skipped=0 defines no std::__ndk1 symbols
+  patch 0x160020 0x20cb0 -> 0x22e48 90000a10 -> 14000866 _ZNSt6__ndk111char_traitsIcE6lengthEPKc
+  patch 0x160028 0x20cc0 -> 0x22ae4 90000a10 -> 14000789 _ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm
+  patch 0x160038 0x20ce0 -> 0x226c0 90000a10 -> 14000678 _ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev
+  patch 0x160058 0x20d20 -> 0x22f24 90000a10 -> 14000881 _ZNSt6__ndk111char_traitsIcE4copyEPcPKcm
+  patch 0x160060 0x20d30 -> 0x22f84 90000a10 -> 14000895 _ZNSt6__ndk111char_traitsIcE6assignERcRKc
+  patch 0x160198 0x20fa0 -> 0xfda44 90000a10 -> 140372a9 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1601a0 0x20fb0 -> 0xfdb54 90000a10 -> 140372e9 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1601a8 0x20fc0 -> 0xe4c40 90000a10 -> 14030f20 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x160260 0x21130 -> 0xe6354 f00009f0 -> 14031489 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x160338 0x212e0 -> 0xe4c9c f00009f0 -> 14030e6f _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1604a0 0x215b0 -> 0xe6a34 f00009f0 -> 14031521 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1604a8 0x215c0 -> 0xe6f8c f00009f0 -> 14031673 _ZNSt6__ndk111char_traitsIcE7compareEPKcS3_m
+  patch 0x160598 0x217a0 -> 0xfe040 f00009f0 -> 14037228 _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1605a0 0x217b0 -> 0xffb64 f00009f0 -> 140378ed _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1605a8 0x217c0 -> 0x1002f8 f00009f0 -> 14037ace _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1605b0 0x217d0 -> 0x10040c f00009f0 -> 14037b0f _ZNSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6_
+  patch 0x1605b8 0x217e0 -> 0x100fa4 f00009f0 -> 14037df1 _ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_
+  patch 0x1605c0 0x217f0 -> 0x101138 f00009f0 -> 14037e52 _ZNSt6__ndk127__tree_balance_after_insertIPNS_16__tree_node_baseIPvEEEEvT_S5_
+  patch 0x1605c8 0x21800 -> 0x100f58 f00009f0 -> 14037dd6 _ZNKSt6__ndk16__treeINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_4lessIS6_EENS4_IS6
+  patch 0x1605d0 0x21810 -> 0x1014f8 f00009f0 -> 14037f3a _ZNSt6__ndk118__tree_left_rotateIPNS_16__tree_node_baseIPvEEEEvT_
+  patch 0x1605d8 0x21820 -> 0x1015fc f00009f0 -> 14037f77 _ZNSt6__ndk119__tree_right_rotateIPNS_16__tree_node_baseIPvEEEEvT_
+
+# objdump -d of the ~basic_string PLT stub before and after (GOT 0x160038, the crash in issue #38)
+0000000000020ce0 <_ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev@plt>:
+   20ce0:	90000a10 	adrp	x16, 160000 <__cxa_finalize@LIBC>
+   20ce4:	f9401e11 	ldr	x17, [x16, #56]
+   20ce8:	9100e210 	add	x16, x16, #0x38
+   20cec:	d61f0220 	br	x17
+0000000000020ce0 <_ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev@plt>:
+   20ce0:	14000678 	b	226c0 <_ZNSt6__ndk112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev@@Base>
+   20ce4:	f9401e11 	ldr	x17, [x16, #56]
+   20ce8:	9100e210 	add	x16, x16, #0x38
+   20cec:	d61f0220 	br	x17
+
+# objdump -T: std::__ndk1 dynamic symbols in libovrplatformloader.so
+23
+fe3e09351dbd7a5378db8418ad93d4aaa5581aa64b1c3e07998dafb7b80ac336  libovrplatformloader.so
+35e67e79dbbc2f02ab82e093cf75794d410e24799751b5507bb6bdc067a876b9  patched.so

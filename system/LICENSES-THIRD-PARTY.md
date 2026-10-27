@@ -6,6 +6,7 @@ The exceptions are vendored under `gbox/vendor/`, each with its licence file and
 | Vendored | Use | License | Where |
 |---|---|---|---|
 | universal-modder (rehan-remade), commit 5ba8150e27b4f1bf17ae19dcecdb2341e467885a | `um_*` tools: game scan, field notes, save backups, publish lint, sprites, ComfyUI, 3D-to-sprite | MIT | `gbox/vendor/universal_modder/` (LICENSE there; changes listed in its `__init__.py`; docs/universal_modder.md) |
+| Refract (MIXIDtheSilly), 1.0.2, commit c0e83a847d74aef67379607d79413cd349503d97: `native/tools/install_apk.py` and `scripts/pose_input_server.py`, plus gBox's `private_libcxx.py` | Meta Quest games (`gbox/refract.py`): converting a game for Refract Native with the Refract issue #38 loader fix; the pad/keyboard pose server listening on 127.0.0.1 | GPL-3.0-or-later with Refract's Section 7(b) visible-credit term | `gbox/vendor/refract/` (LICENSE and NOTICE there; each file's header lists gBox's changes). These run as separate processes; gBox never imports them. **Based on Refract: https://github.com/MIXIDtheSilly/Refract** |
 
 | Component | Use | License | How it's integrated |
 |---|---|---|---|
@@ -22,6 +23,22 @@ The exceptions are vendored under `gbox/vendor/`, each with its licence file and
 | ComfyUI | local image generation (`um_comfy`) | GPLv3 | separate server, HTTP API only; not bundled |
 
 Check each license again before bundling anything in a Windows installer.
+
+## Meta Quest stack (`gbox/refract.py`)
+
+Based on Refract: https://github.com/MIXIDtheSilly/Refract
+
+Downloaded on demand by gBox onto the Quest worker PCs (`[quest] workers`, `D:/gBox/refract`), pinned, never bundled
+in the repo. Refract's processes run separately; the two Refract scripts gBox changed are vendored above.
+
+| Component | Use | License | Source (exact) |
+|---|---|---|---|
+| Refract 1.0.2 for Windows (MIXIDtheSilly; carries Node.js, a Temurin 27 runtime, dex2jar, Digitalis) | `refract_native.exe` runs Quest games' ARM64 code, `refract_viewer.exe` is the PC window, its Platform SDK stand-in answers the game's entitlement check only for games gBox confirmed as the operator's own | GPL-3.0-or-later + Section 7(b) visible credit (AXRB parts MIT, Digitalis Apache-2.0; see its NOTICE and CREDITS.md) | `github.com/MIXIDtheSilly/Refract` release `v1.0.2`, asset `Refract-1.0.2-win64.zip` (sha256 `196229a2…4bcb380`) |
+| Android SDK build-tools 36 (`aapt2`) and the Android 14 ARM64 system image (Google) | reading game manifests; the Android system files Refract Native runs games on (`make_sysroot.py`) | Android Software Development Kit License Agreement (downloading accepts it, as in Refract's own Setup) | `dl.google.com/android/repository/` `build-tools_r36_windows.zip` (sha1 `f16ccffd…`), `sys-img/android/arm64-v8a-34_r04.zip` (sha1 `d9f20111…`) |
+| python-ext4 1.2.4 (+ cachetools 6.0.0, crcmod 1.7) | read the system image's ext4 partitions for `make_sysroot.py`; pinned because 1.2.2 padded extracted files (Refract issue #39) | MIT / MIT / MIT | PyPI, installed into `D:/gBox/refract/pylib` (the worker's own packages stay as they are) |
+
+Game files come only from the operator's own copy in the library (`quest` library); gBox keeps a private copy of the
+APK and OBBs on the worker and never changes the original.
 
 ## Resident Evil 4 (2023) stack (`gbox/re4r.py`, `adapters/reframework/`)
 

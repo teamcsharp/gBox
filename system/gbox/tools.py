@@ -127,6 +127,10 @@ def scan_library(inp: ScanIn, ctx: Ctx):
         t = time.time()
         if lib.kind == "attract":
             e, p, stats = catalog.scan_attract(root, lib.id, cache)
+        elif lib.kind == "quest":                       # Meta Quest packages, played through Refract (gbox/refract.py)
+            from . import refract
+            e, p = refract.scan_refract(root, lib.id)
+            stats = {}
         else:
             e, p = catalog.scan([root], {}, cache, lib_id=lib.id, do_hash=lib.hash,
                                 platform_hint=lib.platform, recursive=lib.recursive, exclude_dirs=lib.exclude_dirs,
@@ -854,6 +858,22 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
         checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
         detail = ad.launch_game(g.launch["emulator"], g.launch["name"])
+    elif g.launch.get("kind") == "refract":
+        # Meta Quest (gbox/refract.py): the ownership check, then this PC's Refract setup and the game's own copy
+        # (never the cache staging below: the package is unpacked, not copied whole), all before the previous game
+        # is closed. Setup outliving this job keeps going in the background for the next launch.
+        diag["stage"] = "prepare Refract"
+        source = rom_path(g, ctx.config) if (g.library and g.rel_path) or g.launch.get("path") else None
+        ad.deadline = ctx.execution_deadline_monotonic
+        prepared = ad.prepare(g.model_dump(), source)
+        src = Path(prepared["package"]["apk"])
+        lap("prepare_s")
+        diag["stage"] = "close the previous game"
+        checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
+        lap("close_previous_s")
+        ctx.progress(72, f"Starting Refract Native with {g.title}")
+        diag["stage"] = "start the emulator"
+        detail = ad.launch_game(prepared["install"]["app"])
     else:
         src = rom_path(g, ctx.config)
         # A complete mod is its own game copy. Do not wake/stat the library
