@@ -5307,6 +5307,13 @@ def for_game(game: dict, config: Config, debug: bool = False, *, mod: str | None
         return DEBUG_ADAPTERS[plat](config, plat)
     if plat == "pc_steam":
         return SteamAdapter()
+    if plat == "quest" or (game.get("launch") or {}).get("kind") == "refract":
+        # Meta Quest games: Refract Native + its PC viewer on a Windows x64 worker (gbox/refract.py). The ownership
+        # check runs in RefractAdapter.prepare, before anything is installed or started.
+        if HOST_OS != "windows":
+            raise ToolUnavailable("Meta Quest games run in Refract Native on a Windows x64 worker")
+        from .refract import RefractAdapter
+        return RefractAdapter(config, game)
     if (game.get('launch') or {}).get('kind') == 'savemgo_bundle':
         if plat != 'ps3':
             raise ToolUnavailable('The SaveMGO bundle must be catalogued as PS3')

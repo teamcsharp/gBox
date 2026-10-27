@@ -99,6 +99,7 @@ RULES: list[tuple[str, str, str | None, list[str]]] = [
     # so no libretro core; catalogued so the build is a first-class gBox game until an Infuse adapter boots it
     (r"zeebo|\bbrew\b", "zeebo", None, []),
     # --- Windows-only (PC launchers, modern consoles, special hardware) ---
+    (r"meta quest|oculus|occulus", "quest", None, []),   # Refract Native on Windows x64 workers (gbox/refract.py)
     (r"xbox 360|xbox360", "xbox360", None, []),          # Xenia on Windows nodes (gbox/xenia.py)
     (r"\bxbox\b", "xbox", None, []),                 # Cxbx-Reloaded on Windows nodes (gbox/xbox.py)
     (r"teknoparrot|taito type x|nesicaxlive|examu|pc games|arcadepc|future pinball|pinball|flash games|"

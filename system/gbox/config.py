@@ -23,6 +23,7 @@ class Library(BaseModel):
     """A game collection on the network. Paths are per-OS so Linux and Windows nodes resolve the same games."""
     id: str
     kind: str = "files"               # "attract" (HyperSpin/Attract-Mode tree) | "files" (plain ROM/ISO folders)
+                                      # | "quest" (Meta Quest packages, one APK+OBB zip or folder each: gbox/refract.py)
     paths: dict[str, str]             # os -> root path, e.g. {"linux": "/mnt/gbox/hyperspin/Arcade", "windows": "//nas/..."}
     mount: str | None = None          # linux: SMB source to mount at paths["linux"] during setup
     mount_root: str | None = None     # linux: mountpoint when paths["linux"] is a subdir of the share
@@ -231,6 +232,29 @@ class HermesConfig(BaseModel):
     grunt: GruntConfig = GruntConfig()
 
 
+class QuestOwnership(BaseModel):
+    """[quest.owned."<package>"] the operator's own statement that a Quest game is theirs. gBox reads it and never
+    writes it; an entry without declared_by and declared_at counts as no declaration."""
+    title: str = ""
+    declared_by: str = ""
+    declared_at: str = ""
+    statement: str = ""
+
+
+class QuestConfig(BaseModel):
+    """[quest] Meta Quest games in Refract Native on a Windows worker (gbox/refract.py). Based on Refract:
+    https://github.com/MIXIDtheSilly/Refract. A game starts only when [quest.owned] has the operator's declaration for
+    it or Refract's own Meta sign-in on that PC lists it as owned; only then does it get Refract's owner flag."""
+    root: dict[str, str] = {"windows": "D:/gBox/refract"}   # os -> Refract, Android files, game copies, saves (not C:)
+    workers: list[str] = []           # PCs that download Refract and copy Quest games there (~10 GB per game)
+    owned: dict[str, QuestOwnership] = {}
+    eye_size: int = 1600              # per-eye render size the game is offered (Refract's PC viewer default)
+    cpu: str = "digitalis"            # ARM64 translator: digitalis (Refract's choice, faster) | dynarmic
+    focus: str = r"Refract Viewer|^gBox\b"   # keyboard reaches the game only while such a window is in front: the
+                                      # viewer, or gBox with the viewer docked (typing in gBox then reaches it too)
+    boot_timeout_s: float = 240.0     # first frames in the viewer (shader compiles make the first boot slow)
+
+
 class BuildsConfig(BaseModel):
     """[builds] how custom builds reach the worker PCs (gbox/storage_policy.py, operator 2026-10-26: "I want to opt
     into the builds and only download builds when I choose to download them")."""
@@ -312,6 +336,7 @@ class Config(BaseModel):
     showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
     builds: BuildsConfig = BuildsConfig()            # [builds] auto_send: builds reach a PC only by the operator's download
+    quest: QuestConfig = QuestConfig()               # [quest] Meta Quest games through Refract (gbox/refract.py)
     takeover_idle_s: float = 3.0      # the operator's pad takes over from a playing bot; this long after their last input
                                       # (nothing held) the bot takes the pad back (gbox/pad_takeover.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
@@ -429,6 +454,15 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # [builds]                        # custom builds on the worker PCs (gbox/storage_policy.py)
 # auto_send = false               # false: a build reaches a PC only when the operator downloads it there; agent and
 #                                 # background work that needs it elsewhere fails with a clear message instead of copying
+
+# [quest]                         # Meta Quest games in Refract Native (gbox/refract.py; Based on Refract:
+#                                 # https://github.com/MIXIDtheSilly/Refract), Windows x64 workers only
+# workers = ["i9-NUC"]            # PCs that set Refract up and copy each game there (~10 GB per game, never C:)
+# root = { windows = "D:/gBox/refract" }
+# [quest.owned."com.Armature.VR4"]   # the operator's own declaration (gBox never writes it). Without it a Quest game
+# declared_by = "<your name>"     # starts only when Refract's Meta sign-in on that PC lists it as owned
+# declared_at = "<date>"
+# statement = "I own this game."
 
 # [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
 # enabled = true                  # records only while the pad was used in the last idle_s seconds

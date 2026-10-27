@@ -3965,9 +3965,10 @@ def create_app(config: Config) -> FastAPI:
             req.require_worker = byname[0]["id"] if byname else node
         elif (e.get("launch") or {}).get("kind") == "native_port":
             req.require_os = "linux"                      # native ports build and stream from the Linux worker
-        elif e.get("platform") in ("ps2", "ps3", "ps4"):
+        elif e.get("platform") in ("ps2", "ps3", "ps4", "quest"):
             # PS2 on the Spark uses an experimental ARM CPU backend. Keep ordinary
             # play on the Windows PC's mature recompiler and direct game display.
+            # Quest games run only in Refract Native on a Windows x64 worker (gbox/refract.py).
             req.require_os = "windows"
         elif e.get("launch", {}).get("kind") == "attract":
             from . import systems                          # the platform rule wins over a core stored at scan time
