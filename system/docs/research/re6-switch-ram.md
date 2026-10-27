@@ -186,10 +186,10 @@ The units are named by vtable (main + offset):
 | uIdStartUp31 | +0x2699F30 | STAGE | cursor +0x50: Urban Chaos 0, Steel Beast 1, Mining the Depths 2, Rail Yard 3, High Seas Fortress 4, The Catacombs 5, Requiem for War 6, Liquid Fire 7, Rooftop Mission 8, Creature Workshop 9 |
 | uIdStartUp32 | +0x2699E88 | CHARACTER SELECT | cursor +0x1CC: Leon 0, Chris 1, Jake 2, Agent 3 |
 | uIdMerceUI | +0x2685650 | the round's HUD | with uIdLife00, uIdGoal, uIdScope, uIdWpSlot00, uIdArmSelector00, uIdGadget00 ... |
-| uIdGameover00 | +0x2683608 | YOU ARE DEAD, CONTINUE? YES / NO | YES restarts the round; Right + A = NO, then Save successful, then STAGE |
+| uIdGameover00 | +0x2683608 | YOU ARE DEAD, CONTINUE? YES / NO | cursor +0x50 (YES 0, NO 1) once +0x248 points at its YES / NO menu (about 4 s after the death); YES restarts the same round at once, NO goes "Now saving", "Save successful", STAGE |
 | uIdResult30 | +0x2686750 | RESULTS (Kills, Max Combo, Score, Rank) | with uIdResultBg; "(+) End game" |
 | uIdSave00 | +0x2686968 | saving | |
-| uIdAlert00 | +0x2681440 | dialogs (always on line 0) | +0x1CC = 1 while one is up, +0x1C8 its id: 0x41 "Connect to the Leaderboards...?" (B = No), 0x0C "Now saving", 0x09 "Save successful" (A) |
+| uIdAlert00 | +0x2681440 | dialogs (always on line 0) | +0x1CC = 1 while one is up, +0x1C8 its id: 0x41 "Connect to the Leaderboards...?" (B = No), 0x0C "Now saving", 0x09 "Save successful" (A), 0x08 "Load successful" (A), 0x0F the autosave notice (A), 0x0D the "create new save data?" notice (A) |
 
 **From boot to a No Mercy round (with the unlock):**
 
@@ -231,24 +231,115 @@ The units are named by vtable (main + offset):
 
 gBox's keyboard pad (`yuzu_runtime.SWITCH_KEYS`) reaches all of them; Citron's default keyboard map is the same one.
 
+## The driver (gbox/mercs/titles/re6_switch.py, 2026-10-27)
+
+Measured in short private Citron sessions on the Spark (one at a time, no other agent emulator running, CPU under
+65-70 %, Citron at nice 15), on top of the facts above:
+
+- **The camera.** Every camera unit (`uCameraCtrl`, `uEventMotionCamera`, ...) carries uCamera's own properties,
+  mCameraPos +0x60, mCameraUp +0x70 and mTargetPos +0x80 (registered by main+0x124DE70). The live one is the
+  `uCameraCtrl` on move line 14, about 2 m behind Leon; the one on line 8 sits idle at (0, 200, -700). Its yaw
+  (atan2 of target - position) is where the left stick walks him: lup walked him along -123.8 with the camera at
+  -123.8. The right stick turns the camera about 174 deg/s with the gun down (rleft = a larger yaw; 0.5 s took -124.6
+  to -37.6), and ZL raises the gun along it.
+- **The laser sight.** `uLaserSight` sits on move line 22 (the effects line). +0x60 (also +0x100, +0x180, +0x450) is
+  the dot, where the aim's ray lands. +0x440 (and +0x570) is the muzzle, about 190 cm up and 30 cm in front of him.
+  +0x12C goes from about 0.3 to 0.86 while the gun is up. While aiming, the right stick moves the aim about 70 deg/s in
+  yaw (1.0 s of rleft took the dot from -125.1 to -58.0) and faster in pitch.
+- **The player's action.** +0x6E2 (u8; a copy at +0x6D2) names what he is doing: 0 free, 1 hit for a moment, 2 / 64 /
+  66 a quick shot (64, 66, 2), 3 knocked down, and **8 then 9 / 25 held by a zombie** (its bite took 450 to 300). +0x598
+  (u16) is the motion: 84 the aimed shot, 86 its end, 472 / 474 the quick shot, 4012 / 4018 only while held. The
+  hold's prompt shows **B** (a live frame); one broke after 2.3 s of the left stick turned round with A mashed (state 8
+  -> 1), so the bot now mashes B with the stick going round.
+- **Dying.** Health 1 held for 8.5 s before 0 (the dying crawl); then the death animation and CONTINUE?.
+- **The inventory.** 12 cItem slots of 0x28 bytes from player +0x5070 (vtable main+0x2875848): +0x8 1 = in use, +0x9
+  the slot's index, +0xA the item id, +0xE s16 the rounds in the magazine (P_AMMO +0x507E is slot 0's, the gun in hand
+  at the start), +0x14 the capacity (the Wing Shooter 18), +0x16 the carry limit. Slots 0-6 hold the weapons and 7-11
+  the items. Slot 7's rounds (+0x5196, s16) are the health tablets (Leon 8 at the start; R took one). Chris: slot 0 his
+  assault rifle (id 0x0F, 30 / 30), slot 1 id 0x07 (7 / 7), slot 2 id 0x19 (no magazine), slot 7 the tablets (id
+  0x1D, 0 / 12: he starts with none, and R did nothing), slot 8 id 0x20 (0 / 3), slots 9-11 ids 0x13-0x15 (3 / 5,
+  0 / 5, 0 / 5).
+- **The shot's pace.** The Wing Shooter fires once per ZR press, and every press 0.15 s apart was a shot (20 in 3 s).
+  Chris's assault rifle is automatic: ZR held for 2.5 s with the gun up spent 24 rounds (9.6 a second), and tapped,
+  every press was a shot.
+  The motion layer's speed (+0x5D8, 1.0) does not change it: 20 shots at x1, 20 at x4, 17 at x8 with the same
+  presses. No game-side fire-rate multiplier (RE5's player time scale) has been found in RE6.
+
+What the driver does with it:
+
+- **Menus.** `screen()` names every screen from the units above, with cursors and targets. `step()` presses toward
+  the target, then A, and presses A at the title only when +0x20A says the main menu is what it opens.
+  `wandered()` stops a run whose title stays locked for 45 s (the unlock-on-load did not run). Live: the walk from
+  "Load successful" to a round took 64 s, about 19 presses, every one confirmed in RAM.
+- **CONTINUE?** YES by the cursor (REPLAY_ON_DEATH, as RE5 Switch): the same round again at once. The engine
+  publishes the death's round boundary (terminal witness "dead"); the bot counts the replay as the next round
+  (stats rounds, deaths_continued, round_start_via "dead/retry", a new _round_started) on its first tick alive with
+  a full clock. The replay's load reports "dead" to the engine for up to 60 s so it is not counted as lost. With
+  REPLAY_ON_DEATH off it answers NO, and "Now saving" hands the round back to the menus.
+- **The brain.** It picks the zombie to fight by distance and angle from the camera's yaw, turns the camera to him
+  (right stick, pulsed when close, the quick turn for one behind), raises the gun inside 25 deg, closes the laser's
+  ray (muzzle -> dot) onto his chest and taps ZR while the dot is on a zombie or the ray runs through him. It kicks one
+  at arm's length (ZR alone), takes the game's quick shot (ZL + ZR together) at one close in front, backs off when two
+  come within 2.6 m, breaks holds read in RAM (B mashed, the stick round), takes a tablet (R) at half health with
+  nobody at arm's length (at a third whoever is near) while he is free, counted when the count falls and pressed
+  again 1 s after an ignored press, reloads an empty gun (Y), and walks to the next zombie along the camera. stats act / acts name each tick's decision for the watch panel.
+- **The round's end.** Time up (phase 3) is "results" to the engine at once (the menus press nothing until the
+  RESULTS unit is up), and result_ready closes the evidence when the RESULTS unit shows or the score holds still for
+  1 s after 2 s, so MercMode's terminal witness carries tally_ready. The camera and laser units are found by class and
+  checked on every read (the camera must ride within 6 m, the muzzle within 4 m); a replay that frees them makes the
+  driver look again.
+- **Mods** (gbox.mercs.titles.re6_switch_mods, the profile's playing_ops). infinite_ammo keeps every gun's magazine
+  (the weapon slots 0-6) at its capacity, topped up from the snapshot; the items (the tablets, slots 7-11) are left
+  alone. fire_rate is honest: no game-side multiplier exists yet. With infinite
+  ammo, every bot press is a shot and none waits on a reload.
+
+## Live rounds (2026-10-27, a private Citron NEO session on the Spark)
+
+Seven minutes of the driver as MercMode runs it (gbox.mercs.engine.play_round with this driver, the menus between
+rounds from RAM, the profile's playing_ops at each round start), on Leon in Urban Chaos with infinite ammo on:
+
+| round | how it ended | kills | score | max combo | aimed shots (hits) | quick shots | kicks | holds broken |
+|---|---|---|---|---|---|---|---|---|
+| 1 | died, 62.6 s left | 27 | 26,240 | 23 | 53 (48, 91 %) | 32 | 37 | 13 |
+| 2 (the YES replay) | died, 38.8 s left | 7 | 3,340 | 6 | 55 (44, 80 %) | 20 | 15 | 3 |
+| 3 (the next YES replay) | playing at the 420 s stop, 41.7 s left | 19 | 5,700 | a 19 combo running | 46 (40, 87 %) | 28 | 28 | 7 |
+
+In all: 154 aimed shots, 132 hits (86 %), no reloads (215 magazine top-ups), 74 backoffs. Both deaths were answered
+YES and the replays were counted as the next rounds (stats rounds 2, deaths_continued 2, round_start_via
+"dead/retry"). The HUD agreed with RAM in the frames: 027/300 and 00026240 at round 1's death, 007/300 and 00003340
+at round 2's. Inventory at the round start (Leon): slot 0 the Wing Shooter (id 0x03, 18 / 18), slot 1 id 0x04 (8 / 8),
+slot 7 the tablets (id 0x1D, 8 / 12), slot 8 id 0x20 (0 / 3), slots 9-11 ids 0x13-0x15 (0 / 5 each).
+
+What the run showed:
+
+- **Tablets.** At 1'14" left in round 1 the HUD showed one health block and the tablet count still at 7, after six R
+  presses: presses in a crowd were ignored, and Leon died with tablets left. The driver now presses R only while his
+  action byte says he is free, counts a tablet only when the count falls (stats tablets, tablet_presses,
+  tablet_misses), presses again 1 s after an ignored press, and lowers the gun for it. This is unit-tested, not yet
+  measured live.
+- **The gun not coming up.** 171 times in seven minutes the laser was not up 0.9 s after ZL (stats reraise), about a
+  third of the run. The bot now looks for the laser unit again after each one; the cause (hit reactions in the crowd,
+  cover, another laser unit) is not measured.
+- **The pace of fire.** The Wing Shooter fired 26 shots from 32 presses in 2.5 s (10.4 a second) with presses 0.04 s
+  apart, so the press rate sets the pace up to about 10 a second.
+- **No time scale among the most-read fields.** The player's f32 fields that main reads most (tools: loads by
+  unsigned offset, at least 60 sites each) and that sat at 1.0, +0xD3C, +0x36D4, +0xD2C, +0xD6C, +0xBD0, +0x688 and
+  +0x5D8, were each held at 3.0 for a 1.2 s walk. The game rewrote every one of them each frame, and none moved him
+  faster than the baseline's own spread (70 to 240 cm/s).
+
+The frames are in docs/evidence/re6-switch-driver/ (real frames from this session and the measurement sessions,
+cropped to the game's window).
+
 ## What an RE6 Switch driver still needs
 
-1. **A title driver** (`gbox/mercs/titles/re6_switch.py`) on the shared engine. It needs `snapshot()` from the tables
-   above, `screen()` / `step()` for the menu walk, including the title wait on +0x20A and the results / Continue
-   flows, a brain (ZL + ZR shots; RE6's melee is strong, so ZR alone at arm's length), and tests on these measured
-   values. After that, a `profiles/gamedata/01002A000CD48000-ram.json`.
-2. **The authoritative round timer** for writes. sGameMan +0x3DF0 is good to read but is copied every frame.
-3. **Unmeasured pieces:**
-   - the aim direction while aiming (the laser / camera);
-   - an enemy's state and grab detection;
-   - item drops;
-   - the time-bonus pickups;
-   - the `uIdGameover00` cursor;
-   - the Load successful dialog id.
-4. **Eden.** gBox's `SwitchLinuxAdapter` runs Eden, single-core for RE6 (`EDEN_TITLE_SETTINGS`), but everything here
-   was measured on Citron NEO. The guest layout is the game's, not the emulator's. Only the way it is read depends on
-   the emulator: NCE direct addressing through the HostMemory memfd, which both share. The integration check ran
-   gBox's real `SwitchLinuxAdapter` memory path against Citron's maps. RE6's frame rate on gBox's Eden path still needs
-   a run before MercMode leans on it.
-5. **The MercMode edition.** `re_switch.normalize_preferences` accepts RE5 only. RE6 Switch No Mercy becomes a
-   MercMode edition (map 01002A000CD48000) once the driver has logged a complete round.
+1. **A game-side fire rate.** Neither the motion layer speed nor the seven most-read player f32 fields at 1.0 are it
+   (above). RE5's player time scale has no measured RE6 twin yet. Next, look for the weapon resource
+   (soft\chara\wp\wpNNNN) that the in-hand uWp unit points at.
+2. **The tablet and the gun up, live.** Measure the confirm-and-retry tablet presses and the reraise cause in a
+   round.
+3. **The authoritative round timer** for writes. sGameMan +0x3DF0 is good to read but is copied every frame.
+4. **Unmeasured pieces:** enemy states (a zombie's attack wind-up for counters), item drops and the time-bonus
+   pickups, the staggered-zombie finisher prompt (a ZR icon over him), and whether a tablet heals at once (one was
+   taken while a zombie held him).
+5. **Eden.** All of this was measured on Citron NEO, the canonical Switch emulator for RE5 / RE6 (#1236). The guest
+   layout is the game's; on Eden only the frame rate needs a run.

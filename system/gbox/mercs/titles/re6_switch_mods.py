@@ -8,8 +8,9 @@ apply_ops), and the driver (gbox.mercs.titles.re6_switch.RE6Switch.screen) calls
 
 ops:
   status                    what is on, and the in-hand weapon's rounds / capacity
-  infinite_ammo on=true     every gun in the inventory keeps a full magazine: a slot whose rounds fell below its capacity
-                            is topped up on the next snapshot, so the gun never empties and never reloads
+  infinite_ammo on=true     every gun in the inventory keeps a full magazine: a weapon slot whose rounds fell below its
+                            capacity is topped up on the next snapshot, so the gun never empties and never reloads (the
+                            item slots - the tablets, the sprays, the grenades - are left alone)
   fire_rate multiplier=N    the bot's own trigger: with infinite ammo it presses ZR on every other tick on target (about
                             10 presses a second; the Wing Shooter fires on each, measured 6.7 a second with every press
                             a shot). RE6 has no measured game-side fire-rate multiplier: the shot motion's layer speed
@@ -17,9 +18,12 @@ ops:
                             at x8), so N above 1 reports verified=False and changes nothing in the game
 
 Where (measured live 2026-10-27 in a private Citron NEO session on the Spark; docs/research/re6-switch-ram.md):
-  player +0x5070  the inventory: cItem slots of 0x28 (vtable main+0x2875848), +0xE s16 the rounds in the magazine,
-                  +0x14 s16 its capacity (the Wing Shooter 18 / 18; three shots took it to 15, the HUD's magazine row),
-                  +0x16 the carry limit
+  player +0x5070  the inventory: 12 cItem slots of 0x28 (vtable main+0x2875848), +0x8 1 = in use, +0x9 the slot's
+                  index, +0xA the item id, +0xE s16 the rounds in the magazine, +0x14 s16 its capacity (the Wing Shooter
+                  18 / 18; three shots took it to 15, the HUD's magazine row), +0x16 the carry limit. Slots 0-6 hold the
+                  weapons, 7-11 the items: Chris's slot 0 is his assault rifle (id 0x0F, 30 / 30; a held ZR spent 24 rounds
+                  in 2.5 s, an automatic), slot 1 id 0x07 (7 / 7), slot 7 id 0x1D (0 / 12: the tablets, Leon's 8 at the
+                  start), 8 id 0x20 (0 / 3), 9-11 ids 0x13-0x15 (3 / 5, 0 / 5, 0 / 5)
   player +0x507E  the first slot's rounds = the gun in hand at the round start (gbox.mercs.titles.re6_switch.P_AMMO)
   player +0x5196  s16 the health tablets (8 at the start; R takes one)
 """
@@ -34,6 +38,7 @@ from . import re6_switch as R
 GAME = "Resident Evil 6 (Nintendo Switch 01002A000CD48000 v1.0.2, main 061D2A06CD700785E987C42CE2D72231)"
 MAP_ID = R.MAP_ID
 SLOTS, SLOT_STRIDE, SLOT_ROUNDS, SLOT_CAP, N_SLOTS = 0x5070, 0x28, 0xE, 0x14, 12
+WEAPON_SLOTS = 7                                         # slots 0-6 the weapons; 7-11 the items (tablets, sprays, grenades)
 SLOT_VTABLE = 0x2875848                                  # cItem
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
@@ -71,13 +76,14 @@ class RE6Switch:
             self.state["base"] = base
 
     def slots(self, player: int) -> list[tuple[int, int, int]]:
-        """The gun slots [(slot, rounds, capacity)]: cItem records with a magazine (0 < capacity <= CAP_MAX)."""
+        """The gun slots [(slot, rounds, capacity)]: the weapon slots' cItem records with a magazine (0 < capacity <=
+        CAP_MAX; a knife has none). The item slots after them are not guns."""
         out = []
         try:
-            raw = self.ad.read_memory(player + SLOTS, SLOT_STRIDE * N_SLOTS)
+            raw = self.ad.read_memory(player + SLOTS, SLOT_STRIDE * WEAPON_SLOTS)
         except (ValueError, OSError):
             return out
-        for i in range(N_SLOTS):
+        for i in range(WEAPON_SLOTS):
             o = SLOT_STRIDE * i
             vt = struct.unpack_from("<Q", raw, o)[0]
             if vt != self.base + SLOT_VTABLE:

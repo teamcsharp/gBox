@@ -446,7 +446,7 @@ def test_the_ram_map_names_this_driver_for_the_catalog_game():
 
 def test_a_tablet_at_half_health_with_nobody_close_and_at_a_third_regardless():
     bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablets"] == 1
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 1
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # one a TABLET_GAP_S
     bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 120.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # one at arm's length: fight first
@@ -456,6 +456,32 @@ def test_a_tablet_at_half_health_with_nobody_close_and_at_a_third_regardless():
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: no tablet (not measured)
+    bot, clock, snap = brain(round_guest(hp=300, state=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
+
+
+def test_a_tablet_counts_once_the_count_falls_and_an_ignored_press_is_pressed_again():
+    g = round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0)
+    bot, clock, snap = brain(g)
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}
+    snap["player"]["tablets"] = 7                                            # the press took one
+    run(bot, snap, clock, 1)
+    assert bot.stats["tablets"] == 1 and bot.stats["tablet_misses"] == 0
+    clock[0] += R.TABLET_GAP_S
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 2
+    acts = run(bot, snap, clock, int(R.TABLET_CONFIRM_S / 0.05) + 2)       # the count stays at 7: ignored
+    assert bot.stats["tablet_misses"] == 1 and bot.stats["tablets"] == 1
+    assert acts.count({"tap": "r"}) == 1 and acts[0] != {"tap": "r"}        # pressed again once the miss is known
+    assert bot.stats["tablet_presses"] == 3
+
+
+def test_a_gun_that_does_not_come_up_drops_the_cached_laser():
+    down = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.3)            # the laser unit, but the gun not up
+    bot, clock, snap = brain(round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500),
+                                         laser=down))
+    R._FOUND[(BASE, "laser")] = (1, 2)
+    acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 2)
+    assert bot.stats["reraise"] == 1 and {"hold": ()} in acts and (BASE, "laser") not in R._FOUND
 
 
 # --- the live mods ---------------------------------------------------------------------------------------------------
@@ -504,6 +530,20 @@ def test_infinite_ammo_tops_every_gun_up_to_its_capacity(mods):
     clock[0] += mods.CHECK_S
     assert mods.maintain(ad, R.snapshot(g), enabled=False, clock=lambda: clock[0])["writes"] == 0   # out of a round
     assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1
+
+
+def test_infinite_ammo_leaves_the_item_slots_alone(mods):
+    g = round_guest(guns=((20, 30), (7, 7)), tablets=3)                    # Chris: the rifle and a 7-round gun
+    p = R.snapshot(g)["player"]["ptr"]
+    for i in range(2, mods.N_SLOTS):                                        # the rest of the 12 cItem slots
+        g.q(p + mods.SLOTS + mods.SLOT_STRIDE * i, BASE + mods.SLOT_VTABLE)
+    item = lambda i: p + mods.SLOTS + mods.SLOT_STRIDE * i
+    g.put(item(7) + mods.SLOT_CAP, struct.pack("<h", 12))                  # the tablets: 3 of 12 (P_TABLETS)
+    g.put(item(9) + mods.SLOT_ROUNDS, struct.pack("<hhhh", 3, 0, 0, 5))    # an item at 3 of 5
+    ad = Adapter(g)
+    assert mods.run(ad, "infinite_ammo", on=True)["topped_up"] == 1
+    assert [(r, c) for _, r, c in mods.RE6Switch(ad).slots(p)] == [(30, 30), (7, 7)]
+    assert R.snapshot(g)["player"]["tablets"] == 3 and struct.unpack("<h", g.rd(item(9) + mods.SLOT_ROUNDS, 2))[0] == 3
 
 
 def test_infinite_ammo_off_writes_nothing_and_status_reports(mods):
@@ -603,3 +643,38 @@ def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
     res = round_guest(player=False, phase=R.PHASE_OVER, timer=0.0)
     ui(res, 18, "uIdResult30")
     assert d2.screen(res, None) == "results" and d2.result_ready(R.snapshot(res), 0.0) is True
+
+
+def test_aiming_gives_way_to_a_kick_when_one_closes_in():
+    on = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.86)
+    g = round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500), laser=on)
+    bot, clock, snap = brain(g)
+    run(bot, snap, clock, 6)
+    assert bot.aim_since is not None                                   # aiming at the far one
+    snap["enemies"].append({"slot": 1, "ptr": 99, "pos": (20.0, 0.0, 90.0), "hp": 700, "hp_max": 700})
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"tap": "zr"} and bot.stats["melee"] == 1              # the gun down, the kick
+
+
+def test_warm_probe_names_stable_native_menus_and_waits_for_an_open_title():
+    g = round_guest(player=False)
+    assert R.warm_probe(g) == {"ready": False, "screen": "unknown", "title": R.MAP_ID}
+    title = ui(g, 0, "uIdTitle00")
+    assert R.warm_probe(g)["screen"] == "title_locked" and not R.warm_probe(g)["ready"]
+    g.put(title + R.TITLE_MENU_OPEN, b"\x01")
+    probe = R.warm_probe(g)
+    assert probe["ready"] and probe["screen"] == "title" and probe["token"] == ("uIdTitle00", title)
+    menu = ui(g, 18, "uIdStartUp31")
+    probe = R.warm_probe(g)
+    assert probe["ready"] and probe["screen"] == "select_stage" and probe["token"] == ("uIdStartUp31", menu)
+    g = round_guest(player=False)
+    alert = g.lines[0][0]
+    g.i32(alert + R.ALERT_ID, 0x08)
+    g.i32(alert + R.ALERT_UP, 1)
+    assert R.warm_probe(g)["screen"] == "alert_ok" and R.warm_probe(g)["ready"]
+
+
+def test_the_warm_pool_finds_the_re6_reader_from_the_catalog_game():
+    from gbox.mercs import warm_boot
+    reader = warm_boot.title_probe(None, {"game_id": "115f9cdbba115432", "platform": "switch"})
+    assert reader is R.warm_probe

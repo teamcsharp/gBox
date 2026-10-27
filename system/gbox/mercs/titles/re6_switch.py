@@ -421,6 +421,53 @@ def pressed(scr: dict, key: str) -> None:
     return None
 
 
+STAGE_NAMES = STAGES                    # mercs_bot's prepare receipt names the stage by these
+WARM_SCREENS = {"uIdStartUp00": "main_menu", "uIdStartUp01": "play_game", "uIdStartUp02": "extra_content",
+                "uIdStartUp30": "mercs_mode", "uIdStartUp31": "select_stage", "uIdStartUp32": "select_player"}
+WARM_ALERTS = {0x08: "alert_ok"}        # "Load successful.": the boot's first stop after PRESS ANY BUTTON
+WARM_RESCAN_S = 2.0                     # main not found yet (still booting): look again this often (a full scan)
+
+
+def warm_probe(m) -> dict:
+    """gbox.mercs.warm_boot's boot observer for RE6 Switch (title_probe): a stable native menu where the warm pool may
+    pause the boot, read only (no input, no writes). The title counts only once its main-menu byte is set (the
+    unlock-on-load ran: A opens the main menu, not the Prologue). Each screen's unit is its token."""
+    out = {"ready": False, "screen": "unknown", "title": MAP_ID}
+    now = time.monotonic()
+    if getattr(m, "_warm_miss", None) is not None and now - m._warm_miss < WARM_RESCAN_S:
+        return out
+    base = module_base(m)
+    try:
+        m._warm_miss = None if base is not None else now
+    except AttributeError:
+        pass
+    if base is None:
+        return out
+    units = ui_units(m, base)
+    if {"uIdNowLoading00", "uIdNowLoading01"} & units.keys():
+        return out | {"screen": "loading"}
+    for name, where in WARM_SCREENS.items():
+        if name in units:
+            return out | {"ready": True, "screen": where, "token": (name, units[name])}
+    alert = units.get("uIdAlert00")
+    if alert:
+        try:
+            aid, up = struct.unpack("<ii", m.rd(alert + ALERT_ID, 8))
+        except (ValueError, OSError):
+            aid, up = 0, 0
+        if up and aid in WARM_ALERTS:
+            return out | {"ready": True, "screen": WARM_ALERTS[aid], "token": ("alert", alert, aid)}
+    title = units.get("uIdTitle00")
+    if title:
+        try:
+            open_ = m.rd(title + TITLE_MENU_OPEN, 1)[0] == 1
+        except (ValueError, OSError):
+            open_ = False
+        return out | ({"ready": True, "screen": "title", "token": ("uIdTitle00", title)} if open_
+                      else {"screen": "title_locked"})
+    return out
+
+
 # --- the camera and the laser sight -------------------------------------------------------------------------------------
 _FOUND: dict = {}                       # (main base, what) -> (unit, its vtable), checked by the vtable on every read
 _MISS: dict = {}                        # (main base, what) -> when a walk last ended without it
@@ -462,6 +509,12 @@ def _find_unit(m, base: int, what: str, classes: tuple, lines, pick=None, now: f
         pass
     _MISS[key] = now
     return None
+
+
+def forget(what: str) -> None:
+    """Drop a cached unit ("camera", "laser") for every main base: the next read looks for it again."""
+    for key in [k for k in _FOUND if k[1] == what]:
+        _FOUND.pop(key, None)
 
 
 def camera(m, base: int, near=None) -> dict | None:
@@ -588,6 +641,9 @@ DEAD_WAIT_S = 2.5                       # "YOU ARE DEAD - CONTINUE?" takes input
 RELOAD_GAP_S = 1.5
 TABLET_HP, TABLET_CLEAR_R, TABLET_GAP_S = 0.5, 150.0, 3.0   # a tablet (R) at half health or less, nobody this near
 TABLET_LOW_HP = 0.34                    # ... and at a third or less whoever is near (a tablet beats dying)
+TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
+                                        # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
+                                        # pressed again this soon, and only while he is free (action 0)
 REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long at most before it counts as lost
 HANG_S = 6.0
 
@@ -600,15 +656,16 @@ class Bot:
     stick; the quick turn for one behind), a melee kick for one at arm's length, the game's quick shot for one close in
     front; ZL once the camera is within AIM_CONE. Gun up: the laser's ray (muzzle +0x440 -> dot +0x60, RAM) is closed
     onto his chest with the right stick (pulsed inside the fine zones) and ZR is tapped while the dot sits on a zombie or
-    the ray runs through him. Far: walk to him along the camera. Held (the stick moves nothing, or the health falls with
-    one at arm's length): the left stick turned round with A mashed. Dead: "Continue?" YES by the cursor read in
-    RAM (the same round again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
+    the ray runs through him. Far: walk to him along the camera. Held (RAM's action byte, or the stick moving nothing):
+    B mashed with the left stick turned round. Hurt: a tablet (R) while he is free, counted once the tablet count falls
+    (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round again at once;
+    NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic):
         self.stats = stats if stats is not None else {}
         self.clock = clock
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
-                  "reraise", "restale", "deaths", "tablets", "backoffs"):
+                  "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs"):
             self.stats.setdefault(k, 0)
         self.target, self.target_at = None, -1e9
         self.aim_since = None
@@ -617,6 +674,7 @@ class Bot:
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
+        self.tablet_wait, self.tablet_missed = None, False   # (the count, when) after an R press, until it falls
         self.backoff_until = self.backoff_ready = -1e9
         self.qshot_release = False
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
@@ -642,6 +700,7 @@ class Bot:
                 self.stats["round_start_via"] = "dead/retry"
                 self._round_started = now
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
+                self.tablet_wait, self.tablet_missed = None, False
             self.continued = None
         if self._round_started is None:
             self._round_started = now
@@ -683,6 +742,20 @@ class Bot:
         self.hp_seen = [(t, hp) for t, hp in self.hp_seen if now - t <= GRAB_S] + [(now, p.get("hp") or 0)]
         falling = len(self.hp_seen) > 1 and self.hp_seen[-1][1] < self.hp_seen[0][1]
         return bool(falling and near <= GRAB_R)
+
+    def _tablet_check(self, p, now) -> None:
+        """An R press counts as a tablet once the count falls (stats tablets); none within TABLET_CONFIRM_S is a press
+        the game ignored (stats tablet_misses), tried again after TABLET_RETRY_S."""
+        if self.tablet_wait is None:
+            return
+        before, at = self.tablet_wait
+        n = p.get("tablets")
+        if isinstance(n, int) and isinstance(before, int) and n < before:
+            self.stats["tablets"] += 1
+            self.tablet_wait, self.tablet_missed = None, False
+        elif now - at >= TABLET_CONFIRM_S:
+            self.stats["tablet_misses"] += 1
+            self.tablet_wait, self.tablet_missed = None, True
 
     def _score_hits(self, snap, now) -> None:
         """A zombie's health falling within HIT_S of an aimed shot is that shot's hit (accuracy = hits / shots)."""
@@ -779,6 +852,7 @@ class Bot:
         self.dead_since = None
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        self._tablet_check(p, now)
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
             self._act("quick_shot_release")
@@ -831,19 +905,26 @@ class Bot:
         dist = flat(tgt)
         err = wrap(heading(foot[0] - px, foot[2] - pz) - yaw)
         self.stats["target_dist"] = round(dist)
+        crowd = sum(1 for e in live if flat(e) < CROWD_R)
+        if self.aim_since is not None and (near < MELEE_R or (crowd >= CROWD_N and now >= self.backoff_ready)):
+            self._gun_down()                                     # one at arm's length or a crowd closing in while he
+                                                                 # aims: the gun down, a kick or a step back first
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        gap = TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
+        if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
+                and self.tablet_wait is None and now - self.tablet_at >= gap
+                and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R))):
+            self._gun_down()                                     # half health, nobody close, free: a tablet (R),
+            self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
+            self.tablet_wait = (p.get("tablets"), now)
+            self.stats["tablet_presses"] += 1
+            self._act("tablet")
+            return {"tap": "r"}
         if self.aim_since is None:
-            hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
-            if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and now - self.tablet_at >= TABLET_GAP_S
-                    and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R))):
-                self.tablet_at = now                             # half health, nobody close: a tablet (R)
-                self.stats["tablets"] += 1
-                self._act("tablet")
-                return {"tap": "r"}
             if dist > ENGAGE_R:                                  # nobody in range: walk to him along the camera
                 self._act("walk")
                 return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - yaw)
-            crowd = sum(1 for e in live if flat(e) < CROWD_R)
             if crowd >= CROWD_N and now >= self.backoff_ready:
                 self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
                 self.stats["backoffs"] += 1
@@ -885,8 +966,9 @@ class Bot:
             self._act("raise")
             return {"hold": ("zl",)}
         if not lz.get("up"):
-            self.stats["reraise"] += 1                           # the gun did not come up: let ZL go a tick
-            self._gun_down()
+            self.stats["reraise"] += 1                           # the gun did not come up: let ZL go a tick, and
+            self._gun_down()                                     # look for the laser unit again (another may be his)
+            forget("laser")
             self._act("reraise")
             return {"hold": ()}
         ray = (tuple(lz["from"]), tuple(lz["at"]))
