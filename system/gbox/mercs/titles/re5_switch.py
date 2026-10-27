@@ -69,8 +69,21 @@ ALERTS = {0x33: "alert_leaderboard",     # "Connect to the Leaderboards and subm
           0x09: "alert_ok",              # "Save successful." (after Continue? No, and after the results): A = OK
           0x08: "alert_ok"}              # "Load successful.": A = OK
 MENU_CURSOR, MENU_SUB, EXTRA_CURSOR, MODE_CURSOR, PLAYER_CURSOR = 0x74, 0x1C4, 0x1D8, 0x1C8, 0x1D0
-CONTINUE_CURSOR, CONTINUE_NO = 0x1CC, 1   # uIdGameover00 "Continue?": +0x1CC 0 Yes / 1 No (live 2026-10-26: A on Yes
-                                         # restarts the round, so A goes in only with the cursor read on No)
+CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Continue?": +0x1CC 0 Yes / 1 No: Yes
+                                         # replays the round at once, No saves and goes to the selects (live 2026-10-26);
+                                         # A goes in only with the cursor read on the answer the pace wants
+# The pace between rounds (operator 2026-10-26: "match to match to match without these loading screens and waiting";
+# re5_ps3.Pace on PS3): No Mercy here is always the same stage and character, so a death answers "Continue? Yes" - the
+# same round again at once, with no save, no selects and no loading. The engine publishes MercMode's round boundary at
+# the death (its terminal witness "dead") and closes the round's evidence; the bot counts the replay as the next round
+# (stats rounds, deaths_continued, round_start_via "dead/retry") and marks its start (_round_started).
+REPLAY_ON_DEATH = True
+FRESH_ROUND_S = 3.0                      # a clock this close to the round's full time on the first tick alive: it began
+
+
+def continue_target() -> int:
+    """The "Continue?" answer the pace wants: Yes (replay) unless REPLAY_ON_DEATH is off."""
+    return CONTINUE_YES if REPLAY_ON_DEATH else CONTINUE_NO
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, EXTRA_MERCENARIES, MODE_NO_MERCY = 0, 1, 0, 3
 STAGE_TARGET, PLAYER_TARGET = 0, 0       # Public Assembly, Chris (BSAA): the selects' first entries
 
@@ -395,7 +408,7 @@ def screen(m, merc=None) -> dict:
             cursor = _i32(m, ui["uIdGameover00"] + CONTINUE_CURSOR)
         except (ValueError, OSError):
             cursor = None
-        return out | {"where": "dead", "cursor": cursor, "target": CONTINUE_NO}
+        return out | {"where": "dead", "cursor": cursor, "target": continue_target()}
     if snap.get("player") and out["where"] == "loading" and snap.get("mercenaries_phase") == PHASE_INTRO \
             and "uIdNowLoading00" not in ui:
         return out | {"where": "playing", "intro": True}    # the round is up (its intro, the clock not yet running):
@@ -582,6 +595,8 @@ class Bot:
         self.fire_at = None                     # the last tick ZR was held on him
         self._threats: list = []
         self.dead_since, self.dead_taps = None, 0
+        self.died, self.continued = False, None   # this round ended in a death / how "Continue?" was answered
+        self._round_started = None                # the engine's round marker (a replay starts a new round in one call)
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -675,6 +690,23 @@ class Bot:
         self.fire_down, self.fire_at = True, now
         return {"zr"}
 
+    def _round_start(self, snap, now) -> None:
+        """The first tick alive of a round: its marker for the engine; after a death answered Yes, the replay counts as
+        the next round (mercs_bot counts only rounds the menus reach)."""
+        if self.died:
+            self.died = False
+            t, start = snap.get("timer"), snap.get("timer_start")
+            fresh = isinstance(t, (int, float)) and isinstance(start, (int, float)) and start - t <= FRESH_ROUND_S
+            if self.continued == "yes" and fresh:
+                self.stats["rounds"] = self.stats.get("rounds", 0) + 1
+                self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
+                self.stats["round_start_via"] = "dead/retry"
+                self._round_started = now
+                self.target, self.hp_prev, self.hp_seen = None, {}, []
+            self.continued = None
+        if self._round_started is None:
+            self._round_started = now
+
     def _gun_down(self) -> None:
         self.aim_since, self.fire_down, self.ray_key = None, False, None
 
@@ -687,6 +719,7 @@ class Bot:
             return {"hold": ()}
         if (p.get("hp") or 0) <= 0:
             self._gun_down()
+            self.died = True
             if self.dead_since is None:
                 self.dead_since = now
             if now - self.dead_since < DEAD_WAIT_S:
@@ -697,8 +730,13 @@ class Bot:
                 return {"tap": "dright" if self.dead_taps % 2 else "a"}
             if cursor is None:                               # "Continue?" not up yet
                 return {"hold": ()}
-            return {"tap": "a" if cursor == CONTINUE_NO else "dright"}   # No, never Yes (Yes restarts the round)
+            want = continue_target()
+            if cursor == want:                               # A only on the answer the pace wants
+                self.continued = "yes" if want == CONTINUE_YES else "no"
+                return {"tap": "a"}
+            return {"tap": "dleft" if cursor > want else "dright"}
         self.dead_since = None
+        self._round_start(snap, now)
         self._score_hits(snap, now)
         if self.quick:                                       # the quick turn: the stick back, + B, let go
             step, self.quick = self.quick, (self.quick + 1) % 4
