@@ -674,6 +674,23 @@ def test_warm_probe_names_stable_native_menus_and_waits_for_an_open_title():
     assert R.warm_probe(g)["screen"] == "alert_ok" and R.warm_probe(g)["ready"]
 
 
+def test_the_boots_press_any_button_is_a_warm_stop_and_a_press_of_a_for_the_menus():
+    # live 2026-10-27 on lilspark: a warm prelaunch (no input) waits on the sign-in's PRESS ANY BUTTON - line 0 held
+    # uIdScreen, uIdAlert00 (down), uIdNetMsg00 and uIdSignIn00 - which neither the probe nor the menus named, so the
+    # first two RE6 prelaunches timed out after 600 s and were closed
+    g = round_guest(player=False)
+    signin = ui(g, 0, "uIdSignIn00")
+    probe = R.warm_probe(g)
+    assert probe["ready"] and probe["screen"] == "press_any_button" and probe["token"] == ("uIdSignIn00", signin)
+    scr = R.screen(g)
+    assert scr["where"] == "press_any_button" and R.step(scr) == "a" and R.wandered(scr) is None
+    title = ui(g, 0, "uIdTitle00")                                           # the title after the load comes first
+    assert R.warm_probe(g)["screen"] == "title_locked" and not R.warm_probe(g)["ready"]
+    assert R.screen(g)["where"] == "title_locked" and R.step(R.screen(g)) is None   # never A on a locked title
+    g.put(title + R.TITLE_MENU_OPEN, b"")
+    assert R.warm_probe(g)["screen"] == "title" and R.screen(g)["where"] == "title"
+
+
 def test_the_warm_pool_finds_the_re6_reader_from_the_catalog_game():
     from gbox.mercs import warm_boot
     reader = warm_boot.title_probe(None, {"game_id": "115f9cdbba115432", "platform": "switch"})
