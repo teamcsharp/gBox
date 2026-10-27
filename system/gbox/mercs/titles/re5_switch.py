@@ -206,7 +206,13 @@ TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # r
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
-          "escape", "heal", "held", "reload", "walk", "no_foes", "dead")
+          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition")
+# The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
+# same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
+# proven itself in MercMode turns
+PS3_BRAIN = True
+BRAIN_COUNTERS = ("misses", "headshots", "miss_short", "miss_past", "miss_beside", "miss_moved", "threat_blasts",
+                  "laser_rejected", "front_first", "blocked_switches")
 AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
                 "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("heal", "escape", "held", "backoff", "burst_backoff", "reload")
@@ -666,7 +672,8 @@ class Bot:
     answered No (right, then A), like the PS3 bot, so the round ends on its results. Without a laser unit the v1 heading
     aim stands in."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic, release=None):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, release=None, m=None, learn_dir=None,
+                 lessons=None):
         self.stats = stats if stats is not None else {}
         self.clock = clock
         self.release = release                  # the driver's: the live mods' state put back when the bot stops
@@ -709,6 +716,13 @@ class Bot:
         self._raise_t = None                      # when the gun went up for the pulls to come (first_pull_s)
         self.ray_seen, self.last_ray = None, None # the last live laser ray and when (FLICKER_S)
         self.stats.setdefault("flicker_s", 0)
+        self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
+        self._fire_t = None                       # the last tick the fighter held the trigger (trigger_s)
+        if PS3_BRAIN:
+            from .re5_switch_brain import Fighter
+            self.fighter = Fighter(m, self.stats, clock, look=self.look, learn_dir=learn_dir, lessons=lessons)
+            for k in BRAIN_COUNTERS:
+                self.stats.setdefault(k, 0)
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -965,9 +979,16 @@ class Bot:
         if not p:
             self._gun_down()
             return {"hold": ()}
+        if self.fighter is not None:
+            try:
+                self.fighter.observe(snap, now)              # its shot / hit / kill accounting, every tick
+            except Exception as exc:                         # noqa: BLE001 - accounting never stops the bot
+                self.stats["brain_error"] = f"observe {type(exc).__name__}: {exc}"[:160]
         if (p.get("hp") or 0) <= 0:
             self.doing, self.why = "dead", "Continue?"
             self._gun_down()
+            if not self.died and self.fighter is not None:
+                self.fighter.end_round(now)                  # the round's shots resolved, its calibration learned
             self.died = True
             if self.dead_since is None:
                 self.dead_since = now
@@ -1031,6 +1052,8 @@ class Bot:
             act = self._escape(p, live, flat, now)
             if act is not None:
                 self.doing, self.why = "escape", f"{self.round_escapes} this round"
+            elif self.fighter is not None:
+                act = self._fight(live, snap, now)
             else:
                 act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
@@ -1282,10 +1305,36 @@ class Bot:
             self.stats["look"] = self.look.snapshot()
             self._look_pub = (self.look.version, now)
 
+    def _fight(self, live, snap, now) -> dict:
+        """The PS3 combat core's decision on the Switch pad (re5_switch_brain.Fighter), with the Switch's trigger time
+        and the dropouts fired through counted here."""
+        try:
+            act, self.doing, self.why = self.fighter.fight(snap, live, now)
+        except Exception as exc:                             # noqa: BLE001 - a brain error falls back to the Switch's
+            self.stats["brain_error"] = f"fight {type(exc).__name__}: {exc}"[:160]
+            p = snap["player"]
+            px, _, pz = p["pos"]
+            flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            near_e = min(live, key=flat, default=None)
+            return self._decide(p, live, flat, near_e, flat(near_e) if near_e is not None else math.inf, snap, now)
+        held = act.get("hold") or ()
+        if "zr" in held:
+            if self._fire_t is not None:
+                self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self._fire_t, 0.2), 2)
+            self._fire_t = now
+            if self.fighter.flickering and self._tick_t is not None:
+                self.stats["flicker_s"] = round(self.stats["flicker_s"] + min(now - self._tick_t, LOOK_STEP_MAX_S), 2)
+        else:
+            self._fire_t = None
+        self.aim_since = (self.aim_since or now) if "zl" in held else None   # (the reload wait keeps the gun up)
+        return act
+
     def prompt_ok(self, button, snap, now) -> bool:
         return True
 
     def save(self) -> None:
+        if self.fighter is not None:
+            self.fighter.end_round(self.clock())
         if self.release is not None:
             try:
                 self.release()
@@ -1298,7 +1347,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") \
+                      "flicker_s") + BRAIN_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
@@ -1370,7 +1419,7 @@ class RE5Switch(Driver):
 
         def release():                                      # the round's end or the bot stopping: the game's pace back
             self._mods(m, snapshot(m), False)
-        return Bot(stats=stats, clock=clock, release=release)
+        return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir)
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

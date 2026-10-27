@@ -12,6 +12,13 @@ MUZZLE = (0.0, 140.0, 30.0)
 GUN = {"slot": 3, "id": 0x102, "type": 1, "item": 0x02, "rounds": 50, "cap": 50, "grid": 3, "hand": True}
 
 
+
+@pytest.fixture(autouse=True)
+def _switch_fight(monkeypatch):
+    """These tests drive the Switch's own fight (re5_switch.Bot._decide), kept behind PS3_BRAIN = False until the RE5
+    PS3 combat core (tests/test_re5_switch_brain.py) has proven itself live."""
+    monkeypatch.setattr(R, "PS3_BRAIN", False)
+
 @pytest.fixture(autouse=True)
 def _no_heal(monkeypatch):
     monkeypatch.setattr(R, "HEAL_ENABLED", False)

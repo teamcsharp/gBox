@@ -271,6 +271,79 @@ class Writer:
             return False
 
 
+class PS3IO:
+    """The RE5 PS3 RAM behind the combat layer (gbox.mercs.brain.io.TitleIO): the player chain, the action object,
+    the fire command word, the second player's slot, the character's vtable, the inventory record in hand, the FX
+    line's laser, the fire timer and the pitch writer. Combat reads RAM only through its io (this, by default), so
+    another title runs the same combat core with its own."""
+
+    def __init__(self, m):
+        self.m = m
+        self.laser = Laser(m)
+        self.writer = Writer(m)
+
+    def player_index(self):
+        from . import re5_ps3 as R
+        return R.player_index(self.m)
+
+    def player_ptr(self) -> int:
+        from . import re5_ps3 as R
+        pl = R.player_pointer(self.m)
+        return pl if ptr_ok(pl) else 0
+
+    def action(self, pl):
+        """(vtable, frames) of the player's current action object, or None (re-checked against a swap mid-read)."""
+        ap = u32(self.m, pl + P_ACTION_OBJ) if pl else 0
+        if not ptr_ok(ap):
+            return None
+        index = self.player_index()
+        if index != 0 and u32(self.m, ap + 0x18) != pl:
+            return None
+        vt = u32(self.m, ap)
+        fr = struct.unpack(">f", self.m.rd(ap + ACT_FRAMES, 4))[0]
+        if not math.isfinite(fr) or self.player_ptr() != pl \
+                or u32(self.m, pl + P_ACTION_OBJ) != ap \
+                or (index != 0 and u32(self.m, ap + 0x18) != pl):
+            return None
+        return vt, fr
+
+    def in_hand(self, pl):
+        """(weapon id, rounds, an item in hand) from the inventory records, or None when nothing is in hand."""
+        raw = self.m.rd(pl + P_INV, INV_SLOT * INV_SLOTS)
+        for k in range(INV_SLOTS):
+            o = k * INV_SLOT
+            if struct.unpack_from(">I", raw, o + INV_HAND)[0] == 1 and raw[o + INV_USED]:
+                word = struct.unpack_from(">I", raw, o + INV_ID)[0]
+                if word >> 8 != 1:
+                    return None, None, True
+                return word & 0xFF, struct.unpack_from(">i", raw, o + INV_ROUNDS)[0], False
+        return None
+
+    def fire_command(self, pl) -> int:
+        return u32(self.m, pl + P_FIRE_CMD) if pl else 0
+
+    def second_player(self) -> bool:
+        manager = u32(self.m, S_PLAYER)
+        return ptr_ok(manager) and ptr_ok(u32(self.m, manager + 0x2C))
+
+    def character(self, pl) -> str:
+        return CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}")
+
+    def read_laser(self, now):
+        return self.laser.read(now)
+
+    def rapid_fire(self, wid):
+        fps = struct.unpack(">f", self.m.rd(FIRE_TIMER_FPS, 4))[0]
+        interval = struct.unpack(">f", self.m.rd(WEAPON_TABLE + wid * WEAPON_STRIDE + WEAPON_INTERVAL, 4))[0]
+        return 120.0 <= fps <= 60000.0 and interval == 0.0
+
+    def read_pitch(self, pl):
+        return struct.unpack(">f", self.m.rd(pl + P_PITCH, 4))[0]
+
+    def write_pitch(self, pl, value) -> bool:
+        return self.writer.write(pl + P_PITCH, struct.pack(">f", value))
+
+
 class Trigger:
     """R1 for one weapon: a hold (the Gatling) or taps; learned from whether shots come."""
 
@@ -343,14 +416,16 @@ class Combat:
     tick(snap, p, tgt, now) -> {"hold": keys} | {"tap": key}. Reads the laser and the action object itself (m);
     the inventory from snap["inventory"] when the driver read it, else from RAM."""
 
-    def __init__(self, m, stats: dict, clock=time.time, learn_dir=None, lessons=None):
+    def __init__(self, m, stats: dict, clock=time.time, learn_dir=None, lessons=None, io=None, map_id=None):
         self.m, self.stats, self.clock = m, stats, clock
+        self.io = io if io is not None else PS3IO(m)      # every RAM read (another title brings its own)
+        self.map_id = map_id or MAP_ID
         if learn_dir is None:                 # the deployment: beside the lessons under gbox-data
-            learn_dir = L.ROOT.parent / "learned" / MAP_ID
+            learn_dir = L.ROOT.parent / "learned" / self.map_id
         self.run_id = time.strftime("%Y%m%d-%H%M%S", time.localtime()) + "-combat"
-        self.lessons = lessons or (lambda e: L.append(MAP_ID, e, run=self.run_id))
-        self.laser = Laser(m)
-        self.writer = Writer(m)
+        self.lessons = lessons or (lambda e: L.append(self.map_id, e, run=self.run_id))
+        self.laser = self.io.laser
+        self.writer = self.io.writer
         self.tun = Tunables(learn_dir)
         self.shots = Shots(gun_gap_s=0.0)
         self.shots.HIT_S = HIT_S
@@ -445,31 +520,16 @@ class Combat:
     # --- RAM ---
     def _action(self, pl=None):
         try:
-            from . import re5_ps3 as R
             scoped = self._player_ptr()
             pl = scoped if pl is None else pl
             if not pl or pl != scoped:
                 return None
-            ap = u32(self.m, pl + P_ACTION_OBJ) if pl else 0
-            if not ptr_ok(ap):
-                return None
-            index = R.player_index(self.m)
-            if index != 0 and u32(self.m, ap + 0x18) != pl:
-                return None
-            vt = u32(self.m, ap)
-            fr = struct.unpack(">f", self.m.rd(ap + ACT_FRAMES, 4))[0]
-            if not math.isfinite(fr) or self._player_ptr() != pl \
-                    or u32(self.m, pl + P_ACTION_OBJ) != ap \
-                    or (index != 0 and u32(self.m, ap + 0x18) != pl):
-                return None
-            return vt, fr
+            return self.io.action(pl)
         except (ValueError, OSError, struct.error):
             return None
 
     def _player_ptr(self) -> int:
-        from . import re5_ps3 as R
-        pl = R.player_pointer(self.m)
-        return pl if ptr_ok(pl) else 0
+        return self.io.player_ptr()
 
     def _in_hand(self, snap, pl):
         """(weapon id, rounds) of the slot in hand; (None, None) with a non-weapon in hand (self.item_in_hand): the
@@ -485,18 +545,15 @@ class Combat:
                     return None, None
                 return s.get("item", s.get("id", 0) & 0xFF), s.get("rounds")
         try:
-            raw = self.m.rd(pl + P_INV, INV_SLOT * INV_SLOTS)
+            held = self.io.in_hand(pl)
         except (ValueError, OSError):
             return None, None
-        for k in range(INV_SLOTS):
-            o = k * INV_SLOT
-            if struct.unpack_from(">I", raw, o + INV_HAND)[0] == 1 and raw[o + INV_USED]:
-                word = struct.unpack_from(">I", raw, o + INV_ID)[0]
-                if word >> 8 != 1:
-                    self.item_in_hand = True
-                    return None, None
-                return word & 0xFF, struct.unpack_from(">i", raw, o + INV_ROUNDS)[0]
-        return None, None
+        if held is None:
+            return None, None
+        if held[2]:
+            self.item_in_hand = True
+            return None, None
+        return held[0], held[1]
 
     def _shot(self, pl: int, rounds, aiming: bool, now: float) -> bool:
         """A shot the game fired since the last tick: the in-hand rounds fell (the surest, until infinite ammo), else
@@ -517,7 +574,7 @@ class Combat:
             if fired:self.shot_evidence = 'native_fire_action_entry_or_reset'
             return fired
         try:
-            cmd = u32(self.m, pl + P_FIRE_CMD) if pl else 0
+            cmd = self.io.fire_command(pl) if pl else 0
         except (ValueError, OSError, struct.error):
             return False
         fire_frame = aiming and cmd == 4 and (rounds is None or rounds > 0) and now - self._cmd_shot_at > 0.025
@@ -538,8 +595,7 @@ class Combat:
         other_player = index != 0 or any(row.get('slot') == 2 and row.get('native_actor_verified') is True
             for row in snap.get('players') or () if isinstance(row, dict))
         try:
-            manager = u32(self.m, S_PLAYER)
-            other_player = other_player or (ptr_ok(manager) and ptr_ok(u32(self.m, manager + 0x2C)))
+            other_player = other_player or self.io.second_player()
         except (OSError, ValueError, struct.error):
             other_player = True  # missing participant evidence cannot prove solo attribution
         if other_player and not self.damage_unattributed:
@@ -616,8 +672,7 @@ class Combat:
         if active:
             self.start_round(now)
         p = snap.get("player") or {}
-        from . import re5_ps3 as R
-        index = R.player_index(self.m)
+        index = self.io.player_index()
         scoped = self._player_ptr()
         if index is None or (index != 0 and (not scoped or p.get('ptr') != scoped)):
             self.suspend_observation(now)
@@ -628,7 +683,7 @@ class Combat:
         self._update_attribution(snap, index, now)
         wid, rounds = self._in_hand(snap, pl)
         if active:
-            self.character = CHARACTERS.get(u32(self.m, pl), f"vt{u32(self.m, pl):#x}") if pl else "?"
+            self.character = self.io.character(pl) if pl else "?"
             self.wid = wid
         shot = active and not getattr(self, "item_in_hand", False) and self._shot(pl, rounds, p.get("action") == AIMING, now)
         if active and getattr(self, "item_in_hand", False):
@@ -686,10 +741,9 @@ class Combat:
 
     def _raw_ray(self, snap, now):
         if "laser" not in snap:
-            from . import re5_ps3 as R
-            if R.player_index(self.m) != 0:
+            if self.io.player_index() != 0:
                 return None  # the global first-laser scan has no verified P2 owner
-            return self.laser.read(now)
+            return self.io.read_laser(now)
         sl = snap.get("laser")
         if not sl or not sl.get("from") or not sl.get("at") or not any(sl["from"]):
             return None
@@ -938,9 +992,7 @@ class Combat:
             return self.rapid_fire
         self.rapid_checked, self.rapid_weapon = now, wid
         try:
-            fps = struct.unpack(">f", self.m.rd(FIRE_TIMER_FPS, 4))[0]
-            interval = struct.unpack(">f", self.m.rd(WEAPON_TABLE + wid * WEAPON_STRIDE + WEAPON_INTERVAL, 4))[0]
-            self.rapid_fire = 120.0 <= fps <= 60000.0 and interval == 0.0
+            self.rapid_fire = bool(self.io.rapid_fire(wid))
         except (TypeError, ValueError, OSError, struct.error):
             self.rapid_fire = False
         self.stats["rapid_fire_verified"] = self.rapid_fire
@@ -1700,9 +1752,9 @@ class Combat:
             return set()
         if PITCH_WRITE and self.writer.ok and pl:
             try:
-                cur = struct.unpack(">f", self.m.rd(pl + P_PITCH, 4))[0]
+                cur = self.io.read_pitch(pl)
                 new = max(-1.3, min(1.3, cur - PITCH_GAIN * err))
-                if self.writer.write(pl + P_PITCH, struct.pack(">f", new)):
+                if self.io.write_pitch(pl, new):
                     self.stats["pitch_writes"] += 1
                     return set()
             except (ValueError, OSError, struct.error):
