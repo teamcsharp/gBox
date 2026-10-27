@@ -412,6 +412,37 @@ def reconcile(data, jobs, latest, active, *, now, closed=frozenset()):
         item['retry_at'] = max(item.get('retry_at', 0), now + delay)
 
 
+PRUNE_PER_TICK, PRUNE_AFTER_S, PRUNE_BUDGET_S = 20, 1800, 20.0
+
+
+def prune(data, jobs, active, *, now, clock=time.monotonic):
+    """Remove settled one-shot queue jobs from Hermes. Each request kept its own job forever (2026-10-27: jobs.json
+    1231 jobs, 12 MB), the gateway's control socket stopped answering its 2 s identify, and most new fires failed
+    "Gateway starting: deadline". A job goes once it is disabled, has no live execution, last ran PRUNE_AFTER_S ago
+    and its item has settled with its report posted; the request's next dispatch creates a new job by name."""
+    owners = {i['job_id']: i for i in data['items'].values() if i.get('job_id')}
+    started, removed = clock(), []
+    for job in jobs:
+        if len(removed) >= PRUNE_PER_TICK or clock() - started > PRUNE_BUDGET_S:
+            break
+        jid = job.get('id')
+        if (not str(job.get('name', '')).startswith(PREFIX) or job.get('enabled') or jid in active
+                or not job.get('last_run_at') or now - _stamp(job['last_run_at']) < PRUNE_AFTER_S):
+            continue
+        item = owners.get(jid)
+        if item and (item.get('dispatch_state') != 'finished' or item.get('report_error')
+                     or item.get('report_run') and item.get('report_posted_run') != item['report_run']):
+            continue
+        try:
+            mode._run('remove', jid)
+        except RuntimeError:
+            continue
+        if item:
+            item.pop('job_id', None)
+        removed.append(jid)
+    return removed
+
+
 def candidates(data, requests, native, owned, on_main, *, now, verified=None):
     by_id = {r['id']: r for r in requests}
     busy_requests = set(owned) | {j.get('parent_request_id') for j in native}
@@ -812,6 +843,9 @@ def tick(*, now=None):
         reconcile(data, jobs, latest, active, now=now,
                   closed={r['id'] for r in requests if r.get('status') in ('done', 'blocked')})
         _save(data)
+        if pruned := set(prune(data, jobs, active, now=now)):
+            _save(data)
+            jobs = [j for j in jobs if j.get('id') not in pruned]
         config = mode._config()
         from . import hermes_provider_scope as scope
         blocked = scope.admission(config)
