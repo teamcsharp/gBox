@@ -75,11 +75,105 @@ EXTRA_COUNT, EXTRA_MODES = 0x54, 0x1C4  # uIdStartUp02: how many modes, their id
 MAIN_PLAY_GAME, PLAY_EXTRA_CONTENT, MERCS_SOLO = 0, 3, 0
 STAGES = ("Urban Chaos", "Steel Beast", "Mining the Depths", "Rail Yard", "High Seas Fortress", "The Catacombs",
           "Requiem for War", "Liquid Fire", "Rooftop Mission", "Creature Workshop")
-CHARACTERS = ("Leon", "Chris", "Jake", "Agent")
+CHARACTERS = ("Leon", "Helena", "Chris", "Piers", "Jake", "Sherry", "Ada", "Carla", "Agent")   # by their select ids 0-8
 STAGE_TARGET, PLAYER_TARGET = 0, 1      # Urban Chaos, Chris (the cursor's index on a fresh save's list, the fallback)
 PLAYER_ID = 2                           # Chris by his id in the select's list: his assault rifle is automatic (ZR held
                                         # fires 9.6 rounds a second; with infinite ammo it never stops: "rain fire",
-                                        # operator 2026-10-27)
+                                        # operator 2026-10-27), the character when no queued round names one
+# A random stage and costume each round (operator 2026-10-27: "the characters using random costumes and playing random
+# levels"), from the selects' own state (Ghidra, this build: the stage select's update main+0xAAFB20, the character
+# select's main+0xAAD830). The stage select lists all ten (+0x54 = 10), its cursor +0x50 walks them with up / down, and
+# A starts only a stage whose bit is set in +0x58. The character select keeps, per select id, the costume it shows
+# (+0x1F8 + 4 * id, left / right step it) and how many it lists (+0x21C + 4 * id: the unlocked ones); its confirm writes
+# the costume code (0-29, the unlock mask's bit) to sGameMan +0x3CA4, and the round's loadout follows the costume
+# (gbox.mercs.titles.re6_switch_mods.LOADOUTS: costume 0 has its own, 1-3 share the second).
+STAGE_COUNT, STAGE_UNLOCKED = 0x54, 0x58
+COSTUME_CURSOR, COSTUME_COUNT = 0x1F8, 0x21C
+GM_GAME_MODE, GM_STAGE, GM_COSTUME = 0xCC, 0x3C78, 0x3CA4   # sGameMan: the round set-up's mode, stage index, costume code
+
+
+class _Pick:
+    """This menu visit's draws, kept until the round is up (screen() says playing), then drawn afresh at the next
+    selects: the stage among the unlocked ones, the costume among the listed ones; a queued round (request) names the
+    character and / or the stage (None = random, MercMode's convention); no queue: PLAYER_ID, a random stage."""
+
+    def __init__(self, rng=None):
+        import random
+        self.rng = rng or random.Random()
+        self.queued: dict = {}
+        self.stage = self.costume = None
+        self.costume_of = None
+
+    def reset(self) -> None:
+        self.stage = self.costume = self.costume_of = None
+
+    consumed: dict = {}                                     # the last queued pick a round started with (not again)
+
+
+PICK = _Pick()
+
+
+def request(character=None, stage=None) -> dict:
+    """The next selects' character and stage (MercMode's DJ queue): a character by name or select id, a stage index
+    (0-9); None leaves it random (the stage among the unlocked ones; the character: Chris)."""
+    cid = None
+    if character is not None:
+        cid = character if isinstance(character, int) else next(
+            (i for i, n in enumerate(CHARACTERS) if n.casefold() == str(character).casefold()), None)
+        if cid is None or not 0 <= cid < len(CHARACTERS):
+            raise ValueError(f"RE6 has no character {character!r} (one of {', '.join(CHARACTERS)})")
+    if stage is not None and (type(stage) is not int or not 0 <= stage < len(STAGES)):
+        raise ValueError(f"RE6 has no stage {stage!r} (0-{len(STAGES) - 1})")
+    pick = {"character": cid, "stage": stage}
+    if pick == PICK.consumed:                               # the pick a round already started with (a prepared round's
+        return {}                                           # own turn hands it over again): the next selects draw anew
+    PICK.queued = pick
+    PICK.reset()
+    return dict(pick)
+
+
+def stage_target(m, unit: int) -> int:
+    """The stage select's target: the queued stage when it can start, else this visit's random draw among the stages
+    whose bit is set (+0x58); STAGE_TARGET when the mask can't be read."""
+    try:
+        mask = struct.unpack("<I", m.rd(unit + STAGE_UNLOCKED, 4))[0]
+    except (ValueError, OSError, struct.error):
+        return STAGE_TARGET
+    open_ = [i for i in range(len(STAGES)) if mask >> i & 1]
+    if not open_:
+        return STAGE_TARGET
+    if PICK.stage not in open_:
+        q = PICK.queued.get("stage")
+        PICK.stage = q if q in open_ else PICK.rng.choice(open_)
+    return PICK.stage
+
+
+def wanted_character() -> int:
+    q = PICK.queued.get("character")
+    return q if isinstance(q, int) else PLAYER_ID
+
+
+def costume_target(m, unit: int, cid: int) -> tuple[int | None, int | None]:
+    """(the costume the select shows for select id cid, this visit's random target among the ones it lists)."""
+    try:
+        cur, n = (struct.unpack("<i", m.rd(unit + off + 4 * cid, 4))[0] for off in (COSTUME_CURSOR, COSTUME_COUNT))
+    except (ValueError, OSError, struct.error):
+        return None, None
+    if not 0 < n <= 4 or not 0 <= cur < n:
+        return None, None
+    if PICK.costume is None or PICK.costume_of != cid or not 0 <= PICK.costume < n:
+        PICK.costume, PICK.costume_of = PICK.rng.randrange(n), cid
+    return cur, PICK.costume
+
+
+def costume_code(code: int) -> tuple[str, int] | None:
+    """(character, costume index) of a costume code (the unlock mask's bit): 4 a character for the first seven, then
+    Carla and Agent with one each."""
+    if 0 <= code < 28:
+        return CHARACTERS[code // 4], code % 4
+    if code in (28, 29):
+        return CHARACTERS[code - 21], 0
+    return None
 
 CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO, CONTINUE_MENU = 0x50, 0, 1, 0x248   # uIdGameover00 "YOU ARE DEAD -
                                         # CONTINUE? YES / NO": +0x50 the cursor (0 YES, 1 NO), +0x248 -> its YES / NO
@@ -96,12 +190,16 @@ ROUND_TIME_S, FRESH_ROUND_S = 120.0, 3.0   # No Mercy's clock; within this of it
 
 
 def player_target(m, unit: int) -> int:
-    """The character select's cursor index for PLAYER_ID: its place in the select's own list of ids, which grows as
-    characters unlock; PLAYER_TARGET when the list can't be read or lacks him."""
+    """The character select's cursor index for the wanted character (a queued one, else PLAYER_ID): its place in the
+    select's own list of ids, which grows as characters unlock; PLAYER_TARGET when the list can't be read or lacks
+    him."""
+    want = wanted_character()
     try:
         n = _i32(m, unit + PLAYER_COUNT)
         if 0 < n <= 16:
             ids = struct.unpack(f"<{n}i", m.rd(unit + PLAYER_IDS, 4 * n))
+            if want in ids:
+                return ids.index(want)
             if PLAYER_ID in ids:
                 return ids.index(PLAYER_ID)
     except (ValueError, OSError, struct.error):
@@ -138,6 +236,10 @@ P_STATE, P_MOTION = 0x6E2, 0x598        # u8 the action's kind, u16 its motion (
 HELD_STATES = frozenset({8, 9, 25})
 P_TABLETS = 0x5196                      # s16: the health tablets (8 at the round start; R takes one, live 2026-10-27)
 P_WEAPON_ID = 0x507A                    # u8: slot 0's item id, the gun in hand at the start (Leon 0x03, Chris 0x0F)
+P_EQUIPPED, P_SLOTS, SLOT_STRIDE, N_SLOTS = 0x5064, 0x5070, 0x28, 24   # the equipped slot's index (the HUD's: uIdLife's
+                                        # update reads it and finds the slot whose +0x9 holds it, main+0xB22BB0); the 24
+                                        # cItem slots: +0x8 in use, +0x9 the slot's index, +0xA u16 the type (0x100 + the
+                                        # item id), +0xE s16 rounds / count
 
 
 def _rows(m):
@@ -260,6 +362,20 @@ def ui_units(m, base: int | None = None) -> dict:
     return out
 
 
+def equipped_id(m, p: int) -> int:
+    """The item id of the gun in hand: the equipped slot's (+0x5064 names the slot by its +0x9 index); slot 0's at the
+    round start when no live slot holds that index."""
+    try:
+        idx = struct.unpack("<i", m.rd(p + P_EQUIPPED, 4))[0]
+        raw = m.rd(p + P_SLOTS, SLOT_STRIDE * N_SLOTS)
+        for o in range(0, SLOT_STRIDE * N_SLOTS, SLOT_STRIDE):
+            if raw[o + 8] and raw[o + 9] == idx:
+                return raw[o + 0xA]
+        return m.rd(p + P_WEAPON_ID, 1)[0]
+    except (ValueError, OSError, struct.error):
+        return 0
+
+
 def game_man(m, base: int) -> int:
     gm = u64(m, base + S_GAMEMAN)
     return gm if ptr_ok(gm) else 0
@@ -284,7 +400,7 @@ def snapshot(m) -> dict:
             state = m.rd(p + P_STATE, 1)[0]
             motion = struct.unpack("<H", m.rd(p + P_MOTION, 2))[0]
             tablets = struct.unpack("<h", m.rd(p + P_TABLETS, 2))[0]
-            weapon_id = m.rd(p + P_WEAPON_ID, 1)[0]
+            weapon_id = equipped_id(m, p)
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
@@ -365,6 +481,9 @@ def screen(m, merc=None, now: float | None = None) -> dict:
     if p and "uIdMerceUI" in ui:
         if (p.get("hp") or 0) <= 0:
             return out | {"where": "dead"}
+        if phase == PHASE_PLAYING and (PICK.stage is not None or PICK.costume is not None or PICK.queued):
+            PICK.consumed, PICK.queued = PICK.queued or PICK.consumed, {}    # the round is up: the next selects draw anew
+            PICK.reset()
         return out | {"where": "playing" if phase == PHASE_PLAYING else "loading"}
     if p:
         return out | {"where": "loading"}                   # the stage is up, its HUD not yet
@@ -373,10 +492,18 @@ def screen(m, merc=None, now: float | None = None) -> dict:
     where, cursor, target = "unknown", None, None
     try:
         if "uIdStartUp32" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp32"] + PLAYER_CURSOR), player_target(
-                m, ui["uIdStartUp32"])
+            u = ui["uIdStartUp32"]
+            where, cursor, target = "select_player", _i32(m, u + PLAYER_CURSOR), player_target(m, u)
+            if cursor == target and 0 <= cursor < 16:            # on the character: the costume next (left / right)
+                cid = _i32(m, u + PLAYER_IDS + 4 * cursor)
+                if 0 <= cid < len(CHARACTERS):
+                    out["costume_cursor"], out["costume_target"] = costume_target(m, u, cid)
+                    out["character"] = CHARACTERS[cid]
         elif "uIdStartUp31" in ui:
-            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp31"] + MENU_CURSOR), STAGE_TARGET
+            u = ui["uIdStartUp31"]
+            where, cursor, target = "select_stage", _i32(m, u + MENU_CURSOR), stage_target(m, u)
+            if isinstance(target, int) and 0 <= target < len(STAGES):
+                out["stage"] = STAGES[target]
         elif "uIdStartUp30" in ui:
             if snap.get("mercenaries_mode") == "no_mercy":
                 where, cursor, target = "mercs_mode", _i32(m, ui["uIdStartUp30"] + MENU_CURSOR), MERCS_SOLO
@@ -432,6 +559,9 @@ def step(scr: dict) -> str | None:
         if not isinstance(cursor, int) or not isinstance(target, int):
             return None
         if cursor == target:
+            cc, ct = scr.get("costume_cursor"), scr.get("costume_target")
+            if isinstance(cc, int) and isinstance(ct, int) and cc != ct:
+                return "dright" if cc < ct else "dleft"         # the character select's costume, then A
             return "a"
         back, fwd = CURSORED[where]
         return fwd if cursor < target else back
@@ -705,7 +835,10 @@ TABLET_LOW_HP = 0.34                    # ... and at a third or less whoever is 
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
-AUTO_IDS = frozenset({0x0F})            # automatic guns: ZR held, not tapped (Chris's assault rifle: held 2.5 s, 24 rounds)
+AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, not tapped: the guns the fire action's
+                                        # own loop fires again while the trigger stays down (Ghidra: main+0x1098470, the
+                                        # weapon class 0x20 / 0x40 of main+0xF42980 or the types 0x10D / 0x128; Chris's
+                                        # assault rifle 0x0F: held 2.5 s, 24 rounds); any other gun fires once a press
 REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long at most before it counts as lost
 HANG_S = 6.0
 # "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the

@@ -493,6 +493,16 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             stats['queued_selection'] = f"{pick.get('mode')} / {pick.get('character')} / {pick.get('stage_name', pick.get('stage'))}"
         except (ValueError, OSError) as exc:
             stats['queued_selection_error'] = str(exc)[:160]
+    if isinstance(pick, dict) and pick.get('title') == 're6' and prof['map_id'] == '01002A000CD48000':
+        # RE6 Switch: the selects take the queued character and stage (None: Chris, a random unlocked stage; the
+        # costume is random every round); a pick a round already started with is not taken again
+        try:
+            from .mercs.titles import re6_switch
+            took = re6_switch.request(pick.get('character'), pick.get('stage'))
+            stats['queued_selection'] = (f"{pick.get('character') or 'Chris'} / {pick.get('stage_name', pick.get('stage'))}"
+                                         if took else 'already played')
+        except ValueError as exc:
+            stats['queued_selection_error'] = str(exc)[:160]
     runtime, base_driver = None, None
     if session_id and ad is not None and prof['map_id'] in ('BLUS30491', 'BH6'):
         from .mercs.session_runtime import SessionRuntime
