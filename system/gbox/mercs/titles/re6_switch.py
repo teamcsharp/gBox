@@ -237,6 +237,12 @@ P_STATE, P_MOTION = 0x6E2, 0x598        # u8 the action's kind, u16 its motion (
                                         # knocked down, 8 -> 9 / 25 held by a zombie (its bite: 450 -> 300 health), the
                                         # motion 4012 / 4018 only then
 HELD_STATES = frozenset({8, 9, 25})
+# the enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge): every resolved pull is a
+# record_shot (his class, distance, the weapon, where the dot sat on him, hit / kill / miss and the health it took), every
+# health loss a record_damage (the nearest zombie, or the one holding him, and how: "grab" / "hold" / "melee"), and the
+# live zombies within K_OBSERVE_M go to observe about K_OBSERVE_HZ times a second (his exposure: the danger it learns).
+K_OBSERVE_HZ, K_OBSERVE_M = 10.0, 15.0
+MOTION_HELD = frozenset({4012, 4018})       # the hold motions (a zombie has him: the bite)
 P_TABLETS = 0x5196                      # s16: the health tablets (8 at the round start; R takes one, live 2026-10-27)
 P_WEAPON_ID = 0x507A                    # u8: slot 0's item id, the gun in hand at the start (Leon 0x03, Chris 0x0F)
 BOMB_INDEX, BOMB_TYPE, SLOT_MODE = 12, 0x116, 0xC          # the item wheel's remote bomb slot; its mode byte (1 = out)
@@ -560,7 +566,9 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+                cls = class_name(m, e)                      # the MtDTI class (uEm5200 ...): K's enemy_class
+                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
+                                        "class": cls})
     gm = game_man(m, base)
     if gm:
         raw = m.rd(gm + GM_PHASE, 0x10)
@@ -1448,6 +1456,10 @@ class Bot:
         self.bonus_target, self.bonus_since, self.bonus_skip = None, -1e9, {}
         self.bonus_prev: dict = {}                           # ptr -> kind, waiting at the last tick
         self.bonus_round = None                              # {"seen": {ptr: kind}, "taken": {ptr: kind}}
+        # the enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge)
+        self._k_obs_at = None                     # the last observe() to the enemy knowledge database
+        self._hp_last = None                      # (player, health) at the last tick: a fall is a record_damage
+        self._last_enemies: list = []             # the last snapshot's enemies (K's shot records)
 
     def _round_start(self, snap, now) -> None:
         """The first tick alive of a round: its marker for the engine; after a death answered YES, the replay counts as
@@ -1672,6 +1684,8 @@ class Bot:
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        self._k_tick(snap, now)
+        self._last_enemies = snap.get("enemies") or []
         self._ppos = p["pos"]
         self._pos_of = {e.get("ptr", e.get("slot")): e["pos"] for e in snap.get("enemies") or ()}
         self._los_tick(snap, now)
@@ -2893,6 +2907,64 @@ class Bot:
             self._pulls.remove(pull)
             self.stats["pulls_hit" if pull["hit"] else "pulls_miss"] += 1
             self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
+            self._k_shot(pull, now)
+
+    def _k_shot(self, pull, now) -> None:
+        """The pull for the enemy knowledge database: his class, the distance, the weapon, the dot's point on him,
+        kill / hit / miss, the health taken."""
+        from ..brain import knowledge
+        target = next((e for e in self._pos_of.items() if e[0] == pull["target"]), None)
+        entry = pull.get("entry") or {}
+        tgt = None
+        if target is not None:
+            tgt = {"pos": target[1], "class": None}
+            # find the full enemy dict from the last snapshot
+            for e in self._last_enemies or ():
+                if e.get("ptr", e.get("slot")) == pull["target"]:
+                    tgt = e
+                    break
+        if tgt is None:
+            return
+        dist = math.hypot(tgt["pos"][0] - self._ppos[0], tgt["pos"][2] - self._ppos[2]) if self._ppos else None
+        dead = pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) <= 0
+        outcome = "kill" if dead else "hit" if pull["hit"] else "miss"
+        knowledge.record_shot(MAP_ID, tgt.get("class"), None, (dist or 0.0) / 100.0, None,
+                              None, outcome, None, enemy_id=pull["target"],
+                              zone=None, fire_mode="hold", enemy_pos=tgt.get("pos"),
+                              shooter_pos=self._ppos, units_per_m=100.0, hp_max=tgt.get("hp_max"),
+                              round_id=self.stats.get("round_evidence_id"), t=now)
+        self.stats["k_shots"] = self.stats.get("k_shots", 0) + 1
+
+    def _k_tick(self, snap, now) -> None:
+        """Each tick: a health fall -> record_damage (the zombie holding him, else the nearest, and how); the live
+        zombies within K_OBSERVE_M -> observe, about K_OBSERVE_HZ times a second."""
+        from ..brain import knowledge
+        p = snap.get("player")
+        if not p:
+            self._hp_last = None
+            return
+        px, py, pz = p["pos"]
+        live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        hp, last = p.get("hp"), self._hp_last
+        self._hp_last = (p.get("ptr"), hp)
+        if last is not None and last[0] == p.get("ptr") and isinstance(hp, int) and isinstance(last[1], int) \
+                and hp < last[1]:
+            near = min(live, key=flat, default=None)
+            motion = p.get("motion")
+            how = "grab" if motion in (106, 107) else "hold" if motion in MOTION_HELD else \
+                "melee" if near is not None and flat(near) <= THREAT_R else "unknown"
+            knowledge.record_damage(MAP_ID, near.get("class") if near else None, None,
+                                    flat(near) / 100.0 if near else None, how, last[1] - hp,
+                                    enemy_id=near.get("ptr") if near else None, hp_max=p.get("hp_max"),
+                                    player_state=motion, round_id=self.stats.get("round_evidence_id"), t=now)
+            self.stats["k_damages"] = self.stats.get("k_damages", 0) + 1
+        if self._k_obs_at is None or now - self._k_obs_at >= 1.0 / K_OBSERVE_HZ:
+            self._k_obs_at = now
+            knowledge.observe(MAP_ID, [{"id": e.get("ptr"), "cls": e.get("class"), "state": None,
+                                        "dist_m": round(flat(e) / 100.0, 2)}
+                                       for e in live if flat(e) <= K_OBSERVE_M * 100.0], t=now)
+            self.stats["k_observes"] = self.stats.get("k_observes", 0) + 1
 
     def _look_tick(self, snap, now) -> None:
         """After each decision: the time since the last tick in the budget of the decision that ran (t_<doing>,
@@ -2949,7 +3021,8 @@ class RE6Switch(Driver):
                       "taunts_seen",
                       "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
-                      "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots",
+                      "k_shots", "k_damages", "k_observes") + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

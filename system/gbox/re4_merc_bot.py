@@ -155,6 +155,11 @@ SHOOT_KEEP = 3800.0                              # ... and with the gun already 
                                                  # (today 30 % of the raises that never fired came down as he stepped past
                                                  # 2.4 m - median 2.15 m at the last aim - for a run at him; 14 % for a bonus)
 THREAT_R = 1600.0                                # a Ganado this close is about to strike: him first, before bonuses
+# the enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge): every resolved shot is a
+# record_shot (his class, distance, the weapon, where the dot sat on him, hit / kill / miss and the health it took), every
+# health loss a record_damage (the nearest Ganado, or the one holding him, and how), and the live Ganados within
+# K_OBSERVE_M go to observe about K_OBSERVE_HZ times a second (his exposure: the danger it learns).
+K_OBSERVE_HZ, K_OBSERVE_M = 10.0, 15.0
 # the fight or the bonus run, one at a time (operator 2026-10-26 live: "hold fire: wall in the aim line" -> "run to a time
 # bonus 2.6 m" -> "turning to slot 71 (gun down)" -> "run to a time bonus 2.5 m", a flip every second or two)
 BONUS_SAFE_R = 2000.0                            # a bonus run gives way to a Ganado in view this close (about to reach him)
@@ -995,7 +1000,8 @@ class Bot:
                       # the bosses (operator 2026-10-26): every one seen, the one targeted, the chainsaw's keep-out
                       # answers, the shotgun blasts into crowds, and what hit / killed Leon
                       "bosses": [], "bosses_seen": 0, "boss": "", "boss_shots": 0, "chainsaw_keepouts": 0,
-                      "chainsaw_evades": 0, "crowd_blasts": 0, "weapon": "", "last_hit_by": "", "death_cause": ""}
+                      "chainsaw_evades": 0, "crowd_blasts": 0, "weapon": "", "last_hit_by": "", "death_cause": "",
+                      "k_shots": 0, "k_damages": 0, "k_observes": 0}
         # the operator's stalemate rule (gbox.mercs.stalemate): settings in stats (stalemate_cut_enabled / _s) from the
         # launch's MercMode block (play() / mercs_bot.play put them there); the write is cut_clock on this memory
         self.stalemate = stalemate_rule.Rule(lambda: self.stats)     # play() / the engine rebind bot.stats
@@ -1026,6 +1032,10 @@ class Bot:
         self._wall_line = None                        # (slot, since): the aim line on a wall at this target
         self.commit = None                            # ("fight" | "bonus", since, why): what he is committed to now
         self._fight_seen_at = -math.inf               # the last time a Ganado was in view to fight
+        # the enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge)
+        self._k_obs_at = None                     # the last observe() to the enemy knowledge database
+        self._hp_last = None                      # (player, health) at the last tick: a fall is a record_damage
+        self._last_enemies: list = []             # the last snapshot's enemies (K's shot records)
 
     def new_round(self) -> None:
         """A new round begins (play(): its first in-round frame): what the last round learned is saved, and everything
@@ -1562,6 +1572,7 @@ class Bot:
             shot = self._look_pending.pop(0)
             if shot is None:
                 continue
+            e = None
             if k < hits:
                 tid = shot["target"]["id"]
                 aimed = int(tid) if tid is not None and tid.lstrip("-").isdigit() else None
@@ -1577,6 +1588,67 @@ class Bot:
                     shot["dot_on"], "off_target" if shot["target"]["id"] is not None else "nothing")
             self.look.resolve(shot, outcome, delta)
             self.metrics.shot_result(outcome)
+            self._k_shot(shot, outcome, delta, e, s)
+
+    def _k_shot(self, shot, outcome, delta, e, s) -> None:
+        """The shot for the enemy knowledge database: his class (em id / type), the distance, the weapon, the outcome
+        (kill / hit / miss), the health taken."""
+        from .mercs.brain import knowledge
+        import time as _time
+        now = _time.time()
+        if shot is None:
+            return
+        tid = shot["target"]["id"]
+        aimed = int(tid) if tid is not None and tid.lstrip("-").isdigit() else None
+        tgt = e
+        if tgt is None and aimed is not None:
+            tgt = next((x for x in self._last_enemies or () if x.get("slot") == aimed), None)
+        if tgt is None:
+            return
+        p = s.get("player")
+        dist = None
+        if p is not None:
+            dist = math.hypot(tgt["pos"][0] - p["pos"][0], tgt["pos"][2] - p["pos"][2])
+        cls = f"em{tgt.get('id', 0):02x}t{tgt.get('type', 0):02x}"   # the em id / type: K's enemy_class
+        dead = outcome.startswith("hit:") and (tgt.get("hp") or 0) <= 0
+        k_outcome = "kill" if dead else "hit" if outcome.startswith("hit:") else "miss"
+        knowledge.record_shot("G4BE08", cls, None, (dist or 0.0) / 1000.0, None,
+                              None, k_outcome, delta, enemy_id=tgt.get("slot"),
+                              zone=None, fire_mode="tap", enemy_pos=tgt.get("pos"),
+                              shooter_pos=p.get("pos") if p else None, units_per_m=1000.0,
+                              hp_max=tgt.get("hp_max"),
+                              round_id=self.stats.get("round_evidence_id"), t=now)
+        self.stats["k_shots"] = self.stats.get("k_shots", 0) + 1
+
+    def _k_tick(self, s, now) -> None:
+        """Each tick: a health fall -> record_damage (the Ganado holding him, else the nearest, and how); the live
+        Ganados within K_OBSERVE_M -> observe, about K_OBSERVE_HZ times a second."""
+        from .mercs.brain import knowledge
+        p = s.get("player")
+        if not p:
+            self._hp_last = None
+            return
+        px, py, pz = p["pos"]
+        live = [e for e in s.get("enemies") or () if (e.get("hp") or 0) > 0]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        hp, last = s.get("hp"), self._hp_last
+        self._hp_last = (p.get("ptr"), hp)
+        if last is not None and last[0] == p.get("ptr") and isinstance(hp, (int, float)) \
+                and isinstance(last[1], (int, float)) and hp < last[1]:
+            near = min(live, key=flat, default=None)
+            how = "melee" if near is not None and flat(near) <= THREAT_R else "unknown"
+            cls = f"em{near.get('id', 0):02x}t{near.get('type', 0):02x}" if near else None
+            knowledge.record_damage("G4BE08", cls, None,
+                                    flat(near) / 1000.0 if near else None, how, last[1] - hp,
+                                    enemy_id=near.get("slot") if near else None, hp_max=p.get("hp_max"),
+                                    player_state=p.get("r"), round_id=self.stats.get("round_evidence_id"), t=now)
+            self.stats["k_damages"] = self.stats.get("k_damages", 0) + 1
+        if self._k_obs_at is None or now - self._k_obs_at >= 1.0 / K_OBSERVE_HZ:
+            self._k_obs_at = now
+            knowledge.observe("G4BE08", [{"id": e.get("slot"), "cls": f"em{e.get('id', 0):02x}t{e.get('type', 0):02x}",
+                                          "state": None, "dist_m": round(flat(e) / 1000.0, 2)}
+                                         for e in live if flat(e) <= K_OBSERVE_M * 1000.0], t=now)
+            self.stats["k_observes"] = self.stats.get("k_observes", 0) + 1
 
     def _look_decide(self, act, p, s, now) -> None:
         """What the bot does now and why (the look's decisions), whether it sits among foes (the idle streak), and
@@ -2992,6 +3064,8 @@ class Bot:
             return {"hold": set()}
         self._round(s["room"])
         self._raycast_fan(p, now)
+        self._k_tick(s, now)
+        self._last_enemies = s.get("enemies") or []
         if isinstance(s.get("hp"), (int, float)):
             self.hp_best = max(self.hp_best, s["hp"])
         self._scan_items(p, now)                                          # pickups / time bonuses passed (the round map)
