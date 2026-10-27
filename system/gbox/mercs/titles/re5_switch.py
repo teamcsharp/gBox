@@ -309,7 +309,11 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # of BONUS_JUMP_S or more), bonus_runs, knife_swings, bonus_detours.
 BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S =     True, 0x1BD6D58, 1.0, 200.0, 250.0, 12.0, 20.0
 KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 90.0, math.radians(12), 0.35, 3.0, 2
-BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours")
+# Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
+# minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
+BONUS_JUMP_TRY_S = 0.8
+BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours",
+                  "bonus_jumps")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
@@ -606,11 +610,7 @@ def time_bonuses(m, base: int, now: float | None = None):
         if not ptr_ok(su):
             return None
         vt = base + BONUS_VT
-        full = _BONUS_SCAN["line"] is None or now - _BONUS_SCAN["full_at"] >= 10.0
-        lines = range(N_LINES) if full else (_BONUS_SCAN["line"],)
-        if full:
-            _BONUS_SCAN["full_at"] = now
-        for line in lines:
+        for line in range(N_LINES):                      # every line each time (a one-line scan lost some: 16:59)
             u, k = u64(m, su + UNIT_LINES + LINE_STRIDE * line), 0
             while ptr_ok(u) and k < 1024:
                 if u64(m, u) == vt:
@@ -1339,10 +1339,17 @@ class Bot:
             return {"hold": ("l", "zr") if swing else ("l",)}
         if d < run["best"] - 50.0:                       # on the way: run (walk the last metres), a detour when stuck
             run["best"], run["best_at"] = d, now
+        elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY:
+            run["jumped"] = True                         # stuck at a ledge above (or below) it: the context action
+            run["best_at"] = now                         # (Y: "Jump down" - the 16:24 frame on the roof - or a ladder)
+            self.stats["bonus_jumps"] += 1
+            self.doing, self.why = "walk", f"time bonus {d / 100:.1f} m, {by - py:+.0f} cm off his level: Y"
+            return {"hold": ("y", "lup")}
         elif now - run["best_at"] > 1.5 and now >= run["detour_until"]:
             run["detours"] += 1
             run["side"] = -run["side"]
             run["detour_until"], run["best_at"] = now + 0.9, now + 0.9
+            run["jumped"] = False
             self.stats["bonus_detours"] += 1
             if run["detours"] > 3:
                 self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S

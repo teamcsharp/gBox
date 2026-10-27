@@ -89,3 +89,15 @@ def test_the_statues_are_read_from_the_unit_lines():
     got = R.time_bonuses(M(), base, now=0.0)
     assert got == [{"ptr": unit, "pos": (35.0, 303.0, 29.0), "secs": 60}] and R._BONUS_SCAN["line"] == 13
     assert R.time_bonuses(M(), base, now=0.5) is got                  # (at most every BONUS_SCAN_S)
+
+
+def test_stuck_on_a_ledge_above_the_statue_he_takes_the_context_action():
+    b, clock = bot()
+    below = at(1700, 0, y=-163.0)                                  # (16:59: him on the roof, it 1.6 m below)
+    acts = []
+    for k in range(12):
+        clock[0] = 0.1 * k
+        s = snap(bonuses=[below])
+        s["player"]["pos"] = (15.0 * k, 0.0, 0.0)                # along the roof's edge: moving, no closer
+        acts.append(b.tick(s)["hold"])
+    assert ("y", "lup") in acts and b.stats["bonus_jumps"] == 1
