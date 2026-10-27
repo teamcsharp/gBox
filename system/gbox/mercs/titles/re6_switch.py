@@ -993,6 +993,8 @@ BOMB_HURT_HP = 50                       # a blast that takes this much of his he
 BOMB_LOG_N = 12
 BOMB_REAL_R = 3000.0                    # the placed bomb's unit (snapshot bomb_pos) within this of him: its spot is used
                                         # (stats bomb_aim_err_cm: how far it lay from 3 m ahead of the throw)
+BOMB_MIN_HP = 0.5                       # no new bomb under half health (live 12:29: a throw at low health dropped it at
+                                        # his feet and he crawled out of its reach at 1 health, too slow)
 BOMB_RETRY_S = 4.0                      # readying one given up (one came within BOMB_ROOM_R): tried again this soon
                                         # (live 11:21: 900 -> 1 health in 5 s readying one with two at 76 cm)
 BOMB_STEP_S, BOMB_STEPS, BOMB_AIM_S = 0.45, 8, 0.45   # the wheel's step pace and presses, ZL held before ZR
@@ -1671,6 +1673,9 @@ class Bot:
                 self.bomb_phase, self.bomb_last = None, now
                 return None
             return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if hp_max and hp < BOMB_MIN_HP * hp_max:                 # hurt: no bomb (a throw can drop it at his feet,
+            return None                                          # and he must walk out of its reach first)
         if (bomb.get("count") or 0) <= 0 or now - self.bomb_last < BOMB_GAP_S or not live:
             return None
         near = min(flat(e) for e in live)

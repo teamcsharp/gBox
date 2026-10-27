@@ -581,6 +581,15 @@ def test_readying_a_bomb_is_given_up_when_one_comes_close():
     assert bot.bomb_phase is None and bot.stats["bomb_aborts"] == 1 and bot.doing == "crowd"
 
 
+def test_no_new_bomb_under_half_health():
+    crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False})
+    bot.tablet_at = clock[0] + 100                                            # (no tablet this tick)
+    run(bot, snap, clock, 1)
+    assert bot.bomb_phase is None and bot.doing != "bomb"
+
+
 def test_no_bomb_without_one_a_crowd_or_room():
     for kw, enemies in (({"count": 0, "out": False}, ((0.0, 0.0, 700.0, 700),) * 3),     # none left
                         ({"count": 5, "out": False}, ((0.0, 0.0, 1500.0, 700),)),        # one, far: no stand
