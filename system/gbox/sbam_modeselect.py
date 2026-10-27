@@ -66,6 +66,36 @@ LOCK_SITE = {
                         "n -> key n + 0x41 ('A') is selectable"),
 }
 
+#: The round-select screen, file 0x00119678 - 0x001196E0.
+ROUND_LOCK_SITE = {
+    "vaddr_start": 0x00119654,
+    "vaddr_end": 0x001196E0,
+    "gate_vaddr": 0x00119658,
+    "gate_word": 0x10400013,
+    "sprintf_vaddr": 0x001DD410,
+    "buffer_vaddr": 0x005D9110,
+    "format_selectable_vaddr": 0x00559FB8,
+    "format_only_one_vaddr": 0x00559FD8,
+    "round_index_slot": "0x0018($t9)",
+    "round_index_means": ("0 -> only round 1 is selectable (locked); "
+                          "n -> round n is selectable"),
+}
+
+#: The bubble-select screen, file 0x00119A08 - 0x00119A70.
+BUBBLE_LOCK_SITE = {
+    "vaddr_start": 0x001199E4,
+    "vaddr_end": 0x00119A70,
+    "gate_vaddr": 0x001199E8,
+    "gate_word": 0x10400013,
+    "sprintf_vaddr": 0x001DD410,
+    "buffer_vaddr": 0x005D9110,
+    "format_selectable_vaddr": 0x0055A008,
+    "format_only_one_vaddr": 0x0055A028,
+    "bubble_index_slot": "0x0018($t9)",
+    "bubble_index_means": ("0 -> only bubble size 1 is selectable (locked); "
+                           "n -> bubble size n is selectable"),
+}
+
 #: The instructions that implement the lock, read word for word.
 INSTRUCTIONS = [
     {"vaddr": 0x001191C0, "word": 0x3C020057, "asm": "lui $v0, 0x57"},
@@ -82,7 +112,15 @@ INSTRUCTIONS = [
     {"vaddr": 0x001192E8, "word": 0x0C077504, "asm": "jal 0x001dd410   # sprintf"},
     {"vaddr": 0x00119308, "word": 0x8FC30004, "asm": "lw $v1, 4($fp)   # only-A branch"},
     {"vaddr": 0x00119318, "word": 0x3C050056, "asm": "lui $a1, 0x56 / addiu $a1, $a1, -0x6078  # 'ZONE %c (only A selectable)'"},
-    {"vaddr": 0x00119324, "word": 0x0C077504, "asm": "jal 0x001dd410   # sprintf"}
+    {"vaddr": 0x00119324, "word": 0x0C077504, "asm": "jal 0x001dd410   # sprintf"},
+    # Round-select lock site
+    {"vaddr": 0x00119658, "word": 0x10400013, "asm": "beq $v0, $zero, 0x001196A8  # round index == 0 -> only-1 branch"},
+    {"vaddr": 0x00119678, "word": 0x3C050056, "asm": "lui $a1, 0x56 / addiu $a1, $a1, -0x6048  # 'ROUND %d (1-%d selectable)'"},
+    {"vaddr": 0x001196C4, "word": 0x0C077504, "asm": "jal 0x001dd410   # sprintf"},
+    # Bubble-select lock site
+    {"vaddr": 0x001199E8, "word": 0x10400013, "asm": "beq $v0, $zero, 0x00119A38  # bubble index == 0 -> only-1 branch"},
+    {"vaddr": 0x00119A08, "word": 0x3C050056, "asm": "lui $a1, 0x56 / addiu $a1, $a1, -0x5FF8  # 'BUBBLE %d (1-%d selectable)'"},
+    {"vaddr": 0x00119A54, "word": 0x0C077504, "asm": "jal 0x001dd410   # sprintf"}
 ]
 
 #: The in-game EV / character names, as cstrings in .rodata / .sdata.
@@ -116,7 +154,7 @@ EV_NAMES = [
 #: instruction for the mode-select lock site above.
 PROVEN_REVISIONS: dict[str, dict] = {
     EXECUTABLE_SHA256: {
-        "artifact": "static-mode-select-disassembly-0x1192B4-0x119340",
+        "artifact": "static-mode-select-disassembly-0x1192B4-0x119340-0x119670-0x1196E0-0x119A00-0x119A70",
         "categories": ["modes"],
     },
 }
@@ -138,9 +176,9 @@ INVENTORY["modes"].extend([
     {"name": "zone_select", "status": "unknown",
      "evidence": "lock site vaddr 0x001192B4-0x00119340 in the owned executable"},
     {"name": "round_select", "status": "unknown",
-     "evidence": "no disassembled evidence yet"},
+     "evidence": "lock site vaddr 0x00119678-0x001196E0 in the owned executable"},
     {"name": "bubble_select", "status": "unknown",
-     "evidence": "no disassembled evidence yet"},
+     "evidence": "lock site vaddr 0x00119A08-0x00119A70 in the owned executable"},
 ])
 
 #: The runtime patch plan that a future writer must pass through
@@ -243,6 +281,8 @@ def profile() -> dict:
                            for category, rows in INVENTORY.items()},
         "findings": list(INSTRUCTIONS),
         "lock_site": dict(LOCK_SITE),
+        "round_lock_site": dict(ROUND_LOCK_SITE),
+        "bubble_lock_site": dict(BUBBLE_LOCK_SITE),
         "panel_global": {"vaddr": PANEL_GLOBAL_VADDR,
                          "on_disk": PANEL_GLOBAL_ON_DISK},
         "ev_names": [dict(row) for row in EV_NAMES],

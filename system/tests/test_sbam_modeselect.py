@@ -73,12 +73,64 @@ def test_branch_target_is_the_narrow_panel():
     assert pc + 4 + offset * 4 == 0x00119248
 
 
+def test_round_lock_gate_branches_to_only_one():
+    pc = 0x00119658
+    word = _word(_elf(), pc)
+    assert (word >> 26) == 0x04                # BEQ
+    rs = (word >> 21) & 0x1F
+    rt = (word >> 16) & 0x1F
+    assert rs == 2, f"beq should test $v0 (rs=2), got rs={rs}"
+    assert rt == 0, f"beq should compare against $zero (rt=0), got rt={rt}"
+    offset = word & 0xFFFF
+    if offset & 0x8000:
+        offset -= 0x10000
+    assert pc + 4 + offset * 4 == 0x001196A8, \
+        "beq target should be the only-1 branch"
+
+
+def test_bubble_lock_gate_branches_to_only_one():
+    pc = 0x001199E8
+    word = _word(_elf(), pc)
+    assert (word >> 26) == 0x04                # BEQ
+    rs = (word >> 21) & 0x1F
+    rt = (word >> 16) & 0x1F
+    assert rs == 2, f"beq should test $v0 (rs=2), got rs={rs}"
+    assert rt == 0, f"beq should compare against $zero (rt=0), got rt={rt}"
+    offset = word & 0xFFFF
+    if offset & 0x8000:
+        offset -= 0x10000
+    assert pc + 4 + offset * 4 == 0x00119A38, \
+        "beq target should be the only-1 branch"
+
+
+def test_round_and_bubble_lock_site_words():
+    elf = _elf()
+    # Round lock site
+    assert _word(elf, 0x00119678) == 0x3C050056  # lui $a1, 0x56
+    assert _word(elf, 0x001196A0) == 0x1000000E  # beqz $v0, ...
+    assert _word(elf, 0x001196B8) == 0x3C050056  # lui $a1, 0x56
+    assert _word(elf, 0x001196C4) == 0x0C077504  # jal 0x001dd410
+    # Bubble lock site
+    assert _word(elf, 0x00119A08) == 0x3C050056  # lui $a1, 0x56
+    assert _word(elf, 0x00119A30) == 0x1000000E  # beqz $v0, ...
+    assert _word(elf, 0x00119A48) == 0x3C050056  # lui $a1, 0x56
+    assert _word(elf, 0x00119A54) == 0x0C077504  # jal 0x001dd410
+
+
 def test_format_strings_match_executable():
     elf = _elf()
     assert _cstr(elf, mod.LOCK_SITE["format_selectable_vaddr"]) == \
         "ZONE %c (A-%c selectable)"
     assert _cstr(elf, mod.LOCK_SITE["format_only_a_vaddr"]) == \
         "ZONE %c (only A selectable)"
+    assert _cstr(elf, mod.ROUND_LOCK_SITE["format_selectable_vaddr"]) == \
+        "ROUND %d (1-%d selectable)"
+    assert _cstr(elf, mod.ROUND_LOCK_SITE["format_only_one_vaddr"]) == \
+        "ROUND %d (only 1 selectable)"
+    assert _cstr(elf, mod.BUBBLE_LOCK_SITE["format_selectable_vaddr"]) == \
+        "BUBBLE %d (1-%d selectable)"
+    assert _cstr(elf, mod.BUBBLE_LOCK_SITE["format_only_one_vaddr"]) == \
+        "BUBBLE %d (only 1 selectable)"
 
 
 def test_panel_global_is_zero_on_disk():
