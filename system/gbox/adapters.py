@@ -1030,6 +1030,13 @@ def win_resume_threads(tids: list[int]) -> int:
     return n
 
 
+def _extract_root(config, strict: bool = True):
+    """The extract cache (archives unpacked, CHDs converted, list sets staged): runtime/extract, never on a Windows
+    system drive (gbox/storage_policy.py: moved under the cache, or refused when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.extract_root(config, strict=strict)
+
+
 def _audio_prefetch(ad):
     """Start (once) the output-device choice + warm-up for a Windows launch (game_audio.Prefetch)."""
     if HOST_OS != "windows" or getattr(ad, "config", None) is None:
@@ -1164,6 +1171,7 @@ class RetroArchAdapter(CommandAdapter):
     def _write_cfg(self) -> Path:
         rt = self.config.runtime
         d = {k: rt / k for k in ("system", "saves", "states", "screenshots", "logs", "retroarch", "extract")}
+        d["extract"] = _extract_root(self.config, strict=False)   # archived content unpacks off the system drive
         for p in d.values():
             p.mkdir(parents=True, exist_ok=True)
         cfg = d["retroarch"] / f"session-{self.addr[1]}.cfg"
@@ -1388,7 +1396,7 @@ class RetroArchAdapter(CommandAdapter):
         if not rom.lower().endswith(".7z") or not z or not Path(z).exists() and not shutil.which(z):
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("7z-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("7z-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         if not out.exists() or not any(out.iterdir()):
             out.mkdir(parents=True, exist_ok=True)
             self._p(30, f"Extracting {Path(rom).name}")
@@ -1419,7 +1427,7 @@ class RetroArchAdapter(CommandAdapter):
                 lst = next((n for n in names if n.lower().endswith(".lst")), None)
                 if not lst:
                     return rom                                   # a normal MAME-style ROM set: Flycast reads the zip
-                out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+                out = _extract_root(self.config) / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
                 if not (out / lst).exists():
                     out.mkdir(parents=True, exist_ok=True)
                     self._p(30, f"Unpacking {Path(rom).name}")
@@ -1450,7 +1458,7 @@ class RetroArchAdapter(CommandAdapter):
         if len(bins) != 1:
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("lst-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         staged = out / path.name
         if not staged.exists():
             out.mkdir(parents=True, exist_ok=True)
@@ -1469,7 +1477,7 @@ class RetroArchAdapter(CommandAdapter):
         if head[:8] != b"MComprHD" or int.from_bytes(head[12:16], "big") >= 5:
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("chd-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
+        out = _extract_root(self.config) / ("chd-" + hashlib.sha1(rom.encode()).hexdigest()[:16])
         cue = out / (Path(rom).stem + ".cue")
         if not cue.exists():
             out.mkdir(parents=True, exist_ok=True)
@@ -1482,7 +1490,7 @@ class RetroArchAdapter(CommandAdapter):
         if self.platform != "pocketstation" or not rom.lower().endswith(".gme"):
             return rom
         import hashlib
-        out = self.config.runtime / "extract" / ("gme-" + hashlib.sha1(rom.encode()).hexdigest()[:16]) / (Path(rom).stem + ".min")
+        out = _extract_root(self.config) / ("gme-" + hashlib.sha1(rom.encode()).hexdigest()[:16]) / (Path(rom).stem + ".min")
         if not out.exists():
             data = Path(rom).read_bytes()
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -2166,7 +2174,7 @@ class StandaloneAdapter(Adapter):
         if not rom.lower().endswith(".zip"):
             return rom
         import zipfile
-        out = self.config.runtime / "extract" / Path(rom).stem
+        out = _extract_root(self.config) / Path(rom).stem
         with zipfile.ZipFile(rom) as z:
             m = max(z.infolist(), key=lambda i: i.file_size)
             dst = out / Path(m.filename).name
@@ -4367,7 +4375,45 @@ EDEN_SETTINGS = {
     "Renderer": {"backend": "1"},                        # Vulkan on the GB10 (Eden's default too; pinned)
     "Core": {"use_multi_core": "true"},
 }
+# Per-title overrides, written to Eden's own per-game file (config/eden/custom/<TITLE ID>.ini) with the
+# "\use_global=false" and "\default=false" twins Eden itself writes for a per-game value. gBox owns only these keys
+# there: a key a title no longer lists goes back to the global value (\use_global=true).
+# RE5 / RE6 (MT Framework, Eden v0.2.1 on the Spark, 2026-10-26): with multi-core on, the game's npad watcher thread
+# (RE5 main+0xCE7FC0) moves itself to cores 1-2 at boot (nn::os::SetThreadCoreMask(self, 1, 0b110)) and Eden loses
+# that thread's state: InvalidHandle 0xE401, SVCs re-run with stale registers, other threads jump to PC=4, then
+# svcBreak or SIGSEGV 3-4 s in. NCE and Dynarmic both fail and the symptoms differ from run to run. Single-core boots
+# both games to gameplay (docs/research/switch-emulator-spark.md).
+EDEN_TITLE_SETTINGS = {
+    "010018100CD46000": {"Core": {"use_multi_core": "false"}},   # Resident Evil 5
+    "01002A000CD48000": {"Core": {"use_multi_core": "false"}},   # Resident Evil 6
+}
+EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)
+
+
+def ini_get(text: str, section: str, key: str) -> str | None:
+    """The value of `key` in one [section] of an INI text, or None."""
+    in_section = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            in_section = s[1:-1] == section
+        elif in_section and "=" in line and line.split("=", 1)[0].strip() == key:
+            return line.split("=", 1)[1]
+    return None
+
+
+def ini_drop(text: str, section: str, prefix: str) -> str:
+    """`text` without the lines of [section] whose key starts with `prefix`."""
+    out, in_section = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            in_section = s[1:-1] == section
+        elif in_section and line.split("=", 1)[0].strip().startswith(prefix):
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
 
 
 class SwitchLinuxAdapter(StandaloneAdapter):
@@ -4379,8 +4425,10 @@ class SwitchLinuxAdapter(StandaloneAdapter):
     memory is read and written through /proc/<pid>/mem at the addresses gbox.eden_memory derives from Eden's
     HostMemory arena (a guest address is the host address under NCE). A debug launch adds Eden's GDB stub (arm64)
     and runs on Dynarmic, because Eden's NCE backend has no breakpoints or watchpoints and its single-step is a stub
-    (src/core/arm/nce/arm_nce.cpp). Eden has no save states. Built from Eden's sources 2026-10-26
-    (docs/research/switch-emulator-spark.md); not yet run live on the Spark."""
+    (src/core/arm/nce/arm_nce.cpp). Eden has no save states. Per title, EDEN_TITLE_SETTINGS go into Eden's per-game
+    file, and an update or DLC kept beside the game's NSP is applied through Eden's external content folders (no NAND
+    install). Run live on the Spark 2026-10-26 with Eden v0.2.1: RE5 to a No Mercy round, RE6 (v131072) to its title
+    screen (docs/research/switch-emulator-spark.md)."""
     name = "eden"
     supported = {"launch_game", "stop_game", "pause", "resume", "read_memory", "write_memory", "query_runtime",
                  "get_frame", "send_input", "stream_session"}
@@ -4396,6 +4444,8 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         self.env = provision.switch_linux_env(config)
         self.home = provision.switch_linux_dir(config)   # keys/, nand/, sdmc/, log/eden_log.txt
         self.debug, self.paused, self.rom = False, False, None
+        self.title_settings: dict = {}                    # the per-title overrides this launch applied
+        self.content_dirs: list[str] = []                 # Eden's external content folders for this launch
         self.nce = eden_memory.nce_capable()              # this host can run NCE (ARM64, 4 KiB pages)
         self.address_mode = eden_memory.mode_for(self.nce)
         self._mem, self._mem_checked_at = None, -1e9
@@ -4410,8 +4460,10 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         provision.ensure_switch_linux(self.config, getattr(self, "progress", None))
 
     def write_settings(self) -> Path:
-        """qt-config.ini: EDEN_SETTINGS, the CPU backend (use_nce) and the GDB stub for a debug launch; every other line
-        in the file is kept. Also fixes the address mode the guest-memory reads use for this launch."""
+        """qt-config.ini: EDEN_SETTINGS, the CPU backend (use_nce), the GDB stub for a debug launch and, for the game
+        being launched (self.rom), Eden's external content folders; every other line in the file is kept. Then the
+        game's per-title overrides (write_title_settings). Also fixes the address mode the guest-memory reads use for
+        this launch."""
         path = provision.switch_linux_config(self.config)
         path.parent.mkdir(parents=True, exist_ok=True)
         text = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -4423,8 +4475,55 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             for k, v in kv.items():
                 text = ini_set(text, section, k, v)
                 text = ini_set(text, section, f"{k}\\default", "false")
+        if self.rom:
+            self.content_dirs = self.content_folders(self.rom)
+            text = self.set_content_dirs(text, self.content_dirs)
         path.write_text(text, encoding="utf-8")
+        if self.rom:
+            from . import switch_nsp
+            self.title_settings = self.write_title_settings(switch_nsp.title_id(self.rom))
         return path
+
+    @staticmethod
+    def content_folders(rom: str) -> list[str]:
+        """The game's own folder when it holds an update or DLC for the game (gbox.switch_nsp.companions), else none:
+        Eden v0.2.1 scans these folders at boot and applies what it finds (RE6 v131072: "ExeFS: Update (v0.2.0)
+        applied successfully"), so nothing is installed into its NAND."""
+        from . import switch_nsp
+        return [str(Path(rom).parent)] if switch_nsp.companions(rom) else []
+
+    @staticmethod
+    def set_content_dirs(text: str, dirs: list[str]) -> str:
+        """[UI] Paths\\external_content_dirs as Eden's config reads it (src/qt_common/config/qt_config.cpp): a size
+        and 1-based "<n>\\path" entries; earlier entries are replaced."""
+        text = ini_drop(text, "UI", EDEN_CONTENT_DIRS + "\\")
+        text = ini_set(text, "UI", f"{EDEN_CONTENT_DIRS}\\size", str(len(dirs)))
+        for n, folder in enumerate(dirs, 1):
+            text = ini_set(text, "UI", f"{EDEN_CONTENT_DIRS}\\{n}\\path", folder)
+        return text
+
+    def write_title_settings(self, title_id: str | None) -> dict:
+        """Eden's per-game file for this title (config/eden/custom/<TITLE ID>.ini): the EDEN_TITLE_SETTINGS overrides,
+        each with its \\use_global=false and \\default=false twins; a key gBox manages that this title does not list
+        goes back to the global value. No file is created for a title without overrides. Returns what was applied."""
+        tid = (title_id or "").upper()
+        wanted = EDEN_TITLE_SETTINGS.get(tid, {})
+        path = provision.switch_linux_config(self.config).parent / "custom" / f"{tid}.ini"
+        if not tid or (not wanted and not path.exists()):
+            return {}
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        managed = sorted({(s, k) for kv in EDEN_TITLE_SETTINGS.values() for s, d in kv.items() for k in d})
+        for section, key in managed:
+            value = wanted.get(section, {}).get(key)
+            if value is not None:
+                text = ini_set(text, section, f"{key}\\use_global", "false")
+                text = ini_set(text, section, f"{key}\\default", "false")
+                text = ini_set(text, section, key, value)
+            elif ini_get(text, section, f"{key}\\use_global") == "false":
+                text = ini_set(text, section, f"{key}\\use_global", "true")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return {s: dict(kv) for s, kv in wanted.items()}
 
     def _argv(self, rom: str) -> list[str]:
         self.rom = rom
@@ -4445,6 +4544,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         if not ok:
             raise ToolUnavailable(why)
         self._mem = None
+        self.rom = rom                                    # write_settings (via _ensure) reads the game's overrides
         try:
             d = super().launch_game(rom)
             if self.dbg:
@@ -4454,6 +4554,7 @@ class SwitchLinuxAdapter(StandaloneAdapter):
             return d | {"emulator": "eden (linux)", "ready": "guest_memory", "address_mode": self.address_mode,
                         "cpu_backend": "nce" if self.use_nce else "dynarmic",
                         "guest_arena": [hex(arena["lo"]), hex(arena["hi"])], "title_id": switch_nsp.title_id(rom),
+                        "title_settings": self.title_settings, "content_dirs": self.content_dirs,
                         "eden_log": str(self.eden_log()),
                         "validation": "guest memory mapped; gameplay not yet verified"}
         except BaseException:

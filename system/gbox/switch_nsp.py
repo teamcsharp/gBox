@@ -50,6 +50,8 @@ __all__ = [
     "title_id",
     "title_id_from_names",
     "is_update",
+    "is_addon_of",
+    "companions",
     "base_title_id",
     "version",
     "describe",
@@ -358,7 +360,8 @@ def build_manifest(
 
 # --- title identity without keys --------------------------------------------------------------------------------------
 UPDATE_BIT = 0x800
-MAX_MEMBERS = 4096                      # an NSP holds a handful of NCAs, tickets and certs; anything bigger is not one
+ADDON_OFFSET = 0x1000                   # add-on content (DLC) ids: base id + 0x1000 + index
+MAX_MEMBERS = 4096                     # an NSP holds a handful of NCAs, tickets and certs; anything bigger is not one
 CNMT_LIMIT = 1 << 20                    # a cnmt.xml is a few KB: never read a big member for a title id
 _TITLE_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 _VERSION_TAG = re.compile(r"\[v(\d+)\]")
@@ -436,6 +439,34 @@ def is_update(tid: str) -> bool:
     return (int(tid, 16) & 0xFFF) == UPDATE_BIT
 
 
+def is_addon_of(tid: str, base: str) -> bool:
+    """Whether `tid` is add-on content (DLC) of base game `base`: the base id + 0x1000, the DLC index in the low 12 bits."""
+    return (int(tid, 16) & ~0xFFF) == int(base, 16) + ADDON_OFFSET
+
+
+CONTAINER_SUFFIXES = (".nsp", ".xci")                     # what Eden's external content scan opens
+
+
+def companions(path: str | Path) -> list[Path]:
+    """The update and DLC containers kept beside a base game's container (same folder), by title id: what Eden's
+    external content folders apply at boot (gbox.adapters.SwitchLinuxAdapter). [] for an update container itself, for a
+    container without a title id, or when the folder cannot be listed. Only container headers are read."""
+    path = Path(path)
+    tid = title_id(path)
+    if not tid or is_update(tid):
+        return []
+    try:
+        siblings = sorted(f for f in path.parent.iterdir() if f.suffix.lower() in CONTAINER_SUFFIXES and f != path)
+    except OSError:
+        return []
+    out = []
+    for f in siblings:
+        other = title_id(f)
+        if other and ((is_update(other) and base_title_id(other) == tid) or is_addon_of(other, tid)):
+            out.append(f)
+    return out
+
+
 def base_title_id(tid: str) -> str:
     """The base game's title id for an update (low 12 bits 0x800 cleared); a base id comes back unchanged."""
     value = int(tid, 16)
@@ -463,14 +494,14 @@ def describe(path: str | Path) -> dict:
 
 
 def launchable(path: str | Path) -> tuple[bool, str]:
-    """(True, "") for a game NSP; (False, why) for a title update, which is content for an installed base game, not
-    something an emulator boots (Eden installs it into its NAND: a follow-up ticket). An unreadable file passes here
-    and fails in the emulator with the emulator's own message."""
+    """(True, "") for a game NSP; (False, why) for a title update, which is content for a base game, not something an
+    emulator boots: on Linux, Eden applies an update kept in the base game's folder (companions(), Eden's external
+    content folders). An unreadable file passes here and fails in the emulator with the emulator's own message."""
     info = describe(path)
     if info["is_update"]:
         return False, (f"{Path(path).name} is a title update (v{info['version'] or '?'}) for base title "
-                       f"{info['base_title_id']}, not a game: launch the base game; the update installs into "
-                       "the emulator's NAND")
+                       f"{info['base_title_id']}, not a game: launch the base game; an update kept in the base "
+                       "game's folder is applied at boot")
     return True, ""
 
 

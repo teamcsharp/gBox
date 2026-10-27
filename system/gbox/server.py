@@ -25,6 +25,7 @@ from . import tools as _builtin  # noqa: F401  (registers tools)
 from . import bot_control
 from . import game_prefs
 from . import padstate
+from . import pad_takeover
 from . import fit_events
 from . import operator_guard
 from .config import HOST_OS, Config
@@ -1336,9 +1337,14 @@ def create_app(config: Config) -> FastAPI:
         launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
         jump = {"jump": True} if _bot_demo(store, sid) or launched.get("jump") else {}
         pad = {"pad": launched["pad"]} if launched.get("pad") else {}
+        # MercMode's parked titles on that PC stay up through any relaunch: 2026-10-26 17:58 a frozen RE4's bot reset
+        # (not beside, so no keep) closed every other game there, the warm RE5 included (exit via single_game, rc -9)
+        from . import mercmode as _mercmode
+        warm_keep = sorted(s for s in _mercmode.warm_sessions(store, tw.get("name") or "")
+                           if s != sid and (store.get("session", s) or {}).get("state") == "running")
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
-                                           **jump, **pad},
+                                           **({"keep_sessions": warm_keep} if warm_keep else {}), **jump, **pad},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -1433,6 +1439,11 @@ def create_app(config: Config) -> FastAPI:
                                                                store.get('job', sid.split('-', 1)[-1]))):
                 raise HTTPException(409, "That game has not enabled continuous recovery; autoplay relaunches only "
                                          "continuous runs, bot demos and agent test sessions.")
+            if _demos.mercmode_closed(store, sid, (store.get('worker', _wid(sid.split('-')[0])) or {}).get('name')):
+                # 2026-10-26 17:58: MercMode ended a frozen RE4 run and its bot reset the game 4 s later; nothing
+                # played the relaunched copy and the scheduler waited behind it for 9 minutes
+                raise HTTPException(409, "MercMode already closed this run; its scheduler starts the next title, so "
+                                         "the bot does not relaunch it.")
         if _automated(actor, origin) and sess.get('state') == 'running':
             from .background_testing import agent_owned
             if not agent_owned(store.get('slabel', sid), store.get('job', sid.split('-', 1)[-1])):
@@ -2404,10 +2415,12 @@ def create_app(config: Config) -> FastAPI:
             reason = background_testing.guarded_reason(store, w)
             if not w.get('online'):
                 reason = 'Worker is offline; queued work is preserved.'
+            from . import storage_purge as storage_purge_mod      # "Free space: N GB unplayed" (the newest dry run)
             rows.append({k: w.get(k) for k in ('id','name','os','online','background_testing','resources',
                                                'idle_seconds','active_jobs')} | policy |
                         {'admission': {'allowed': reason is None, 'reason': reason},
-                         'budget_kind': 'admission', 'hard_throttle': False})
+                         'budget_kind': 'admission', 'hard_throttle': False,
+                         'storage': storage_purge_mod.summary(store, w['name'])})
         return {'excluded': sorted(ex), 'workers': rows}
 
     @app.post("/api/testing/workers/{wid}")
@@ -2472,6 +2485,12 @@ def create_app(config: Config) -> FastAPI:
                                                       "stopped": [x["session_id"] for x in stops]})
         return {"job_id": job.id, "worker": {"id": w["id"], "name": w["name"], "os": w.get("os")}, "stopped": stops,
                 "force": body.force}
+
+    # --- free a PC's disk: unplayed games and automatically sent builds (operator 2026-10-26; gbox/storage_purge.py) ---
+    from . import storage_purge as storage_purge_mod
+    storage_purge_mod.routes(app, store, auth, submit=lambda req, actor, origin: submit(req, actor, origin),
+                             workers=lambda: workers(), wid=lambda x: _wid(x), origin_dep=request_origin,
+                             job_request=JobRequest, rejected_state=JobState.REJECTED)
 
     background_coordinator_cache = {'at': 0, 'runs': []}
     background_coordinator_lock = threading.Lock()
@@ -2749,7 +2768,9 @@ def create_app(config: Config) -> FastAPI:
                     j.update(state=JobState.RUNNING, worker_id=wid, started=time.time())
                     store.put("job", j["id"], j)
                     store.audit(actor, "job.claim", j["id"], {"worker": wid})
-                    return j
+                    # what this job may copy onto that PC (gbox/storage_policy.py): handed over, never stored
+                    from . import storage_policy
+                    return j | {"build_permit": storage_policy.permit(store, config, j, w)}
         return Response(status_code=204)
 
     @app.post("/api/workers/{wid}/result")
@@ -2974,6 +2995,12 @@ def create_app(config: Config) -> FastAPI:
                 token='action:'+j['id'])
         build_notes.job_ended(j)                      # a finished build / collect / failed build -> the bell tray
         _extraction_handoff(j)
+        if t.name == "storage_purge" and state == JobState.SUCCEEDED:
+            try:                                      # the PC's newest result for the Workers menu (gbox/storage_purge.py)
+                from . import storage_purge as storage_purge_mod
+                storage_purge_mod.remember(store, j, r.output or {})
+            except Exception as exc:                  # noqa: BLE001 - an accepted result stays accepted
+                store.audit('gbox-auto', 'storage_purge.remember_failed', j['id'], {'error': str(exc)[:300]})
         if t.name in ("session_op", "autoplay", "launch_game"):
             from . import screensaver
             saver = getattr(app.state, "autoplay_screensaver", None)
@@ -3159,6 +3186,10 @@ def create_app(config: Config) -> FastAPI:
             from .job_routing import conflict
             if why := conflict(job.require_os, store.get("worker", job.require_worker)):
                 raise HTTPException(422, why)
+        if t.name == "storage_purge":                 # the facts about that PC (gbox/storage_purge.py), never a client's
+            from . import storage_purge as storage_purge_mod
+            job.input = storage_purge_mod.prepare_input(
+                app, store, job.input, store.get("worker", job.require_worker) if job.require_worker else None, origin)
         if t.name == "launch_game" and job.state == JobState.QUEUED:
             online = [w for w in workers() if w["online"] and t.name in (w.get("tools") or [])]
             candidates = [w for w in online if (not job.require_worker or w["id"] == job.require_worker)
@@ -4233,7 +4264,7 @@ def create_app(config: Config) -> FastAPI:
         return picture_bounds.cached(sid, f)
 
     @app.get("/api/sessions/{sid}/mjpeg")
-    def mjpeg(sid: str, actor=Depends(auth)):
+    def mjpeg(sid: str, request: Request, actor=Depends(auth)):
         from .live_stream import async_mjpeg_parts, BackgroundCheck, BackgroundLease
         lv = _live(sid)
 
@@ -4245,12 +4276,13 @@ def create_app(config: Config) -> FastAPI:
         # so a state save or upload reconnect can no longer end the response and leave the operator's view black.
         import uuid
         viewer = "mjpeg:" + uuid.uuid4().hex
-        operator_guard.report_watch(store, viewer, sid)
+        host = request.client.host if request.client else ""     # the machine viewing it (pad takeover: viewing())
+        operator_guard.report_watch(store, viewer, sid, host=host)
 
         async def watched_parts():
             renewed = time.time()                       # the route already created the first watch lease
             lease = BackgroundLease(
-                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid),
+                lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, sid, host=host),
                 lambda: asyncio.to_thread(operator_guard.report_watch, store, viewer, None))
             try:
                 async for part in async_mjpeg_parts(lv, alive=alive):
@@ -4281,12 +4313,18 @@ def create_app(config: Config) -> FastAPI:
     padmap.register(app, auth)                                 # per-console controller maps (the glyph's right-click)
 
     @app.post("/api/sessions/{sid}/input")
-    def put_input(sid: str, ev: InputEvents, actor=Depends(auth)):
+    def put_input(sid: str, ev: InputEvents, request: Request, actor=Depends(auth), origin=Depends(request_origin)):
         lv = _live(sid)
-        # each pad event says who sent it (player / ui / autoplay / agent): the worker hands autoplay back only to the
-        # operator, never to an agent or a bridge pressing buttons in the same session
-        events = [e | {"src": padstate._source(actor, e)} if isinstance(e, dict) and "rpc" not in e and "src" not in e else e
-                  for e in ev.events]
+        # each pad event says who sent it (player / ui / autoplay / agent), from the authenticated actor - never what the
+        # client wrote: the worker gives the pad to the operator only, never to an agent or a bridge pressing buttons in
+        # the same session. The operator's own events also say whether they may take the pad from the session's bot for
+        # a moment (gbox/pad_takeover.py): not from automation, and only from a machine that is viewing this session.
+        host = request.client.host if request.client else ""
+        operator = padstate._source(actor, {}) in pad_takeover.OPERATOR_SOURCES
+        keys = any(isinstance(e, dict) and "rpc" not in e and isinstance(e.get("key"), str) and e["key"] for e in ev.events)
+        claim = operator and keys and not _automated(actor, origin) and operator_guard.viewing(store, sid, host)
+        events = pad_takeover.stamp(ev.events, lambda e: padstate._source(actor, e), lease=claim, actor=actor,
+                                    via=f"{origin.get('client') or 'app'}@{host}" if operator else "")
         if (store.get('session',sid) or {}).get('federation'):
             expires=time.time()+1.5
             events=[e|{'_federation_expires_at':expires} if isinstance(e,dict) and 'rpc' not in e else e for e in events]

@@ -231,6 +231,13 @@ class HermesConfig(BaseModel):
     grunt: GruntConfig = GruntConfig()
 
 
+class BuildsConfig(BaseModel):
+    """[builds] how custom builds reach the worker PCs (gbox/storage_policy.py, operator 2026-10-26: "I want to opt
+    into the builds and only download builds when I choose to download them")."""
+    auto_send: bool = False           # false: agent / background / automatic work never copies a build onto a PC the
+                                      # operator has not downloaded it to (Builds ▸ download icon); true: the old behavior
+
+
 class Config(BaseModel):
     sync_mod_builds_on_startup: bool = False  # opt-in upload of local builds to this worker's control plane
     preferred_launch_workers: dict[str, str] = Field(default_factory=dict)  # platform -> worker name/ID for auto Play; no fallback
@@ -301,6 +308,9 @@ class Config(BaseModel):
     hermes: HermesConfig = HermesConfig()           # [hermes.local] GPU fallback route, [hermes.grunt] Spark helper
     showcase: ShowcaseConfig = ShowcaseConfig()      # [showcase] Sonic showcase builds (docs/sonic_showcase.md)
     game_audio: GameAudioConfig = GameAudioConfig()  # [game_audio] emulator sound device + slow-device fallback (gbox/game_audio.py)
+    builds: BuildsConfig = BuildsConfig()            # [builds] auto_send: builds reach a PC only by the operator's download
+    takeover_idle_s: float = 3.0      # the operator's pad takes over from a playing bot; this long after their last input
+                                      # (nothing held) the bot takes the pad back (gbox/pad_takeover.py)
     granted_permissions: list[str] = ["read", "execute", "stage", "network"]
 
     @property
@@ -412,6 +422,10 @@ granted_permissions = ["read", "execute", "stage", "network"]   # add memory_wri
 # retroarch_drivers = ["xaudio", "wasapi", "null"]   # next driver when audio init stalls past init_grace_s
 # init_grace_s = 3.0
 # extended_wait_s = 120.0         # content loaded, audio still opening: the launch waits this long instead of failing
+
+# [builds]                        # custom builds on the worker PCs (gbox/storage_policy.py)
+# auto_send = false               # false: a build reaches a PC only when the operator downloads it there; agent and
+#                                 # background work that needs it elsewhere fails with a clear message instead of copying
 
 # [recording]                     # background gameplay ring: right-click the record icon to clip the last minutes (docs/ring_recording.md)
 # enabled = true                  # records only while the pad was used in the last idle_s seconds

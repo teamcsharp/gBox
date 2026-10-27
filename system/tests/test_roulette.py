@@ -89,6 +89,8 @@ def test_builder_leaves_games_without_a_working_writer(monkeypatch):
 def test_screensaver_launches_a_demo_build_and_adds_favorites(monkeypatch):
     s, now = Store(), 10_000.0
     w = worker(now)
+    # builds are opt-in per PC (gbox/storage_policy.py): the demo plays a build this PC already has
+    w["local_builds"] = [{"game_id": "sc", "name": "sc2_sonic_vs_mario_hd_random", "built": 1.0}]
     calls = []
 
     def submit(req, actor, origin):
@@ -111,6 +113,32 @@ def test_screensaver_launches_a_demo_build_and_adds_favorites(monkeypatch):
     assert calls[0]["input"]["mod"] == "sc2_sonic_vs_mario_hd_random"
     run = s.get(S.STATE, "i9-NUC")
     assert run["mod"] == "sc2_sonic_vs_mario_hd_random"
+
+
+def test_a_demo_never_sends_a_build_the_operator_did_not_put_on_that_pc():
+    """[builds] auto_send = false: a build the PC lacks is no demo pick there (the stock game plays) until the operator
+    downloads it to that PC (a receipt) or auto_send is on; the PC's own copy always counts."""
+    from gbox import storage_policy as SP
+    from gbox.config import Config
+
+    def demo(setup):
+        s, now = Store(), 10_000.0
+        w = worker(now)
+        calls = []
+
+        def submit(req, actor, origin):
+            calls.append(req.input)
+            return SimpleNamespace(id=f"j{len(calls)}", state="queued")
+        saver = S.Screensaver(s, Archive(), submit, lambda: [w], rng=random.Random(2),
+                              builds=lambda gid: [{"name": "sc2_cast", "kind": "cast"}], favorites=lambda: [])
+        saver.games = lambda cfg: [{"game_id": "sc", "title": "SoulCalibur", "pads": 900}]
+        setup(s, w, saver)
+        saver.tick(now)
+        return calls[0].get("mod")
+    assert demo(lambda s, w, saver: None) is None, "not on the PC, no receipt: the stock game"
+    assert demo(lambda s, w, saver: SP.record_receipt(s, "i9-NUC", "sc", "sc2_cast")) == "sc2_cast"
+    assert demo(lambda s, w, saver: w.update(local_builds=[{"game_id": "sc", "name": "sc2_cast~ab", "staged_of": "sc2_cast"}])) == "sc2_cast"
+    assert demo(lambda s, w, saver: setattr(saver, "config", Config(builds={"auto_send": True}))) == "sc2_cast"
 
 
 def test_roulette_off_plays_stock():

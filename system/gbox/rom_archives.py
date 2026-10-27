@@ -169,7 +169,8 @@ def prepare(src, config, member, progress=lambda *_: None):
     member = safe_name(member)
     identity = _source_identity(src, config, member)
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
-    root = config.runtime / "extract"
+    from . import storage_policy                       # never an extracted game on a Windows system drive
+    root = storage_policy.extract_root(config)
     out = root / ("rom-" + key)
     marker = out / ".gbox-extracted.json"
     with _LOCK:

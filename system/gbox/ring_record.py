@@ -755,13 +755,23 @@ class SessionRing:
 
 # --- the worker's sessions -----------------------------------------------------------------------
 
+def ring_root(config) -> Path:
+    """runtime/ring_record, never on a Windows system drive (gbox/storage_policy.py: moved under the cache, or
+    SystemDriveRefused when the cache is on it too)."""
+    from . import storage_policy
+    return storage_policy.game_dir(config, Path(config.runtime) / "ring_record", "ring_record")
+
+
 def ring_dir(config, sid: str) -> Path:
-    return Path(config.runtime) / "ring_record" / sid
+    return ring_root(config) / sid
 
 
 def sweep(config) -> None:
     """Rings nothing points at (a previous worker run): deleted."""
-    root = Path(config.runtime) / "ring_record"
+    try:
+        root = ring_root(config)
+    except RuntimeError:
+        return
     try:
         for d in root.iterdir() if root.is_dir() else ():
             if d.name not in ACTIVE:
@@ -793,7 +803,11 @@ def start(sid: str, ad, config, game: dict | None = None, alive=None, threads: b
             old.delete()
     run = kw.get("run", subprocess.run)
     process_pid = kw.pop('process_pid', None)
-    ring = SessionRing(sid, ring_dir(config, sid), rc,
+    try:
+        folder = ring_dir(config, sid)
+    except RuntimeError as e:                         # storage_policy.SystemDriveRefused: no recording on C:
+        return {"state": "unsupported", "reason": str(e)}
+    ring = SessionRing(sid, folder, rc,
                        source_fn=kw.pop("source_fn", None) or (lambda enc, fps: resolve_source(ad, rc, enc, fps, ffmpeg=ffmpeg, run=run)),
                        ffmpeg=ffmpeg, meta={"game_id": (game or {}).get("game_id"), "title": (game or {}).get("title")},
                        audio_fn=kw.pop('audio_fn', None) or ((lambda: audio_tap_for(ad, process_pid)) if getattr(rc, 'audio', True) else None), **kw)

@@ -192,6 +192,7 @@
   .rbn:not(:last-child)::after { content:""; position:absolute; left:100%; top:50%; width:34px; height:2px; background:#3a4560; }
   .rbn.run { border-color:#5b8cff; box-shadow:0 0 0 0 #5b8cff88; animation:rbp 1.2s infinite; } .rbn.ok { border-color:#2ecc71; } .rbn.ok:not(:last-child)::after { background:#2ecc71; }
   .rbn.err { border-color:#ff5252; box-shadow:0 0 14px #ff525288; } .rbn.sel { outline:2px solid #fff6; }
+  .rbn.warn { border-color:#f1c40f; } .rbn.warn:not(:last-child)::after { background:#f1c40f; }
   @keyframes rbp { 70% { box-shadow:0 0 0 10px #5b8cff00; } }
   #rbside { position:absolute; top:56px; right:12px; width:270px; bottom:150px; overflow:auto; background:#0b0d14cc; border-radius:8px; padding:8px 10px; font-size:12px; backdrop-filter:blur(6px); }
   #rbside pre { white-space:pre-wrap; margin:4px 0 0; font-size:11px; color:var(--fg); }
@@ -1229,6 +1230,7 @@ window.taskVizCreate = canvas => {
 <script src="device-outcomes.js"></script>
 <script src="device-work.js"></script>
 <script src="../web/viz/toast-stack.js"></script>
+<script src="../web/viz/pad-takeover.js"></script>
 <script src="../web/viz/process-popup.js"></script>
 <script src="../web/viz/build-report-image.js"></script>
 <script src="../web/viz/decimation-review.js"></script>
@@ -1266,6 +1268,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
+<script src="../web/viz/storage-purge.js"></script>
 <script src="../web/viz/picture-fit.js"></script>
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
@@ -1288,7 +1291,13 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(script):not(style) { display:none !important; }   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(#reconnect.f5):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  /* #reconnect.f5: an F5 pressed over the PiP shows its steps there too, packed into the small window */
+  body.gbox-compact #reconnect .rc-head { top:8px; left:12px; right:12px; font-size:13px; }
+  body.gbox-compact #reconnect .rc-flow { top:36px; left:12px; right:12px; bottom:92px; gap:6px 8px; overflow:auto; }
+  body.gbox-compact #reconnect .rbn { min-width:0; padding:4px 8px; font-size:11px; } body.gbox-compact #reconnect .rbn::after { display:none; }
+  body.gbox-compact #reconnect .rc-detail { max-width:160px; margin-top:2px; font-size:10px; }
+  body.gbox-compact #reconnect .rc-error { left:12px; right:12px; bottom:46px; font-size:12px; } body.gbox-compact #reconnect .rc-actions { left:12px; bottom:10px; }
   /* MercMode in the PiP menu: one toggle (stay here / rotate titles) and an arrow that opens the title list */
   #pipmenu .pip-mercmode { padding:2px 0; } #pipmenu .pip-mercmode-row { display:flex; align-items:stretch; }
   #pipmenu .pip-mercmode-row [data-mm-toggle] { flex:1; } #pipmenu .pip-mercmode-row [data-mm-arrow] { width:34px; text-align:center; flex:0 0 auto; }
@@ -2432,12 +2441,15 @@ async function testPcMenu(x, y) {                             // which PCs backg
         <label style="display:flex;gap:8px;align-items:center">Admit work below <input type="range" data-budget="${esc(w.name)}" min="10" max="90" step="5" value="${Number(w.budget_percent || 70)}"><span>${Number(w.budget_percent || 70)}%</span></label>
         <div role="status" style="font-size:11px;margin-top:4px">${esc(admission.reason || 'Ready for queued background work.')}</div>
         <button type="button" data-rebuild="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="Update this PC's code and packages, self-check, then restart its worker and gBox app; its bot games are saved and closed first (the operator's own game needs force)">⟳ Rebuild &amp; relaunch ${esc(w.name)}</button>
+        ${w.os === 'windows' && window.GBoxStoragePurge ? `<button type="button" data-purge="${esc(w.name)}" ${w.online ? '' : 'disabled'} style="margin-top:6px;font-size:12px" title="List the games on this PC that are not favorites and not played for 14 days, and the builds sent here automatically; nothing is deleted until you confirm the list">${esc(GBoxStoragePurge.buttonLabel(w))}</button>` : ''}
       </div>`;
     }).join('') || '<div class="mut">No workers are registered.</div>';
     fitMenu(m, e.clientX, e.clientY, 8, 40); };
   const r = await gbox.api('/api/testing/workers'); if (r.ok) render(r.data); else m.querySelector('[data-list]').textContent = r.error;
   m.oninput = ev => { const range = ev.target.closest('input[data-budget]'); if (range) range.nextElementSibling.textContent = range.value + '%'; };
   m.onclick = ev => {                                           // "⟳ Rebuild & relaunch <PC>" (gbox/node_rebuild.py): the panel follows it
+    const purge = ev.target.closest('button[data-purge]');       // "🧹 Free space": dry run, the list, then Delete these
+    if (purge) { m.style.display = "none"; storagePurgeOpen(purge.dataset.purge); return; }
     const b = ev.target.closest('button[data-rebuild]'); if (!b) return;
     m.style.display = "none";
     rebuildNode(b.dataset.rebuild).catch(error => toast(`Could not rebuild ${b.dataset.rebuild}: ${error.message}`));
@@ -2680,7 +2692,7 @@ async function loadSettings() {
   $("#sform").innerHTML = FIELDS.map(([k, l, t]) => `<label>${l}<input type="${t || "text"}" name="${k}" value="${esc(k==='apiUrl'?S.configuredApiUrl||S[k]:S[k])}"></label>`).join("") +
     `<label><span><input type="checkbox" name="autoStartWorker" ${S.autoStartWorker ? "checked" : ""}> Start the Windows worker with the app</span></label>` +
     `<label><span><input type="checkbox" name="voiceOverlay" ${vovEnabledPref() ? "checked" : ""}> Voice overlay on the game: the randomized transition visual over the game while you talk with gBox or it talks back</span></label>` +
-    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 refresh client (a bot game keeps its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
+    `<p class="mut" id="hotkey-scope-note"><b>Hotkeys only when gBox is in front.</b> F1 save the last 3 minutes (replay) · F2 save state · F3 autobot on/off for the game shown (whichever PC runs it) · F4 load state · F5 recover (update gBox, reconnect, MercMode back in the PiP with its autobot) · Shift/Ctrl+F2 save slot · Ctrl+I eyedropper · F11 / Alt+Enter full screen · hold ~ to talk · right-click / Ctrl+click / Alt+drag on the game: these work only while gBox (or the game playing in it) is the window in front. Blender and every other application keep all their keys and clicks.</p>`;
 }
 $("#ssave").onclick = async () => {
   const f = new FormData($("#sform")), s = Object.fromEntries(FIELDS.map(([k]) => [k, f.get(k)]));
@@ -3667,7 +3679,7 @@ function gameOutputPlace(){
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
 const EMB_HOLES = ".piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
-const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, [role=dialog], [role=menu], [aria-modal=true]";
+const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, #pad-takeover, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
   window.__gboxMenuWatch = new MutationObserver(records => {
@@ -3748,7 +3760,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown, #pad-takeover:not([hidden])" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -3946,16 +3958,19 @@ const compactContinuity = GBoxSessionContinuity.create({
     () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
   follow: (session, from) => compactFollow(session, from)
 });
-async function compactFollow(session, from) {
+// force (F5): the PiP moves at once, its first frame only a poster when there is one (the operator asked for this game)
+async function compactFollow(session, from, { force = false } = {}) {
   const token = await gbox.token();
   const webview = document.querySelector('#wv');
-  if (webview?.dataset.ready !== 'true') return;
+  if (webview?.dataset.ready !== 'true' && !force) return;
   const url = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/frame.jpg?token=${encodeURIComponent(token)}`;
-  const frame = await webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
-  if (!frame?.visible) return; // black boot frames do not replace the held gameplay
+  const look = () => webview.executeJavaScript(`window.GBoxSessionContinuity.picture(${JSON.stringify(url)})`);
+  const frame = !force ? await look() : webview?.dataset.ready === 'true' ? await look().catch(() => null) : null;
+  if (!frame?.visible && !force) return; // black boot frames do not replace the held gameplay
   if (!COMPACT.on || COMPACT.sid !== from) return;
   const image = $('#compact-stream');
-  if (image && frame.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+  if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+  else if (image && force) image.style.backgroundImage = '';   // never the old game's last frame under the new one
   compactSession = session; compactTitle = sessionTitle(session);
   closePipMenu();
   compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}`;
@@ -4086,6 +4101,25 @@ document.addEventListener('gbox-stream-state', event => {
   if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
   document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});
 }, true);
+// Pad takeover (gbox/pad_takeover.py): the view forwards your pad to the PiP's game and says when that game's bot let you
+// have it (GBOX:{ev:"padtakeover"}); the view is hidden behind the PiP, so the PiP shows the badge - "You have control -
+// put the pad down to give it back (3 s)" - counting down on this window's clock until the bot takes back over. Over a
+// game docked on this PC its window leaves a hole for it (embedTick's compact holes).
+const PADTAKE_PIP = { msg: null, at: 0, ui: null, shown: false };
+function padTakeoverPip(m) {
+  PADTAKE_PIP.msg = m; PADTAKE_PIP.at = Date.now();
+  padTakeoverPipRender();
+}
+function padTakeoverPipRender() {
+  if (!window.GBoxPadTakeover) return;
+  const m = PADTAKE_PIP.msg, sid = COMPACT.on ? compactCurrentSid() : null;
+  const st = m && sid && m.sid === sid ? GBoxPadTakeover.countdown(m, PADTAKE_PIP.at) : { show: false };
+  if (!st.show && !PADTAKE_PIP.ui) return;
+  PADTAKE_PIP.ui ||= GBoxPadTakeover.mount(document);
+  const shown = PADTAKE_PIP.ui.render(st);
+  if (shown !== PADTAKE_PIP.shown) { PADTAKE_PIP.shown = shown; EMB.last = ''; embedTick(); }   // the native game's hole
+}
+setInterval(padTakeoverPipRender, 250);
 function compactHover(show) {
   show = show || compactCoach.pinned();
   clearTimeout(compactHoverTimer);
@@ -4695,6 +4729,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
   wv.addEventListener("console-message", e => { if (String(e.message).startsWith("GBOX:")) try {
     const m = JSON.parse(e.message.slice(5));
     if (m.ev === "padscan") syncNativePads();
+    else if (m.ev === "padtakeover") padTakeoverPip(m);   // your pad has the PiP's game for a moment (its badge)
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);
@@ -4735,36 +4770,47 @@ gbox.onEmbedEvent?.(async ev => {
   if (ev.event === "gameup") return;
   if (ev.event === "gameclick") return closePops(null);
   if (ev.event === "whip") return whipSend(ev); if (ev.event === "ptt") return ev.down ? pttDown() : pttUp(); if (ev.event === "rclick") pwRightClick(ev.x, ev.y); if (ev.event === "ctrlclick") eyePoint(ev.x, ev.y); });
-// F5 on a frozen picture does whatever it takes (operator 2026-10-24): a fresh encoder on the PC that runs the game, new
-// picture connections, a fresh GPU video surface, then the client reload that keeps the game and PiP. Every step is bounded
-// and failures never stop the next one; the game itself is never restarted or stopped.
+// A PC back online (the rebuild panel): the shown game's encoder - its running replacement's - and every picture here.
+// Bounded; the game itself is never restarted or stopped.
 async function recoverStreams() {
   const sid = (COMPACT.on ? COMPACT.sid : null) || EMB.sid;
-  const steps = [];
-  if (sid && sid.includes('-')) steps.push((async () => {
-    const history = await Promise.race([gbox.api('/api/sessions?limit=200'), new Promise(r => setTimeout(r, 4000))]);
-    if (!history?.ok) return;
-    const current = GBoxSessionContinuity.commandSession(sid, history.data);
-    if (!current) return; // never send recovery to an ended session while its replacement is starting
-    const target = current.session_id;
-    return Promise.race([
-      gbox.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: target.split('-')[0],
-        input: { session_id: target, op: 'restart_stream', args: {} } }), new Promise(r => setTimeout(r, 4000))]);
-  })().catch(() => null));
+  const restart = (async () => {
+    const target = await repairTarget(sid);
+    if (!target) return; // never send recovery to an ended session while its replacement is starting
+    return Promise.race([gbox.api('/api/jobs', { tool: 'session_op', agent_use: false, require_worker: target.split('-')[0],
+      input: { session_id: target, op: 'restart_stream', args: {} } }), new Promise(r => setTimeout(r, 4000))]);
+  })().catch(() => null);
+  await reconnectPictures();
+  await Promise.allSettled([restart]);
+}
+// The running game a recovery command for `sid` may reach (an F5 with no MercMode game repairs the game on screen): that
+// session or its running replacement of the same game - never an ended game while its replacement starts, never another
+async function repairTarget(sid) {
+  if (typeof sid !== 'string' || !sid.includes('-')) return null;
+  const history = await Promise.race([gbox.api('/api/sessions?limit=200'), new Promise(r => setTimeout(r, 4000))]);
+  if (!history?.ok) return null;
+  return GBoxSessionContinuity.commandSession(sid, history.data)?.session_id || null;
+}
+// the local half of an F5 stream reboot: every game picture in this window on a new connection, a fresh GPU video surface
+async function reconnectPictures() {
   for (const el of document.querySelectorAll('img[data-stream-follow], #compact-stream')) try { globalThis.gboxStreamWatch?.reconnect?.(el, 'operator F5'); } catch {}
   try { await gpuGameDispose(); } catch {}
   EMB.last = ''; GPU_GAME.retryAt = 0; GPU_GAME.failedPid = null; GPU_GAME.blockedPid = null;
-  await Promise.allSettled(steps);
 }
-async function recoverAndRefresh() {
-  toast('F5: reconnecting the stream…');
-  // the bot first: the control plane checks it (a reload cannot cut that off) while the picture is repaired
-  const ensured = botEnsure(await shownSessionSoon());
-  try { await recoverStreams(); } catch {}
-  await Promise.race([ensured, new Promise(r => setTimeout(r, 3000))]);   // its id is kept before any reload
-  // F5 also runs the whole reconnect flow: the Spark, its library, the MercMode game, a live picture, the PiP
-  if (!COMPACT.on || !reconnectFlow.state().done) return reconnectRun({ quiet: false });
-  return clientRefresh.refresh().catch(error => toast(error.message));
+// F5 is one deterministic recovery (operator 2026-10-26: "when i encounter issues. I just want to press F5 reconnect it to
+// the source and reboot the stream and build and update the gbox app and get the pip stream back autoplaying seamlessly"):
+// this PC's gBox updated first (one reload when anything new arrived; the F5 goes on after it), the Spark reached,
+// MercMode's current game in the PiP with a fresh picture and its autobot driving, the main window on the same game. Each
+// step shows in the reconnect dialog (reconnect-flow.js run({ f5: true })), whose Try again is the same F5. The game
+// itself is never restarted or stopped.
+async function recoverAndRefresh() { return f5Recover(null); }
+async function f5Recover(resumed) {
+  const started = Number(resumed?.started) || Date.now();      // an F5 that reloaded counts from its key press
+  if (!resumed) toast('F5: updating gBox and bringing MercMode back…', 5000);
+  else for (let i = 0; i < 25 && !S; i++) await new Promise(r => setTimeout(r, 200));   // after its reload: settings first
+  const out = await reconnectRun({ quiet: false, f5: true, resumed });
+  if (out?.done && out.f5) toast(`F5 done in ${Math.max(1, Math.round((Date.now() - started) / 1000))} s: ${GBoxReconnectFlow.summary(out)}`, 8000);
+  return out;
 }
 // a frozen embedded view must not hold F5 / F3 up (its session is then unknown: null)
 const shownSessionSoon = (options, ms = 1500) => Promise.race([shownSession(options).catch(() => null),
@@ -4775,7 +4821,8 @@ const shownSessionSoon = (options, ms = 1500) => Promise.race([shownSession(opti
 // reports went stale is restarted, and the game's saved menu settings go back on. The answer is toasted, also after the
 // client reload F5 may do: the request id waits in sessionStorage.
 const BOT_ENSURE_KEY = 'gbox.f5.bot', BOT_ENSURE = { at: new Map(), following: null };
-async function botEnsure(sid, reason = 'F5') {
+// raise: the F5 dialog shows a failed check in its autobot step too
+async function botEnsure(sid, reason = 'F5', { raise = false } = {}) {
   if (typeof sid !== 'string' || !sid.includes('-')) return null;
   if (Date.now() - (BOT_ENSURE.at.get(sid) || 0) < 15000) return null;      // F5 and its reconnect flow: one request
   BOT_ENSURE.at.set(sid, Date.now());
@@ -4785,7 +4832,11 @@ async function botEnsure(sid, reason = 'F5') {
     try { sessionStorage.setItem(BOT_ENSURE_KEY, JSON.stringify({ id: job.id, at: Date.now() })); } catch {}
     followBotEnsure(job);
     return job;
-  } catch (error) { toast('⚠ F5: the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000); return null; }
+  } catch (error) {
+    toast('⚠ F5: the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000);
+    if (raise) throw Error(GBoxPipMedia.readable(error));
+    return null;
+  }
 }
 async function followBotEnsure(job) {
   if (!job?.id || BOT_ENSURE.following === job.id) return;
@@ -4845,18 +4896,22 @@ function reconnectOverlay() {
     '<div class="rc-flow" data-rc-flow></div><div class="rc-error" data-rc-error role="alert"></div>' +
     '<div class="rc-actions"><button class="act" data-rc-retry>Try again</button><button class="act" data-rc-local>Use This PC\'s library</button><button class="act" data-rc-close>Close</button></div>';
   document.body.append(el);
-  el.querySelector('[data-rc-retry]').onclick = () => reconnectRun({ quiet: false });
+  el.querySelector('[data-rc-retry]').onclick = () => recoverAndRefresh();      // Try again is the F5 recovery
   el.querySelector('[data-rc-close]').onclick = () => el.classList.remove('on');
   el.querySelector('[data-rc-local]').onclick = async () => { try { sessionStorage.setItem('gbox.connection.manual', 'local'); await gbox.selectConnection('local'); location.reload(); } catch (e) { toast(e.message); } };
   return el;
 }
 function reconnectRender(state) {
   const el = reconnectOverlay();
-  el.querySelector('[data-rc-flow]').innerHTML = state.steps.map(s => `<div class="rbn ${s.status === 'ok' ? 'ok' : s.status === 'run' ? 'run' : s.status === 'err' ? 'err' : ''}">` +
+  el.classList.toggle('f5', !!state.f5);                       // an F5's dialog also shows over the PiP (compact style)
+  el.querySelector('.rc-head b').textContent = state.f5 ? 'F5 · recovering gBox' : 'Reconnecting gBox';
+  el.querySelector('[data-rc-flow]').innerHTML = state.steps.map(s => `<div class="rbn ${['ok', 'run', 'err', 'warn'].includes(s.status) ? s.status : ''}">` +
     `${esc(s.label)}<small>${esc(s.sub)}</small><span class="rc-detail">${esc(s.detail || '')}</span></div>`).join('');
   const running = state.steps.find(s => s.status === 'run');
-  el.querySelector('[data-rc-status]').textContent = state.done ? 'Connected' : running ? running.detail || running.label : state.error ? 'Needs attention' : '';
+  el.querySelector('[data-rc-status]').textContent = state.done ? (state.f5 ? 'Done' : 'Connected') : running ? running.detail || running.label : state.error ? 'Needs attention' : '';
   el.querySelector('[data-rc-error]').textContent = state.error || '';
+  const frame = el.querySelector('iframe');                    // the visual, once the settings name the Spark
+  if (el.classList.contains('on') && S?.apiUrl && !frame.src) frame.src = new URL('/viz/overlay.html?mode=random', S.apiUrl).href;
 }
 const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   status: () => gbox.connectionStatus(),
@@ -4871,16 +4926,82 @@ const reconnectFlow = GBoxReconnectFlow.create({ render: reconnectRender, io: {
   health: sid => compactApi(`/api/sessions/${encodeURIComponent(sid)}/stream/health`, undefined, 'GET'),   // a shown game is kept; an offline PC's run is skipped
   session: sid => sessionById(sid),                             // a parked (warm) MercMode game gives way to the one playing
   recall: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
-  ensureBot: sid => botEnsure(sid, 'F5'),                       // the MercMode game it put on screen keeps its autobot
+  ensureBot: sid => botEnsure(sid, 'F5', { raise: true }),      // the MercMode game it put on screen keeps its autobot
   pipEnter: sid => compactController.enter({ sid }),
   pipRestore: () => compactRestore(),
   show: on => { const el = reconnectOverlay(); el.classList.toggle('on', !!on);
     const frame = el.querySelector('iframe'); if (on && S?.apiUrl && !frame.src) frame.src = new URL('/viz/overlay.html?mode=random', S.apiUrl).href; },
+  // ---- F5 only (run({ f5: true })) ----
+  workerName: () => S?.workerName || '',
+  // the game this window shows runs on this PC and is the operator's own (not MercMode's, an agent's or a parked one)
+  ownGame: async () => {
+    if (COMPACT.on && COMPACT.local) return { sid: COMPACT.sid, native: true };
+    const docked = !COMPACT.on && EMB.pid && EMB.sid && (!EMB.authority || EMB.authority === S?.apiUrl) ? EMB.sid : null;
+    const sid = COMPACT.on ? compactCurrentSid() : docked;
+    const row = sid ? await sessionById(sid).catch(() => null) : null;
+    const own = row?.state === 'running' && row.worker_online !== false && !row.warm && !row.agent_owned && row.detail?.worker_name === S?.workerName;
+    return own ? { sid, native: !!docked } : null;
+  },
+  shownSession: () => shownSessionSoon(),                       // with no MercMode game, the game on screen is repaired
+  repairTarget: sid => repairTarget(sid),
+  // the PiP shows another game: it moves to this one in place (the same window, bounds and aspect)
+  pipSwitch: async (_from, sid) => {
+    if (!COMPACT.on || COMPACT.local) return false;
+    const session = await sessionById(sid);
+    if (session?.state !== 'running' || session.worker_online === false) return false;
+    await compactFollow(session, COMPACT.sid, { force: true });
+    return COMPACT.sid === sid;
+  },
+  reconnectPicture: () => reconnectPictures(),
+  jobResult: (job, ms) => GBoxPipMedia.settle(compactApi, job, { limit: ms, what: 'The autobot check' }),
+  // the main window's Sessions view shows the F5's game, never a paused warm one left there
+  mainFollow: async sid => {
+    const wv = document.querySelector('#wv');
+    if (!wv) return false;
+    await Promise.race([wv.gboxReady, new Promise(r => setTimeout(r, 8000))]).catch(() => {});
+    if (wv.dataset.ready !== 'true') return false;
+    return wv.executeJavaScript(`(() => { if (typeof playing !== "undefined" && playing === ${JSON.stringify(sid)}) return "same"; show("Sessions", ${JSON.stringify(sid)}); return "shown"; })()`);
+  },
+  // a saved view still being restored after a reload finishes first; its retries then stop (they would bring back the
+  // game this F5 replaces)
+  settleView: async () => {
+    for (let i = 0; i < 40 && (clientViewRestoring || restoreClientView.busy); i++) await new Promise(r => setTimeout(r, 200));
+    clientViewNavigation++; restoreClientView.retryAt = 0; clientRefresh.done();
+  },
+  // this PC's gBox (main.js client:update) and the Spark's client against what this window loaded
+  update: async () => {
+    let pull = null;
+    try { pull = gbox.clientUpdate ? await gbox.clientUpdate() : null; }
+    catch (error) {                                             // an older main process has no client:update: null
+      const text = String(error?.message || error);
+      if (!/No handler registered/.test(text)) pull = { state: 'failed', detail: 'The update check failed (' + text.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, '') + ')' };
+    }
+    const latest = pull?.version || await gbox.clientVersion?.().catch(() => null) || null;
+    return GBoxReconnectFlow.updatePlan({ pull, baseline: await clientVersionAtLoad, latest });
+  },
+  // one reload through client:reload (it keeps the PiP window; new runtime code relaunches gBox when this PC is idle);
+  // the F5 goes on after it (F5_RESUME below)
+  applyUpdate: async info => {
+    const key = GBoxReconnectFlow.F5_KEY;
+    try { localStorage.setItem(key, JSON.stringify({ ...info, at: Date.now() })); } catch {}
+    try { await clientRefresh.refresh(); }
+    catch (error) { try { localStorage.removeItem(key); } catch {} toast('⚠ F5: gBox did not reload: ' + error.message, 8000); return false; }
+    await new Promise(r => setTimeout(r, 8000));                // the reload replaces this page: still here, it did not happen
+    try { localStorage.removeItem(key); } catch {}
+    return false;
+  },
+  f5Mark: info => { try { localStorage.setItem(GBoxReconnectFlow.F5_KEY, JSON.stringify({ ...info, at: Date.now() })); } catch {} },
 } });
 function reconnectRun(options) { return reconnectFlow.run(options).catch(error => toast(error.message)); }
+// An F5 that reloaded (or relaunched) gBox - to apply an update or to switch libraries - goes on here, once
+const F5_RESUME = (() => { try { const value = JSON.parse(localStorage.getItem(GBoxReconnectFlow.F5_KEY) || 'null');
+  localStorage.removeItem(GBoxReconnectFlow.F5_KEY); const age = Date.now() - Number(value?.at);
+  return age >= 0 && age < GBoxReconnectFlow.F5_RESUME_MS ? value : null; } catch { return null; } })();
+if (F5_RESUME) setTimeout(() => f5Recover(F5_RESUME), 1500);
 // On launch: back to the Spark and its MercMode game unless the operator chose This PC in this window
 // (operator 2026-10-24: "when I open gbox 90% of the time, it is to connect and watch an autobot mercmode play").
 setTimeout(() => {
+  if (F5_RESUME) return;                                         // the F5 going on does the reconnecting
   let manual = null, resume = null;
   try { manual = sessionStorage.getItem('gbox.connection.manual'); resume = sessionStorage.getItem(GBoxReconnectFlow.RESUME_KEY); } catch {}
   if (resume || (manual !== 'local' && !EMB.sid && !COMPACT.on)) reconnectRun({ quiet: !resume, automatic: true });
@@ -6695,6 +6816,20 @@ function rebuildPanelOpen(target) {
     },
     onClose: () => { if (rebuildPanel === panel) rebuildPanel = null; } });
   if (!COMPACT.on) dragAnywhere(host);                           // the floating panel moves; over the PiP it fills the window
+}
+// ---- "🧹 Free space on <PC>" (operator 2026-10-26; gbox/storage_purge.py, ../web/viz/storage-purge.js) ----
+// A dry run of storage_purge on that PC (POST /api/workers/<name>/storage-purge), its list of unplayed games and
+// automatically sent builds with sizes and reasons, then "Delete these" (asked twice) deletes exactly that list.
+let storagePanel = null;
+function storagePurgeOpen(name) {
+  if (!window.GBoxStoragePurge) return toast('The storage panel did not load');
+  storagePanel?.close();
+  if (!$('#storage-panel-style')) { const style = document.createElement('style'); style.id = 'storage-panel-style'; style.textContent = GBoxStoragePurge.CSS; document.head.append(style); }
+  const host = document.createElement('div'); document.body.append(host);
+  const panel = storagePanel = GBoxStoragePurge.mount(host, { name, api: rebuildApi,
+    onDone: s => { if (s.status === 'done') toast(`🧹 ${s.text || GBoxStoragePurge.summaryText(s)}`); },
+    onClose: () => { if (storagePanel === panel) storagePanel = null; } });
+  dragAnywhere(host);
 }
 function botDemoInView(gid, pc) {
   if (!gid || !pc) return;

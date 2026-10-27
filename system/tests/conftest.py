@@ -27,6 +27,15 @@ def _private_character_library(monkeypatch):
     monkeypatch.delenv("GBOX_CHARACTERS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_system_drive_rule(monkeypatch):
+    """A worker refuses game data on a Windows system drive (gbox/storage_policy.py); tests keep their temporary
+    folders wherever pytest puts them (C: on a Windows box), so the rule only applies where a test asks for it
+    (drive="C:" or its own system_drive)."""
+    from gbox import storage_policy
+    monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: None)
+
+
 @pytest.fixture
 def cfg(tmp_path):
     return Config(data_dir=tmp_path / "data", cache_dir=tmp_path / "cache", api_port=free_port())

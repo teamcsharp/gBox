@@ -240,6 +240,24 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
     return background.guarded_reason(store, worker, now=now, require_gpu=False)
 
 
+ORPHAN_GRACE_S = 60.0          # a copy younger than this may still be on its way into a run or the warm pool
+ORPHAN_TELEMETRY_S = 30.0      # a bot reported from it this recently: something plays it, it is not an orphan
+
+
+def mercmode_closed(store, sid: str, host: str | None) -> bool:
+    """A MercMode copy (this scheduler launched it) on a MercMode host that is no longer the host's run, its launch,
+    or a parked title: MercMode ended it (a rotation, a freeze, a black screen), so nothing should bring it back."""
+    from . import mercmode
+    if not host or not sid or '-' not in sid or not mercmode.settings(store, host)['enabled']:
+        return False
+    if (store.get('job', sid.split('-', 1)[1]) or {}).get('actor') != ACTOR:
+        return False
+    run = store.get(STATE, host) or {}
+    if sid == run.get('session_id') or sid.split('-', 1)[1] == run.get('job'):
+        return False
+    return sid not in mercmode.warm_sessions(store, host)
+
+
 def playbook_games() -> set[str]:
     """Catalog games a playbook plays without recorded play (gbox.doa2_bot, gbox.doa3_bot)."""
     out: set[str] = set()
@@ -257,6 +275,7 @@ class Screensaver:
         # builds(game_id) -> [built mod]; favorites() -> [{game_id, title}] (roulette; both optional)
         self.store, self.archive, self.submit, self.workers = store, archive, submit, workers
         self.builds, self.favorites = builds, favorites
+        self.config = None                           # install(): [builds] auto_send for the roulette's build choice
         self.builder = None
         self.rng = rng or random.Random()
         self.lock = threading.Lock()
@@ -294,13 +313,16 @@ class Screensaver:
                 host_cfg = self._worker_settings(w, cfg)
                 if not _local_scheduler(w):
                     self._tend_warm(w, running, now)
+                    if self._reap_orphans(w, running, now):
+                        out.setdefault('orphans_closed', []).append(w['name'])
                 run = self.store.get(STATE, w["name"])
                 if run:
                     out[w["name"]] = self._advance(w, run, host_cfg, running, now)
                     if run.get('mercmode') and host_cfg["enabled"] and not _local_scheduler(w) \
-                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(f'ended: {ROTATION}'):
-                        # a MercMode rotation: the next title starts in this same tick (the ready one is resumed at
-                        # once: no 30 s gap between the park and the swap)
+                            and self.store.get(STATE, w["name"]) is None and str(out[w["name"]]).startswith(
+                                (f'ended: {ROTATION}', *(f'ended: {why}' for why in BAD_ENDS.values()))):
+                        # a MercMode rotation, or a frozen / black game closed: the next title starts in this same tick
+                        # (the ready one is resumed at once: no 30 s gap between the park or the stop and the swap)
                         running = self.store.running_sessions()
                         reason = worker_reason(self.store, w, host_cfg, running, now)
                         out[w["name"]] = reason or self._start(w, host_cfg, now)
@@ -319,6 +341,56 @@ class Screensaver:
         if wake is not None:
             self.nudged = why
             wake.set()
+
+    def _reap_orphans(self, w, running, now) -> list[str]:
+        """MercMode hosts: close a copy that this scheduler or its bot started and that no run, launch or parked title
+        owns any more, once nothing has played it for a while. 2026-10-26 17:58: RE4 froze on its results, MercMode
+        ended the run while the bot's own reset relaunched RE4; nothing played that copy, and the scheduler waited
+        behind it ("a game is already running there") for 9 minutes. Operator and agent launches are never touched,
+        nor a copy the operator took over (label owner "you")."""
+        from . import mercmode
+        from .server import JobRequest
+        if not mercmode.settings(self.store, w['name'])['enabled']:
+            return []
+        run = self.store.get(STATE, w['name']) or {}
+        owned = set(mercmode.warm_sessions(self.store, w['name']))
+        jobs = {run.get('job')} | {(row or {}).get('job') for row in (mercmode.warm_pool(self.store, w['name']) or {}).values()}
+        jobs |= {p.get('job') for p in self.store.all(PENDING)}
+        if run.get('session_id'):
+            owned.add(run['session_id'])
+            nxt = (self.store.get('session', run['session_id']) or {}).get('replaced_by')
+            if nxt:
+                owned.add(nxt)                           # the run's own game relaunched by its bot: still the run
+        stopping = {(j.get('input') or {}).get('session_id') for j in self.store.all('job')
+                    if j.get('tool') == 'session_op' and (j.get('input') or {}).get('op') == 'stop_game'
+                    and j.get('state') in ('queued', 'assigned', 'running')}
+        closed = []
+        for s in running:
+            sid = s.get('session_id', '')
+            if not sid.startswith(w['id'] + '-') or sid in owned or sid in stopping or sid.split('-', 1)[1] in jobs:
+                continue
+            launch = self.store.get('job', sid.split('-', 1)[1]) or {}
+            actor = launch.get('actor')
+            if actor == DEMO_ACTOR:                      # a bot's relaunch: an orphan only when it replaced a MercMode copy
+                before = next((p for p in self.store.all('session') if p.get('replaced_by') == sid), None)
+                if not before or (self.store.get('job', before['session_id'].split('-', 1)[-1]) or {}).get('actor') != ACTOR:
+                    continue
+            elif actor != ACTOR:
+                continue
+            if (self.store.get('slabel', sid) or {}).get('owner') == 'you':
+                continue
+            if now - float(s.get('started') or now) < ORPHAN_GRACE_S:
+                continue
+            tel = telemetry_get(sid, now)
+            if tel and tel.get('age_s', 99) < ORPHAN_TELEMETRY_S:
+                continue
+            self.submit(JobRequest(tool='session_op', input={'session_id': sid, 'op': 'stop_game', 'args': {}},
+                                   agent_use=True, require_worker=w['id']), actor=ACTOR,
+                        origin={'via': 'MercMode: closing an orphaned copy', 'session_id': sid})
+            self.store.audit(ACTOR, 'mercmode.orphan_closed', sid, {'worker': w['name'], 'launched_by': actor,
+                                                                     'title': s.get('title') or s.get('game_title')})
+            closed.append(sid)
+        return closed
 
     def _worker_settings(self, worker, cfg):
         from . import mercmode
@@ -402,8 +474,11 @@ class Screensaver:
             return "no recorded game to play (play a game for a while first)"
         build = None
         if not merc_cfg['enabled'] and cfg.get("roulette") and self.builds:
-            from . import roulette
-            build = roulette.demo_build(self.builds(g["game_id"]), self.rng)
+            from . import roulette, storage_policy
+            # builds are opt-in per PC ([builds] auto_send = false): a demo plays a build this PC already has or the
+            # operator downloaded here, else the stock game; it never copies one over (gbox/storage_policy.py)
+            build = roulette.demo_build([b for b in self.builds(g["game_id"]) if storage_policy.sendable(
+                self.store, self.config, w, g["game_id"], str(b.get("name") or ""))], self.rng)
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
@@ -412,7 +487,8 @@ class Screensaver:
                 'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'))}}
             if merc_pick.get('selection'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
-        inp = {"game": game, "jump": True, "memory_cards": "operator"} | ({"mod": build["name"]} if build else {})
+        inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
+            {"mod": build["name"], "local_build_ok": True} if build else {})    # a stale copy here still demos
         if warm_ok and not mercmode.memory_reason(w, now):
             # a cold launch of a title with nothing warm keeps the pool's paused games (with too little memory the
             # worker's one-game rule closes them, without a save: nothing was played in them)
@@ -532,6 +608,8 @@ class Screensaver:
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
             if run.get('mercmode_rotate_requested'):
+                if operator_has_pad(sid, now):                 # never switched away under the operator's pad
+                    return f"{phase} {run['title']}: the operator has the pad, the switch waits"
                 # kept warm (paused) where the pool may hold it, else closed as before (_park falls back to _stop)
                 return self._park(w, run, now, ROTATION)
             if phase in ('starting', 'playing') and sid:
@@ -559,7 +637,8 @@ class Screensaver:
             run |= {"phase": "playing", "autoplay_job": _jid(job), "playing_since": now}
             self.store.put(STATE, w["name"], run)
             return f"playing {run['title']}"
-        if phase == "playing" and not run.get('mercmode') and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60:
+        if phase == "playing" and not run.get('mercmode') and now - run.get("playing_since", now) >= cfg["session_minutes"] * 60 \
+                and not operator_has_pad(sid, now):            # the operator playing it now: the next game waits
             return self._stop(w, run, now, f"{cfg['session_minutes']} minutes: next game")
         return f"{phase} {run['title']}"
 
@@ -1072,7 +1151,11 @@ class Screensaver:
             if bad and not run.get("yield"):
                 upd["yield"] = BAD_ENDS.get(bad, f"{bad}: next game")
             self.store.put(STATE, run["worker"], run | upd)
-            return True
+        if bad:
+            # the frozen / black game goes and the next title comes now, not at the next 30 s tick (2026-10-26: RE4 froze
+            # on its results at 16:54:33, the stop came 15 s later and the prepared RE5 only at 16:55:58)
+            self.nudge(f'bad end ({bad}): next title')
+        return True
 
     def round_boundary(self, body, parent_job, now=None):
         from . import mercmode
@@ -1352,6 +1435,13 @@ def telemetry_get(sid: str, now: float | None = None) -> dict:
                                                          "running": t.get("running", True) and now - t["at"] < 30}
 
 
+def operator_has_pad(sid: str, now: float | None = None) -> bool:
+    """The operator holds the pad on this session's bot right now (a pad takeover, gbox/pad_takeover.py, from the bot's
+    live report): its game is never stopped or parked under them; the schedule goes on once the bot has it back."""
+    t = telemetry_get(sid, now)
+    return bool(t.get("running")) and t.get("age_s", 99) < 15 and (t.get("stats") or {}).get("operator_control") is True
+
+
 def telemetry_last(sid: str, now: float | None = None) -> dict:
     """The newest report exactly as autoplay sent it (running is what it said, however old) plus its age; {} when there
     is none. F5 recovery tells "the bot stopped" (running false) from "the bot went quiet while driving" (stale)."""
@@ -1382,6 +1472,7 @@ def install(app, store, config, auth, submit, workers, archive):
 
     saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers,
                         builds=builds_for, favorites=favorites)
+    saver.config = config
     app.state.autoplay_screensaver = saver
     from . import roulette
     from .server import JobRequest

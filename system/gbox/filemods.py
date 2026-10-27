@@ -47,6 +47,8 @@ def ensure_base(cfg, game_id: str, rom: Path, progress=None) -> Path:
     done = base / ".gbox-base-complete"
     if done.exists():
         return base
+    from . import storage_policy                       # never a game copy on a Windows system drive
+    storage_policy.require_off_system(cfg, base, "a base copy of the game")
     files = [f for f in src.rglob("*") if f.is_file()]
     total, copied = sum(f.stat().st_size for f in files) or 1, 0
     for f in files:
@@ -65,6 +67,8 @@ def build(cfg, game_id: str, rom: Path, name: str, changes: dict, progress=None)
     """changes: {relative path: {"from": local file} | {"bytes": raw} | {"patch": [{"offset": int, "hex": str}]}}."""
     base = ensure_base(cfg, game_id, rom, progress)
     out = mod_dir(cfg, game_id, name)
+    from . import storage_policy
+    storage_policy.require_off_system(cfg, out, f"build {name}")
     if out.exists():
         shutil.rmtree(out)
     norm = {Path(k).as_posix().lower(): (k, v) for k, v in changes.items()}
@@ -158,6 +162,8 @@ def build_image(cfg, game_id: str, rom: Path, name: str, changes: dict, progress
     or patch inside that file."""
     rom = Path(rom)
     out_dir = mod_dir(cfg, game_id, name)
+    from . import storage_policy
+    storage_policy.require_off_system(cfg, out_dir, f"build {name}")
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -404,6 +410,10 @@ def stage(cfg, server: str, headers: dict, game_id: str, name: str, progress=Non
             # in place or erase its metadata. Claim a fresh exclusive sibling.
             alias += "-" + uuid.uuid4().hex[:12]
             out = mod_dir(cfg, game_id, alias)
+        # the build has to be copied onto this PC: only off the system drive, and only when the operator asked for
+        # it here (their own job, a download receipt, or [builds] auto_send) - gbox/storage_policy.py
+        from . import storage_policy
+        storage_policy.check_build_copy(cfg, game_id, name, out)
         out.mkdir(parents=True, exist_ok=False)
         if alias != name:
             (out / STAGED_MARK).write_text(name)
@@ -528,7 +538,7 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
         dst = _file_path(out, row["path"])
         _file_path(out, row["path"] + ".part")
     total, done = sum(f["size"] for f in files) or 1, 0
-    reported = [0.0]
+    reported, permitted = [0.0], False
     for f in sorted(files, key=lambda f: f["path"] == ".gbox-mod.json"):    # the marker last: a half copy isn't a mod
         dst = _file_path(out, f["path"])
         if dst.exists() and dst.stat().st_size == f["size"]:
@@ -536,6 +546,10 @@ def _fetch(cfg, server: str, headers: dict, game_id: str, name: str, progress=No
                 valid = not f.get('sha256') or hashlib.file_digest(stream, 'sha256').hexdigest() == f['sha256']
             if valid:
                 done += f["size"]; continue
+        if not permitted:                    # the first byte to download: off the system drive and opted in
+            from . import storage_policy
+            storage_policy.check_build_copy(cfg, game_id, name, out)
+            permitted = True
         dst.parent.mkdir(parents=True, exist_ok=True)
         tmp = dst.with_name(dst.name + ".part")
         _download_file(cfg, server, headers, game_id, name, f, tmp, dst, out, progress,
@@ -666,6 +680,12 @@ def delete_build(cfg, game_id: str, name: str, in_use=()) -> dict:
             continue
         try:
             _hash_sidecar(out).unlink(missing_ok=True)
+        except OSError:
+            pass
+    if not errors:                                   # the operator's download receipt goes with the last copy
+        from . import storage_policy
+        try:
+            storage_policy.receipt_file(cfg, game_id, name).unlink(missing_ok=True)
         except OSError:
             pass
     _LOCAL_CACHE.clear()                             # the next heartbeat reports the build gone

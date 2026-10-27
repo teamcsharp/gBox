@@ -134,7 +134,7 @@ test('F3 never shows the replay\'s "Preparing" text and F1 never touches the aut
 });
 
 test('the on-screen hints name the keys the operator asked for', () => {
-  assert.match(html, /F1 save the last 3 minutes \(replay\) · F2 save state · F3 autobot on\/off for the game shown \(whichever PC runs it\) · F4 load state · F5 refresh client/);
+  assert.match(html, /F1 save the last 3 minutes \(replay\) · F2 save state · F3 autobot on\/off for the game shown \(whichever PC runs it\) · F4 load state · F5 recover \(update gBox, reconnect, MercMode back in the PiP with its autobot\)/);
   assert.match(html, /\["replay", "🎬 Save the last 3 minutes \(replay\)  F1"\]/);
   assert.match(html, /\["save", "💾 Save state  F2", noStates\], \["load", "📂 Load state  F4", noStates\]/);
   assert.match(html, /"🤖 Take control \(autoplay\)  F3/);
