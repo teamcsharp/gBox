@@ -138,10 +138,9 @@ def test_near_origin_direction_reversals_do_not_thrash_the_stick_and_valid_ray_r
         assert bot.stats["aim_feedback"] == "near-origin ray; correction paused"
     s["laser"] = {"from": (143, 53, 136), "at": (400, 100, 200)}
     action = bot.tick(s, s["player"], s["enemies"][0], 1.35)
-    assert {"l1", "rleft"} <= action["hold"] and {"rup", "rdown"} & action["hold"] and "r1" not in action["hold"]   # steering, off him
-
-
-    assert {"l1", "rleft"} <= action["hold"] and {"rup", "rdown"} & action["hold"] and "r1" not in action["hold"]   # valid ray, off him: turn, no shot
+    # valid ray, 28 deg off him in yaw (outside his window): turn, no shot; its 5 deg of pitch sit inside his window's
+    # deadband (re5_engage.deadband): the stick leaves them alone - no waving while the dot is on his body height
+    assert {"l1", "rleft"} <= action["hold"] and not {"rup", "rdown"} & action["hold"] and "r1" not in action["hold"]
     assert bot.near_ray_since is None
     assert bot.stats["aim_feedback"] == "ray direction"
 
@@ -157,7 +156,8 @@ def test_persistent_near_origin_feedback_has_bounded_reacquisition_and_valid_ray
     assert "reacquire" in bot.stats["combat"]
     assert not bot.blocked_until                 # uncertain direction does not invent cover evidence
     s["laser"] = None
-    assert bot.tick(s, s["player"], s["enemies"][0], 1.6)["hold"] == set()  # no ray/floor: no blind sidestep
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.6)["hold"] == {"l1"}  # no ray: no blind sidestep, the gun stays up
+    assert bot.near_ray_move_until == 0                                     # (its ray comes with it)
     s["laser"] = {"from": (0, 149, 46), "at": (0, 110, 400)}
     assert bot.tick(s, s["player"], s["enemies"][0], 1.65)["hold"] == {"l1", "r1"}
     assert bot.near_ray_since is None and bot.near_ray_move_until == 0
@@ -178,8 +178,14 @@ def test_short_ray_at_a_nearby_enemy_still_fires_and_aligned_near_cover_still_re
         assert bot.tick(s, s["player"], s["enemies"][0], now)["hold"] == {"l1", "r1"}
         assert bot.last_dot[0] == "body"
         assert bot.near_ray_since is None
+    # a torn read (its origin 3 m behind him) is no ray: a Majini at arm's length straight ahead is still shot
     s["laser"] = {"from": (0, 110, 46), "at": (0, 110, 56)}
-    assert bot.tick(s, s["player"], s["enemies"][0], 2.1)["hold"] in ({"lleft"}, {"lright"})
+    assert bot.tick(s, s["player"], s["enemies"][0], 2.1)["hold"] == {"l1", "r1"}
+    assert bot.stats["fire_gate"] == "point blank" and bot.stats["laser_rejected"] == 1
+    # aligned near cover: a wall 45 cm in front of the muzzle, straight toward a Majini 4 m off - one sidestep
+    s["player"]["pos"] = (0, 0, 0)
+    s["laser"] = {"from": (0, 149, 46), "at": (0, 140, 90)}
+    assert bot.tick(s, s["player"], s["enemies"][0], 2.2)["hold"] in ({"lleft"}, {"lright"})
     assert bot.stats["combat"] == "reposition: measured obstruction"
 
 
@@ -189,7 +195,7 @@ def test_malformed_ray_cannot_drive_stick_feedback(tmp_path, bad):
     bot = C.Combat(m, {}, learn_dir=tmp_path, lessons=lambda row: None)
     s = snap(m)
     s["laser"] = {"from": (0, 149, 46), "at": bad}
-    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == set()   # no ray/floor: request supported reacquisition
+    assert bot.tick(s, s["player"], s["enemies"][0], 1.0)["hold"] == {"l1"}   # no ray: the gun up, no stick, no trigger
     assert bot._ray(s, 1.0) is None
 
 
@@ -532,10 +538,13 @@ def test_confirmed_cover_lowers_the_gun_until_cooldown_then_acquisition_can_fire
     s["laser"] = None
     assert "r1" not in bot.tick(s, s["player"], s["enemies"][0], 0.25)["hold"]
     act = bot.tick(s, s["player"], s["enemies"][0], 1.1)["hold"]
-    assert not ({"l1","r1"} & act)                       # without ray or floor, route rather than hold aim forever
+    assert "l1" in act and "r1" not in act and not bot.needs_firing_position   # the gun up, waiting for its ray
+    for t in (1.6, 2.1, 2.6):                            # up LASERLESS_SWITCH_S without one: the laserless controller,
+        act = bot.tick(s, s["player"], s["enemies"][0], t)["hold"]   # and without ray or floor it routes rather than
+    assert not ({"l1","r1"} & act)                       # holding the aim forever
     assert bot.needs_firing_position
     s["laser"] = {"from": (0.0, 149.0, 46.0), "at": (0.0, 110.0, 1000.0)}
-    assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 1.15)["hold"]
+    assert {"l1", "r1"} <= bot.tick(s, s["player"], s["enemies"][0], 2.65)["hold"]
 
 
 def test_measured_exposed_enemy_wins_over_a_nearer_front_candidate():
@@ -549,7 +558,7 @@ def test_measured_exposed_enemy_wins_over_a_nearer_front_candidate():
 
 
 def test_actual_first_hit_overrides_camera_sector_for_a_close_low_enemy_until_dead():
-    foot, impact = (0.0, -180.0, 70.0), (0.0, -70.0, 70.0)
+    foot, impact = (0.0, -140.0, 140.0), (0.0, -30.0, 140.0)            # below the camera's sector, the dot on him
     m = world(laser_dot=impact)
     m.put(C.FIRE_TIMER_FPS, ">f", C.FIRE_TIMER_ORIG * 80)
     m.put(C.WEAPON_TABLE + 0x12 * C.WEAPON_STRIDE + C.WEAPON_INTERVAL, ">f", 0.0)
@@ -565,7 +574,7 @@ def test_actual_first_hit_overrides_camera_sector_for_a_close_low_enemy_until_de
         assert bot.target_exposed
         assert {"l1", "r1"} <= bot.tick(s, s["player"], target, now)["hold"]
     assert bot.stats["rapid_fire_verified"]
-    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 50.0, 57.0)           # actual first hit now stops short
+    m.put(LASER + C.LASER_DOT, ">3f", 0.0, 100.0, 80.0)          # actual first hit now stops short (a ledge)
     assert bot.choose_target(s, s["player"], s["enemies"], 0.15) is None
     assert "r1" not in bot.tick(s, s["player"], target, 0.15)["hold"]
     m.put(LASER + C.LASER_DOT, ">3f", *impact)
@@ -782,19 +791,29 @@ def test_by_default_he_fires_as_soon_as_the_dot_is_anywhere_on_him():
         assert bot.zone == "body" and {"l1", "r1"} <= act["hold"], dot          # no settle, no patience: the trigger
 
 
-def test_a_close_threat_gets_blasted_from_the_moment_the_gun_comes_up():
-    # operator 2026-10-22: "I need them blasting like a lunatic on a threat. They are just eating blows ... There is no
-    # preparing the aim. There's only blasting and aiming while blasting."
-    for dot in ((90.0, 120.0, 400.0), (0.0, 30.0, 300.0), None):   # beside him, at his feet, no ray yet
+def test_a_close_threat_is_blasted_once_the_aim_is_on_him_never_beside_him_or_at_his_feet():
+    # operator 2026-10-22: "I need them blasting like a lunatic on a threat" - and 2026-10-26: "she lowered her gun, shot
+    # at his feet, circled around him and then shot him. This is an absurd way to behave". The trigger is down from the
+    # first frame the aim is inside his window (re5_engage.window); beside him or at his feet it waits while the stick
+    # brings the dot on (2026-10-26: the old blast fired whatever the aim within 30 deg - "shooting at walls")
+    for dot, want in (((90.0, 120.0, 400.0), {"rright"}), ((0.0, 30.0, 300.0), {"rup"})):   # beside him, at his feet
+        m = world(laser_dot=dot)
+        bot = C.Combat(m, {}, clock=lambda: 0.0)
+        s = supported_laserless(snap(m, enemy=(0.0, 0.0, 300.0)))
+        for k in range(3):
+            act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)["hold"]
+            assert "l1" in act and "r1" not in act and want <= act, (dot, k)
+        assert bot.stats["fire_gate"].startswith("slewing") and bot.stats["los_held_fire"] == 3
+    for dot in ((0.0, 110.0, 300.0), None):              # the dot on him; no ray yet, the gun up and level, faced
         m = world(laser_dot=dot) if dot else world()
         bot = C.Combat(m, {}, clock=lambda: 0.0)
-        s = supported_laserless(snap(m, enemy=(0.0, 0.0, 300.0)))  # measured corridor also gates laserless firing
+        s = supported_laserless(snap(m, enemy=(0.0, 0.0, 300.0)))
         if dot is None:
             s["laser"] = None
         for k in range(5):
             act = bot.tick(s, s["player"], s["enemies"][0], k * 0.02)["hold"]
             assert {"l1", "r1"} <= act, (dot, k)                     # gun up, trigger down, every frame
-        assert bot.stats["fire_gate"] == ("laserless gun: aimed hold" if dot is None else "threat: blasting")
+        assert bot.stats["fire_gate"] == ("threat: blasting" if dot is None else "on him")
 
 
 def test_blast_stays_off_for_far_majini_and_ones_off_to_the_side():
@@ -845,7 +864,7 @@ def test_a_direct_gun_with_the_gun_down_is_raised_not_treated_as_laserless():
     # the laser ray only exists while aiming, so every gun looked laserless with the gun down and never came up
     m = world(aiming=False, act_vt=0)
     bot = C.Combat(m, {}, clock=lambda: 0.0)
-    s = supported_laserless(snap(m, enemy=(700.0, 0.0, 900.0)))        # a Majini off to the side, in range
+    s = supported_laserless(snap(m, enemy=(500.0, 0.0, 900.0)))        # a Majini 29 deg off, in the gun's sector
     s["laser"] = None                                                   # the gun is down: no ray
     act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
     assert "l1" in act                                                  # raise the gun (the ray comes with it)
@@ -873,16 +892,20 @@ def test_a_wild_ray_error_faces_him_levels_the_gun_and_holds_the_trigger():
     assert "r1" in act and "aim_guard" not in bot.stats, act
 
 
-def test_a_moderate_error_at_the_muzzle_is_steered_like_any_other_and_still_blasted():
-    # 13:05 live: a "close" guard that skipped the steering left yaw +14 / pitch +24 uncorrected through 149 ticks of fire
+def test_a_moderate_error_at_the_muzzle_is_steered_and_the_blast_waits_for_his_window():
+    # 13:05 live: a "close" guard that skipped the steering left yaw +14 / pitch +24 uncorrected through 149 ticks of fire.
+    # The error is steered like any other; the trigger waits until the aim is inside his window (no rounds beside him)
     m = world(laser_dot=(40.0, 100.0, 140.0))        # the dot a hand beside him: 23 deg of yaw to take out
     bot = C.Combat(m, {}, clock=lambda: 0.0)
     s = snap(m, enemy=(0.0, 0.0, 150.0))
     s["player"]["pitch"] = 0.0
     act = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
-    assert {"l1", "r1"} <= act, act                  # the threat blast goes on (operator 2026-10-22)
-    assert act & {"rleft", "rright"}, act            # ...while the stick takes the error out
-    assert "aim_guard" not in bot.stats and bot.stats["fire_gate"] == "threat: blasting"
+    assert "l1" in act and "r1" not in act, act
+    assert act & {"rleft", "rright"}, act            # the stick takes the error out
+    assert "aim_guard" not in bot.stats and bot.stats["fire_gate"].startswith("slewing")
+    m.put(LASER + C.LASER_DOT, ">3f", 40.0, 110.0, 260.0)   # 11 deg off his chest (past him): inside his window at 1.5 m
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"]
+    assert {"l1", "r1"} <= act and bot.stats["fire_gate"] == "threat: blasting", act
 
 
 def test_a_majini_behind_gets_the_quick_turn_and_the_aim_takes_over_once_the_heading_swings():
@@ -924,5 +947,7 @@ def test_the_majini_in_front_is_chosen_over_a_slightly_nearer_one_behind_and_the
     assert bot.choose_target(s, s["player"], s["enemies"], 0.0) is front
     behind["pos"] = (0.0, 0.0, -230.0)                 # a little nearer still: no swing round for him
     assert bot.choose_target(s, s["player"], s["enemies"], 0.1) is front
-    behind["pos"] = (0.0, 0.0, -60.0)                  # on top of him behind: worth the turn now
-    assert bot.choose_target(s, s["player"], s["enemies"], 0.2) is behind
+    behind["pos"] = (0.0, 0.0, -60.0)                  # on top of him behind - but one stands 3 m in front: the gun never
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.2) is front    # comes down to turn away (operator 2026-10-26)
+    front["pos"] = (0.0, 0.0, 450.0)                   # the front one further off than FRONT_CLEAR_R: the turn now
+    assert bot.choose_target(s, s["player"], s["enemies"], 0.3) is behind

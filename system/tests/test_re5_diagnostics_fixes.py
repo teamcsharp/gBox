@@ -11,7 +11,7 @@ from gbox.mercs.round_audit import RoundAudit
 from gbox.mercs.round_map import RoundTrace
 from gbox.mercs.titles import re5_combat as C, re5_ps3 as R, re5_weapons as W
 from tests.test_re5_combat import PL, FakeMem, snap, world
-from tests.test_re5_laserless_fire import scene
+from tests.test_re5_laserless_fire import laserless, scene
 
 SU, FIRST, OTHER_VT = 0x30900000, 0x31000000, 0x015B0000
 
@@ -78,26 +78,47 @@ def test_a_first_aid_spray_in_hand_is_no_gun_and_its_use_is_no_shot(tmp_path):
     assert combat._in_hand(s, PL) == (0x12, 9) and not combat.item_in_hand
 
 
-def test_a_laserless_gun_blasts_a_close_threat_instead_of_lowering_to_turn(tmp_path):
-    """Operator 2026-10-26: "the laserless path must fire while turning toward a target within ~3 m instead of lowering
-    the gun". Inside LASERLESS_BLAST_R and LASERLESS_BLAST_CONE: the gun stays up, the trigger down, the aim correcting."""
+def test_a_laserless_gun_turns_gun_down_to_a_close_majini_off_to_the_side_then_blasts_him(tmp_path):
+    """#1231 fired a laserless gun "while the aim corrects" at a Majini up to 60 deg off: rounds into the wall beside
+    him. Operator 2026-10-26: "raise his gun, aim it at the target, and shoot the target" - with nothing else in front the
+    gun comes down to turn (~150 deg/s against ~30 aiming); once the aim is inside his window the close-threat blast
+    (within LASERLESS_BLAST_R no floor corridor is needed) holds the trigger."""
     memory, state = scene(0x1A)
     a = math.radians(50)
-    state["enemies"][0]["pos"] = (250.0 * math.sin(a), 0.0, 250.0 * math.cos(a))
-    combat = C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None)
+    foot = (250.0 * math.sin(a), 0.0, 250.0 * math.cos(a))
+    state["enemies"][0]["pos"] = foot
+    combat = laserless(C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None), 0x1A)
     keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.0)["hold"]
-    assert {"l1", "r1"} <= keys and keys & {"rleft", "rright"}
-    assert combat.stats["fire_gate"] == C.BLAST_GATE_LASERLESS and "lower weapon" not in combat.stats["combat"]
-    assert combat.stats["laserless_blasts"] == 1
+    assert not keys & {"l1", "r1"} and "rleft" in keys                  # gun down, the body turning to him (left)
+    assert "lower weapon" in combat.stats["combat"]
+    state["player"]["rot"] = a                                          # turned: his heading and the camera on him
+    state["camera"] = {"eye": (0.0, 140.0, 0.0), "at": (foot[0], 110.0, foot[2])}
+    keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.3)["hold"]
+    assert {"l1", "r1"} <= keys
+    assert combat.stats["fire_gate"] == C.BLAST_GATE_LASERLESS and combat.stats["laserless_blasts"] == 1
 
 
 def test_a_laserless_gun_still_turns_gun_down_for_one_far_off_its_heading(tmp_path):
     memory, state = scene(0x1A)
-    a = math.radians(80)                                                 # outside the cone: the body turn is faster
+    a = math.radians(80)                                                 # far off the heading: the body turn is faster
     state["enemies"][0]["pos"] = (250.0 * math.sin(a), 0.0, 250.0 * math.cos(a))
-    combat = C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None)
+    combat = laserless(C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None), 0x1A)
     keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.0)["hold"]
     assert "r1" not in keys and "lower weapon" in combat.stats["combat"]
+
+
+def test_a_laserless_gun_keeps_the_gun_up_on_a_majini_in_front_instead_of_turning_away(tmp_path):
+    """The target 80 deg off, another Majini 2 m straight ahead: the gun never comes down to turn away from him - he is
+    fought now (re5_engage.front_threat)."""
+    memory, state = scene(0x1A)
+    a = math.radians(80)
+    state["enemies"][0]["pos"] = (250.0 * math.sin(a), 0.0, 250.0 * math.cos(a))
+    front = {"slot": 1, "ptr": state["enemies"][0]["ptr"] + 0x100, "pos": (0.0, 0.0, 200.0), "hp": 800, "hp_max": 800}
+    state["enemies"].append(front)
+    combat = laserless(C.Combat(memory, {}, learn_dir=tmp_path, lessons=lambda e: None), 0x1A)
+    keys = combat.tick(dict(state), state["player"], state["enemies"][0], 1.0)["hold"]
+    assert {"l1", "r1"} <= keys and combat.target_key == front["ptr"] and combat.stats["front_first"] == 1
+    assert "lower weapon" not in combat.stats["combat"]
 
 
 def test_a_gun_up_two_seconds_without_a_ray_is_laserless_and_a_ray_resets_it(tmp_path):

@@ -52,9 +52,19 @@ def test_known_unlinked_mesh_wall_prevents_fire_even_at_close_range(tmp_path,wid
     assert 'known-wall veto' in combat.stats['fire_gate']
 
 
+def laserless(combat, wid):
+    """The gun has been up LASERLESS_SWITCH_S without a laser ray: re5_combat.Combat.laserless_now."""
+    combat.no_ray_s = {wid: C.LASERLESS_SWITCH_S}
+    return combat
+
+
 def test_gun_without_ray_fires_from_finite_camera_then_returns_to_laser_when_available(tmp_path):
     memory,state = scene(0x12)
     combat = C.Combat(memory,{},learn_dir=tmp_path)
+    keys = combat.tick(state,state['player'],state['enemies'][0],.5)['hold']
+    assert 'l1' in keys and 'r1' not in keys                  # its ray not shown yet: up, waiting (10 m: no camera guess)
+    assert combat.stats['aim_feedback'] == 'no laser ray yet; camera direction'
+    laserless(combat, 0x12)                                   # up LASERLESS_SWITCH_S without one: the laserless controller
     assert {'l1','r1'} <= combat.tick(state,state['player'],state['enemies'][0],1.)['hold']
     assert 'camera direction' in combat.stats['aim_feedback']
     state['laser'] = {'from':(0.,149.,46.),'at':(0.,110.,1000.)}
@@ -67,7 +77,7 @@ def test_gun_without_ray_fires_from_finite_camera_then_returns_to_laser_when_ava
 def test_missing_camera_uses_native_pitch_and_unknown_pitch_has_bounded_reacquisition(tmp_path,wid):
     memory,state = scene(wid)
     del state['camera']
-    combat = C.Combat(memory,{},learn_dir=tmp_path)
+    combat = laserless(C.Combat(memory,{},learn_dir=tmp_path), wid)
     assert {'l1','r1'} <= combat.tick(state,state['player'],state['enemies'][0],1.)['hold']
     assert 'body/pitch estimate' in combat.stats['aim_feedback']
     del state['player']['pitch']
@@ -112,6 +122,7 @@ def test_finite_but_unmoving_camera_releases_aim_and_yields_real_route_movement(
     memory,state = scene(wid)
     state['camera']['at'] = (1000.,140.,0.)
     bot = R.Bot(memory,clock=lambda:10.,learn_dir=tmp_path)
+    laserless(bot.combat, wid)
     assert 'l1' in bot._tick(dict(state))['hold']
     bot.clock = lambda:12.6
     assert bot._tick(dict(state)) == {'hold':set()}

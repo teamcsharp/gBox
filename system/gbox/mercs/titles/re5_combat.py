@@ -9,9 +9,13 @@ anything but the dot misses. So every tick:
     = the ray hits something else first (the floor, a wall, a prop) or passes him;
   * the aim approaches a preferred anatomical zone until any body region is exposed, then keeps that exposed
     region under the dot. Stick correction follows the measured shot ray rather than the camera ray;
-  * a loaded direct-fire gun holds L1 + R1 during acquisition and tracking, including off-reticle frames. This is
-    the operator's later continuous-fire policy, not a claim that every shot will land. Confirmed cover lowers the
-    gun for repositioning. Splash weapons still require first-hit overlap and safe impact clearance;
+  * one straight sequence per Majini (operator 2026-10-26: "raise his gun, aim it at the target, and shoot the target";
+    re5_engage): the gun comes up, the aim slews onto him with a deadband inside his body's window, the trigger is down
+    while the dot is on any Majini or (within re5_engage.CLOSE_R) the aim is inside his window - with 80x fire that is
+    the operator's "blasting" - and up while the dot is on a wall or the floor short of him or the gun is still coming
+    up (a Majini at arm's length in front excepted); the gun comes down to turn only with nothing threatening in front.
+    A laser read that cannot be the gun's (re5_engage.plausible) never steers or fires. Measured cover turns to another
+    Majini in sight, else one sidestep. Splash weapons still require first-hit overlap and safe impact clearance;
   * direct-gun firing is observed in RAM (the player's current action object, player +0x1238, entering the
     weapon-fire action 0x0163DFC0 / its frame counter +0x20 starting over) and scored: a hit when any Majini's health
     fell within HIT_S, a headshot when the dot was on the head as it left; a miss is classified by what the dot was on
@@ -50,6 +54,7 @@ from .. import ballistics as B
 from .. import lessons as L
 from ..aim import Shots
 from . import re5_aim_geometry
+from . import re5_engage as E
 
 MAP_ID = "BLUS30491"
 
@@ -161,6 +166,16 @@ BOW_TURN_ENTER, BOW_TURN_EXIT = math.radians(60), math.radians(25)
 BOW_TURN_IDLE_S, BOW_TURN_MAX_S = .75, 2.0
 BOW_READY_WAIT_S = 1.0
 BOW_TARGET_SLACK = 75.0              # keep a living target through nearby distance ties (world cm)
+# One straight sequence (operator 2026-10-26: "he should basically raise his gun, aim it at the target, and shoot the
+# target"; re5_engage): the gun up, the stick slewing onto him with a deadband, the trigger down only while the aim is on
+# him (his body's window) or the dot on any Majini, the gun down to turn only with nothing threatening in front.
+READY_FIRE_R = 150.0                 # the gun still coming up: the trigger only for a Majini this near (on his level) ...
+READY_FIRE_FACING = math.radians(25)  # ... faced within this (2026-10-26: shots while the gun came up hit 13 of 141 -
+                                      # "shot at his feet")
+REPOSITION_S = 0.7                   # a blocked line: one sidestep this long, the next one the other way (was 0.25 s
+                                     # each way: standing among foes jittering left / right)
+WINDOW_GATES = frozenset({"on him", "on another Majini", "point blank", "threat: blasting", "line to him"})
+                                     # the gates that fire inside the target's window (behavior_metrics: on target)
 
 
 def bow_tolerance(distance):
@@ -514,6 +529,20 @@ class Combat:
         self.laser_weapons: set = set()       # weapon ids that have shown a laser ray in hand (the longshot rule)
         self._rot_seen = None
         self._pos_seen: dict = {}
+        self.look = None                      # gbox.mercs.bot_look.BotLook (the driver's Bot sets it): "look at the bot"
+        self.metrics = None                   # gbox.mercs.behavior_metrics.BehaviorMetrics (the Bot's): the shots' lines
+        self._look_pending: dict = {}         # id(shot record) -> (its look entry, target ptr, enemy hp at the shot)
+        self.round_dots: dict = {}            # this round's shots by what the dot was on (re5_engage.dot_class)
+        self.decisions_n = 0                  # one more per decision (the Bot tells this tick's decision from a stale one)
+        self.look_decision = None             # (decision, reason) of the last decision, for the look
+        self.swing_key = None                 # the Majini a gun-down swing is turning to (it ends at re5_engage.SWING_DONE)
+        self.target_key = None
+        self._enemy_hp: dict = {}             # this snapshot's enemy health (the look's hp_delta)
+        self._obs_snap = None
+        self._ray_checked = None              # (snap, now, ray): a snapshot's laser is checked once
+        self.ray_rejected = None              # why this tick's laser read was dropped (re5_engage.plausible), or None
+        self.decision_target = None
+        self._err_seen = None                 # (target, t, yaw, pitch) of the last laser aim error (the jump guard)
         self.stats.update(bow_confirmed_hits=0,bow_confirmed_misses=0,
                           bow_ballistic_calibration='unavailable; no native projectile impact ownership')
         for k in ("shots", "hits", "misses", "headshots", "accuracy", "miss_short", "miss_past", "miss_beside",
@@ -715,10 +744,13 @@ class Combat:
         shot = active and not getattr(self, "item_in_hand", False) and self._shot(pl, rounds, p.get("action") == AIMING, now)
         if active and getattr(self, "item_in_hand", False):
             self.rounds_seen = None                       # a spray's count falling is no round fired
+        self._obs_snap = snap
         if shot:
             self._on_shot(now)
         self._observe_bow(snap, now)
         self._observe_impacts(snap.get("enemies") or [], now)
+        self._enemy_hp = {e.get("ptr", e.get("slot")): e.get("hp") for e in snap.get("enemies") or ()
+                          if isinstance(e, dict) and isinstance(e.get("hp"), (int, float))}
         self._score(now)
         if active:
             self._count_kills(snap)
@@ -740,6 +772,30 @@ class Combat:
         self._score(now)
 
     def _ray(self, snap, now):
+        """The laser ray (origin, dot) when it can be his gun's (re5_engage.plausible), else None. A torn read - an origin
+        metres from him, a ray behind him or straight into the ground (2026-10-26 19:25: "yaw +172.6 pitch -79.7") - never
+        steers or gates a shot; stats laser_rejected counts them (once per snapshot)."""
+        checked = self._ray_checked
+        if checked is not None and checked[0] is snap and checked[1] == now and checked[3] is snap.get("laser") \
+                and "laser" in snap:
+            return checked[2]
+        ray = self._raw_ray(snap, now)
+        if ray is not None:
+            ok, why = E.plausible(ray, snap.get("player") or {},
+                                  on_majini=E.under_dot(ray, snap.get("enemies") or (), dot_on) is not None)
+            if not ok:
+                self.stats["laser_rejected"] = self.stats.get("laser_rejected", 0) + 1
+                self.stats["laser_rejected_why"] = why
+                self.ray_rejected = why
+                ray = None
+            else:
+                self.ray_rejected = None
+        else:                                   # no read this tick - or one the driver dropped from the snapshot
+            self.ray_rejected = snap.get("laser_dropped")
+        self._ray_checked = (snap, now, ray, snap.get("laser"))
+        return ray
+
+    def _raw_ray(self, snap, now):
         if "laser" not in snap:
             from . import re5_ps3 as R
             if R.player_index(self.m) != 0:
@@ -802,12 +858,15 @@ class Combat:
         ray = self._ray(snap, now) if self._ready(p) else None
         self._awareness_ray = ray
         awareness = []
+        # a Majini under the dot is a target, not cover: the ones behind him are not "blocked" by him (the old rule marked
+        # them, and the bot sidestepped among foes instead of shooting the one in front)
+        under = E.under_dot(ray, snap.get("enemies") or (), dot_on)
         for enemy in snap.get("enemies") or ():
             key = enemy.get("ptr", enemy.get("slot"))
             hit = ray is not None and dot_on(ray[1], enemy["pos"]) is not None
             if hit:
                 self.blocked_until.pop(key, None)
-            elif ray is not None and self.ray_blocked(ray, enemy["pos"]):
+            elif ray is not None and under is None and self.ray_blocked(ray, enemy["pos"]):
                 self.blocked_until[key] = now + BLOCKED_S
             blocked = self.blocked_until.get(key, 0) > now
             awareness.append({"id": key, "hp": enemy.get("hp"), "hp_max": enemy.get("hp_max"),
@@ -819,11 +878,38 @@ class Combat:
         return ray
 
     def choose_target(self, snap, p, enemies, now):
+        """The Majini to fight (re5_engage.pick): the one under the laser dot; else the nearest threat in front within
+        FRONT_CLEAR_R (the gun stays up); else one at arm's length anywhere (turned to); else the nearest in front within
+        FRONT_R; else near and in front first. The held target stays while he is still that kind of choice. Measured cover
+        (the dot on a wall short of him) leaves a Majini out for BLOCKED_S; a Majini under the dot is never cover.
+        2026-10-26 16:00-19:30: at 94 of 162 hits taken during a gun-down swing a Majini stood within 4 m and 35 deg in
+        front - the old cost (distance x (1 + 1.5 x angle / pi), the held one kept unless another cost under 0.7 of him,
+        anyone within 1.1 m always first) kept the one off to the side. The longbow keeps its own lock
+        (_choose_bow_target)."""
         self.target_exposed = False
         enemies = [e for e in enemies if (e.get("hp") or 0) > 0]
-        bow = any(w.get('hand') and w.get('id') == 0x10F for w in snap.get('inventory') or ())
-        if not bow:
-            self.bow_target_key = None
+        if any(w.get('hand') and w.get('id') == 0x10F for w in snap.get('inventory') or ()):
+            return self._choose_bow_target(snap, p, enemies, now)
+        self.bow_target_key = None
+        ray = self.observe_awareness(snap, p, now)
+        dotted = E.under_dot(ray, enemies, dot_on)
+        if dotted is not None:
+            self.blocked_until.pop(E.key(dotted), None)
+        pool = [e for e in enemies if self.blocked_until.get(E.key(e), 0) <= now]
+        target, why = E.pick(p, pool, held=self.target_key, dotted=dotted,
+                             extra_ok=lambda e: self.front_candidate(snap, p, e))
+        self.target_key = E.key(target) if target is not None else None
+        self.target_exposed = target is not None and ray is not None and dot_on(ray[1], target["pos"]) is not None
+        close = target is not None and math.dist(p["pos"], target["pos"]) <= 350
+        evidence = ("laser first hit on enemy" if self.target_exposed else "acquiring clear shot" if close
+                    else "front candidate; visibility unconfirmed" if target is not None else "no exposed candidate")
+        self.stats["target_evidence"] = ("nearest immediate threat; " + evidence) if close else evidence
+        self.stats["target_rule"] = why
+        return target
+
+    def _choose_bow_target(self, snap, p, enemies, now):
+        """The longbow's target: the nearest supported one, locked through distance ties (its own controller's rules)."""
+        bow = True
         def cost(e):
             off = abs(wrap(heading(e['pos'][0] - p['pos'][0], e['pos'][2] - p['pos'][2]) - (p.get('rot') or 0.0)))
             return math.dist(p['pos'], e['pos']) * (1.0 + FRONT_WEIGHT * off / math.pi)
@@ -885,12 +971,31 @@ class Combat:
         self.stats["target_evidence"] = "front candidate; visibility unconfirmed" if candidates else "no exposed candidate"
         return nearest(candidates)
 
-    def seek_target(self, snap, p, enemies, now):
+    def seek_target(self, snap, p, enemies, now, *, depth=0):
+        """No target to fight here. A measured obstruction (the dot on a wall short of him): another Majini in sight is
+        fought at once - never a stand among foes - else one sidestep (REPOSITION_S). Nobody chosen at all: the body turns
+        to the nearest and, once he is in the gun's sector, the gun comes up (its laser confirms or blocks the line; the
+        old turn without L1 stood facing a Majini with the gun down - 484 s of "turning toward a front candidate"
+        standstills on 2026-10-26)."""
         if any(self.blocked_until.get(e.get("ptr", e.get("slot")), 0) > now for e in enemies):
-            return self._reposition(now, "reposition: measured obstruction")
+            others = [e for e in snap.get("enemies") or () if E.living(e) and E.on_level(p, e)
+                      and self.blocked_until.get(E.key(e), 0) <= now and E.flat(p["pos"], e["pos"]) <= E.FRONT_R]
+            nxt, _ = E.pick(p, others, held=None) if others and depth == 0 else (None, None)
+            if nxt is not None:
+                self.target_key = E.key(nxt)
+                self.stats["blocked_switches"] = self.stats.get("blocked_switches", 0) + 1
+                return self._decide(snap, p, nxt, now, observed=True, depth=1)
+            act = self._reposition(now, "reposition: measured obstruction")
+            self._decided(act, (enemies or [None])[0], p)
+            return act
         target = min(enemies, key=lambda e: math.dist(p["pos"], e["pos"]))
         self.stats["combat"] = "turning toward a front candidate"
-        return {"hold": self._face(p, target["pos"])}
+        keys = self._face(p, target["pos"])
+        if abs(E.bearing(p, target["pos"])) <= E.FRONT_CONE:
+            keys = keys | {"l1"}
+        act = {"hold": keys}
+        self._decided(act, target, p)
+        return act
 
     def _quick_turn(self, p, facing, now):
         """A Majini more than QUICK_TURN_ERR off the heading, the gun down (stand / move): the quick turn (operator
@@ -931,8 +1036,10 @@ class Combat:
         return None
 
     def _reposition(self, now, reason):
+        """One sidestep REPOSITION_S long in one direction; the next sidestep goes the other way (the gun comes down so
+        the game moves him)."""
         if now >= self.step_until:
-            self.step_until = now + STEER_STEP_S
+            self.step_until = now + REPOSITION_S
             self.step_side = "lright" if self.step_side == "lleft" else "lleft"
         self.stats["combat"] = reason
         return {"hold": {self.step_side}}       # lower the gun so the game can move
@@ -953,12 +1060,48 @@ class Combat:
     # --- the tick ---
     def tick(self, snap: dict, p: dict, tgt: dict, now: float, *, observed=False) -> dict:
         """One decision (_decide); the aim it took is kept for the record of a shot the next tick sees leave."""
+        self.decision_target = tgt
         act = self._decide(snap, p, tgt, now, observed=observed)
         aim = self.last_aim
         if aim is not None and aim.get("at") == now:
             aim["fire"] = "r1" in (act.get("hold") or ())
             aim.setdefault("gate", self.stats.get("fire_gate"))
+        self._decided(act, self.decision_target, p)
         return act
+
+    def _decided(self, act, tgt, p) -> None:
+        """This tick's decision for the look (gbox.mercs.bot_look): what (fire / aim / raise / swing / quick turn /
+        reposition / turn / wait) and why (the target, the fire gate, the combat line)."""
+        self.decisions_n += 1
+        held = set((act or {}).get("hold") or ())
+        c = str(self.stats.get("combat") or "")
+        if c.startswith("quick turn"):
+            what = "quick turn"
+        elif c.startswith("swinging round") or "lower weapon and turn" in c or "finish committed body turn" in c:
+            what = "swing (gun down)"
+        elif c.startswith(("reposition", "reacquire")) or "route to" in c or "use supported route" in c:
+            what = "reposition"
+        elif c.startswith("waiting"):
+            what = "wait"
+        elif "r1" in held:
+            what = "fire"
+        elif c.startswith("readying"):
+            what = "raise the gun"
+        elif "l1" in held:
+            what = "aim"
+        elif c.startswith("turning toward"):
+            what = "turn"
+        else:
+            what = "hold"
+        who = ""
+        if isinstance(tgt, dict) and tgt.get("pos") and p and p.get("pos"):
+            kind = "boss" if (tgt.get("hp_max") or 0) > BOSS_HP else "Majini"
+            k = tgt.get("ptr", tgt.get("slot"))
+            who = (f"{kind} {k:#x}" if isinstance(k, int) else f"{kind} {k}") + \
+                f" {E.flat(p['pos'], tgt['pos']) / 100.0:.1f} m {round(E.bearing_right_deg(p, tgt['pos'])):+d} deg; "
+        gate = str(self.stats.get("fire_gate") or "")
+        self.look_decision = (what, (who + (gate + "; " if gate and what in ("fire", "aim", "raise the gun") else "")
+                                     + c)[:160])
 
     def _note_ray(self, wid, ray: bool, ready: bool, now: float) -> None:
         """Gun-up seconds without a laser ray, per weapon (a ray resets it): laserless_now() tells the driver to take a
@@ -1005,14 +1148,29 @@ class Combat:
                          "pitch": round(math.degrees(pitch), 1) if isinstance(pitch, (int, float)) else None}
         return self.last_aim
 
-    def _decide(self, snap: dict, p: dict, tgt: dict, now: float, *, observed=False) -> dict:
+    def _decide(self, snap: dict, p: dict, tgt: dict, now: float, *, observed=False, depth=0) -> dict:
+        """One decision for one Majini - one straight sequence (operator 2026-10-26: "he should basically raise his gun, aim
+        it at the target, and shoot the target"; re5_engage):
+          1. the gun comes up (L1) facing him; while it is still coming up the trigger waits (a Majini at arm's length in
+             front excepted): those shots went into the floor - 13 hits in 141 on 2026-10-26;
+          2. the aim slews onto him with a deadband inside his body's window (no waving): by the laser ray when it can be
+             the gun's (re5_engage.plausible), else the camera's look ray, else his heading and the gun's pitch;
+          3. the trigger is down while the dot is on any Majini (another one under the dot is shot - he is no "cover"
+             for the target) or, within CLOSE_R, while the aim is inside the target's window; never with the dot on a wall
+             or the floor short of him; beyond CLOSE_R the laser line gate decides as before;
+          4. the target is kept (choose_target); a gun-down swing goes on until he is within SWING_DONE, and it starts
+             only when nothing threatening stands within FRONT_CLEAR_R in front - that one is fought instead.
+        depth: a decision handed to another Majini this tick (the one in front, or the next one in sight when this one's
+        line is measured blocked) is not handed on again."""
         if (not p or (p.get("hp") or 0) <= 0 or not tgt or (tgt.get("hp") or 0) <= 0
                 or snap.get("recovery_active")
                 or (snap.get("prompt") and not self.optional_prompt_blocked(snap))):
             self.near_ray_since = self.near_ray_key = None
             self.near_ray_move_until = 0.0
+            self.swing_key = None
             self.stats["combat"] = "waiting: no living target or priority prompt/recovery"
             return {"hold": set()}
+        self.decision_target = tgt
         if not observed:
             # Standalone callers own a new decision, and may reuse a mutable snapshot fixture between ticks.
             self._observed_snap = None
@@ -1028,30 +1186,33 @@ class Combat:
         if snap.get('rotten_egg_only') and not snap.get('rotten_egg_native_equipped'):
             self.stats['combat']='eggs only: native in-hand weapon ownership unverified; trigger withheld'
             return {'hold':set()}
-        from .re5_weapons import DIRECT, WEAPONS, longshot_reach
+        from .re5_weapons import DIRECT, WEAPONS, fire_policy, longshot_reach
         weapon = WEAPONS.get(wid)
+        direct = weapon is not None and weapon.family in DIRECT
         self.needs_firing_position = False
+        self.stats.pop("aim_guard", None)                  # set again below while a guard holds (never last round's)
         aim = self._aim_begin(now, p, tgt, wid)
-        self._note_ray(wid, self._ray(snap, now) is not None, self._ready(p), now)
-        # a direct gun with no laser ray is laserless only once the gun is up and still shows none (the ray exists only
-        # while aiming: with the gun down every gun looked laserless, and that path lowers the gun and turns in place -
-        # round map 2026-10-26: 42 s standing still in 'fight', "laserless gun: lower weapon and turn toward target")
-        if wid in (0x0F,0x36) or (weapon is not None and weapon.family in DIRECT and self._ray(snap,now) is None
-                                  and self._ready(p)):
-            act = self._laserless_tick(snap, p, tgt, now, pl, wid, rounds, shot)
+        lz = self._ray(snap, now)                          # the gun's ray only (a torn read is None)
+        ready = self._ready(p)
+        self._note_ray(wid, lz is not None, ready, now)
+        # The laserless controller: the bow and the egg always; a direct gun only once it has been up LASERLESS_SWITCH_S
+        # without a ray. Until then its ray may simply not be up yet (2026-10-26 19:16: the MP5 lowered its gun to turn as
+        # "laserless" in the frames before its ray showed, and was hit; 19:19 the P8 fired "laserless" 25 deg off him).
+        if wid in (0x0F, 0x36) or (direct and lz is None and ready and self.laserless_now(wid)):
+            act = self._laserless_tick(snap, p, tgt, now, pl, wid, rounds, shot, depth=depth)
             said = str(self.stats.get("combat") or "")          # its own lowered-weapon turns are the gun-down swing
             aim["state"] = "swing" if "lower weapon and turn" in said or "finish committed body turn" in said \
                 else "laserless"
             return act
+        self.stats.pop("laserless_visibility", None)
         self.laserless_feedback_since = None
         self.laserless_progress = None
-        # the laser dot against him (the driver's snapshot carries it as {"from", "at"} when it read it)
-        lz = self._ray(snap, now)
         if lz is not None and isinstance(wid, int):
             self.laser_weapons.add(wid)
         foot = tgt["pos"]
         lead = self._lead(tgt, now)
         dist = math.hypot(foot[0] - p["pos"][0], foot[2] - p["pos"][2])
+        level = abs(foot[1] - p["pos"][1]) < 150.0
         reach = max(ENGAGE_R, longshot_reach(wid)) if wid in self.laser_weapons else ENGAGE_R
         if dist > reach and (lz is None or dot_on(lz[1], foot) is None):
             self.stats["combat"] = "target outside engagement range"
@@ -1093,74 +1254,131 @@ class Combat:
         else:
             self.dot_head_since = self.dot_body_since = None
         key = tgt.get("ptr", tgt.get("slot"))
-        if self._ready(p) and lz is not None:
-            if where is not None:
+        enemies = snap.get("enemies") or ()
+        # the dot on another Majini: a measured line to him - he is shot now and becomes the target (the old gate held
+        # the trigger: "no line" to the target, while the bot stood among foes with its gun on one of them)
+        other = E.under_dot(lz, enemies, dot_on, exclude=key) if ready and lz is not None and where is None else None
+        if ready and lz is not None:
+            if where is not None or other is not None:
                 self.blocked_until.pop(key, None)
             elif self.ray_blocked(lz, foot):
                 self.blocked_until[key] = now + BLOCKED_S
         if self.blocked_until.get(key, 0) > now:
             aim.update(state="blocked", gate="measured cover: reposition")
-            return self.seek_target(snap, p, [tgt], now)
-        from .re5_weapons import DIRECT, WEAPONS, fire_policy
-        weapon = WEAPONS.get(wid)
-        direct = weapon is not None and weapon.family in DIRECT
+            self.swing_key = None
+            return self.seek_target(snap, p, [tgt], now, depth=depth)
+        if other is not None:
+            self.target_key = E.key(other)
+            aim.update(other=E.key(other))
+        if lz is None and dist > E.FRONT_CLEAR_R and snap.get("nav") is not None \
+                and not self.firing_corridor(snap, p, tgt, wid):
+            # no ray to measure the line, and the stage's floor says a wall stands between: no aiming at the wall - a
+            # firing position (the driver walks the floor route; a Majini within FRONT_CLEAR_R is always faced)
+            self.needs_firing_position = True
+            self.swing_key = None
+            aim.update(state="walled", gate="known wall: reposition")
+            self.stats.update(fire_gate="no laser ray: known-wall veto / unknown corridor; hold fire",
+                              combat="route to a firing position: a known wall between", aim_feedback="no laser ray")
+            return {"hold": set()}
         permitted, policy = fire_policy(wid, snap, tgt, lz[1] if lz else None)
         self.stats["weapon_policy"] = policy
         loaded = rounds is not None and rounds > 0
-        point_blank = dist < POINT_BLANK and abs(foot[1] - p["pos"][1]) < 150.0   # nothing fits between: fire
-        # the band's calibration: a band that hits fires inside a wider cone, one that misses (and every longshot)
-        # only with the dot on him
+        point_blank = dist < POINT_BLANK and level   # nothing fits between
+        close = dist <= E.CLOSE_R and level            # the fire window rules here (the laser line gate beyond)
+        facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
+        est = self._aim_estimate(snap, p, lz, aim_at, ready)
+        if est is not None and est[0] in ("camera", "body") and est[1] is not None:
+            aim.update(est=est[0], est_yaw=round(math.degrees(est[1]), 2),
+                       est_pitch=round(math.degrees(est[2]), 2) if est[2] is not None else None)
+        laser_est = est is not None and est[0] == "laser"
+        win_y, win_p = E.window(max(50.0, dist - E.MUZZLE_CM),   # seen from the gun, half a metre ahead of his feet
+                                pad=E.LASER_PAD_CM if laser_est else E.WINDOW_PAD_CM)
+        on_window = (est is not None and est[1] is not None and abs(est[1]) <= win_y
+                     and (abs(est[2]) <= win_p if est[2] is not None else point_blank))
+        if laser_est and not on_window:
+            on_window = E.through_body(lz, foot)            # the ray runs through his torso / head on its way
+        short = (lz is not None and where is None and other is None
+                 and math.dist(lz[0], lz[1]) < math.dist(lz[0], aim_at) - FIRE_SLACK)
+        # a torn read: the ray's own direction jumped further in one tick than the stick can turn the aim (Ship_Deck
+        # 11:37: yaw -5 / pitch +1, 0.26 s later -55 / -56): no steering and no line-only shot on it until it holds a
+        # second tick (the dot leaving his shoulder for the wall behind him moves the dot, not the direction: no jump)
+        jump = None
+        if lz is not None and steering_ray(lz, aim_at):
+            ray_yaw = heading(lz[1][0] - lz[0][0], lz[1][2] - lz[0][2])
+            ray_pitch = math.atan2(lz[1][1] - lz[0][1], max(math.hypot(lz[1][0] - lz[0][0], lz[1][2] - lz[0][2]), 1.0))
+            last = getattr(self, "_err_seen", None)
+            if last is not None and last[0] == key and 0 < now - last[1] <= 0.5 and \
+                    (abs(wrap(ray_yaw - last[2])) > WILD_YAW or abs(ray_pitch - last[3]) > WILD_PITCH):
+                jump = f"jump: ray yaw {math.degrees(last[2]):+.0f} -> {math.degrees(ray_yaw):+.0f}, pitch " \
+                       f"{math.degrees(last[3]):+.0f} -> {math.degrees(ray_pitch):+.0f} in {now - last[1]:.2f} s"
+            self._err_seen = (key, now, ray_yaw, ray_pitch)
         mode, window_rate = self.cal.mode(self.character, wid or 0, dist)
         widen = CAL_WIDEN if mode == "wide" else 1.0
         dot_required = mode == "strict" or longshot
         line_ok = line_to(lz, aim_at, foot, cone=FIRE_CONE * widen)
-        sighted = where is not None or point_blank or (line_ok and not dot_required)   # through hit recovery too
-        # and the laser has to stop on him (#881): a ray off the aim point - the ground, beside him, or on past him (the
-        # game's dot stops on the first body it meets, so a dot beyond him is a miss) - holds fire while the stick
-        # brings the dot onto him; no ray yet, or one too short to judge, leaves it to the sight check
-        on_line = lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot, scale=widen)
-        tracking_fire = direct and permitted and loaded and sighted and on_line
+        p90 = self.cal.p90(self.character, wid or 0, dist)
         steady = True
         if STEADY_HEAD and zone == "head" and direct and not point_blank:   # a steady aim: settled on the head, else patience
             head_ok = self.dot_head_since is not None and now - self.dot_head_since >= HEAD_SETTLE_S
             body_ok = self.dot_body_since is not None and now - self.dot_body_since >= HEAD_PATIENCE_S
             steady = head_ok or body_ok
-            tracking_fire = tracking_fire and steady
-        self.stats["fire_gate"] = ("settling on the head: hold fire" if sighted and on_line and not steady
-                                   else "no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line
-                                   else "on him" if where is not None else "line to him")
-        if line_ok and not sighted:
-            self.stats["fire_gate"] = ("longshot: the dot must be on him: hold fire" if longshot else
-                                       f"calibration: {B.band(dist)} m hits {window_rate:.0%}, the dot must be on him: hold fire")
-        # the swing-then-fire case: a line-only shot (the dot not on him) while the ray is further off the aim point than
-        # the band's hits ever were (their 90th percentile) is held; point blank and the blast below are exempt
-        p90 = self.cal.p90(self.character, wid or 0, dist)
-        if tracking_fire and p90 is not None and lz is not None and where is None and not point_blank \
-                and steering_ray(lz, aim_at):
-            limit = max(math.radians(p90) * widen, CAL_P90_FLOOR)
-            error = math.hypot(*ray_error(lz[0], lz[1], aim_at))
-            if error > limit:
-                tracking_fire = False
-                self.stats["fire_gate"] = (f"calibration: error {math.degrees(error):.1f} > the hits' p90 "
-                                           f"{math.degrees(limit):.1f} deg: hold fire")
+        able = direct and permitted and loaded
+        if not able:
+            fire = where is not None and loaded and permitted and steady    # splash: the dot on him (its own policy)
+            gate = "on him" if fire else "no line: hold fire" if where is None else "dot off him: hold fire"
+        elif where is not None:
+            fire, gate = True, "on him"
+        elif other is not None:
+            fire, gate = True, "on another Majini"
+        elif point_blank and (on_window or ((lz is None or short or not steering_ray(lz, aim_at))
+                                            and abs(facing) <= READY_FIRE_FACING)):
+            fire, gate = True, "point blank"
+        elif not ready and level and dist < READY_FIRE_R and abs(facing) <= READY_FIRE_FACING:
+            # a Majini at arm's length in front while the gun comes up (or through hit recovery): the trigger is queued -
+            # waiting for the pose to clear perpetuates the stunlock
+            fire, gate = True, "point blank"
+        elif short and jump is None:
+            fire, gate = False, ("floor short of him: hold fire"
+                                 if E.dot_class(lz, foot, p, enemies, dot_on) == "floor" else "wall in front: hold fire")
+        elif close:
+            if not ready:
+                fire, gate = False, "gun coming up: hold fire"
+            elif on_window and jump is None:
+                fire, gate = True, "threat: blasting" if THREAT_BLAST and dist < THREAT_BLAST_R else "line to him"
+            else:
+                off = math.degrees(math.hypot(est[1] or 0.0, est[2] or 0.0)) if est is not None and est[1] is not None else None
+                fire, gate = False, (f"slewing {off:.0f} deg off him: hold fire" if off is not None else "no line: hold fire")
+        else:
+            sighted = line_ok and not dot_required
+            # the laser has to stop on him (#881): a ray off the aim point - the ground, beside him, or on past him - holds
+            # fire while the stick brings the dot onto him
+            on_line = lz is None or not steering_ray(lz, aim_at) or line_of_sight_aim(lz, aim_at, where, foot, scale=widen)
+            fire = lz is not None and sighted and on_line and jump is None
+            gate = ("no line: hold fire" if not sighted else "dot off him: hold fire" if not on_line or jump
+                    else "line to him")
+            if line_ok and not sighted:
+                gate = ("longshot: the dot must be on him: hold fire" if longshot else
+                        f"calibration: {B.band(dist)} m hits {window_rate:.0%}, the dot must be on him: hold fire")
+            # the swing-then-fire case: a line-only shot while the ray is further off the aim point than the band's hits
+            # ever were (their 90th percentile) is held
+            if fire and p90 is not None and steering_ray(lz, aim_at):
+                limit = max(math.radians(p90) * widen, CAL_P90_FLOOR)
+                error = math.hypot(*ray_error(lz[0], lz[1], aim_at))
+                if error > limit:
+                    fire = False
+                    gate = (f"calibration: error {math.degrees(error):.1f} > the hits' p90 "
+                            f"{math.degrees(limit):.1f} deg: hold fire")
+        if able and fire and not steady and gate not in ("on another Majini", "point blank"):
+            fire, gate = False, "settling on the head: hold fire"
+        if gate == "threat: blasting":
+            self.stats["threat_blasts"] = self.stats.get("threat_blasts", 0) + 1
+        self.stats["fire_gate"] = gate
         described = self.cal.describe(self.character, wid or 0, dist)
         if described:
             self.stats["aim_calibration"] = described
         else:
             self.stats.pop("aim_calibration", None)
-        # A threat on top of him: blast. Operator 2026-10-22: "I need them blasting like a lunatic on a threat. They are
-        # just eating blows ... The gun is being raised. It needs to be blasting. Rapid fire. There is no preparing the
-        # aim. There's only blasting and aiming while blasting." Within THREAT_BLAST_R on his level and roughly faced, the
-        # trigger stays down from the moment the gun comes up and the stick keeps correcting; the sight / dot gates above
-        # are for Majini further off (no shooting walls from across the map).
-        to_him = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
-        if (THREAT_BLAST and direct and permitted and loaded and dist < THREAT_BLAST_R
-                and abs(foot[1] - p["pos"][1]) < 150.0 and abs(to_him) < THREAT_BLAST_FACING):
-            tracking_fire = True
-            self.stats["fire_gate"] = "threat: blasting"
-            self.stats["threat_blasts"] = self.stats.get("threat_blasts", 0) + 1
-        aim.update(gate=self.stats["fire_gate"], mode=mode if mode != "normal" else None, p90=p90,
-                   pb=point_blank or None)
+        aim.update(gate=gate, mode=mode if mode != "normal" else None, p90=p90, pb=point_blank or None)
         rapid = self._rapid_fire(wid, now)              # observed package status, independent of fire intent
         if p.get("action") == 4:                      # prompts own escape from a grab
             self.stats["combat"] = "waiting: grab animation"
@@ -1173,23 +1391,31 @@ class Combat:
                 self.stats["reloads"] += 1
                 return {"hold": {"l1", "cross"}}
             return {"hold": {"l1"}}
-        facing = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
-        if abs(facing) > SWING_TURN and p.get("action") != 4 and not (self._ready(p) and where is not None):
-            # He is well off to the side or behind: the gun down, the body turned at ~150 deg/s (aiming turns ~30 deg/s:
-            # live 2026-10-22 the gun stayed up through yaw errors of 90-160 deg, seconds of aiming at walls)
-            # A ready weapon's measured first hit on him is stronger than body heading: the upper-body aim can
-            # already be on target. Keep that shot instead of lowering the gun and restarting acquisition.
+        # The swing: he is well off the heading (or a swing under way has not brought him within SWING_DONE) and the gun
+        # is not already on him: the gun comes down and the body turns at ~150 deg/s (aiming turns ~30 deg/s) - unless a
+        # threat stands within FRONT_CLEAR_R in front: then that one is fought now, the gun up.
+        aimed = ready and (where is not None or other is not None or (on_window and jump is None))
+        swinging = self.swing_key == key and abs(facing) > E.SWING_DONE
+        if (abs(facing) > E.SWING_TURN or swinging) and not aimed:
+            threat = E.front_threat(p, enemies, exclude=key) if depth == 0 else None
+            if threat is not None:
+                self.target_key = E.key(threat)
+                self.swing_key = None
+                self.stats["front_first"] = self.stats.get("front_first", 0) + 1
+                return self._decide(snap, p, threat, now, observed=True, depth=depth + 1)
             self.near_ray_since = None
+            self.swing_key = key
             aim["state"] = "swing"                     # the quick turn too: the gun is down while the body turns
             quick = self._quick_turn(p, facing, now)
             if quick is not None:
                 return quick
             self.stats["combat"] = f"swinging round to him (gun down): {math.degrees(facing):+.0f} deg"
-            return {"hold": self._face(p, foot)}
-        steer = lz is not None and steering_ray(lz, aim_at)
+            return {"hold": self._face(p, foot, tol=E.SWING_DONE * 0.6)}
+        self.swing_key = None
+        steer = lz is not None and steering_ray(lz, aim_at) and jump is None
         feedback_key = (p.get("ptr"), key)
-        if feedback_key != self.near_ray_key or (self._ready(p) and (steer or where is not None)):
-            self.near_ray_since, self.near_ray_key = None, feedback_key
+        if feedback_key != self.near_ray_key or lz is None or (ready and (steer or where is not None or other is not None)):
+            self.near_ray_since, self.near_ray_key = None, feedback_key   # (no ray at all: no near-origin sidestep either)
             self.near_ray_move_until = 0.0
         if now < self.near_ray_move_until:
             aim["state"] = "reacquire"
@@ -1197,65 +1423,105 @@ class Combat:
         if self.near_ray_move_until:
             self.near_ray_move_until = 0.0
             self.near_ray_since = None
-        if not self._ready(p) or lz is None:
-            # Queue aim/fire through hit recovery too; waiting for the pose byte to clear can perpetuate stunlock.
-            # The game decides when the gun can fire, and only its RAM shot events enter the counters.
+        trig = self.triggers.get(wid)
+        if trig is None:
+            trig = self.triggers[wid] = Trigger(tune["mode"])
+        if direct:
+            trig.mode = "hold"
+        self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if fire or not able else 1)
+
+        def trigger(keys):
+            keys |= ({"r1"} if fire else set()) if direct or rapid else trig.keys(now, fire, shot)
+            tune["mode"] = trig.mode
+            return keys
+        if not ready:
+            # The gun coming up (L1) facing him. Queue aim/fire through hit recovery too; waiting for the pose byte to clear
+            # can perpetuate stunlock. The game decides when the gun can fire; only its RAM shot events enter the counters.
             self.dot_head_since = self.dot_body_since = None
             self.stats["combat"] = (f"readying: action={p.get('action')} laser={'yes' if lz else 'no'} "
-                                    f"{'tracking FIRE' if tracking_fire else policy}")
+                                    f"{'tracking FIRE' if fire else policy}")
             self.stats["aim_feedback"] = "waiting for ready ray"
             aim["state"] = "readying"
-            return {"hold": {"l1"} | ({"r1"} if tracking_fire else set()) | self._face(p, foot)}
-        if not steer and where is None:
+            return {"hold": {"l1"} | ({"r1"} if fire else set()) | self._face(p, foot)}
+        if lz is None:
+            # The gun is up and its ray has not shown (yet, or a torn read was dropped): the aim by the camera's look ray,
+            # else his heading and the gun's pitch - slewed with a deadband, fired inside his window.
+            self.dot_head_since = self.dot_body_since = None
+            src = est[0] if est is not None else "body"
+            keys = {"l1"}
+            yaw_e = est[1] if est is not None else None
+            pitch_e = est[2] if est is not None else None
+            if yaw_e is not None:
+                dby, dbp = E.deadband(dist)
+                keys |= self._yaw(yaw_e, deadzone=dby)
+                if pitch_e is not None:
+                    keys |= self._pitch(pl, p, pitch_e, now, deadzone=dbp)
+            guard = None
+            if getattr(self, "ray_rejected", None):
+                guard = "wild"
+                self.stats["aim_guard"] = f"wild: ray dropped ({self.ray_rejected}): face him, level the gun"
+                self.stats["aim_guards"] = self.stats.get("aim_guards", 0) + 1
+            aim.update(state=src, guard=guard)
+            keys = trigger(keys)
+            self.stats["aim_feedback"] = f"no laser ray yet; {src} direction"
+            self.stats["combat"] = (f"aim by the {src}: yaw {math.degrees(yaw_e or 0.0):+.1f} pitch "
+                                    f"{math.degrees(pitch_e or 0.0):+.1f} {'FIRE' if fire else ''}"
+                                    f"{' guard ' + guard if guard else ''}")
+            return {"hold": keys}
+        if not steer and where is None and other is None and jump is None:
             if self.near_ray_since is None:
                 self.near_ray_since = now
             elif now - self.near_ray_since >= STEER_REACQUIRE_S:
                 self.near_ray_move_until = now + STEER_STEP_S
                 aim["state"] = "reacquire"
                 return self._reposition(now, "reacquire: near-origin ray")
-        # steer the dot onto the zone (his head, or his thighs for the stun)
+        # steer the dot onto the zone, a deadband inside his window: on him, the stick is left alone
         yaw_err, pitch_err = ray_error(lz[0], lz[1], aim_at)
         keys = {"l1"}
         self.stats["aim_feedback"] = "ray direction" if steer else "near-origin ray; correction paused"
-        # Operator 2026-10-26, watching: "the bot will do a thing while aiming where they begin looking down and to the
-        # side while dispatching the foes" - round map Ship_Deck 11:37: yaw -5 / pitch +1 with the dot on his body,
-        # 0.26 s later yaw -55 / pitch -56 with the trigger held and the dot on nothing. An error past WILD_YAW /
-        # WILD_PITCH is a torn read or the dot on something else (the aim cannot move 55 deg in 0.26 s), not a turn to
-        # make: the body faces him (the game's own heading), the gun is levelled, and a wild aim at a Majini further
-        # off holds the trigger (those rounds went into the deck) until the dot is back on him. A moderate error at the
-        # muzzle is steered like any other (13:05 live: a "close" guard that skipped the steering left yaw +14 / pitch
-        # +24 uncorrected through 149 ticks of fire, 28 % hits).
-        guard = "wild" if steer and where is None and (abs(yaw_err) > WILD_YAW or abs(pitch_err) > WILD_PITCH) else None
+        guard = "jump" if jump else None
         aim.update(state="aim", guard=guard)
         if guard:
-            steer = False
-            self.stats["aim_guard"] = (f"{guard}: yaw {math.degrees(yaw_err):+.0f} pitch {math.degrees(pitch_err):+.0f}: "
-                                       f"face him, level the gun")
+            self.stats["aim_guard"] = jump + ": steering paused"
             self.stats["aim_guards"] = self.stats.get("aim_guards", 0) + 1
-            keys |= self._face(p, foot)
-            level = p.get("pitch")                                # + = up (the driver's snapshot)
-            if level is not None and abs(level) > LEVEL_PITCH:
-                keys.add("rup" if level < 0 else "rdown")
-            if guard == "wild" and not point_blank:
-                tracking_fire = False
-        if steer:
-            keys |= self._yaw(yaw_err)
-            keys |= self._pitch(pl, p, pitch_err, now)
-        # Direct fire continues while the stick corrects aim. Splash/unknown policies remain separate.
-        firing = tracking_fire or (where in ("head", "body", "leg") and loaded and permitted and steady)
-        self.stats["los_held_fire"] = self.stats.get("los_held_fire", 0) + (0 if firing or not (direct and permitted and loaded) else 1)
-        trig = self.triggers.get(wid)
-        if trig is None:
-            trig = self.triggers[wid] = Trigger(tune["mode"])
-        if direct:
-            trig.mode = "hold"
-        keys |= ({"r1"} if firing else set()) if direct or rapid else trig.keys(now, firing, shot)
-        tune["mode"] = trig.mode
+        if steer and other is None:
+            dby, dbp = E.deadband(dist)
+            keys |= self._yaw(yaw_err, deadzone=dby if abs(yaw_err) <= win_y else None)
+            keys |= self._pitch(pl, p, pitch_err, now, deadzone=dbp if abs(pitch_err) <= win_p else None)
+        keys = trigger(keys)
         weapon_label = hex(wid) if isinstance(wid, int) else "unknown"
-        self.stats["combat"] = (f"{self.character} w{weapon_label} {zone} dot {where} yaw {math.degrees(yaw_err):+.1f} "
+        dot = where if where is not None else "other" if other is not None else None
+        self.stats["combat"] = (f"{self.character} w{weapon_label} {zone} dot {dot} yaw {math.degrees(yaw_err):+.1f} "
                                 f"pitch {math.degrees(pitch_err):+.1f} {'rapid hold' if rapid else trig.mode} "
-                                f"{'FIRE' if firing else ''}{' guard ' + guard if guard else ''}")
+                                f"{'FIRE' if fire else ''}{' guard ' + guard if guard else ''}")
         return {"hold": keys}
+
+    def _aim_estimate(self, snap, p, lz, aim_at, ready):
+        """(source, yaw error, pitch error) from where the gun points to aim_at (+ = left / up): the laser ray when it can
+        steer ("laser"; a ray too short to give a direction is ("laser-near", None, None)); else, the gun up, the camera's
+        look ray ("camera": it runs through the crosshair, where the shot goes); else his heading and the gun's pitch
+        ("body"; the pitch error None when the snapshot has no pitch)."""
+        if lz is not None:
+            if steering_ray(lz, aim_at):
+                y, pch = ray_error(lz[0], lz[1], aim_at)
+                return "laser", y, pch
+            return "laser-near", None, None
+        if ready:
+            cam = snap.get("camera") or {}
+            try:
+                eye, at = tuple(cam["eye"]), tuple(cam["at"])
+                if len(eye) == len(at) == 3 and all(math.isfinite(v) for v in (*eye, *at)) and math.dist(eye, at) > 1.0:
+                    y, pch = ray_error(eye, at, aim_at)
+                    return "camera", y, pch
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
+        pos, rot = p["pos"], p.get("rot") or 0.0
+        y = wrap(heading(aim_at[0] - pos[0], aim_at[2] - pos[2]) - rot)
+        pitch = p.get("pitch")
+        if isinstance(pitch, (int, float)) and not isinstance(pitch, bool) and math.isfinite(pitch):
+            want = math.atan2(aim_at[1] - (pos[1] + 140.0), max(math.hypot(aim_at[0] - pos[0], aim_at[2] - pos[2]), 1.0))
+            return "body", y, want - pitch
+        return "body", y, None
 
     @staticmethod
     def firing_corridor(snap, p, tgt, wid=0x0F):
@@ -1267,8 +1533,13 @@ class Combat:
         except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
             return False
 
-    def _laserless_tick(self, snap, p, tgt, now, pl, wid, rounds, shot):
+    def _laserless_tick(self, snap, p, tgt, now, pl, wid, rounds, shot, depth=0):
         """Aim without laser feedback using the camera or native body/pitch.
+
+        A direct gun with a Majini within LASERLESS_BLAST_R on his level needs no floor corridor, and fires once the aim
+        (the camera, else his heading) is inside the target's window (re5_engage.window) - never while still turning
+        toward him (2026-10-26: the old close-threat blast fired 60 deg off him: "shooting at walls"). Further off the
+        heading than SWING_TURN, the gun comes down to turn only with no threat in front (re5_engage.front_threat).
 
         Trigger intent never counts as an arrow. The ordinary RAM observation path alone records shots/hits;
         native refire-table verification does not establish the bow animation's achievable firing rate.
@@ -1289,7 +1560,7 @@ class Combat:
         facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
         blast = (wid not in (0x0F, 0x36) and rounds is not None and rounds > 0 and p.get("action") != 4
                  and math.hypot(foot[0]-p["pos"][0], foot[2]-p["pos"][2]) < LASERLESS_BLAST_R
-                 and abs(foot[1]-p["pos"][1]) < 150.0 and abs(facing) < LASERLESS_BLAST_CONE)
+                 and abs(foot[1]-p["pos"][1]) < 150.0)          # near: no corridor needed; fired once aligned
         if not corridor and not blast:
             self.bow_down_at = None
             self.needs_firing_position = True
@@ -1395,7 +1666,11 @@ class Combat:
             self.stats["aim_feedback"] = label+" body/pitch estimate; no projectile ray"
         self.laserless_feedback_since = None
         distance = math.dist(origin,aim)
-        yaw_tol,pitch_tol = bow_tolerance(distance) if wid==0x0F else (BOW_YAW,BOW_PITCH)
+        if wid == 0x0F:
+            yaw_tol, pitch_tol = bow_tolerance(distance)
+        else:                       # a gun: his body's window at this range (wider than BOW_YAW / BOW_PITCH up close)
+            win_y, win_p = E.window(math.hypot(foot[0]-p["pos"][0], foot[2]-p["pos"][2]))
+            yaw_tol, pitch_tol = max(BOW_YAW, win_y), max(BOW_PITCH, win_p)
         aligned = abs(yaw) <= yaw_tol and abs(pitch) <= pitch_tol
         if wid == 0x0F:
             self.stats.update(bow_aim_tolerance_deg=[round(math.degrees(yaw_tol),3),round(math.degrees(pitch_tol),3)],
@@ -1409,7 +1684,14 @@ class Combat:
             swing = self.bow_turning
             self.stats['bow_aim_phase'] = 'turning to target' if swing else 'tracking with aim held'
         else:
-            swing = abs(facing) > SWING_TURN and not aligned and not blast   # a close threat: blast, never lower the gun
+            swing = abs(facing) > E.SWING_TURN and not aligned
+            threat = None
+            if swing and depth == 0 and p.get("action") != 4:
+                threat = E.front_threat(p, snap.get("enemies") or (), exclude=tgt.get("ptr", tgt.get("slot")))
+            if threat is not None:            # a threat in front: he is fought now, the gun stays up
+                self.target_key = E.key(threat)
+                self.stats["front_first"] = self.stats.get("front_first", 0) + 1
+                return self._decide(snap, p, threat, now, observed=True, depth=depth + 1)
         # An on-target aim (camera ray already on his chest) supersedes the whole-body swing: if the aim line is
         # already on him, fire now instead of lowering the gun to turn the body. Only a genuinely off-axis aim for a
         # far-off heading turns first. Never swing mid-grab (action 4).
@@ -1424,7 +1706,7 @@ class Combat:
             self.stats.update(weapon_policy=label+": turn before aiming", fire_gate=label+": turning; hold fire",
                               combat=label+": lower weapon and turn toward target")
             return {"hold": self._face(p, foot)}
-        if not blast and self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now,aligned=aligned):
+        if not (blast and aligned) and self._laserless_stalled(p,tgt,wid,math.hypot(yaw,pitch),shot,now,aligned=aligned):
             return {"hold":set()}
         if wid==0x0F:
             self.bow_aim = {'at':now,'target':tgt.get('ptr'),'player':p.get('ptr'),
@@ -1437,10 +1719,10 @@ class Combat:
                 'ballistic_calibration':'unavailable; no owned impact/flight model'}
         if wid not in (0x0F,0x36) and math.dist(p["pos"],foot) < POINT_BLANK and abs(yaw) <= BOW_YAW:
             aligned = True  # Supported corridor, contact distance: continue firing while correcting elevation.
-        fire, policy = laserless_fire_policy(wid, corridor=corridor, aligned=aligned,
+        fire, policy = laserless_fire_policy(wid, corridor=corridor or blast, aligned=aligned,
                                       loaded=rounds is not None and rounds > 0)
-        if blast and not fire:
-            fire, policy = True, "laserless gun: close-threat blast"
+        if blast and fire:
+            policy = "laserless gun: close-threat blast"
             self.stats["laserless_blasts"] = self.stats.get("laserless_blasts", 0) + 1
         self.stats["weapon_policy"] = policy
         keys = {"l1"} | self._yaw(yaw,deadzone=yaw_tol*BOW_TRACK if wid==0x0F else None) \
@@ -1508,9 +1790,9 @@ class Combat:
         dt = now - prev[0]
         return ((tgt["pos"][0] - prev[1][0]) / dt * HEAD_LEAD_S, (tgt["pos"][2] - prev[1][2]) / dt * HEAD_LEAD_S)
 
-    def _face(self, p, foot) -> set:
+    def _face(self, p, foot, tol=math.radians(10)) -> set:
         err = wrap(heading(foot[0] - p["pos"][0], foot[2] - p["pos"][2]) - p["rot"])
-        if abs(err) < math.radians(10):
+        if abs(err) < tol:
             return set()
         return {"rleft"} if err > 0 else {"rright"}
 
@@ -1602,6 +1884,19 @@ class Combat:
                     'result':'bow observation capacity reached; impact unknown',
                     'confirmed_hit':False,'confirmed_miss':False,'calibration_applied':False})
             self._bow_event({'kind':'bow_firing_observation',**row})
+            if self.look is not None:                  # an arrow's impact is never attributed: its outcome stays unknown
+                try:
+                    p = (self._obs_snap or {}).get("player") or {}
+                    tgt = aim.get("target_pos")
+                    target = {"id": f"{aim['target']:#x}" if isinstance(aim.get("target"), int) else aim.get("target"),
+                              "kind": "majini", "dist_m": E.flat(p["pos"], tgt) / 100.0,
+                              "bearing_deg": E.bearing_right_deg(p, tgt)} if tgt and p.get("pos") else None
+                    yaw = aim.get("yaw_error_rad")
+                    self.look.record_shot("longbow (0xf)", self.stats.get("fire_gate"), target,
+                                          aim_err_deg=-math.degrees(yaw) if isinstance(yaw, (int, float)) else None,
+                                          dot_on="off", t=now)
+                except Exception:                      # noqa: BLE001 - the look never stops the fight
+                    pass
             return
         self.shots.fired(now)
         self.round_counts["shots"] += 1
@@ -1614,9 +1909,88 @@ class Combat:
             d_him = math.dist(lz[0], (foot[0], foot[1] + HEAD_H, foot[2]))
             reach = "short" if d_dot < d_him - 60 else ("past" if d_dot > d_him + 60 else "beside")
         self._pending_where = getattr(self, "_pending_where", [])
+        rec = self._shot_record(now, where, reach)
         self._pending_where.append((now, where, ptr, reach, round(d_him) if foot is not None and lz is not None else None,
-                                    self.wid, self.character, self._shot_record(now, where, reach)))
+                                    self.wid, self.character, rec))
+        try:
+            self._look_shot(now, rec, lz, foot, ptr)
+        except Exception as exc:                     # noqa: BLE001 - the look never stops the fight
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
         # Native shots are counted above; learned weapon samples enter only when their outcome is resolvable.
+
+    def _look_shot(self, now, rec, lz, foot, ptr) -> None:
+        """The shot into the look (gbox.mercs.bot_look): the weapon, the fire gate, the target (id, kind, distance,
+        bearing + = right), the aim error at the trigger (+ = he was right of the aim; the laser's, else the camera / body
+        estimate's), what the dot was on (re5_engage.dot_class: also the record's "dot_on", and this round's round_dots).
+        Its outcome follows in _look_resolve."""
+        snap = self._obs_snap or {}
+        p = snap.get("player") or {}
+        enemies = snap.get("enemies") or ()
+        dot = E.dot_class(lz, foot, p, enemies, dot_on) if p.get("pos") else ("off" if lz is None else "none")
+        rec["dot_on"] = dot
+        self.round_dots[dot] = self.round_dots.get(dot, 0) + 1
+        if self.metrics is not None:                # the round's behaviour block: what the line met, on the window or not
+            self.metrics.shot_line(dot)
+            self.metrics.shot(now, dot == "target" or rec.get("gate") in WINDOW_GATES)
+        if self.look is None:
+            return
+        tgt = next((e for e in enemies if e.get("ptr", e.get("slot")) == ptr), None) if ptr is not None else None
+        target = None
+        if foot is not None and p.get("pos"):
+            target = {"id": f"{ptr:#x}" if isinstance(ptr, int) else ptr,
+                      "kind": "boss" if tgt is not None and (tgt.get("hp_max") or 0) > BOSS_HP else "majini",
+                      "dist_m": E.flat(p["pos"], foot) / 100.0, "bearing_deg": E.bearing_right_deg(p, foot)}
+        yaw = rec.get("yaw_err") if rec.get("yaw_err") is not None else rec.get("est_yaw")
+        name = rec.get("weapon") or "unknown"
+        if isinstance(self.wid, int):
+            name = f"{name} ({self.wid:#x})"
+        entry = self.look.record_shot(name, rec.get("gate") or self.stats.get("fire_gate"), target,
+                                      aim_err_deg=0.0 - yaw if isinstance(yaw, (int, float)) else None, dot_on=dot,
+                                      t=now)
+        if len(self._look_pending) > 64:
+            self._look_pending.pop(next(iter(self._look_pending)))
+        self._look_pending[id(rec)] = (entry, ptr, dict(self._enemy_hp))
+
+    @staticmethod
+    def _look_cause(rec) -> str:
+        """A miss's cause in the look's words (gbox.mercs.bot_look.MISS_CAUSES)."""
+        dot = rec.get("dot_on")
+        if dot in ("wall", "floor"):
+            return dot
+        causes = rec.get("causes") or B.causes(rec)
+        if "too far for the weapon" in causes:
+            return "out_of_range"
+        if rec.get("where") in ("head", "body", "leg") or dot == "target":
+            return "no_damage"
+        if dot == "off" and rec.get("state") in ("swing", "readying", "stale", "reload", "grab", None):
+            return "gun_down"
+        if rec.get("target") is None:
+            return "nothing"
+        return "off_target"
+
+    def _look_resolve(self, rec, result) -> None:
+        """A shot's outcome into its look entry: "hit:<kind of the Majini hurt>" with his health change, or
+        "miss:<cause>"; an unattributed one stays "unknown"."""
+        pend = self._look_pending.pop(id(rec), None)
+        if pend is None or self.look is None:
+            return
+        entry, ptr, hp_then = pend
+        if result == "hit":
+            cur = {e.get("ptr", e.get("slot")): e for e in (self._obs_snap or {}).get("enemies") or ()}
+            drops = {k: hp_then[k] - cur[k]["hp"] for k in hp_then
+                     if k in cur and isinstance(cur[k].get("hp"), (int, float)) and cur[k]["hp"] < hp_then[k]}
+            k = ptr if ptr in drops else (max(drops, key=drops.get) if drops else None)
+            e = cur.get(k) if k is not None else None
+            kind = "boss" if e is not None and (e.get("hp_max") or 0) > BOSS_HP else "majini"
+            outcome = f"hit:{kind}"
+            self.look.resolve(entry, outcome, -int(drops[k]) if k is not None else None)
+        elif result == "miss":
+            outcome = "miss:" + self._look_cause(rec)
+            self.look.resolve(entry, outcome)
+        else:
+            return
+        if self.metrics is not None:
+            self.metrics.shot_result(outcome)
 
     def _shot_record(self, now, where, reach) -> dict:
         """The shot's record (gbox.mercs.ballistics): the aim decided at the last tick - when it is that fresh - and
@@ -1657,6 +2031,10 @@ class Combat:
             rec["miss"] = cls
         if result == "miss":
             rec["causes"] = B.causes(rec)
+        try:
+            self._look_resolve(rec, result)
+        except Exception as exc:                     # noqa: BLE001 - the look never stops the fight
+            self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
         if result in ("hit", "miss") and not self.damage_unattributed and not self.bow_round_observations:
             self.cal.observe(rec)
         if self.shot_sink is not None:
@@ -1762,6 +2140,9 @@ class Combat:
         self.round_counts = {"shots": 0, "hits": 0, "headshots": 0, "finishers": 0, "time_gained_s": 0.0}
         self.round_weapons = {}
         self.round_shots = []
+        self.round_dots = {}
+        self._look_pending.clear()
+        self.swing_key = None
         self.last_aim = None
         self.last_timer = None
         self.bow_down_at, self.bow_up_at = None, -1e9
