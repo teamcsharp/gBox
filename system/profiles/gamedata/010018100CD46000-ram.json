@@ -18,7 +18,8 @@
     "Measured live 2026-10-26 on the Spark (Eden v0.2.1, single-core, NCE: a guest address is the host address) in The Mercenaries United, No Mercy, Public Assembly, Chris (BSAA): sMain base+0x26A1BA8 (sBioMain) +0x584E0 -> cGameSys (+0x944 phase 0/1/3, +0x948 f32 seconds left, +0x94C round time, +0x96C kills, +0x974 combo, +0x978 max combo, +0x97C f32 combo window, +0x990 score); sPlayer base+0x1CF1C98 +0x30 -> the player (+0x60 pos, +0x70 quaternion, +0x1EB8 s16 health, +0x1EBA maximum); sEnemy base+0x1CF04B8 (+0x38 count, +0x48 -> enemy pointers; +0x60 pos, +0x1EB8 health).",
     "The results screen agreed with cGameSys: Enemies Routed 9, Max combo 6x, Score 3,060 (docs/research/re5-switch-ram.md).",
     "Type D controls (the game's default): left stick moves, right stick turns (rleft = larger heading), ZL aims, ZL + ZR fires, L + ZR knife, ZL + B reload.",
-    "Live mods (gbox.re5_switch_mods, the playing_ops): the weapon definition records at main+0x1D08680 (0x140 each, +0x1C the Gatling's 'needs no ammo' flag) and the player's time scale (+0x1A08) raised while his shot motion (+0x8F8 = 29) plays: held ZR 2.7 shots/s -> ~25 at x80 (live 2026-10-26)."
+    "Live mods (gbox.re5_switch_mods, the playing_ops): the weapon definition records at main+0x1D08680 (0x140 each, +0x1C the Gatling's 'needs no ammo' flag) and the player's time scale (+0x1A08) raised while his shot motion (+0x8F8 = 29) plays: held ZR 2.7 shots/s -> ~25 at x80 (live 2026-10-26).",
+    "mine_loadout (live 2026-10-27, private Citron): Chris (BSAA)'s loadout template (main+0x1AAD9A8 and main+0x1AAF208) carries the proximity bomb x5 (0x10A) at grid 1 from the next round; with infinite_ammo's flag on WP0A the HUD shows infinity and a placement spends none. ZL alone places one ~57 cm ahead of his feet (a uWp0a unit on sUnit line 11); held, another every 1.25 s; its blast hurts him (gbox.mercs.titles.re5_switch_mines keeps him out of it)."
   ],
   "mercs": {
     "driver": "gbox.mercs.titles.re5_switch",
@@ -37,6 +38,12 @@
         "fire_rate",
         {
           "multiplier": 80
+        }
+      ],
+      [
+        "mine_loadout",
+        {
+          "on": true
         }
       ]
     ],
