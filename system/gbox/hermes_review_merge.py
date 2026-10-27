@@ -237,7 +237,9 @@ def test(worktree, tests, log, junit):
 SUPPORTED = re.compile(r'system/(?:gbox/(?:\w+/)*\w+\.py|tests/(?:\w+/)*test_\w+\.py|docs/[\w.-]+\.md|hermes/gbox/[\w.-]+)')
 TEST_LIMIT = 50
 SOURCE_LIMIT = 150000      # the diff plus every changed file in full, as the reviewer reads them
-FILE_LIMIT = 80000
+# One file may use the whole budget: an 80 KB limit per file kept every change to a large module out (PR 1325, a 3.7 KB
+# diff to the 113 KB mercs/titles/re5_switch.py: 124 KB in all, a 132 KB packet against the 240 KB review limit).
+FILE_LIMIT = SOURCE_LIMIT
 
 
 def module_test_prefixes(module):

@@ -744,6 +744,16 @@ class MergeGateCoverageTests(unittest.TestCase):
         self.assertFalse(complete)
         self.assertTrue(why.startswith('diff and sources '))
 
+    def test_one_large_module_fits_when_the_total_does(self):
+        module = self.write('system/gbox/mercs/titles/re5_switch.py', '#' * 113000 + '\n')   # PR 1325's module
+        self.write('system/tests/test_re5_switch.py', 'from gbox.mercs.titles import re5_switch\n')
+        self.assertEqual(self.coverage(module, diff='+' * 3700)[0::3], (True, ''))
+        other = self.write('system/gbox/mercs/titles/re5_ps3.py', '#' * 60000 + '\n')
+        self.write('system/tests/test_re5_ps3.py', 'from gbox.mercs.titles import re5_ps3\n')
+        complete, _, _, why = self.coverage(module, other, diff='+' * 3700)
+        self.assertFalse(complete)
+        self.assertEqual(why, f'diff and sources {3700 + 113001 + 60001} B >= 150000 B')
+
 
 if __name__ == '__main__':
     unittest.main()
