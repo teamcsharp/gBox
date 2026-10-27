@@ -657,6 +657,39 @@ def test_infinite_tablets_keeps_the_case_counted_only_in_its_live_slot(mods):
     assert mods.run(ad3, "tablets", on=True)["kept"] == 0 and ad3.writes == []
 
 
+def item_slots(g, rows):
+    """cItem slots in use: rows of (physical slot, +0x9 index, type, count, capacity)."""
+    from gbox.mercs.titles import re6_switch_mods as RM
+    p = R.snapshot(g)["player"]["ptr"]
+    for i in range(RM.ALL_SLOTS):
+        g.q(p + RM.SLOTS + RM.SLOT_STRIDE * i, BASE + RM.SLOT_VTABLE)
+    for phys, index, kind, count, cap in rows:
+        slot = p + RM.SLOTS + RM.SLOT_STRIDE * phys
+        g.put(slot + RM.SLOT_USED, bytes([1, index]) + struct.pack("<H", kind))
+        g.put(slot + RM.SLOT_ROUNDS, struct.pack("<h", count))
+        g.put(slot + RM.SLOT_CAP, struct.pack("<h", cap))
+    return lambda phys: struct.unpack("<h", g.rd(p + RM.SLOTS + RM.SLOT_STRIDE * phys + RM.SLOT_ROUNDS, 2))[0]
+
+
+def test_infinite_grenades_keeps_every_stack_and_the_wheels_total(mods):
+    g = round_guest(guns=((30, 30),))
+    count = item_slots(g, ((9, 9, 0x113, 2, 5), (12, 12, 0x116, 5, 5),        # the wheel: hand grenades 2, remote bombs 5
+                           (15, 15, 0x113, 2, 5), (16, 16, 0x116, 5, 5),      # their stacks
+                           (17, 17, 0x204, 59, 60), (8, 8, 0x120, 0, 3)))     # an ammo box and the spray: never written
+    ad = Adapter(g)
+    out = mods.run(ad, "grenades", on=True)
+    assert out["verified"] and out["kept"] == 2 and count(15) == 5 and count(9) == 5     # the stack, then the wheel's total
+    assert count(16) == 5 and count(12) == 5 and count(17) == 59 and count(8) == 0
+    assert len(ad.writes) == 2
+    g.put(R.snapshot(g)["player"]["ptr"] + mods.SLOTS + mods.SLOT_STRIDE * 16 + mods.SLOT_ROUNDS, struct.pack("<h", 4))
+    clock = [10.0]
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 1 and count(16) == 5   # a bomb placed
+    mods.run(ad, "infinite_grenades", on=False)
+    g.put(R.snapshot(g)["player"]["ptr"] + mods.SLOTS + mods.SLOT_STRIDE * 16 + mods.SLOT_ROUNDS, struct.pack("<h", 4))
+    clock[0] += 1.0
+    assert mods.maintain(ad, R.snapshot(g), clock=lambda: clock[0])["writes"] == 0 and count(16) == 4
+
+
 def test_infinite_stamina_keeps_the_combat_gauge_at_its_maximum(mods):
     g = round_guest(guns=((30, 30),))
     p = R.snapshot(g)["player"]["ptr"]
