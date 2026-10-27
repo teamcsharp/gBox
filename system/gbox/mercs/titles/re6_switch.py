@@ -855,8 +855,18 @@ WIGGLE = (("b", "lup"), ("lright", "lup"), ("b", "lright"), ("ldown", "lright"),
           ("b", "ldown"), ("ldown", "lleft"), ("b", "lleft"), ("lleft", "lup"))      # (live), mashed, the stick round
 DEAD_WAIT_S = 2.5                       # "YOU ARE DEAD - CONTINUE?" takes input ~4 s after the death
 RELOAD_GAP_S = 1.5
-TABLET_HP, TABLET_CLEAR_R, TABLET_GAP_S = 0.5, 150.0, 3.0   # a tablet (R) at half health or less, nobody this near
-TABLET_LOW_HP = 0.34                    # ... and at a third or less whoever is near (a tablet beats dying)
+TABLET_HP, TABLET_CLEAR_R, TABLET_GAP_S = 0.6, 150.0, 3.0   # a tablet (R) at 60 % health or less while he is free,
+TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs out (re6_switch_mods.infinite_tablets);
+                                        # MercMode's RE6 turn of 2026-10-27 09:29-09:43 took 1 tablet in 8.5 min under
+                                        # the old 50 % / nobody-within-1.5 m rule and died 4 times after runs of bites
+# Crowd control (operator 2026-10-27: "when zombies are up close in re6, do a series of quick attacks to deal with them
+# ... unlimited stamina so they can use quick attacks when they have enemies near as form of crowd control"; the combat
+# gauge is kept full by re6_switch_mods.infinite_stamina): a zombie within CC_R in front or flanking (CC_CONE) puts the
+# gun down for the game's quick shot every CC_QSHOT_GAP_S and a kick at arm's length every CC_KICK_GAP_S, before it can
+# grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
+CC_R, CC_CONE = 350.0, math.radians(100)
+CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
+CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -896,7 +906,7 @@ HANG_S = 6.0
 #   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
-          "walk", "no_foes", "dead", "bomb")
+          "walk", "no_foes", "dead", "bomb", "crowd")
 AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("held", "tablet", "reload")
 
@@ -922,7 +932,7 @@ class Bot:
         for k in ("shots", "hits", "quick_shots", "melee", "turns", "quick_turns", "wiggles", "holds", "reloads",
                   "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
                   "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
-                  "bomb_misses", "holds_freed_no_press", "holds_shaken"):
+                  "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s"):
             self.stats.setdefault(k, 0.0)
@@ -1221,7 +1231,7 @@ class Bot:
         if (hp_max and hp > 1 and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
                 and self.tablet_wait is None and now - self.tablet_at >= gap
                 and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R))):
-            self._gun_down()                                     # half health, nobody close, free: a tablet (R),
+            self._gun_down()                                     # 60 % health or less, free: a tablet (R),
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1
@@ -1229,6 +1239,9 @@ class Bot:
         bombed = self._bomb(p, live, flat, yaw, snap, now)
         if bombed is not None:
             return bombed
+        crowded = self._crowd_control(live, flat, bearing, now)
+        if crowded is not None:
+            return crowded
         if self.aim_since is None:
             near_err = bearing(near_e)
             if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
@@ -1253,7 +1266,8 @@ class Bot:
                 self.qshot_release = True
                 return self._go("quick_shot", "quick_shot", {"hold": ("zl", "zr")}, f"one at {dist:.0f} cm: quick shot")
             self.aim_since, self._raise_t, self.reraised = now, now, False   # a zombie in front: the gun comes up
-        keep_off = crowd >= CROWD_N or near < KEEP_R             # he steps back while he fires
+        keep_off = (crowd >= CROWD_N or near < KEEP_R             # he steps back while he fires
+                    or sum(1 for e in live if flat(e) < CC_BACK_R) >= CC_BACK_N)
         if keep_off and not self.keeping_off:
             self.stats["backoffs"] += 1
         self.keeping_off = keep_off
@@ -1335,6 +1349,34 @@ class Bot:
         return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
                         (f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
+
+    # --- crowd control ---------------------------------------------------------------------------------------------
+    def _crowd_control(self, live, flat, bearing, now) -> dict | None:
+        """A zombie up close (CC_R, in front or flanking): the gun down, the game's quick shot every CC_QSHOT_GAP_S and a
+        kick at arm's length every CC_KICK_GAP_S (the gauge is kept full), the camera turned to one on the flank; between
+        them he steps back. None: nobody that close (the gun's bursts go on)."""
+        close = [e for e in live if flat(e) <= CC_R and abs(bearing(e)) <= CC_CONE]
+        if not close:
+            return None
+        e = min(close, key=flat)
+        d, err = flat(e), bearing(e)
+        self._gun_down()
+        if d < MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.melee_at >= CC_KICK_GAP_S:
+            self.melee_at = now
+            self.stats["melee"] += 1
+            self.stats["cc_kicks"] += 1
+            return self._go("crowd", "cc_kick", {"tap": "zr"}, f"one at {d:.0f} cm: a kick (crowd control)")
+        if abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= CC_QSHOT_GAP_S:
+            self.qshot_at = now
+            self.stats["quick_shots"] += 1
+            self.stats["cc_quick_shots"] += 1
+            self.qshot_release = True
+            return self._go("crowd", "cc_quick_shot", {"hold": ("zl", "zr")},
+                            f"one at {d:.0f} cm: quick shot (crowd control)")
+        if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
+            return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
+                            f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
+        return self._go("crowd", "cc_space", {"hold": ("ldown",)}, f"one at {d:.0f} cm: stepping back between attacks")
 
     # --- remote bombs ----------------------------------------------------------------------------------------------
     def _bomb(self, p, live, flat, yaw, snap, now) -> dict | None:
@@ -1538,7 +1580,7 @@ class RE6Switch(Driver):
     round_counters = ("shots", "hits", "quick_shots", "melee", "holds", "reloads", "deaths", "tablets",
                       "tablet_presses", "tablet_misses", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "bombs_placed", "bombs_detonated", "bomb_kills", "bomb_misses", "holds_freed_no_press",
-                      "holds_shaken")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "holds_shaken", "cc_quick_shots", "cc_kicks")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock

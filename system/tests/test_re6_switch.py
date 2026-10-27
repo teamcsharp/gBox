@@ -603,14 +603,14 @@ def test_the_ram_map_names_this_driver_for_the_catalog_game():
     assert isinstance(D.load(merc), R.RE6Switch)
 
 
-def test_a_tablet_at_half_health_with_nobody_close_and_at_a_third_regardless():
-    bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 1
+def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
+    bot, clock, snap = brain(round_guest(hp=540, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 1   # 60 % of 900
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # one a TABLET_GAP_S
-    bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 120.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # one at arm's length: fight first
-    bot, clock, snap = brain(round_guest(hp=300, enemies=((0.0, 0.0, 120.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a third left: a tablet anyway
+    bot, clock, snap = brain(round_guest(hp=560, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # above 60 %: none
+    bot, clock, snap = brain(round_guest(hp=500, enemies=((0.0, 0.0, 120.0, 700),), cam_yaw=0.0))
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # one at arm's length: a tablet anyway
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
@@ -1074,15 +1074,32 @@ def test_a_stale_camera_or_laser_after_a_replay_is_looked_up_again():
     assert R.snapshot(g)["laser"]["up"] is False and (BASE, "laser") not in R._FOUND
 
 
-def test_a_crowd_close_by_is_fired_on_while_he_steps_back():
-    crowd = ((100.0, 0.0, 200.0, 700), (-120.0, 0.0, 200.0, 700), (0.0, 0.0, 900.0, 700))   # two within CROWD_R
-    on = ((100.0, R.CHEST_H, 200.0), (20.0, 145.0, 30.0), 0.86)              # the dot on the near one's chest
+def test_zombies_up_close_get_quick_shots_and_kicks_and_the_ones_further_back_the_bursts():
+    crowd = ((100.0, 0.0, 200.0, 700), (-120.0, 0.0, 200.0, 700), (0.0, 0.0, 900.0, 700))   # two within CC_R
+    on = ((100.0, R.CHEST_H, 200.0), (20.0, 145.0, 30.0), 0.86)
     bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=math.atan2(100, 200), laser=on))
-    acts = run(bot, snap, clock, 10)
-    assert acts[0] == {"hold": ("zl", "zr")} and bot.stats["quick_shots"] == 1   # the close one: the quick shot first
-    assert all("ldown" in a.get("hold", ()) for a in acts[2:]) and bot.stats["backoffs"] == 1   # stepping back ...
-    assert all("zl" in a.get("hold", ()) for a in acts[2:])                  # ... with the gun up
-    assert sum("zr" in a.get("hold", ()) for a in acts[2:]) >= 2 and bot.stats["t_fire"] > 0    # ... and firing
+    bot.held = lambda p, now: False                                          # (the frozen snapshot never moves him)
+    acts = run(bot, snap, clock, 30)                                         # 1.5 s
+    assert acts[0] == {"hold": ("zl", "zr")} and bot.doing == "crowd"         # the gun down: the quick shot at once
+    assert bot.stats["cc_quick_shots"] == 3 and bot.stats["quick_shots"] == 3 # one every CC_QSHOT_GAP_S
+    assert all("zl" not in a.get("hold", ()) or a == {"hold": ("zl", "zr")} for a in acts)   # never the gun up
+    assert {"hold": ("ldown",)} in acts                                      # stepping back between them
+    snap["enemies"] = [snap["enemies"][2]]                                   # only the far one left: the bursts
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.CHEST_H, 900.0), "up": True}
+    acts = run(bot, snap, clock, 12)
+    assert bot.doing in ("fire", "aim", "raise") and any("zr" in a.get("hold", ()) for a in acts)
+
+
+def test_kicks_at_arms_length_every_point_four_seconds_and_a_flanker_is_turned_to():
+    bot, clock, snap = brain(round_guest(enemies=((20.0, 0.0, 100.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 21)                                         # 1 s with one at arm's length
+    assert acts[0] == {"tap": "zr"} and bot.stats["cc_kicks"] == 3            # one every CC_KICK_GAP_S
+    assert bot.stats["cc_quick_shots"] >= 1                                  # quick shots between the kicks
+    bot, clock, snap = brain(round_guest(enemies=((300.0, 0.0, 0.0, 700),), cam_yaw=0.0))   # 3 m off to the right
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.doing == "crowd" and act["hold"] == bot._turn(R.heading(300.0, 0.0))   # the camera to him
+    assert bot.stats["cc_quick_shots"] == 0 and bot.stats["cc_kicks"] == 0
 
 
 def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
@@ -1101,7 +1118,7 @@ def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
     assert d2.screen(res, None) == "results" and d2.result_ready(R.snapshot(res), 0.0) is True
 
 
-def test_one_closing_in_while_he_aims_is_backed_away_from_with_the_gun_up():
+def test_one_closing_in_while_he_aims_is_kicked_before_it_can_grab():
     on = ((300.0, R.CHEST_H, 500.0), (20.0, 145.0, 30.0), 0.86)
     g = round_guest(enemies=((300.0, 0.0, 500.0, 700),), cam_yaw=math.atan2(300, 500), laser=on)
     bot, clock, snap = brain(g)
@@ -1109,7 +1126,7 @@ def test_one_closing_in_while_he_aims_is_backed_away_from_with_the_gun_up():
     assert bot.aim_since is not None                                   # aiming at the far one
     snap["enemies"].append({"slot": 1, "ptr": 99, "pos": (20.0, 0.0, 90.0), "hp": 700, "hp_max": 700})
     act = run(bot, snap, clock, 1)[0]
-    assert "zl" in act["hold"] and "ldown" in act["hold"] and bot.stats["melee"] == 0   # gun up, a step back
+    assert act == {"tap": "zr"} and bot.stats["cc_kicks"] == 1 and bot.aim_since is None   # the gun down, a kick
 
 
 def test_warm_probe_names_stable_native_menus_and_waits_for_an_open_title():
