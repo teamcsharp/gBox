@@ -841,7 +841,13 @@ def create_app(config: Config) -> FastAPI:
     def notify_list(limit: int = 30, actor=Depends(auth)):
         """Newest first. Build entries (auto: "build") carry items with launch options for the PCs online now and a
         thumbnail URL (GET /api/notify/{id}/thumb)."""
-        return build_notes.decorate(sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit])
+        # newest `limit` picked by SQLite: the tray in every client polls this, and decoding all 247 entries each time
+        # added to the garbage whose full collections froze the streams on the Spark (2026-10-27)
+        if limit >= 0:
+            notes = store.newest("notify", "ts", limit)
+        else:                                        # a negative slice: every entry but the oldest -limit, as before
+            notes = sorted(store.all("notify"), key=lambda x: -x.get("ts", 0))[:limit]
+        return build_notes.decorate(notes)
 
     @app.post("/api/notify/{nid}/read")
     def notify_read(nid: str, actor=Depends(auth)):

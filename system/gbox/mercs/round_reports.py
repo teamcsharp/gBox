@@ -518,7 +518,7 @@ class Reports:
         self.scan()
         try:
             from .. import hermes_work_queue
-            queue = hermes_work_queue._read()
+            queue = hermes_work_queue.read_shared()     # read-only here (reconcile looks items up)
         except (OSError, ValueError):
             queue = {}
         # Old offline records cannot be pushed out of retry by a busy new-round tail.

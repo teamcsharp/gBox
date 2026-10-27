@@ -515,6 +515,16 @@ class Store:
                               (kind, int(limit))).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def newest(self, kind: str, field: str, limit: int) -> list[dict]:
+        """The `limit` documents of a kind with the largest numeric top-level `field` (a missing one counts as 0), ties
+        in rowid order: sorted(all(kind), key=lambda d: -d.get(field, 0))[:limit] without decoding the others."""
+        if not field.isidentifier():
+            raise ValueError("field names a top-level field")
+        with self.reading() as db:
+            rows = db.execute(f"SELECT body FROM docs WHERE kind=? ORDER BY COALESCE(json_extract(body,'$.{field}'),0) "
+                              "DESC, rowid ASC LIMIT ?", (kind, max(0, int(limit)))).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
     def running_sessions(self) -> list[dict]:
         """Live sessions only; admission polls must not decode the session archive."""
         with self.reading() as db:
@@ -580,6 +590,21 @@ class Store:
                 (game_id, game_id, *statuses, limit)).fetchall()
         return [{"id": i, "number": n, "title": t, "status": s, "context": json.loads(c) if c else {}}
                 for i, n, t, s, c in rows]
+    def requests_for_game(self, game_id: str) -> list[dict]:
+        """Inbox requests whose context names a game (context.game_id, or a context.build under "<game_id>/"), in rowid
+        order. SQLite picks them out, so Python decodes only those bodies; the caller still applies its exact test (a
+        build that is an object or array comes back too, as Python would compare its repr). inspection_builds decoded
+        the whole kind (4,526 requests, 47.5 MB) for every plan on every 15 s tick: on the Spark (2026-10-27) that
+        thread held the GIL in long stretches and its garbage made full collections that froze the event loop and
+        every MJPEG stream 0.4-0.9 s at a time."""
+        with self.reading() as db:
+            rows = db.execute(
+                "SELECT body FROM docs WHERE kind='request' AND (json_extract(body,'$.context.game_id') = ? "
+                "OR instr(json_extract(body,'$.context.build'), ?) = 1 "
+                "OR json_type(body,'$.context.build') IN ('object','array')) ORDER BY rowid",
+                (game_id, game_id + "/")).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def request_jobs(self, rid: str, limit: int = 200) -> list[dict]:
         """Jobs an inbox request started (parent_request_id or input.request_id), oldest first, for its story."""
         with self.reading() as db:

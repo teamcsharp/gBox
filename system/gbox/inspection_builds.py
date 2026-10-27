@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sqlite3
 import threading
 import time
 
@@ -59,9 +60,21 @@ def settings(body=None):
     return {k: value[k] for k in DEFAULTS}
 
 
+def _game_requests(store, gid):
+    """The requests that can name this game, filtered in SQLite when the store can (Store.requests_for_game); the
+    exact test below still decides. A body SQLite cannot parse falls back to decoding the kind, as before."""
+    pick = getattr(store, 'requests_for_game', None)
+    if pick is not None:
+        try:
+            return pick(gid)
+        except sqlite3.Error:
+            pass
+    return store.all('request')
+
+
 def request_revisions(store, gid):
     result = {}
-    for r in store.all('request'):
+    for r in _game_requests(store, gid):
         c = r.get('context') or {}
         if c.get('game_id') != gid and not str(c.get('build') or '').startswith(gid + '/'):
             continue

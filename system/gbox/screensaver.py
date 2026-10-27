@@ -1351,7 +1351,7 @@ class Screensaver:
         """One row per PC (its current registration, not every stale id a restart left behind) and one read of the
         session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
         from . import mercmode
-        sessions = self.store.all('session')
+        sessions = mercmode.session_rows(self.store)    # the 3 fields inventory() needs, not the 4.9 MB archive
         running = self.store.running_sessions()
         hosts=[]
         for w in _current_workers(self.workers()):
