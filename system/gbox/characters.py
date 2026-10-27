@@ -1291,9 +1291,13 @@ DEDICATED = [
     ("metal_arms", lambda t, p: "metal arms" in t and p == "gamecube", lambda: __import__("gbox.metal_arms", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.metal_arms", fromlist=["x"]).extract_run(ctx, game, e, work)),
     # Def Jam: Vendetta (GDTE69 rev 0): static model-space meshes from data/sNNNx/*.gpl; rig not decoded yet
-    ("defjam_vendetta", lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
+    ('defjam_vendetta', lambda t, p: "def jam" in t and "vendetta" in t and p == "gamecube",
      lambda: __import__("gbox.defjam_vendetta", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.defjam_vendetta", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # S&K + Sonic 1 lock-on / Blue Spheres: SStage Sonic sprite export
+    ("sk_sstage", lambda t, p: "sonic & knuckles" in t and "sonic the hedgehog 2" in t and p == "genesis",
+     lambda: __import__("gbox.sk_export", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.sk_export", fromlist=["x"]).extract_run(ctx, game, e, work)),
 ]
 
 
