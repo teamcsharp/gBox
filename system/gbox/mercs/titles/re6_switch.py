@@ -908,6 +908,11 @@ BOMB_SELF_R = 700.0                     # ... and him at least this far from it,
                                         # from about 3 m, both blasts knocked Chris down and took a health block; operator
                                         # 11:12: "have the bot distance himself from the remote mines")
 BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
+BOMB_WALK_S, BOMB_MIN_R = 5.0, 550.0    # walked off it this long without getting clear: off from BOMB_MIN_R (the blast
+                                        # reached 4.9 m and spared from 4.85 m, live 2026-10-27 11:35-11:38), never nearer
+BOMB_CROWD_N, BOMB_CROWD_R = 2, 300.0   # walking off it, this many this near him: he stops and kicks (ZR alone; ZL + ZR
+                                        # would set the bomb off) instead of backing into them
+DEATH_LOG_N, HP_HIST_S = 8, 3.0         # stats death_log: the last deaths, each with his last HP_HIST_S
 BOMB_STUCK_S, BOMB_SIDE_S = 0.6, 0.8    # walking off it: not 30 cm further in this long, a side step this long
 BOMB_HURT_S, BOMB_HURT_HP = 1.0, 50     # a blast that takes this much of his health this soon: stats bomb_self_hits
 BOMB_LOG_N = 12
@@ -1003,6 +1008,8 @@ class Bot:
         self.bomb_since, self.bomb_last, self.bomb_why = None, -1e9, ""
         self.bomb_kills = None                               # (the kill count at a blast, when)
         self.bomb_walk, self.bomb_side_until = None, -1e9    # walking off it: (since when, from where); a side step
+        self.bomb_walk_since = None                          # when this bomb's walk began
+        self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.bomb_hurt = None                                # (his health, when) at the press that set it off
         # line of sight
         self.blocked: dict = {}                              # zombie -> until when he is out of sight (never fired at)
@@ -1178,6 +1185,7 @@ class Bot:
             if self.dead_since is None:
                 self.dead_since = now
                 self.stats["deaths"] += 1
+                self._death(p, snap, now)
             if now - self.dead_since < DEAD_WAIT_S:
                 return self._go("dead", "dead_wait", {"hold": ()}, "dead: the Continue? screen comes up")
             cursor = snap.get("continue_cursor")
@@ -1190,6 +1198,7 @@ class Bot:
                 return self._go("dead", "continue", {"tap": "a"}, f"Continue? {self.continued}")
             return self._go("dead", "continue", {"tap": "dleft" if cursor > want else "dright"}, "Continue? cursor")
         self.dead_since = None
+        self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
         self._score_hits(snap, now)
         self._ppos = p["pos"]
@@ -1544,7 +1553,9 @@ class Bot:
             on = sum(1 for e in live if math.hypot(e["pos"][0] - bx, e["pos"][2] - bz) <= BOMB_BLAST_R)
             me = math.hypot(px - bx, pz - bz)
             out_s = now - (self.bomb_since or now)
-            if me >= BOMB_SELF_R and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S):   # never with him near it
+            walked = self.bomb_walk_since is not None and now - self.bomb_walk_since >= BOMB_WALK_S
+            clear = me >= BOMB_SELF_R or (walked and me >= BOMB_MIN_R)
+            if clear and (on >= BOMB_BLAST_N or out_s >= BOMB_HOLD_S):   # never with him near it
                 self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
                 self.bomb_kills = (snap.get("kills"), now)
                 self.bomb_hurt = (p.get("hp"), None)
@@ -1554,18 +1565,25 @@ class Bot:
                 return self._bomb_press(eq, now, detonate=True)
             self.bomb_phase = "wait"
             self._gun_down()
-            if me < BOMB_SELF_R + 150.0:                         # walk off it while they come over it
-                return self._bomb_walk(p, (bx, bz), yaw, me, on, now)
-            self.bomb_walk = None
             close = [e for e in live if flat(e) < MELEE_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz)
                                                                         - yaw)) <= MELEE_CONE]
-            if close and now - self.melee_at >= MELEE_GAP_S:     # one at arm's length meanwhile: a kick (ZR alone)
+            if close and now - self.melee_at >= MELEE_GAP_S:     # one at arm's length: a kick (ZR alone)
                 self.melee_at = now
                 self.stats["melee"] += 1
                 return self._go("bomb", "bomb_kick", {"tap": "zr"}, f"a bomb out, one at {flat(close[0]):.0f} cm: a kick")
+            crowd = sum(1 for e in live if flat(e) < BOMB_CROWD_R)
+            if me < BOMB_SELF_R + 150.0 and crowd < BOMB_CROWD_N:   # walk off it while they come over it
+                return self._bomb_walk(p, (bx, bz), yaw, me, on, now)
+            self.bomb_walk = None
+            nearest = min((e for e in live), key=flat, default=None)
+            if crowd and nearest is not None:                    # they are on him: face the nearest for the kicks
+                err = wrap(heading(nearest["pos"][0] - px, nearest["pos"][2] - pz) - yaw)
+                return self._go("bomb", "bomb_face", {"hold": self._turn(err, MELEE_CONE / 2)},
+                                f"a bomb out, {crowd} on him: facing the nearest for a kick")
             return self._go("bomb", "bomb_wait", {"hold": ()}, f"a bomb out: {on} on it, {me:.0f} cm from him")
         if self.bomb_phase in ("det_aim", "det", "det_wait"):    # it went off: the game put the gun back
             self.stats["bombs_detonated"] += 1
+            self.bomb_walk = self.bomb_walk_since = None
             if self.bomb_hurt is not None:
                 self.bomb_hurt = (self.bomb_hurt[0], now)
             self.bomb_phase, self.bomb_last, self.bomb_at = None, now, None
@@ -1596,12 +1614,37 @@ class Bot:
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "equip", now - BOMB_STEP_S, 0
         return self._bomb_press(eq, now, live=live, p=p, yaw=yaw)
 
+    def _death(self, p, snap, now) -> None:
+        """stats death_log: what he was doing over his last HP_HIST_S (the decisions while his health fell), whether a
+        zombie held him, how many stood near, a bomb out and how far, so a death names its cause."""
+        px, py, pz = p["pos"]
+        near = sorted(math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in snap.get("enemies") or ()
+                      if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY)
+        falls, doing_fall = [], {}
+        for (t0, h0, d0), (t1, h1, _d1) in zip(self.hp_hist, self.hp_hist[1:]):
+            if isinstance(h0, int) and isinstance(h1, int) and h1 < h0:
+                falls.append(h0 - h1)
+                doing_fall[d0] = doing_fall.get(d0, 0) + (h0 - h1)
+        bomb = None
+        if self.bomb_at is not None:
+            bomb = round(math.hypot(px - self.bomb_at[0], pz - self.bomb_at[1]))
+        log = self.stats.setdefault("death_log", [])
+        log.append({"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
+                    "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
+                    "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
+                    "bomb_phase": self.bomb_phase, "bomb_cm": bomb})
+        del log[:-DEATH_LOG_N]
+        self.hp_hist = []
+        self.bomb_phase, self.bomb_at, self.bomb_walk, self.bomb_walk_since = None, None, None, None
+
     def _bomb_walk(self, p, at, yaw, me, on, now) -> dict:
         """Off the bomb: the camera turned to it and the stick back (he runs away from it); not 30 cm further in
         BOMB_STUCK_S (a wall behind), a side step for BOMB_SIDE_S, the side swapped each time."""
         px, _, pz = p["pos"]
-        if self.bomb_walk is None:
+        if self.bomb_walk_since is None:
             self.stats["bomb_walks"] += 1
+            self.bomb_walk_since = now
+        if self.bomb_walk is None:
             self.bomb_walk = (now, (px, pz))
         elif math.hypot(px - self.bomb_walk[1][0], pz - self.bomb_walk[1][1]) > 30.0:
             self.bomb_walk = (now, (px, pz))

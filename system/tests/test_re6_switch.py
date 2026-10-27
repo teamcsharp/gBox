@@ -451,6 +451,31 @@ def test_after_a_bomb_he_walks_off_it_and_never_sets_it_off_near_himself():
     assert {"hold": ("zl", "zr")} in acts and bot.stats["bomb_det_cm"] == [R.BOMB_SELF_R + 50]
 
 
+def test_walking_off_a_bomb_he_kicks_and_stops_for_a_crowd_and_after_the_walk_sets_it_off_from_the_blasts_edge():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 100.0, 700),))                   # one at arm's length in front
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"tap": "zr"} and bot.stats["melee"] == 1                   # a kick (ZR alone), not the walk
+    bot, clock, snap = bomb_out(((150.0, 0.0, -150.0, 700), (-150.0, 0.0, -150.0, 700)))   # two behind him
+    acts = run(bot, snap, clock, 4)
+    assert all("ldown" not in a.get("hold", ()) for a in acts) and bot.doing == "bomb"   # not backing into them
+    on_it = ((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700))
+    bot, clock, snap = bomb_out(on_it, me=(0.0, 0.0, R.BOMB_AHEAD - 600.0))  # 6 m from it: short of BOMB_SELF_R
+    acts = run(bot, snap, clock, int(R.BOMB_WALK_S / 0.05) - 2)
+    assert all("zr" not in a.get("hold", ()) for a in acts)                   # walking off it first
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 6)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["bomb_det_cm"] == [600]   # the walk ran out: off from 6 m
+
+
+def test_a_death_is_logged_with_its_cause_and_forgets_the_bomb():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 120.0, 700),) * 3)
+    run(bot, snap, clock, 4)
+    snap["player"].update(hp=0, state=0)
+    run(bot, snap, clock, 1)
+    d = bot.stats["death_log"][-1]
+    assert d["near_2m"] == 3 and d["bomb_phase"] == "wait" and d["bomb_cm"] == 300 and d["held"] is False
+    assert bot.bomb_at is None and bot.bomb_phase is None
+
+
 def test_the_bomb_walk_turns_the_camera_to_the_bomb_and_a_blast_that_hurts_him_is_counted():
     bot, clock, snap = bomb_out(((0.0, 0.0, 3000.0, 700),), me=(-300.0, 0.0, R.BOMB_AHEAD))   # the bomb 3 m to his right
     act = run(bot, snap, clock, 1)[0]
