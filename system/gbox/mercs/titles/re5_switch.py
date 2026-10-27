@@ -262,12 +262,35 @@ CONFIRMED_FIRE, LONG_KILL_R, LONG_KILL_S = True, 1500.0, 3.0
 WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.4, 2.5, 3
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
 FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky")
+# through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
+# misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
-                     "confirmed_shots", "long_shot_kills")
+                     "confirmed_shots", "long_shot_kills", "through_shots")
+# Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
+# so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
+# enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
+# the stage, wherever he is), checked against sUnit's enemy line (ENEMY_LINE, the uEm units alive, every CENSUS_S:
+# census_units against census_count). With a combo running, its window under PURSUE_S and nobody on his level within
+# COMBO_REACH, he runs (B) to the census's best - the flat distance + PURSUE_DY_W x the height (his level preferred);
+# no PURSUE_PROGRESS_CM closer in PURSUE_STUCK_S: a detour (PURSUE_DETOUR_DEG off the heading for PURSUE_DETOUR_S, the
+# side alternating); PURSUE_MAX_DETOURS on one Majini: another for PURSUE_BLOCK_S. pursuit_kills: a kill during a
+# pursuit or within PURSUE_CREDIT_S after it (once a pursuit); pursuit_lapses: a combo lapse during one.
+PURSUIT, PURSUE_S, PURSUE_DY_W, PURSUE_CREDIT_S = True, 6.0, 3.0, 4.0
+PURSUE_PROGRESS_CM, PURSUE_STUCK_S, PURSUE_DETOUR_DEG, PURSUE_DETOUR_S = 50.0, 1.5, 70.0, 0.9
+PURSUE_MAX_DETOURS, PURSUE_BLOCK_S = 3, 8.0
+ENEMY_LINE, CENSUS_S = 10, 2.0
+PURSUIT_COUNTERS = ("pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck")
+# Crowd moves (operator 15:27: "they need to always keep the crowd control and be on the move to avoid being
+# overcrowded"): CROWD_N or more within CROWD_R and the gun up CROWD_BURST_S: the gun down and CROWD_MOVE_S moving away
+# from them (the left stick back, sideways or between, whichever points most away; still turning to the target), at
+# most once every CROWD_GAP_S; not while a confirmed long shot is on.
+CROWD_MOVES, CROWD_N, CROWD_R, CROWD_BURST_S, CROWD_MOVE_S, CROWD_GAP_S = True, 3, 600.0, 1.2, 0.5, 2.5
+CROWD_COUNTERS = ("crowd_moves",)
 SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
 THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
-                   "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS + AIMFAULT_COUNTERS
+                   "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS + AIMFAULT_COUNTERS + PURSUIT_COUNTERS \
+    + CROWD_COUNTERS
 # Each lapse's cause, counted at the lapse (counters only, no behavior): no Majini alive (combo_lapse_empty), the
 # nearest beyond COMBO_REACH (combo_lapse_far), one in reach but not dispatched in time (combo_lapse_near), and of
 # those, how many with his gun up (combo_lapse_aimed). combo_window_full: the longest window read (the game's own).
@@ -517,6 +540,30 @@ def heading(dx: float, dz: float) -> float:
     return math.atan2(dx, dz)
 
 
+_UNIT_CENSUS = {"at": -1e9, "n": None}
+
+
+def unit_enemies_alive(m, base: int, now: float | None = None):
+    """The game's own count: uEm units alive on sUnit's enemy line (ENEMY_LINE), read at most every CENSUS_S."""
+    now = time.monotonic() if now is None else now
+    if now - _UNIT_CENSUS["at"] < CENSUS_S:
+        return _UNIT_CENSUS["n"]
+    _UNIT_CENSUS["at"] = now
+    n = None
+    try:
+        su = u64(m, base + S_UNIT)
+        if ptr_ok(su):
+            u, k, n = u64(m, su + UNIT_LINES + LINE_STRIDE * ENEMY_LINE), 0, 0
+            while ptr_ok(u) and k < 256:
+                if (enemy_class(m, u) or "").startswith("uEm") and struct.unpack("<h", m.rd(u + E_HP, 2))[0] > 0:
+                    n += 1
+                u, k = u64(m, u + UNIT_NEXT), k + 1
+    except (ValueError, OSError, struct.error):
+        n = None
+    _UNIT_CENSUS["n"] = n
+    return n
+
+
 def game_sys(m, base: int) -> int:
     main = u64(m, base + S_MAIN)
     return u64(m, main + MAIN_GAMESYS) if ptr_ok(main) else 0
@@ -624,6 +671,7 @@ def snapshot(m) -> dict:
                     snap["continue_cursor"] = _i32(m, over + CONTINUE_CURSOR) if over else None
                 except (ValueError, OSError):
                     snap["continue_cursor"] = None
+    snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     se = u64(m, base + S_ENEMY)
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
@@ -917,6 +965,9 @@ class Bot:
         self._dot_prev, self._dot_same, self._rot_prev = None, 0, None   # the frozen-dot watch
         self._wall_since, self._away_since, self._behind_on, self._fault_t = None, None, False, None
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
+        self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
+        self._kills_prev = None
+        self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
         self.stats.setdefault("crowd_max", 0)
         for kind in FAULT_KINDS:
             self.stats.setdefault("ex_" + kind, "")
@@ -1029,6 +1080,16 @@ class Bot:
         self._fault_t = now
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
+        self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
+        if snap.get("unit_enemies_alive") is not None:
+            self.stats["census_units"] = snap["unit_enemies_alive"]
+        k = snap.get("kills")
+        if type(k) is int and type(self._kills_prev) is int and k > self._kills_prev and not self._pur_credit \
+                and (self._pur is not None or now - self._pur_end_at <= PURSUE_CREDIT_S):
+            self.stats["pursuit_kills"] += 1
+            self._pur_credit = True
+        if type(k) is int:
+            self._kills_prev = k
         behind = [e for e in live if flat(e) <= BEHIND_R and e.get("ptr", e.get("slot")) != self.target
                   and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2]
         on = bool(behind) and self.aim_since is not None
@@ -1049,6 +1110,67 @@ class Bot:
                     del self._long_marks[key]
                 elif e is None or now - t > LONG_KILL_S:
                     del self._long_marks[key]
+
+    def _pursue(self, p, live, flat, snap, now):
+        """The combo running down with nobody on his level in reach: run to the census's best (stuck: a detour)."""
+        combo, window = snap.get("combo"), snap.get("combo_timer")
+        running = PURSUIT and type(combo) is int and combo > 0 and isinstance(window, (int, float)) \
+            and not isinstance(window, bool) and 0.0 < window <= PURSUE_S
+        if not running or any(flat(e) <= COMBO_REACH for e in live) or self.aim_since is not None:
+            if self._pur is not None:
+                self._pur, self._pur_end_at = None, now
+            return None
+        px, py, pz = p["pos"]
+        self._pur_block = {k: t for k, t in self._pur_block.items() if t > now}
+        census = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
+                  and e.get("ptr", e.get("slot")) not in self._pur_block]
+        if not census:
+            return None
+        cost = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz) + PURSUE_DY_W * abs(e["pos"][1] - py)
+        tgt = min(census, key=cost)
+        key = tgt.get("ptr", tgt.get("slot"))
+        d = math.hypot(tgt["pos"][0] - px, tgt["pos"][2] - pz)
+        if self._pur is None or self._pur["target"] != key:
+            if self._pur is None:
+                self.stats["pursuits"] += 1
+                self._pur_credit = False
+            self._pur = {"target": key, "best": d, "best_at": now, "detours": 0, "detour_until": -1e9, "side": 1}
+        pur = self._pur
+        if d < pur["best"] - PURSUE_PROGRESS_CM:
+            pur["best"], pur["best_at"] = d, now
+        elif now - pur["best_at"] > PURSUE_STUCK_S and now >= pur["detour_until"]:
+            self.stats["pursuit_stuck"] += 1             # no closer: a detour, the other side each time
+            pur["detours"] += 1
+            pur["side"] = -pur["side"]
+            pur["detour_until"], pur["best_at"] = now + PURSUE_DETOUR_S, now + PURSUE_DETOUR_S
+            if pur["detours"] > PURSUE_MAX_DETOURS:
+                self._pur_block[key] = now + PURSUE_BLOCK_S
+                pur["target"] = None
+        off = math.radians(PURSUE_DETOUR_DEG) * pur["side"] if now < pur["detour_until"] else 0.0
+        err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) + off - p["rot"])
+        self.target = key
+        self.doing = "walk"
+        self.why = (f"pursuit: combo {combo}, {window:.1f} s left, the best of {len(census)} at {d / 100:.1f} m "
+                    f"(dy {tgt['pos'][1] - py:+.0f})" + (" - a detour" if off else ""))
+        self._gun_down()
+        return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
+
+    @staticmethod
+    def _escape_keys(p, crowd) -> tuple:
+        """The left stick away from the crowd (each Majini pushing by 1/d^2), in his frame: back, sideways or between."""
+        px, _, pz = p["pos"]
+        vx = vz = 0.0
+        for e in crowd:
+            dx, dz = px - e["pos"][0], pz - e["pos"][2]
+            d = max(math.hypot(dx, dz), 50.0)
+            vx, vz = vx + dx / (d * d), vz + dz / (d * d)
+        if not (vx or vz):
+            return ("ldown",)
+        a = math.degrees(wrap(heading(vx, vz) - p["rot"]))   # 0 ahead, +90 his left (a larger heading), 180 behind
+        options = ((0, ("lup",)), (45, ("lleft", "lup")), (90, ("lleft",)), (135, ("ldown", "lleft")),
+                   (180, ("ldown",)), (-180, ("ldown",)), (-135, ("ldown", "lright")), (-90, ("lright",)),
+                   (-45, ("lright", "lup")))
+        return min(options, key=lambda o: abs(o[0] - a))[1]
 
     def _frozen_dot(self, p, dot, fresh) -> bool:
         """The live dot unchanged FROZEN_TICKS aimed ticks while the right stick was held or his heading changed."""
@@ -1266,6 +1388,8 @@ class Bot:
             if isinstance(self._combo_window, (int, float)) and self._combo_window <= COMBO_LAPSE_S:
                 self.stats["combo_lapses"] += 1
                 self._lapse_cause(snap)
+                if self._pur is not None or (self._now is not None and self._now - self._pur_end_at < 1.0):
+                    self.stats["pursuit_lapses"] += 1
         if combo > 0 and isinstance(window, (int, float)) and not isinstance(window, bool) and 0 < window < 600:
             self.stats["combo_window_full"] = round(max(window, self.stats.get("combo_window_full") or 0.0), 1)
         self._combo_prev = combo
@@ -1712,6 +1836,9 @@ class Bot:
             live = rest or live
         self._fault_tick(p, live, flat, snap, now)
         if not live:
+            act = self._pursue(p, live, flat, snap, now)
+            if act is not None:
+                return act
             others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
             if self.mode in ("fight", "hunt") and others:     # nobody on his level: go to the nearest one anywhere
                 tgt = min(others, key=lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz))
@@ -1729,6 +1856,9 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
+        act = self._pursue(p, live, flat, snap, now)
+        if act is not None:
+            return act
         urgent = self._combo_urgent(snap)
         if urgent:                                           # the combo window runs down: the quickest kill
             self.stats["combo_pushes"] += 1
@@ -1758,6 +1888,9 @@ class Bot:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it
                 self.doing, self.why = "backoff", "finishing a back-off"
                 return {"hold": ("ldown",) + self._turn(body_err)}
+            if now < self._crowd_until:                      # a crowd move under way: on, still turning to him
+                self.doing, self.why = "backoff", f"moving out of the crowd ({','.join(self._crowd_keys)})"
+                return {"hold": self._crowd_keys + self._turn(body_err)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
             if CLOSE_BACKOFF and near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back
                 if now >= self.backoff_ready:
@@ -1936,6 +2069,17 @@ class Bot:
                     and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= FRONT_CONE)
         if on and dist > LONG_KILL_R:
             self._long_marks[tgt.get("ptr", tgt.get("slot"))] = now
+        if on and where is None and not point_blank and not confirmed and not self.fire_down:
+            self.stats["through_shots"] += 1
+        crowd = [e for e in live if flat(e) <= CROWD_R]
+        if CROWD_MOVES and len(crowd) >= CROWD_N and now - self.aim_since >= CROWD_BURST_S and now >= self._crowd_ready \
+                and not (confirmed and dist > LONG_R):
+            self._crowd_keys = self._escape_keys(p, crowd)
+            self._crowd_until, self._crowd_ready = now + CROWD_MOVE_S, now + CROWD_MOVE_S + CROWD_GAP_S
+            self.stats["crowd_moves"] += 1
+            self.doing, self.why = "backoff", f"{len(crowd)} within {CROWD_R / 100:.0f} m: the gun down, moving out"
+            self._gun_down()
+            return {"hold": self._crowd_keys + self._turn(body_err)}
         if BURST_BACKOFF and front >= FRONT_N and self.trigger_since is not None and now - self.trigger_since >= BURST_S:
             self.doing, self.why = "burst_backoff", f"{front} in front after a {now - self.trigger_since:.1f} s burst"
             self.stats["burst_backoffs"] += 1                # a crowd in front: the burst is done, step back, burst again
