@@ -2042,7 +2042,9 @@ class Bot:
         """A time / combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
         onto it and the trigger down while the ray runs through it. None: no bonus to shoot (the fight goes on)."""
         bs = snap.get("bonuses")
+        eq = p.get("equipped")
         if (not BONUS_PURSUIT or not bs or (p.get("bomb") or {}).get("out")   # the remote in hand: ZR would set it off
+                or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.nade is not None
                 or any(flat(e) < BONUS_SAFE_R for e in live)):
             self.bonus_target = None
             return None
