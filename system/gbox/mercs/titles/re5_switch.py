@@ -176,7 +176,7 @@ SMOOTH = False
 # The pieces, back one RE5 turn at a time, each with its own numbers (a piece that raises deaths is dropped); each is on
 # when its flag is True or SMOOTH is:
 SMOOTH_FAR = True        # the far-aim unaim hold and the re-raise hysteresis, only with nobody within THREAT_R (13:25)
-SMOOTH_FLIP = False      # no flip back to the Majini he just left within FLIP_S
+SMOOTH_FLIP = True       # no flip back to the Majini he just left within FLIP_S (back 14:10)
 SMOOTH_DOT = False       # the dot takes another Majini after DOT_SWITCH_TICKS (and fires on him at once meanwhile)
 SMOOTH_LEVEL = False     # his own level first, no pitch swings to roofs while ground Majini come
 SMOOTH_CLOSE = False     # up close the target is kept until it dies or leaves THREAT_R
