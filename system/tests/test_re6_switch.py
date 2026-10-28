@@ -1020,14 +1020,18 @@ def test_with_the_lock_the_camera_is_written_onto_the_target_and_no_camera_key_s
     assert "LOCK" in bot.stats["aim"]
 
 
-def test_one_hanging_from_the_ceiling_within_fifteen_metres_is_locked_and_shot():
-    hang = (0.0, 600.0, 900.0, 700)                                           # 6 m up: off his floor
-    pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 900.0)
+def test_one_hanging_from_the_ceiling_right_above_is_locked_and_shot_and_one_far_off_another_floor_is_not():
+    far = (0.0, 600.0, 900.0, 700)                                            # 6 m up, 9 m off: no threat to him
+    bot0, clock0, snap0, writes0 = lock_brain((far,), laser=((0.0, 660.0, 900.0), (20.0, 145.0, 30.0), 0.86))
+    acts0 = run(bot0, snap0, clock0, 10)
+    assert not any("zr" in a.get("hold", ()) for a in acts0) and bot0.stats["offlevel_skips"] >= 1
+    hang = (0.0, 600.0, 300.0, 700)                                           # 6 m up, 3 m off: right above him
+    pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 300.0)
     bot, clock, snap, writes = lock_brain((hang,), laser=(pt, (20.0, 145.0, 30.0), 0.86))
     acts = run(bot, snap, clock, 10)
     assert writes and any("zr" in a.get("hold", ()) for a in acts) and bot.stats["aimed_shots"] >= 1
     c = snap["camera"]["pos"]
-    assert writes[-1][2] == pytest.approx(R.heading(-c[0], 900.0 - c[2]), abs=1e-4)
+    assert writes[-1][2] == pytest.approx(R.heading(-c[0], 300.0 - c[2]), abs=1e-4)
     bot2, clock2, snap2 = brain(round_guest(enemies=(hang,), cam_yaw=0.0, laser=(pt, (20.0, 145.0, 30.0), 0.86)))
     bot2.held = lambda p, now: False
     acts2 = run(bot2, snap2, clock2, 10)                                      # without the lock: off his floor, ignored
@@ -1035,7 +1039,7 @@ def test_one_hanging_from_the_ceiling_within_fifteen_metres_is_locked_and_shot()
 
 
 def test_the_big_one_gets_the_focus_fire_first():
-    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 600.0, 500), (500.0, 0.0, 1000.0, 1000)))
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 800.0, 500), (500.0, 0.0, 1000.0, 1000)))   # none within 6 m
     snap["enemies"][1]["hp_max"] = 1000
     run(bot, snap, clock, 4)
     c = snap["camera"]["pos"]
@@ -1528,6 +1532,75 @@ def test_greens_wait_for_the_match_and_save_a_running_out_combo():
     snap["bonuses"] = []
     run(bot, snap, clock, 1)
     assert bot.stats["greens_taken"] == 1 and bot.stats["combo_saves"] == 1
+
+
+def test_the_nav_mesh_line_of_sight_stops_at_its_walls():
+    mesh = R.NavMesh(*u_mesh(size=200.0))
+    assert mesh.clear((100.0, 0.0, 100.0), (100.0, 0.0, 500.0)) is False     # across the hole: a wall between
+    assert mesh.clear((100.0, 0.0, 100.0), (500.0, 0.0, 100.0)) is True      # along the floor
+    assert mesh.clear((500.0, 0.0, 100.0), (500.0, 0.0, 500.0)) is True
+    assert mesh.clear((100.0, 0.0, 100.0), (100.0, 900.0, 500.0)) is None    # another level: the laser decides
+
+
+def test_one_behind_a_wall_is_never_aimed_at_and_is_walked_to_by_the_mesh():
+    hidden = (100.0, 0.0, 500.0, 700)                                         # beyond the hole from him
+    bot, clock, snap, writes = lock_brain((hidden,))
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
+    acts = run(bot, snap, clock, 6)
+    assert all("zl" not in a.get("hold", ()) for a in acts)                  # never aimed at the wall
+    assert writes and all(abs(w[2]) > 1.0 for w in writes)                    # the camera onto the way (east), not him
+    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "walk_nav" and "lup" in acts[-1]["hold"]
+    snap["enemies"][0]["pos"] = (500.0, 0.0, 100.0)                           # down the corridor: in sight
+    bot._sight_cache.clear()
+    acts = run(bot, snap, clock, 6)
+    assert any("zl" in a.get("hold", ()) for a in acts)
+
+
+def test_the_lasers_probe_takes_one_out_of_sight_when_the_ray_stops_short():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),),
+                                          laser=((0.0, R.CHEST_H, 400.0), (20.0, 145.0, 30.0), 0.86))   # a wall at 4 m
+    run(bot, snap, clock, int((R.READY_S + R.LOS_PROBE_S) / 0.05) + 6)
+    assert bot.stats["los_blocks"] >= 1 and bot.is_blocked(snap["enemies"][0], clock[0])
+    assert bot.stats["wall_aim_s"] == 0                                       # 4 m: not a wall at the muzzle
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (20.0, 145.0, 120.0), "up": True}   # 90 cm from the muzzle
+    run(bot, snap, clock, 4)
+    assert bot.stats["wall_aim_s"] > 0
+
+
+def test_a_close_one_beats_a_far_one_and_low_health_is_survival():
+    bot, clock, snap, writes = lock_brain(((300.0, 0.0, 300.0, 700), (0.0, 0.0, 1200.0, 700)))   # 4.2 m and 12 m
+    run(bot, snap, clock, 4)
+    assert bot.target == snap["enemies"][0]["ptr"] and bot.close_threat
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 2000.0, 700),))        # one far off in front
+    snap["player"]["hp"] = 250                                                # under 35 %: survival
+    acts = run(bot, snap, clock, 8)
+    assert bot.survival and bot.stats["survival_s"] > 0 and all("zr" not in a.get("hold", ()) for a in acts)
+    snap["enemies"] = [{"slot": 0, "ptr": 0x9100, "pos": (0.0, 0.0, 400.0), "hp": 700, "hp_max": 700}]
+    acts = run(bot, snap, clock, 6)
+    assert any("zl" in a.get("hold", ()) for a in acts)                       # the one closing in: shot
+    assert any("ldown" in a.get("hold", ()) for a in acts)                    # backing away from him
+
+
+def test_the_turn_governor_releases_the_sticks_on_a_whip_and_in_a_sped_up_action():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 2)
+    snap["player"]["action"] = "cPlAction_pl_act_weapon_comn_quick_shot"     # x10 while it runs
+    out = bot._govern(snap, {"hold": ("lup", "rleft", "zl")}, clock[0] + 0.05)
+    assert out["hold"] == ("zl",) and bot.stats["whips"] == 1
+    snap["player"]["action"] = "cPlAction_pl_act_walk"
+    bot._rot_prev = (clock[0], 0.0)
+    snap["player"]["rot"] = math.radians(90)                                  # 90 deg in 0.05 s: a whip
+    out = bot._govern(snap, {"hold": ("lup", "zl")}, clock[0] + 0.05)
+    assert out["hold"] == ("zl",) and bot.stats["spin_deg_s"] >= 1000 and bot.stats["whips"] == 2
+
+
+def test_aiming_up_with_no_vertical_threat_is_counted():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    snap["camera"]["pitch"] = math.radians(30)                                # the camera up at the rafters
+    run(bot, snap, clock, 8)
+    assert bot.stats["up_aim_s"] > 0
 
 
 def test_no_new_bomb_under_half_health():
