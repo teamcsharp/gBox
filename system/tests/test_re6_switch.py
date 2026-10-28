@@ -3057,7 +3057,9 @@ def test_a_hold_presses_the_prompts_own_button():
     bot._prompt_pressed = lambda key, now: None
     bot._prompt_shown = [{"key": "r", "ab": 1, "type": 3}]
     outs = [bot._held_prompt(0.0) for _ in range(4)]
-    assert ("r",) in [o["hold"] for o in outs] and () in [o["hold"] for o in outs]
+    holds = [o["hold"] for o in outs]
+    assert any("r" in h for h in holds) and any("r" not in h for h in holds)   # mashed: pressed and let go
+    assert all(set(h) - {"r"} for h in holds)                                  # the stick worked every tick too
     bot._prompt_shown = [{"key": "stick", "ab": 1, "type": 9}]
     out = bot._held_prompt(0.0)
     assert out["hold"] and "b" not in out["hold"]
