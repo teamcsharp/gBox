@@ -18,6 +18,7 @@ def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     monkeypatch.setattr(R, "MINES", False)
+    monkeypatch.setattr(R, "SWEEP", True)                         # off in MercMode since 18:52 (#1383); the code is kept
     monkeypatch.setattr(R, "SWEEP", True)              # off in MercMode since 18:52 (it spun at ~1300 deg/s); the code is kept
 
 
@@ -52,8 +53,8 @@ def test_three_within_5_m_the_gun_up_the_trigger_down_and_the_aim_pans_toward_th
     b, clock = bot()
     ring = [at(300, 40), at(350, 100), at(250, -60)]               # two on his left (a larger heading), one right
     act = b.tick(snap(ring))
-    assert b.doing == "sweep" and {"zl", "zr", "rleft"} <= set(act["hold"]) and "rright" not in act["hold"]
-    assert b.stats["sweeps"] == 1
+    assert b.doing == "sweep" and {"zl", "rleft"} <= set(act["hold"]) and "rright" not in act["hold"]
+    assert "zr" not in act["hold"] and b.stats["sweeps"] == 1      # nobody under the aim yet: panning
 
 
 def test_the_sweep_keeps_its_way_whatever_the_crowd_does_and_never_reverses():
@@ -63,21 +64,53 @@ def test_the_sweep_keeps_its_way_whatever_the_crowd_does_and_never_reverses():
     for k in range(1, 30):                                         # they all go round to his right
         clock[0] = 0.05 * k
         act = b.tick(snap([at(300, -40), at(350, -100), at(250, -60)], motion=26))
-        assert "rright" not in act["hold"] and "zr" in act["hold"]
+        assert "rright" not in act["hold"] and "rleft" in act["hold"]
     assert b.stats["sweep_reversals"] == 0 and b.stats["sweeps"] == 1 and b.stats["sweep_s"] > 1.0
 
 
-def test_on_a_majini_the_pan_dwells():
+def test_on_a_majini_the_pan_stops_and_the_trigger_holds():
     b, clock = bot()
     ring = [at(300, 0), at(350, 100), at(250, 60)]
     b.tick(snap(ring))
-    sticks = 0
     for k in range(1, 10):
         clock[0] = 0.05 * k
-        act = b.tick(snap(ring, dot=chest(ring[0]), motion=26))   # the dot on the one ahead
-        sticks += "rleft" in act["hold"]
-        assert "zr" in act["hold"]
-    assert sticks == 3                                             # one tick in SWEEP_DWELL_N
+        act = b.tick(snap(ring, dot=chest(ring[0]), motion=26 if k == 1 else 29))   # the dot on the one ahead
+        assert "zr" in act["hold"] and not {"rleft", "rright"} & set(act["hold"])
+
+
+def test_no_stick_while_the_shot_motion_plays_then_the_pan_goes_on():
+    b, clock = bot()
+    ring = [at(300, 40), at(350, 100), at(250, -60)]
+    b.tick(snap(ring))
+    clock[0] = 0.1
+    act = b.tick(snap(ring, dot=(0.0, 140.0, 3000.0), motion=29, aim_pitch=-0.4))   # off them, the shot still playing
+    assert not {"rleft", "rright", "rup", "rdown", "zr"} & set(act["hold"]) and b.stats["sweep_shot_waits"] == 1
+    clock[0] = 0.15
+    act = b.tick(snap(ring, dot=(0.0, 140.0, 3000.0), motion=26))
+    assert "rleft" in act["hold"] and "zr" not in act["hold"]
+
+
+def test_one_at_point_blank_in_front_is_fired_on():
+    b, clock = bot()
+    ring = [at(100, 5), at(350, 100), at(250, -60)]
+    b.tick(snap(ring))
+    clock[0] = 0.1
+    act = b.tick(snap(ring, dot=(0.0, 120.0, 60.0), motion=26))   # the dot at the muzzle: on him
+    assert "zr" in act["hold"] and "rleft" not in act["hold"]
+
+
+def test_the_regular_aim_holds_no_stick_in_the_shot_motion():
+    b, clock = bot()
+    foe = at(600, 0)
+    b.tick(snap([foe]))                                            # the gun comes up
+    clock[0] = 0.4
+    off = (-300.0, 140.0, 3000.0)                                  # the dot 6 deg off him
+    act = b.tick(snap([foe], dot=off, motion=29))
+    assert b.doing == "aim" and not {"rleft", "rright", "rup", "rdown"} & set(act["hold"])
+    assert b.stats["shot_stick_drops"] == 1
+    clock[0] = 0.45
+    act = b.tick(snap([foe], dot=off, motion=26))
+    assert "rleft" in act["hold"]
 
 
 def test_one_behind_while_another_is_in_front_sweeps_two_in_front_do_not():
@@ -155,7 +188,7 @@ def test_no_spot_held_past_the_dwell_limit_with_majini_about_he_runs_away_from_t
     clock[0] = 7.1
     act = b.tick(snap(foes))
     assert b.stats["relocations"] == 1
-    assert b.doing == "quick_turn" and act["hold"] == ("ldown",)   # the way out is behind him: one quick turn
+    assert b.doing == "relocate" and "ldown" in act["hold"] and b.quick == 0   # the way out behind him: backing toward it, turning
     want = math.degrees(R.wrap(math.pi + math.radians(R.KITE_DEG)))
     assert abs(math.degrees(b._reloc["head"]) - want) < 15
 
@@ -272,3 +305,25 @@ def test_a_replay_starts_the_statues_again_none_counted_taken():
     b.tick(snap([], bonuses=[at(1000, 0), at(1200, 90)], timer=119.5))   # new units
     b2 = b.stats
     assert b2["bonuses_taken"] == 0 and b2["time_gained"] == 0 and b2["rounds"] == 1
+
+
+# --- the heading governor ----------------------------------------------------------------------------------------------
+def test_a_heading_turning_faster_than_the_governor_releases_the_turn_stick(monkeypatch):
+    monkeypatch.setattr(R, "CALM", False)                         # (the calm budget would coast the tick first)
+    b, clock = bot()
+    foe = at(600, 90)                                              # off to his left: a body turn
+    act = b.tick(snap([foe], rot=0.0))
+    assert "rleft" in act["hold"]
+    clock[0] = 0.1
+    act = b.tick(snap([foe], rot=math.radians(30)))               # 300 deg/s: over the governor
+    assert not {"rleft", "rright"} & set(act["hold"]) and b.stats["gov_drops"] == 1
+    clock[0] = 0.2
+    act = b.tick(snap([foe], rot=math.radians(35)))               # 50 deg/s: the stick back
+    assert b.stats["gov_drops"] == 1
+
+
+def test_no_quick_turn_for_one_behind_the_body_turns_by_the_stick():
+    b, clock = bot()
+    act = b.tick(snap([at(200, 170)]))
+    assert b.quick == 0 and act["hold"] != ("ldown",) and {"rleft", "rright"} & set(act["hold"])
+    assert b.stats["quick_turns"] == 0

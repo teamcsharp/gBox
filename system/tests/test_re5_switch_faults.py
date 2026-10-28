@@ -70,6 +70,7 @@ def test_a_target_behind_geometry_is_left_a_moment_for_another():
         b.target = 10 if k == 0 else b.target
         b.tick(snap([hidden, other], dot=(1.0 * k, 140.0, 300.0), motion=26))   # the dot on a wall 2.7 m out
     assert b.stats["wall_blocks"] == 1 and 10 in b.blocked and b.stats["shots"] == 0
+    assert 0.2 <= b.stats["wall_aim_s"] <= 0.5                    # the gun's seconds on the wall, counted
 
 
 def test_a_dot_frozen_while_the_aim_moves_is_no_live_aim():

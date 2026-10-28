@@ -368,7 +368,8 @@ def test_bot_raises_the_gun_again_and_waits_out_a_reload():
     assert b.stats["reraise"] == 0
 
 
-def test_bot_quick_turns_for_one_behind():
+def test_bot_quick_turns_for_one_behind(monkeypatch):
+    monkeypatch.setattr(R, "QUICK_TURN", True)                            # (off since 18:52: the heading governor)
     b, clock = brain()
     behind = (0.0, 0.0, -280.0)                                          # (the calm camera: only one close behind)
     assert b.tick(bot_snap(behind))["hold"] == ("ldown",)
@@ -383,6 +384,7 @@ def test_bot_quick_turns_for_one_behind():
 
 def test_bot_backs_off_one_in_front_only(monkeypatch):
     monkeypatch.setattr(R, "CLOSE_BACKOFF", True)                         # (off since rain fire: the gun goes up)
+    monkeypatch.setattr(R, "QUICK_TURN", True)                            # (off since 18:52: the heading governor)
     b, clock = brain()
     assert b.tick(bot_snap((0.0, 0.0, 100.0)))["hold"][0] == "ldown" and b.stats["backoffs"] == 1
     b, clock = brain()
