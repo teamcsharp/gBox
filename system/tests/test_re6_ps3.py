@@ -4,6 +4,8 @@ The X360 sibling (test_re6_menus.py) names a round from SPLAYER because those of
 no measured offset yet, so this test pins exactly what the driver can promise before a live session: out of a round it
 is "unknown" and never guessed, BOOT_KEY is START (never A), the blind stage pick and 9-character roster hold, and the
 menu_state() hook — once measured — drives select_stage / select_player the same way as the X360 build.
+Plus request 3370's static pin: the sPlayer DTI node at 0x1834D04 (decrypted-EBOOT xrefs) validates by name bytes and
+rejects wrong-revision memory, and player() only answers through a fully sane chain.
 """
 import random
 
@@ -93,3 +95,54 @@ def test_step_covers_title_results_dead_and_never_wanders_into_a_story():
     assert R.step({"where": "dead"}) == "a"
     assert R.wandered({"where": "select_stage"}) is None
     assert "left The Mercenaries" in R.wandered({"where": "campaign"})
+
+
+# --- Request 3370: the statically pinned sPlayer DTI node (0x1834D04) from decrypted-EBOOT xrefs ---
+
+import struct
+
+
+def _node_world(name_bytes=b"sPlayer", node_class=None, instance=0, up=0x40020000, hp=900, hp_max=1000):
+    m = Mem()                       # Mem.rd returns zeros; overlay the bytes this chain needs
+    b = {}
+
+    def put(a, fmt, *v):
+        b[a] = struct.pack(fmt, *v)
+
+    def rd(a, n):
+        buf = bytearray(n)
+        for base, d in b.items():
+            lo, hi = max(a, base), min(a + n, base + len(d))
+            if lo < hi:
+                buf[lo - a:hi - a] = d[lo - base:hi - base]
+        return bytes(buf)
+
+    m.rd = rd
+    put(R.SPLAYER_DTI_NODE, ">I", R.SPLAYER_NODE_CLASS if node_class is None else node_class)
+    put(R.SPLAYER_DTI_NODE + R.NODE_NAME, ">I", R.SPLAYER_NAME_VA)
+    put(R.SPLAYER_NAME_VA, "7s", name_bytes)
+    put(R.SPLAYER_DTI_NODE + R.NODE_INSTANCE_CANDIDATE, ">I", instance)
+    if instance:
+        put(instance + 0x28, ">I", up)                    # uPlayer 1 (360-map offset)
+        put(up + 0xF20, ">hh", hp, hp_max)                # Life / LifeMax
+    return m
+
+
+def test_splayer_node_validates_on_this_exact_eboot():
+    n = R.splayer_node(_node_world(instance=0x40010000))
+    assert n == {"node": R.SPLAYER_DTI_NODE, "name": "sPlayer", "class": R.SPLAYER_NODE_CLASS,
+                 "instance": 0x40010000}
+    assert R.EBOOT_DEC_SHA256 == "3720224a5eb8b8a2e69871439aa8d8b11c8a4cbc426f4144d0531d6e5648cecb"
+
+
+def test_splayer_node_rejects_wrong_revision_or_class():
+    assert R.splayer_node(_node_world(name_bytes=b"sPlayex")) is None      # different EBOOT / moved rodata
+    assert R.splayer_node(_node_world(node_class=0xDEADBEEF)) is None      # not a DTI node
+    assert R.splayer_node(_node_world(instance=0))["instance"] is None     # slot still zeroed: honest, no guess
+
+
+def test_player_reads_life_through_the_validated_node():
+    assert R.player(_node_world(instance=0x40010000)) == {"hp": 900, "hp_max": 1000}
+    assert R.player(_node_world(instance=0x40010000, hp=0)) == {"hp": 0, "hp_max": 1000}    # dead is provable
+    assert R.player(_node_world(instance=0x40010000, hp=5000)) is None                     # fails sanity bounds
+    assert R.player(_node_world()) is None                                                 # instance unpinned

@@ -24,6 +24,28 @@ import struct
 # build (both use struct ">"), so u32()/s16 reads here stay big-endian to match re5_ps3 (whose reads are BE too).
 PTR_LO, PTR_HI = 0x10000, 0x300000000            # RPCS3 user memory range (PS3 PPU user VAS is up to 0x300000000)
 
+# --- Static evidence, request 3370 (decrypted-EBOOT cross-references, no live session needed) ---
+# BLUS30855 EBOOT.BIN 01.00 (SELF sha256 161788e7c0264b1b9d5cd72ac051c9ce2a64b7c85d04f954b2e35f202834af67, KeyRev
+# 0x001C, 9,381,200 bytes). Decrypted image: 25,060,016 bytes, ELF64 PPC BE, segments based at 0x10000, sha256
+# 3720224a5eb8b8a2e69871439aa8d8b11c8a4cbc426f4144d0531d6e5648cecb (gbox-data/analysis/re6-ps3-eboot/EBOOT.dec.ELF).
+#
+#   0x1a93d8  sPlayer DTI registration:
+#              lis r31,0x183 / addic r3,r31,0x4d04        -> slot 0x1834D04
+#              lis r4,0x141 / addic r4,r4,0x3668          -> name VA 0x1413668 (bytes "sPlayer\0" verified)
+#              addic r5,r5,-0x449c (0x1900000) = 0x18FBB64 -> the node's category-list object
+#              li r6,0x40d0                                -> instance size 0x40d0
+#              bl 0xcb2a04 -> 0xcb2898 writes [slot+0]=0x14DCB00 (node class, shared by every DTI node),
+#              [slot+4]=name pointer, [slot+0x14]=0, packs size into [slot+0x18], links the node.
+#   0x1413668  "sPlayer\0" sits in the .rodata class-name table (neighbours "sMessMan", "mAccessList", "mArray").
+EBOOT_DEC_SHA256 = "3720224a5eb8b8a2e69871439aa8d8b11c8a4cbc426f4144d0531d6e5648cecb"
+SPLAYER_NAME_VA = 0x1413668            # .rodata "sPlayer\0" of this exact EBOOT
+SPLAYER_DTI_NODE = 0x1834D04           # .bss DTI node slot registered at 0x1a93d8
+SPLAYER_NODE_CLASS = 0x14DCB00         # [node+0] node-class descriptor written by the registrar 0xcb2898
+SPLAYER_NODE_LIST = 0x18FBB64          # r5: the node's category-list object
+SPLAYER_INSTANCE_SIZE = 0x40D0         # r6: the singleton's instance size
+NODE_NAME = 0x4                        # [node+4] = name pointer (stored verbatim: 0x1413668)
+NODE_INSTANCE_CANDIDATE = 0x14         # [node+0x14] zeroed at registration; instance slot is the live-read TODO
+
 STAGES = ("Urban Chaos", "Steel Beast", "Mining the Depths")     # disc names from docs/re6.md; PS3 count pending
 CHARACTERS = ("Leon", "Helena", "Chris", "Piers", "Jake", "Sherry", "Ada", "Carla", "Agent")  # console roster order
 
@@ -43,10 +65,44 @@ def u32(m, a: int) -> int:
     return struct.unpack(">I", m.rd(a, 4))[0]
 
 
+def splayer_node(m) -> dict | None:
+    """Validate the statically pinned sPlayer DTI node (0x1834D04) against live RAM. The node is revision
+    scoped: its [node+4] name pointer must lead to the exact .rodata bytes "sPlayer\\0" of this EBOOT, so a
+    different BLUS30855 revision (or an unmapped/garbage node) is rejected instead of guessed. Returns
+    {"node", "name", "class", "instance"}; "instance" is the candidate slot [node+0x14] only while it holds a
+    guest pointer — whether that slot is the live singleton instance is the one fact still owed to a live
+    RPCS3 read (the registrar only proves it is zeroed at boot)."""
+    try:
+        if u32(m, SPLAYER_DTI_NODE) != SPLAYER_NODE_CLASS:
+            return None
+        name_p = u32(m, SPLAYER_DTI_NODE + NODE_NAME)
+        if not ptr_ok(name_p) or m.rd(name_p, 7) != b"sPlayer":
+            return None
+        inst = u32(m, SPLAYER_DTI_NODE + NODE_INSTANCE_CANDIDATE)
+    except Exception:                                   # noqa: BLE001 - guest memory not mapped yet (boot)
+        return None
+    return {"node": SPLAYER_DTI_NODE, "name": "sPlayer", "class": SPLAYER_NODE_CLASS,
+            "instance": inst if ptr_ok(inst) else None}
+
+
 def player(m) -> dict | None:
-    """Player 1's life from RAM. None until SPLAYER is measured live (see the module note): no address is assumed,
-    so a round is never claimed before its Life/LifeMax are provable from a running frame."""
-    return None
+    """Player 1's life from RAM. Reads through the validated sPlayer DTI node when its instance slot is
+    populated: instance+0x28 -> uPlayer, +0xF20/+0xF22 Life/LifeMax s16 (offsets inherited from the verified
+    360 map, same MT Framework build family). The chain must still pass re6ps3_player's sanity bounds, so a
+    stale pointer or wrong revision answers None instead of a fabricated round."""
+    from gbox import re6ps3_player as RP
+
+    n = splayer_node(m)
+    if not n or n["instance"] is None:
+        return None
+    try:
+        up = u32(m, n["instance"] + RP.OFF_PLAYER_PTR)
+        hp, hp_max = struct.unpack(">hh", m.rd(up + RP.OFF_HP, 4))
+    except Exception:                                   # noqa: BLE001 - guest memory not mapped yet (boot)
+        return None
+    if not (0 <= hp <= RP.HP_MAX_LIMIT and 0 < hp_max <= RP.HP_MAX_LIMIT and hp <= hp_max):
+        return None
+    return {"hp": hp, "hp_max": hp_max}
 
 
 def menu_state(m) -> dict | None:
