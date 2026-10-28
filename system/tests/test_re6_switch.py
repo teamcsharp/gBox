@@ -1300,6 +1300,87 @@ def test_the_bonus_run_takes_the_nearest_by_the_way_there():
     assert bot.run_target == along
 
 
+def with_prompt(g, pad=0x4000, typ=18, button=17, index=0, unit=0x248, shown=True):
+    """sActionButton with ButtonMgr[0] for player `index`, one ButtonUnit showing a cActionButton's prompt."""
+    sab = g.alloc(0x1D20)
+    g.q(BASE + R.S_ACTION_BUTTON, sab)
+    for k in range(R.AB_MGRS):
+        g.i32(sab + R.AB_MGR + R.AB_MGR_SIZE * k + 0xC, k)
+    mgr = sab + R.AB_MGR + R.AB_MGR_SIZE * index
+    ab = g.obj("cActionButton", 0x1D0)
+    g.i32(ab + 0x30, typ)
+    g.i32(ab + 0x38, button)
+    g.put(mgr + unit + 0xC, bytes([1 if shown else 0, 1]))
+    g.q(mgr + unit + 0x10, ab)
+    g.i32(mgr + unit + 0x1C, typ)
+    g.i32(mgr + unit + 0x28, pad)
+    return ab
+
+
+def test_the_snapshot_reads_the_games_shown_prompts_and_their_buttons():
+    g = round_guest()
+    ab = with_prompt(g, pad=0x4000, typ=35, button=17)
+    q = R.snapshot(g)["prompts"]
+    assert q == [{"type": 35, "button": 17, "pad": 0x4000, "key": "b", "ab": ab}]
+    g2 = round_guest()
+    with_prompt(g2, pad=0x8000, typ=1, button=1, unit=0x2E0)
+    assert [x["key"] for x in R.snapshot(g2)["prompts"]] == ["y"]
+    g3 = round_guest()
+    with_prompt(g3, pad=0xF0000)
+    assert R.snapshot(g3)["prompts"][0]["key"] == "stick"
+    g4 = round_guest()
+    with_prompt(g4, shown=False)
+    assert R.snapshot(g4)["prompts"] == []
+    g5 = round_guest()
+    with_prompt(g5, index=1)                                                  # player 2's mgr: not his
+    assert R.snapshot(g5)["prompts"] == []
+
+
+def prompt_snap(enemies=((0.0, 0.0, 1500.0, 700),), **kw):
+    bot, clock, snap = brain(round_guest(enemies=enemies, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["prompts"] = [dict({"type": 35, "button": 17, "pad": 0x4000, "key": "b", "ab": 0x5000}, **kw)]
+    return bot, clock, snap
+
+
+def test_a_shown_prompt_is_pressed_at_once_and_counted_taken_when_it_goes():
+    bot, clock, snap = prompt_snap()
+    acts = run(bot, snap, clock, 1)
+    assert acts[0] == {"tap": "b"} and bot.stats["prompts_seen"] == 1 and bot.stats["act"] == "prompt_b"
+    snap["prompts"] = []                                                      # he climbed
+    run(bot, snap, clock, 1)
+    assert bot.stats["prompts_taken"] == 1 and bot.stats["climbs"] == 1
+    assert bot.stats["prompt_types"]["35"] == [1, 1, "b"] and bot.stats["prompt_latency_ms"] <= 100
+
+
+def test_a_pickup_waits_until_nobody_is_near_and_a_stick_prompt_gets_the_stick():
+    bot, clock, snap = prompt_snap(enemies=((0.0, 0.0, 200.0, 700),), key="y", pad=0x8000, type=1)
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "y"} not in acts                                           # one at 2 m: not now
+    snap["enemies"][0]["pos"] = (0.0, 0.0, 900.0)
+    acts = run(bot, snap, clock, 1)
+    assert acts[0] == {"tap": "y"}
+    snap["prompts"] = []
+    run(bot, snap, clock, 1)
+    assert bot.stats["pickups"] == 1
+    bot, clock, snap = prompt_snap(key="stick", pad=0xF0000, type=26)
+    acts = run(bot, snap, clock, 1)
+    assert "b" not in acts[0]["hold"] and set(acts[0]["hold"]) <= {"lup", "ldown", "lleft", "lright"}
+    bot, clock, snap = prompt_snap(key="r", pad=0x800, type=1, button=34)    # the heal hint: left to the tablet rules
+    acts = run(bot, snap, clock, 3)
+    assert {"tap": "r"} not in acts and bot.stats["prompts_seen"] == 1
+
+
+def test_a_grabs_b_prompt_counts_the_holds_own_b_presses():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
+    snap["prompts"] = [{"type": 18, "button": 17, "pad": 0x4000, "key": "b", "ab": 0x6000}]
+    acts = run(bot, snap, clock, 3)
+    assert any("b" in a.get("hold", ()) for a in acts) and bot.stats["act"] == "break_free"
+    snap["prompts"] = []
+    run(bot, snap, clock, 1)
+    assert bot.stats["prompts_seen"] == 1 and bot.stats["prompts_taken"] == 1 and bot.stats["climbs"] == 0
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
