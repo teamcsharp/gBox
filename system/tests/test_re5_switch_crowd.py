@@ -52,6 +52,18 @@ def test_three_within_5_m_put_the_shotgun_up_first():
     assert act["hold"] == ("dright",) and b.stats["shotgun_swaps"] == 1 and b.stats["rampage_weapon"] == "shotgun"
 
 
+def test_crowd_fires_the_held_shotgun_instead_of_cycling_to_an_earlier_shotgun():
+    b, clock = bot()
+    held = dict(SHOTGUN, slot=2, id=0x117, item=0x17, grid=4, hand=True)
+    inv = [SHOTGUN, held]
+    act = b.tick(snap(CROWD, inv=inv))
+    assert "zl" in act["hold"] and not set(act["hold"]) & set(R.QUICK.values())
+    clock[0] = 0.2
+    act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"])
+    assert b.stats["shotgun_swaps"] == b.stats["rampage_swaps"] == 0
+
+
 def test_with_the_aim_on_the_nearest_in_front_the_trigger_holds_and_no_stick():
     b, clock = bot()
     held = [dict(M92F, hand=False), dict(SHOTGUN, hand=True)]

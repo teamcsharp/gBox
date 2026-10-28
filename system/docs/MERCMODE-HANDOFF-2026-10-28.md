@@ -31,7 +31,11 @@ Run this loop until the operator says stop. Don't wait to be asked for each step
 
 **Boss directive, 2026-10-28:** recognize bosses as serious threats, prioritize threatening reachable bosses, and dispatch them quickly with sustained automatic-magnum fire. The screenshot shows a large axe wielder beside dying Jill. Keep immediate grab/QTE escapes and healing ahead of weapon setup; verify boss damage and survival rather than merely counting weapon switches.
 
-**Latest weapon directive, 2026-10-28:** "i want them either using a random shotgun or the bow and arrow with 30x fire rate and rapid fire on it." Remove miniguns from use. Randomize the supported shotgun/bow choice per round; this latest allowed-weapon instruction supersedes the earlier magnum preference, while boss threat priority remains. Preserve first-aid availability and movement suppression during boosted shots.
+**Earlier weapon directive, 2026-10-28 (superseded below):** "i want them either using a random shotgun or the bow and arrow with 30x fire rate and rapid fire on it." Remove miniguns from use. Preserve first-aid availability and movement suppression during boosted shots.
+
+**Latest combat directive, 2026-10-28:** rapid-fire magnums are now preferred, superseding the shotgun/bow-only choice. Use mines and grenades extensively in RE5 and RE6 through verified native equip/conjure paths, without inventory, wheel or slot cycling. RE6 remote bombs must detonate while the gun stays held. The requested grenade burst is **20 actual grenades in two seconds**; gestures or generic shot/throw motion IDs are not proof. RE5 mine placement should be roughly every two minutes, with confirmed deployment and a safe escape. Native equip and that throw rate remain unverified; do not guess RAM fields or claim them delivered by the smaller weapon-churn/cadence fix.
+
+**Enemy strategy directive, 2026-10-28:** research enemy types, including explosives, vest/cop variants and bosses, then bind verified native enemy identity to the live map and run database for tailored strategies. Wiki names alone do not establish native class or subtype mappings.
 
 **Live sidebar directive, 2026-10-28:** fire rates, behavior and modification settings must be adjustable for the active game session from the sliding MercMode PiP sidebar, with applied values and errors visible.
 

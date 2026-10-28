@@ -2,7 +2,7 @@
 resolved. I dont want them raising the gun and putting it down"; 16:12: "whipping their view around ... pointing the
 gun at threats that aren't even on screen"): with a Majini within 5 m the gun comes up at once and the trigger stays
 down, the nearest inside is held (a grab-range one takes over), one close behind gets one quick turn, the shotgun
-goes up first and the main gun comes back after, no unaim inside, and the counters."""
+goes up first and stays equipped after, no unaim inside, and the counters."""
 import math
 
 import pytest
@@ -64,7 +64,7 @@ def test_one_close_behind_gets_one_quick_turn_then_the_gun_up():
     assert act["hold"] == ("ldown",) and b.quick == 2 and b.stats["behind_turns"] == 1
 
 
-def test_the_shotgun_goes_up_first_and_the_main_gun_comes_back_after():
+def test_the_shotgun_stays_equipped_after_the_crowd_clears():
     b, clock = bot()
     foe = at(300, 0)
     act = b.tick(snap([foe], inv=[M92F, SHOTGUN]))
@@ -78,7 +78,26 @@ def test_the_shotgun_goes_up_first_and_the_main_gun_comes_back_after():
     b._gun_down()
     clock[0] = 1.8
     act = b.tick(snap([], inv=held))
-    assert act["hold"] == ("dleft",) and b.stats["rampage_swaps"] == 2   # the M92F's D-pad slot
+    assert not set(act.get("hold", ())) & set(R.QUICK.values())
+    assert b.stats["rampage_swaps"] == 1 and b._restore is None
+
+
+@pytest.mark.parametrize("held_item", [0x04, 0x17])
+@pytest.mark.parametrize("held_grid", [5, 4])
+def test_crowd_keeps_the_shotgun_in_hand_even_when_another_shotgun_is_first(held_item, held_grid):
+    b, clock = bot()
+    held = dict(SHOTGUN, slot=2, id=0x100 | held_item, item=held_item, grid=held_grid, hand=True)
+    inv = [dict(SHOTGUN, grid=1), held]
+    assert b._rampage_gun(inv) == (held, "shotgun")
+    foe = at(300, 0)
+    act = b.tick(snap([foe], inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"])
+    assert not set(act["hold"]) & set(R.QUICK.values())
+    assert b.stats["rampage_swaps"] == 0
+    clock[0] = 0.3
+    act = b.tick(snap([foe], inv=inv, motion=26, dot=chest(foe)))
+    assert {"zl", "zr"} <= set(act["hold"])
+    assert b.stats["rampage_swaps"] == 0
 
 
 def test_the_target_inside_is_held_and_only_a_grab_range_one_takes_over():
