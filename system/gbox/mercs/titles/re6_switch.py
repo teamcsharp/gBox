@@ -585,6 +585,14 @@ class NavMesh:
     def __init__(self, verts, tris, links, name=""):
         self.V, self.T, self.N, self.name = verts, tris, links, name
         self.C = [tuple(sum(verts[v][i] for v in t) / 3.0 for i in range(3)) for t in tris]
+        self.edge_nb: list = []                              # per triangle: {edge (u, v sorted): the neighbour across}
+        for k, t in enumerate(tris):
+            nbs = {}
+            for nb in links[k]:
+                shared = sorted(v for v in t if v in tris[nb])
+                if len(shared) == 2:
+                    nbs[tuple(shared)] = nb
+            self.edge_nb.append(nbs)
         self.grid: dict = {}
         for k, t in enumerate(tris):
             xs, zs = [verts[v][0] for v in t], [verts[v][2] for v in t]
@@ -611,6 +619,51 @@ class NavMesh:
         if not near:
             return None
         return min(near, key=lambda k: (abs(self.C[k][1] - y) > NAV_DY, math.hypot(self.C[k][0] - x, self.C[k][2] - z)))
+
+    def clear(self, a, b, steps: int = 600) -> bool | None:
+        """Whether the straight line a -> b stays on the walkable floor (on a's level): walked triangle to triangle
+        across the edges it crosses; an edge with no neighbour (a wall, a drop, a crate) - False. None: off the mesh or
+        another level (unknown)."""
+        k, g = self.locate(a), self.locate(b)
+        if k is None or g is None or abs(a[1] - b[1]) > 2 * NAV_DY:
+            return None
+        ax, az, bx, bz = a[0], a[2], b[0], b[2]
+        length = math.hypot(bx - ax, bz - az)
+        if length < 1.0:
+            return True
+        ax, az = ax + (bx - ax) * 0.5 / length, az + (bz - az) * 0.5 / length   # off an edge it may start on
+        k = self.locate((ax, a[1], az))
+        if k is None:
+            return None
+
+        def cross(o, p_, q):
+            return (p_[0] - o[0]) * (q[1] - o[1]) - (p_[1] - o[1]) * (q[0] - o[0])
+        prev = None
+        for _ in range(steps):
+            if k == g:
+                return True
+            t, nxt, wall = self.T[k], None, False
+            for i in range(3):
+                u, v = t[i], t[(i + 1) % 3]
+                pu, pv = (self.V[u][0], self.V[u][2]), (self.V[v][0], self.V[v][2])
+                d1, d2 = cross(pu, pv, (ax, az)), cross(pu, pv, (bx, bz))
+                d3, d4 = cross((ax, az), (bx, bz), pu), cross((ax, az), (bx, bz), pv)
+                if not ((d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0)):
+                    continue                                 # the line does not cross this edge
+                nb = self.edge_nb[k].get(tuple(sorted((u, v))))
+                if nb is None:
+                    wall = True
+                    continue
+                if nb == prev:
+                    continue
+                nxt = nb
+                break
+            if nxt is None:                                  # it ends in this triangle, or runs into a wall
+                if self._inside(k, bx, bz):
+                    return True
+                return False if wall else None
+            prev, k = k, nxt
+        return None
 
     def path(self, a, b) -> list | None:
         """A* from a's triangle to b's: the shared edges' midpoints, then b. None: off the mesh or no way there."""
@@ -1691,6 +1744,30 @@ BONUS_H, BONUS_HIT_R = 40.0, 45.0
 BONUS_TRY_S, BONUS_SKIP_S = 2.5, 30.0   # (5 s a try wasted 20 s on 4 out of sight live 14:41)
 BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
 BONUS_LOG_N = 12
+# Sight (operator 18:58: "Every time the bot points a gun at a wall, I cry"): a zombie the nav mesh says is behind a
+# wall from him (NavMesh.clear: the line between them crosses a floor edge with no neighbour) counts as out of sight -
+# never a target, the camera never turned to him (stats offscreen_skips); one off his level, or the mesh unknown: the
+# laser decides - locked on him LOS_PROBE_S and the ray ending short of him (within LOS_PROBE_ERR of his line): out of
+# sight for BLOCK_S (stats los_blocks). None in sight: walked toward by the nav mesh. stats wall_aim_s: the laser's dot
+# within WALL_AIM_R of the muzzle while zombies are about (the aim on a wall; target 0).
+SIGHT_S, LOS_PROBE_S, LOS_PROBE_ERR, WALL_AIM_R = 0.25, 0.3, math.radians(8), 150.0
+# Threats only (operator 19:09, a frame at low health aiming up at the ceiling with nothing there: "Aiming up for no reason
+# is how you get killed in this game ... if it's not in the vicinity, then she's basically risking her life"): an aim
+# target is one on his level (within AIM_DY) in sight, or a real vertical threat - one above him within CEILING_R, or a
+# big one (BIG_HP) - never one on another floor that can't reach him (stats offlevel_skips; still in the census for the
+# walks). One on his level within CLOSE_R: only those, the lock's pitch never above CLOSE_PITCH. Low health (under
+# SURVIVAL_HP): survival - only the ones within CLOSE_R, backing away from the nearest, no long shots, no upward aim
+# (stats survival_s). stats up_aim_s: the camera's pitch over UP_AIM with no vertical threat (target 0).
+AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 180.0, 400.0, 600.0, math.radians(15), 0.35, math.radians(20)
+# The turn governor (the RE5 lesson, 19:05: a time scale raised while the shot plays turns any stick held then many
+# times too fast): his body's heading turning faster than SPIN_DEG_S, or his action one the mods speed up (a quick
+# attack, the magnum's shot), releases the sticks for that tick (a grab's escape exempt). stats spin_deg_s (the
+# fastest seen), whips (ticks released).
+SPIN_DEG_S = 150.0
+STICK_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rup", "rdown", "rleft", "rright"})
+BOOSTED_ACTIONS = frozenset({"cPlAction_pl_act_weapon_comn_quick_shot", "cPlAction_pl_act_attack_ex",
+                             "cPlAction_pl_act_jake_hand_quick_attack"})   # (+ weapon_fire with a magnum: x3)
+MAGNUM_IDS = frozenset({0x07, 0x08})
 # Walking by the nav mesh (snapshot navmesh): the bonus run and the combo pursuit walk its path - toward the next
 # waypoint, the ones within NAV_REACH_R dropped, replanned every NAV_REPLAN_S, on a new goal or after a stall; with the
 # aim lock's writer the camera's yaw is written onto the way (no turning keys). stats nav_paths, nav_fails (no path:
@@ -1789,6 +1866,16 @@ class Bot:
                   "cc_vs_aimed"):
             self.stats.setdefault(k, 0.0)
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
+        self.stats.setdefault("offscreen_skips", 0)
+        self.stats.setdefault("wall_aim_s", 0.0)
+        for k in ("offlevel_skips", "whips"):
+            self.stats.setdefault(k, 0)
+        for k in ("up_aim_s", "survival_s", "spin_deg_s"):
+            self.stats.setdefault(k, 0.0)
+        self.survival, self.close_threat = False, False
+        self._rot_prev = None                                # (when, his body heading) for the turn governor
+        self._sight_cache: dict = {}
+        self.lock_at = -1e9                                  # when the lock took its current target
         self.bonus_unseen: dict = {}                         # bonus -> until when it counts as out of sight
         self.bshot = None                                    # the bonus being shot: (ptr, since)
         for k in ("prompts_seen", "prompts_taken", "climbs", "pickups"):
@@ -2130,6 +2217,7 @@ class Bot:
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         out = self._tick(snap, now)
+        out = self._govern(snap, out, now)
         if "zl" in (out.get("hold") or ()):
             self._zl_at = now
         hold = set(out.get("hold") or ())
@@ -2143,6 +2231,31 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        return out
+
+    def _govern(self, snap, out, now) -> dict:
+        """The turn governor: his heading turning faster than SPIN_DEG_S, or a sped-up action running, releases the
+        sticks this tick (held: exempt); up_aim_s: the camera aimed up past UP_AIM with no vertical threat targeted."""
+        p = snap.get("player") or {}
+        cam = snap.get("camera")
+        if cam and cam.get("pitch", 0.0) > UP_AIM and "zl" in (out.get("hold") or ()):
+            tgt = next((e for e in snap.get("enemies") or () if e.get("ptr", e.get("slot")) == self.target), None)
+            if tgt is None or not (p.get("pos") and self._vertical_threat(p, tgt)):
+                self.stats["up_aim_s"] = round(self.stats["up_aim_s"] + TICK_S, 2)
+        rot = p.get("rot")
+        spin = 0.0
+        if isinstance(rot, (int, float)) and self._rot_prev is not None and now > self._rot_prev[0]:
+            spin = math.degrees(abs(wrap(rot - self._rot_prev[1]))) / (now - self._rot_prev[0])
+            self.stats["spin_deg_s"] = round(max(self.stats["spin_deg_s"], spin), 1)
+        self._rot_prev = (now, rot) if isinstance(rot, (int, float)) else None
+        hold = out.get("hold")
+        if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate"):
+            return out
+        boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
+                                                          and p.get("weapon_id") in MAGNUM_IDS)
+        if (spin > SPIN_DEG_S or boosted) and set(hold) & STICK_KEYS:
+            self.stats["whips"] += 1
+            out = dict(out, hold=tuple(k for k in hold if k not in STICK_KEYS))
         return out
 
     def _tick(self, snap: dict, now: float) -> dict:
@@ -2185,6 +2298,11 @@ class Bot:
         self._round_start(snap, now)
         self._score_hits(snap, now)
         self._ppos = p["pos"]
+        self._mesh = snap.get("navmesh")
+        lz = snap.get("laser")
+        if lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) < WALL_AIM_R and any(
+                (e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()):
+            self.stats["wall_aim_s"] = round(self.stats["wall_aim_s"] + TICK_S, 2)   # the aim on a wall
         self._pos_of = {e.get("ptr", e.get("slot")): e["pos"] for e in snap.get("enemies") or ()}
         self._los_tick(snap, now)
         self._tablet_check(p, now)
@@ -2320,8 +2438,21 @@ class Bot:
         front = [e for e in vis if flat(e) <= ENGAGE_R and abs(bearing(e)) <= FRONT_CONE]
         if not front:                                            # nobody near: one in front far off - a long shot
             front = [e for e in vis if flat(e) <= LONG_R and abs(bearing(e)) <= FRONT_CONE]
-        self._aimable = vis + self._off_floor(p, snap, now)
-        if self._lock_ready(snap, now):                          # the lock turns the camera: any bearing, any floor
+        hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
+        self.survival = bool(hp_max and hp <= SURVIVAL_HP * hp_max)
+        if self.survival:
+            self.stats["survival_s"] = round(self.stats["survival_s"] + TICK_S, 2)
+        level = [e for e in vis if abs(e["pos"][1] - py) <= AIM_DY]
+        close = [e for e in level if flat(e) <= CLOSE_R]
+        self.close_threat = bool(close)
+        if close or self.survival:                               # the near ones beat everything; low health: only them
+            if self._lock_ready(snap, now):
+                front = [e for e in (close or level) if flat(e) <= (CLOSE_R if self.survival else ENGAGE_R)] or front
+            self._aimable = close or [e for e in level if flat(e) <= CLOSE_R]
+        else:
+            self._aimable = level + [e for e in vis if abs(e["pos"][1] - py) > AIM_DY and self._vertical_threat(p, e)] \
+                + self._off_floor(p, snap, now)
+        if self._lock_ready(snap, now) and self._aimable:        # the lock turns the camera: any bearing
             near_all = [e for e in self._aimable if math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R or flat(e) <= ENGAGE_R]
             if near_all:
                 front = near_all
@@ -2365,6 +2496,10 @@ class Bot:
             return took
         if not self._aimable:                                    # every one in reach out of sight: a way round
             self._gun_down()
+            want = self._nav_heading(p, tgt["pos"], snap, now)
+            if want is not None:                                 # by the nav mesh's way to him
+                return self._go("walk", "walk_nav", {"hold": self._walk_keys(p, want, snap)},
+                                f"the nearest at {dist:.0f} cm is out of sight: walking the nav mesh to him")
             if now - self.detour_at >= DETOUR_S:
                 self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
                 self.stats["detours"] += 1
@@ -2406,6 +2541,8 @@ class Bot:
             self.stats["kite_s"] = round(self.stats["kite_s"] + TICK_S, 2)
         if self.hazard is not None:                              # in smoke: out of it as he fires
             back = self._stick(self._open_heading(p, live, self.hazard), yaw)
+        elif self.survival and near_e is not None:              # low health: away from the nearest as he fires
+            back = self._stick(self._open_heading(p, live, (near_e["pos"][0], near_e["pos"][2])), yaw)
         self._locked = (self._lock(p, tgt, snap, now), tgt.get("ptr", tgt.get("slot")))   # the lock from the raise on
         if p.get("ammo") == 0 and now - self.reload_at > RELOAD_GAP_S:
             self.reload_at = now                                 # empty: reload (Y)
@@ -2438,7 +2575,7 @@ class Bot:
             origin, dot, source = cam["pos"], cam["target"], "camera"
         cands = self._aimable if source == "laser" else (front or self._aimable)
         on_e = self._on_line(origin, dot, source, cands, now)
-        if source == "laser" and on_e is None and self._ray_short(origin, dot, tgt):
+        if source == "laser" and on_e is None and (self._ray_short(origin, dot, tgt) or self._probe_short(origin, dot, tgt, now)):
             self._block(tgt, now, "los_blocks")                  # the ray ends on something in front of him: a wall
         if on_e is not None and on_e is not tgt:                 # the line is on another one: he is the target now
             tgt, foot = on_e, on_e["pos"]
@@ -2557,8 +2694,22 @@ class Bot:
         if not self._lock_ready(snap, now):
             return []
         py = p["pos"][1]
-        return [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) > MAX_DY
-                and math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R and not self.is_blocked(e, now)]
+        out = []
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0 or abs(e["pos"][1] - py) <= MAX_DY or math.dist(p["pos"], e["pos"]) > AIM_LOCK_R:
+                continue
+            if not self._vertical_threat(p, e):
+                self.stats["offlevel_skips"] += 1                # another floor, no threat to him: not aimed at
+                continue
+            if not self.is_blocked(e, now):
+                out.append(e)
+        return out
+
+    def _vertical_threat(self, p, e) -> bool:
+        """One off his level worth aiming at: above him within CEILING_R, or a big one."""
+        dy = e["pos"][1] - p["pos"][1]
+        h = math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+        return (dy > 0 and h <= CEILING_R) or (e.get("hp_max") or 0) >= BIG_HP
 
     def _lock_fail(self, now, why: str) -> None:
         self.stats[why] += 1
@@ -2578,9 +2729,11 @@ class Bot:
         pt, c = (point if point is not None else aim_point(tgt, p["pos"])), cam["pos"]
         want_yaw = heading(pt[0] - c[0], pt[2] - c[2])
         want_pitch = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
+        if (self.close_threat or self.survival) and point is None:
+            want_pitch = min(want_pitch, CLOSE_PITCH)            # one close by: never aimed up past this
         tid = tgt.get("ptr", tgt.get("slot"))
         if tid != self.lock_tid:
-            self.lock_tid = tid
+            self.lock_tid, self.lock_at = tid, now
             self.stats["aim_locks"] += 1
         view, w = (cam["yaw"], cam["pitch"]), self.lock_w
         if w is not None:
@@ -3141,11 +3294,35 @@ class Bot:
 
     # --- line of sight ---------------------------------------------------------------------------------------------
     def is_blocked(self, e, now) -> bool:
-        """Out of sight: blocked within BLOCK_S and not within BLOCK_MIN_R of him (one that close is always fought)."""
-        if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) <= now:
-            return False
+        """Out of sight: blocked within BLOCK_S, or behind a wall by the nav mesh (_sight), and not within BLOCK_MIN_R of
+        him (one that close is always fought)."""
         me = self._ppos
-        return me is None or math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) >= BLOCK_MIN_R
+        if me is not None and math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) < BLOCK_MIN_R:
+            return False
+        if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) > now:
+            return True
+        return not self._sight(e, now)
+
+    def _sight(self, e, now) -> bool:
+        """The nav mesh's line from him to e (cached SIGHT_S): False only when it crosses a wall; off his level or off
+        the mesh: True (the laser's probe decides)."""
+        mesh, me = getattr(self, "_mesh", None), self._ppos
+        if mesh is None or me is None:
+            return True
+        tid = e.get("ptr", e.get("slot"))
+        hit = self._sight_cache.get(tid)
+        if hit is not None and now - hit[0] < SIGHT_S:
+            return hit[1]
+        ok = True
+        if abs(e["pos"][1] - me[1]) <= MAX_DY:
+            eye = (me[0], me[1], me[2])
+            ok = mesh.clear(eye, e["pos"]) is not False
+        if not ok and (hit is None or hit[1]):
+            self.stats["offscreen_skips"] += 1
+        if len(self._sight_cache) > 256:
+            self._sight_cache.clear()
+        self._sight_cache[tid] = (now, ok)
+        return ok
 
     def _block(self, e, now, why: str) -> None:
         """A zombie out of sight for BLOCK_S (stats <why>): never fired at, never the target while another is open."""
@@ -3172,6 +3349,17 @@ class Bot:
             return False
         have, want = math.dist(origin, dot), math.dist(origin, chest)
         return 1.0 <= have < want - FIRE_SLACK and dot_on(dot, foot) is None
+
+    def _probe_short(self, origin, dot, tgt, now) -> bool:
+        """The lock on him LOS_PROBE_S and the laser's ray, within LOS_PROBE_ERR of his line, ends short of him."""
+        if self.lock_tid != tgt.get("ptr", tgt.get("slot")) or now - self.lock_at < LOS_PROBE_S:
+            return False
+        pt = aim_point(tgt, self._ppos or origin)
+        yaw_err, pitch_err = ray_error(origin, dot, pt)
+        if abs(yaw_err) > LOS_PROBE_ERR or abs(pitch_err) > LOS_PROBE_ERR:
+            return False
+        have, want = math.dist(origin, dot), math.dist(origin, pt)
+        return 1.0 <= have < want - FIRE_SLACK
 
     def _los_tick(self, snap, now) -> None:
         """Out of sight by what the shots did: the trigger on one zombie NOHIT_S without his health falling, or
