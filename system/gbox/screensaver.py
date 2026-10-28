@@ -1600,7 +1600,10 @@ def install(app, store, config, auth, submit, workers, archive):
     @app.post('/api/mercmode')
     def mercmode_settings(body: MercModeSettings, actor=Depends(auth)):
         from . import mercmode
-        worker=next((w for w in workers() if w.get('name')==body.host),None)
+        # the PC's current record (online first), as the adopt route above: a PC that relaunched leaves older records under
+        # its name, and the first of them (live 2026-10-27: i9-NUC's offline, unpaired 5e0a22ad96d6484b) skipped the
+        # relay to its local scheduler, so the i9's settings were stored here and never reached it
+        worker=next((w for w in _current_workers(workers()) if w.get('name')==body.host),None)
         if worker is None:
             raise HTTPException(422,'Choose an exact registered worker name')
         try:
