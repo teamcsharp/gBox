@@ -16,6 +16,8 @@ ops:
                             hand grenades. The game builds the stack itself at the next round's start (no item record or
                             pointer is ever written); with infinite_ammo's flag on the bomb (WP0A) a placement spends
                             none. Off: the grenades back (the next round)
+  flash_loadout on=true     every Mercenaries loadout carries the flash grenade x5 (0x108) on a D-pad grid (Chris
+                            (BSAA): grid 7, D-pad down, in place of the First Aid Spray); re5_switch_nades throws it
   mines multiplier=S on=    the PS3 tool's op: mine_loadout plus the Switch bot's cadence (one every S seconds; the
                             settings reach the bot through the driver's snapshot "mine_settings"); "only" is PS3-only yet
   unlimited_health on=      the PS3's: living health refilled to a boosted maximum (HEALTH_MAX) every driver snapshot
@@ -100,6 +102,18 @@ ROCKETS, LONG_GUNS = frozenset({0x10D}), frozenset({0x10D, 0x105, 0x11C, 0x120})
 HEALTH_MAX = 30000                                           # unlimited_health's boosted maximum (the PS3's)
 MINE_EVERY_DEFAULT = 9.0                                     # the Switch bot's cadence unless `mines` sets one
 THROWN_ITEMS = frozenset({0x06, 0x07, 0x08, 0x0A})           # grenades and the bomb: a loadout draw keeps them
+# flash_loadout (operator 2026-10-27 21:0x: "Have them throw flashbangs all the time ... If they're overwhelmed, have them
+# just throw flashbangs"): every Mercenaries loadout carries the flash grenade (WP08 GRENADE_FLASH, 0x108; infinite_ammo's
+# no-ammo flag keeps the stack) on a D-pad grid, composed last (after the gun draw, the rampage gun and the bombs). Its
+# slot, in order: a flash already on a D-pad grid (its count raised to FLASH_COUNT); an empty D-pad grid (FLASH_EMPTY:
+# 7, 5, 1, 3, the record whose id is 0); a recovery item there; a hand / incendiary grenade; else a gun not in hand, one
+# that is neither shotgun nor magnum first, never the last shotgun or magnum. Never the bomb, never the gun in hand.
+# Chris (BSAA) (read live 2026-10-27 21:1x: the bomb up, two drawn guns left / right, the First Aid Spray x1 down): the
+# spray's grid 7 (D-pad down) - one heal a round, used only under 40 % with nobody within 4 m (rare in the swarms the
+# flash is for), against a flash every 1.5 s that keeps the swarm off him; the bomb and both guns stay. Nine of the 20 No
+# Mercy loadouts carry the flash already (x3 / x5 at grid 1 or 7: Sheva (Tribal), Jill (BSAA) in both banks ...).
+FLASH_ID, FLASH_COUNT, FLASH_EMPTY = 0x108, 5, (7, 5, 1, 3)
+HEAL_ITEMS, NADE_ITEMS = frozenset(range(0x304, 0x30A)), frozenset({0x106, 0x107})
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
 RELOAD_KEEP = ("ORIG", "_LOCK")                              # a bot hot reload keeps the originals and the settings
@@ -326,7 +340,8 @@ def _is_gun(idw: int) -> bool:
 
 def compose_templates(g: RE5Switch) -> dict:
     """Every loadout block from its original and the template ops on now, in order: weapon_override (else loadout's
-    draw), then the rocket / long-gun replacements, then mine_loadout's bomb in Chris's record 1. A replaced weapon's
+    draw), then the rocket / long-gun replacements, then mine_loadout's bomb in Chris's record 1, then flash_loadout's
+    flash grenade on a D-pad grid. A replaced weapon's
     upgrade levels go to 0 (none indexes past the new weapon's table). Only a block that differs is written, then read
     back. Effective at the next round's start (the game copies the block into the inventory then)."""
     import random
@@ -363,6 +378,8 @@ def compose_templates(g: RE5Switch) -> dict:
         if g.state.get("mine_loadout") and ptr - g.base in CHRIS_TEMPLATES \
                 and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == GRENADE_ID:
             struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, MINE_ID)
+        if g.state.get("flash_loadout"):
+            records += int(_flash_block(t))
         if g.rd(ptr, len(t)) != bytes(t):
             ok = g.wr(ptr, bytes(t)) and ok
             ok = ok and g.rd(ptr, len(t)) == bytes(t)
@@ -393,6 +410,53 @@ def _rampage_block(t: bytearray) -> bool:
     struct.pack_into("<I", t, spare + REC_UPG, 0)
     struct.pack_into("<i", t, spare + REC_COUNT, -1)
     return True
+
+
+def _flash_block(t: bytearray) -> bool:
+    """One block: the flash grenade on a D-pad grid (FLASH_* above for the slot's order); whether the block changed."""
+    from . import re5_weapons
+    recs = []
+    for k in range(TEMPLATE_RECS):
+        o = k * TEMPLATE_REC
+        idw, count = struct.unpack_from("<Ii", t, o + REC_ID)
+        grid, hand = struct.unpack_from("<II", t, o + REC_GRID)
+        recs.append((o, idw, count, grid, hand))
+    quick = [r for r in recs if r[1] not in (0, 0x100) and r[3] in QUICK_GRIDS]
+    have = next((r for r in quick if r[1] == FLASH_ID), None)
+    if have is not None:                                     # the costume's own flash: a decent stack
+        if have[2] >= FLASH_COUNT:
+            return False
+        struct.pack_into("<i", t, have[0] + REC_COUNT, FLASH_COUNT)
+        return True
+    used = {r[3] for r in quick}
+    pick = next((r for grid in FLASH_EMPTY if grid not in used for r in recs if r[1] == 0 and r[3] == grid), None)
+    pick = pick or next((r for r in quick if r[1] in HEAL_ITEMS), None) \
+        or next((r for r in quick if r[1] in NADE_ITEMS), None)
+    if pick is None:
+        def fam(idw):
+            spec = re5_weapons.WEAPONS.get(idw & 0xFF) if _is_gun(idw) and (idw & 0xFF) not in THROWN_ITEMS else None
+            return spec.family if spec is not None else None
+        guns = [r for r in quick if fam(r[1])]
+        strong = [r for r in guns if fam(r[1]) in ("shotgun", "magnum")]
+        spare = [r for r in guns if r[4] != 1 and len(guns) > 1
+                 and (fam(r[1]) not in ("shotgun", "magnum") or len(strong) > 1)]
+        spare.sort(key=lambda r: fam(r[1]) in ("shotgun", "magnum"))
+        pick = spare[0] if spare else None
+    if pick is None:
+        return False
+    struct.pack_into("<Ii", t, pick[0] + REC_ID, FLASH_ID, FLASH_COUNT)
+    struct.pack_into("<III", t, pick[0] + REC_HAND, 0, 0, 0)     # not in hand, no upgrades, no flags
+    return True
+
+
+def flash_loadout(g: RE5Switch, on: bool = True) -> dict:
+    """Every Mercenaries loadout with the flash grenade on a D-pad grid (re5_switch_nades throws it when he is
+    overwhelmed), from the next round; off: the blocks composed without it."""
+    g.state["flash_loadout"] = bool(on)
+    res = compose_templates(g)
+    note = ("the flash grenade x%d on a D-pad grid in every loadout from the next round (Chris (BSAA): D-pad down, in "
+            "place of the First Aid Spray)" % FLASH_COUNT) if on else "the loadouts without the flash"
+    return {"flash_loadout": bool(on), **res, "note": note}
 
 
 def rampage_loadout(g: RE5Switch, on: bool = True) -> dict:
@@ -1016,7 +1080,7 @@ def revert_all(g: RE5Switch) -> dict:
         out["rotten_eggs"] = rotten_egg_only(g, False)["verified"]
     if g.state.get("kill_time"):
         g.state["kill_time"]["on"] = False
-    for key in ("weapon_override", "loadout", "replace", "preferred_weapon", "rampage_loadout"):
+    for key in ("weapon_override", "loadout", "replace", "preferred_weapon", "rampage_loadout", "flash_loadout"):
         g.state.pop(key, None)
     req = g.state.get("weapon_request")
     if req and req.get("state") == "pending":
@@ -1087,6 +1151,7 @@ AVAILABLE = {
     "kill_time": "Seconds added to the authoritative clock per kill, every snapshot.",
     "time_bonus_multiplier": "The round's standing hourglasses' seconds x N; rerun each round.",
     "rotten_egg_only": "Every gun the rotten egg (infinite) from the next round; the throw sped up by the fire rate.",
+    "flash_loadout": "The flash grenade on a D-pad grid in every loadout (the bot throws it when overwhelmed); next round.",
     "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
     "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
 }
@@ -1109,7 +1174,7 @@ def full_status(g: RE5Switch) -> dict:
               mine_settings=g.state.get("mine_settings") or {"enabled": bool(g.state.get("mine_loadout")),
                                                             "interval_s": MINE_EVERY_DEFAULT, "only": False},
               weapon_override=g.state.get("weapon_override"),
-              loadout=bool(g.state.get("loadout")),
+              loadout=bool(g.state.get("loadout")), flash_loadout=bool(g.state.get("flash_loadout")),
               weapon_replacements=sorted(f"{w:#x}" for w in (g.state.get("replace") or {}).get("unwanted", ())),
               kill_time_on=bool((g.state.get("kill_time") or {}).get("on")),
               kill_time_s=(g.state.get("kill_time") or {}).get("seconds", KILL_TIME_S)
@@ -1164,7 +1229,8 @@ ALIASES = {"fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_
            "more_time": "add_time", "subtract_time": "add_time", "cut_time": "add_time", "set_clock": "set_time",
            "merc_time_set": "set_time", "clock": "set_time", "time_bonus": "time_bonus_multiplier",
            "merc_time_bonus": "time_bonus_multiplier", "auto_qte": "instant_qte", "qte_assist": "instant_qte",
-           "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout"}
+           "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout", "flash_grenades": "flash_loadout",
+           "flashbangs": "flash_loadout"}
 
 
 def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch | None = None, **extra) -> dict:
@@ -1189,6 +1255,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(unlimited_health(g, bool(on)))
         elif op == "rampage_loadout":
             res.update(rampage_loadout(g, bool(on)))
+        elif op == "flash_loadout":
+            res.update(flash_loadout(g, bool(on)))
         elif op == "add_time":
             secs = extra.get("seconds")
             res.update(add_time(g, (multiplier if multiplier is not None else 60) if secs is None else secs))
