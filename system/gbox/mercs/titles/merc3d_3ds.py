@@ -76,7 +76,9 @@ BOOT_KEY = "a"                          # the gore warning: the first screen RAM
 # the mission sMission names; B there autosaves and leaves for the title, so it is never pressed on that screen.
 STEPS = {"gore_warning": "a", "press_start": "start", "demo": "start", "title_menu": "a", "select_player": "a",
          "duo_menu": "b", "records": "b", "options": "b", "special": "b",
-         "results": "a"}                    # the result screens after a round: A through them, back to the main menu
+         "results": "a",                    # the result screens after a round: A through them, back to the main menu
+         "dead": "a"}                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
+                                            # sat for minutes with the clock frozen and nothing pressed)
 MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead")
 LEVELS = 5                              # LV.1-LV.5 in the select (the sixth, EX, is not in this list)
 CHARACTERS: tuple = ()                  # the roster's order is read from the character select next

@@ -108,3 +108,25 @@ def test_nearest_threat_in_front_is_chosen():
     b = B.Bot(clock=Clock())
     b.tick(snap([((0.0, 0.0, 700.0), 300), ((0.0, 0.0, 400.0), 300)]))
     assert b.target == 0x08501000
+
+
+def test_the_fire_key_is_learned_from_his_vitality():
+    """No damage point blank: the trigger moves to the next candidate; damage: it stays (kept for the process)."""
+    B.FIRE.update(key="a", confirmed=False)
+    clock = Clock()
+    b = B.Bot(clock=clock)
+    e = [((0.0, 0.0, 120.0), 600)]
+    act = b.tick(snap(e))
+    assert "a" in act["hold"]
+    for _ in range(10):                                          # 2 s of trigger time, his vitality unchanged
+        clock.t += 0.2
+        act = b.tick(snap(e))
+    assert B.FIRE["key"] == "y" and "y" in act["hold"] and b.stats["fire_key_switches"] == 1
+    clock.t += 0.2
+    b.tick(snap([((0.0, 0.0, 120.0), 540)]))                     # he took damage: y is the trigger
+    assert B.FIRE["confirmed"] is True and b.stats["fire_key"] == "y"
+    for _ in range(12):
+        clock.t += 0.2
+        act = b.tick(snap([((0.0, 0.0, 120.0), 540)]))
+    assert B.FIRE["key"] == "y"
+    B.FIRE.update(key=B.CONTROLS["fire"], confirmed=False)
