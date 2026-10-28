@@ -52,8 +52,6 @@ PRIORITY_TOP = 3                      # batches per game on the Hermes priority 
 EXAMPLES = 5                          # representative examples per batch
 BACKFILL_PER_PASS = 120               # ledger receipts read back per pass (200-400 KB each)
 BACKLOG_PER_RUN = 60                  # an open single older than the window: its newest events classified, not all
-REOPEN_GRACE_S = 12 * 3600            # a closed batch reopens only for hits this long after it closed (deploys are manual)
-REOPEN_MIN = 5                        # ... and at least this many of them
 UPDATE_S = 300                        # a batch request's summary is rewritten at most this often
 PASS_S = 60.0
 PREV_S = 3.0                          # a counter rising since the previous hit this recent belongs to this hit
@@ -79,6 +77,7 @@ GAMES = {'e7ca89bbeb67360d': RE5_PS3, '78ab9efa2e310db4': RE4_GC, 'e42c9b780c07c
          '0871eee3b68cdea3': RE4_PS2, '52d15709be0fda1a': RE5_SWITCH, '115f9cdbba115432': RE6_SWITCH}
 HELD_MOTIONS = frozenset({100, 106, 107, 113, 114})   # re5_switch MOTION_HELD (107 grabbed, 106 held, 113/100/114 strangled)
 DYING_MOTIONS = frozenset({40, 47, 51})                # re5_switch P_MOTION: dying at 1 HP (8 is dead)
+HELD_R = 25.0                                          # re5_switch HELD_R: a Majini this near is on him, whatever the motion
 HELD_STATES = frozenset({8, 9, 25})                    # re6_switch HELD_STATES (P_STATE 3: knocked down)
 HEAL_IDS = frozenset({0x304, 0x305, 0x307, 0x309})     # RE5 First Aid Spray, green herb, mixed herbs (both editions)
 AIM_KEYS = frozenset({'zl', 'l1'})                     # Switch ZL / the PS3 bot's L1 raise the gun
@@ -88,7 +87,9 @@ COUNTERS = ('wall_aim_s', 'wall_blocks', 'wall_shots', 'los_blocks', 'look_walls
             'aim_away_s', 'aim_away_fixes', 'frozen_dots', 'sky_ticks', 'holds', 'deaths', 'dyings', 'dying',
             'tablets', 'tablet_presses', 'tablet_misses', 'heals', 'heal_starts', 'heal_failures',
             'mine_blast_hp_loss', 'mines_gone', 'bomb_self_hits', 'bombs_detonated', 'bomb_radius_cm',
-            'down_s', 'hazard_marks', 'hits_taken', 'crowd_moves', 'escapes', 'burst_backoffs', 'max_within_4m')
+            'down_s', 'hazard_marks', 'hits_taken', 'crowd_moves', 'escapes', 'burst_backoffs', 'max_within_4m',
+            'reloc_stuck', 'reloc_dead_ends', 'relocations', 't_relocate', 'unaims_in_5m', 'idle_in_5m_s')
+RELOC_COUNTERS = ('reloc_stuck', 'reloc_dead_ends')
 WALL_COUNTERS = ('wall_aim_s', 'wall_blocks', 'wall_shots', 'los_blocks', 'look_walls_shot')
 AWAY_COUNTERS = ('aim_away_s', 'behind_threat_s', 'frozen_dots', 'sky_ticks')
 BOMB_COUNTERS = ('mine_blast_hp_loss', 'bomb_self_hits')
@@ -104,7 +105,10 @@ SIGNATURES = (
     ('grabbed_front', 'grabbed from the front', 'a grab or hold with the nearest enemy within 90 deg of his facing'),
     ('fall_knockdown', 'fall, knockdown or dying chain',
      'knocked down, lying, crawling or dying at 1 HP (RE6 down actions, state 3), or a drop of 1.5 m in 2 s'),
-    ('crowd_4_in_2m', 'crowd of 4+ within 2 m', 'four or more live enemies on his level within 2 m'),
+    ('crowd_gun_down', 'swarmed (4+ within 2 m) with the gun lowered',
+     'four or more live enemies on his level within 2 m while his gun was down (no aim button held)'),
+    ('crowd_4_in_2m', 'swarmed (4+ within 2 m) with the gun up',
+     'four or more live enemies on his level within 2 m while he aimed or fired'),
     ('aimed_away_or_behind', 'aimed away or threat behind while hit',
      'his gun up with the nearest enemy within 4 m more than 45 deg off his aim, the nearest within 2 m more than '
      '90 deg behind him, or the driver\'s aim-away / behind-threat seconds rising since the previous hit'),
@@ -121,6 +125,7 @@ SIGNATURES = (
     ('other', 'other', 'no rule matched (the top fields are listed)'),
 )
 ORDER = [s[0] for s in SIGNATURES]
+ROUND_PREFIX = 'round:'                # round-fault clusters (gbox.mercs.learning.FAULTS) share the batch machinery
 LABELS = {s[0]: s[1] for s in SIGNATURES}
 RULES = {s[0]: s[2] for s in SIGNATURES}
 EX_KINDS = {'aim_away': 'aimed_away_or_behind', 'behind_threat': 'aimed_away_or_behind', 'sky': 'aimed_away_or_behind',
@@ -140,6 +145,9 @@ CODE = {
                           [(_R5S, 'Bot._rampage'), (_R5S, 'Bot._keep_moving'), (_R5S, 'Bot._tick')]),
         'fall_knockdown': ('dying and knockdowns: the resuscitate mash and getting clear after rising',
                            [(_R5S, 'Bot._tick'), (_R5S, 'Bot._escape')]),
+        'crowd_gun_down': ('the gun comes down (turning, relocating, heal, mine, unaim) while four or more stand '
+                           'within 2 m: keep firing until the circle is clear', [(_R5S, 'Bot._decide'),
+                           (_R5S, 'Bot._gun_down'), (_R5S, 'Bot._rampage'), (_R5S, 'Bot._relocate')]),
         'crowd_4_in_2m': ('the crowd move / keep moving lets four or more close within 2 m before he relocates',
                           [(_R5S, 'Bot._keep_moving'), (_R5S, 'Bot._relocate'), (_R5S, 'Bot._escape')]),
         'aimed_away_or_behind': ('the aim is off the nearest threat (aim_away / behind_threat): the target choice '
@@ -167,6 +175,8 @@ CODE = {
                           [(_R6S, 'Bot._crowd_control'), (_R6S, 'Bot._decide')]),
         'fall_knockdown': ('down and dying: the fight from the ground, getting up and the tablet at 1 health',
                            [(_R6S, 'Bot._down_tick'), (_R6S, 'Bot._down_fight'), (_R6S, 'Bot._dying')]),
+        'crowd_gun_down': ('the gun is down (bomb escape, bomb walk, break free, tablet) with four or more within '
+                           '2 m', [(_R6S, 'Bot._bomb_escape'), (_R6S, 'Bot._bomb_walk'), (_R6S, 'Bot._crowd_control')]),
         'crowd_4_in_2m': ('crowd control lets four or more within 2 m: no flash, step back or kick in time',
                           [(_R6S, 'Bot._crowd_control'), (_R6S, 'Bot._nade')]),
         'aimed_away_or_behind': ('the aim lock is on one away from the nearest: target choice and turn',
@@ -188,6 +198,7 @@ CODE = {
         'grabbed_from_behind': ('threats behind him are not turned to', [(_R5P, 'Bot._threat'), (_R5P, 'Bot._tick')]),
         'grabbed_front': ('a Majini reaches arm\'s length in front', [(_R5P, 'Bot._threat'), (_R5P, 'Bot._tick')]),
         'fall_knockdown': ('knockdowns and dying', [(_R5P, 'Bot._tick')]),
+        'crowd_gun_down': ('the gun is down with four or more within 2 m', [(_R5P, 'Bot._tick')]),
         'crowd_4_in_2m': ('crowd handling lets four or more within 2 m', [(_R5P, 'Bot._tick'), (_R5P, 'Bot._threat')]),
         'aimed_away_or_behind': ('the aim is off the nearest threat', [('gbox/mercs/titles/re5_combat.py',
                                                                         'Combat._aim_begin'), (_R5P, 'Bot._threat')]),
@@ -284,7 +295,8 @@ def features(event, game_id=None) -> dict:
     bombs.sort()
     motion, state, action = p.get('motion'), p.get('state'), p.get('action')
     words = action.lower() if isinstance(action, str) else ''
-    grabbed = bool((title == RE5_SWITCH and motion in HELD_MOTIONS) or (title == RE6_SWITCH and state in HELD_STATES)
+    grabbed = bool((title == RE5_SWITCH and (motion in HELD_MOTIONS or (near and near[0]['d'] < HELD_R)))
+                   or (title == RE6_SWITCH and state in HELD_STATES)
                    or state == 'grabbed' or (title == RE5_PS3 and action == 4)
                    or any(w in words for w in GRAB_WORDS))
     hp_before, hp_after, hp_max = event.get('hp_before'), event.get('hp_after'), event.get('hp_max')
@@ -321,6 +333,11 @@ def features(event, game_id=None) -> dict:
         'death_log_tail': [{k: d.get(k) for k in ('held', 'doing', 'why', 'lost_by_doing', 'near_2m', 'near_4m',
                                                   'bomb_phase', 'bomb_cm')} for d in tail[-2:] if isinstance(d, dict)],
         'heal_status': str(logic.get('heal_status') or logic.get('heal_deferred') or '')[:80] or None,
+        'pos': [round(v) for v in pos] if pos else None, 'rot': round(rot, 3) if rot is not None else None,
+        'round_evidence_id': logic.get('round_evidence_id') if isinstance(logic.get('round_evidence_id'), str) else None,
+        'stage': next((v[:80] for v in (logic.get('tuning_stage'), logic.get('stage'))
+                       if isinstance(v, str) and v and v != 'unknown'), None),
+        'tuning_version': logic.get('tuning_version') if isinstance(logic.get('tuning_version'), str) else None,
         'frame': {k: frame.get(k) for k in ('state', 'seq', 'age_s') if k in frame} or None,
     }
 
@@ -359,13 +376,14 @@ def classify(inc, prev=None, death=None):
             or death.get('doing') in ('down', 'dying'):
         tags.append('fall_knockdown')
     if max(inc.get('near_2m') or 0, death.get('near_2m') if _num(death.get('near_2m')) else 0) >= CROWD_N:
-        tags.append('crowd_4_in_2m')
+        tags.append('crowd_4_in_2m' if inc.get('aiming') else 'crowd_gun_down')
     away = inc.get('aiming') and nearest is not None and nearest <= NEAR4_R and deg is not None and deg > AWAY_DEG
     behind = nearest is not None and nearest <= CROWD_R and deg is not None and deg > BEHIND_DEG
     if not grabbed and (away or behind or _rose(inc, prev, AWAY_COUNTERS)):  # a grab's own bearing is the grab's
         tags.append('aimed_away_or_behind')
     if _rose(inc, prev, WALL_COUNTERS):
         tags.append('wall_los_aim')
+    reloc = _rose(inc, prev, RELOC_COUNTERS)
     hp, top = inc.get('hp_before'), inc.get('hp_max')
     if _num(hp) and _num(top) and top > 0 and hp / top <= LOW_HP and not inc.get('dying'):
         supply = inc.get('tablets') if inc.get('tablets') is not None else inc.get('heals')
@@ -376,6 +394,8 @@ def classify(inc, prev=None, death=None):
     if not tags:                                     # the fallbacks: nothing more specific explains the hit
         tags.append('faced_melee' if nearest is not None and nearest <= CONTACT_R else 'ranged')
     tags = sorted(set(tags), key=ORDER.index)
+    if reloc:
+        tags.append('relocation_dead_end')             # a tag only: gbox.mercs.learning's round fault counts these
     return (tags[0] if tags else 'other'), tags
 
 
@@ -422,6 +442,25 @@ def label_run(incidents):
     return out, deaths
 
 
+def label_all(incidents):
+    """Every run's incidents classified: ([(incident, signature, new_episode)], [(death cause incident, signature,
+    death_log entry)]). new_episode: not a hit of the same cause in the same run and round within EPISODE_S."""
+    by_run = {}
+    for inc in incidents:
+        by_run.setdefault((inc.get('game_id'), inc.get('run_id')), []).append(inc)
+    out, deaths = [], []
+    for items in by_run.values():
+        labelled, dead = label_run(items)
+        last = {}
+        for inc, sig, _tags in labelled:
+            key = (inc.get('round_id'), sig)
+            at = inc.get('observed_at') or 0
+            out.append((inc, sig, key not in last or at - last[key] > EPISODE_S))
+            last[key] = at
+        deaths += dead
+    return out, deaths
+
+
 def cluster_id(game_id, signature):
     return hashlib.sha256(f'mercs-damage-cluster:{game_id}:{signature}'.encode()).hexdigest()[:16]
 
@@ -435,7 +474,8 @@ def _example(inc, tags, entry=None):
     who = ', '.join(f"{n['d'] / 100:.1f} m at {n['deg']:+d} deg" + (f" ({n['cls']})" if n.get('cls') else '')
                     for n in near[:3] if _num(n.get('deg'))) or 'nobody on his level'
     sid, run = inc.get('session_id'), inc.get('run_id')
-    out = {'event_id': inc.get('event_id'), 'at': inc.get('observed_at'), 'run_id': run, 'round_id': inc.get('round_id'),
+    out = {'id': inc.get('id'), 'event_id': inc.get('event_id'), 'at': inc.get('observed_at'), 'run_id': run,
+           'round_id': inc.get('round_id'), 'stage': inc.get('stage'),
            'hp': f"{inc.get('hp_before')} -> {inc.get('hp_after')} of {inc.get('hp_max')}",
            'nearest': who, 'within_2m': inc.get('near_2m'), 'within_4m': inc.get('near_4m'),
            'held': inc.get('held'), 'decision': inc.get('decision'), 'grabbed': inc.get('grabbed'),
@@ -541,7 +581,7 @@ def summarize(incidents, *, now, window_s=WINDOW_S):
         tag_counts = {}
         for _i, tags, _e in hits:
             for t in tags:
-                if t != sig:
+                if t != sig and t in LABELS:
                     tag_counts[t] = tag_counts.get(t, 0) + 1
         suspect, code = (CODE.get(title) or {}).get(sig) or ('unclassified', [])
         recent = [t['episodes_per_round'] for t in turns[-2:]]
@@ -568,7 +608,6 @@ def summarize(incidents, *, now, window_s=WINDOW_S):
                            'nearest_class': _top(((i.get('near') or [{}])[0] or {}).get('cls') for i, _t, _e in hits),
                            'action': _top(i.get('action') or i.get('motion') for i, _t, _e in hits)},
             'suspect': suspect, 'code': [{'file': f, 'function': fn} for f, fn in code],
-            '_stamps': stamps,
         }
     return out, totals
 
@@ -631,10 +670,14 @@ def run_counts(store, kind, runs):
 class Clusters:
     """The background pass: backfill incidents, cluster, keep one batch request per cluster, link singles."""
 
-    def __init__(self, store, data_dir=None, *, now=time.time, priority=None):
+    def __init__(self, store, data_dir=None, *, now=time.time, priority=None, learning=None):
         self.store, self.now = store, now
         self.root = Path(data_dir) if data_dir else None
         self.priority = priority          # callable(list of open batch request ids, closed ids) -> None, or None
+        if learning is None and data_dir:
+            from .learning import Learning
+            learning = Learning(store, data_dir, now=now)
+        self.learning = learning          # gbox.mercs.learning: rounds, round faults, changes and their effect
         self.last = None
 
     # backfill ---------------------------------------------------------------------------------------------------------
@@ -733,7 +776,8 @@ class Clusters:
     def poll(self):
         singles = self.open_singles()
         backfilled = self.backfill(singles)
-        clusters, totals = summarize(self.incidents(singles), now=self.now())
+        incidents = self.incidents(singles)
+        clusters, totals = summarize(incidents, now=self.now())
         faults = {}
         for gid, sig in clusters:
             title = title_of(gid)
@@ -741,28 +785,38 @@ class Clusters:
                 faults[title] = self.fault_examples(title)
             if faults[title].get(sig):
                 clusters[(gid, sig)]['fault_examples'] = faults[title][sig]
+        round_faults, learning = {}, {}
+        if self.learning is not None:
+            round_faults = self.learning.enrich(clusters, incidents, window_s=WINDOW_S)
         batches = {}
-        for key, c in clusters.items():
+        for key, c in list(clusters.items()) + list(round_faults.items()):
             doc = self.upsert(c, totals.get(c['game_id']) or {})
-            if doc.get('request_id'):
+            if doc.get('request_id') and c.get('kind') != 'round':
                 batches[c['id']] = doc
         linked = self.link_singles(singles, clusters, batches)
+        if self.learning is not None:
+            labelled, deaths = label_all(incidents)
+            changes = self.learning.track_changes(sorted({c['title'] for c in clusters.values()}
+                                                         | {c['title'] for c in round_faults.values()}))
+            self.learning.effects(labelled, deaths)
+            followed = self.learning.follow_up({**clusters, **round_faults})
+            learning = {'changes_recorded': len(changes), 'follow_ups': followed, 'round_faults': len(round_faults)}
         self.sync_priority()
         self.last = {'at': self.now(), 'backfilled': backfilled, 'clusters': len(clusters), 'batches': len(batches),
-                     'singles_closed': linked, 'totals': totals}
+                     'singles_closed': linked, 'totals': totals, 'learning': learning}
         self.store.put(STATE, 'pass', self.last)
         return self.last
 
     def upsert(self, c, total):
         """The cluster document, and its batch request once it has MIN_BATCH episodes + deaths."""
         now = self.now()
-        stamps = c.get('_stamps') or []
         old = self.store.get(CLUSTER, c['id']) or {}
         doc = {**old, **{k: v for k, v in c.items() if not k.startswith('_')}, 'updated': now,
                'window_s': WINDOW_S, 'game_totals': total}
         doc.setdefault('created', now)
         doc['members'] = old.get('members') or []
-        if c['episodes'] + c['deaths'] < MIN_BATCH and not old.get('request_id'):
+        due = c.get('batchable') if c.get('kind') == 'round' else c['episodes'] + c['deaths'] >= MIN_BATCH
+        if not due and not old.get('request_id'):
             self.store.put(CLUSTER, c['id'], doc)
             return doc
         rid = old.get('request_id') or request_id_for(c['id'])
@@ -775,19 +829,6 @@ class Clusters:
                 if (req.get('context') or {}).get('damage_cluster_id') != c['id']:
                     raise ValueError('Deterministic damage batch request identity collision; existing request kept')
                 changed = False
-                if req.get('status') == 'done':
-                    since = (req.get('completed') or now) + REOPEN_GRACE_S
-                    after = sum(1 for at in stamps if at >= since)
-                    if after >= REOPEN_MIN:
-                        req.update(status='open', completed=None)
-                        req.setdefault('messages', []).append({'author': 'agent', 'ts': now,
-                            'id': f'reopen-{int(now)}', 'attachments': [],
-                            'text': f'Reopened: {after} more incidents of this cause {REOPEN_GRACE_S // 3600} h or '
-                                    'more after it was closed. The change did not remove it yet (or is not deployed): '
-                                    'start from the newest examples and the trend per turn.'})
-                        doc['reopened'] = (old.get('reopened') or 0) + 1
-                        old['summary_at'] = 0
-                        changed = True
                 if now - (old.get('summary_at') or 0) >= UPDATE_S:
                     self._refresh(req, doc, now)
                     doc['summary_at'] = now
@@ -946,18 +987,29 @@ class Clusters:
         rows = []
         for c in clusters.values():
             doc = self.store.get(CLUSTER, c['id']) or {}
-            c.pop('_stamps', None)
-            c.update(request_id=doc.get('request_id'), number=doc.get('number'),
+            c.update(request_id=doc.get('request_id'), number=doc.get('number'), last_verdict=doc.get('last_verdict'),
                      status=(self.store.get('request', doc['request_id']) or {}).get('status')
                      if doc.get('request_id') else None, members=len(doc.get('members') or []))
             rows.append(c)
+        faults = []
+        if self.learning is not None:
+            try:
+                for f in self.learning.enrich(clusters, found, window_s=window).values():
+                    doc = self.store.get(CLUSTER, f['id']) or {}
+                    f.update(request_id=doc.get('request_id'), number=doc.get('number'),
+                             status=(self.store.get('request', doc['request_id']) or {}).get('status')
+                             if doc.get('request_id') else None, last_verdict=doc.get('last_verdict'))
+                    faults.append(f)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                faults = [{'error': f'{type(exc).__name__}: {exc}'[:200]}]
+        faults.sort(key=lambda f: (-(f.get('share_of_rounds') or 0), str(f.get('signature'))))
         rows.sort(key=lambda c: (-c['deaths'], -c['hp_lost'], c['signature']))
         top_n = rows[:max(1, min(100, int(top)))]
         return {'window_s': window, 'generated_at': self.now(), 'game': gid, 'totals': totals,
                 'what_kills_him': [f"{c['game']}: {c['label']} - {c['deaths']} deaths, {c['episodes']} episodes, "
                                    f"{c['hp_lost']} HP"
                                    + (f" (#{c['number']})" if c.get('number') else '') for c in top_n[:10]],
-                'clusters': top_n, 'last_pass': self.store.get(STATE, 'pass')}
+                'clusters': top_n, 'round_faults': faults, 'last_pass': self.store.get(STATE, 'pass')}
 
 
 def resolve_game(game):
@@ -981,42 +1033,87 @@ def title_line(doc):
     return f"Damage batch: {doc['game']} - {doc['label']}"[:140]
 
 
+def metric(doc):
+    """(rate per round now, the target) of a batch: the cause's episodes per round, or the round fault's value."""
+    from .learning import TARGET_DROP
+    rate = doc.get('rate_per_round')
+    if rate is None and doc.get('turns'):
+        eps = [t.get('episodes_per_round') for t in doc['turns'] if t.get('episodes_per_round') is not None]
+        rate = round(sum(eps) / len(eps), 3) if eps else None
+    return rate, (round(rate * (1 - TARGET_DROP), 3) if rate is not None else None)
+
+
 def render(doc):
     """The batch request body: what Hermes reads (and the operator in the inbox)."""
-    lines = [
-        f"Batched damage incidents of {doc['game']} (game {doc['game_id']}), cause: {doc['label']}.",
-        f"Rule (gbox/mercs/damage_clusters.py, deterministic): {doc['rule']}.",
-        f"Last {WINDOW_S // 3600} h: {doc['deaths']} deaths ({doc['share_of_deaths']:.0%} of this game's deaths), "
-        f"{doc['episodes']} episodes / {doc['hits']} HP-loss samples ({doc['share_of_hits']:.0%} of its samples), "
-        f"{doc['hp_lost']} HP lost ({doc['share_of_hp']:.0%} of its HP lost), "
-        f"from {_clock(doc.get('first_at'))} to {_clock(doc.get('last_at'))}, over {len(doc.get('runs') or [])} "
-        f"autoplay runs (turns); trend {doc['trend']}. {len(doc.get('members') or [])} single damage reports are "
-        "batched here (closed as members, ledgers kept).",
-        'Trend per turn (run start: rounds, episodes, episodes per round, deaths): ' + '; '.join(
-            f"{_clock(t.get('start'))}: {t.get('rounds')} rounds, {t['episodes']} ep, {t['episodes_per_round']}/round, "
-            f"{t['deaths']} deaths"
-            for t in (doc.get('turns') or [])[-8:]) + '.',
-        f"Suspected bot decision: {doc['suspect']}.",
-        'Code it implicates: ' + '; '.join(f"{c['file']} {c['function']}" for c in doc.get('code') or []) + '.',
-    ]
+    from .learning import EFFECT_ROUNDS, NO_CHANGE_S, TARGET_DROP
+    rate, target = metric(doc)
+    turns = doc.get('round_turns') or doc.get('turns') or []
+    if doc.get('kind') == 'round':
+        lines = [
+            f"Round fault of {doc['game']} (game {doc['game_id']}): {doc['label']}.",
+            f"Rule (gbox/mercs/learning.py FAULTS, the driver's per-round counters): {doc['rule']}.",
+            f"Last {WINDOW_S // 3600} h: {doc['marked_rounds']} of {doc['rounds']} rounds marked "
+            f"({doc['share_of_rounds']:.0%}), {doc['rate_per_round']} per round; {doc['deaths']} of the marked rounds "
+            f"ended in his death; trend {doc['trend']}.",
+            'Trend per turn (autoplay job start: rounds, value per round, marked): ' + '; '.join(
+                f"{_clock(t.get('start'))}: {t['rounds']} rounds, {t['rate']}/round, {t['marked']} marked"
+                for t in turns[-8:]) + '.']
+    else:
+        lines = [
+            f"Batched damage incidents of {doc['game']} (game {doc['game_id']}), cause: {doc['label']}.",
+            f"Rule (gbox/mercs/damage_clusters.py, deterministic): {doc['rule']}.",
+            f"Last {WINDOW_S // 3600} h: {doc['deaths']} deaths ({doc['share_of_deaths']:.0%} of this game's deaths), "
+            f"{doc['episodes']} episodes / {doc['hits']} HP-loss samples ({doc['share_of_hits']:.0%} of its samples), "
+            f"{doc['hp_lost']} HP lost ({doc['share_of_hp']:.0%} of its HP lost), "
+            f"from {_clock(doc.get('first_at'))} to {_clock(doc.get('last_at'))}"
+            + (f"; {doc['rate_per_round']} episodes and {doc.get('deaths_per_round')} deaths per round over "
+               f"{doc['rounds']} rounds ({doc.get('marked_rounds')} rounds had one)" if doc.get('rounds') else '')
+            + f"; trend {doc['trend']}. {len(doc.get('members') or [])} single damage reports are batched here "
+            "(closed as members, ledgers kept).",
+            ('Trend per turn (autoplay job start: rounds, episodes per round, deaths): ' + '; '.join(
+                f"{_clock(t.get('start'))}: {t['rounds']} rounds, {t['rate']}/round, {t['deaths']} deaths"
+                for t in turns[-8:]) if doc.get('round_turns') else
+             'Trend per turn (run start: rounds, episodes, episodes per round, deaths): ' + '; '.join(
+                f"{_clock(t.get('start'))}: {t.get('rounds')} rounds, {t['episodes']} ep, "
+                f"{t['episodes_per_round']}/round, {t['deaths']} deaths" for t in turns[-8:])) + '.']
+    lines += [f"Suspected bot decision: {doc['suspect']}.",
+              'Code it implicates: ' + '; '.join(f"{c['file']} {c['function']}" for c in doc.get('code') or []) + '.']
+    if rate is not None:
+        lines.append(f"Metric: {'its value' if doc.get('kind') == 'round' else 'episodes of this cause'} per round, "
+                     f"now {rate}. Target: {target} or less ({TARGET_DROP:.0%} lower) over the {EFFECT_ROUNDS} rounds "
+                     'after the change is live (hot-reloaded or deployed). gbox/mercs/learning.py measures it per '
+                     'round and posts the result here.')
     if doc.get('co_tags'):
         lines.append('Also true of these hits: ' + ', '.join(f'{t} ({n})' for t, n in doc['co_tags']) + '.')
     fields = doc.get('top_fields') or {}
-    lines.append('Top fields at the hit: ' + '; '.join(f"{k} " + ', '.join(f'{v} ({n})' for v, n in vals)
-                                                     for k, vals in fields.items() if vals) + '.')
-    lines.append('Representative examples (fields recorded at the hit; frames, map and snapshot in each ledger):')
+    if any(fields.values()):
+        lines.append('Top fields at the hit: ' + '; '.join(f"{k} " + ', '.join(f'{v} ({n})' for v, n in vals)
+                                                         for k, vals in fields.items() if vals) + '.')
+    lines.append('Representative examples (' + ('rounds: their counters are in the reviewer link'
+                 if doc.get('kind') == 'round' else 'fields recorded at the hit; frames, map and snapshot in each '
+                 'ledger') + '):')
     for n, ex in enumerate(doc.get('examples') or [], 1):
         lines.append(f'{n}. ' + json.dumps(ex, sort_keys=True, separators=(',', ':'))[:700])
     for fault in doc.get('fault_examples') or []:
         lines.append(f"Driver fault examples ex_{fault['fault']} (round {fault['round_id'][:12]}): {fault['examples']}")
+    replay = (f"GET /api/mercs/damage-clusters/{doc['id']}/replay returns these examples as fixtures (the snapshot, "
+              'held buttons and counters at the hit); save the ones the change is about under '
+              'tests/fixtures/mercs_incidents/ and drive the bot through them with '
+              'gbox.mercs.incident_replay.replay(fixture), asserting the new decision')
+    if doc.get('kind') == 'round':
+        replay = ("build the test from the example rounds' recorded situation (their damage fixtures, when a round "
+                  'has hits: GET /api/mercs/damage-clusters/<cluster>/replay of the same rounds, driven with '
+                  'gbox.mercs.incident_replay.replay) and assert the new decision')
     lines.append(
         'Task: propose ONE logic change in the implicated bot code that would prevent the most incidents of this '
-        'cluster (not one per example), with focused unit tests built from the example fields above, and publish it '
-        "as a draft PR from this request's worktree. One change per batch; no unrelated fixes. Do not launch games, "
-        'send input, or stop, restart or reset MercMode sessions or gBox; the live bots measure the change after a '
-        f"deploy: GET /api/mercs/damage-clusters?game={doc['game_id']} lists this cluster's hits per turn. Post the "
-        'PR link and the effect you expect on this request, then mark it done. This batch updates in place as the '
-        f'window rolls and reopens itself if the cause keeps coming {REOPEN_GRACE_S // 3600} h after it closed.')
+        'cluster (not one per example), and publish it as a draft PR from this request\'s worktree. The PR must add a '
+        f'replay test from the incident data: {replay}. One change per batch; no unrelated fixes. Do not launch '
+        'games, send input, or stop, restart or reset MercMode sessions or gBox; the live bots measure the change '
+        f"after a merge and hot reload: GET /api/mercs/damage-clusters?game={doc['game_id']} and GET "
+        '/api/mercs/learning list this cluster per turn. Post the PR link and the effect you expect on this request, '
+        f'then mark it done. This batch updates in place as the window rolls; it reopens with the new evidence if the '
+        f'rate has not dropped {EFFECT_ROUNDS} rounds after a bot change went live, or if no change went live within '
+        f'{NO_CHANGE_S // 3600} h.')
     return '\n'.join(lines)
 
 
@@ -1075,5 +1172,34 @@ def install(app, store, config, auth, runner=None):
         if doc is None:
             raise HTTPException(404, 'Unknown damage cluster')
         return doc
+
+    @app.get('/api/mercs/damage-clusters/{cid}/replay')
+    def replay(cid: str, n: int = EXAMPLES, actor=Depends(auth)):
+        """The cluster's examples as incident replay fixtures (gbox.mercs.incident_replay): what its PR's replay
+        test loads."""
+        doc = store.get(CLUSTER, cid)
+        if doc is None:
+            raise HTTPException(404, 'Unknown damage cluster')
+        from .incident_replay import fixture
+        out, missing = [], []
+        for ex in (doc.get('examples') or [])[:max(1, min(20, n))]:
+            row = store.get(LEDGER, ex.get('id') or '') if ex.get('id') else None
+            data = store.read_artifact(row['receipt']) if row and row.get('receipt') else None
+            if not data:
+                missing.append(ex.get('event_id') or ex.get('round_id'))
+                continue
+            out.append(fixture(json.loads(data)['event'], doc))
+        return {'cluster': cid, 'signature': doc.get('signature'), 'title': doc.get('title'), 'fixtures': out,
+                'missing': missing}
+
+    @app.get('/api/mercs/learning')
+    def learning(game: str = '', actor=Depends(auth)):
+        """The self-improvement loop at a glance: per title the rounds, the clusters with their rate per round and
+        batch, the changes that went live and their measured effect, the learned tuning in force."""
+        out = runner.learning.summary(game or None) if runner.learning is not None else {'titles': {}}
+        page = runner.listing(game or None, top=50)
+        out.update(clusters=page['clusters'], round_faults=page.get('round_faults', []),
+                   what_kills_him=page['what_kills_him'], last_pass=page['last_pass'])
+        return out
 
     return runner
