@@ -22,19 +22,46 @@
       ...(Array.isArray(frame.players)?{players:playersOf(frame).map(p=>interpolate(p,nextPlayers.get(p.id)))}:{}),enemies:(frame.enemies||[]).map(e=>{
       const n=next.get(String(e.id));return n&&xyz(e.pos)&&xyz(n.pos)&&Math.hypot(...e.pos.map((v,k)=>v-n.pos[k]))<=(800*(b.at-a.at)+30)*nativeScale?{...e,pos:lerp(e.pos,n.pos)}:e;})};
   }
+  // Run maps (gbox.mercs.run_capture, format gbox.run_map/1): a captured round's 2D path, health, decisions, enemies,
+  // statues and events, drawn as the live tactical map draws (+x to the left, +z up). No collision geometry.
+  const RAMP=[[0,[56,189,248]],[.4,[167,139,250]],[.7,[244,114,182]],[1,[251,191,36]]];
+  function ramp(f){f=Math.max(0,Math.min(1,Number(f)||0));for(let k=1;k<RAMP.length;k++){const [a,ca]=RAMP[k-1],[b,cb]=RAMP[k];if(f<=b){const u=b>a?(f-a)/(b-a):0;return `rgb(${ca.map((v,i)=>Math.round(v+(cb[i]-v)*u)).join(',')})`;}}return 'rgb(251,191,36)';}
+  function hpColor(f){f=Math.max(0,Math.min(1,Number(f)));if(!Number.isFinite(f))return '#8a96a6';return f>.5?`rgb(${Math.round(130+(243-130)*(1-f)*2)},${Math.round(216-(216-203)*(1-f)*2)},${Math.round(157-(157-112)*(1-f)*2)})`:`rgb(${Math.round(243+(255-243)*(1-f*2))},${Math.round(203-(203-92)*(1-f*2))},${Math.round(112-(112-92)*(1-f*2))})`;}
+  function atIndex(rows,i){let lo=0,hi=(rows||[]).length;while(lo<hi){const mid=(lo+hi)>>>1;if(rows[mid][0]<=i)lo=mid+1;else hi=mid;}return lo?rows[lo-1]:null;}
+  function roundMapSamples(map){
+    const route=Array.isArray(map?.route)?map.route:[],bonuses=Array.isArray(map?.bonuses)?map.bonuses:[];
+    return route.filter(r=>Array.isArray(r)&&r.length>=3&&r.slice(0,3).every(finite)).map((r,i)=>{
+      const [t,x,z,y=0]=r,en=atIndex(map.enemies,i),ck=atIndex(map.clock,i),dg=atIndex(map.doing,i),hp=map.hp?.[i],facing=map.heading?.[i];
+      const player={id:'p1',control:dg?.[1]==='operator'?'human':'bot',pos:[x,y,z],...(finite(hp)?{hp}:{}),...(finite(map.hp_max)?{hp_max:map.hp_max}:{}),...(finite(facing)?{facing}:{})};
+      return {seq:i,at:t,frame:{players:[player],
+        enemies:(en?.[1]||[]).map((e,k)=>({id:`${en[0]}:${k}`,pos:[e[0],y,e[1]]})),
+        bonuses:bonuses.filter(b=>Array.isArray(b.pos)&&finite(b.seen_t)&&b.seen_t<=t).map(b=>({id:b.id,kind:b.kind,pos:[b.pos[0],b.pos[2]??y,b.pos[1]],taken:finite(b.gone_t)&&t>=b.gone_t})),
+        ...(ck?{clock:{left:ck[1],score:ck[2],combo:ck[3],kills:ck[4]}}:{}),
+        ...(dg?{plan:{doing:dg[1],phase:dg[2],why:dg[3]}}:{})}};});
+  }
+  function roundMapEvents(map){return (map?.events||[]).filter(e=>e&&finite(e.t)&&!['shots','kill'].includes(e.kind)).map((e,k)=>({seq:k,at:e.t,kind:e.kind,data:e}));}
+  function exploreSummary(map){
+    const ex=map?.exploration||{},cov=map?.coverage_now||ex.coverage||{},pct=v=>finite(v)?`${Math.round(v*100)}%`:'—';
+    const bonuses=map?.bonuses||[],taken=bonuses.filter(b=>b.taken).length,left=bonuses.filter(b=>b.gone_t==null).length;
+    return [['Distance',finite(ex.distance_m)?`${ex.distance_m} m`:'—'],['Explored',`${pct(cov.value)}`,`${cov.cells??'?'} of ${cov.known_cells??'?'} known cells`],
+      ['Starting area',finite(ex.start_area_s)?`${ex.start_area_s} s`:'—',`${pct(ex.start_area_share)} within ${ex.start_r_m??10} m of the spawn`],
+      ['Furthest from spawn',finite(ex.max_from_spawn_m)?`${ex.max_from_spawn_m} m`:'—'],['Hits taken',String(map?.hits_taken_events??'—')],
+      ['Statues',`${taken} taken`,`${left} left standing`],['Deaths',String(map?.deaths??'—')]];
+  }
   function sameGeometry(runs,selected){return runs.filter(r=>r.title===selected?.title&&r.geometry===selected?.geometry);}
   function appendSamples(old,incoming){const ids=new Set(old.map(s=>s.seq));return old.concat(incoming.filter(s=>!ids.has(s.seq))).sort((a,b)=>a.seq-b.seq);}
   function geometryPoints(geometry){const points=geometry?.points||[],used=new Set((geometry?.triangles||[]).flat());return [...used].map(i=>points[i]).filter(xyz);}
-  function transform(points,width,height,zoom=1,pan=[0,0]){
+  function transform(points,width,height,zoom=1,pan=[0,0],flip=false){
     const good=points.filter(xyz),xs=good.map(p=>p[0]),zs=good.map(p=>p[2]);
     const x0=good.length?Math.min(...xs):0,x1=good.length?Math.max(...xs):100,z0=good.length?Math.min(...zs):0,z1=good.length?Math.max(...zs):100;
     const scale=Math.min((width-50)/Math.max(1,x1-x0),(height-50)/Math.max(1,z1-z0))*zoom,cx=(x0+x1)/2,cz=(z0+z1)/2;
-    return {point:p=>[width/2+pan[0]+(p[0]-cx)*scale,height/2+pan[1]-(p[2]-cz)*scale],world:(x,y,h)=>[cx+(x-width/2-pan[0])/scale,h,cz-(y-height/2-pan[1])/scale],scale};
+    const sx=flip?-1:1;
+    return {point:p=>[width/2+pan[0]+sx*(p[0]-cx)*scale,height/2+pan[1]-(p[2]-cz)*scale],world:(x,y,h)=>[cx+sx*(x-width/2-pan[0])/scale,h,cz-(y-height/2-pan[1])/scale],scale,flip};
   }
   function mount(host,{api,visible=()=>true}={}){
     const doc=host.ownerDocument;let dead=false,revision=0,raf=0,poll=0,feed=0,busy=false,liveBusy=false,pollBusy=false,lastPoll=0,liveFrame=null,liveStats=null,liveSource=null;
     let games=[],runs=[],current=null,data=null,samples=[],events=[],at=0,playing=false,speed=1,live=true,lastRaf=0;
-    let drawn=[],editing=false,drag=null,zoom=1,pan=[0,0],background=null,mapTransform=null,lastSide=0,saveBusy=false,teachBusy=false,fromMark=null,toMark=null,playerChoices='',sessions=[],sessionBusy=false,binding=false;
+    let colourMode='time',drawn=[],editing=false,drag=null,zoom=1,pan=[0,0],background=null,mapTransform=null,lastSide=0,saveBusy=false,teachBusy=false,fromMark=null,toMark=null,playerChoices='',sessions=[],sessionBusy=false,binding=false;
     const adoptionBusy=new Set();
     const el=(tag,cls,text)=>{const n=doc.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
     const button=(label,fn)=>{const n=el('button','act',label);n.type='button';n.onclick=fn;return n;};
@@ -52,13 +79,18 @@
     const error=el('div','mr-error');error.hidden=true;
     const layout=el('div','mr-layout'),list=el('div','mr-list'),center=el('div','mr-center'),side=el('aside','mr-sidebar');
     const mapWrap=el('div','mr-map-wrap'),canvas=el('canvas','mr-map'),mapNote=el('div','mr-map-note','Choose a recorded run'),legend=el('div','mr-legend');
-    for(const [label,color] of [['Human','#50d9e8'],['Bot','#b19bff'],['Unknown control','#b7c1cd'],['Enemies','#ff8282'],['Time bonus','#f3cb70'],['Mine','#82d89d']]){const span=el('span'),dot=el('i');dot.style.background=color;span.append(dot,doc.createTextNode(label));legend.append(span);}
+    const LEGEND_ATLAS=[['Human','#50d9e8'],['Bot','#b19bff'],['Unknown control','#b7c1cd'],['Enemies','#ff8282'],['Time bonus','#f3cb70'],['Mine','#82d89d']];
+    const LEGEND_RUN=[['Path start → end','linear-gradient(90deg,rgb(56,189,248),rgb(167,139,250),rgb(244,114,182),rgb(251,191,36))'],['Start / end','linear-gradient(90deg,#3ddc84 50%,#ffffff 50%)'],['Hit','#ff5c5c'],['Death ✕','#ff2d2d'],['Statue taken ● left ○','#f3cb70'],['Mine','#82d89d'],['Prompt □','#5ee0f0'],['Stuck ✕','#e6e6e6'],['Still ○','#ffd166'],['Known stage','#2b3a4d']];
+    let legendMode='';function setLegend(mode){if(mode===legendMode)return;legendMode=mode;legend.replaceChildren();for(const [label,color] of mode==='run'?LEGEND_RUN:LEGEND_ATLAS){const span=el('span'),dot=el('i');dot.style.background=color;if(color.startsWith('linear'))dot.style.width='16px',dot.style.borderRadius='3px';span.append(dot,doc.createTextNode(label));legend.append(span);}}
+    setLegend('atlas');
     mapWrap.append(canvas,mapNote,legend);const ctx=canvas.getContext('2d');
     const controls=el('div','mr-controls'),play=button('Play',()=>{live=false;liveInput.checked=false;playing=!playing;if(playing&&at>=end())at=start();text(play,playing?'Pause':'Play');});
     const seek=el('input');seek.type='range';seek.min='0';seek.max='1000';seek.value='0';seek.setAttribute('aria-label','Playback position');
     const elapsed=el('span','mr-time','0:00 / 0:00'),rate=select();[.25,.5,1,2,4,8].forEach(v=>rate.add(new Option(`${v}×`,v)));rate.value='1';rate.setAttribute('aria-label','Playback speed');
-    controls.append(play,seek,elapsed,rate,button('Fit map',()=>{zoom=1;pan=[0,0];background=null;render();}));rate.onchange=()=>speed=+rate.value;seek.oninput=()=>{live=false;liveInput.checked=false;at=start()+(end()-start())*(+seek.value/1000);render();};
+    const colour=select();colour.className='mr-colour';colour.setAttribute('aria-label','Path colour');[['time','Path colour: time'],['hp','Path colour: HP']].forEach(([v,l])=>colour.add(new Option(l,v)));colour.onchange=()=>{colourMode=colour.value;background=null;render();};colour.hidden=true;
+    controls.append(play,seek,elapsed,rate,colour,button('Fit map',()=>{zoom=1;pan=[0,0];background=null;render();}));rate.onchange=()=>speed=+rate.value;seek.oninput=()=>{live=false;liveInput.checked=false;at=start()+(end()-start())*(+seek.value/1000);render();};
     const kpis=el('div','mr-kpis'),values={};for(const key of ['Score','Combo','HP','Clock']){const card=el('div','mr-kpi'),value=el('b',null,'—');card.append(el('small',null,key),value);values[key]=value;kpis.append(card);}
+    const explore=el('section','mr-explore');explore.hidden=true;explore.setAttribute('aria-label','Exploration summary');
     const chart=el('canvas','mr-chart'),chartKey=el('div','mr-chart-key');chartKey.append(el('span',null,'Score · cyan'),el('span',null,'HP · red'),el('span',null,'Combo · gold'),el('span',null,'Each series scaled independently · click to seek'));
     chart.onclick=e=>{const rect=chart.getBoundingClientRect();live=false;liveInput.checked=false;at=start()+(end()-start())*Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));render();};
     const editbar=el('div','mr-editbar'),draw=button('Draw suggested route',()=>{editing=!editing;draw.classList.toggle('on',editing);canvas.style.cursor=editing?'crosshair':'default';});
@@ -75,14 +107,16 @@
     const sessionbar=el('div','mr-sessionbar'),sessionTarget=select(),sessionNote=el('span','mr-session-note','Saved routes can be practiced when a matching game session is running.');
     sessionTarget.className='mr-session-select';sessionTarget.setAttribute('aria-label','Session for route practice');sessionTarget.add(new Option('Choose a matching live session',''));
     sessionTarget.onchange=()=>renderDemonstrations();sessionbar.append(sessionTarget,button('Find live sessions',findSessions),sessionNote);
-    const eventTitle=el('small','mut','Recorded events'),eventList=el('div','mr-events');center.append(mapWrap,controls,kpis,chart,chartKey,teachbar,teachingNote,sessionbar,demonstrations,editbar,validation,eventTitle,eventList);
+    const eventTitle=el('small','mut','Recorded events'),eventList=el('div','mr-events');center.append(mapWrap,controls,kpis,explore,chart,chartKey,teachbar,teachingNote,sessionbar,demonstrations,editbar,validation,eventTitle,eventList);
     side.append(el('h3',null,'Tracked state & provenance'));const sections=new Map();
-    for(const key of ['Player','All players','Assistance & teaching','Clock','Plan','Enemies','Bonuses','Mines','Weapon & sections','Map goal & obstruction','Inputs & prompt','Live diagnostics','Run review','Round learning','Navigation & mine learning','Vector evidence','Source IDs']){
-      const detail=el('details'),summary=el('summary',null,key),content=el('div');detail.append(summary,content);detail.open=['Player','Clock'].includes(key);detail.ontoggle=()=>renderSide(true);side.append(detail);sections.set(key,{detail,content});
+    for(const key of ['Player','All players','Assistance & teaching','Run map','Clock','Plan','Enemies','Bonuses','Mines','Weapon & sections','Map goal & obstruction','Inputs & prompt','Live diagnostics','Run review','Round learning','Navigation & mine learning','Vector evidence','Source IDs']){
+      const detail=el('details'),summary=el('summary',null,key),content=el('div');detail.append(summary,content);detail.open=['Player','Clock','Run map'].includes(key);detail.ontoggle=()=>renderSide(true);side.append(detail);sections.set(key,{detail,content});
     }
     side.append(button('Inspect complete reviewer payload',()=>inspect('Complete reviewer payload',{run:current,frame:frame(),frame_source:live&&liveFrame?liveSource:{source_id:current?.source_id,recorded:true},notebook:data?.notebook,review:current?.review,provenance:data?.provenance},'Recorded and current live sources are identified separately')));
     layout.append(list,center,side);const empty=el('div','mr-empty');empty.hidden=true;host.append(heading,filters,error,empty,layout);
     const dialog=el('dialog','mr-dialog'),dialogTitle=el('h3'),dialogSource=el('p'),raw=el('pre');dialog.append(dialogTitle,dialogSource,raw,button('Close',()=>dialog.close()));host.append(dialog);
+    function runBadge(run){const ex=run.exploration||{};return run.round_map?.available?`Run map · ${finite(ex.distance_m)?ex.distance_m+' m':'?'} · furthest ${finite(ex.max_from_spawn_m)?ex.max_from_spawn_m+' m':'?'} from spawn`:'No run map';}
+    function runMap(){return data?.round_map&&Array.isArray(data.round_map.route)?data.round_map:null;}
     function inspect(label,value,source){text(dialogTitle,label);text(dialogSource,source);raw.textContent=JSON.stringify(value,null,2);dialog.showModal();}
     function fail(err){if(dead)return;error.hidden=false;error.textContent=String(err?.message||err);}
     function start(){return samples[0]?.at||0;}function end(){return samples[samples.length-1]?.at||start();}function rawFrame(){return live&&liveFrame?liveFrame:playbackFrame(samples,at)||{};}function frame(){const f=rawFrame();return {...f,player:playerOf(f,player.value)};}
@@ -104,7 +138,7 @@
         const response=await api(BASE+'/runs?'+query);if(dead||token!==revision)return;runs=response.runs||[];
         list.replaceChildren(el('div','mr-list-title',`${runs.length} recorded run${runs.length===1?'':'s'}`));
         for(const run of runs){const b=button('',()=>{live=false;liveInput.checked=false;load(run);});b.className='mr-run'+(run.id===current?.id?' on':'');b.dataset.run=run.id;
-          b.append(el('strong',null,run.character),el('small',null,run.stage),el('small','mr-run-assistance',assistanceLabel(run.assistance)),el('small',run.active?'mr-active':null,run.active?'Live · sampled state':`${run.outcome||'Unknown outcome'} · ${new Date(run.started*1000).toLocaleString()}`));list.append(b);}
+          b.append(el('strong',null,run.character),el('small',null,run.stage),el('small','mr-run-assistance',assistanceLabel(run.assistance)),...(run.spatial?[]:[el('small',run.round_map?.available?'mr-run-map':'mr-run-nomap',runBadge(run))]),el('small',run.active?'mr-active':null,run.active?'Live · sampled state':`${run.outcome||'Unknown outcome'} · ${new Date(run.started*1000).toLocaleString()}`));list.append(b);}
         empty.hidden=!!runs.length;layout.hidden=!runs.length;if(!runs.length){text(empty,'No runs match these filters.');return;}
         if(!current||reset||!runs.some(r=>r.id===current.id)||(live&&runs[0].id!==current.id))await load(runs[0]);else{current={...current,...runs.find(r=>r.id===current.id)};background=null;}
       }catch(err){fail(err);}finally{busy=false;}
@@ -116,7 +150,8 @@
       try{
         let after=-1;
         do{const result=await api(BASE+'/round?'+new URLSearchParams({title:run.title,id:run.id,after}));if(dead||token!==revision)return;data=result;samples=appendSamples(samples,result.samples||[]);events=result.events||[];after=result.next_after;}while(data.more);
-        current=data.run;updatePlayers();at=live?end():start();floor.value=String(Math.round(frame().player?.pos?.[1]||0));background=null;renderEvents();renderDemonstrations();renderSide(true);render();
+        if(runMap()){samples=roundMapSamples(data.round_map);events=roundMapEvents(data.round_map);}
+        current=data.run;updatePlayers();at=live?end():start();floor.value=String(Math.round(frame().player?.pos?.[1]||0));background=null;renderEvents();renderDemonstrations();renderExplore();renderSide(true);render();
         text(status,current.active?'Live run · recorded samples':'Recorded run');status.classList.toggle('live',current.active&&live);
       }catch(err){if(token===revision)fail(err);}
     }
@@ -135,10 +170,16 @@
         else{text(status,'Saved samples · '+result.reason);status.classList.remove('live');}
       }catch(err){if(!dead&&token===revision){liveFrame=null;fail(err);}}finally{liveBusy=false;}
     }
+    function renderExplore(){const rm=runMap();explore.hidden=!rm;explore.replaceChildren();if(!rm)return;
+      const tiles=el('div','mr-explore-tiles');for(const [label,value,note] of exploreSummary(rm)){const card=el('div','mr-kpi'),b=el('b',null,value);card.append(el('small',null,label),b);if(note)card.append(el('small','mr-explore-note',note));tiles.append(card);}
+      explore.append(el('h3',null,'Exploration'),tiles);if(rm.verdict)explore.append(el('p','mr-verdict',rm.verdict));
+      const cov=rm.coverage_now||{};explore.append(el('p','mr-explore-source',`Known stage: ${rm.extent?.source||'none yet'} over ${rm.extent?.runs??0} runs; coverage changes as runs add to it. ${rm.truncated&&Object.keys(rm.truncated).length?'Some samples were dropped: '+JSON.stringify(rm.truncated):''}`));}
     function renderEvents(){eventList.replaceChildren();for(const event of events.slice(-120).reverse()){const b=button(`${clock(event.at-start())}  ${event.kind.replaceAll('_',' ')}`,()=>{at=event.at;live=false;liveInput.checked=false;render();inspect(event.kind,event,`Recorded event seq ${event.seq} · ${current?.source_id}`);});b.className='mr-event';eventList.append(b);}}
     function renderSide(force=false){
       if(!force&&Date.now()-lastSide<400)return;lastSide=Date.now();const f=frame(),s=samples[sampleIndex(samples,at)]||{};
-      const groups={'Player':f.player,'All players':playersOf(f),'Assistance & teaching':{sample_assistance:f.assistance,run_assistance:current?.assistance,demonstrations:(data?.suggestions||[]).filter(r=>r.kind==='recorded_demonstration')},'Clock':f.clock,'Plan':f.plan,'Enemies':f.enemies,'Bonuses':f.bonuses,'Mines':f.mines,'Inputs & prompt':{inputs:s.inputs,input_provenance:f.input_provenance,prompt:s.prompt},'Run review':current?.review,'Round learning':data?.notebook?.observed,
+      const rm=runMap();
+      const groups={'Player':f.player,'Run map':rm?{verdict:rm.verdict,exploration:rm.exploration,coverage_now:rm.coverage_now,extent:{source:rm.extent?.source,runs:rm.extent?.runs,known_cells:rm.extent?.known?.length},
+          outcome:rm.outcome,stage:rm.stage,time_by_doing:rm.time_by_phase,standstills:rm.standstills,bonuses:rm.bonuses,file:rm.file,session_id:rm.session_id,autoplay_job_id:rm.autoplay_job_id,truncated:rm.truncated}:null,'All players':playersOf(f),'Assistance & teaching':{sample_assistance:f.assistance,run_assistance:current?.assistance,demonstrations:(data?.suggestions||[]).filter(r=>r.kind==='recorded_demonstration')},'Clock':f.clock,'Plan':f.plan,'Enemies':f.enemies,'Bonuses':f.bonuses,'Mines':f.mines,'Inputs & prompt':{inputs:s.inputs,input_provenance:f.input_provenance,prompt:s.prompt},'Run review':current?.review,'Round learning':data?.notebook?.observed,
         'Navigation & mine learning':data?.navigation_learning,'Vector evidence':data?.notebook?{performance_features:data.notebook.vector,feature_definitions:data.notebook.vector_features,vector_kind:data.notebook.vector_kind,source_id:data.notebook.source_id,knowledge_delivered:data.notebook.knowledge_delivered,...data?.knowledge}:null,
         'Weapon & sections':{controlled_actor_weapon:f.weapon,recorded_sections:current?.review?.weapon_sections,evidence:current?.review?.weapon_section_evidence},
         'Map goal & obstruction':{operator_goal:f.operator_goal,obstruction:f.obstruction},
@@ -153,19 +194,43 @@
     }
     function size(node){const rect=node.getBoundingClientRect(),dpr=Math.min(2,root.devicePixelRatio||1),w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));if(node.width!==w||node.height!==h){node.width=w;node.height=h;background=null;}return {w,h,dpr};}
     function path(c,points,color,width=2){c.beginPath();let started=false;for(const p of points){if(!xyz(p)){started=false;continue;}const [x,y]=mapTransform.point(p);if(!started)c.moveTo(x,y);else c.lineTo(x,y);started=true;}c.strokeStyle=color;c.lineWidth=width;c.stroke();}
-    function staticMap(w,h){const cache=doc.createElement('canvas');cache.width=w;cache.height=h;const c=cache.getContext('2d'),geometry=data?.geometry||{},points=geometry.points||[],used=geometryPoints(geometry);mapTransform=transform(used.length?used:samples.map(s=>s.frame?.player?.pos),w,h,zoom,pan);c.fillStyle='#101923';c.fillRect(0,0,w,h);
+    function pathColour(i){const rm=runMap();if(colourMode==='hp'&&rm){const hp=rm.hp?.[i];return finite(hp)&&finite(rm.hp_max)&&rm.hp_max>0?hpColor(hp/rm.hp_max):'#8a96a6';}return ramp(samples.length>1?(samples[i].at-samples[0].at)/(samples.at(-1).at-samples[0].at||1):0);}
+    function runPath(c,upto,width,alpha){if(samples.length<2)return;const n=samples.length,buckets=48;c.globalAlpha=alpha;c.lineWidth=width;c.lineCap='round';c.lineJoin='round';
+      let i=0;while(i<n-1&&samples[i+1].at<=upto){const j0=i,color=pathColour(i);c.beginPath();let [x,y]=mapTransform.point(samples[i].frame.players[0].pos);c.moveTo(x,y);
+        while(i<n-1&&samples[i+1].at<=upto&&(colourMode==='hp'?pathColour(i)===color:Math.floor(i*buckets/n)===Math.floor(j0*buckets/n))){const a=samples[i].frame.players[0].pos,b=samples[i+1].frame.players[0].pos;[x,y]=mapTransform.point(b);if(Math.hypot(b[0]-a[0],b[2]-a[2])>1500)c.moveTo(x,y);else c.lineTo(x,y);i++;}
+        c.strokeStyle=color;c.stroke();}c.globalAlpha=1;}
+    function drawRunMap(c,w,h){
+      const rm=runMap(),cell=rm.cell||250,known=rm.extent?.known||[],visited=new Set((rm.cells||[]).map(k=>k.join(',')));
+      const pts=samples.map(s=>s.frame.players[0].pos).concat(known.map(k=>[(k[0]+.5)*cell,0,(k[1]+.5)*cell])).concat((rm.bonuses||[]).map(b=>[b.pos[0],0,b.pos[1]]));
+      mapTransform=transform(pts,w,h,zoom,pan,rm.view?.x===-1);c.fillStyle='#0e1116';c.fillRect(0,0,w,h);
+      for(const k of new Set([...known.map(k=>k.join(',')),...visited])){const [i,j]=k.split(',').map(Number),[ax,ay]=mapTransform.point([i*cell,0,j*cell]),[bx,by]=mapTransform.point([(i+1)*cell,0,(j+1)*cell]);
+        c.fillStyle=visited.has(k)?'#2b3a4d':'#1a212b';c.fillRect(Math.min(ax,bx),Math.min(ay,by),Math.abs(bx-ax)+.5,Math.abs(by-ay)+.5);}
+      const sp=samples[0]?.frame.players[0].pos;if(sp){const [x,y]=mapTransform.point(sp);c.setLineDash([6,5]);c.beginPath();c.arc(x,y,(rm.exploration?.start_r_m||10)*100*mapTransform.scale,0,Math.PI*2);c.strokeStyle='#3ddc84aa';c.lineWidth=1.5;c.stroke();c.setLineDash([]);}
+      runPath(c,Infinity,2,.35);
+      for(const st of rm.standstills||[]){const [x,y]=mapTransform.point([st.at[0],0,st.at[1]]);c.beginPath();c.arc(x,y,6+Math.min(st.seconds,30)/2,0,Math.PI*2);c.strokeStyle='#ffd166cc';c.lineWidth=1.5;c.stroke();}
+      for(const b of rm.bonuses||[]){const [x,y]=mapTransform.point([b.pos[0],0,b.pos[1]]);const tone=b.kind==='combo'?'#9be37a':'#f3cb70';c.beginPath();c.arc(x,y,6,0,Math.PI*2);if(b.taken){c.fillStyle=tone;c.fill();}else{c.strokeStyle=b.gone_t==null?tone:'#8a8f98';c.lineWidth=2;c.stroke();}}
+      for(const e of rm.events||[]){const [x,y]=mapTransform.point([e.x,0,e.z]);
+        if(e.kind==='hit'){c.beginPath();c.arc(x,y,3+Math.min((e.loss||0)/60,7),0,Math.PI*2);c.fillStyle='#ff5c5cbb';c.fill();}
+        else if(e.kind==='death'){c.beginPath();c.moveTo(x-8,y-8);c.lineTo(x+8,y+8);c.moveTo(x-8,y+8);c.lineTo(x+8,y-8);c.strokeStyle='#ff2d2d';c.lineWidth=3.5;c.stroke();}
+        else if(e.kind==='mine'){c.beginPath();c.moveTo(x,y-6);c.lineTo(x+6,y);c.lineTo(x,y+6);c.lineTo(x-6,y);c.closePath();c.fillStyle='#82d89d';c.fill();}
+        else if(e.kind==='prompt'){c.strokeStyle='#5ee0f0';c.lineWidth=1.5;c.strokeRect(x-3.5,y-3.5,7,7);}
+        else if(e.kind==='stuck'){c.beginPath();c.moveTo(x-5,y-5);c.lineTo(x+5,y+5);c.moveTo(x-5,y+5);c.lineTo(x+5,y-5);c.strokeStyle='#e6e6e6';c.lineWidth=2;c.stroke();}}
+      const ends=[[samples[0],'#3ddc84'],[samples.at(-1),'#ffffff']];for(const [s,color] of ends)if(s){const [x,y]=mapTransform.point(s.frame.players[0].pos);c.beginPath();c.arc(x,y,6,0,Math.PI*2);c.fillStyle=color;c.fill();c.strokeStyle='#0e1116';c.lineWidth=2;c.stroke();}
+    }
+    function staticMap(w,h){const cache=doc.createElement('canvas');cache.width=w;cache.height=h;const c=cache.getContext('2d');if(runMap()){drawRunMap(c,w,h);return cache;}const geometry=data?.geometry||{},points=geometry.points||[],used=geometryPoints(geometry);mapTransform=transform(used.length?used:samples.map(s=>s.frame?.player?.pos),w,h,zoom,pan);c.fillStyle='#101923';c.fillRect(0,0,w,h);
       for(const triangle of geometry.triangles||[]){const vertices=triangle.map(i=>points[i]);if(!vertices.every(xyz))continue;c.beginPath();vertices.forEach((p,i)=>{const [x,y]=mapTransform.point(p);i?c.lineTo(x,y):c.moveTo(x,y);});c.closePath();c.fillStyle='#1b2c3b';c.fill();}
       for(const [,a,b] of geometry.boundaries||[])if(points[a]&&points[b])path(c,[points[a],points[b]],'#5b6d80',1);
       const overlay=sameGeometry(runs,current);overlay.forEach((run,index)=>{const tracks=run.paths?.length?run.paths:[{control:'unknown',path:run.path||[]}];for(const track of tracks)path(c,track.path.flatMap(p=>p.break?[null,p.pos]:[p.pos]),playerColor(track)+(run.id===current?.id?'90':'38'),run.id===current?.id?2:1);});
       for(const suggestion of data?.suggestions||[]){c.setLineDash([6,5]);path(c,suggestion.points||[],suggestion.bot_eligible?'#96c79788':'#d8ad7188',2);c.setLineDash([]);}return cache;}
     function marker(c,pos,color,r,label,hp,max){if(!xyz(pos))return;const [x,y]=mapTransform.point(pos);c.beginPath();c.arc(x,y,r,0,Math.PI*2);c.fillStyle=color;c.fill();if(label){c.fillStyle='#e5eef5';c.font='11px system-ui';c.fillText(label,x+8,y-7);}if(finite(hp)&&finite(max)&&max>0){c.fillStyle='#131a23';c.fillRect(x-12,y+9,24,3);c.fillStyle=color;c.fillRect(x-12,y+9,24*Math.max(0,Math.min(1,hp/max)),3);}}
     function render(){
-      if(dead)return;const {w,h}=size(canvas);if(!background)background=staticMap(w,h);ctx.drawImage(background,0,0);const f=frame();
-      for(const b of f.bonuses||[])if(!b.taken)marker(ctx,b.pos,b.kind==='time'?'#f3cb70':'#b19bff',5);
+      if(dead)return;const {w,h}=size(canvas);if(!background)background=staticMap(w,h);ctx.drawImage(background,0,0);const f=frame(),rm=runMap();
+      setLegend(rm?'run':'atlas');colour.hidden=!rm;if(rm)runPath(ctx,at,3,1);
+      for(const b of f.bonuses||[])if(!b.taken)marker(ctx,b.pos,b.kind==='time'?'#f3cb70':rm&&b.kind==='combo'?'#9be37a':'#b19bff',rm?2.5:5);   // a run map: a dot in its final-state symbol, standing now
       for(const mine of f.mines||[])marker(ctx,mine.pos,'#82d89d',4);
-      for(const e of f.enemies||[])marker(ctx,e.pos,'#ff8282',4,String(e.id),e.hp,e.hp_max);
+      for(const e of f.enemies||[])marker(ctx,e.pos,'#ff8282',4,rm?null:String(e.id),e.hp,e.hp_max);
       const p=f.player;for(const actor of playersOf(f))marker(ctx,actor.pos,playerColor(actor),actor.id===player.value?7:5,`${actor.id.toUpperCase()} ${actor.control} · HP ${actor.hp??'?'}`,actor.hp,actor.hp_max);
-      if(p&&xyz(p.pos)&&finite(p.facing)){const [x,y]=mapTransform.point(p.pos);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+Math.sin(p.facing)*18,y-Math.cos(p.facing)*18);ctx.strokeStyle='#f0fcff';ctx.lineWidth=2;ctx.stroke();}
+      if(p&&xyz(p.pos)&&finite(p.facing)){const [x,y]=mapTransform.point(p.pos);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+(mapTransform.flip?-1:1)*Math.sin(p.facing)*18,y-Math.cos(p.facing)*18);ctx.strokeStyle='#f0fcff';ctx.lineWidth=2;ctx.stroke();}
       if(fromMark!=null||toMark!=null)path(ctx,selectedSamples().map(s=>playerOf(s.frame,player.value)?.pos),'#d8f9ff',4);
       for(const event of events)if(event.kind==='checkpoint_acquired'&&event.at<=at&&xyz(event.data?.pos)){const [x,y]=mapTransform.point(event.data.pos);ctx.beginPath();ctx.arc(x,y,10,0,Math.PI*2);ctx.strokeStyle='#f3cb70';ctx.lineWidth=2;ctx.stroke();}
       if(drawn.length){path(ctx,drawn,'#c4a4ff',3);drawn.forEach(p=>marker(ctx,p,'#dfccff',4));}
@@ -175,7 +240,10 @@
       text(selection,chosen.length?`${player.value.toUpperCase()} · ${clock(chosen[0].at-start())} → ${clock(chosen.at(-1).at-start())} · ${chosen.length} samples`:'No recorded selection');
       const context=rangeAssistance(chosen);text(assist,'Selection: '+assistanceLabel(context));assist.dataset.classification=context.classification;
       text(teachingNote,human?'The selected recorded positions will be checked against this exact mode and geometry. The bot keeps its own goals, threat checks and live traversal prompts.':'Select a recorded human player to teach a route. Older traces with unknown controller ownership remain available for review.');
+      if(rm){const cov=rm.coverage_now||rm.exploration?.coverage||{};text(mapNote,`${rm.stage||current?.stage||''} · run map · ${finite(cov.value)?Math.round(cov.value*100)+'% of the known stage':'coverage unknown'} (${rm.extent?.source||'no extent yet'}, ${rm.extent?.runs??0} runs) · ${rm.exploration?.distance_m??'?'} m walked · as the live map draws it (+x left)`);}
+      else if(!data?.geometry&&current&&!current.spatial)text(mapNote,current.round_map&&!current.round_map.available?'No run map for this round (played before run capture, or under 2 s)':'No spatial samples or measured map recorded for this run');
       if(data?.geometry?.geometry_available===false)text(mapNote,`${current?.stage||''} - native coordinate paths only; walls and collision geometry unknown. ${data.geometry.units_per_m||'?'} native units/metre.`);
+      for(const node of [teachbar,teachingNote,sessionbar,demonstrations,editbar,validation])node.hidden=!!rm;   // a run map has no measured floor to teach or draw on
       teach.disabled=teachBusy||!human||!current?.mode||!measuredGeometry(data);markStart.disabled=markEnd.disabled=!samples.length;
       save.disabled=saveBusy||drawn.length<2||!measuredGeometry(data);draw.disabled=!measuredGeometry(data);renderChart();renderSide();
     }
@@ -271,6 +339,6 @@
     refresh(true);raf=root.requestAnimationFrame(animate);poll=root.setInterval(()=>liveTick(),2000);feed=root.setInterval(()=>liveFeed(),500);
     return {dispose(){dead=true;revision++;root.clearInterval(poll);root.clearInterval(feed);root.cancelAnimationFrame(raf);resize?.disconnect();dialog.remove();host.replaceChildren();},refresh,inspect};
   }
-  const exported={mount,sampleIndex,playbackFrame,sameGeometry,appendSamples,geometryPoints,transform,clock,playersOf,playerOf,assistanceLabel,rangeAssistance,measuredGeometry};
+  const exported={mount,sampleIndex,playbackFrame,sameGeometry,appendSamples,geometryPoints,transform,clock,playersOf,playerOf,assistanceLabel,rangeAssistance,measuredGeometry,roundMapSamples,roundMapEvents,exploreSummary,ramp,hpColor,atIndex};
   if(typeof module==='object'&&module.exports)module.exports=exported;else root.GBoxMercsReviewer=exported;
 })(typeof window!=='undefined'?window:globalThis);

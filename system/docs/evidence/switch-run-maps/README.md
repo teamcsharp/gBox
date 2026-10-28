@@ -22,3 +22,16 @@ The live capture in the engine has these too, but the replay does not:
    - 406 s, 212 m walked, furthest 40.8 m from the spawn, 35 cells (20% of the stage seen so far).
    - 1 capsule taken, 9 left standing.
    - The round was still running when polling stopped, so it shows as interrupted.
+
+## The run reviewer (PR 2)
+
+These screenshots show the run reviewer rendered in headless Edge by `tests/test_mercs_reviewer_run_maps.cjs`:
+- the map comes from the same replayed run maps, through `Reviewer.run_map` (the payload that `/api/mercs/reviewer/round` returns);
+- `GBOX_RUN_MAP=<payload>` sets the run map;
+- `GBOX_RUN_MAP_AT` sets the scrub position in thousandths of the run;
+- `GBOX_RUN_MAP_COLOUR=hp` colours the path by HP.
+
+In each screenshot, the second run in the list is a test fixture. It is there to show the "No run map" badge that rounds played before the capture get.
+
+3. `03-reviewer-creature-workshop.png`: Creature Workshop scrubbed to 4:19 of 6:45, path coloured by time. The traversed part is bright and the rest dim.
+4. `04-reviewer-rail-yard-hp.png`: Rail Yard at its end, path coloured by HP (green at full, red low).
