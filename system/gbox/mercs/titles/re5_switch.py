@@ -375,7 +375,14 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # read from RAM since the last tick over HEADING_GOV_DEG_S releases the turn stick this tick (gov_drops); no aim stick in
 # the shot motion (shot_stick_drops); the quick turn (180 deg in 0.3 s) is not used (QUICK_TURN off: the body turns by
 # the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
-HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, False
+HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
+# The quick turn back (operator 20:25: "you can do a quick turn by holding down and pressing B. Thats how you turn around
+# and deal with people behind you"): a Majini on his level within BEHIND_R more than QUICK_ERR off his heading, nobody
+# nearer in front: the trigger let go first (never in the boosted shot motion), the gun down, then the stick back, + B,
+# let go (behind_turns); the fight raises at the one now in front after the settle. At most one each QUICK_GAP_S, and
+# none within QUICK_BACK_S of the last unless the one behind is within GRAB_THREAT_R (no back and forth). The quick turn
+# is exempt from the heading governor (its 180 deg in 0.3 s is the game's own move).
+QUICK_BACK_S = 3.0
 GOV_COUNTERS = ("gov_drops",)
 # The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
 # hourglass: re5_switch_prompt's live finding, label 112 press:y on the statue - up 23 samples in six minutes, never
@@ -1676,7 +1683,7 @@ class Bot:
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
-        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S:
+        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
             if self.aim_since is not None:
                 self._gun_down()
             self.stats["behind_turns"] += 1
@@ -1757,6 +1764,36 @@ class Bot:
                        dist / 100, math.degrees(body_err)))
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
+
+    def _quick_behind(self, p, live, flat, now):
+        """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
+        if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+            return None
+        px, py, pz = p["pos"]
+        bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        behind = [e for e in live if flat(e) <= BEHIND_R and abs(e["pos"][1] - py) <= LEVEL_DY and bear(e) > QUICK_ERR]
+        if not behind:
+            return None
+        e = min(behind, key=flat)
+        if any(flat(f) < flat(e) and bear(f) <= math.radians(60) for f in live):
+            return None                                  # one nearer in front: him first
+        if now - self.quick_at < QUICK_BACK_S and flat(e) > GRAB_THREAT_R:
+            return None                                  # just turned: no back and forth
+        if p.get("motion") == MOTION_SHOT or self.fire_down:
+            if self.fire_down:
+                self._trigger(False, now)                # the trigger let go first: the shot motion ends
+            self.doing, self.why = "quick_turn", "one behind: the trigger let go before the quick turn"
+            return {"hold": ("zl",) if self.aim_since is not None else ()}
+        self._gun_down()
+        key = e.get("ptr", e.get("slot"))
+        self._set_target(key, now)
+        self.target_at = now
+        self.stats["quick_turns"] += 1
+        self.stats["behind_turns"] += 1
+        self.quick = 2
+        self.doing, self.why = "quick_turn", (f"one {flat(e) / 100:.1f} m behind "
+                                              f"({math.degrees(bear(e)):.0f} deg): the quick turn")
+        return {"hold": ("ldown",)}
 
     def _sweep(self, p, live, flat, snap, now):
         """The turret sweep (SWEEP above): this tick's keys while it runs, None when the circle is not crowded."""
@@ -1945,11 +1982,12 @@ class Bot:
         if r.get("goal") is not None:                    # on toward the goal (a point he knows is open)
             r["head"] = heading(r["goal"][0] - px, r["goal"][2] - pz)
         err = wrap(r["head"] - p["rot"])
-        if not QUICK_TURN and abs(err) > QUICK_ERR:      # the way out behind him: back toward it while turning
+        can_quick = QUICK_TURN and not r["quick"] and now - self.quick_at > QUICK_BACK_S
+        if abs(err) > QUICK_ERR and not can_quick:       # the way out behind him: back toward it while turning
             r["best_at"] = max(r["best_at"], now)
             self.doing, self.why = "relocate", f"relocating: turning to the way out {math.degrees(err):+.0f} deg"
             return {"hold": ("ldown",) + self._turn(err)}
-        if QUICK_TURN and abs(err) > QUICK_ERR and not r["quick"] and now - self.quick_at > QUICK_GAP_S:
+        if abs(err) > QUICK_ERR:
             r["quick"], r["best_at"] = True, now + 0.6   # the way out behind him: one quick turn, then the run
             self.stats["quick_turns"] += 1
             self.quick = 2
@@ -2268,8 +2306,9 @@ class Bot:
             speed = abs(math.degrees(wrap(rot - g[0]))) / (now - g[1])
         self._gov = (rot, now) if rot is not None else (None, now)
         hold = act.get("hold")
-        if not HEADING_GOV or speed is None or speed <= HEADING_GOV_DEG_S or not hold or self.doing == "held"                 or not {"rleft", "rright"} & set(hold):
-            return act
+        if not HEADING_GOV or speed is None or speed <= HEADING_GOV_DEG_S or not hold or self.doing == "held" \
+                or not {"rleft", "rright"} & set(hold) or self.quick or now - self.quick_at < QUICK_SETTLE_S + 0.3:
+            return act                                   # (the quick turn: the game's own 180, exempt)
         self.stats["gov_drops"] += 1
         return {**act, "hold": tuple(k for k in hold if k not in ("rleft", "rright"))}
 
@@ -2834,6 +2873,9 @@ class Bot:
         if crowded:                                      # someone near: the far ones are no concern now
             live = [e for e in live if flat(e) <= NEAR_FOCUS_R] or live
         self._crowded = crowded
+        act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
+        if act is not None:
+            return act
         act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first (off)
         if act is not None:
             return act
@@ -2889,7 +2931,7 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
-            if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R):
+            if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R) and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
