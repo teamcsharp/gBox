@@ -1958,6 +1958,10 @@ AUTO_SWITCH = False
 # go from the location where they run themselves"): a kite / back-off heading whose WALL_PROBE_R line leaves the nav
 # mesh costs WALL_COST (more than a crowd in the way).
 WALL_PROBE_R, WALL_COST = 350.0, 6.0
+# Misses answered up close (operator 2026-10-28: "if the bot misses a shot three times, they need to do three quick
+# attacks"): MISS_QA_N misses in a row queue MISS_QA_COUNT quick attacks (ZR alone) on the nearest within MISS_QA_R.
+MISS_QA_N, MISS_QA_COUNT, MISS_QA_R = 3, 3, 300.0
+WALL_ESCAPE_S = 1.5                      # Bot._wall_command: the walk away from the operator's wall
 _NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
 SHOTGUN_ORDER = (0x105, 0x104, 0x106)
@@ -2636,6 +2640,9 @@ class Bot:
         escape = self._bomb_escape(p, snap, now)
         if escape is not None:
             return escape
+        wall = self._wall_command(p, live, snap, now)            # the PiP's wall button
+        if wall is not None:
+            return wall
         act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
@@ -2664,6 +2671,31 @@ class Bot:
                 self._prompt_pressed(k, now)                     # (prompts_taken counts it as the prompt's press)
         return self._go("held", "held_prompt", {"hold": (buttons if self.wiggle % 2 else ()) + stick},
                         f"held: the prompt's {'+'.join(buttons).upper()} mashed, the stick round")
+
+    def _wall_command(self, p, live, snap, now) -> dict | None:
+        """The operator's wall (the PiP's wall button sends the explore / next_area command; operator 2026-10-28: "it
+        basically tells the bot to navigate the level in a different way"): the bonus or goal he was walking to is left
+        for BONUS_SKIP_S and he walks WALL_ESCAPE_S along the clearest way that is not into a wall (_open_heading, the
+        nav mesh), then decides again. stats wall_reports."""
+        from ..directives import Reader
+        if getattr(self, "commands", None) is None:
+            self.commands = Reader()
+        try:
+            cmd, fresh = self.commands.current(self.stats, time.time())
+        except Exception:                                    # noqa: BLE001 - the command never stops a tick
+            return None
+        if cmd in ("explore", "next_area") and fresh:
+            self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
+            if self.run_target is not None:
+                self.bonus_skip[self.run_target] = now + BONUS_SKIP_S
+            self.wall_escape = (now + WALL_ESCAPE_S, self._open_heading(p, live))
+        esc = getattr(self, "wall_escape", None)
+        if esc is not None and now < esc[0]:
+            cam = snap.get("camera")
+            self._gun_down()
+            return self._go("walk", "wall_escape", {"hold": self._stick(esc[1], cam["yaw"] if cam else p["rot"])},
+                            "the operator's wall: away from it by the clearest open way")
+        return None
 
     def _grab_swap(self, p, now) -> None:
         """A grab: a random loaded shotgun or magnum other than the gun in hand, switched to once he is free."""
@@ -2770,6 +2802,17 @@ class Bot:
         # shoot first (operator 2026-10-28: "just have the bot firing on the enemy like mad if they are in the vicinity of
         # them ... I need him mainly shooting"): one in sight on his level within FIRE_ZONE_R - no bonus run, no green
         # detour, the fight below (stats fire_zone_s)
+        if getattr(self, "qa_burst", 0) > 0:                     # the misses' quick attacks on the nearest, up close
+            close_e = min((e for e in live if flat(e) <= MISS_QA_R and abs(e["pos"][1] - py) <= AIM_DY),
+                          key=flat, default=None)
+            if close_e is None:
+                self.qa_burst = 0
+            elif now - getattr(self, "qa_at", -1e9) >= MELEE_GAP_S:
+                self.qa_burst -= 1
+                self.qa_at = now
+                self.stats["miss_quick_attacks"] = self.stats.get("miss_quick_attacks", 0) + 1
+                self._gun_down()
+                return self._go("melee", "miss_quick_attack", {"tap": "zr"}, "missed three running: a quick attack")
         hot = any(flat(e) <= FIRE_ZONE_R and abs(e["pos"][1] - py) <= AIM_DY and not self.is_blocked(e, now) for e in live)
         if hot:
             self.stats["fire_zone_s"] = round(self.stats.get("fire_zone_s", 0.0) + TICK_S, 2)
@@ -4725,6 +4768,9 @@ class Bot:
             tol += math.radians(FIRE_TOL_STEP) * (1 if pull["hit"] else -1)
             self.fire_tol = min(math.radians(FIRE_TOL_MAX), max(math.radians(FIRE_TOL_MIN), tol))
             self.stats["fire_tol_deg"] = round(math.degrees(self.fire_tol), 2)
+            self.miss_streak = 0 if pull["hit"] else getattr(self, "miss_streak", 0) + 1
+            if MISS_QA_N and self.miss_streak >= MISS_QA_N:     # three misses running: quick attacks up close
+                self.qa_burst, self.miss_streak = MISS_QA_COUNT, 0
             self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
 
     def _k_shot(self, pull, now) -> None:
