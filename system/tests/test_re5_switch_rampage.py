@@ -17,6 +17,7 @@ def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     monkeypatch.setattr(R, "RAMPAGE", True)              # off in MercMode since 16:45 (it spun between foes); the code is kept
+    monkeypatch.setattr(R, "QUICK_TURN", True)           # (off since 18:52: the heading governor)
 
 
 def at(dist, deg, y=0.0):

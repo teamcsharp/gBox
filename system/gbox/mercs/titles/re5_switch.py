@@ -309,7 +309,9 @@ PITCH_SETTLE = False                     # off at 15:45 with SKY_GUARD (the 14:5
 #  * crowd_max: the most within 4 m at once in the round; ex_<fault>: the first EXAMPLES of each in the round, readable.
 # long_shot_kills: a Majini fired on past LONG_KILL_R found dead within LONG_KILL_S.
 CONFIRMED_FIRE, LONG_KILL_R, LONG_KILL_S = True, 1500.0, 3.0
-WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.4, 2.5, 3
+WALL_SLACK, WALL_DROP_S, WALL_BLOCK_S, FROZEN_TICKS = 10.0, 0.3, 3.0, 3   # (operator 18:58: "Every time the bot points
+                                         # a gun at a wall, I cry": dropped after 0.3 s for 3 s; wall_aim_s the seconds
+                                         # the gun's ray ended on geometry short of the target, target 0)
 BEHIND_R, AWAY_ERR, AWAY_S, EXAMPLES = 300.0, math.radians(45), 0.3, 3
 FAULT_KINDS = ("wall_shot", "wall_block", "frozen_dot", "behind_threat", "aim_away", "sky")
 # The close-range pitch (the 15:26 turn's pitch_up_last: targets 0.8-2.2 m wanting -23 to -38 deg with the laser at
@@ -346,21 +348,36 @@ RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s
 # quick turn only for one within CALM_QUICK_R behind. spin_deg_s / spin_max_deg_s: his heading's mean and peak speed.
 CALM, CALM_REVERSE_S, CALM_TURN_DEG_S, TURN_SPEED_DEG_S, CALM_QUICK_R = True, 0.25, 110.0, 160.0, 300.0
 CALM_COUNTERS = ("calm_coasts", "calm_caps")
+# The heading governor (operator 18:52: "i need the gameplay to look logical. It makes no sense for him to turn too fast
+# and just rotate in place"; live with #1381's sweep: spin_deg_s 1325 mean, 1998 peak, whips 224 - the sweep held the
+# aim stick while the trigger was down, and re5_switch_mods.fire_rate runs his time scale up to x80 in the shot motion,
+# the stick's turn with it). The pad's last stage, whatever decided the tick (a grab's escape aside): his heading's speed
+# read from RAM since the last tick over HEADING_GOV_DEG_S releases the turn stick this tick (gov_drops); no aim stick in
+# the shot motion (shot_stick_drops); the quick turn (180 deg in 0.3 s) is not used (QUICK_TURN off: the body turns by
+# the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
+HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, False
+GOV_COUNTERS = ("gov_drops",)
 # The turret sweep (operator 17:38: "with as many threats that they have around them within a five meter circle, they
 # should be holding down the trigger and just spinning around getting all of these people that are ganging up on them";
 # kept from 16:12 / 16:47: no whipping, nothing dizzying). It replaces the rampage (RAMPAGE stays off): SWEEP_N or more
 # Majini on his level within SWEEP_R, or one within BEHIND_R behind him while another stands in front inside SWEEP_R:
-# the gun up and the trigger held, the aim panned ONE way - toward the side with more of them, the nearer weighing more -
-# by the right stick held (while aiming the stick turns the aim, and him with it, at the game's own steady ~40 deg/s: a
-# slow pan, never a snap), the stick pulsed one tick in SWEEP_DWELL_N while the dot or the ray is on a Majini (the shots
-# land), until nobody is inside SWEEP_R for SWEEP_EXIT_S. A sweep that starts within SWEEP_SAME_S of the last keeps its
-# direction. The aim's pitch (P_AIM_PITCH) is held inside SWEEP_PITCH_BAND: a Majini's chest 1-5 m away, never the sky.
+# the gun up, the aim panned ONE way - toward the side with more of them, the nearer weighing more - by the right stick
+# held (while aiming the stick turns the aim, and him with it, at the game's own steady ~40 deg/s: a slow pan, never a
+# snap); the trigger held while the dot or the ray is on a Majini (or one is at point blank in front), the pan stopped
+# meanwhile, until nobody is inside SWEEP_R for SWEEP_EXIT_S. A sweep that starts within SWEEP_SAME_S of the last keeps
+# its direction. No aim stick while the shot motion plays (MOTION_SHOT): re5_switch_mods.fire_rate runs his own time
+# scale up to x80 in it, the stick's turn with it (live 18:47, the first sweep turn: the trigger and the stick held
+# together, 44 kills in a round but his heading at 970 deg/s on average, 200 whips). The aim's pitch (P_AIM_PITCH) is
+# held inside SWEEP_PITCH_BAND: a Majini's chest 1-5 m away, never the sky.
 # A grab, a heal, the hurt escape and the bombs still come first (they run before the fight). Counters: sweeps, sweep_s,
 # sweep_kills, sweep_reversals (the yaw stick reversed during a sweep: target 0), sweep_clears / sweep_clear_s (sweeps
 # that cleared the circle and their seconds); stats crowd_cleared_s: the round's mean seconds to clear it.
-SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S, SWEEP_DWELL_N = False, 500.0, 3, 0.4, 2.0, 3
+SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S = False, 500.0, 3, 0.4, 2.0   # off since 18:52 (#1383): back
+                                         # only after the heading governor (HEADING_GOV) has its numbers
+MOTION_SHOT = 29                         # the shot motion (re5_switch_mods.MOTION_SHOT: the raised time scale)
 SWEEP_PITCH_BAND = (-0.05, 0.30)         # P_AIM_PITCH (+ = down): from 3 deg up to 17 deg down
-SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_clears", "sweep_clear_s")
+SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_clears", "sweep_clear_s",
+                  "sweep_shot_waits", "shot_stick_drops")
 # Keep moving (operator 17:42: "If the RE5 bot doesn't get away from the enemies and tries maneuvering around the level
 # quickly, he will be overwhelmed ... It is important to continue moving around the level"): his dwell is the time he
 # stays within DWELL_R of one spot. Past DWELL_MAX_S with Majini about, after a sweep clears the circle, or with
@@ -406,9 +423,9 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
                   "bonus_jumps")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
-AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
+AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -1152,6 +1169,7 @@ class Bot:
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
         self._dot_prev, self._dot_same, self._rot_prev = None, 0, None   # the frozen-dot watch
         self._wall_since, self._away_since, self._behind_on, self._fault_t = None, None, False, None
+        self._wall_t = None                              # the last aimed tick (wall_aim_s)
         self._long_marks = {}                            # far Majini fired on: key -> when (long_shot_kills)
         self._first_check, self._raise_is_reroll, self._reroll_next, self._close_sky_since = False, False, False, None
         self._ramp = None                                # the rampage: {"since", "main", "kills0", "retarget_at"}
@@ -1163,7 +1181,8 @@ class Bot:
         self._whip = {"dir": 0, "amount": 0.0, "end": -1e9, "last_big": None, "rot": None}
         self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
         self._kills_prev = None
-        self._sweep_st, self._sweep_last, self._sweep_pulse, self._sweep_t = None, None, 0, None   # the turret sweep
+        self._sweep_st, self._sweep_last, self._sweep_t = None, None, None   # the turret sweep
+        self._gov = (None, None)                         # (heading, when) at the last tick: the heading governor
         self._clears: list = []                          # this round's sweep seconds to clear the circle
         self._dwell = None                               # {"anchor", "since"}: the spot he stands at (keep moving)
         self._dwells: list = []                          # this round's finished dwells (seconds)
@@ -1565,7 +1584,7 @@ class Bot:
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
-        if dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S:
+        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S:
             if self.aim_since is not None:
                 self._gun_down()
             self.stats["behind_turns"] += 1
@@ -1676,6 +1695,9 @@ class Bot:
         if lz.get("up") and lz.get("from") and lz.get("at"):
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
             hit = next((e for e in ring if dot_on(dot, e["pos"]) or through(origin, dot, e["pos"])), None)
+        if hit is None and (lz.get("up") or p.get("motion") in MOTION_AIM):   # point blank in front: on him
+            hit = next((e for e in sorted(ring, key=flat) if flat(e) <= POINT_BLANK_R
+                        and abs(bear(e)) <= self.raise_tol(flat(e))), None)
         tgt = hit or nearest
         if tgt is not None:
             key = tgt.get("ptr", tgt.get("slot"))
@@ -1690,22 +1712,19 @@ class Bot:
                             "origin": tuple(lz["from"]) if lz.get("up") else None,
                             "dot": tuple(lz["at"]) if lz.get("up") else None, "gate": "sweep"}
         keys = {"zl"}
-        stick = "rleft" if sw["dir"] > 0 else "rright"
-        if hit is not None:                              # on one: dwell (the stick one tick in SWEEP_DWELL_N)
-            self._sweep_pulse = (self._sweep_pulse + 1) % SWEEP_DWELL_N
-            if self._sweep_pulse == 0:
-                keys.add(stick)
-        else:
-            self._sweep_pulse = 0
-            keys.add(stick)
+        shot = p.get("motion") == MOTION_SHOT            # the shot plays at the raised time scale: no stick in it
+        if hit is None and not shot:                     # nobody under the aim: pan on
+            keys.add("rleft" if sw["dir"] > 0 else "rright")
         ap = p.get("aim_pitch")
-        if ap is not None and now - self.aim_since >= READY_S:   # the aim's own pitch: a chest 1-5 m away
+        if ap is not None and now - self.aim_since >= READY_S and not shot:   # the aim's own pitch: a chest 1-5 m
             if ap < SWEEP_PITCH_BAND[0]:
                 keys.add("rdown")
             elif ap > SWEEP_PITCH_BAND[1]:
                 keys.add("rup")
-        if ring:
-            keys |= self._trigger(True, now)
+        if shot and hit is None:
+            self.stats["sweep_shot_waits"] += 1          # the trigger let go, the shot motion still playing
+        if hit is not None:
+            keys |= self._trigger(True, now)             # on one: the trigger, the pan stopped
         elif self.fire_down:
             self._trigger(False, now)
         yaw = 1 if "rleft" in keys else -1 if "rright" in keys else 0
@@ -1715,7 +1734,7 @@ class Bot:
         self.doing = "sweep"
         self.why = (f"sweep {'left' if sw['dir'] > 0 else 'right'} {now - sw['since']:.1f} s: {len(ring)} within "
                     f"{SWEEP_R / 100:.0f} m" + (f", the nearest {flat(nearest) / 100:.1f} m" if nearest else ", clearing")
-                    + (" - on one" if hit is not None else ""))
+                    + (" - firing on one" if hit is not None else " - the shot playing" if shot else " - panning"))
         return {"hold": tuple(sorted(keys))}
 
     def _keep_moving(self, p, live, flat, now) -> None:
@@ -1782,7 +1801,11 @@ class Bot:
             self._reloc, self._dwell = None, None
             return None
         err = wrap(r["head"] - p["rot"])
-        if abs(err) > QUICK_ERR and not r["quick"] and now - self.quick_at > QUICK_GAP_S:
+        if not QUICK_TURN and abs(err) > QUICK_ERR:      # the way out behind him: back toward it while turning
+            r["best_at"] = max(r["best_at"], now)
+            self.doing, self.why = "relocate", f"relocating: turning to the way out {math.degrees(err):+.0f} deg"
+            return {"hold": ("ldown",) + self._turn(err)}
+        if QUICK_TURN and abs(err) > QUICK_ERR and not r["quick"] and now - self.quick_at > QUICK_GAP_S:
             r["quick"], r["best_at"] = True, now + 0.6   # the way out behind him: one quick turn, then the run
             self.stats["quick_turns"] += 1
             self.quick = 2
@@ -1995,6 +2018,20 @@ class Bot:
                 keys = [k for k in keys if k not in ("rleft", "rright")]   # over the turn rate: this tick coasts
                 self.stats["calm_caps"] += 1
         return {**act, "hold": tuple(keys)}
+
+    def _governor(self, act, snap, now) -> dict:
+        """HEADING_GOV: his heading turned faster than HEADING_GOV_DEG_S since the last tick: no turn stick this tick
+        (a grab's escape left alone)."""
+        rot, g = (snap.get("player") or {}).get("rot"), self._gov
+        speed = None
+        if rot is not None and g[0] is not None and now > g[1]:
+            speed = abs(math.degrees(wrap(rot - g[0]))) / (now - g[1])
+        self._gov = (rot, now) if rot is not None else (None, now)
+        hold = act.get("hold")
+        if not HEADING_GOV or speed is None or speed <= HEADING_GOV_DEG_S or not hold or self.doing == "held"                 or not {"rleft", "rright"} & set(hold):
+            return act
+        self.stats["gov_drops"] += 1
+        return {**act, "hold": tuple(k for k in hold if k not in ("rleft", "rright"))}
 
     def _count_sticks(self, act, now) -> None:
         """The right stick's motion this tick: a key newly down (stick_onsets: the pulses), and the yaw turned the other
@@ -2320,7 +2357,10 @@ class Bot:
         if self.escape is not None:
             out, until = self.escape
             if now < until:
-                return {"hold": RUN + self._turn(wrap(out - p["rot"]), TURN_TOL)}
+                err = wrap(out - p["rot"])
+                if not QUICK_TURN and abs(err) > QUICK_ERR:   # the gap behind him: back toward it while turning
+                    return {"hold": ("ldown",) + self._turn(err)}
+                return {"hold": RUN + self._turn(err, TURN_TOL)}
             self.escape = None
         if now - self.escape_at < ESCAPE_GAP_S or self.round_escapes >= ESCAPES_MAX:
             return None
@@ -2345,11 +2385,13 @@ class Bot:
         self.round_escapes += 1
         self.stats["escapes"] += 1
         err = wrap(out - p["rot"])
-        if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+        if QUICK_TURN and abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
             self.stats["quick_turns"] += 1                   # the gap behind him: the quick turn first, then the run
             self.quick = 2
             self.escape = (out, now + ESCAPE_S + 0.6)
             return {"hold": ("ldown",)}
+        if not QUICK_TURN and abs(err) > QUICK_ERR:
+            return {"hold": ("ldown",) + self._turn(err)}
         return {"hold": RUN + self._turn(err, TURN_TOL)}
 
     # --- the decision ----------------------------------------------------------------------------------------------
@@ -2360,6 +2402,7 @@ class Bot:
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
         act = self._calm_sticks(act, snap, now)
+        act = self._governor(act, snap, now)
         self._count_sticks(act, now)
         try:
             self._look_tick(snap, now)
@@ -2596,7 +2639,7 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
-            if abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and (not CALM or dist <= CALM_QUICK_R):
+            if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
@@ -2739,7 +2782,10 @@ class Bot:
                 self.stats["wall_shots"] += 1
                 self._example("wall_shot", p, now, f"target {dist / 100:.1f} m, the ray {ray_len / 100:.1f} m, "
                                                    f"dot ({dot[0]:.0f},{dot[1]:.0f},{dot[2]:.0f})")
+        wall_dt = 0.0 if self._wall_t is None else max(0.0, min(now - self._wall_t, LOOK_STEP_MAX_S))
+        self._wall_t = now
         if not on and dot_e is None and ray_len > POINT_BLANK_R and ray_len < chest_len - FIRE_SLACK:
+            self.stats["wall_aim_s"] = round(self.stats["wall_aim_s"] + wall_dt, 2)   # the gun on a wall (target 0)
             self._wall_since = self._wall_since or now   # the dot short of him on geometry
             if now - self._wall_since >= WALL_DROP_S:
                 key0 = tgt.get("ptr", tgt.get("slot"))
@@ -2845,6 +2891,9 @@ class Bot:
         if cam_up:                                       # ... but the aim's own pitch up: down, at any range
             keys = (keys - {"rup"}) | {"rdown"}
             self.why = f"aim pitch {math.degrees(-p['aim_pitch']):+.0f} deg up: down; {self.why}"
+        if motion == MOTION_SHOT and keys & {"rleft", "rright", "rup", "rdown"}:
+            keys -= {"rleft", "rright", "rup", "rdown"}  # the shot plays at fire_rate's time scale: the stick waits
+            self.stats["shot_stick_drops"] += 1
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "
