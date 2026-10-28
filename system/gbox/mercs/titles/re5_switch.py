@@ -422,8 +422,7 @@ CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # unaims_in_5m (target 0), behind_turns, offscreen_aim_s (the aim over OFFSCREEN_ERR off the nearest inside, target 0),
 # whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
 RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = False, 500.0, 0.6, math.radians(100)
-RAMPAGE_FAMILIES = ("shotgun", "automatic", "magnum")   # the crowd's gun: a shotgun, else the Gatling / AK-74 / an
-                                         # SMG (re5_weapons "automatic", #1395's loadouts), else a magnum
+RAMPAGE_FAMILIES = ("magnum", "shotgun", "automatic")   # operator 2026-10-28: rapid-fire magnums first
 # Near focus (operator 20:2x: "Stop having the bot worry about enemies that are far away whenever they're surrounded by
 # people that are nearby"): with a Majini on his level within RAMPAGE_R, no target, dot switch, confirmed shot, aim line
 # pick or combo kill beyond NEAR_FOCUS_R - the fight's pool is the near ones. far_picks_while_crowded: ticks aimed at

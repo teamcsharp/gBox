@@ -174,7 +174,7 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
                                                ["rampage_loadout", {"on": True}]]
     assert rm.spec["mercs"]["round_ops"] == [
-        ["loadout", {"on": True, "only": True, "weapons": ["0x04", "0x16", "0x17", "0x19"]}]]
+        ["loadout", {"on": True, "only": True, "weapons": ["0x0B", "0x1A", "0x1B"]}]]
 
 
 def test_thirty_times_fire_rate_remains_only_in_the_shot_motion():
