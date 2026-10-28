@@ -276,3 +276,19 @@ def test_mercmode_accepts_a_native_mission_complete_only_for_merc3d():
     import pytest
     with pytest.raises(ValueError, match='tally'):
         mercmode.accept_boundary(Store(), re5, dict(body, map_id='BLUS30491'), parent_job=parent, now=now)
+
+
+def test_the_player_comes_from_the_live_node_layout():
+    """The exact bytes read live on the i9 (2026-10-27): sPlayer 0x82D7290, its node 0x8567154 = {0x899630, 0x82D72AC,
+    0x82D72AC, 0x899644, 0x8566420, 0, ...}; the unit is the word at +0x10."""
+    g = _guest("aS0000", STAGE, 2)
+    sp, node = 0x082D7290, 0x08567154
+    p = g.obj("uPl< Chris >", 0x1000)
+    g.u32(M.S_PLAYER, sp)
+    g.u32(sp, g.vtable("sPlayer"))
+    g.u32(sp + 0x20, node)
+    g.put(node, struct.pack("<8I", 0x899630, 0x082D72AC, 0x082D72AC, 0x899644, p, 0, 0, 0))
+    g.f32(p + M.P_VIT, 1000.0)
+    g.f32(p + M.P_VIT_MAX, 1000.0)
+    assert M.player_unit(g) == p
+    assert M.snapshot(g)["player"]["class"] == "uPl< Chris >"
