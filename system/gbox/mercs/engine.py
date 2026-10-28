@@ -250,13 +250,16 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             except Exception as exc:
                 stats["round_notebook_error"] = str(exc)[:200]
         stats["round_evidence_closed"] = True
-        if not observe_only and solo_native_round and native_playing_seen and terminal_witness is not None \
+        # a bot+bot split-screen round (RE5 / RE6 Switch, switch_team) is a team round, published as one: MercMode
+        # counts it only for a turn that asked for split screen (mercmode.accept_boundary)
+        team_round = session_runtime is not None and session_runtime.config.get('role') == 'bots_p1_p2'
+        if not observe_only and (solo_native_round or team_round) and native_playing_seen and terminal_witness is not None \
                 and isinstance(prof.get('map_id'),str) and bool(prof['map_id']) \
-                and reason in ('completed','died') and (session_runtime is None or
+                and reason in ('completed','died') and (session_runtime is None or team_round or
                     session_runtime.config.get('role') == 'solo_p1'):
             from ..mercmode import publish_boundary
             publish_boundary(getattr(tactical,'sink',None), {
-                'round_id':round_id, 'at':at, 'map_id':prof['map_id'], 'role':'solo_p1',
+                'round_id':round_id, 'at':at, 'map_id':prof['map_id'], 'role':'bots_p1_p2' if team_round else 'solo_p1',
                 'source':'native_terminal_reader', 'mode':str(stats.get('mercenaries_mode') or 'mercenaries'),
                 'stage':str(remembered[0]) if remembered else None,
                 'character':stats.get('character'), 'witness':terminal_witness},stats)

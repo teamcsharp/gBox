@@ -41,6 +41,40 @@ TAP_S = 0.12                            # a brain's "tap" held this long when tw
 MENU_PRESS_S, MENU_GAP_S = 0.3, 1.5     # Player 2's menu presses (the menus take 0.3 s presses on both titles)
 P2_STATS = ("act", "shots", "hits", "holds", "heals", "tablets", "team_act", "team_shaped", "team_follow_s",
             "team_helps", "team_revives")
+# each co-op round's per-player counters (operator 2026-10-27: "both players' kills, deaths, revives and combos"): the
+# engine records each one's amount for the round as round_<key> (Driver.round_counters). Kills and combos are the
+# round's own (the team's, from the game); a per-player kill count is not mapped in RAM yet
+TEAM_COUNTERS = ("p1_deaths", "p2_deaths", "p1_downs", "p2_downs", "team_revives", "team_helps", "p2_team_revives",
+                 "p2_team_helps")
+
+
+class Tally:
+    """Both players' deaths (health to 0) and downs (the dying state) as they happen, from each tick's two players, and
+    the round's kills / combo; counted into stats (turn-long, the engine takes each round's share)."""
+
+    def __init__(self, title, stats: dict):
+        self.title, self.stats = title, stats
+        self.seen = {1: None, 2: None}                    # each player's last state: "alive" / "down" / "dead"
+        for key in TEAM_COUNTERS:
+            stats.setdefault(key, 0)
+
+    def _state(self, p):
+        if not p or p.get("hp") is None:
+            return None
+        return "dead" if p["hp"] <= 0 else "down" if self.title.dying(p) else "alive"
+
+    def observe(self, p1, p2, snap) -> None:
+        for slot, p in ((1, p1), (2, p2)):
+            now, before = self._state(p), self.seen[slot]
+            if now == "dead" and before in ("alive", "down"):
+                self.stats[f"p{slot}_deaths"] += 1
+            if now == "down" and before == "alive":
+                self.stats[f"p{slot}_downs"] += 1
+            if now is not None:
+                self.seen[slot] = now
+        for key, value in (("team_kills", snap.get("kills")), ("team_max_combo", snap.get("max_combo"))):
+            if isinstance(value, int):
+                self.stats[key] = value
 
 
 class Title:
@@ -209,8 +243,9 @@ class Teammate:
     else his grabbers are the brain's only targets; then following back when the partner is far and nothing is near;
     otherwise the brain fights on the shaped snapshot."""
 
-    def __init__(self, bot, title: Title, mode: str, stats: dict, clock=time.monotonic):
+    def __init__(self, bot, title: Title, mode: str, stats: dict, clock=time.monotonic, tally: bool = False):
         self.bot, self.title, self.mode, self.stats, self.clock = bot, title, mode, stats, clock
+        self.tally = Tally(title, stats) if tally else None   # the team's counters (TEAMMATE: the bot keeps them)
         self.following = False
         self._pulse_at, self._pulse_down = -1e9, False
         self._follow_since = None
@@ -239,6 +274,8 @@ class Teammate:
         now = self.clock()
         me, mate = snap.get("player"), snap.get("partner")
         title = self.title
+        if self.tally is not None:                        # TEAMMATE: the bot is Player 2, the operator Player 1
+            self.tally.observe(mate, me, snap)
         if not me or not mate or (me.get("hp") or 0) <= 0 or title.held(me) or title.dying(me) \
                 or (mate.get("hp") or 0) <= 0:
             self.following = False
@@ -282,6 +319,7 @@ class Pair:
     def __init__(self, one: Teammate, two: Teammate, stats: dict, clock=time.monotonic):
         self.one, self.two, self.stats, self.clock = one, two, stats, clock
         self._taps = {1: {}, 2: {}}
+        self.tally = Tally(one.title, stats)
 
     def __getattr__(self, name):
         if name.startswith("__") or name == "one":
@@ -298,6 +336,7 @@ class Pair:
 
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self.tally.observe(snap.get("player"), (snap.get("p2") or {}).get("player"), snap)
         a1 = self.one.tick(snap)
         second = snap.get("p2")
         if isinstance(second, dict):
@@ -343,7 +382,7 @@ class CoopDriver(Driver):
         cls = self.title.mod.DRIVER
         self.drivers = {0: cls(clock=clock), 1: cls(clock=clock)}
         self.map_id = self.title.map_id
-        self.round_counters = tuple(getattr(cls, "round_counters", ()) or ())
+        self.round_counters = tuple(getattr(cls, "round_counters", ()) or ()) + TEAM_COUNTERS
         self.p2_stats: dict = {}
 
     @property
@@ -373,7 +412,7 @@ class CoopDriver(Driver):
         title = self.title
         if self.mode == TEAMMATE:
             bot = self.drivers[1].brain(View(m, 1), stats, clock, learn_dir=learn_dir)
-            return Teammate(bot, title, TEAMMATE, stats, clock)
+            return Teammate(bot, title, TEAMMATE, stats, clock, tally=True)
         self.p2_stats = {}
         one = Teammate(self.drivers[0].brain(View(m, 0), stats, clock, learn_dir=learn_dir), title, PAIR, stats, clock)
         # Player 2's driver never maintains the live mods: they track one player per session (RE5's fire-rate time
@@ -426,29 +465,106 @@ class CoopDriver(Driver):
                 "active_players": rows, "reason": reason}
 
 
+LOBBY_JOIN_GAP_S, LOBBY_JOIN_MAX = 6.0, 3   # RE6's split lobby: Player 2's + this far apart, at most this often a visit
+
+
 class MenuPartner:
-    """Player 2's own presses between rounds: on the character select, A every MENU_GAP_S (a 0.3 s press) so Player 2
-    takes its character once Player 1 has; nothing anywhere else (Player 1 drives the shared menus). TEAMMATE waits
-    `after_s` on the select first, so the operator picks before the bot."""
+    """Player 2's own presses between rounds; Player 1 drives the shared menus. RE6's split lobby ("Press -/+ to join",
+    live 2026-10-27): Player 2's + to join, again after LOBBY_JOIN_GAP_S at most LOBBY_JOIN_MAX times a visit. A
+    character select: A every MENU_GAP_S. Each a 0.3 s press. TEAMMATE waits `after_s` on the screen first, so the
+    operator picks before the bot."""
 
     def __init__(self, send2, clock=time.monotonic, *, after_s: float = 0.0, sleep=time.sleep):
         self.send2, self.clock, self.after_s, self.sleep = send2, clock, after_s, sleep
-        self._since, self._last = None, -1e9
+        self._since, self._last, self._where, self._joins = None, -1e9, None, 0
         self.presses = 0
 
     def step(self, scr: dict) -> bool:
         now = self.clock()
-        if (scr or {}).get("where") != "select_player":
-            self._since = None
+        where = (scr or {}).get("where")
+        if where not in ("select_player", "split_lobby"):
+            self._since, self._where = None, None
             return False
-        if self._since is None:
-            self._since = now
-        if now - self._since < self.after_s or now - self._last < MENU_GAP_S:
-            return False
+        if where != self._where:
+            self._since, self._where, self._joins = now, where, 0
+        if where == "split_lobby":
+            if self._joins >= LOBBY_JOIN_MAX or now - self._since < self.after_s or now - self._last < LOBBY_JOIN_GAP_S:
+                return False
+            key, self._joins = "plus", self._joins + 1
+        else:
+            if now - self._since < self.after_s or now - self._last < MENU_GAP_S:
+                return False
+            key = "a"
         self._last = now
-        self.send2([{"key": "a", "down": True, "player": 2}])
+        self.send2([{"key": key, "down": True, "player": 2}])
         self.sleep(MENU_PRESS_S)
-        self.send2([{"key": "a", "down": False, "player": 2}])
+        self.send2([{"key": key, "down": False, "player": 2}])
         self.presses += 1
         return True
 
+
+
+# --- mercs_bot's split-screen run ------------------------------------------------------------------------------------
+COOP_ROLES = {"teammate_p2": TEAMMATE, "bots_p1_p2": PAIR}
+TEAMMATE_MENU_WAIT_S = 4.0              # the operator picks first: the bot's Player 2 waits this long on the select
+
+
+def launch_role(game: dict) -> str | None:
+    """A MercMode bot+bot turn names its role in the launch (game.launch.mercmode.coop); None otherwise."""
+    merc = ((game or {}).get("launch") or {}).get("mercmode")
+    return "bots_p1_p2" if isinstance(merc, dict) and merc.get("coop") in ("bots", "bots_p1_p2") else None
+
+
+class Session:
+    """One split-screen run in mercs_bot: the session's SessionRuntime (the role, the input fence: Player 2's keys to
+    Player 2's pad only), the CoopDriver for the role, the menus' split-screen target on this session's memory, and
+    Player 2's own presses between rounds. start() gives None for a solo run, so MercMode's solo turns and every other
+    session play exactly as before."""
+
+    @classmethod
+    def start(cls, ad, session_id: str, game: dict, prof: dict, m, send, stats: dict, clock=time.monotonic,
+              sleep=time.sleep):
+        if (prof or {}).get("map_id") not in TITLES:
+            return None
+        from ..teamplay import TeamStore
+        forced = launch_role(game)
+        role = forced or TeamStore(ad.config.data_dir).get(session_id)["role"]
+        if role == "solo_p1":
+            return None
+        from ..session_runtime import SessionRuntime
+        runtime = SessionRuntime(ad, session_id, (game or {}).get("game_id"), prof["map_id"], send, stats, role=forced)
+        return cls(ad, prof["map_id"], runtime, m, stats, role, clock, sleep)
+
+    def __init__(self, ad, map_id: str, runtime, m, stats: dict, role: str, clock=time.monotonic, sleep=time.sleep):
+        self.ad, self.map_id, self.runtime, self.m, self.stats, self.clock = ad, map_id, runtime, m, stats, clock
+        self.partner = MenuPartner(self._send2, clock=clock, sleep=sleep)
+        self.driver = None
+        self.follow(role)
+        runtime.poll(m, self.driver)
+
+    def follow(self, role: str):
+        """The driver (and the menus' target) for a role: split screen for teammate_p2 / bots_p1_p2, the title's own
+        driver (None: the engine loads it) for observation or solo."""
+        mode = COOP_ROLES.get(role)
+        self.role, self.mode = role, mode
+        try:
+            self.m.mercs_split_screen = mode is not None
+        except AttributeError:
+            pass
+        self.partner.after_s = TEAMMATE_MENU_WAIT_S if mode == TEAMMATE else 0.0
+        self.driver = CoopDriver(self.map_id, mode, clock=self.clock) if mode else None
+        self.stats["coop_mode"] = mode or ""
+        return self.driver
+
+    def _send2(self, rows) -> None:
+        self.ad.send_input_player(rows, player=2)
+
+    def menus(self, scr: dict) -> None:
+        """Between rounds: Player 2 takes its character on its own pad (split screen roles only)."""
+        if self.mode is None:
+            return
+        try:
+            if self.partner.step(scr):
+                self.stats["p2_menu_presses"] = self.partner.presses
+        except Exception as exc:                          # noqa: BLE001 - no verified pad yet: Player 2 waits
+            self.stats["p2_menu_error"] = str(exc)[:160]

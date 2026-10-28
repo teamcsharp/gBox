@@ -46,6 +46,7 @@ PRUNE_S = 600.0
 RE5 = 'e7ca89bbeb67360d'
 RE5_SWITCH = '52d15709be0fda1a'                         # RE5 on Switch: re5_mods routes it to re5_switch_mods (own key)
 RE6 = '0871eee3b68cdea3'
+RE6_SWITCH = '115f9cdbba115432'                         # RE6 on Switch: split screen's team controls (mercs_team)
 RE4 = ('78ab9efa2e310db4', 'e42c9b780c07c437')          # Resident Evil 4 (USA) GameCube Disc 1 / Disc 2
 
 RE5_TOGGLES = ('unlimited_health', 'infinite_ammo', 'infinite_spray', 'instant_qte')
@@ -60,7 +61,8 @@ TOOLS = {
     're5_mods': {'games': (RE5, RE5_SWITCH), 'adapters': ('rpcs3', 'citron', 'eden'), 'label': 'RE5 modifiers',
                  'order': RE5_ORDER},
     're_mods': {'games': RE4, 'adapters': ('dolphin',), 'label': 'RE4 modifiers', 'order': RE4_ORDER},
-    'mercs_team': {'games': (RE5, RE6), 'adapters': ('rpcs3', 'xenia'), 'label': 'Team and training',
+    'mercs_team': {'games': (RE5, RE6, RE5_SWITCH, RE6_SWITCH), 'adapters': ('rpcs3', 'xenia', 'citron', 'eden'),
+                   'label': 'Team and training',
                    'order': ('team',), 'operator_only': True},
 }
 CLIENT_PANELS = {'pip': {'save_slot': (0, 9)}}         # values the menus write themselves (int ranges)

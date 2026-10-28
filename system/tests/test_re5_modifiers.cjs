@@ -902,7 +902,7 @@ test('mounted clock inputs preview without a job and the buttons send the chosen
   control.stop();
 });
 
-test('RE5 on Switch gets the same panel: eligible on Citron / Eden, no team controls, not-yet ops disabled with their reason', async () => {
+test('RE5 on Switch gets the same panel: eligible on Citron / Eden, split-screen team controls, not-yet ops disabled with their reason', async () => {
   const sw = { session_id: 'lilspark-re5sw', game_id: M.SWITCH, state: 'running', adapter: 'citron' };
   assert.equal(M.eligible(sw), true);
   assert.equal(M.eligible({ ...sw, adapter: 'eden' }), true);
@@ -924,11 +924,11 @@ test('RE5 on Switch gets the same panel: eligible on Citron / Eden, no team cont
   const control = M.create({ session: sw, api, render: s => { painted = s; }, delay: async () => {}, teamControls: true });
   await control.refresh();
   assert.equal(control.state().error, false);
-  assert.ok(!calls.some(c => c.body?.tool === 'mercs_team'), 'no team read for the Switch edition');
+  assert.ok(calls.some(c => c.body?.tool === 'mercs_team' && c.body.input.op === 'status'), 'the team read for split screen');
   assert.equal(calls.find(c => c.body?.tool)?.body.input.session_id, 'lilspark-re5sw');
   const html = M.html(painted);
   assert.match(html, /RE5 modifiers \(Switch\)/);
-  assert.doesNotMatch(html, /Team and training/);
+  assert.match(html, /Team and training/);                                     // split screen (gbox/switch_coop.py)
   const turn = M.rows(painted).find(r => r.op === 'turn_speed');
   assert.equal(turn.disabled, true);
   assert.match(html, /not yet on Switch: sParameter/);
@@ -941,4 +941,41 @@ test('RE5 on Switch gets the same panel: eligible on Citron / Eden, no team cont
   const page = M.html(live);
   assert.match(page, /<fieldset class="re5-mine-controls" ><legend>Next-round weapon<\/legend>/);
   assert.match(page, /<fieldset class="re5-mine-controls" disabled><legend>Preferred gun<\/legend>/);
+});
+
+test('Switch split screen: bots on both players, Player 2 connected by an in-place restart, RE6 Switch team-only', async () => {
+  const sw = { session_id: 'lilspark-re5sw', game_id: M.SWITCH, state: 'running', adapter: 'citron' };
+  const re6 = { session_id: 'lilspark-re6sw', game_id: M.RE6_SWITCH, state: 'running', adapter: 'citron' };
+  assert.equal(M.panelEligible(re6), true);
+  assert.equal(M.eligible(re6), false);                                         // no re5_mods on RE6
+  assert.equal(M.panelEligible({ ...re6, adapter: 'xenia' }), false);
+  const team = { config: { role: 'solo_p1', training_profile: 'assisted', auto_reduce_mods: false, selected_route_id: null },
+    phase: 'active', control_player: 1, split_screen: true,
+    capabilities: { teammate_p2: { available: false, reason: 'Player 2 has not joined the round' },
+      bots_p1_p2: { available: true }, prepare_player2: { available: true, restart_available: true } } };
+  const calls = [];
+  const api = async (path, body) => {
+    calls.push({ path, body });
+    if (path.startsWith('/api/sessions')) return [re6];
+    if (path.startsWith('/api/jobs?')) return [];
+    if (body?.input?.op === 'prepare_player2') team.player2_preparation = { player: 2, prepared: true, verified: false, reason: 'restarting' };
+    return { id: 'job', state: 'succeeded', output: { result: { status: structuredClone(team), configuration_verified: true } } };
+  };
+  let painted;
+  const control = M.create({ session: re6, api, render: s => { painted = s; }, delay: async () => {}, teamControls: true });
+  await control.refresh();
+  assert.ok(!calls.some(c => c.body?.tool === 're5_mods'), 'RE6 Switch never asks for RE5 modifiers');
+  const html = M.html(painted);
+  assert.match(html, /RE6 team and training \(Switch\)/);
+  assert.match(html, /<option value="bots_p1_p2" >Bots on Player 1 and Player 2 \(split screen\)<\/option>/);
+  assert.match(html, /data-re5-team-prepare data-restart="1" >Connect Player 2 and restart this title now/);
+  await control.preparePlayer2({ restart: true });
+  const prep = calls.find(c => c.body?.input?.op === 'prepare_player2');
+  assert.deepEqual(prep.body.input, { session_id: 'lilspark-re6sw', op: 'prepare_player2', restart: true });
+  await control.setTeam({ role: 'bots_p1_p2' });
+  assert.ok(calls.some(c => c.body?.input?.op === 'configure' && c.body.input.role === 'bots_p1_p2'));
+  // the PS3 panel keeps its own wording and never offers bots on both players
+  const ps3 = M.html({ team: { ...structuredClone(team), split_screen: false }, teamOnly: true });
+  assert.doesNotMatch(ps3, /bots_p1_p2/);
+  assert.match(ps3, /Prepare Player 2 controller for next launch/);
 });

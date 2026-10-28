@@ -2788,7 +2788,7 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
     d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
     native_team_required = False
-    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3', '52d15709be0fda1a', '115f9cdbba115432'):
         from .mercs.teamplay import TeamStore
         team_intent = TeamStore(ad.config.data_dir).get(inp.session_id)
         d.mercs_team_role = team_intent['role']
@@ -3171,7 +3171,7 @@ AUTOPLAY_HACKS = MISSIONS.parent / "autoplay"            # profiles/autoplay/<ga
 def _autoplay_hacks(sid: str, g: dict) -> list[str]:
     """Hold the game's autoplay hacks (infinite health for the side autoplay plays, one-hit KOs...) in this session,
     once per session; returns what is held. Never applied to the operator's own play: only autoplay calls it."""
-    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+    if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3', '52d15709be0fda1a', '115f9cdbba115432'):
         from .mercs.teamplay import TeamStore
         adapter = SESSIONS[sid][0]
         intent = TeamStore(adapter.config.data_dir).get(sid)
@@ -4187,10 +4187,11 @@ def _sid_of(run, ad) -> str:
 def _mercs_human_controls(sid: str) -> bool:
     try:
         ad, game = SESSIONS[sid]
-        if game.get('game_id') not in ('e7ca89bbeb67360d', '0871eee3b68cdea3'):
+        from .mercs.teamplay import GAMES, HUMAN_ROLES, TeamStore
+        if game.get('game_id') not in GAMES:
             return False
-        from .mercs.teamplay import TeamStore
-        return TeamStore(ad.config.data_dir).get(sid)['role'] != 'solo_p1'
+        # a human holds Player 1 (teammate, observation); with two bots (Switch split screen) Player 1 is a bot's
+        return TeamStore(ad.config.data_dir).get(sid)['role'] in HUMAN_ROLES
     except KeyError:
         return False
     except Exception:

@@ -1,6 +1,14 @@
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.GBoxMercMode=api;})(globalThis,function(){
   'use strict';
   const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // bot+bot split screen on RE5 / RE6 Switch (operator 2026-10-27: "the ratio of co-op matches to single player matches
+  // six to one"): each turn draws co-op or solo by this co-op : solo ratio (gbox/mercmode.py draw_coop). RE6's co-op is
+  // No Mercy split screen; RE5's is Mercenaries United's split screen, RE5's No Mercy being single-player only
+  const COOP_RATIOS=['off','1:1','2:1','3:1','4:1','5:1','6:1','8:1','10:1','only'];
+  const SWITCH_GAMES={'52d15709be0fda1a':'RE5','115f9cdbba115432':'RE6'};
+  const coopLabel=r=>r==='off'?'Off (solo turns only)':r==='only'?'Co-op only':`${r} co-op to solo`;
+  const coopSelect=(attr,value)=>`<select ${attr} aria-label="Bot+bot split-screen turns">${COOP_RATIOS.map(r=>`<option value="${r}" ${r===(COOP_RATIOS.includes(value)?value:'off')?'selected':''}>${coopLabel(r)}</option>`).join('')}</select>`;
+  const COOP_NOTE='RE6 plays No Mercy in split screen; RE5 plays Mercenaries United in split screen (its No Mercy is single-player only).';
   function render(data){
     return `<div class="gbox-mercmode"><h3>MercMode</h3><p>Finish each round before switching games. Random characters and stages use each title’s verified controls. Your gameplay modifiers stay selected.</p>`+
       (data.hosts||[]).map(host=>`<fieldset data-host="${escape(host.name)}" data-worker="${escape(host.id)}"><legend>${escape(host.name)} · ${host.online?'online':'offline'}</legend>
@@ -10,6 +18,7 @@
         <div>${(host.titles||[]).map(title=>`<label style="display:block"><input type="checkbox" data-title="${escape(title.title)}" ${(host.settings?.titles||[]).includes(title.title)?'checked':''}> ${escape(title.name)}${title.playable?'':' · unavailable'}</label>${!title.playable?`<p><small>${escape(title.reason)}</small></p>`:''}`).join('')}</div>
         <label>Rounds before switching <input type="number" data-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}" style="width:4em"></label>
         <label style="display:block"><input type="checkbox" data-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s with time left, the bot cuts the clock to <input type="number" data-stalemate-s min="1" max="60" value="${stalemateSeconds(host.settings)}" style="width:4em"> s</label>
+        <label style="display:block">Bot+bot split-screen turns on RE5 / RE6 Switch ${coopSelect('data-coop',host.settings?.coop_ratio)}</label><p><small>${COOP_NOTE}</small></p>
         ${queueHTML(host,data.catalog)}
         <p><button type="button" data-save>Save this PC</button> <button type="button" data-prepare ${host.online?'':'disabled'}>Check cached assets</button>
         ${host.current_run?.mercmode?`<button type="button" data-stay="${escape(host.current_run.session_id)}">Stay in this game (autobot)</button>`:''}
@@ -47,7 +56,8 @@
           await api('/api/mercmode',{host:host.dataset.host,enabled:host.querySelector('[data-enabled]').checked,
             presentation_priority:host.querySelector('[data-presentation]').checked,
             titles,rounds_per_title:Number(host.querySelector('[data-rounds]').value),
-            ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{})});
+            ...(stalemate&&stalemateS?{stalemate_cut:!!stalemate.checked,stalemate_cut_s:stalemateSeconds({stalemate_cut_s:stalemateS.value})}:{}),
+            ...(COOP_RATIOS.includes(host.querySelector('[data-coop]')?.value)?{coop_ratio:host.querySelector('[data-coop]').value}:{})});
           await refresh();
         }else if(button.hasAttribute('data-stay')){
           await stay(api,button.dataset.stay);await refresh();
@@ -156,7 +166,7 @@
     root.querySelectorAll('[data-mm-unqueue]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();run('remove',b.dataset.mmUnqueue);}));
     const m=root.querySelector('[data-mm-q-mode]');if(m)m.dataset.title=root.querySelector('[data-mm-q-title]')?.value||'';
   }
-  function menuHTML(host,open=false,catalog=null){
+  function menuHTML(host,open=false,catalog=null,session=null){
     if(!host)return `<div class="pip-mercmode"><small>MercMode: no gBox PC owns this game.</small></div>`;
     const on=!!host.settings?.enabled,chosen=host.settings?.titles||[];
     const label=on?'🔁 MercMode: rotating titles · click to stay in this game':'▶ MercMode: play across titles · click to turn on';
@@ -165,7 +175,29 @@
       `<div class="pip-mercmode-titles"${open?'':' hidden'}>${titles}<label>Rounds before switching <input type="number" data-mm-rounds min="1" max="20" value="${Number(host.settings?.rounds_per_title)||1}"></label>`+
       `<span class="pip-mm-rounds-quick">${[5,10,20].map(n=>`<button type="button" data-mm-rounds-pick="${n}"${Number(host.settings?.rounds_per_title)===n?' aria-pressed="true"':''}>${n}</button>`).join('')}</span>`+
       `<label class="pip-mm-stalemate"><input type="checkbox" data-mm-stalemate ${host.settings?.stalemate_cut===false?'':'checked'}> Stalemate: no enemy for 15 s, cut the clock to <input type="number" data-mm-stalemate-s min="${STALEMATE.min}" max="${STALEMATE.max}" value="${stalemateSeconds(host.settings)}"> s</label>`+
+      `<label class="pip-mm-coop">Bot+bot split screen (Switch RE5 / RE6) ${coopSelect('data-mm-coop',host.settings?.coop_ratio)}</label>`+
+      (SWITCH_GAMES[session?.game_id]?`<button type="button" data-mm-play-bot title="You play Player 1, the bot plays Player 2 in split screen. The title restarts in this session with Player 2 connected.">🎮 Play with bot (${SWITCH_GAMES[session.game_id]} split screen)</button>`:'')+
       `${host.current_run?.mercmode?`<small>${escape(host.current_run.phase)}: ${escape(host.current_run.title)} · ${Number(host.current_run.mercmode_rounds)||0} verified rounds</small>`:''}${queueHTML(host,catalog)}</div></div>`;
+  }
+  // "Play with bot" (operator 2026-10-27): the operator as Player 1, the bot as Player 2 in this exact Switch session -
+  // the team role, Player 2 connected by an in-place title restart, then the autobot; each step a job confirmed in turn
+  async function jobRun(api,tool,input){
+    const worker=String(input.session_id).split('-')[0];
+    let job=await api('/api/jobs',{tool,agent_use:false,require_worker:worker,input});
+    for(let i=0;i<300&&['queued','running','assigned'].includes(job?.state);i++){
+      await new Promise(r=>setTimeout(r,500));
+      job=await api('/api/jobs/'+encodeURIComponent(job.id),undefined,'GET');
+    }
+    if(job?.state!=='succeeded')throw Error(`${tool}: ${job?.error?.message||job?.error||job?.state||'no answer'}`);
+    return job.output?.result||{};
+  }
+  async function playWithBot(api,value){
+    const sid=value?.session_id;
+    if(!SWITCH_GAMES[value?.game_id]||typeof sid!=='string'||!sid.includes('-'))throw Error('Play with bot needs an RE5 or RE6 Switch session.');
+    await jobRun(api,'mercs_team',{session_id:sid,op:'configure',role:'teammate_p2'});
+    await jobRun(api,'mercs_team',{session_id:sid,op:'prepare_player2',restart:true});
+    await jobRun(api,'autoplay',{session_id:sid,op:'start',mode:'auto',continuous:true});
+    return 'Player 2 connected: the title restarts in this session. Choose split screen (RE6 No Mercy > SPLIT, RE5 Mercenaries United > SPLIT-SCREEN); the bot joins as Player 2.';
   }
   async function menuAction(api,host,action,value){
     if(!host?.name)throw Error('No gBox PC owns this game.');
@@ -193,6 +225,14 @@
       return enabled?`Stalemate rule on: no enemy for 15 s, the bot cuts the clock to ${seconds} s (from the next launch)`
         :'Stalemate rule off: the bot leaves the clock alone (from the next launch)';
     }
+    if(action==='coop'){                // bot+bot split screen on the Switch editions: co-op : solo turns, off by default
+      if(!COOP_RATIOS.includes(value))throw Error('Choose a co-op ratio from the list.');
+      await api('/api/mercmode',{host:host.name,coop_ratio:value});
+      return value==='off'?'Switch RE5 / RE6 turns play solo (from the next launch)'
+        :value==='only'?'Every Switch RE5 / RE6 turn plays split screen with bots on both players (from the next launch)'
+        :`Switch RE5 / RE6 turns: ${value} co-op to solo (from the next launch)`;
+    }
+    if(action==='play_with_bot')return playWithBot(api,value);
     throw Error('Unknown MercMode action');
   }
   // --- between titles: what the PiP shows while the next game boots in the background ---

@@ -494,9 +494,10 @@ class Screensaver:
         # jump: the demo starts in gameplay where this PC has a jump state for the game and build (gbox.jumpstate)
         # memory_cards: the operator's own cards go in, so their saved characters load (#2817: "get my memory card ...
         # you need to use it with screensaver for playing the game"); their own launch elsewhere takes a card back
+        coop = mercmode.draw_coop(merc_cfg, merc_pick.get('map_id'), self.rng) if merc_pick else {}
         if merc_pick:
             game = game | {'launch':dict(game.get('launch') or {}) | {
-                'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'))}}
+                'mercmode': mercmode.launch_block(merc_cfg, merc_pick.get('selection'), coop)}}
             if merc_pick.get('selection'):
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
@@ -518,6 +519,7 @@ class Screensaver:
                                           **({'mercmode_predecessor':mercmode.rotation_predecessor(self.store,w,now),
                                               'mercmode': {'title': merc_pick['title'], 'map_id': merc_pick['map_id'],
                                                'rounds_per_title': merc_cfg['rounds_per_title'],
+                                               **coop,
                                                **({'selection': merc_pick['selection']} if merc_pick.get('selection') else {})}}
                                               if merc_pick else {}),
                                           **({"mod": build["name"], "build": label} if build else {})})
@@ -902,7 +904,8 @@ class Screensaver:
                    if row.get('warm_adoption') else {}),
                 'mercmode_predecessor': mercmode.rotation_predecessor(self.store, w, now),
                 'mercmode': {'title': pick['title'], 'map_id': pick['map_id'],
-                             'rounds_per_title': merc_cfg['rounds_per_title'], **selection}}
+                             'rounds_per_title': merc_cfg['rounds_per_title'], **selection,
+                             **({'coop': 'bots'} if row.get('coop') == 'bots' else {})}}   # the preload's draw
         job = self.store.get('job', row.get('job')) or {}
         session = next((s for s in running if s.get('session_id') == row.get('session_id')), None)
         if not row.get('session_id') or row.get('state') == 'prelaunch' and (
@@ -1082,15 +1085,16 @@ class Screensaver:
                 mercmode.keep_warm(self.store, w['name'], title, row | {'state': 'releasing'})
         keep = [run['session_id']] + [r['session_id'] for _, r in others if r.get('session_id')]
         selection = {'selection': pick['selection']} if pick.get('selection') else {}
-        game = game | {'launch': dict(game.get('launch') or {}) | {
-            'mercmode': mercmode.launch_block(cfg_merc, pick.get('selection'))}}
+        coop = mercmode.draw_coop(cfg_merc, pick.get('map_id'), self.rng)   # a co-op preload connects P2 at boot and its
+        game = game | {'launch': dict(game.get('launch') or {}) | {        # prepare walks into split screen (switch_team)
+            'mercmode': mercmode.launch_block(cfg_merc, pick.get('selection'), coop)}}
         job = self.submit(JobRequest(tool='launch_game', input={'game': game, 'jump': True, 'memory_cards': 'operator',
                                                                 'warm': True, 'keep_sessions': keep},
                                      agent_use=True, low_priority=True, require_worker=w['id']), actor=ACTOR,
                           origin={'via': 'MercMode preload', 'game_id': pick['game_id']})
         mercmode.keep_warm(self.store, w['name'], pick['title'],
                            {'session_id': None, 'game_id': pick['game_id'], 'job': _jid(job), 'worker_id': w['id'],
-                            'state': 'prelaunch', 'at': now, **selection})
+                            'state': 'prelaunch', 'at': now, **selection, **coop})
         mark(title=pick['title'], job=_jid(job))
         return f"preloading {pick['name']} for the next round (paused until the switch)"
 
@@ -1426,6 +1430,7 @@ class MercModeSettings(BaseModel):
     keep_warm: int | None = None                # titles waiting paused beside the playing one (0 = cold switches)
     stalemate_cut: bool | None = None           # the bots cut the clock when no enemy shows for 15 s (gbox.mercs.stalemate)
     stalemate_cut_s: int | None = None          # ... to this many seconds (1..60; default 5)
+    coop_ratio: str | None = None               # co-op : solo turns on RE5 / RE6 Switch (off, 1:1 ... 6:1 ..., only)
     # gbox.re_switch: e.g. {"re5": {"platform": "switch", "mode": "no_mercy", "title_id": "010018100CD46000"}}; {} = the
     # native editions. Missing here, the field was dropped silently (the mercmode tool and MCP posted it) - 2026-10-26.
     preferred_editions: dict | None = None
@@ -1614,6 +1619,7 @@ def install(app, store, config, auth, submit, workers, archive):
                 relay={k:v for k,v in desired.items()
                        if (k!='keep_warm' or mercmode.WARM_FEATURE in (worker.get('features') or []))
                        and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in (worker.get('features') or []))
+                       and (k != 'coop_ratio' or mercmode.COOP_FEATURE in (worker.get('features') or []))
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
                 job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':body.host,**relay},
                     require_worker=worker['id']),actor=actor,

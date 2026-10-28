@@ -514,11 +514,24 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         ad._mercs_bot_runtime = runtime
         send = runtime.send
         runtime.poll(m, base_driver)
+    coop, p1_send = None, send
+    if session_id and ad is not None and runtime is None:
+        # split screen on RE5 / RE6 Switch (docs/research/switch-coop-bot.md): an operator's team role, or a MercMode
+        # bot+bot turn named by its launch; a solo run (MercMode's solo turns included) never gets here
+        from .mercs.titles import switch_team
+        coop = switch_team.Session.start(ad, session_id, game or {}, prof, m, send, stats, clock=clock, sleep=sleep)
+        if coop is not None:
+            runtime, base_driver = coop.runtime, coop.driver
+            ad._mercs_bot_runtime = runtime
+            send = runtime.send
 
     def training_ops(ops, collect=None):
         if runtime is not None:
             intent = runtime.refresh()
-            if intent['role'] != 'solo_p1' or intent['training_profile'] != 'assisted':
+            # Switch split screen keeps the profile's mods for the bots (operator 2026-10-27: "their ... modifications to
+            # help me"); PS3 team roles and every observation play unmodified, as before
+            human = intent['role'] == 'observe_human' if getattr(runtime, 'switch', False) else intent['role'] != 'solo_p1'
+            if human or intent['training_profile'] != 'assisted':
                 return []
         return apply_ops(ad, ops, prof) if collect is None else apply_ops(ad, ops, prof, collect)
 
@@ -529,7 +542,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
         if failed:
             stats["early_failed"] = "; ".join(failed)[:300]
     round_ops = [tuple(x) for x in prof.get("round_ops") or []]
-    boot = Boot(menus, m, send, sleep=sleep, clock=clock, stats=stats, ad=ad, game=game,
+    boot = Boot(menus, m, p1_send if coop is not None else send, sleep=sleep, clock=clock, stats=stats, ad=ad,
+                game=game,
                 hooks=(lambda: training_ops([x for x in package if x[0] not in early])) if ad is not None else None,
                 jump_at=prof.get("jump_at") or "select_player",
                 round_hooks=(lambda: training_ops(round_ops, stats)) if ad is not None and round_ops else None)
@@ -572,6 +586,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             assignment = runtime.signature() if runtime is not None else None
             if previous_assignment is not None and assignment != previous_assignment:
                 playing_initialized = False
+                if coop is not None:                 # the operator changed the role: the driver for it
+                    base_driver = coop.follow(team['config']['role'])
             previous_assignment = assignment
             try:
                 scr = menus.screen(m)
@@ -608,6 +624,24 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
             if boot_read_attempts:
                 stats.update(boot_ram_status="ready",boot_ram_wait_s=round(max(0.,clock()-boot_read_started),2))
             human_observation = team is not None and team['config']['role'] == 'observe_human'
+            if coop is not None and scr.get("where") != "playing":
+                # between rounds in split screen: Player 2 takes its character (its own pad); the operator drives the
+                # menus as teammate, the walk drives Player 1 with two bots
+                fresh = True                                 # the next round counts once, as on the solo path
+                if pub is not None:
+                    pub.idle(scr.get("where"))
+                coop.menus(scr)
+                if team['config']['role'] == 'bots_p1_p2':
+                    why = boot.tick(clock(), scr=scr)
+                    if why:
+                        stats.update(hung=True, wandered=why)
+                        break
+                    sleep(boot.nav.poll_s(scr, POLL_S))
+                else:
+                    runtime.release()
+                    stats['screen'] = scr.get('where')
+                    sleep(POLL_S)
+                continue
             if team is not None and not human_observation and team['control_player'] is None:
                 runtime.release()
                 stats['screen'] = scr.get('where')
@@ -657,7 +691,7 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
                 options = {"tactical": pub} if pub else {}
                 if runtime is not None:
                     options.update(session_runtime=runtime, observe_only=human_observation, driver=base_driver)
-                    if team['control_player'] == 2:
+                    if team['control_player'] == 2 and coop is None:
                         scoped = getattr(base_driver, 'for_player', None)
                         selected = scoped(m, player=2, stats=stats) if callable(scoped) else None
                         if selected is None:
