@@ -4588,6 +4588,7 @@ _MT_FRAMEWORK_EDEN = {"Core": {"use_multi_core": "false"},
 EDEN_TITLE_SETTINGS = {
     "010018100CD46000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 5
     "01002A000CD48000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 6
+    "010099A00BC1E000": _MT_FRAMEWORK_EDEN,                   # Resident Evil 4
 }
 EDEN_CONTENT_DIRS = "Paths\\external_content_dirs"       # [UI] array Eden scans for update/DLC NSPs at boot
 EDEN_LOG = ("log", "eden_log.txt")                       # under Eden's data folder (src/common/fs/fs_paths.h LOG_FILE)
@@ -4603,14 +4604,15 @@ _MT_FRAMEWORK_CITRON = {"Renderer": {"use_asynchronous_shaders": "true", "async_
 CITRON_TITLE_SETTINGS = {
     "010018100CD46000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 5
     "01002A000CD48000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 6
+    "010099A00BC1E000": _MT_FRAMEWORK_CITRON,                 # Resident Evil 4
 }
 CITRON_LOG = ("log", "citron_log.txt")
 # Titles a Linux node starts in Citron when it is configured (switch_linux_emulator = auto): multi-core there, where
 # Eden v0.2.1 loses a thread that moves itself between cores (EDEN_TITLE_SETTINGS) and runs them single-core.
-SWITCH_CITRON_TITLES = frozenset({"010018100CD46000", "01002A000CD48000"})
+SWITCH_CITRON_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
 # A boot that never draws (live 2026-10-26: 1 of 7 Eden single-core boots of RE5 stayed black at 0 FPS after
 # "SetPollingMode") is started again once: these titles animate from the first second (logos, intro, title fog).
-BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000"})
+BOOT_WATCH_TITLES = frozenset({"010018100CD46000", "01002A000CD48000", "010099A00BC1E000"})
 BOOT_WATCH_S, BOOT_WATCH_SETTLE_S, BOOT_WATCH_EVERY_S, BOOT_RETRIES = 45.0, 8.0, 1.5, 1
 
 
@@ -4622,7 +4624,8 @@ _SWITCH_TID_TAG = re.compile(r"\[([0-9A-Fa-f]{16})\]")
 # Catalog rows that carry no serial (the share's "Resident Evil 5.nsp" has no [TITLEID] tag and the catalog does not read
 # its ticket): named by title, the way gbox.re_switch.capabilities does.
 _SWITCH_TITLES_BY_NAME = ((re.compile(r"(?:resident\s+evil|biohazard)\s*5", re.I), "010018100CD46000"),
-                          (re.compile(r"(?:resident\s+evil|biohazard)\s*6", re.I), "01002A000CD48000"))
+                          (re.compile(r"(?:resident\s+evil|biohazard)\s*6", re.I), "01002A000CD48000"),
+                          (re.compile(r"(?:resident\s+evil|biohazard)\s*4", re.I), "010099A00BC1E000"))
 
 
 def _switch_title_id(game: dict) -> str:
