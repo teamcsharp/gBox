@@ -39,7 +39,7 @@ import time
 
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
-from . import re5_switch_prompt
+from . import re5_switch_aim, re5_switch_prompt
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -383,6 +383,18 @@ HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
 # none within QUICK_BACK_S of the last unless the one behind is within GRAB_THREAT_R (no back and forth). The quick turn
 # is exempt from the heading governor (its 180 deg in 0.3 s is the game's own move).
 QUICK_BACK_S = 3.0
+# The RAM aim lock (re5_switch_aim, the RE6 way of #1367; the coordinator 19:06: "even better aim"): with the gun up,
+# the aim moved by RAM toward the target instead of the right stick - the player's heading by the yaw error, the camera
+# pitch (uCameraQFPS +0x1B0) by the pitch error, each at most AIM_LOCK_YAW_DEG_S / AIM_LOCK_PITCH_DEG_S (all of it within
+# AIM_LOCK_SNAP_DEG: no overshoot, no snap), every write read back; the errors from the laser's ray when it is long
+# enough to steer by, else from his heading and the chest's elevation. While the gun comes up the camera pitch goes to
+# the target's elevation first (no raise from an old +57 deg). A failed read-back: the stick as before (aim_lock_fails).
+# OFF until one live round shows the writes hold (no private slot for the write test). Counters: aim_lock_ticks,
+# aim_lock_fails, aim_lock_prepitch.
+AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = False, 140.0, 90.0, 1.5
+AIM_LOCK_HELD = 0.03                     # rad: the next frame's state this near the write: it held (else, 6 times and
+                                         # more often than held, the lock stands down for the round: aim_lock_unheld)
+AIM_LOCK_COUNTERS = ("aim_lock_ticks", "aim_lock_fails", "aim_lock_prepitch", "aim_lock_unheld")
 GOV_COUNTERS = ("gov_drops",)
 # The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
 # hourglass: re5_switch_prompt's live finding, label 112 press:y on the statue - up 23 samples in six minutes, never
@@ -480,7 +492,8 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
+    + AIM_LOCK_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -920,6 +933,8 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
+            if AIM_LOCK:                                 # the camera pitch and heading the aim lock writes
+                snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
                 snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
                 snap["prompt_read"] = True
@@ -1236,6 +1251,8 @@ class Bot:
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
         self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
+        self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
+        self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -1745,6 +1762,10 @@ class Bot:
                 if keys & {"rleft", "rright", "rup", "rdown"}:
                     self.stats["shot_stick_drops"] += 1
                 keys -= {"rleft", "rright", "rup", "rdown"}
+            if AIM_LOCK and snap.get("aim_cam"):         # the RAM aim lock (the stick only as a fallback)
+                lzo = (tuple(lz["from"]), tuple(lz["at"])) if lz.get("up") and lz.get("from") and lz.get("at") \
+                    else (None, None)
+                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], CHEST_H, dist, *lzo), now)
             if not on:                                   # the aim off them: turn, the trigger let go (the turn's pace)
                 if self.fire_down:
                     self._trigger(False, now)
@@ -2297,6 +2318,56 @@ class Bot:
             return None
         return {"hold": keys if st["phase"] % 2 else ()}  # one tick down, one up: a fresh press each time
 
+    def _writer(self):
+        if self._ram is None and self._m is not None:
+            self._ram = re5_switch_aim.aim_writer(self._m) or False
+        return self._ram or None
+
+    def _lock_aim(self, snap, keys, yaw_err, pitch_err, now):
+        """AIM_LOCK: the aim moved by RAM - the heading by yaw_err, the camera pitch by pitch_err (radians: + = a larger
+        heading / up), each at most its rate this tick (all of it within AIM_LOCK_SNAP_DEG), read back: the right-stick
+        keys dropped. Off, no camera, no writer or a failed read-back: the keys as they were."""
+        st = snap.get("aim_cam")
+        if not AIM_LOCK or not st or (yaw_err is None and pitch_err is None) or self._lock_off:
+            return keys
+        w = self._writer()
+        if w is None:
+            return keys
+        last = self._lock_last                           # did the game keep the last write? (the next frame's state)
+        if last is not None and now - last[2] <= 0.25:
+            held = (last[0] is None or abs(st["pitch"] - last[0]) <= AIM_LOCK_HELD) and                 (last[1] is None or abs(wrap(st["heading"] - last[1])) <= AIM_LOCK_HELD)
+            self._lock_score[0 if held else 1] += 1
+            if self._lock_score[1] >= 6 and self._lock_score[1] > self._lock_score[0]:
+                self._lock_off = True                    # written, read back, then overwritten: the stick again
+                self.stats["aim_lock_unheld"] += 1
+                return keys
+        dt = max(1.0 / 30.0, min(now - self._lock_t, LOOK_STEP_MAX_S)) if self._lock_t is not None else 1.0 / 30.0
+        self._lock_t = now
+
+        def step(err, rate):
+            lim = math.radians(rate) * dt
+            return err if abs(err) <= math.radians(AIM_LOCK_SNAP_DEG) else max(-lim, min(lim, err))
+        h = wrap(st["heading"] + step(yaw_err, AIM_LOCK_YAW_DEG_S)) if yaw_err is not None else None
+        pt = st["pitch"] + step(pitch_err, AIM_LOCK_PITCH_DEG_S) if pitch_err is not None else None
+        if w(st, pt, h):
+            self.stats["aim_lock_ticks"] += 1
+            self._lock_last = (pt, h, now)
+            return set(keys) - {"rleft", "rright", "rup", "rdown"}
+        self.stats["aim_lock_fails"] += 1
+        return keys
+
+    def _lock_errors(self, p, snap, foot, aim_h, dist, origin=None, dot=None):
+        """(yaw, pitch) errors for the lock: from the laser's ray when it is long enough to steer by, else his heading
+        to the target and the chest's elevation against the camera's pitch."""
+        chest = (foot[0], foot[1] + aim_h, foot[2])
+        if origin is not None and dot is not None and math.dist(origin, dot) >= STEER_RAY_CM:
+            return ray_error(origin, dot, chest)
+        px, py, pz = p["pos"]
+        st = snap.get("aim_cam") or {}
+        yaw = wrap(heading(chest[0] - px, chest[2] - pz) - p["rot"])
+        want = math.atan2(chest[1] - (py + MUZZLE_H), max(dist, 1.0))
+        return yaw, (want - st["pitch"]) if st.get("pitch") is not None else None
+
     def _governor(self, act, snap, now) -> dict:
         """HEADING_GOV: his heading turned faster than HEADING_GOV_DEG_S since the last tick: no turn stick this tick
         (a grab's escape left alone)."""
@@ -2537,6 +2608,7 @@ class Bot:
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
+        self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
         if self.mines is not None:
             self.mines.new_round(now)
 
@@ -2990,6 +3062,11 @@ class Bot:
             self.doing, self.why = "raise", f"the gun coming up (motion {motion})"
             if self.fire_down:
                 self._trigger(False, now)
+            if AIM_LOCK and snap.get("aim_cam"):         # no raise from an old pitch: the target's elevation first
+                _yaw, perr = self._lock_errors(p, snap, foot, CHEST_H, dist)
+                if perr is not None and abs(perr) > math.radians(AIM_LOCK_SNAP_DEG) \
+                        and self._lock_aim(snap, {"zl"}, None, perr, now) == {"zl"}:
+                    self.stats["aim_lock_prepitch"] += 1
             if SKY_GUARD and motion == MOTION_AIMED and waited > SKY_BLIND_S \
                     and (self._ray_pitch is None or self._ray_pitch > -math.radians(5)):
                 self.stats["sky_blind_ticks"] += 1           # aimed, no dot anywhere: the ray on the sky; down
@@ -3205,6 +3282,8 @@ class Bot:
         if motion == MOTION_SHOT and keys & {"rleft", "rright", "rup", "rdown"}:
             keys -= {"rleft", "rright", "rup", "rdown"}  # the shot plays at fire_rate's time scale: the stick waits
             self.stats["shot_stick_drops"] += 1
+        if AIM_LOCK and snap.get("aim_cam"):             # the RAM aim lock: the aim by RAM, the stick only as a fallback
+            keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, foot, aim_h, dist, origin, dot), now)
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "
