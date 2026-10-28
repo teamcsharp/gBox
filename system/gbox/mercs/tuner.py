@@ -206,6 +206,7 @@ class Tuner:
         if self.learning is not None:
             self.learning.record({'kind': 'tuning', 'title': title, 'at': self.now(), 'stage': stage,
                                   'param': trial['param'], 'old': trial.get('old'), 'new': trial.get('new'),
+                                  'causes': trial.get('causes'),
                                   'status': status, 'reason': reason, 'source': f"{trial.get('version')}:{status}"})
         return line
 

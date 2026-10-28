@@ -315,6 +315,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/tactical-map.js"></script>
 <script src="/viz/mercs-reviewer.js"></script>
 <script src="/viz/mercmode.js"></script>
+<script src="/viz/bot-learning.js"></script>
 <script src="/viz/bot-demo.js"></script>
 <script src="/viz/mercs-clock.js"></script>
 <script src="/viz/re5-modifiers.js"></script>
@@ -769,13 +770,18 @@ async function apiRaw(path, body, method, timeoutMs = 0) {
 let cur = location.pathname === '/mercenaries' ? 'Mercenaries' : "Home", timer = null, viewRevision = 0, sessionMode = null;
 const MERCS_REVIEWER = {ctl:null};
 // The Mercenaries tab: MercMode per PC (on/off, which titles rotate, rounds per title) above the run reviewer
-function mercsReviewerView(){ return '<details id="mercmode-web" class="pane" open><summary>MercMode: which PCs rotate through which Resident Evil Mercenaries titles</summary><div id="mercmode-web-panel"></div></details><div id="mercs-reviewer"></div>'; }
+function mercsReviewerView(){ return '<details id="mercmode-web" class="pane" open><summary>MercMode: which PCs rotate through which Resident Evil Mercenaries titles</summary><div id="mercmode-web-panel"></div></details><details id="bot-learning-web" class="pane"><summary>Bot learning: what hurts the bots, what changed, whether it helped</summary><div id="bot-learning-web-panel"></div></details><div id="mercs-reviewer"></div>'; }
 mercsReviewerView.after = () => {
   MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'});
   const root = document.getElementById('mercmode-web-panel');
   // Watch: in the desktop app that PC's run goes into its PiP (GBOX: bridge), in a browser it opens in Sessions
   if (root && window.GBoxMercMode) GBoxMercMode.mount({ root, api: (path, body) => api(path, body),
     watch: sid => bnEmbedded() ? console.log("GBOX:" + JSON.stringify({ ev: "mercwatch", sid })) : show("Sessions", sid) }).ready.catch(() => {});
+  const learning = document.getElementById('bot-learning-web');      // mounted when opened: one GET a minute while shown
+  if (learning && window.GBoxBotLearning) learning.addEventListener('toggle', () => {
+    if (learning.open && !MERCS_REVIEWER.learning) MERCS_REVIEWER.learning = GBoxBotLearning.mount({ root: document.getElementById('bot-learning-web-panel'), api: path => api(path) });
+    else if (!learning.open && MERCS_REVIEWER.learning) { MERCS_REVIEWER.learning.dispose(); MERCS_REVIEWER.learning = null; }
+  });
 };
 const HOME = { ctl: null, search: "" };
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
