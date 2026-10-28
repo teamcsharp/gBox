@@ -10,7 +10,7 @@ class MercModeIn(BaseModel):
     op: Literal['status','configure','prepare']='status'
     host: str | None=None
     enabled: StrictBool | None=None
-    titles: list[Literal['re4','re5','re6']] | None=None
+    titles: list[Literal['re4','re5','re6','re3','merc3d']] | None=None
     rounds_per_title: int | None=None
     presentation_priority: StrictBool | None=None
     queue: list[dict] | None=None         # the DJ queue (gbox.mercmode.queue_entry validates each round)
@@ -37,7 +37,8 @@ def mercmode(inp: MercModeIn,ctx):
             result['games']={}
             from . import re_switch as RS
             # the native discs and the Switch No Mercy editions a host may prefer (preferred_editions)
-            for gid in (*M.TITLES['re4']['game_ids'],*M.TITLES['re5']['game_ids'],RS.RE5_GAME_ID,RS.RE6_GAME_ID):
+            for gid in (*M.TITLES['re4']['game_ids'],*M.TITLES['re5']['game_ids'],RS.RE5_GAME_ID,RS.RE6_GAME_ID,
+                        *M.TITLES['merc3d']['game_ids']):
                 catalog=client.get('/api/catalog/'+gid)
                 if catalog.status_code==404:continue
                 catalog.raise_for_status()
