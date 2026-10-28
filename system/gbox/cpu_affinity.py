@@ -81,6 +81,53 @@ def place(pids: list[int], *, background: bool) -> None:
             pass
 
 
+def tree(pid: int) -> list[int]:
+    """A process and all its descendants (/proc children lists)."""
+    pids, todo = [], [pid]
+    while todo:
+        p = todo.pop()
+        pids.append(p)
+        for task in Path(f"/proc/{p}/task").glob("*/children"):
+            try:
+                todo += [int(c) for c in task.read_text().split()]
+            except (OSError, ValueError):
+                pass
+    return pids
+
+
+KEEP_S = 30.0
+_keeper: dict = {}
+
+
+def ensure_keeper(roots, period: float = KEEP_S) -> None:
+    """Re-place every live game's tree each `period` s (roots() -> root pids): Citron sets its own thread affinity
+    after boot (2026-10-27: all 68 threads on 10-19, half of them A725) and new threads follow it. A tree at niceness
+    10+ (a MercMode game booting or parked, tools._warm_priority) goes to the slow cores, the rest to the fast ones.
+    One daemon thread per process; a no-op without a fast/slow split."""
+    import threading
+    if _keeper.get("thread") or not fast_cores() or os.name != "posix":
+        _keeper["roots"] = roots
+        return
+    _keeper["roots"] = roots
+
+    def run():
+        import time
+        while True:
+            time.sleep(period)
+            try:
+                for pid in list(_keeper["roots"]() or []):
+                    try:
+                        background = os.getpriority(os.PRIO_PROCESS, pid) >= 10
+                    except OSError:
+                        continue
+                    place(tree(pid), background=background)
+            except Exception:                          # noqa: BLE001 - placement is best effort, never fatal
+                pass
+    t = threading.Thread(target=run, daemon=True, name="gbox-cpu-affinity")
+    _keeper["thread"] = t
+    t.start()
+
+
 def fast_argv(argv: list[str]) -> list[str]:
     """argv run on the fast cores (taskset), unchanged where there is no such split or no taskset."""
     if os.name != "posix" or not argv or argv[0] == "taskset":
