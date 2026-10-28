@@ -83,6 +83,14 @@ E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
 # the walk in), 85-87 / 30 / 12 / 2 none. The flag: 45 % (64 of 209 ticks set) against 4 % clear.
 E_MOTION, E_ACT, E_ATTACKING = 0x8F8, 0xA23, 0x40
 WINDUP_MOTIONS = frozenset({80, 81, 60, 91})
+# Downed / kneeling motions (the enemy motion byte +0x8F8): the aim tracks the real body height.
+# Live 2026-10-27: 85-87 / 30 / 12 / 2 none (undocumented); the operator 2026-10-28 04:5x: the bot
+# "doesn't aim at them after they fall ... holds the trigger until they get back up".  These are the
+# fall / down / get-up states: the aim point drops with them.
+DOWNED_MOTIONS = frozenset({2, 85, 86, 87})                    # flat on the ground
+KNEELING_MOTIONS = frozenset({12, 30})                         # a knee down: the chest is lower, not on the ground
+DOWNED_AIM_H = 25.0                                          # cm above the feet: a body on the ground
+KNEELING_AIM_H = 70.0                                        # cm: a kneeling Majini's chest
 MAX_ENEMIES = 64
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES, UI_MAX = 0x18, 0x30, 0x18, 32, 64
@@ -1499,11 +1507,17 @@ class Bot:
         return max(BODY_AIM_TOL, math.atan2(BODY_R * RAISE_WIDTH, max(dist, 1.0)))
 
     def _aim_h(self, tgt, dist, now) -> float:
-        """The height on him to aim at: K's learned aim for his class at this distance and weapon (sure), else CHEST_H;
-        kept inside his body (KNEE_H .. HEAD_H). Within GRAB_THREAT_R (a grab or a lunge: the Switch reads no enemy
-        state) always CHEST_H, the bot's own rule."""
+        """The height on him to aim at: downed/kneeling motions the real body height (the operator 2026-10-28
+        04:5x: \"doesn't aim at them after they fall\"); K's learned aim for his class at this distance and weapon
+        (sure), else CHEST_H; kept inside his body (KNEE_H .. HEAD_H). Within GRAB_THREAT_R (a grab or a lunge:
+        the Switch reads no enemy state) always CHEST_H, the bot's own rule."""
         if dist < GRAB_THREAT_R:
             return CHEST_H                                   # at grabbing / lunging range: the old rule, whatever K says
+        motion = tgt.get("motion")
+        if motion in DOWNED_MOTIONS:
+            return DOWNED_AIM_H                              # on the ground: the aim at the body, not the air
+        if motion in KNEELING_MOTIONS:
+            return KNEELING_AIM_H                            # a knee down: the chest is lower
         plan = self._plan(tgt, dist, self._item, now)
         if self._sure(plan, "aim_offset"):
             self.stats["k_aim_ticks"] += 1
@@ -1902,9 +1916,10 @@ class Bot:
         pitch_err = None
         ray_len = None
         weapon = f"0x{held['item']:03x}" if held else "gun"
+        aim_h = self._aim_h(tgt, dist, now)
         if lz.get("up") and lz.get("from") and lz.get("at"):
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
-            chest = (tgt["pos"][0], tgt["pos"][1] + CHEST_H, tgt["pos"][2])
+            chest = (tgt["pos"][0], tgt["pos"][1] + aim_h, tgt["pos"][2])
             yaw_err, pitch_err = ray_error(origin, dot, chest)
             ray_len = math.dist(origin, dot)
             aim_off = abs(yaw_err)
@@ -1965,7 +1980,7 @@ class Bot:
             if AIM_LOCK and snap.get("aim_cam"):         # the RAM aim lock (the stick only as a fallback)
                 lzo = (tuple(lz["from"]), tuple(lz["at"])) if lz.get("up") and lz.get("from") and lz.get("at") \
                     else (None, None)
-                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], CHEST_H, dist, *lzo), now)
+                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], aim_h, dist, *lzo), now)
             if not on:                                   # the aim off them: turn, the trigger let go (the turn's pace)
                 if self.fire_down:
                     self._trigger(False, now)
@@ -3353,7 +3368,7 @@ class Bot:
             if self.fire_down:
                 self._trigger(False, now)
             if AIM_LOCK and snap.get("aim_cam"):         # no raise from an old pitch: the target's elevation first
-                _yaw, perr = self._lock_errors(p, snap, foot, CHEST_H, dist)
+                _yaw, perr = self._lock_errors(p, snap, foot, self._aim_h(tgt, dist, now), dist)
                 if perr is not None and abs(perr) > math.radians(AIM_LOCK_SNAP_DEG) \
                         and self._lock_aim(snap, {"zl"}, None, perr, now) == {"zl"}:
                     self.stats["aim_lock_prepitch"] += 1

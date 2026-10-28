@@ -183,3 +183,38 @@ def test_writes_the_game_overwrites_stand_the_lock_down_for_the_round(monkeypatc
     clock[0] = 1.0
     b.tick(snap([foe], dot=(-450.0, 140.0, 2000.0), cam=CAM))
     assert len(writes) == n                                        # no more writes this round: the stick aims
+
+
+# --- downed / kneeling targets: the aim tracks the real body height --------------------
+
+def test_a_downed_majini_is_aimed_at_the_ground_not_the_air():
+    b, _ = bot([])
+    downed = {"ptr": 99, "pos": (0.0, 0.0, 800.0), "hp": 800, "hp_max": 800, "motion": 2}
+    assert b._aim_h(downed, 800.0, 0.0) == R.DOWNED_AIM_H
+
+
+def test_a_kneeling_majini_is_aimed_lower_than_standing():
+    b, _ = bot([])
+    kneeling = {"ptr": 98, "pos": (0.0, 0.0, 800.0), "hp": 800, "hp_max": 800, "motion": 30}
+    assert b._aim_h(kneeling, 800.0, 0.0) == R.KNEELING_AIM_H
+    standing = {"ptr": 97, "pos": (0.0, 0.0, 800.0), "hp": 800, "hp_max": 800, "motion": 4}
+    assert b._aim_h(standing, 800.0, 0.0) == R.CHEST_H
+
+
+def test_a_downed_majini_in_crowd_fire_gets_the_ground_aim():
+    """The rampage / crowd-fire path uses _aim_h, not a hardcoded CHEST_H."""
+    b, clock = bot([])
+    downed = (0.0, 0.0, 300.0)
+    standing = (0.0, 0.0, 400.0)
+    foes = [downed, standing]
+    snap_d = {"player": {"ptr": PLAYER, "pos": (0.0, 0.0, 0.0), "rot": 0.0, "hp": 1000, "hp_max": 1000,
+                         "motion": 26, "aim_pitch": None},
+              "enemies": [{"ptr": 10, "pos": downed, "hp": 800, "hp_max": 800, "motion": 2},
+                          {"ptr": 11, "pos": standing, "hp": 800, "hp_max": 800, "motion": 4}],
+              "inventory": [], "kills": 0, "aim_cam": None,
+              "laser": {"from": MUZZLE, "at": (0.0, 25.0, 300.0), "up": True}}
+    b.tick(snap_d)
+    clock[0] = 0.3
+    act = b.tick(snap_d)
+    # the aim context should carry the downed target's low aim height
+    assert b._aimctx["foot"][1] + R.DOWNED_AIM_H <= 25.0 + 1e-6
