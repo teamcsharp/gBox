@@ -59,7 +59,8 @@ def test_nobody_on_his_level_at_all_he_still_pursues_from_the_census():
     assert "pursuit" in b.why and "b" in act["hold"] and b.stats["pursuits"] == 1
 
 
-def test_stuck_he_takes_a_detour_and_a_kill_is_credited():
+def test_stuck_he_takes_a_detour_and_a_kill_is_credited(monkeypatch):
+    monkeypatch.setattr(R, "WALL_GOV", False)                     # (the pursuit's own detour, under the wall governor)
     b, clock = bot()
     far = at(2000, 0)
     for k in range(20):                                            # no closer for 2 s
