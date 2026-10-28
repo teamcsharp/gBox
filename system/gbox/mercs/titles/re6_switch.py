@@ -1291,6 +1291,11 @@ def near_line(origin, toward, pt, r: float, reach: float = 1e9) -> bool:
 
 # --- the shot's geometry (a zombie's body; RE6's are human-sized like RE5's Majini) ---------------------------------------
 HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 36.0, 115.0
+# The trigger's tolerance (operator 2026-10-28: "have the aimbot improving aim over time ... Precision is important. I want
+# them taking pot shots and nailing people with precision over time"): besides the ray on him, the laser within fire_tol
+# of his chest fires; a pull that took health widens it by FIRE_TOL_STEP, a miss narrows it (FIRE_TOL_MIN..MAX). Rounds
+# showed 6-10 s aiming for 1 s firing with 13 of 13 hits: the gate, not the aim, held the shots back. stats fire_tol_deg.
+FIRE_TOL_DEG0, FIRE_TOL_MIN, FIRE_TOL_MAX, FIRE_TOL_STEP = 3.0, 1.0, 6.0, 0.15
 FIRE_SLACK = 60.0                       # a ray ending this much short of him ends on something in front of him
 
 
@@ -2153,6 +2158,7 @@ class Bot:
         self.seen: dict = {}                                 # zombie -> when his health last fell to a shot
         self.laser_seen: dict = {}                           # zombie -> when the laser's ray last reached him
         self.fire_track = None                               # [zombie, since, his health then, last on the line]
+        self.fire_tol = math.radians(FIRE_TOL_DEG0)          # the learned trigger tolerance (FIRE_TOL_* above)
         self.ray_yaw = None                                  # the camera's yaw when the laser's ray last moved
         self.cc_shot = None                                  # (zombie, when, {zombie: health} within CC_R)
         self.cc_miss: dict = {}
@@ -2982,6 +2988,12 @@ class Bot:
             foot = tgt["pos"]
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             yaw_err, pitch_err = ray_error(origin, dot, (foot[0], foot[1] + CHEST_H, foot[2]))
+        near_on = (on_e is None and source == "laser" and abs(yaw_err) <= getattr(self, "fire_tol", 0.0)
+                   and abs(pitch_err) <= getattr(self, "fire_tol", 0.0)    # within the learned tolerance of his chest,
+                   and math.dist(origin, dot) >= math.dist(origin, chest) - FIRE_SLACK   # the ray reaching him (no wall)
+                   and not self.is_blocked(tgt, now))
+        if near_on:
+            on_e = tgt
         on = on_e is not None and source == "laser" and getattr(self, "lock_redirect_at", None) != now
         auto = p.get("weapon_id") in AUTO_IDS
         trig = self._trigger(on, now, auto)
@@ -4660,6 +4672,10 @@ class Bot:
         for pull in [x for x in self._pulls if now - x["end"] > HIT_S]:
             self._pulls.remove(pull)
             self.stats["pulls_hit" if pull["hit"] else "pulls_miss"] += 1
+            tol = getattr(self, "fire_tol", math.radians(FIRE_TOL_DEG0))   # learn the trigger's tolerance from the result
+            tol += math.radians(FIRE_TOL_STEP) * (1 if pull["hit"] else -1)
+            self.fire_tol = min(math.radians(FIRE_TOL_MAX), max(math.radians(FIRE_TOL_MIN), tol))
+            self.stats["fire_tol_deg"] = round(math.degrees(self.fire_tol), 2)
             self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
 
     def _look_tick(self, snap, now) -> None:
