@@ -203,13 +203,36 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         from . import lessons as lesson_store
         trace = Recorder(log, atlas_root=lesson_store.ROOT.parent / "navigation", title=prof["map_id"], round_id=round_id,
                          provenance=provenance)
+    capture = None
+
+    def start_capture():
+        """Every round's run map (gbox.mercs.run_capture), keyed by its curriculum row id; a brain that keeps its own
+        round map (trace_finish: RE5 PS3, RE4) keeps it alone."""
+        nonlocal capture
+        capture = None
+        if callable(getattr(bot, "trace_finish", None)) or not isinstance(prof.get("map_id"), str):
+            return
+        try:
+            from . import run_capture
+            from . import lessons as lesson_store
+            capture = run_capture.RunCapture(lesson_store.ROOT.parent / "round_maps", prof["map_id"], round_id,
+                                             provenance=provenance)
+        except Exception as exc:                      # noqa: BLE001 - no map never costs the round
+            stats["run_map_error"] = str(exc)[:200]
+    start_capture()
 
     def finish_evidence(at, reason, final_stats):
-        nonlocal trace, round_closed
+        nonlocal trace, round_closed, capture
         if round_closed:
             return
         round_closed = True
         row = dict(final_stats)
+        if capture is not None:                       # the run map: its exploration numbers into the row, files after
+            mapped = capture.finish(at, reason, stage=remembered[0] if remembered else None)
+            row.update(mapped)
+            if mapped.get("round_map_file"):
+                stats["last_run_map"] = mapped["round_map_file"]
+            capture = None
         row['assistance'] = round_fields(stats, assistance)
         row['assistance_classification'] = row['assistance']['classification']
         row['assistance_verified'] = row['assistance']['verified']
@@ -281,6 +304,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             stats.pop(key,None)
         stats.update(round_evidence_id=round_id,round_evidence_closed=False)
         _enemy_round(prof.get("map_id") if isinstance(prof, dict) else None)
+        start_capture()
         if prof.get("map_id") == "BLUS30491":
             from .route_trace import Recorder
             from . import lessons as lesson_store
@@ -354,6 +378,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     tactical(snap, bot, where)
                 except Exception:                     # noqa: BLE001 - the map never costs the round a tick
                     pass
+            if capture is not None:                   # the run map: a sample 5 times a second (appends; never raises)
+                capture.observe(now, where, snap, bot, stats)
             if where not in D.IN_ROUND:
                 if where == "results":
                     last_stats = dict(stats)
@@ -440,6 +466,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())
+                if capture is not None:
+                    capture.prompt(now, chords)
                 mash = getattr(pp, "mashing", False)  # a grab: as fast as the game takes new presses (30 a second)
                 for chord in chords:
                     recovery = False
