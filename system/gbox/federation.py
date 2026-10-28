@@ -297,6 +297,18 @@ class Federation:
             conflict=self.store.get('federation_local_job',owner['worker_id']+'-'+local_id)
             if conflict and conflict['central_job_id']!=jid:
                 raise HTTPException(409,'Local job is already bound to another central command')
+            progress = None
+            progress_error = None
+            if 'rebuild_progress' in body:
+                if job['tool'] != 'rebuild_node':
+                    raise HTTPException(422,'Console snapshots require a rebuild job')
+                from .federated_progress import validate
+                try:
+                    progress = validate(body['rebuild_progress'], (key,))
+                except ValueError as exc:
+                    if state not in TERMINAL:
+                        raise HTTPException(422,str(exc)) from None
+                    progress_error = 'invalid_rebuild_progress'
             result=body.get('result')
             if state in TERMINAL:
                 if not isinstance(result,dict) or result.get('job_id')!=jid or type(result.get('ok')) is not bool \
@@ -316,6 +328,13 @@ class Federation:
                         raise HTTPException(409,'Launch output must retain its actual local SID')
             elif record.get('ack'):
                 return record['ack']               # a delayed running update cannot undo a completed delivery
+            if not record.get('ack') and job['state'] not in TERMINAL:
+                from .federated_progress import merge
+                changed = progress is not None and merge(job, progress)
+                if progress_error:
+                    job['federation_progress_error'] = progress_error
+                if changed or progress_error:
+                    self.store.put('job', jid, job)
             record.update(local_job_id=local_id,local_state=state,updated=self.clock())
             self.store.put('federation_command',jid,record)
             self.store.put('federation_local_job',owner['worker_id']+'-'+local_id,

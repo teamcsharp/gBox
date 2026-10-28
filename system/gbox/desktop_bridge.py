@@ -445,6 +445,22 @@ class DesktopBridge:
                 job = self.store.get('job', row['local_job_id'])
                 if not job:raise SubmissionHeld('A mapped local job is unavailable')
                 body = {'local_job_id': job['id'], 'state': job['state']}
+                if row.get('tool') == 'rebuild_node' and job.get('progress') is not None:
+                    source = job.get('origin') or {}
+                    if job['id'] != row['local_job_id'] or job.get('tool') != row['tool'] \
+                            or row.get('authority') != self.submissions.authority \
+                            or source.get('desktop_federation_authority') != self.submissions.authority \
+                            or source.get('desktop_federation_key') != self.submissions.key(row['id']) \
+                            or job.get('worker_id') != self.active_worker_id or not self.active_worker_id \
+                            or sha256(canon(job.get('input') or {})) != row.get('execution_input_sha256'):
+                        raise SubmissionHeld('Rebuild progress does not match its original local execution')
+                    from .federated_progress import snapshot
+                    try:
+                        body['rebuild_progress'] = snapshot(job, (self.token, self.secret, self.input_secret, self.cfg.token()))
+                    except ValueError:
+                        # Optional telemetry cannot strand the actual tool result or change its error.
+                        row = row | {'progress_delivery_error': 'invalid_rebuild_progress'}
+                        self.store.put('desktop_bridge_job', self.submissions.key(row['id']), row)
                 terminal = job['state'] in _TERMINAL
                 if terminal:body['result'] = self.result(job, row['id'])
                 if len(canon(body))>120*1024*1024:raise SubmissionHeld('Serialized result exceeds the bounded bridge transfer')
