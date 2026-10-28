@@ -1396,6 +1396,7 @@ class Bot:
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
         self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
         self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
+        self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
@@ -1745,12 +1746,28 @@ class Bot:
             if run["detours"] > 3:
                 self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
                 self._bonus = None
+        # plan or refresh the learned-grid route toward this statue
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            nav.plan((px, pz), (bx, bz), now)
         off = math.radians(70) * run["side"] if now < run["detour_until"] else 0.0
+        # learned-grid navigation: A* waypoints when the grid has a route, else the straight line
+        nav = getattr(self, "_nav", None)
+        nav_wp = None
+        if nav is not None and off == 0.0:
+            nav_wp = nav.next_waypoint((px, pz))
+            if nav_wp is not None:
+                wx, wz = nav_wp
+                err = wrap(heading(wx - px, wz - pz) - p["rot"])
+                self.doing = "walk"
+                self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
+                            f"{len(open_)} left - nav route")
+                return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
         err = wrap(heading(bx - px, bz - pz) + off - p["rot"])
         self.doing = "walk"
         self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
                     f"{len(open_)} left" + (" - a detour" if off else ""))
-        return {"hold": (("lup", "b") if d > BONUS_WALK_R else ("lup",)) + self._turn(err, TURN_TOL)}
+        return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
 
     def _watch_whips(self, p, now) -> None:
         """A turn of WHIP_DEG or more one way, then WHIP_BACK_DEG back within WHIP_S of its end: a whip."""
@@ -2121,9 +2138,13 @@ class Bot:
             self._reloc_due = True
 
     def _trail_tick(self, p, now) -> None:
-        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT."""
+        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT.
+        The navigator's grid is folded from the same trail and the wall memory."""
         if not self._trail or now - self._trail[-1][0] >= TRAIL_EVERY_S:
             self._trail = (self._trail + [(now, tuple(p["pos"]))])[-TRAIL_KEPT:]
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            nav.update(self._trail, self._walls)
 
     def _reloc_goal(self, p, live, snap, now):
         """Where to relocate: a point he knows is open - his own trail (TRAIL_AGE_S old or more, RELOC_GOAL_MIN away)
@@ -2901,6 +2922,11 @@ class Bot:
             self.mines.new_round(now)
         tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
+        # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
+        stage_name = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
+            from .re5_switch_nav import Navigator
+            self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -4027,6 +4053,9 @@ class RE5Switch(Driver):
         self.stats = stats
 
         def release():                                      # the round's end or the bot stopping: the game's pace back
+            nav = getattr(self, "_nav", None)
+            if nav is not None:
+                nav.save()
             self._mods(m, snapshot(m), False)
         return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir)
 
