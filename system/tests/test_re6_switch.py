@@ -483,9 +483,9 @@ def test_a_bomb_out_he_backs_off_it_and_kicks_the_ones_on_him_in_the_same_ticks_
     act = run(bot, snap, clock, 1)[0]
     assert set(act["hold"]) >= {"ldown", "zr"} and bot.stats["melee"] == 1
     bot, clock, snap = bomb_out(((150.0, 0.0, six[2] - 100.0, 700), (-150.0, 0.0, six[2] - 100.0, 700)), me=six)
-    acts = run(bot, snap, clock, 20)                                          # two at his back: never standing
-    assert all("ldown" in a.get("hold", ()) for a in acts) and bot.stats["bomb_face_s"] == 0.0
-    assert bot.stats["bomb_kicks"] >= 2
+    acts = run(bot, snap, clock, 20)                                          # two at his back, in the way out:
+    assert bot.stats["escape_fights"] >= 1 and bot.stats["bomb_face_s"] == 0.0   # fought first, never walked into
+    assert not any(a.get("hold") == ("ldown",) for a in acts)
     on_it = ((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700))
     bot, clock, snap = bomb_out(on_it, me=six)
     acts = run(bot, snap, clock, int(30.0 / 0.05))                            # 30 s at 6 m (a wall behind)
@@ -670,9 +670,9 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     snap["player"]["equipped"] = 0
     bot.melee_at = -1e9
     acts = run(bot, snap, clock, 4)
-    assert bot.nade is None and bot.stats["act"] in ("fever_close", "fever_kick")
-    assert any("lup" in a.get("hold", ()) for a in acts)                      # in among them
-    snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)
+    assert bot.nade is None and bot.stats["act"] == "push_walk" and bot.push is not None
+    assert all("ldown" in a.get("hold", ()) for a in acts)                    # the push-through: out the open side
+    snap["enemies"][0]["pos"] = (0.0, 0.0, -100.0)                            # one steps into the way out
     acts = run(bot, snap, clock, 2)
     assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["fever_kicks"] >= 1
     assert bot.stats["bomb_drops"] == 0                                       # the fever first, no bomb drop
@@ -2946,3 +2946,68 @@ def test_the_warm_pool_finds_the_re6_reader_from_the_catalog_game():
     from gbox.mercs import warm_boot
     reader = warm_boot.title_probe(None, {"game_id": "115f9cdbba115432", "platform": "switch"})
     assert reader is R.warm_probe
+
+
+def test_overwhelmed_he_flashes_even_with_one_at_arms_length_and_time_overwhelmed_is_counted(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    on_him = ((0.0, 0.0, 100.0, 700), (150.0, 0.0, 200.0, 700), (-150.0, 0.0, 220.0, 700))   # three within 3 m
+    bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x115: (11, 5)})
+    run(bot, snap, clock, 2)
+    assert bot.nade is not None and bot.nade["kind"] == "flash" and bot.stats["over_s"] > 0
+    snap["player"]["equipped"] = 11                                           # in hand: never called off
+    acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1 and bot.stats["nade_aborts"] == 0
+    assert bot.push is not None and abs(R.wrap(bot.push["h"] - math.pi)) <= math.radians(60)   # the way out: behind
+
+
+def test_his_health_falling_with_two_close_gets_the_flash(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    two = ((0.0, 0.0, 200.0, 700), (150.0, 0.0, 180.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    snap["player"].update(equipped=0, nades={0x115: (11, 5)})
+    run(bot, snap, clock, 2)
+    assert bot.nade is None                                                   # two close, unhurt: no flash yet
+    snap["player"]["hp"] = 700                                                # hit
+    run(bot, snap, clock, 1)
+    assert bot.nade is not None and bot.nade["kind"] == "flash"
+
+
+def test_the_way_out_is_the_clearest_heading_the_nav_mesh_lets_him_walk():
+    class Mesh:                                                               # a wall straight behind him
+        def clear(self, a, b):
+            return abs(R.wrap(R.heading(b[0] - a[0], b[2] - a[2]) - math.pi)) > math.radians(30)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 200.0, 700),), cam_yaw=0.0))
+    p = dict(snap["player"], pos=(0.0, 0.0, 0.0))
+    crowd = [{"pos": (x, 0.0, 250.0)} for x in (-100.0, 0.0, 100.0)]
+    assert abs(R.wrap(bot._push_heading(p, crowd, {"navmesh": None}) - math.pi)) < 1e-6   # no mesh: straight back
+    h = bot._push_heading(p, crowd, {"navmesh": Mesh()})
+    assert math.radians(30) < abs(R.wrap(h - math.pi)) <= math.radians(70) and bot.stats["push_nav_clear"] == 1
+
+
+def test_a_push_through_counts_once_he_is_out_of_the_crowd():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 900.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.push = {"h": math.pi, "from": (0.0, 300.0), "since": 0.0, "until": clock[0] + 5}
+    run(bot, snap, clock, 1)                                                  # 3 m from where it began, none close
+    assert bot.stats["pushthroughs"] == 1 and bot.push is None
+
+
+def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(monkeypatch):
+    monkeypatch.setattr(R, "BOMB_DROP", True)
+    on_him = ((0.0, 0.0, 150.0, 700), (150.0, 0.0, 200.0, 700), (-150.0, 0.0, 220.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={0x115: (11, 5)})
+    bot.flash_last = bot.nade_last = clock[0]                                 # the flash just went
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"tap": "dup"} and bot.doing == "bomb" and bot.bomb_drop
+    assert bot.stats["bomb_drops"] == 1 and bot.stats["flash_drops"] == 1
+    bot2, clock2, snap2 = brain(round_guest(enemies=on_him, cam_yaw=0.0))    # no flash yet: the flash comes first
+    bot2.held = lambda p, now: False
+    snap2["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={0x115: (11, 5)})
+    run(bot2, snap2, clock2, 1)
+    assert bot2.stats["bomb_drops"] == 0
