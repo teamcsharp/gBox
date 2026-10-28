@@ -741,6 +741,15 @@ BRAIN_COUNTERS = ("misses", "headshots", "miss_short", "miss_past", "miss_beside
                   "laser_rejected", "front_first", "blocked_switches")
 AIM_COUNTERS = ("pulls_hit", "pulls_dot_miss", "pulls_ray_miss", "pulls_blind", "pulls_short", "pulls_slipped",
                 "drops_mid_burst", "first_pull_n", "first_pull_s", "t_turn_foe_front")
+# Aim measured (the coordinator 19:06: "Measure aim: aim_err_deg at each shot (mean/p90), first-shot latency after
+# acquiring, hit rate by band. Before/after per turn"): each pull's aim error (the yaw from the aim to his chest as it
+# was pulled; the laser's, else his heading's), the seconds from a target's acquiring to the first pull on it, and each
+# resolved pull's outcome by his distance (AIM_BANDS). Per-round counters aim_err_n / aim_err_sum_deg, acquire_n /
+# acquire_s, pulls_<band> / hits_<band>; stats aim_err_mean_deg, aim_err_p90_deg, acquire_to_shot_s and aim_report (the
+# round's line: "err mean 3.1 / p90 8.2 deg; first shot 0.42 s after acquiring; hits <3 m 80 % (40) ...").
+AIM_BANDS = ((300.0, "lt3m"), (800.0, "3to8m"), (1500.0, "8to15m"), (1e12, "gt15m"))
+MEASURE_COUNTERS = ("aim_err_n", "aim_err_sum_deg", "acquire_n", "acquire_s") \
+    + tuple("pulls_" + b for _, b in AIM_BANDS) + tuple("hits_" + b for _, b in AIM_BANDS)
 SURVIVAL = ("heal", "escape", "held", "backoff", "burst_backoff", "reload")
 # The enemy knowledge database (gbox.mercs.enemy_db, through gbox.mercs.brain.knowledge): every resolved pull is a
 # record_shot (his class, distance, the weapon, where the dot sat on him, hit / kill / miss and the health it took), every
@@ -1446,8 +1455,11 @@ class Bot:
         self.round_escapes = 0                    # escapes this round (ESCAPES_MAX)
         self.trigger_since = None                 # the burst's first pull since the gun came up (kept across the
                                                   # targets it drops; the gun going down ends the burst)
-        for k in AIM_COUNTERS + tuple("t_" + d for d in DOINGS):
+        for k in AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS):
             self.stats.setdefault(k, 0)
+        self._errs: list = []                            # this round's pulls' aim errors (deg): aim_err_p90_deg
+        self._acq = (None, None)                         # (the target, when acquired) awaiting its first pull
+        self._band_round: dict = {}                      # this round's band -> [pulls, hits] (aim_report)
         self.look = BotLook(epoch=clock)          # stats look: the last pulls and decisions ("look at the bot")
         self.doing, self.why, self._now = "none", "", None   # this tick's decision (DOINGS) and why
         self._tick_t = self._look_at = None
@@ -2716,6 +2728,8 @@ class Bot:
     def _set_target(self, key, now) -> None:
         """The target from here on: a change is counted (target_switches), and a change back to the one he left within
         FLIP_S too (target_flips)."""
+        if key != self.target and key is not None:
+            self._acq = (key, now)                       # acquired: the first pull on him is timed (acquire_to_shot_s)
         if key != self.target:
             if self.target is not None and key is not None:
                 self.stats["target_switches"] += 1
@@ -2858,6 +2872,7 @@ class Bot:
         self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
         self._bonus_seen_round = False
         self._walls, self._wall_hist, self._wall_push, self._wall_rec = [], [], None, None
+        self._errs, self._band_round = [], {}
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
         self._trail, self._dead_ends = [], []
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
@@ -3690,6 +3705,18 @@ class Bot:
             self.stats["first_pull_n"] += 1
             self.stats["first_pull_s"] = round(self.stats["first_pull_s"] + max(0.0, now - self._raise_t), 2)
             self._raise_t = None
+        err = abs(math.degrees(ctx.get("yaw_err") or 0.0))
+        if ctx.get("target") is not None and err < 90.0:
+            self.stats["aim_err_n"] += 1
+            self.stats["aim_err_sum_deg"] = round(self.stats["aim_err_sum_deg"] + err, 2)
+            self._errs = (self._errs + [err])[-400:]
+            self.stats["aim_err_mean_deg"] = round(sum(self._errs) / len(self._errs), 2)
+            self.stats["aim_err_p90_deg"] = round(sorted(self._errs)[int(0.9 * (len(self._errs) - 1))], 2)
+        if self._acq[0] is not None and ctx.get("target") == self._acq[0]:
+            self.stats["acquire_n"] += 1                 # the first pull on the target since he was acquired
+            self.stats["acquire_s"] = round(self.stats["acquire_s"] + max(0.0, now - self._acq[1]), 2)
+            self.stats["acquire_to_shot_s"] = round(self.stats["acquire_s"] / self.stats["acquire_n"], 3)
+            self._acq = (None, None)
         target = make_target(id=ctx.get("target"), kind="majini" if ctx.get("target") is not None else None,
                              dist_m=(ctx.get("dist") or 0.0) / 100.0, bearing_deg=-math.degrees(ctx.get("bearing") or 0.0))
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
@@ -3721,6 +3748,14 @@ class Bot:
         if slipped and pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) > 0:
             self.stats["pulls_slipped"] += 1
 
+    def _aim_report(self) -> None:
+        names = {"lt3m": "<3 m", "3to8m": "3-8 m", "8to15m": "8-15 m", "gt15m": ">15 m"}
+        bands = "; ".join(f"{names[b]} {100 * h // max(n, 1)} % ({n})" for _, b in AIM_BANDS
+                          for n, h in [self._band_round.get(b, (0, 0))] if n)
+        self.stats["aim_report"] = (f"err mean {self.stats.get('aim_err_mean_deg', 0)} / p90 "
+                                    f"{self.stats.get('aim_err_p90_deg', 0)} deg; first shot "
+                                    f"{self.stats.get('acquire_to_shot_s', 0)} s after acquiring; hits {bands}")
+
     def _resolve_pulls(self, now) -> None:
         """Pulls whose hit window has passed: hit (a Majini's health fell), or why not."""
         for pull in [x for x in self._pulls if x["end"] is not None and now - x["end"] > HIT_S]:
@@ -3734,6 +3769,16 @@ class Bot:
             else:
                 out, key = "miss:off_target", "pulls_ray_miss"
             self.stats[key] += 1
+            d = (pull.get("k") or {}).get("dist")
+            if isinstance(d, (int, float)) and not pull["laserless"]:
+                band = next(b for lim, b in AIM_BANDS if d < lim)
+                self.stats["pulls_" + band] += 1
+                row = self._band_round.setdefault(band, [0, 0])
+                row[0] += 1
+                if pull["drops"]:
+                    self.stats["hits_" + band] += 1
+                    row[1] += 1
+                self._aim_report()
             gate = pull["entry"].get("gate") or ""
             if pull["behind"]:
                 pull["entry"]["gate"] = f"{gate} (the dot on the {pull['behind']} behind him)"[:160]
@@ -3874,7 +3919,7 @@ class RE5Switch(Driver):
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS \
-        + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+        + AIM_COUNTERS + MEASURE_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
