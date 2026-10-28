@@ -126,6 +126,10 @@ DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
 # stays (the magnum's 8). Only once fire_rate has set the table this boot; the op sets the factor (1 = off). status
 # magnum_fast counts the fire actions sped up.
 MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 3.0, 6.0
+# throw_speed (operator 19:01: "When throwing grenades give them 20x grenade throwing speed animation"): his mDeltaTime
+# at THROW_SPEED_X while the throw runs (the gun's fire action with a grenade in hand: records THROW_RECORDS), as the
+# magnum's; status throw_fast counts them.
+THROW_SPEED_X, THROW_SPEED_MAX = 20.0, 20.0
 MAGNUM_FIRE_ACTIONS = frozenset({"cPlAction_pl_act_weapon_fire"})
 FIRE_FLOOR = 0.004                                       # never 0: a semi-automatic's next press waits for the countdown
                                                          # to fall below its record's +0x20 (0 for most), so it must pass 0
@@ -820,6 +824,7 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     magnum in hand, 1.0 otherwise (only over 1.0 or one of its own values)."""
     k = st.get("quick_attack") or 1.0
     mk = (st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
+    tk = (st.get("throw_speed", THROW_SPEED_X) or 1.0) if st.get("fire_rate") else 1.0
     try:
         act = R.u64(g.m, player + UNIT_ACTION)
         name = None
@@ -836,11 +841,14 @@ def _keep_quick(ad, g: RE6Switch, player: int, st: dict, weapon=None) -> int:
     if quick and not st.get("qa_in"):
         st["quick_attacks"] = st.get("quick_attacks", 0) + 1
     magnum = mk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in MAGNUM_RECORDS
+    throw = tk > 1.0 and name in MAGNUM_FIRE_ACTIONS and weapon in THROW_RECORDS
     if magnum and not st.get("mag_in"):
         st["magnum_fast"] = st.get("magnum_fast", 0) + 1
-    st["qa_in"], st["mag_in"] = quick, magnum
-    want = k if quick else mk if magnum else 1.0
-    if abs(cur - want) < 1e-4 or not (abs(cur - 1.0) < 1e-4 or abs(cur - k) < 1e-4 or abs(cur - mk) < 1e-4):
+    if throw and not st.get("throw_in"):
+        st["throw_fast"] = st.get("throw_fast", 0) + 1
+    st["qa_in"], st["mag_in"], st["throw_in"] = quick, magnum, throw
+    want = k if quick else mk if magnum else tk if throw else 1.0
+    if abs(cur - want) < 1e-4 or not any(abs(cur - v) < 1e-4 for v in (1.0, k, mk, tk)):
         return 0
     try:
         ad.write_memory(player + UNIT_DELTA, struct.pack("<f", want))   # read back by the adapter
@@ -1007,7 +1015,8 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                                                  "infinite_grenades", "auto_qte_ram")) or \
             st and ((st.get("kill_time") or {}).get("on") or (st.get("quick_attack") or 1.0) > 1.0) or down_fire_on
         mag_on = bool(st and st.get("fire_rate") and ((st.get("magnum_speed", MAGNUM_SPEED_X) or 1.0) > 1.0
-                                                      or st.get("mag_in")))
+                                                      or (st.get("throw_speed", THROW_SPEED_X) or 1.0) > 1.0
+                                                      or st.get("mag_in") or st.get("throw_in")))
         keeping = keeping or mag_on
         if not keeping or not enabled:
             return out
@@ -1101,6 +1110,12 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                                aim_lock=_extra.get("aim_lock"), flash=_extra.get("flash"))
         if op == "magnum_speed":
             return magnum_speed(g, 1.0 if on is False else multiplier)
+        if op == "throw_speed":
+            k = float(1.0 if on is False else (multiplier if multiplier is not None else THROW_SPEED_X))
+            if not 1.0 <= k <= THROW_SPEED_MAX:
+                raise ValueError("throw_speed multiplier: 1..%g (1 = off)" % THROW_SPEED_MAX)
+            g.state["throw_speed"] = k
+            return {"verified": True, "throw_speed_x": k}
         if op == "down_fire":
             return down_fire(g, 1.0 if on is False else multiplier)
         if op == "fire_rate":
