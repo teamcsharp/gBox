@@ -461,6 +461,8 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # the shot motion (shot_stick_drops); the quick turn (180 deg in 0.3 s) is not used (QUICK_TURN off: the body turns by
 # the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
 HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
+SHOT_TAIL_S = 0.15                     # Bot._shot_tail: no stick in the boosted shot motion nor this long after it
+SHOT_TAIL_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rleft", "rright", "rup", "rdown"})
 # The quick turn back (operator 20:25: "you can do a quick turn by holding down and pressing B. Thats how you turn around
 # and deal with people behind you"): a Majini on his level within BEHIND_R more than QUICK_ERR off his heading, nobody
 # nearer in front: the trigger let go first (never in the boosted shot motion), the gun down, then the stick back, + B,
@@ -2649,6 +2651,21 @@ class Bot:
         self.stats["gov_drops"] += 1
         return {**act, "hold": tuple(k for k in hold if k not in ("rleft", "rright"))}
 
+    def _shot_tail(self, act, snap, now) -> dict:
+        """No stick at all while the shot motion plays and SHOT_TAIL_S after it (operator 2026-10-28 04:0x: "they seem
+        like they're teleporting around the stage at times ... whipping the view unnaturally and then ... their position
+        in the level is somewhere that's unrealistic"): fire_rate's x80 time scale is put back only at the next
+        snapshot, so a run or turn begun in that gap moved him seconds' worth at once. stats shot_tail_drops."""
+        p = snap.get("player") or {}
+        if p.get("motion") == MOTION_SHOT:
+            self._shot_until = now + SHOT_TAIL_S
+        hold = act.get("hold")
+        if (not hold or now >= getattr(self, "_shot_until", -1e9) or self.doing == "held" or self.quick
+                or not set(hold) & SHOT_TAIL_KEYS):
+            return act
+        self.stats["shot_tail_drops"] = self.stats.get("shot_tail_drops", 0) + 1
+        return {**act, "hold": tuple(k for k in hold if k not in SHOT_TAIL_KEYS)}
+
     def _count_sticks(self, act, now) -> None:
         """The right stick's motion this tick: a key newly down (stick_onsets: the pulses), and the yaw turned the other
         way within 0.4 s of the last (aim_reversals: the camera swinging back)."""
@@ -3032,6 +3049,7 @@ class Bot:
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
+        act = self._shot_tail(act, snap, now)
         self._count_sticks(act, now)
         try:
             self._look_tick(snap, now)

@@ -78,7 +78,8 @@ def test_on_a_majini_the_pan_stops_and_the_trigger_holds():
         assert "zr" in act["hold"] and not {"rleft", "rright"} & set(act["hold"])
 
 
-def test_no_stick_while_the_shot_motion_plays_then_the_pan_goes_on():
+def test_no_stick_while_the_shot_motion_plays_then_the_pan_goes_on(monkeypatch):
+    monkeypatch.setattr(R, "SHOT_TAIL_S", 0.0)                          # (the post-shot pause: its own test)
     b, clock = bot()
     ring = [at(300, 40), at(350, 100), at(250, -60)]
     b.tick(snap(ring))
@@ -99,7 +100,8 @@ def test_one_at_point_blank_in_front_is_fired_on():
     assert "zr" in act["hold"] and "rleft" not in act["hold"]
 
 
-def test_the_regular_aim_holds_no_stick_in_the_shot_motion():
+def test_the_regular_aim_holds_no_stick_in_the_shot_motion(monkeypatch):
+    monkeypatch.setattr(R, "SHOT_TAIL_S", 0.0)                          # (the post-shot pause: its own test)
     b, clock = bot()
     foe = at(600, 0)
     b.tick(snap([foe]))                                            # the gun comes up
