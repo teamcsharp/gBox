@@ -27,15 +27,17 @@ CODE_START = 0x00100000
 N_ENTRIES = 1 << 20
 FCRAM_SIZE = 0x10000000                       # FCRAM_N3DS_SIZE: Citra always allocates the New 3DS size
 TABLE_MIN = N_ENTRIES * 8                     # the raw pointer array alone is 8 MiB
+TABLE_MAX = 0x4000000                         # Citra's PageTable (raw pointers + refs + attributes) is about 41 MiB
+FCRAM_SLACK = 0x400000                        # the allocator's header / a small neighbour merged into the same row
 SCAN_STEP = 0x1000000
 
 
 def _table_for(page: int, fcram: tuple[int, int], rw, read) -> int | None:
     """The page table whose entry 0x100 holds `page` (entry 0 null, entry 0x101 in FCRAM too), or None."""
     want = struct.pack("<Q", page)
-    for a, b in rw:
-        if b - a < TABLE_MIN or (a, b) == fcram:
-            continue
+    sized = [r for r in rw if TABLE_MIN <= r[1] - r[0] <= TABLE_MAX and r != fcram]
+    larger = [r for r in rw if r[1] - r[0] > TABLE_MAX and r != fcram]
+    for a, b in sized + larger:                    # the table's own allocation first: a few reads, not the whole heap
         for off in range(0, b - a, SCAN_STEP):
             try:
                 blk = read(a + off, min(SCAN_STEP, b - a - off))
@@ -57,7 +59,7 @@ def _table_for(page: int, fcram: tuple[int, int], rw, read) -> int | None:
     return None
 
 
-def locate(regions, read, signature: bytes) -> dict:
+def locate(regions, read, signature: bytes, wide_ok: bool = True) -> dict:
     """{fcram: (lo, hi), code_host, table}: regions [(start, end, writable, private)] of the host process, read(host,
     n) -> bytes (or raises OSError). ValueError when the game isn't loaded yet (no FCRAM page holds the signature).
 
@@ -68,7 +70,12 @@ def locate(regions, read, signature: bytes) -> dict:
         raise ValueError("a code signature of at least 32 bytes is needed")
     rw = [(a, b) for a, b, writable, private in regions if writable and private]
     hits = 0
-    for a, b in sorted((r for r in rw if r[1] - r[0] >= FCRAM_SIZE), key=lambda r: r[1] - r[0]):
+    # FCRAM-sized rows first (the block itself, or a save-state copy), then any bigger row (a merged neighbour): an
+    # attach while the game boots reads one or two 256 MiB rows, not every big row of RetroArch's heap (2026-10-27: the
+    # i9 worker stopped answering the Spark 50 s into the first Merc3D boot)
+    exact = sorted((r for r in rw if FCRAM_SIZE <= r[1] - r[0] <= FCRAM_SIZE + FCRAM_SLACK), key=lambda r: r[1] - r[0])
+    wide = sorted((r for r in rw if r[1] - r[0] > FCRAM_SIZE + FCRAM_SLACK), key=lambda r: r[1] - r[0])
+    for a, b in exact + (wide if wide_ok else []):
         for off in range(0, b - a, SCAN_STEP):
             try:
                 blk = read(a + off, min(SCAN_STEP + len(signature), b - a - off))
@@ -91,9 +98,9 @@ class CitraMemory:
     """rd(va, n) / wr(va, data) on a 3DS guest's virtual addresses through Citra's page table. `read(host, n)` and
     `write(host, data)` reach the emulator process; `regions()` lists its memory for locate()."""
 
-    def __init__(self, read, regions, signature: bytes, write=None):
+    def __init__(self, read, regions, signature: bytes, write=None, wide_ok: bool = True):
         self._read, self._write, self._regions, self.signature = read, write, regions, signature
-        self.where = locate(regions(), read, signature)
+        self.where = locate(regions(), read, signature, wide_ok=wide_ok)
         self._pages: dict[int, int] = {}
 
     def refresh(self) -> None:
@@ -205,23 +212,25 @@ def _windows(pid: int, writable: bool):
                                                  ctypes.sizeof(m)):
             size = m.RegionSize
             if m.State == 0x1000 and not m.Protect & 0x101:                 # MEM_COMMIT, not NOACCESS / GUARD
-                out.append((a, a + size, bool(m.Protect & 0x44), m.Type == 0x20000))   # READWRITE|EXECUTE_READWRITE, MEM_PRIVATE
+                out.append((a, a + size, bool(m.Protect & 0x44), m.Type == 0x20000,   # READWRITE|EXECUTE_READWRITE, MEM_PRIVATE
+                            m.AllocationBase or 0))
             a = (m.BaseAddress or 0) + size
         merged = []
-        for r in out:                                       # one VirtualAlloc block can come back as several rows
-            if merged and merged[-1][1] == r[0] and merged[-1][2:] == r[2:]:
+        for r in out:                                       # one VirtualAlloc block can come back as several rows; two
+            if merged and merged[-1][1] == r[0] and merged[-1][2:] == r[2:]:     # allocations never merge (sizes matter)
                 merged[-1] = (merged[-1][0], r[1], *r[2:])
             else:
                 merged.append(r)
-        return merged
+        return [r[:4] for r in merged]
 
     return read, (write if writable else None), regions
 
 
-def attach(pid: int, signature: bytes, writable: bool = False) -> CitraMemory:
-    """The 3DS guest of the RetroArch (citra_libretro) process `pid` on this host."""
+def attach(pid: int, signature: bytes, writable: bool = False, wide_ok: bool = True) -> CitraMemory:
+    """The 3DS guest of the RetroArch (citra_libretro) process `pid` on this host. wide_ok False: FCRAM-sized rows only
+    (the cheap attach the adapter retries while the game boots)."""
     read, write, regions = (_windows if sys.platform == "win32" else _linux)(pid, writable)
-    return CitraMemory(read, regions, signature, write=write)
+    return CitraMemory(read, regions, signature, write=write, wide_ok=wide_ok)
 
 
 _SIGNATURES: dict[tuple, bytes] = {}
