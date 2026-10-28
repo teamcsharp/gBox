@@ -80,6 +80,14 @@ class Guest:
 
 
 @pytest.fixture(autouse=True)
+def _fixed_selects(monkeypatch):
+    """These walk the menus to the fixed first entries and replay a death (the stage cycle and its No:
+    tests/test_re5_switch_cycle.py)."""
+    monkeypatch.setattr(R, "CYCLE", False)
+    monkeypatch.setattr(R, "REPLAY_ON_DEATH", True)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_laser_caches():
     """The laser caches are per main base, and every fake guest here shares BASE."""
     for cache in (R._LASER, R._LASER_MISS, R._NOT_LASER):

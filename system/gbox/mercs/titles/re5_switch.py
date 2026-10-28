@@ -90,7 +90,8 @@ CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO = 0x1CC, 0, 1   # uIdGameover00 "Cont
 # same round again at once, with no save, no selects and no loading. The engine publishes MercMode's round boundary at
 # the death (its terminal witness "dead") and closes the round's evidence; the bot counts the replay as the next round
 # (stats rounds, deaths_continued, round_start_via "dead/retry") and marks its start (_round_started).
-REPLAY_ON_DEATH = True
+REPLAY_ON_DEATH = False                  # (operator 18:03: "a random character / costume each and every round ... and
+                                         # level": a death answers No and walks the selects too - never the same round)
 FRESH_ROUND_S = 3.0                      # a clock this close to the round's full time on the first tick alive: it began
 
 
@@ -106,11 +107,84 @@ STAGE_NAMES = ("Public Assembly", "The Mines", "Village", "Ancient Ruins", "Expe
                "Ship Deck", "Prison")
 CHARACTERS = ("Chris (BSAA)", "Chris (Safari)", "Chris (STARS)", "Sheva (BSAA)", "Sheva (Clubbin)", "Sheva (Tribal)",
               "Jill (BSAA)", "Jill (Battle Suit)", "Wesker (Midnight)", "Wesker (STARS)")
-RELOAD_KEEP = ("SELECTION",)
+RELOAD_KEEP = ("SELECTION", "_CYCLE")
+
+
+# The stage cycle (operator 18:03: "i am not seeing the bots cycle through random levels and characters ... I want a
+# random character / costume each and every round ... and level. I want them learning and studying and cycling through
+# all of the levels"): with no operator choice (SELECTION, mercs_select), each visit to the selects takes the stage
+# played least so far (random among the ties, never the last one) and a random character / costume (CHARACTERS: the
+# costumes are the select's own entries; never the last one), held until a round starts on them. The counts persist
+# (CYCLE_FILE). A target the cursor does not reach in CYCLE_MAX_PRESSES presses (a locked entry) is given up: the entry
+# the cursor rests on is taken. The round's stats name the stage and character; stage_coverage the counts.
+CYCLE, CYCLE_MAX_PRESSES = True, 14
+
+
+class StageCycle:
+    def __init__(self, path=None, rng=None):
+        import random
+        self.path, self.rng = path, rng or random.Random()
+        self.stages, self.chars, self.last, self.held = {}, {}, None, None
+        self.confirmed = {}                                 # what the selects confirmed this visit: stage / character
+        self.presses, self.where = 0, None
+        if path is not None:
+            try:
+                import json
+                d = json.loads(open(path, encoding="utf-8").read())
+                self.stages = {int(k): int(v) for k, v in (d.get("stages") or {}).items()}
+                self.chars = {int(k): int(v) for k, v in (d.get("characters") or {}).items()}
+                self.last = tuple(d["last"]) if isinstance(d.get("last"), list) and len(d["last"]) == 2 else None
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+
+    def pick(self) -> tuple:
+        """(stage, character) for the coming round, held until a round starts on it."""
+        if self.held is None:
+            last_s, last_c = self.last if self.last else (None, None)
+            stages = [i for i in range(len(STAGE_NAMES)) if i != last_s] or list(range(len(STAGE_NAMES)))
+            low = min(self.stages.get(i, 0) for i in stages)
+            stage = self.rng.choice([i for i in stages if self.stages.get(i, 0) == low])
+            chars = [i for i in range(len(CHARACTERS)) if i != last_c] or list(range(len(CHARACTERS)))
+            self.held = (stage, self.rng.choice(chars))
+        return self.held
+
+    def started(self, stage: int, char: int) -> None:
+        self.stages[stage] = self.stages.get(stage, 0) + 1
+        self.chars[char] = self.chars.get(char, 0) + 1
+        self.last, self.held, self.confirmed = (stage, char), None, {}
+        if self.path is not None:
+            try:
+                import json
+                import os
+                tmp = str(self.path) + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"stages": self.stages, "characters": self.chars, "last": list(self.last)}, f)
+                os.replace(tmp, self.path)
+            except OSError:
+                pass
+
+    def coverage_text(self) -> str:
+        return ", ".join(f"{STAGE_NAMES[i]} {self.stages.get(i, 0)}" for i in range(len(STAGE_NAMES)))
+
+
+_CYCLE: dict = {}                        # the one StageCycle (made when first used); kept across a bot reload
+
+
+def cycle() -> StageCycle:
+    if "c" not in _CYCLE:
+        try:
+            from .. import lessons
+            path = lessons.ROOT.parent / "re5-switch-cycle.json"
+        except Exception:                                    # noqa: BLE001 - no data folder: in memory only
+            path = None
+        _CYCLE["c"] = StageCycle(path)
+    return _CYCLE["c"]
 
 
 def stage_target() -> int:
-    return int(SELECTION.get("stage", STAGE_TARGET))
+    if "stage" in SELECTION or not CYCLE:
+        return int(SELECTION.get("stage", STAGE_TARGET))
+    return cycle().pick()[0]
 
 
 # Split screen (docs/research/switch-coop-bot.md, static from this main): sPlayer holds four players at +0x30 + 8 * index
@@ -161,7 +235,9 @@ def own_laser(m, p: int, index: int) -> dict | None:
 
 
 def player_target() -> int:
-    return int(SELECTION.get("character", PLAYER_TARGET))
+    if "character" in SELECTION or not CYCLE:
+        return int(SELECTION.get("character", PLAYER_TARGET))
+    return cycle().pick()[1]
 
 BOOT_KEY = "a"                           # a screen RAM can't name out of a round (PRESS ANY BUTTON, a notice)
 STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "alert": "a", "mercs_title": "a"}
@@ -1149,6 +1225,12 @@ def warm_probe(m) -> dict:
 def step(scr: dict) -> str | None:
     """One key toward the next round: a cursor walks to its target first (D-pad), then A confirms."""
     where = scr.get("where")
+    if CYCLE and where in ("select_stage", "select_player") and isinstance(scr.get("cursor"), int):
+        c = cycle()
+        if c.where != where:
+            c.where, c.presses = where, 0
+        if c.presses >= CYCLE_MAX_PRESSES:
+            return "a"                                      # the target not reached (a locked entry): this one
     if where in CURSORED:
         cursor, target = scr.get("cursor"), scr.get("target")
         if not isinstance(cursor, int) or not isinstance(target, int):
@@ -1165,6 +1247,17 @@ def wandered(scr: dict) -> str | None:
 
 
 def pressed(scr: dict, key: str) -> None:
+    """The menus' press went in: the stage cycle counts the presses on a select and keeps what A confirmed there."""
+    where = scr.get("where")
+    if not CYCLE or where not in ("select_stage", "select_player") or not isinstance(scr.get("cursor"), int):
+        return None
+    c = cycle()
+    if c.where != where:
+        c.where, c.presses = where, 0
+    c.presses += 1
+    if key == "a":
+        c.confirmed["stage" if where == "select_stage" else "character"] = scr["cursor"]
+        c.where, c.presses = None, 0
     return None
 
 
@@ -3620,6 +3713,7 @@ class RE5Switch(Driver):
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
         if where == "playing":
+            self._cycle_started()
             now, t = self.clock(), snap.get("timer")
             if t != self._timer[0]:
                 self._timer = (t, now)
@@ -3627,6 +3721,19 @@ class RE5Switch(Driver):
                 where = "loading"                           # the clock stopped: frozen (the engine calls it lost)
         self._mods(m, snap, where == "playing")
         return where
+
+    def _cycle_started(self) -> None:
+        """A round is up on what the selects confirmed: the stage cycle counts it; the round's stats name it."""
+        if not CYCLE or "c" not in _CYCLE:
+            return
+        c = _CYCLE["c"]
+        stage, char = c.confirmed.get("stage"), c.confirmed.get("character")
+        if not (isinstance(stage, int) and isinstance(char, int)
+                and 0 <= stage < len(STAGE_NAMES) and 0 <= char < len(CHARACTERS)):
+            return
+        c.started(stage, char)
+        if self.stats is not None:
+            self.stats.update(stage=STAGE_NAMES[stage], character=CHARACTERS[char], stage_coverage=c.coverage_text())
 
     def _mods(self, m, snap, playing: bool, stats: dict | None = None) -> None:
         """The session's live mods (re5_switch_mods: fire_rate's time scale during shots, the no-ammo flags'
