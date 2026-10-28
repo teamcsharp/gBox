@@ -2646,7 +2646,9 @@ class Bot:
         ring's press inside its window), the stick round for a stick prompt (operator 2026-10-28, a J'avo's knife ring
         failed: "I need the bot able to complete every QTE event"; the hold returned before the prompt reader, so only
         B and the stick were ever tried). stats held_prompt_presses. None: no prompt shown."""
-        keys = [q.get("key") for q in (getattr(self, "_prompt_shown", None) or []) if q.get("key")]
+        keys = [q.get("key") for q in (getattr(self, "_prompt_shown", None) or []) if q.get("key") and q.get("key") != "r"]
+        # (R is the heal hint: a tablet only when he is hurt, by the tablet rule - operator 2026-10-28: "The bot needs to
+        # only eat health capsules when he's damaged")
         if not keys:
             return None
         self.wiggle += 1
@@ -4708,18 +4710,40 @@ class Bot:
                                           make_target(id=str(target), kind="zombie", dist_m=(ctx.get("dist") or 0) / 100.0),
                                           aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
                                           dot_on="target" if ctx.get("source") == "laser" else "off")
-            self._pull = {"target": target, "start": now, "end": None, "hit": False, "entry": entry}
+            pos_of = getattr(self, "_pos_of", {}) or {}
+            self._pull = {"target": target, "start": now, "end": None, "hit": False, "entry": entry,
+                          "k": {"dist": ctx.get("dist"), "foot": pos_of.get(target), "shooter": self._ppos,
+                                "dot": ctx.get("dot"), "weapon": (self._p or {}).get("weapon_id") if getattr(self, "_p", None) else None}}
         for pull in ([self._pull] if self._pull else []) + self._pulls:
             if pull["target"] in self._dropped:
                 pull["hit"] = True
         for pull in [x for x in self._pulls if now - x["end"] > HIT_S]:
             self._pulls.remove(pull)
             self.stats["pulls_hit" if pull["hit"] else "pulls_miss"] += 1
+            self._k_shot(pull, now)
             tol = getattr(self, "fire_tol", math.radians(FIRE_TOL_DEG0))   # learn the trigger's tolerance from the result
             tol += math.radians(FIRE_TOL_STEP) * (1 if pull["hit"] else -1)
             self.fire_tol = min(math.radians(FIRE_TOL_MAX), max(math.radians(FIRE_TOL_MIN), tol))
             self.stats["fire_tol_deg"] = round(math.degrees(self.fire_tol), 2)
             self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
+
+    def _k_shot(self, pull, now) -> None:
+        """Every resolved pull, the misses above all, into the enemy knowledge database (operator 2026-10-28: "I want a
+        report filed for every missed shot so that the aim bot can check into and investigate every single missed shot
+        ... and calibrate"): the distance, the weapon, the dot's point by his feet and the shooter, hit or miss; K's
+        learned aim then calibrates from them (enemy_db, as RE5's). stats k_shots, k_misses."""
+        try:
+            from ..brain import knowledge
+            k = pull.get("k") or {}
+            out = "hit" if pull.get("hit") else "miss"
+            knowledge.record_shot(MAP_ID, "zombie", None, (k.get("dist") or 0.0) / 100.0, k.get("weapon"),
+                                  k.get("dot"), out, None, enemy_id=pull.get("target"), fire_mode="hold",
+                                  enemy_pos=k.get("foot"), shooter_pos=k.get("shooter"), units_per_m=100.0, t=now)
+            self.stats["k_shots"] = self.stats.get("k_shots", 0) + 1
+            if out == "miss":
+                self.stats["k_misses"] = self.stats.get("k_misses", 0) + 1
+        except Exception as exc:                            # noqa: BLE001 - the record never stops a tick
+            self.stats["k_shot_error"] = f"{type(exc).__name__}: {exc}"[:120]
 
     def _look_tick(self, snap, now) -> None:
         """After each decision: the time since the last tick in the budget of the decision that ran (t_<doing>,
