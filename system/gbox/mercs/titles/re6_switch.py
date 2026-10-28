@@ -1695,7 +1695,11 @@ EMOTION_ACTION = "cPlAction_pl_act_emotion"
 AIM_LOCK = True
 CAM_OWNED, QFPS_OFF, QFPS_VT, QFPS_PITCH = P_CAMERA, 0x16A0, 0x25C4080, 0x2C0   # (P_CAMERA / CAM_OWNER: the co-op readers')
 PITCH_DEG_PER_UNIT, PITCH_DEG_AT_0 = 23.0, -1.5
-LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.5, math.radians(1.5), math.radians(0.4)
+LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.25, math.radians(1.5), math.radians(0.4)
+# The pitch guard (live 20:00-20:22: up_aim_s 28.6 s over five rounds, most on High Seas Fortress / Requiem for War):
+# the written pitch never runs more than LOCK_UP_SLACK above the target's own slope, nor above CLOSE_PITCH for one that
+# is not up there itself; the learned correction is held to LOCK_BIAS_MAX (about 6 deg).
+LOCK_UP_SLACK = math.radians(5)
 LOCK_FAIL_N, LOCK_FAIL_S, LOCK_OFF_S, LOCK_HIT_S, LOCK_TOL = 5, 2.0, 3.0, 0.6, 0.02
 # Aimed fire (the same message: "any enemy on screen or within ~15 m in line of sight, including ceiling or hanging
 # enemies and bosses ... gets locked and shot at the magnum's rapid rate until dead; crowd-control quick shots only at
@@ -2324,7 +2328,8 @@ class Bot:
         sticks this tick (held: exempt); up_aim_s: the camera aimed up past UP_AIM with no vertical threat targeted."""
         p = snap.get("player") or {}
         cam = snap.get("camera")
-        if cam and cam.get("pitch", 0.0) > UP_AIM and "zl" in (out.get("hold") or ()):
+        bonus_aim = str(self.stats.get("act") or "").startswith("bonus") or isinstance(self.lock_tid, tuple)
+        if cam and cam.get("pitch", 0.0) > UP_AIM and "zl" in (out.get("hold") or ()) and not bonus_aim:
             tgt = next((e for e in snap.get("enemies") or () if e.get("ptr", e.get("slot")) == self.target), None)
             up_to = None
             if tgt is not None and p.get("pos"):                 # the target's own elevation from the camera
@@ -2355,7 +2360,7 @@ class Bot:
         boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
                                                           and p.get("weapon_id") in MAGNUM_IDS)
         if (spin > SPIN_DEG_S or boosted) and set(hold) & STICK_KEYS:
-            self.stats["whips"] += 1
+            self.stats["whips" if spin > SPIN_DEG_S else "boost_releases"] =                 self.stats.get("whips" if spin > SPIN_DEG_S else "boost_releases", 0) + 1
             out = dict(out, hold=tuple(k for k in hold if k not in STICK_KEYS))
         return out
 
@@ -2922,6 +2927,9 @@ class Bot:
                 self.pitch_bias = max(-LOCK_BIAS_MAX, min(LOCK_BIAS_MAX, self.pitch_bias + LOCK_BIAS_GAIN * err_units))
         self.lock_view = view
         pitch = (math.degrees(want_pitch) - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + self.pitch_bias
+        if point is None:                                    # the pitch guard: never far above his own slope
+            cap_deg = math.degrees(max(want_pitch, CLOSE_PITCH) + LOCK_UP_SLACK)
+            pitch = min(pitch, (cap_deg - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + max(0.0, self.pitch_bias))
         pitch = max(-1.0, min(1.0, pitch))
         if not self.ram(ac["addr"], pitch, want_yaw):
             self._lock_fail(now, "lock_write_fail")

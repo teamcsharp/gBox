@@ -1588,12 +1588,12 @@ def test_the_turn_governor_releases_the_sticks_on_a_whip_and_in_a_sped_up_action
     run(bot, snap, clock, 2)
     snap["player"]["action"] = "cPlAction_pl_act_weapon_comn_quick_shot"     # x10 while it runs
     out = bot._govern(snap, {"hold": ("lup", "rleft", "zl")}, clock[0] + 0.05)
-    assert out["hold"] == ("zl",) and bot.stats["whips"] == 1
+    assert out["hold"] == ("zl",) and bot.stats["boost_releases"] == 1 and bot.stats["whips"] == 0
     snap["player"]["action"] = "cPlAction_pl_act_walk"
     bot._rot_prev = (clock[0], 0.0)
     snap["player"]["rot"] = math.radians(90)                                  # 90 deg in 0.05 s: a whip
     out = bot._govern(snap, {"hold": ("lup", "zl")}, clock[0] + 0.05)
-    assert out["hold"] == ("zl",) and bot.stats["spin_deg_s"] >= 1000 and bot.stats["whips"] == 2
+    assert out["hold"] == ("zl",) and bot.stats["spin_deg_s"] >= 1000 and bot.stats["whips"] == 1
 
 
 def test_aiming_up_with_no_vertical_threat_is_counted():
@@ -1786,6 +1786,17 @@ def test_the_mods_tool_routes_an_re6_switch_session_to_its_own_ops(mods, monkeyp
     st = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="status"), None)["result"]
     assert st["bot"]["flash"] is False and st["live_weapon_sets"] == 1
     assert T.is_switch_re6({"title_id": "01002a000cd48000"}) and not T.is_switch_re6({"game_id": "52d15709be0fda1a"})
+
+
+def test_the_pitch_guard_never_writes_far_above_the_targets_own_slope():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    bot.pitch_bias = 0.25                                                     # a learned correction at its cap
+    run(bot, snap, clock, 4)
+    c = snap["camera"]["pos"]
+    own = math.degrees(math.atan2(R.CHEST_H - c[1], math.hypot(-c[0], 900.0 - c[2])))
+    cap = (math.degrees(R.CLOSE_PITCH) + math.degrees(R.LOCK_UP_SLACK) - R.PITCH_DEG_AT_0) / R.PITCH_DEG_PER_UNIT + 0.25
+    assert writes and all(w[1] <= cap + 1e-6 for w in writes) and own < 0
+    assert R.LOCK_BIAS_MAX <= 0.25
 
 
 def test_no_new_bomb_under_half_health():
