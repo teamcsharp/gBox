@@ -110,3 +110,14 @@ From `tests/test_switch_linux.py::test_re5_and_re6_get_single_core_in_edens_per_
 | Guest-memory mapping | ✅ | guest_arena + /proc/<pid>/maps |
 | GDB module-base check | ❌ BLOCKED | Spark busy with MercMode, i9-NUC offline |
 | Session teardown | ✅ | RE5 stopped cleanly |
+
+
+---
+
+## Status Update (2026-10-27 22:32)
+**Cron run**: gbox-kimi on kimi-for-coding
+**Spark state**: RE5 and RE6 sessions active on lilspark (both agent_owned, paused, warm)
+**i9-NUC state**: Online but running Mercenaries 3D (x86_64 Windows, unsuitable for ARM64 Eden)
+**GDB module-base check**: Still BLOCKED — Spark not idle (two agent-owned Switch sessions running)
+**Next step**: Wait for Spark sessions to end, then perform one debug launch (debug=true) of RE5 with GDB stub, verify module base against /proc/<pid>/maps, tear down.
+**Concrete dependency**: Spark must have zero active sessions before debug launch.
