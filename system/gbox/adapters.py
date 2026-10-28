@@ -810,7 +810,10 @@ def win_grab(pid: int) -> bytes:
 
 
 VGLRUN = "/opt/VirtualGL/bin/vglrun"
-CITRA_RETRY_S, CITRA_WIDE_S = 5.0, 60.0                # 3DS guest attach while the game boots (RetroArchAdapter.citra_memory)
+CITRA_RETRY_S, CITRA_WIDE_S = 5.0, float("inf")       # 3DS guest attach while the game boots (RetroArchAdapter.citra_memory);
+# the wide scan (every big row of RetroArch's heap, in this process) is off: 2026-10-28 the i9 worker kept going offline
+# minutes into Merc3D (each death reboots the game, a re-attach, and after three cheap misses a wide scan a minute
+# starved its heartbeat). The cheap attach (FCRAM-sized rows) finds the game; a miss just tries again in 5 s.
 
 
 def _pad_binds() -> dict:
