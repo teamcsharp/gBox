@@ -1260,6 +1260,8 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<link rel="stylesheet" href="pip-stream-picker.css">
+<script src="pip-stream-picker.js"></script>
 <script src="reconnect-flow.js"></script>
 <script src="pip-media.js"></script>
 <script src="../web/viz/mercs-clock.js"></script>
@@ -2614,7 +2616,7 @@ $('#mercmode-open').onclick=async()=>{
   host.hidden=false;
   mercModePanel=GBoxMercMode.mount({root:host,api:async(path,body)=>{
     const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;},
-    watch:sid=>pipShow(sid)});                  // "Watch": another PC's MercMode run in this PC's PiP
+    watch:sid=>pipChoose(sid)});                // "Watch": remember the explicitly selected instance
   await mercModePanel.ready;
 };
 
@@ -3900,6 +3902,27 @@ function updateCompactMedia(on) {
 }
 addEventListener('resize', () => compactFit?.refit());
 addEventListener('pagehide', () => compactMedia?.stop());
+let pipStreamRead = null;
+async function pipStreamData() {
+  const source = S?.apiUrl;
+  if (!pipStreamRead || pipStreamRead.origin !== source) {
+    const read = {origin:source};
+    read.promise = Promise.all([liveSessions(0), gbox.api('/api/mercmode')]).then(([sessions, merc]) => {
+      if (S?.apiUrl !== source) throw Error('The stream connection changed. Open the picker again.');
+      if (!sessions.ok) throw Error(sessions.error || 'Stream connection unavailable');
+      return {rows:Array.isArray(sessions.data) ? sessions.data : [], hosts:merc.ok ? merc.data?.hosts || [] : []};
+    }).finally(() => { if (pipStreamRead === read) pipStreamRead = null; });
+    pipStreamRead = read;
+  }
+  return pipStreamRead.promise;
+}
+const pipSelection = GBoxPipStreamPicker.create({storage:localStorage, origin:() => S?.apiUrl, read:pipStreamData,
+  show:async (row, current) => {
+    clientViewNavigation++; compactContinuity.cancel();
+    await pipShow(row.session_id, {current});
+    return current() && COMPACT.on && COMPACT.sid === row.session_id;
+  }});
+const pipChoose = sid => pipSelection.select(sid);
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
   resolve: async requested => {
@@ -3924,7 +3947,8 @@ const compactController = GBoxCompactGame.create({
     // fps=30 (gbox/live_stream.py): half of a 57 fps source's bitrate, the newest frame each time, so a Wi-Fi link carries
     // the PiP steadily (operator 2026-10-27: "it plays for three seconds and then it stops")
     const streamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}&fps=30`;
-    const restoreCurrent = () => requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation;
+    const restoreCurrent = () => (!requested?.current || requested.current()) &&
+      (requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation);
     if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
     if (document.fullscreenElement) await document.exitFullscreen();
     if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
@@ -3936,6 +3960,7 @@ const compactController = GBoxCompactGame.create({
     const wv = document.querySelector('#wv');
     if (wv && !requested?.preserveGuest) {
       await wv.gboxReady;
+      if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
       await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`);
     }
     const frame = local && EMB.sid === session.session_id ? window.GBoxGPUVideo?.stats() : null;
@@ -3962,6 +3987,7 @@ const compactController = GBoxCompactGame.create({
       if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
     botLogicSidebar.update({ ...state, session: compactSession }); // bind after the displayed stream changes
+    if (state.on && compactSession?.session_id === state.sid) pipSelection.remember(compactSession);
     if (!state.on) compactHover(false);
     updateCompactMedia(state.on);
     renderClientUpdate();
@@ -3974,15 +4000,17 @@ const compactRows = async read => { const r = await read(); if (!r.ok) throw Err
 // MercMode's run plays on a session the PiP is not showing (GBoxMercMode.transition says follow): go to it the way the
 // continuity follower goes to a replacement - its first real frame, then the stream (a dead or paused session never stays)
 async function compactFollowRun(sid, onlyIfEnded = false) {
-  if (!COMPACT.on || COMPACT.local || COMPACT.sid === sid) return;
+  if (!COMPACT.on || COMPACT.local || COMPACT.sid === sid || pipSelection.preference?.pinned) return;
+  const revision = pipSelection.revision;
   const rows = await compactRows(() => liveSessions());
+  if (revision !== pipSelection.revision || pipSelection.preference?.pinned) return;
   const list = Array.isArray(rows) ? rows : [];
   if (onlyIfEnded && list.some(s => s.session_id === COMPACT.sid && s.state === 'running')) return;   // the operator's own game
   const session = list.find(s => s.session_id === sid);
   if (session && session.state === 'running' && session.worker_online !== false) await compactFollow(session, COMPACT.sid);
 }
 const compactContinuity = GBoxSessionContinuity.create({
-  current: () => COMPACT.on && !COMPACT.local ? { ...compactSession, session_id: COMPACT.sid } : null,
+  current: () => COMPACT.on && !COMPACT.local && !pipSelection.preference?.pinned ? { ...compactSession, session_id: COMPACT.sid } : null,
   // every 2 s: the shared running list while the game runs, the history only to find what replaced it
   read: id => GBoxSessionContinuity.rowsFor(id, () => compactRows(() => liveSessions()),
     () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
@@ -3991,8 +4019,10 @@ const compactContinuity = GBoxSessionContinuity.create({
 // force (F5): the PiP moves at once, its first frame only a poster when there is one (the operator asked for this game).
 // Otherwise the main window's view checks the first frame; a view not ready or silent for 5 s never holds the PiP on an
 // ended game (operator 2026-10-27, "stuck reconnecting" after a Spark restart): the stream's health decides then.
-async function compactFollow(session, from, { force = false } = {}) {
-  if (session?.warm) return; // a fresh paused frame is never the next MercMode turn
+async function compactFollow(session, from, { force = false, current = () => true } = {}) {
+  const revision = pipSelection.revision;
+  const stillCurrent = () => current() && revision === pipSelection.revision && pipSelection.allows(session);
+  if (session?.warm || !stillCurrent()) return; // a fresh paused frame is never the next MercMode turn
   const token = await gbox.token();
   const webview = document.querySelector('#wv'), sid = encodeURIComponent(session.session_id);
   const url = `${S.apiUrl}/api/sessions/${sid}/frame.jpg?token=${encodeURIComponent(token)}`;
@@ -4006,34 +4036,53 @@ async function compactFollow(session, from, { force = false } = {}) {
     frame = { visible: true };
   }
   if (!frame?.visible && !force) return; // black boot frames do not replace the held gameplay
-  if (!COMPACT.on || COMPACT.sid !== from) return;
-  const image = $('#compact-stream');
-  if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
-  else if (image) image.style.backgroundImage = '';            // never the old game's last frame under the new one
-  compactSession = session; compactTitle = sessionTitle(session);
-  closePipMenu();
-  compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}&fps=30`;
-  await compactController.follow(from, {sid:session.session_id, local:false});
-  document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
+  if (!COMPACT.on || COMPACT.sid !== from || !stillCurrent()) return;
+  const followed = await compactController.follow(from, {sid:session.session_id, local:false}, {current:stillCurrent, prepare:() => {
+    const image = $('#compact-stream');
+    if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+    else if (image) image.style.backgroundImage = '';
+    compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
+    compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}&fps=30`;
+  }});
+  if (followed) document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
 }
-setInterval(() => compactContinuity.poll(), 2000); // keep polling while hidden/minimized
+async function pipFollowSelected() {
+  if (pipFollowSelected.busy || !COMPACT.on || !pipSelection.preference?.pinned) return;
+  pipFollowSelected.busy = true;
+  const from = COMPACT.sid, revision = pipSelection.revision;
+  try {
+    const row = await pipSelection.target();
+    const current = () => COMPACT.on && COMPACT.sid === from && revision === pipSelection.revision;
+    if (row && row.session_id !== from && current()) await pipShow(row.session_id, {current, force:false});
+  } catch {} finally { pipFollowSelected.busy = false; }
+}
+setInterval(() => { compactContinuity.poll(); pipFollowSelected(); }, 2000); // keep polling while hidden/minimized
 addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
-const compactEnter = () => compactController.enter();
+const compactEnter = async () => {
+  const revision = pipSelection.revision, current = () => revision === pipSelection.revision;
+  const row = await pipSelection.target(), saved = pipSelection.preference;
+  if (!current()) return false;
+  return compactController.enter({current, ...(row || saved ? {sid:row?.session_id || saved.sid} : {})});
+};
 const compactRestore = () => compactController.restore();
 // This PiP shows a running game, wherever it plays: opened if it is closed, moved in place if it shows another game - this
 // PC's own game as its window (natively, no stream), another PC's as its stream.
-async function pipShow(sid) {
+async function pipShow(sid, {current = () => true, force = true} = {}) {
+  const revision = pipSelection.revision;
   const session = await sessionById(sid);
-  if (!session || session.state !== 'running' || session.worker_online === false)
+  const stillCurrent = () => current() && revision === pipSelection.revision && pipSelection.allows(session);
+  if (!stillCurrent()) return false;
+  if (!session || session.state !== 'running' || session.worker_online === false || session.warm)
     throw Error('That game is not running now (or its PC is offline). Your view was not changed.');
-  if (!COMPACT.on) return compactController.enter({ sid });
+  if (!COMPACT.on) return compactController.enter({ sid, current:stillCurrent });
   if (COMPACT.sid === sid) return COMPACT;
   if (session.detail?.local_window && session.detail.worker_name === S.workerName) {
-    compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
-    await compactController.follow(COMPACT.sid, { sid, local: true });
+    await compactController.follow(COMPACT.sid, { sid, local: true }, {current:stillCurrent, prepare:() => {
+      compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
+    }});
     return COMPACT;
   }
-  await compactFollow(session, COMPACT.sid, { force: true });
+  await compactFollow(session, COMPACT.sid, { force, current:stillCurrent });
   return COMPACT;
 }
 // "pip mode" (operator 2026-10-27, i9-NUC: "on the i9 nuc replace the stream in the pip with the mercenaries 3d playing as
@@ -4049,7 +4098,7 @@ const mercPipSave = () => { try { localStorage.setItem(MERC_PIP_KEY, JSON.string
 // embedTick: the game window of this PC's run, shown by this follower, closed - a title switch: hold the PiP for the next one
 function mercPipHold(sid) {
   try {
-    if (!sid || MERC_PIP.last !== sid) return false;
+    if (!sid || (MERC_PIP.last !== sid && !(pipSelection.preference?.pinned && COMPACT.sid === sid))) return false;
     MERC_PIP.lostAt ||= Date.now();
     return Date.now() - MERC_PIP.lostAt < MERC_PIP_HOLD_MS;
   } catch { return false; }                                      // (before this script line ran: nothing to hold)
@@ -4074,37 +4123,44 @@ async function mercReturnTarget(back) {
   const row = await sessionById(sid).catch(() => null);
   return row?.state === 'running' && row.worker_online !== false ? sid : null;
 }
-async function mercPipLeave(back) {
+async function mercPipLeave(back, current = () => true) {
+  if (!current()) return;
   Object.assign(MERC_PIP, { last: '', lostAt: 0, returnTo: null });
   const sid = back ? await mercReturnTarget(back) : null;
-  if (sid) { await pipShow(sid); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
+  if (!current()) return;
+  if (sid) { await pipShow(sid, {current}); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
   else if (COMPACT.on && COMPACT.local) await compactRestore();
 }
 async function mercPipPoll() {
   if (MERC_PIP.busy || !window.GBoxMercMode?.pipOwnRun || !S?.workerName || !gbox.api) return;
+  const revision = pipSelection.revision;
+  const current = () => revision === pipSelection.revision && !pipSelection.preference?.pinned;
   MERC_PIP.busy = true;
   try {
     const host = await mercOwnHost();
     if (!host) return;
+    if (!current()) return; // explicit instance selection survives local dispatches and title rotation
     const d = host.dispatch;
     if (d?.id && d.id !== MERC_PIP.dispatch) { MERC_PIP.dispatch = d.id; MERC_PIP.away = false; }   // a new dispatch: asked again
     if (!host.current_run) MERC_PIP.away = false;                // the operator's choice lasts while this PC's MercMode runs
     const shown = COMPACT.on ? COMPACT.sid : null;
     const row = shown ? await sessionById(shown).catch(() => null) : null;
+    if (!current()) return;
     const plan = GBoxMercMode.pipOwnRun(host, { shown, running: row?.state === 'running', last: MERC_PIP.last, away: MERC_PIP.away,
       handled: MERC_PIP.handled, closed: MERC_PIP.closed, returnTo: MERC_PIP.returnTo });
     if (plan.action === 'enter' || plan.action === 'follow') {
       if (plan.action === 'follow' && (!COMPACT.on || COMPACT.sid !== plan.from)) return;     // the view moved meanwhile
       const returnTo = plan.remember ? { sid: plan.from, worker: row?.detail?.worker_name || null } : MERC_PIP.returnTo;
-      await pipShow(plan.sid);
+      await pipShow(plan.sid, {current});
+      if (!current()) return;
       Object.assign(MERC_PIP, { last: plan.sid, lostAt: 0, returnTo }, plan.id ? { handled: plan.id } : {}); mercPipSave();
       if (plan.action === 'enter' || plan.remember)
         toast(`${sessionTitle(await sessionById(plan.sid).catch(() => null)) || 'This PC\'s game'} plays here: the PiP shows it on this PC`);
     } else if (plan.action === 'away') Object.assign(MERC_PIP, { away: true, last: '', returnTo: null });
     else if (plan.action === 'closed') { Object.assign(MERC_PIP, { away: true, last: '', returnTo: null }, plan.id ? { closed: plan.id } : {}); mercPipSave(); }
-    else if (plan.action === 'return' || plan.action === 'restore') await mercPipLeave(plan.action === 'return' ? MERC_PIP.returnTo : null);
+    else if (plan.action === 'return' || plan.action === 'restore') await mercPipLeave(plan.action === 'return' ? MERC_PIP.returnTo : null, current);
     else if (MERC_PIP.last && MERC_PIP.lostAt && Date.now() - MERC_PIP.lostAt >= MERC_PIP_HOLD_MS && COMPACT.on && COMPACT.sid === MERC_PIP.last)
-      await mercPipLeave(MERC_PIP.returnTo);                    // no next title came in time
+      await mercPipLeave(MERC_PIP.returnTo, current);           // no next title came in time
   } catch (error) { console.warn('MercMode PiP:', error.message); }
   finally { MERC_PIP.busy = false; }
 }
@@ -4146,6 +4202,15 @@ async function restoreClientView() {
     catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
   }
   value = clientRefresh.pending(); if (!value) return;
+  if (value.compact && pipSelection.preference) {
+    const next = await pipSelection.target();
+    const selected = next?.session_id || pipSelection.preference.sid;
+    if (selected !== value.sid) {
+      const old = value.sid, sid = selected, guest = {...value.guest};
+      for (const key of ['playing','active','pip']) if (guest[key] === old) guest[key] = sid;
+      value = {...value, sid, guest}; clientRefresh.retain(value);
+    }
+  }
   if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
   if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
   document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
@@ -4335,7 +4400,7 @@ function capMissing(op) {
 }
 function closePipMenu() {
   const m = $("#pipmenu");
-  if (m) { m.modifiers?.stop(); m.modifiers = null; m.style.display = "none"; m.opening = null; }
+  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.style.display = "none"; m.opening = null; }
   GM.menu = false; EMB.last = "";
 }
 async function pipModifiers(m, opening) {
@@ -4379,7 +4444,8 @@ function pipMenu(x, y) {
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") closePipMenu(); }, true);
     addEventListener("keydown", e => { if (e.key === "Escape" && m.style.display === "block") { e.preventDefault(); closePipMenu(); } }); }
   m.modifiers?.stop(); m.modifiers = null;
-  const opening = m.opening = {};
+  m.streamPicker?.stop(); m.streamPicker = null;
+  const opening = m.opening = {origin:S?.apiUrl};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
   const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
@@ -4404,13 +4470,19 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { closePipMenu(); gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
+  m.streamPicker = GBoxPipStreamPicker.mount(m.querySelector('[data-pip-stream-picker]'), {
+    read:pipStreamData, current:() => COMPACT.on ? COMPACT.sid : EMB.sid, title:sessionTitle,
+    select:(sid, valid) => pipSelection.select(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
+    preview:async sid => `${opening.origin}/api/sessions/${encodeURIComponent(sid)}/frame.jpg?token=${encodeURIComponent(await gbox.token())}&t=${Date.now()}`,
+    resized:() => { if (m.opening === opening) fitMenu(m, x, y, 8, 40); }
+  });
   pipModifiers(m, opening);
   pipMercMode(m, opening);
   savedSlot().then(slot => {                                   // this game's kept save slot, once known
@@ -4865,7 +4937,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     const m = JSON.parse(e.message.slice(5));
     if (m.ev === "padscan") syncNativePads();
     else if (m.ev === "padtakeover") padTakeoverPip(m);   // your pad has the PiP's game for a moment (its badge)
-    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipShow(m.sid).catch(error => toast(error.message));   // MercMode panel: Watch
+    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipChoose(m.sid).catch(error => toast(error.message)); // MercMode panel: Watch
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);

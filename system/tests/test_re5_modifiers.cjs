@@ -821,7 +821,7 @@ test('both PiP shells load modifier UI and compact right-click owns the gameplay
     assert.match(source, /<script src="\.\.\/web\/viz\/re5-modifiers\.js"><\/script>/);
   assert.match(desktop, /if \(!COMPACT\.on \|\| event\.target\.closest\?\.\('#pipmenu'\)\) return/);
   assert.match(desktop, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*pipMenu\(event\.clientX, event\.clientY\)/);
-  const follow = desktop.slice(desktop.indexOf('const compactContinuity ='), desktop.indexOf('setInterval(() => compactContinuity.poll()'));
+  const follow = desktop.slice(desktop.indexOf('const compactContinuity ='), desktop.indexOf('async function pipFollowSelected()'));
   assert.match(follow, /closePipMenu\(\)/);
   assert.match(mini, /follow: async session => \{\s*closeModifiers\(\)/);
 });

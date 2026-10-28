@@ -540,14 +540,15 @@ test('the update plan reloads once for anything new and says why it did not', ()
 });
 
 test('F5 moves the PiP at once (no wait for a first frame); the continuity follower still waits for a real one', async () => {
-  const src = html.slice(html.indexOf('// force (F5): the PiP moves at once'), html.indexOf('setInterval(() => compactContinuity.poll(), 2000);'));
+  const src = html.slice(html.indexOf('// force (F5): the PiP moves at once'), html.indexOf('async function pipFollowSelected()'));
   const follows = [], image = { style: { backgroundImage: 'url("old")' } };
   let health = { state: 'running', age_s: 12 };
   const ctx = vm.createContext({ S: { apiUrl: 'http://spark:8765' }, COMPACT: { on: true, sid: 'w1-old' }, JSON, encodeURIComponent,
+    pipSelection:{revision:0,allows:()=>true},
     gbox: { token: async () => 't' }, $: () => image, sessionTitle: s => s.title, closePipMenu: () => {}, setTimeout, clearTimeout,
     compactApi: async () => health,
     document: { querySelector: () => ({ dataset: { ready: 'false' }, executeJavaScript: async () => null }) },
-    compactController: { follow: async (from, s) => { follows.push([from, s.sid]); } } });
+    compactController: { follow: async (from, s, options) => { if(!options.current())return false;options.prepare();follows.push([from, s.sid]);return true; } } });
   vm.runInContext(src, ctx);
   await ctx.compactFollow({ session_id: 'w1-next', title: 'RE4' }, 'w1-old');   // no view to look, no live picture yet: it waits
   assert.deepEqual(follows, []); assert.equal(image.style.backgroundImage, 'url("old")');
