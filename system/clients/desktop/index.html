@@ -1295,7 +1295,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(#reconnect.f5):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   /* #reconnect.f5: an F5 pressed over the PiP shows its steps there too, packed into the small window */
   body.gbox-compact #reconnect .rc-head { top:8px; left:12px; right:12px; font-size:13px; }
   body.gbox-compact #reconnect .rc-flow { top:36px; left:12px; right:12px; bottom:92px; gap:6px 8px; overflow:auto; }
