@@ -25,7 +25,8 @@ import importlib
 import math
 
 SCHEMA = 'gbox.mercs.incident-replay/1'
-BOTS = {'010018100CD46000': 'gbox.mercs.titles.re5_switch', '01002A000CD48000': 'gbox.mercs.titles.re6_switch'}
+BOTS = {'010018100CD46000': 'gbox.mercs.titles.re5_switch', '01002A000CD48000': 'gbox.mercs.titles.re6_switch',
+        'BLUS30491': 'gbox.mercs.titles.re5_ps3'}
 HISTORY = 15
 
 

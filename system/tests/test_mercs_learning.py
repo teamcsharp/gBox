@@ -236,4 +236,7 @@ def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
     with pytest.raises(ValueError):
-        incident_replay.bot('BLUS30491')
+        incident_replay.bot('BLUS99999')                      # not a replayable title (no bot registered)
+    # RE5 PS3 (BLUS30491) is now replayable: the crowd_4_in_2m fix drives it through the replay harness
+    b = incident_replay.bot('BLUS30491')
+    assert b is not None

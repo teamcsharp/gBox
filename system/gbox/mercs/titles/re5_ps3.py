@@ -104,6 +104,9 @@ BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
+CROWD_R, CROWD_MIN = 200.0, 4          # a swarm this tight, this many deep: they all block the way, from any side
+                                       # (#5140 crowd_4_in_2m: 4+ within 2 m swarms him; the front cone alone missed the
+                                       # side/rear ones, so he kept firing at the front and got swarmed from behind)
 ROUTE_LEN_S = 3.0                      # the bonuses' route lengths are worked out again this often
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
@@ -2780,7 +2783,19 @@ class Bot:
             tgt = None
             self.stats["phase"] = "clear_nearby"
         threats = [e for e in sightable if self._threat(p, e)]
-        self.flags = {e["slot"]: ["blocking"] for e in threats}
+        # A tight swarm (#5140 crowd_4_in_2m): when CROWD_MIN+ live enemies on his level are within CROWD_R, the front
+        # cone under-counts the threats that actually touch him -- they come in from the sides and the rear, so the
+        # blocking flags and the target fight the front ones while the rest swarm him. Recognize the whole swarm:
+        # every live enemy within CROWD_R blocks the way, from any side, so he fights and relocates against all of it.
+        if len([e for e in live if abs(e["pos"][1] - p["pos"][1]) < LEVEL_DY and
+                math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= CROWD_R]) >= CROWD_MIN:
+            crowd = [e for e in live if abs(e["pos"][1] - p["pos"][1]) < LEVEL_DY and
+                     math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= CROWD_R]
+            self.stats["crowd_threats"] = len(crowd)
+            self.flags = {e["slot"]: ["blocking"] for e in crowd}
+            threats = crowd
+        else:
+            self.flags = {e["slot"]: ["blocking"] for e in threats}
         if tgt is None and candidate is None and live and self.combat is not None:
             chase = self._pursuit_target(p, live, mesh, now, snap)     # nobody in sight: go to them, never wait at a wall
             if chase is not None:
