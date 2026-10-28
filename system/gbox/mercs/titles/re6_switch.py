@@ -1694,6 +1694,11 @@ NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
 # followed by another while FLASH_N are still within FLASH_R, for up to FLASH_BURST_S ("spamming a flurry of flash
 # grenades", stats flash_burst_throws), the flash kept in hand between them.
 NADE_THROW_S, FLASH_BURST_S, FLASH_BURST_AIM_S = 0.3, 3.0, 0.1
+# Where it lands (operator 2026-10-28 05:0x: "she is throwing the grenades off of a cliff and is facing a wall. I need her
+# throwing them at the ground and then using the commotion to dispatch, melee, flee"): every grenade, the flash too,
+# faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
+# floor's height) while it is readied and thrown (stats nade_ground_locks).
+NADE_GROUND_MIN = 250.0
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
                                         # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
                                         # remote bomb)
@@ -3581,14 +3586,17 @@ class Bot:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
         if n["phase"] == "face":
             err = wrap(heading(n["to"][0] - px, n["to"][1] - pz) - yaw)
-            if n["kind"] != "flash" and abs(err) > NADE_FACE_ERR and now - n["at"] < NADE_FACE_S:
-                return self._go("nade", "nade_" + n["kind"], {"hold": self._turn(err)}, f"facing them for the {n['kind']}")
+            locked = self._nade_ground(p, live, snap, now, n)
+            if abs(err) > NADE_FACE_ERR and now - n["at"] < NADE_FACE_S:
+                return self._go("nade", "nade_" + n["kind"], {"hold": () if locked else self._turn(err)},
+                                f"facing them for the {n['kind']}")
             n.update(phase="aim", at=now)
         if n["phase"] == "aim":
             if eq != n["index"]:                                 # not that grenade in hand (the wheel moved): no throw
                 self.stats["nade_aborts"] += 1
                 n.update(phase="back", at=now - NADE_STEP_S, steps=0)
                 return self._go("nade", "nade_back", {"hold": ()}, "the wheel moved off the grenade: the gun back")
+            self._nade_ground(p, live, snap, now, n)
             if now - n["at"] < NADE_AIM_S:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade readied")
             n.update(phase="throw", at=now)
@@ -3615,6 +3623,7 @@ class Bot:
             self.stats["grenade_throws"] += 1
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "throw":
+            self._nade_ground(p, live, snap, now, n)
             if now - n["at"] < NADE_THROW_S:                   # the trigger held long enough for the game to take it
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
             n.update(phase="thrown", at=now)
@@ -3677,6 +3686,26 @@ class Bot:
         vis = [e for e in live if not self.is_blocked(e, now)]
         out = self._nade(p, vis, live, flat, cam["yaw"] if cam else p["rot"], snap, now)
         return out if out is not None else self._go("nade", "nade_" + kind, {"hold": ()}, "the grenade in hand")
+
+    def _nade_ground(self, p, live, snap, now, n) -> bool:
+        """The camera onto the ground among them for the throw (NADE_GROUND_MIN above): a point toward n["to"], at least
+        NADE_GROUND_MIN out, at his floor's height. True when the lock wrote it this tick."""
+        me = p["pos"]
+        tx, tz = n["to"]
+        d = math.hypot(tx - me[0], tz - me[2])
+        if d < NADE_GROUND_MIN:
+            k = NADE_GROUND_MIN / max(d, 1.0)
+            tx, tz = me[0] + (tx - me[0]) * k, me[2] + (tz - me[2]) * k
+        anchor = min(live, key=lambda e: math.hypot(e["pos"][0] - tx, e["pos"][2] - tz), default=None)
+        if anchor is None:
+            return False
+        try:
+            wrote = bool(self._lock(p, anchor, snap, now, point=(tx, me[1], tz)))
+        except Exception:                                   # noqa: BLE001 - the throw goes on with the stick's aim
+            return False
+        if wrote:
+            self.stats["nade_ground_locks"] = self.stats.get("nade_ground_locks", 0) + 1
+        return wrote
 
     @staticmethod
     def _wheel_key(eq, index: int) -> str:
