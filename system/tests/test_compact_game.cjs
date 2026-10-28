@@ -135,8 +135,17 @@ function followRig({ready='true',look,health={state:'running',age_s:.1},timers=g
     compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
   const start=html.indexOf('const compactContinuity =');
   vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
-  return {follow:(session,from)=>io.follow(session,from),changes,reads,image,state};
+  return {follow:(session,from)=>io.follow(session,from),
+    force:(session,from)=>context.compactFollow(session,from,{force:true}),changes,reads,image,state};
 }
+test('compact following never displays a parked MercMode target even when its frame is fresh',async()=>{
+  for(const force of [false,true]){
+    const x=followRig({look:()=>({visible:true,poster:'parked-frame'})});
+    await (force?x.force:x.follow)({session_id:'warm',state:'running',warm:true,title:'RE5'},'old');
+    assert.deepEqual(x.changes,[]); assert.deepEqual(x.reads,[]);
+    assert.equal(x.state.sid,'old'); assert.equal(x.image.style.backgroundImage,'old-picture');
+  }
+});
 test('desktop handoff waits for a visible successor frame and respects a PiP closed during the probe',async()=>{
   for(const visible of [false,true,'closed']){
     const x=followRig({look:state=>{
@@ -259,10 +268,38 @@ test('picture-in-picture never opens a game whose PC is offline, and never moves
   const compactController=vm.runInContext(html.slice(start,html.indexOf('const COMPACT = compactController.state;',start))+'\ncompactController',ctx);
   await assert.rejects(compactController.enter({sid:'nuc-dead'}),/runs on a PC that is offline; it was not opened\. Your view was not changed\./);
   assert.deepEqual(shown,[],'the Sessions view is not moved to it'); assert.equal(compactController.state.on,false);
-  // with nothing requested, the newest game on a PC that answers is the one shown, never the dead one
-  assert.match(html,/r\.data\.filter\(s => s\.state === 'running' && s\.worker_online !== false\)\.sort\(\(a,b\) => \(b\.started \|\| 0\) - \(a\.started \|\| 0\)\)\[0\]/);
   // a saved view of such a game is dropped instead of retried every 2 s (the guest reports it offline), and the PiP error carries the offline mark
   assert.match(html,/if \(restored\?\.offline\?\.length\) \{ clientRefresh\.done\(\); toast\(/);
   assert.match(html,/if \(error\.offline\) \{ clientRefresh\.done\(\); toast\(error\.message, 8000\); return; \}/);
   assert.match(html,/throw Object\.assign\(Error\(`\$\{sessionTitle\(session\) \|\| 'This game'\} runs on a PC that is offline/);
+});
+
+function resolveCompact(rows, selected=null){
+  const shown=[];
+  const wv={gboxReady:Promise.resolve(),executeJavaScript:async code=>shown.push(code)};
+  const ctx=vm.createContext({GBoxCompactGame:{create:io=>io},GBoxSessionContinuity:require('../clients/web/viz/session-continuity.js'),
+    VIEW:{mode:'auto'},S:{apiUrl:'http://spark',workerName:'viewer'},EMB:{sid:null},EYE:{on:false},clientViewNavigation:0,
+    gboxState:async()=>({playing:selected}),sessionById:async sid=>rows.find(s=>s.session_id===sid)||null,
+    liveSessions:async()=>({ok:true,data:rows}),gbox:{api:async()=>({ok:true,data:rows}),token:async()=>'t'},
+    sessionTitle:s=>s?.title||'',closePops(){},document:{fullscreenElement:null,querySelector:sel=>sel==='#wv'?wv:null},window:{}});
+  const start=html.indexOf('const compactController = GBoxCompactGame.create({');
+  const io=vm.runInContext(html.slice(start,html.indexOf('const COMPACT = compactController.state;',start))+'\ncompactController',ctx);
+  return {resolve:io.resolve,shown};
+}
+
+test('compact opening skips newer parked games and follows a selected parked game to its live successor',async()=>{
+  const live={session_id:'spark-live',state:'running',started:9,title:'RE5',detail:{worker_name:'lilspark'}};
+  const warm={...live,session_id:'spark-warm',started:20,warm:true,replaced_by:live.session_id,mercmode_display_successor:true};
+  const offline={...live,session_id:'offline',started:30,worker_online:false};
+  for(const selected of [null,warm.session_id]){
+    const x=resolveCompact([live,warm,offline],selected);
+    assert.equal((await x.resolve()).sid,live.session_id);
+    assert.deepEqual(x.shown,['show("Sessions", "spark-live")']);
+  }
+  const requested=resolveCompact([live,warm]);
+  assert.equal((await requested.resolve({sid:warm.session_id})).sid,live.session_id);
+  const onlyWarm=resolveCompact([{...warm,replaced_by:undefined}]);
+  assert.equal(await onlyWarm.resolve(),null,'a pool with no active game does not open a parked picture');
+  await assert.rejects(onlyWarm.resolve({sid:warm.session_id}),/unavailable/);
+  assert.deepEqual(onlyWarm.shown,[]);
 });

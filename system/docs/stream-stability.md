@@ -334,3 +334,27 @@ answers must stay small. Not verified on the live Spark or with Pine Box yet.
 Tests: `tests/test_stream_no_stutter.py` (a viewer of the production MJPEG generator keeps receiving frames while a
 slow answer is encoded; identical answers; the excluded route kinds; the slim worker list; the desktop-frame store
 reads off the loop) and `tests/test_stream_no_stutter.cjs` (the PiP followers' reads).
+
+
+### MercMode parked-session selection (2026-10-28)
+
+A warm MercMode emulator is paused, but its capture can continue producing fresh frames. Freshness alone therefore
+cannot identify the game currently being played. Regression tests reproduced several routes to the parked picture:
+
+- The per-PC broadcast feed and its feed-list summary chose the newest fresh session, including the warm pool.
+- Automatic program selection could retain its previous session after that session became warm, or follow a stale
+  viewing heartbeat back to it. A PC pin could select a warm session when no active session remained.
+- Session continuity accepted warm replacement candidates. Compact PiP could open the newest parked session or
+  follow a parked target even when the MercMode controller was directing it to the live turn.
+
+Automatic and per-PC selection now excludes warm sessions. Per-PC broadcast selection prefers the current MercMode
+turn, and its listing uses the same selector. Explicit broadcast session pins remain explicit. Client replacement
+chains may traverse parked predecessors, but their destination must be active. A transition with only parked games
+available waits instead of choosing a paused capture.
+
+Validation reproduced these failures before the change and exercises both directions of a warm-pool handover,
+stale viewing heartbeats, warm-only transitions, compact initial selection, and explicit broadcast session pins.
+At 06:35 CDT the live Spark was playing RE5 with RE6 warm; its 600-interval source sample had p95 23.94 ms,
+maximum 73.5 ms, and no gaps over 100 ms. The program was already showing the correct active session in that sample.
+These are confirmed selection defects, not proof that they explain every reported freeze or rewind. Broadcast
+activation needs the batched service restart; Windows desktop activation needs the operator's app relaunch.
