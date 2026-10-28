@@ -1619,6 +1619,16 @@ FLASH_N, FLASH_R, NADE_CLEAR_R = 4, 500.0, 200.0   # (3 flashed on every horde: 
 FLASH_GAP_S = 12.0                      # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m)
 FRAG_GAP_S, FEVER_BREAK_R = 10.0, 250.0
 SPAM_CLUSTERS, SPAM_S = 2, 3.0          # (operator 19:01: "able to spam them if needed") two clusters about: no gap
+# A grenade in hand is thrown (operator 20:4x: "I'm watching the bot lift the grenade but they're afraid to throw it";
+# live since the 20:30 restart: unsafe_trigger_blocks 10 a round, frags / fires 0 in every round): a hand, incendiary
+# or flash grenade in his hand outside a throw goes at the best cluster HELD_MIN_R or further (the nearest one that far
+# without one; a flash at the near ones) - never put away (stats held_item_throws); any other item (the remote bomb
+# unthrown, a spray) goes back to the gun before the gun would come up (stats item_gun_backs). The hand / incendiary
+# grenade no longer waits for nobody within NADE_START_R: the cluster it goes into lies NADE_MIN_R off (its blast + 1 m)
+# and with the x20 throw it is out at once; one at arm's length calls it off only before it is in hand. A throw with the
+# grenade in hand now goes on ahead of the near ones' fight (that fight's ZL lifted the grenade, its ZR was blocked and
+# the gun came back: the lift without a throw the operator saw). stats throws_by_kind.
+HELD_MIN_R = 400.0
 BOMB_NADE_R = 800.0                     # the crowd for a bomb this near already: a grenade into it instead (no time to
                                         # walk off a bomb); stats bomb_choices / nade_choices
 # The flash when they are on him, within FLASH_R (live 14:31: with "nobody within 3 m" none was ever thrown), no call-off
@@ -1921,7 +1931,7 @@ class Bot:
                   "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
                   "bomb_hits_taken", "flashes", "frags", "fires", "nade_aborts", "nade_back_fails", "fever_kicks",
-                  "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "dyings",
+                  "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "held_item_throws", "item_gun_backs", "dyings",
                   "tablet_dying_presses", "tablet_dying_taken", "cc_backouts",
                   "bonuses_taken", "time_bonuses_taken", "combo_bonuses_taken", "bonuses_missed", "bonus_skips",
                   "bonus_shots", "bomb_drops", "surround_events", "max_within_4m", "confirmed_shots",
@@ -2583,6 +2593,16 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        held = self._held_item(p, live, flat, snap, now)         # a grenade in hand: thrown; another item: put away
+        if held is not None:
+            return held
+        n = self.nade                                            # a throw with the grenade in hand (or the gun on its
+        if n is not None and not self.down and (n["phase"] != "equip" or p.get("equipped") == n["index"]):
+            cam = snap.get("camera")                             # way back) goes on before the near ones' fight - that
+            vis = [e for e in live if not self.is_blocked(e, now)]   # fight's ZL lifted the grenade and its ZR was
+            out = self._nade(p, vis, live, flat, cam["yaw"] if cam else p["rot"], snap, now)   # blocked: never thrown
+            if out is not None:
+                return out
         if self.down:
             return self._down_fight(p, snap, now)
         ran = self._bonus_run(p, live, flat, snap, now)          # phase 1: the bonuses first
@@ -3395,7 +3415,7 @@ class Bot:
             if ((len(near) >= FLASH_N or winding >= 2) and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
                     and now - self.flash_last >= FLASH_GAP_S):
                 group, kind = near, "flash"
-            elif (not NADES or any(flat(e) < NADE_START_R for e in live)   # (FLASH alone: no grenades)
+            elif (not NADES                                          # (FLASH alone: no grenades)
                   or (now - self.frag_last < FRAG_GAP_S and self._clusters(vis, flat) < SPAM_CLUSTERS)):
                 return None
             else:
@@ -3421,8 +3441,9 @@ class Bot:
         self._gun_down()
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
-        if n["kind"] != "flash" and n["phase"] in ("equip", "face", "aim") and any(flat(e) < MELEE_R for e in live):
-            self.stats["nade_aborts"] += 1                       # one on him: the gun back first, then the fight
+        if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"]
+                and any(flat(e) < MELEE_R for e in live)):      # one on him before it is in hand: the fight instead
+            self.stats["nade_aborts"] += 1
             n.update(phase="back", at=now - NADE_STEP_S, steps=0)
         if n["phase"] == "equip":
             if eq == n["index"]:
@@ -3451,6 +3472,8 @@ class Bot:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade readied")
             n.update(phase="thrown", at=now)
             self.stats[{"flash": "flashes", "frag": "frags", "fire": "fires"}[n["kind"]]] += 1
+            kinds = self.stats.setdefault("throws_by_kind", {})
+            kinds[n["kind"]] = kinds.get(n["kind"], 0) + 1
             if n["kind"] == "flash":
                 if NADES:                                        # the fever only with the full grenade set
                     self.fever_until = now + FEVER_S + 0.6
@@ -3486,6 +3509,40 @@ class Bot:
                 return self._go("nade", "nade_back", {"tap": n["back_key"]}, "the gun back in hand")
             return self._go("nade", "nade_back", {"hold": ()}, "the gun coming back")
         return None
+
+    def _held_item(self, p, live, flat, snap, now) -> dict | None:
+        """An item in his hand outside a throw or a bomb's steps: a hand / incendiary / flash grenade thrown at once (the
+        best cluster HELD_MIN_R or further, else the nearest that far; a flash at the near ones); anything else but the
+        remote bomb out, the gun back (D-pad right). None: a gun in hand, or a throw / bomb under way."""
+        eq = p.get("equipped")
+        if (not isinstance(eq, int) or eq < WEAPON_INDEXES or self.nade is not None or self.bomb_phase is not None
+                or (p.get("bomb") or {}).get("out") or self.down):
+            return None
+        kind = next((k for k, t in NADE_TYPES.items() if ((p.get("nades") or {}).get(t) or (None,))[0] == eq), None)
+        if kind is None:                                         # not a grenade: the gun back before ZL lifts it
+            self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
+            return self._go("nade", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back")
+        px, _, pz = p["pos"]
+        far = [e for e in live if flat(e) >= HELD_MIN_R]
+        if kind == "flash" and live:
+            group = [e for e in live if flat(e) <= FLASH_R] or live
+        elif far:
+            best = max(far, key=lambda e: sum(1 for z in far if math.hypot(z["pos"][0] - e["pos"][0],
+                                                                          z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R))
+            group = [z for z in far if math.hypot(z["pos"][0] - best["pos"][0], z["pos"][2] - best["pos"][2]) <= NADE_CLUSTER_R]
+        else:                                                    # nobody that far: away from him, ahead
+            cam = snap.get("camera")
+            yaw = cam["yaw"] if cam else p["rot"]
+            group = [{"pos": (px + 600.0 * math.sin(yaw), 0.0, pz + 600.0 * math.cos(yaw))}]
+        cx = sum(e["pos"][0] for e in group) / len(group)
+        cz = sum(e["pos"][2] for e in group) / len(group)
+        self.stats["held_item_throws"] = self.stats.get("held_item_throws", 0) + 1
+        self.nade = {"kind": kind, "index": eq, "phase": "face", "at": now, "steps": 0, "to": (cx, cz), "since": now,
+                     "seen": [eq], "back_key": "dright", "gun": None}
+        cam = snap.get("camera")
+        vis = [e for e in live if not self.is_blocked(e, now)]
+        out = self._nade(p, vis, live, flat, cam["yaw"] if cam else p["rot"], snap, now)
+        return out if out is not None else self._go("nade", "nade_" + kind, {"hold": ()}, "the grenade in hand")
 
     @staticmethod
     def _wheel_key(eq, index: int) -> str:
@@ -4348,7 +4405,7 @@ class RE6Switch(Driver):
                       "taunts_seen",
                       "pursuit_stuck",
                       "grenade_kills", "combo_breaks", "combo_pushes", "unsafe_trigger_blocks", "tablet_dying_presses",
-                      "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
+                      "held_item_throws", "item_gun_backs", "tablet_dying_taken", "bonuses_taken", "bonuses_missed", "bonus_skips", "bonus_shots")         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
     def __init__(self, clock=time.monotonic):
         self.clock = clock
