@@ -1282,6 +1282,25 @@ def test_configure_relay_carries_keep_warm_only_to_a_warm_capable_worker(cfg):
     assert job['input']['keep_warm']==2
 
 
+def test_configure_relays_to_the_pcs_current_record_not_an_old_one_under_its_name(cfg):
+    """A relaunched PC leaves older worker records under its name; settings go to the online, paired one (2026-10-27:
+    i9-NUC's first record was an old unpaired one, and its MercMode settings never reached its local scheduler)."""
+    import time
+    from fastapi.testclient import TestClient
+    from gbox.server import create_app
+    app=create_app(cfg);store=app.state.store
+    old=worker(time.time()-86400,name='Paired')
+    store.put('worker',old['id'],old|{'last_seen':time.time()-86400,'tools':['mercmode']})       # offline, unpaired
+    new=worker(time.time(),name='Paired',os='windows')
+    new['id']='paired-now'
+    store.put('worker',new['id'],new|{'last_seen':time.time(),'tools':['mercmode','launch_game','autoplay'],
+        'federation':{'authority':'authority','scheduler_owner':'local'}})
+    client=TestClient(app,headers={'Authorization':'Bearer '+cfg.token()})
+    assert client.post('/api/mercmode',json={'host':'Paired','enabled':True,'titles':['merc3d'],'keep_warm':0}).status_code==200
+    job=next(job for job in store.all('job') if job['tool']=='mercmode')
+    assert job['require_worker']=='paired-now' and job['input']['titles']==['merc3d']
+
+
 def test_a_title_still_loading_in_the_background_means_another_round_of_this_one():
     # "they could play a 2nd round of mercenaries and continue gaming while the game loads"
     store,w,saver,calls,now,tick,run,job,pre=preloaded()
