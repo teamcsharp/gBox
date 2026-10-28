@@ -2775,7 +2775,8 @@ def create_app(config: Config) -> FastAPI:
                     if sprite_wait:
                         store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':sprite_wait}})
                         continue
-                    if background_testing.requires_admission(j):
+                    from .desktop_admin import authorized_rebuild
+                    if background_testing.requires_admission(j) and not authorized_rebuild(store,j):
                         from . import mercmode
                         if mercmode.presentation_launch(store,w,j):
                             # The operator's continuous presentation is foreground work.
