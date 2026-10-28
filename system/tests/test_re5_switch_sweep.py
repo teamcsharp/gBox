@@ -18,6 +18,7 @@ def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     monkeypatch.setattr(R, "MINES", False)
+    monkeypatch.setattr(R, "SWEEP", True)              # off in MercMode since 18:52 (it spun at ~1300 deg/s); the code is kept
 
 
 def at(dist, deg, y=0.0):

@@ -358,7 +358,7 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # A grab, a heal, the hurt escape and the bombs still come first (they run before the fight). Counters: sweeps, sweep_s,
 # sweep_kills, sweep_reversals (the yaw stick reversed during a sweep: target 0), sweep_clears / sweep_clear_s (sweeps
 # that cleared the circle and their seconds); stats crowd_cleared_s: the round's mean seconds to clear it.
-SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S, SWEEP_DWELL_N = True, 500.0, 3, 0.4, 2.0, 3
+SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S, SWEEP_DWELL_N = False, 500.0, 3, 0.4, 2.0, 3
 SWEEP_PITCH_BAND = (-0.05, 0.30)         # P_AIM_PITCH (+ = down): from 3 deg up to 17 deg down
 SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_clears", "sweep_clear_s")
 # Keep moving (operator 17:42: "If the RE5 bot doesn't get away from the enemies and tries maneuvering around the level
