@@ -97,7 +97,8 @@ def test_smoothness_off_keeps_the_old_immediate_dot_switch(monkeypatch):
         assert k in R.RE5Switch.round_counters
 
 
-def test_up_close_the_gun_goes_down_for_a_far_off_aim_at_once_as_before():
+def test_up_close_the_gun_goes_down_for_a_far_off_aim_at_once_as_before(monkeypatch):
+    monkeypatch.setattr(R, "SWEEP", False)                        # (one behind, one in front sweeps now: the aim without it)
     b, clock = bot()
     target, behind = at(200, 0), at(180, 120)                     # one in front, one at arm's length behind
     chest = lambda f, dx=0.0: (f[0] + dx, f[1] + R.CHEST_H, f[2])

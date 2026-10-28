@@ -58,6 +58,9 @@ P_MOTION = 0x8F8                         # u8 motion (also at +0x2550), live 202
                                          # swing; his health does not fall), 113 / 100 / 114 strangled (it drains), 104 let
                                          # go, 40 / 47 / 51 dying (health 1), 8 dead
 MOTION_HELD, MOTION_RELOAD = frozenset({100, 106, 107, 113, 114}), 32
+P_AIM_PITCH = 0x3F5C                     # f32 the aim's pitch while the gun is up (rad, + = down): the game's own, from
+                                         # the camera, not the laser's muzzle -> dot line (which misreads up close);
+                                         # computed every frame (a write does not hold: aim_write_probe, 2026-10-27)
 HELD_R = 25.0                            # a Majini this near is on him: every hold measured 0-8 cm (bodies collide ~50 cm
                                          # apart otherwise), whatever the motion says
 DYING_HP = 1                             # the solo dying state keeps exactly 1 HP (the PS3's, verified; seen live here)
@@ -343,6 +346,46 @@ RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s
 # quick turn only for one within CALM_QUICK_R behind. spin_deg_s / spin_max_deg_s: his heading's mean and peak speed.
 CALM, CALM_REVERSE_S, CALM_TURN_DEG_S, TURN_SPEED_DEG_S, CALM_QUICK_R = True, 0.25, 110.0, 160.0, 300.0
 CALM_COUNTERS = ("calm_coasts", "calm_caps")
+# The turret sweep (operator 17:38: "with as many threats that they have around them within a five meter circle, they
+# should be holding down the trigger and just spinning around getting all of these people that are ganging up on them";
+# kept from 16:12 / 16:47: no whipping, nothing dizzying). It replaces the rampage (RAMPAGE stays off): SWEEP_N or more
+# Majini on his level within SWEEP_R, or one within BEHIND_R behind him while another stands in front inside SWEEP_R:
+# the gun up and the trigger held, the aim panned ONE way - toward the side with more of them, the nearer weighing more -
+# by the right stick held (while aiming the stick turns the aim, and him with it, at the game's own steady ~40 deg/s: a
+# slow pan, never a snap), the stick pulsed one tick in SWEEP_DWELL_N while the dot or the ray is on a Majini (the shots
+# land), until nobody is inside SWEEP_R for SWEEP_EXIT_S. A sweep that starts within SWEEP_SAME_S of the last keeps its
+# direction. The aim's pitch (P_AIM_PITCH) is held inside SWEEP_PITCH_BAND: a Majini's chest 1-5 m away, never the sky.
+# A grab, a heal, the hurt escape and the bombs still come first (they run before the fight). Counters: sweeps, sweep_s,
+# sweep_kills, sweep_reversals (the yaw stick reversed during a sweep: target 0), sweep_clears / sweep_clear_s (sweeps
+# that cleared the circle and their seconds); stats crowd_cleared_s: the round's mean seconds to clear it.
+SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S, SWEEP_DWELL_N = True, 500.0, 3, 0.4, 2.0, 3
+SWEEP_PITCH_BAND = (-0.05, 0.30)         # P_AIM_PITCH (+ = down): from 3 deg up to 17 deg down
+SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_clears", "sweep_clear_s")
+# Keep moving (operator 17:42: "If the RE5 bot doesn't get away from the enemies and tries maneuvering around the level
+# quickly, he will be overwhelmed ... It is important to continue moving around the level"): his dwell is the time he
+# stays within DWELL_R of one spot. Past DWELL_MAX_S with Majini about, after a sweep clears the circle, or with
+# RELOC_CROWD_N or more within RELOC_CROWD_R, he relocates (at most every RELOC_GAP_S): a run (B) away from the census -
+# every live Majini within RELOC_SENSE_R pushing by 1/d - turned KITE_DEG to one side (a loop through the level, the side
+# kept until a run sticks), toward a standing statue within RELOC_STATUE_DEG of that heading when there is one; the
+# quick turn once when the way out is behind him; the run ends after RELOC_DIST, RELOC_MAX_S, a Majini within
+# RELOC_BLOCK_R in front, or no RELOC_PROGRESS_CM in RELOC_STUCK_S (the kite's side flips). Then he turns and fights. A
+# bomb is due as he leaves (the mines' own checks still apply). Counters: relocations, reloc_stuck, avg_dwell_s,
+# max_dwell_s, hits_taken (his health falling).
+RELOCATE, DWELL_R, DWELL_MAX_S, RELOC_CROWD_N, RELOC_CROWD_R, RELOC_GAP_S = True, 250.0, 7.0, 6, 800.0, 4.0
+RELOC_SENSE_R, KITE_DEG, RELOC_STATUE_DEG, RELOC_DIST, RELOC_MAX_S = 1500.0, 35.0, 60.0, 800.0, 3.0
+RELOC_BLOCK_R, RELOC_PROGRESS_CM, RELOC_STUCK_S = 150.0, 40.0, 0.8
+RELOC_COUNTERS = ("relocations", "reloc_stuck")     # hits_taken: the engine's own per-round delta field
+# The aim's own pitch up close (live 17:27: "Why is he looking up?" - pitch_up_last "the laser +62 deg, wanted -24 deg,
+# 2.3 m ... ray 50.0 m"; raise_up_last "first ray +28 deg, the last aim before +62 deg"): the laser's muzzle -> dot line
+# misreads up close, the pitch stick followed it up, and the next raise kept the pitch. Now, aimed at a Majini on his
+# level within THREAT_CAP_R, the game's own aim pitch (P_AIM_PITCH) more than CAM_UP_MAX above his chest's elevation
+# (or above level for one below): the pitch stick down (never up),
+# whatever the laser says, and no shot unless the dot is on a Majini (cam_up_ticks, cam_up_fixes: the times it took
+# over). With the aim pitch read the gun is no longer lowered and raised again for a high first ray or a high laser up
+# close (raise_rerolls / close_sky_reraises: each a camera zoom out and in). Pressed down CAM_CHECK_S and the pitch went
+# up instead (cam_pitch_inverted): the guard stands down for the round.
+CAM_GUARD, CAM_UP_MAX, CAM_CHECK_S = True, 0.21, 0.35   # 0.21 rad: 12 deg up
+CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted")
 # Time bonuses first (operator 16:45: "the most important thing is capturing every time bonus and then maintaining the
 # combo"; 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... In Resident Evil Five, the only way
 # to grab a time bonus is to walk up to it and melee it ... after grabbing all the time bonuses, that's when the match
@@ -365,7 +408,7 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -490,7 +533,8 @@ TALLY_MIN_S, TALLY_STILL_S, TALLY_MAX_S, TALLY_GAP_S = 2.0, 1.0, 15.0, 5.0   # r
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
-          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm")
+          "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm", "sweep",
+          "relocate")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
 MINES, MINE_EVERY_S = True, 9.0
@@ -794,8 +838,10 @@ def snapshot(m) -> dict:
             pos = struct.unpack("<3f", m.rd(p + P_POS, 12))
             rot = struct.unpack("<4f", m.rd(p + P_ROT, 16))
             hp, hp_max = struct.unpack("<hh", m.rd(p + P_HP, 4))
+            aim_pitch = struct.unpack("<f", m.rd(p + P_AIM_PITCH, 4))[0]
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
-                              "motion": m.rd(p + P_MOTION, 1)[0]}
+                              "motion": m.rd(p + P_MOTION, 1)[0],
+                              "aim_pitch": aim_pitch if math.isfinite(aim_pitch) and abs(aim_pitch) < 2.0 else None}
         except (ValueError, OSError):
             snap["player"] = None
         if snap["player"]:
@@ -1100,6 +1146,7 @@ class Bot:
             self.stats.setdefault(k, 0)
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
+        self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -1110,11 +1157,21 @@ class Bot:
         self._ramp = None                                # the rampage: {"since", "main", "kills0", "retarget_at"}
         self._calm = {"h": (0, -1e9), "v": (0, -1e9), "budget": 0.0, "t": None, "rot": None, "spin": [0.0, 0.0]}
         self._bonus_known, self._bonus_block, self._bonus = {}, {}, None   # statues seen; given up; the run under way
+        self._bonus_seen_round, self._round_t0 = False, None
         self._timer_prev = None
         self._ramp_t, self._swap_at, self._restore = None, -1e9, None
         self._whip = {"dir": 0, "amount": 0.0, "end": -1e9, "last_big": None, "rot": None}
         self._pur, self._pur_block, self._pur_end_at, self._pur_credit = None, {}, -1e9, True   # the pursuit
         self._kills_prev = None
+        self._sweep_st, self._sweep_last, self._sweep_pulse, self._sweep_t = None, None, 0, None   # the turret sweep
+        self._clears: list = []                          # this round's sweep seconds to clear the circle
+        self._dwell = None                               # {"anchor", "since"}: the spot he stands at (keep moving)
+        self._dwells: list = []                          # this round's finished dwells (seconds)
+        self._reloc, self._reloc_ready, self._reloc_due, self._kite_side = None, -1e9, False, 1
+        self._hp_track, self._hit_at = None, -1e9       # (player, health) last tick, the last fall: hits_taken
+        self._cam = {"off": False, "down_since": None, "ap0": None, "on": False}   # the aim pitch guard
+        for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s", "hits_taken"):
+            self.stats.setdefault(k, 0)
         self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
         self.stats.setdefault("crowd_max", 0)
         for kind in FAULT_KINDS:
@@ -1215,7 +1272,7 @@ class Bot:
         cur = self.stats.get(key) or ""
         if cur and cur.count(" | ") + 1 >= EXAMPLES:
             return
-        t = now - self._round_started if self._round_started is not None else now
+        t = now - self._round_t0 if self._round_t0 is not None else now
         x, y, z = p["pos"]
         line = (f"{t:.1f} s: Chris ({x:.0f},{y:.0f},{z:.0f}) heading {math.degrees(p.get('rot') or 0.0):.0f}; {detail}; "
                 f"{self.doing}: {self.why}")
@@ -1229,6 +1286,7 @@ class Bot:
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
         self._bonus_tick(snap, now)
+        self._keep_moving(p, live, flat, now)
         self._watch_whips(p, now)
         self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
         if snap.get("unit_enemies_alive") is not None:
@@ -1337,6 +1395,7 @@ class Bot:
         for b in bonuses:
             if b["ptr"] not in self._bonus_known:
                 self._bonus_known[b["ptr"]] = b
+                self._bonus_seen_round = True
                 self.stats["bonuses_seen"] += 1
         for key in [k for k in self._bonus_known if k not in now_keys]:
             del self._bonus_known[key]
@@ -1344,9 +1403,10 @@ class Bot:
             if self._bonus is not None and self._bonus.get("ptr") == key:
                 self._bonus = None
         self.stats["bonuses_left"] = len(now_keys)
-        if not now_keys and self.stats.get("bonuses_seen") and self._round_started is not None                 and self.stats.get("_bonus_done_round") != self._round_started:
-            self.stats["_bonus_done_round"] = self._round_started
-            self.stats["bonus_time_s"] = round(now - self._round_started, 1)
+        t0 = getattr(self, "_round_t0", None)
+        if not now_keys and self._bonus_seen_round and t0 is not None and self.stats.get("_bonus_done_round") != t0:
+            self.stats["_bonus_done_round"] = t0
+            self.stats["bonus_time_s"] = round(now - t0, 1)
 
     def _go_bonus(self, p, live, flat, snap, now):
         """Phase 1 (operator 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... the only way to
@@ -1559,6 +1619,179 @@ class Bot:
                     f"on the one {dist / 100:.1f} m away ({math.degrees(body_err):+.0f} deg)")
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
+
+    def _sweep(self, p, live, flat, snap, now):
+        """The turret sweep (SWEEP above): this tick's keys while it runs, None when the circle is not crowded."""
+        px, py, pz = p["pos"]
+        dt = 0.0 if self._sweep_t is None else max(0.0, min(now - self._sweep_t, LOOK_STEP_MAX_S))
+        self._sweep_t = now
+        ring = [e for e in live if flat(e) <= SWEEP_R and abs(e["pos"][1] - py) <= LEVEL_DY] if SWEEP else []
+        bear = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])
+        sw, kills = self._sweep_st, snap.get("kills")
+        if sw is None:
+            if not ring:
+                return None
+            behind = any(flat(e) <= BEHIND_R and abs(bear(e)) > math.pi / 2 for e in ring)
+            front = any(abs(bear(e)) <= math.pi / 2 for e in ring)
+            if len(ring) < SWEEP_N and not (behind and front):
+                return None
+            last = self._sweep_last
+            if last is not None and now - last[1] < SWEEP_SAME_S:
+                d = last[0]                              # straight after the last one: the same way (no reversal)
+            else:                                        # toward the side with more of them, the nearer weighing more
+                d = 1 if sum((1.0 if bear(e) > 0 else -1.0) / max(flat(e), 50.0) for e in ring) >= 0 else -1
+            sw = self._sweep_st = {"since": now, "dir": d, "kills": kills if type(kills) is int else None,
+                                   "clear_since": None, "yaw": 0}
+            self.stats["sweeps"] += 1
+            self._reloc = None
+        if type(kills) is int:
+            if type(sw["kills"]) is int and kills > sw["kills"]:
+                self.stats["sweep_kills"] += kills - sw["kills"]
+            sw["kills"] = kills
+        if ring:
+            sw["clear_since"] = None
+        else:
+            sw["clear_since"] = sw["clear_since"] or now
+            if now - sw["clear_since"] >= SWEEP_EXIT_S:  # the circle clear: back to the round, moving on first
+                took = sw["clear_since"] - sw["since"]
+                self._clears.append(took)
+                self.stats["sweep_clears"] += 1
+                self.stats["sweep_clear_s"] = round(self.stats["sweep_clear_s"] + took, 2)
+                self.stats["crowd_cleared_s"] = round(sum(self._clears) / len(self._clears), 2)
+                self._sweep_st, self._sweep_last, self._reloc_due = None, (sw["dir"], now), True
+                if self.fire_down:
+                    self._trigger(False, now)
+                return None
+        self.stats["sweep_s"] = round(self.stats["sweep_s"] + dt, 2)
+        if self.aim_since is None:                       # up at once, no body turn first
+            self.aim_since = self._raise_t = now
+            self.stats["raises"] += 1
+            self.ray_seen = self.last_ray = None
+            self._lower_pitch, self._first_ray = self._ray_pitch, True
+        nearest = min(ring, key=flat) if ring else None
+        held = next((s_ for s_ in snap.get("inventory") or () if s_.get("hand")), None)
+        weapon = f"0x{held['id']:03x}" if held else "gun"
+        lz = snap.get("laser") or {}
+        hit = None
+        if lz.get("up") and lz.get("from") and lz.get("at"):
+            origin, dot = tuple(lz["from"]), tuple(lz["at"])
+            hit = next((e for e in ring if dot_on(dot, e["pos"]) or through(origin, dot, e["pos"])), None)
+        tgt = hit or nearest
+        if tgt is not None:
+            key = tgt.get("ptr", tgt.get("slot"))
+            if key != self.target:
+                self._set_target(key, now)
+                self.target_at = now
+            self._aimctx = {"target": key, "dist": flat(tgt), "bearing": bear(tgt), "yaw_err": bear(tgt),
+                            "where": dot_on(tuple(lz["at"]), tgt["pos"]) if hit is not None else None,
+                            "laserless": not lz.get("up"), "weapon": weapon, "class": tgt.get("class"),
+                            "foot": tuple(tgt["pos"]), "hp_max": tgt.get("hp_max"), "shooter": tuple(p["pos"]),
+                            "item": held.get("item") if held else None, "py": py,
+                            "origin": tuple(lz["from"]) if lz.get("up") else None,
+                            "dot": tuple(lz["at"]) if lz.get("up") else None, "gate": "sweep"}
+        keys = {"zl"}
+        stick = "rleft" if sw["dir"] > 0 else "rright"
+        if hit is not None:                              # on one: dwell (the stick one tick in SWEEP_DWELL_N)
+            self._sweep_pulse = (self._sweep_pulse + 1) % SWEEP_DWELL_N
+            if self._sweep_pulse == 0:
+                keys.add(stick)
+        else:
+            self._sweep_pulse = 0
+            keys.add(stick)
+        ap = p.get("aim_pitch")
+        if ap is not None and now - self.aim_since >= READY_S:   # the aim's own pitch: a chest 1-5 m away
+            if ap < SWEEP_PITCH_BAND[0]:
+                keys.add("rdown")
+            elif ap > SWEEP_PITCH_BAND[1]:
+                keys.add("rup")
+        if ring:
+            keys |= self._trigger(True, now)
+        elif self.fire_down:
+            self._trigger(False, now)
+        yaw = 1 if "rleft" in keys else -1 if "rright" in keys else 0
+        if yaw and sw["yaw"] and yaw != sw["yaw"]:
+            self.stats["sweep_reversals"] += 1
+        sw["yaw"] = yaw or sw["yaw"]
+        self.doing = "sweep"
+        self.why = (f"sweep {'left' if sw['dir'] > 0 else 'right'} {now - sw['since']:.1f} s: {len(ring)} within "
+                    f"{SWEEP_R / 100:.0f} m" + (f", the nearest {flat(nearest) / 100:.1f} m" if nearest else ", clearing")
+                    + (" - on one" if hit is not None else ""))
+        return {"hold": tuple(sorted(keys))}
+
+    def _keep_moving(self, p, live, flat, now) -> None:
+        """His dwell at one spot (DWELL_R): avg_dwell_s / max_dwell_s, and a relocation due past DWELL_MAX_S with
+        Majini about, or with RELOC_CROWD_N within RELOC_CROWD_R after 3 s at one spot."""
+        pos, dw = p["pos"], self._dwell
+        if dw is None or math.hypot(pos[0] - dw["anchor"][0], pos[2] - dw["anchor"][2]) > DWELL_R:
+            if dw is not None:
+                self._dwells.append(now - dw["since"])
+                self.stats["avg_dwell_s"] = round(sum(self._dwells) / len(self._dwells), 1)
+            dw = self._dwell = {"anchor": pos, "since": now}
+        cur = now - dw["since"]
+        if cur > (self.stats.get("max_dwell_s") or 0):
+            self.stats["max_dwell_s"] = round(cur, 1)
+        if not RELOCATE or self._reloc is not None or self._sweep_st is not None or now < self._reloc_ready:
+            return
+        about = any(flat(e) <= RELOC_SENSE_R for e in live)
+        crowd = sum(1 for e in live if flat(e) <= RELOC_CROWD_R)
+        if (cur > DWELL_MAX_S and about) or (cur > 3.0 and crowd >= RELOC_CROWD_N):
+            self._reloc_due = True
+
+    def _relocate(self, p, live, flat, snap, now):
+        """A relocation (RELOCATE above): the run's keys while it lasts, None otherwise."""
+        px, py, pz = p["pos"]
+        r = self._reloc
+        if r is None:
+            if not (RELOCATE and self._reloc_due):
+                return None
+            self._reloc_due = False
+            if now < self._reloc_ready:
+                return None
+            vx = vz = 0.0
+            for e in live:                               # away from them all, the nearer pushing harder
+                dx, dz = px - e["pos"][0], pz - e["pos"][2]
+                d = max(math.hypot(dx, dz), 50.0)
+                if d <= RELOC_SENSE_R:
+                    vx, vz = vx + dx / (d * d), vz + dz / (d * d)
+            head = p["rot"] if not (vx or vz) else wrap(heading(vx, vz) + math.radians(KITE_DEG) * self._kite_side)
+            statue = None
+            for b in snap.get("bonuses") or ():          # a standing statue that way: run to it (an open spot)
+                off = abs(wrap(heading(b["pos"][0] - px, b["pos"][2] - pz) - head))
+                if abs(b["pos"][1] - py) <= LEVEL_DY and off <= math.radians(RELOC_STATUE_DEG) \
+                        and (statue is None or off < statue[0]):
+                    statue = (off, b)
+            if statue is not None:
+                head = heading(statue[1]["pos"][0] - px, statue[1]["pos"][2] - pz)
+            r = self._reloc = {"since": now, "head": head, "from": (px, pz), "best": 0.0, "best_at": now,
+                               "quick": False, "statue": statue is not None}
+            self.stats["relocations"] += 1
+            self._reloc_ready = now + RELOC_GAP_S
+            self._gun_down()
+            if self.mines is not None:
+                self._mine_now("")                       # a bomb as he leaves (the mines' own checks still apply)
+        moved = math.hypot(px - r["from"][0], pz - r["from"][1])
+        if moved > r["best"] + RELOC_PROGRESS_CM:
+            r["best"], r["best_at"] = moved, now
+        blocked = any(flat(e) <= RELOC_BLOCK_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+                      <= math.radians(45) for e in live)
+        stuck = now - r["best_at"] > RELOC_STUCK_S
+        if moved >= RELOC_DIST or now - r["since"] >= RELOC_MAX_S or blocked or stuck:
+            if stuck and not blocked and moved < RELOC_DIST:
+                self.stats["reloc_stuck"] += 1
+                self._kite_side = -self._kite_side       # a wall that way: loop the other way next time
+            self._reloc, self._dwell = None, None
+            return None
+        err = wrap(r["head"] - p["rot"])
+        if abs(err) > QUICK_ERR and not r["quick"] and now - self.quick_at > QUICK_GAP_S:
+            r["quick"], r["best_at"] = True, now + 0.6   # the way out behind him: one quick turn, then the run
+            self.stats["quick_turns"] += 1
+            self.quick = 2
+            self.doing, self.why = "quick_turn", f"relocating: the way out {math.degrees(err):+.0f} deg"
+            return {"hold": ("ldown",)}
+        self.doing = "relocate"
+        self.why = (f"relocating {moved / 100:.1f} m" + (" to a statue" if r["statue"] else "")
+                    + f", heading {math.degrees(err):+.0f} deg off")
+        return {"hold": ("lup", "b") + self._turn(err, TURN_TOL)}
 
     def _frozen_dot(self, p, dot, fresh) -> bool:
         """The live dot unchanged FROZEN_TICKS aimed ticks while the right stick was held or his heading changed."""
@@ -1967,16 +2200,28 @@ class Bot:
                 self.stats["round_start_via"] = "dead/retry"
                 self.target, self.hp_prev, self.hp_seen, self.round_escapes = None, {}, [], 0
                 self.look.new_round()
+                self._new_round(now)                     # the replay's statues are new units: none counted taken
             self.continued = None
         if self._round_started is None:
             self._round_started = now
             self.look.new_round()
-            self.stats["crowd_max"] = 0
-            for kind in FAULT_KINDS:
-                self.stats["ex_" + kind] = ""
-            self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
-            if self.mines is not None:
-                self.mines.new_round(now)
+            self._new_round(now)
+
+    def _new_round(self, now) -> None:
+        """A round's own state and gauges, at the first round's start and at each replay's (dead/retry: the engine's
+        marker stays, the round's statues, clock and gauges start again)."""
+        self._round_t0 = now
+        self.stats["crowd_max"] = 0
+        for kind in FAULT_KINDS:
+            self.stats["ex_" + kind] = ""
+        self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
+        self._bonus_seen_round = False
+        self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
+        for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
+            self.stats[k] = 0
+        self._cam["off"] = False
+        if self.mines is not None:
+            self.mines.new_round(now)
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -2156,6 +2401,11 @@ class Bot:
         self.dead_since = None
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        last, self._hp_track = self._hp_track, (p.get("ptr"), p.get("hp"))
+        if last is not None and last[0] == p.get("ptr") and type(p.get("hp")) is int and type(last[1]) is int                 and p["hp"] < last[1]:
+            if now - self._hit_at > 0.5:                 # his health fell (a hit, a blast; a squeeze counts once)
+                self.stats["hits_taken"] += 1
+            self._hit_at = now
         if self.quick:                                       # the quick turn: the stick back, + B, let go
             self.doing, self.why = "quick_turn", f"step {self.quick}"
             step, self.quick = self.quick, (self.quick + 1) % 4
@@ -2291,6 +2541,12 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
+        act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first
+        if act is not None:
+            return act
+        act = self._relocate(p, live, flat, snap, now)  # then keep moving: no spot held long
+        if act is not None:
+            return act
         act = self._go_bonus(p, live, flat, snap, now)
         if act is not None:
             return act
@@ -2431,7 +2687,8 @@ class Bot:
         ray_len = math.dist(origin, dot)
         have_p = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
         want_p = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
-        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM:
+        cam_read = CAM_GUARD and not self._cam["off"] and p.get("aim_pitch") is not None
+        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM and not cam_read:
             self._first_check = False
             if not self._raise_is_reroll and have_p > want_p + REROLL_ERR:
                 self._reroll_next = True                 # the raise came up high: down and up again, once
@@ -2469,6 +2726,7 @@ class Bot:
             yaw_err, pitch_err = ray_error(origin, dot, chest)
         where = dot_on(dot, foot)
         on = where is not None or point_blank or through(origin, dot, foot)
+        self._ap_now = p.get("aim_pitch")
         self._pitch_up(origin, dot, chest, tgt, dist, now)
         if self._threat_now and dist > THREAT_CAP_R:
             self.stats["far_aim_ticks"] += 1                 # (none expected: every path above is capped)
@@ -2501,7 +2759,7 @@ class Bot:
             dist = flat(tgt)
             body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
             self.stats["confirmed_shots"] += 1
-        if dist < CLOSE_PITCH_R and not on and have_p > CLOSE_SKY:
+        if dist < CLOSE_PITCH_R and not on and have_p > CLOSE_SKY and not cam_read:
             self._close_sky_since = self._close_sky_since or now
             if now - self._close_sky_since >= CLOSE_SKY_S:     # up close and pointing up: down and up again
                 self.stats["close_sky_reraises"] += 1
@@ -2573,22 +2831,54 @@ class Bot:
             self.stats["drops_mid_burst"] += 1
             self._pull_end(now)
             self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
+        cam_up = self._cam_up(p, foot, dist, now)       # the aim's own pitch up at one on his level: down, no sky shot
+        if cam_up and on and where is None and not confirmed:
+            on = False
+            self.doing = "aim"
         keys = {"zl"} | self._trigger(on, now)
         if not on and not settling and math.dist(origin, dot) >= min(STEER_RAY_CM, 0.5 * math.dist(origin, chest)):
             keys |= self._yaw(yaw_err, windows[0]) | self._pitch_settled(pitch_err, windows[1], now)   # steer only off him: a raised fire rate paces the
                                                                   # aim with the shot (re5_switch_mods)
         if dist < CLOSE_PITCH_R and keys & {"rup", "rdown"}:
-            keys -= {"rup", "rdown"}                     # up close: the yaw only
+            keys -= {"rup", "rdown"}                     # up close: the yaw only (by the laser) ...
             self.stats["close_pitch_skips"] += 1
+        if cam_up:                                       # ... but the aim's own pitch up: down, at any range
+            keys = (keys - {"rup"}) | {"rdown"}
+            self.why = f"aim pitch {math.degrees(-p['aim_pitch']):+.0f} deg up: down; {self.why}"
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "
                                            f"keys {','.join(sorted(keys))}")
             self._pu_detail = None
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
+                             + (f"own {-math.degrees(p['aim_pitch']):+.0f} " if p.get("aim_pitch") is not None else "")
+                             + f"laser {math.degrees(have_p):+.0f} "
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
+
+    def _cam_up(self, p, foot, dist, now) -> bool:
+        """The aim's own pitch (P_AIM_PITCH) more than CAM_UP_MAX up while aimed at a Majini on his level within
+        THREAT_CAP_R (CAM_GUARD above). Pressed down CAM_CHECK_S and it went up instead: off for the round."""
+        c, ap = self._cam, p.get("aim_pitch")
+        want_up = math.atan2(foot[1] + CHEST_H - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # his chest's elevation
+        if not CAM_GUARD or c["off"] or ap is None or -ap <= max(want_up, 0.0) + CAM_UP_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
+            c["down_since"], c["on"] = None, False
+            return False
+        self.stats["cam_up_ticks"] += 1
+        if not c["on"]:
+            self.stats["cam_up_fixes"] += 1
+            self._example("sky", p, now, f"the aim {math.degrees(-ap):+.0f} deg up at one {dist / 100:.1f} m away")
+        c["on"] = True
+        if c["down_since"] is None:
+            c["down_since"], c["ap0"] = now, ap
+        elif now - c["down_since"] >= CAM_CHECK_S:
+            if ap < c["ap0"] - 0.05:                     # pressed down and it went further up: not this stick
+                self.stats["cam_pitch_inverted"] += 1
+                c["off"], c["on"], c["down_since"] = True, False, None
+                return False
+            c["down_since"], c["ap0"] = now, ap
+        return True
 
     def _sky_guard(self, origin, dot, chest, on, point_blank, keys) -> set:
         """The laser more than SKY_MARGIN above the target's elevation: the pitch-up stick out, the pitch-down in."""
@@ -2668,7 +2958,8 @@ class Bot:
             f"{cause}: the laser {math.degrees(have):+.0f} deg, wanted {math.degrees(want):+.0f} deg, {dist / 100:.1f} m, "
             f"dy {tgt['pos'][1] - origin[1] + MUZZLE_H:+.0f} cm, ray {math.dist(origin, dot) / 100:.1f} m, up "
             + (f"{now - self.aim_since:.2f}" if self.aim_since is not None else "-")
-            + f" s, the target {now - self.target_at:.2f} s, {tgt.get('class') or '?'}")
+            + f" s, the target {now - self.target_at:.2f} s, {tgt.get('class') or '?'}"
+            + (f", the aim's own pitch {-math.degrees(self._ap_now):+.0f} deg" if self._ap_now is not None else ""))
 
     @staticmethod
     def _near_aim(origin, dot, live, flat):

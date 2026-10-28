@@ -65,7 +65,7 @@ def test_a_majini_in_his_way_is_fought_first_then_the_run_goes_on():
 
 def test_a_statue_gone_is_taken_and_the_round_time_of_the_last_kept():
     b, clock = bot()
-    b._round_started = 0.0
+    b._round_started = b._round_t0 = 0.0                          # (the round's own start: _new_round)
     b.tick(snap(bonuses=[at(70, 3)], timer=100.0))
     clock[0] = 12.0
     b.tick(snap(bonuses=[], timer=160.0))

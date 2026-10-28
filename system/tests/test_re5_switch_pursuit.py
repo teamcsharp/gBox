@@ -71,6 +71,7 @@ def test_stuck_he_takes_a_detour_and_a_kill_is_credited():
 
 
 def test_three_close_with_the_gun_up_he_lowers_it_and_moves_out(monkeypatch):
+    monkeypatch.setattr(R, "SWEEP", False)                         # (three within 5 m sweep now: the crowd move without it)
     b, clock = bot()
     crowd = [at(250, 0), at(300, 30), at(350, -30)]                # all in front
     b.tick(snap(crowd, motion=22))
