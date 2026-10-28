@@ -56,6 +56,17 @@ GAME_IDS = {"e7ca89bbeb67360d"}
 # RE5 on Switch (Citron / Eden, title 010018100CD46000): the same ops through gbox.mercs.titles.re5_switch_mods
 # (tool_run: the same parameters and result shape; an op not there yet answers "not yet on Switch: why")
 SWITCH_GAME_IDS, SWITCH_TITLE = {"52d15709be0fda1a"}, "010018100CD46000"
+# RE6 on Switch (Citron, title 01002A000CD48000): its own ops through gbox.mercs.titles.re6_switch_mods (the app's RE6
+# panel: the live weapon and its list, the infinite / speed mods, the bot's switches)
+RE6_SWITCH_GAME_IDS, RE6_SWITCH_TITLE = {"115f9cdbba115432"}, "01002A000CD48000"
+
+
+def is_switch_re6(g) -> bool:
+    """A session of RE6 on Switch (its game id, or its Switch title id)."""
+    if not isinstance(g, dict):
+        return False
+    ids = {str(g.get(k) or "") for k in ("game_id", "title_id", "map_id")}
+    return bool(ids & RE6_SWITCH_GAME_IDS) or RE6_SWITCH_TITLE in {i.upper() for i in ids}
 
 
 def is_switch_re5(g) -> bool:
@@ -1509,6 +1520,11 @@ class RE5ModsIn(BaseModel):
     only: bool = False             # weapon_override: the chosen weapon in every gun slot (e.g. longbow-only rounds)
     ops: list[dict] = []           # apply_saved: [{name, op, on, multiplier?, weapon?, only?}]
     seconds: float | None = None   # add_time: -3600..3600 (negative takes time away); set_time: the clock's new value 1..3600
+    # RE6 on Switch's bot_options (None leaves a switch as it is)
+    nades: bool | None = None
+    flash: bool | None = None
+    aim_lock: bool | None = None
+    bomb_drop: bool | None = None
 
 
 class RE5ModsOut(BaseModel):
@@ -1528,6 +1544,12 @@ def re5_mods(inp: RE5ModsIn, ctx):
     playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if is_switch_re6(g):                                 # RE6 on Switch: its own ops
+        from .mercs.titles import re6_switch_mods as R6
+        extra = {k: v for k, v in (("weapon", inp.weapon), ("seconds", inp.seconds), ("nades", inp.nades),
+                                   ("flash", inp.flash), ("aim_lock", inp.aim_lock), ("bomb_drop", inp.bomb_drop))
+                 if v is not None}
+        return {"result": R6.run(ad, inp.op, inp.multiplier, inp.on, **extra)}
     if is_switch_re5(g):                                 # RE5 on Switch: the same ops, routed to its own mods
         from .mercs.titles import re5_switch_mods as SW
         if (inp.op or "").strip().lower() == "apply_saved":

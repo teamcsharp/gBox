@@ -1265,6 +1265,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/mercs-clock.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/re4-modifiers.js"></script>
+<script src="../web/viz/re6-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
@@ -4271,6 +4272,7 @@ async function pipModifiers(m, opening) {
 }
 // the mod panel this session gets: RE5 / RE6 (re5-modifiers.js) or RE4 GameCube on Dolphin (re4-modifiers.js)
 function pipPanel(session) {
+  if (globalThis.GBoxRE6Modifiers?.eligible(session)) return { module: GBoxRE6Modifiers, selector: '.re6-modifiers' };
   if (GBoxRE5Modifiers.panelEligible(session)) return { module: GBoxRE5Modifiers, selector: '.re5-modifiers' };
   if (globalThis.GBoxRE4Modifiers?.eligible(session)) return { module: GBoxRE4Modifiers, selector: '.re4-modifiers' };
   return null;

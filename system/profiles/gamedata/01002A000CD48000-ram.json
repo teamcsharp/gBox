@@ -165,7 +165,8 @@
         "merc_loadout",
         {
           "thrown": 5,
-          "magnum": true
+          "magnum": true,
+          "spread": true
         }
       ]
     ]
