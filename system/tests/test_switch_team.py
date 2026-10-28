@@ -365,3 +365,25 @@ def test_player_two_joins_the_split_lobby_with_plus_a_few_times_at_most():
     mp.step({"where": "loading"})
     clock[0] = 60.0
     assert mp.step({"where": "split_lobby"})                      # a new visit: Player 2 may join again
+
+
+def test_each_coop_round_counts_both_players_deaths_downs_revives_and_the_teams_kills():
+    clock = [0.0]
+    one = S.Teammate(Brain(), RE5T, S.PAIR, {}, clock=lambda: clock[0])
+    stats = one.stats
+    two = S.Teammate(Brain(), RE5T, S.PAIR, {}, clock=lambda: clock[0])
+    pair = S.Pair(one, two, stats, clock=lambda: clock[0])
+
+    def tick(p1_hp, p2_hp, kills):
+        snap = team_snap(mate=(300.0, 0.0, 0.0), me_hp=p1_hp)
+        snap.update(kills=kills, max_combo=kills)
+        snap["p2"] = team_snap(me=(300.0, 0.0, 0.0), mate=(0.0, 0.0, 0.0), me_hp=p2_hp, mate_hp=p1_hp)
+        pair.tick(snap)
+    tick(1000, 1000, 3)
+    tick(1000, 1, 4)                                              # P2 goes down (dying)
+    tick(1000, 0, 4)                                              # ... and dies
+    tick(0, 0, 5)                                                 # P1 dies
+    assert (stats["p1_deaths"], stats["p2_deaths"], stats["p2_downs"], stats["p1_downs"]) == (1, 1, 1, 0)
+    assert stats["team_kills"] == 5 and stats["team_max_combo"] == 5
+    d = S.CoopDriver(R5.MAP_ID, S.PAIR)
+    assert set(S.TEAM_COUNTERS) <= set(d.round_counters)           # the engine records each round's share

@@ -18,7 +18,7 @@ class MercModeIn(BaseModel):
     preferred_editions: dict | None=None  # gbox.re_switch: e.g. RE5 on Switch, No Mercy
     stalemate_cut: StrictBool | None=None # gbox.mercs.stalemate: the bots cut the clock when no enemy shows for 15 s
     stalemate_cut_s: int | None=None      # ... to this many seconds (1..60; default 5)
-    coop_turns: StrictBool | None=None    # RE5 / RE6 Switch turns in split screen, bots on both players (off by default)
+    coop_ratio: Literal['off','1:1','2:1','3:1','4:1','5:1','6:1','8:1','10:1','only'] | None=None  # co-op : solo turns (Switch)
 
 
 class MercModeOut(BaseModel):

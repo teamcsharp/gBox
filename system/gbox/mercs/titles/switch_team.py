@@ -41,6 +41,40 @@ TAP_S = 0.12                            # a brain's "tap" held this long when tw
 MENU_PRESS_S, MENU_GAP_S = 0.3, 1.5     # Player 2's menu presses (the menus take 0.3 s presses on both titles)
 P2_STATS = ("act", "shots", "hits", "holds", "heals", "tablets", "team_act", "team_shaped", "team_follow_s",
             "team_helps", "team_revives")
+# each co-op round's per-player counters (operator 2026-10-27: "both players' kills, deaths, revives and combos"): the
+# engine records each one's amount for the round as round_<key> (Driver.round_counters). Kills and combos are the
+# round's own (the team's, from the game); a per-player kill count is not mapped in RAM yet
+TEAM_COUNTERS = ("p1_deaths", "p2_deaths", "p1_downs", "p2_downs", "team_revives", "team_helps", "p2_team_revives",
+                 "p2_team_helps")
+
+
+class Tally:
+    """Both players' deaths (health to 0) and downs (the dying state) as they happen, from each tick's two players, and
+    the round's kills / combo; counted into stats (turn-long, the engine takes each round's share)."""
+
+    def __init__(self, title, stats: dict):
+        self.title, self.stats = title, stats
+        self.seen = {1: None, 2: None}                    # each player's last state: "alive" / "down" / "dead"
+        for key in TEAM_COUNTERS:
+            stats.setdefault(key, 0)
+
+    def _state(self, p):
+        if not p or p.get("hp") is None:
+            return None
+        return "dead" if p["hp"] <= 0 else "down" if self.title.dying(p) else "alive"
+
+    def observe(self, p1, p2, snap) -> None:
+        for slot, p in ((1, p1), (2, p2)):
+            now, before = self._state(p), self.seen[slot]
+            if now == "dead" and before in ("alive", "down"):
+                self.stats[f"p{slot}_deaths"] += 1
+            if now == "down" and before == "alive":
+                self.stats[f"p{slot}_downs"] += 1
+            if now is not None:
+                self.seen[slot] = now
+        for key, value in (("team_kills", snap.get("kills")), ("team_max_combo", snap.get("max_combo"))):
+            if isinstance(value, int):
+                self.stats[key] = value
 
 
 class Title:
@@ -209,8 +243,9 @@ class Teammate:
     else his grabbers are the brain's only targets; then following back when the partner is far and nothing is near;
     otherwise the brain fights on the shaped snapshot."""
 
-    def __init__(self, bot, title: Title, mode: str, stats: dict, clock=time.monotonic):
+    def __init__(self, bot, title: Title, mode: str, stats: dict, clock=time.monotonic, tally: bool = False):
         self.bot, self.title, self.mode, self.stats, self.clock = bot, title, mode, stats, clock
+        self.tally = Tally(title, stats) if tally else None   # the team's counters (TEAMMATE: the bot keeps them)
         self.following = False
         self._pulse_at, self._pulse_down = -1e9, False
         self._follow_since = None
@@ -239,6 +274,8 @@ class Teammate:
         now = self.clock()
         me, mate = snap.get("player"), snap.get("partner")
         title = self.title
+        if self.tally is not None:                        # TEAMMATE: the bot is Player 2, the operator Player 1
+            self.tally.observe(mate, me, snap)
         if not me or not mate or (me.get("hp") or 0) <= 0 or title.held(me) or title.dying(me) \
                 or (mate.get("hp") or 0) <= 0:
             self.following = False
@@ -282,6 +319,7 @@ class Pair:
     def __init__(self, one: Teammate, two: Teammate, stats: dict, clock=time.monotonic):
         self.one, self.two, self.stats, self.clock = one, two, stats, clock
         self._taps = {1: {}, 2: {}}
+        self.tally = Tally(one.title, stats)
 
     def __getattr__(self, name):
         if name.startswith("__") or name == "one":
@@ -298,6 +336,7 @@ class Pair:
 
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self.tally.observe(snap.get("player"), (snap.get("p2") or {}).get("player"), snap)
         a1 = self.one.tick(snap)
         second = snap.get("p2")
         if isinstance(second, dict):
@@ -343,7 +382,7 @@ class CoopDriver(Driver):
         cls = self.title.mod.DRIVER
         self.drivers = {0: cls(clock=clock), 1: cls(clock=clock)}
         self.map_id = self.title.map_id
-        self.round_counters = tuple(getattr(cls, "round_counters", ()) or ())
+        self.round_counters = tuple(getattr(cls, "round_counters", ()) or ()) + TEAM_COUNTERS
         self.p2_stats: dict = {}
 
     @property
@@ -373,7 +412,7 @@ class CoopDriver(Driver):
         title = self.title
         if self.mode == TEAMMATE:
             bot = self.drivers[1].brain(View(m, 1), stats, clock, learn_dir=learn_dir)
-            return Teammate(bot, title, TEAMMATE, stats, clock)
+            return Teammate(bot, title, TEAMMATE, stats, clock, tally=True)
         self.p2_stats = {}
         one = Teammate(self.drivers[0].brain(View(m, 0), stats, clock, learn_dir=learn_dir), title, PAIR, stats, clock)
         # Player 2's driver never maintains the live mods: they track one player per session (RE5's fire-rate time

@@ -30,7 +30,7 @@ test('operator can adopt the exact displayed solo bot without submitting a new l
  panel.dispose();
 });
 test('continuous presentation saves an explicit host setting',async()=>{
- const calls=[],listeners=new Map(),fields={'[data-rounds]':{value:'1'},'[data-stalemate]':{checked:false},'[data-stalemate-s]':{value:'12'},'[data-coop]':{checked:false}};
+ const calls=[],listeners=new Map(),fields={'[data-rounds]':{value:'1'},'[data-stalemate]':{checked:false},'[data-stalemate-s]':{value:'12'},'[data-coop]':{value:'off'}};
  const host={dataset:{host:'lilspark'},
   querySelectorAll:()=>[{dataset:{title:'re4'}},{dataset:{title:'re5'}}],
   querySelector:key=>fields[key]||{checked:true}};
@@ -39,7 +39,7 @@ test('continuous presentation saves an explicit host setting',async()=>{
  const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return {hosts:[]};}});
  await panel.ready;await listeners.get('click')({target:{closest:()=>button}});
  assert.deepEqual(calls[1],['/api/mercmode',{host:'lilspark',enabled:true,presentation_priority:true,titles:['re4','re5'],rounds_per_title:1,
-  stalemate_cut:false,stalemate_cut_s:12,coop_turns:false}]);
+  stalemate_cut:false,stalemate_cut_s:12,coop_ratio:'off'}]);
  panel.dispose();
 });
 test('the stalemate rule is a host setting: on by default at 5 s, saved from the panel and the PiP menu, bounded 1..60',async()=>{
@@ -146,13 +146,32 @@ test('queue actions post the whole queue for the exact host',async()=>{
  assert.match(await M.queueAction(api,{name:'x',settings:{enabled:false}},'add',{title:'re4'}),/turn MercMode on/);
  await assert.rejects(M.queueAction(api,null,'add',{}),/No gBox PC/);
 });
-test('bot+bot split-screen turns on the Switch editions: off by default, saved from the panel and the PiP menu',async()=>{
+test('bot+bot split-screen turns: a co-op : solo ratio, off by default, set from the panel and the PiP menu',async()=>{
  const host={name:'lilspark',id:'w1',online:true,settings:{enabled:true,titles:['re5','re6']},titles:[]};
- assert.match(M.render({hosts:[host]}),/<input type="checkbox" data-coop > Split-screen turns on RE5 \/ RE6 Switch/);
- assert.match(M.render({hosts:[{...host,settings:{...host.settings,coop_turns:true}}]}),/data-coop checked/);
- assert.match(M.menuHTML(host,true),/data-mm-coop >/);
+ const html=M.render({hosts:[host]});
+ assert.match(html,/<select data-coop aria-label="Bot\+bot split-screen turns"><option value="off" selected>Off \(solo turns only\)<\/option>/);
+ assert.match(html,/RE5 plays Mercenaries United in split screen \(its No Mercy is single-player only\)/);
+ assert.match(M.render({hosts:[{...host,settings:{...host.settings,coop_ratio:'6:1'}}]}),/<option value="6:1" selected>6:1 co-op to solo<\/option>/);
+ assert.match(M.menuHTML(host,true),/<select data-mm-coop/);
+ assert.doesNotMatch(M.menuHTML(host,true),/data-mm-play-bot/);                      // no Switch session: no button
+ assert.match(M.menuHTML(host,true,null,{session_id:'w1-a',game_id:'115f9cdbba115432'}),/data-mm-play-bot[^>]*>🎮 Play with bot \(RE6 split screen\)/);
  const calls=[],api=async(path,body)=>{calls.push([path,body]);return {};};
- assert.match(await M.menuAction(api,host,'coop',true),/split screen with bots on both players/);
- assert.match(await M.menuAction(api,host,'coop',false),/play solo/);
- assert.deepEqual(calls,[['/api/mercmode',{host:'lilspark',coop_turns:true}],['/api/mercmode',{host:'lilspark',coop_turns:false}]]);
+ assert.match(await M.menuAction(api,host,'coop','6:1'),/6:1 co-op to solo/);
+ assert.match(await M.menuAction(api,host,'coop','off'),/play solo/);
+ await assert.rejects(M.menuAction(api,host,'coop',true),/co-op ratio/);
+ assert.deepEqual(calls,[['/api/mercmode',{host:'lilspark',coop_ratio:'6:1'}],['/api/mercmode',{host:'lilspark',coop_ratio:'off'}]]);
+});
+test('play with bot: the team role, Player 2 by an in-place restart, then the autobot, each confirmed in turn',async()=>{
+ const calls=[],api=async(path,body)=>{calls.push([path,body]);
+  return path==='/api/jobs'?{id:'j'+calls.length,state:'succeeded',output:{result:{}}}:{};};
+ const out=await M.menuAction(api,{name:'lilspark'},'play_with_bot',{session_id:'w1-sw',game_id:'52d15709be0fda1a'});
+ assert.match(out,/the bot joins as Player 2/);
+ assert.deepEqual(calls.map(c=>[c[1].tool,c[1].input]),[
+  ['mercs_team',{session_id:'w1-sw',op:'configure',role:'teammate_p2'}],
+  ['mercs_team',{session_id:'w1-sw',op:'prepare_player2',restart:true}],
+  ['autoplay',{session_id:'w1-sw',op:'start',mode:'auto',continuous:true}]]);
+ assert.ok(calls.every(c=>c[1].require_worker==='w1'&&c[1].agent_use===false));
+ await assert.rejects(M.menuAction(api,{name:'lilspark'},'play_with_bot',{session_id:'w1-x',game_id:'e7ca89bbeb67360d'}),/RE5 or RE6 Switch/);
+ const failing=async(path,body)=>path==='/api/jobs'?{id:'x',state:'failed',error:'no pad'}:{};
+ await assert.rejects(M.menuAction(failing,{name:'lilspark'},'play_with_bot',{session_id:'w1-sw',game_id:'52d15709be0fda1a'}),/mercs_team: no pad/);
 });

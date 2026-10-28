@@ -4334,7 +4334,7 @@ async function pipMercMode(m, opening, open = false) {
     const data = await api('/api/mercmode', undefined, 'GET');
     const host = GBoxMercMode.hostFor(data, sid, compactSession?.detail?.worker_name || S.workerName);
     if (m.opening !== opening) return;
-    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog);
+    slot.innerHTML = GBoxMercMode.menuHTML(host, open, data.catalog, compactSession);
     const queue = slot.querySelector('[data-mm-queue]');
     if (queue) GBoxMercMode.wireQueue(queue, { api, host, catalog: data.catalog,
       done: async message => { toast(message); await pipMercMode(m, opening, true); }, fail: error => toast(error.message) });
@@ -4355,7 +4355,11 @@ async function pipMercMode(m, opening, open = false) {
     slot.querySelector('[data-mm-stalemate]')?.addEventListener('change', stalemate);
     slot.querySelector('[data-mm-stalemate-s]')?.addEventListener('change', stalemate);
     // bot+bot split screen on the Switch editions (operator 2026-10-27), off unless chosen here
-    slot.querySelector('[data-mm-coop]')?.addEventListener('change', e => act('coop', e.target.checked));
+    slot.querySelector('[data-mm-coop]')?.addEventListener('change', e => act('coop', e.target.value));
+    // "Play with bot" on an RE5 / RE6 Switch session: you as Player 1, the bot as Player 2 (the title restarts in place)
+    slot.querySelector('[data-mm-play-bot]')?.addEventListener('click', e => { e.stopPropagation();
+      if (confirm('Play with the bot as Player 2? The title restarts in this session with Player 2 connected (the round in progress is lost).'))
+        act('play_with_bot', { session_id: sid, game_id: compactSession?.game_id }); });
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {

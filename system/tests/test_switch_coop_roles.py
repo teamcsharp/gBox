@@ -186,16 +186,25 @@ def test_human_controls_mean_a_human_holds_player_one(tmp_path, monkeypatch):
 
 # --- MercMode's bot+bot turns ----------------------------------------------------------------------------------------
 
-def test_coop_turns_are_off_by_default_and_only_for_the_switch_editions():
+def test_coop_ratio_is_off_by_default_and_draws_per_turn_for_the_switch_editions():
+    import random
     cfg = M.normalize({})
-    assert cfg['coop_turns'] is False
-    with pytest.raises(ValueError, match='coop_turns'):
-        M.normalize({'coop_turns': 1})
-    on = M.normalize({'coop_turns': True})
-    assert M.launch_block(on, map_id='01002A000CD48000')['coop'] == 'bots'
-    assert 'coop' not in M.launch_block(on, map_id='BLUS30491')
-    assert 'coop' not in M.launch_block(cfg, map_id='01002A000CD48000')
-    assert M.coop_of(on, '010018100CD46000') == {'coop': 'bots'} and M.coop_of(on, 'G4BE08') == {}
+    assert cfg['coop_ratio'] == 'off'
+    for bad in ('7:1', True, 6, '6'):
+        with pytest.raises(ValueError, match='coop_ratio'):
+            M.normalize({'coop_ratio': bad})
+    rng = random.Random(7)
+    six = M.normalize({'coop_ratio': '6:1'})
+    draws = [M.draw_coop(six, '01002A000CD48000', rng) for _ in range(7000)]
+    share = sum(1 for d in draws if d == {'coop': 'bots'}) / len(draws)
+    assert 0.82 < share < 0.89                                    # six co-op turns to one solo
+    assert M.draw_coop(six, 'BLUS30491', rng) == {} and M.draw_coop(six, 'G4BE08', rng) == {}
+    assert all(M.draw_coop(cfg, '010018100CD46000', rng) == {} for _ in range(50))
+    only = M.normalize({'coop_ratio': 'only'})
+    assert all(M.draw_coop(only, '010018100CD46000', rng) == {'coop': 'bots'} for _ in range(50))
+    assert M.coop_weights(only) == (1, 0) and M.coop_weights(six) == (6, 1) and M.coop_weights(cfg) == (0, 1)
+    assert M.launch_block(six, coop={'coop': 'bots'})['coop'] == 'bots'
+    assert 'coop' not in M.launch_block(six, coop={}) and 'coop' not in M.launch_block(six)
 
 
 def test_a_coop_turn_counts_its_team_rounds_and_only_a_coop_turn_does():

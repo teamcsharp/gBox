@@ -24,12 +24,15 @@ DEFAULT = {'enabled': False, 'titles': ['re4', 're5', 're6'], 'rounds_per_title'
            # clock -> the clock is cut to stalemate_cut_s once per round. Rides in the launch payload (game.launch.mercmode)
            'stalemate_cut': True, 'stalemate_cut_s': 5,
            # bot+bot split screen (operator 2026-10-27: "have the bot team up with itself playing two play split screen
-           # and bots control both players"): RE5 / RE6 Switch turns play split screen with bots on both players.
-           # Off unless the operator turns it on; the other editions always play solo
-           'coop_turns': False}
+           # and bots control both players", and "the ratio of co-op matches to single player matches six to one"): each
+           # RE5 / RE6 Switch turn draws co-op or solo by this ratio (co-op : solo turns). RE6's co-op is No Mercy >
+           # SPLIT; RE5's is Mercenaries United's split screen (RE5's No Mercy is single-player only). Off until the
+           # operator turns it on; the other editions always play solo
+           'coop_ratio': 'off'}
 STALEMATE_KEYS = ('stalemate_cut', 'stalemate_cut_s')
 STALEMATE_FEATURE = 'mercmode_stalemate_cut'     # worker feature: its mercmode tool accepts the stalemate settings
-COOP_FEATURE = 'mercmode_coop_turns'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
+COOP_FEATURE = 'mercmode_coop_ratio'             # worker feature: split-screen launches (gbox.switch_coop) and its tool
+COOP_RATIOS = ('off', '1:1', '2:1', '3:1', '4:1', '5:1', '6:1', '8:1', '10:1', 'only')   # co-op : solo turns
 COOP_MAPS = frozenset({'010018100CD46000', '01002A000CD48000'})   # RE5 / RE6 Switch: split screen (switch_team)
 # Warm pool (operator 2026-10-24: "now that there is more ram on the spark, get the swapping of mercenary modes more
 # seamless by having emulators ready to swap in for merc mode fully prepared"). keep_warm = how many titles besides the
@@ -106,8 +109,8 @@ def normalize(patch, current=None):
             or not 1 <= out['rounds_per_title'] <= 20:
         raise ValueError('MercMode needs enabled true/false and 1..20 rounds per title')
     from .mercs.stalemate import CUT_MIN_S, CUT_MAX_S
-    if type(out['coop_turns']) is not bool:
-        raise ValueError('MercMode coop_turns is true or false (bot+bot split screen on RE5 / RE6 Switch)')
+    if out['coop_ratio'] not in COOP_RATIOS:
+        raise ValueError('MercMode coop_ratio is co-op : solo turns, one of ' + ', '.join(COOP_RATIOS))
     if type(out['stalemate_cut']) is not bool or type(out['stalemate_cut_s']) is not int \
             or not CUT_MIN_S <= out['stalemate_cut_s'] <= CUT_MAX_S:
         raise ValueError(f'MercMode stalemate: stalemate_cut true/false and {CUT_MIN_S}..{CUT_MAX_S} seconds on the clock')
@@ -273,21 +276,37 @@ def presentation_launch(store, worker, job):
             =={'random_characters':True,'random_stages':True})
 
 
-def coop_of(cfg, map_id) -> dict:
-    """{'coop': 'bots'} for a turn that plays split screen with bots on both players (coop_turns on, an RE5 / RE6
-    Switch edition), else {}. The launch carries it to the worker (gbox.switch_coop.players_requested, switch_team) and
-    the run records it, so the turn's team round boundaries count (accept_boundary)."""
-    return {'coop': 'bots'} if (cfg or {}).get('coop_turns') is True and map_id in COOP_MAPS else {}
+def coop_weights(cfg) -> tuple[int, int]:
+    """(co-op, solo) turn weights from coop_ratio: off (0, 1), 'N:1' (N, 1), only (1, 0)."""
+    ratio = (cfg or {}).get('coop_ratio', 'off')
+    if ratio == 'only':
+        return 1, 0
+    if ratio not in COOP_RATIOS or ratio == 'off':
+        return 0, 1
+    return int(ratio.split(':')[0]), 1
 
 
-def launch_block(cfg, selection=None, map_id=None) -> dict:
+def draw_coop(cfg, map_id, rng) -> dict:
+    """This turn's draw: {'coop': 'bots'} (split screen, bots on both players) or {} (solo) by coop_ratio, for an RE5 /
+    RE6 Switch edition only. Drawn once per launch: the launch carries it to the worker (gbox.switch_coop
+    .players_requested connects Player 2 at boot, switch_team plays it, a warm prepare walks into split screen), and
+    the run records the same draw, so the turn's team round boundaries count (accept_boundary)."""
+    if map_id not in COOP_MAPS:
+        return {}
+    coop, solo = coop_weights(cfg)
+    if not coop:
+        return {}
+    return {'coop': 'bots'} if not solo or rng.random() < coop / (coop + solo) else {}
+
+
+def launch_block(cfg, selection=None, coop=None) -> dict:
     """The launch payload's mercmode block (game.launch.mercmode): random character and stage every round, the DJ's
     exact selection when there is one, the bots' stalemate rule settings (gbox.mercs.stalemate.configure reads
-    them on the worker), and a bot+bot split-screen turn's coop (coop_of)."""
+    them on the worker), and the turn's co-op draw (draw_coop)."""
     return {'random_characters': True, 'random_stages': True,
             **({'selection': selection} if selection else {}),
             **{k: cfg[k] for k in STALEMATE_KEYS if k in cfg},
-            **coop_of(cfg, map_id)}
+            **(coop if isinstance(coop, dict) and coop.get('coop') == 'bots' else {})}
 
 
 def adopt_current(store, worker, session, telemetry, *, now=None):
@@ -773,7 +792,7 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
     # 010018100CD46000, not the PS3 BLUS30491, and were refused here (2026-10-26)
     expected_map = run['mercmode'].get('map_id') or spec['map_id']
     witness = body.get('witness')
-    # a bot+bot split-screen turn (coop_of, recorded at its start) counts its team rounds; every other run, solo ones
+    # a bot+bot split-screen turn (draw_coop, recorded at its start) counts its team rounds; every other run, solo ones
     roles = ('solo_p1', 'bots_p1_p2') if run['mercmode'].get('coop') == 'bots' else ('solo_p1',)
     if body.get('map_id') != expected_map or body.get('role') not in roles \
             or body.get('source') != 'native_terminal_reader' or not isinstance(witness, dict) \
