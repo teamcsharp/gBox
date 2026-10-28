@@ -106,13 +106,13 @@ def test_once_on_it_stays_while_anyone_is_within_5_m_then_the_main_gun_comes_bac
     assert b._ramp is None
 
 
-def test_the_aim_pitch_is_held_on_a_chest():
+def test_a_confirmed_body_shot_does_not_steer_away_for_a_conflicting_pitch_read():
     b, clock = bot()
     held = [dict(M92F, hand=False), dict(SHOTGUN, hand=True)]
     b.tick(snap(CROWD, inv=held))
     clock[0] = 0.3
     act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=held, aim_pitch=-0.4))
-    assert "rdown" in act["hold"] and "rup" not in act["hold"]
+    assert "zr" in act["hold"] and not {"rdown", "rup"}.intersection(act["hold"])
 
 
 def test_with_one_near_a_far_one_is_never_the_target_nor_shot():
@@ -133,3 +133,142 @@ def test_the_crowds_gun_is_a_shotgun_else_an_automatic_else_a_magnum():
     assert b._rampage_gun([magnum, gatling])[1] == "automatic"
     assert b._rampage_gun([magnum, gatling, SHOTGUN])[1] == "shotgun"
     assert b._rampage_gun([magnum])[1] == "magnum"
+
+
+@pytest.mark.parametrize("dot,pitch,key", [
+    ((0.0, 0.0, 100.0), 0.8, "rup"),       # ground before the crowd
+    ((0.0, 1000.0, 100.0), -0.8, "rdown"), # sky over the crowd
+    ((0.0, 140.0, 100.0), 0.0, None),       # wall directly before a target
+])
+def test_crowd_yaw_alignment_does_not_fire_into_ground_sky_or_wall(dot, pitch, key):
+    b, clock = bot()
+    ring = [at(400, 0), at(350, 70), at(300, -100)]
+    held = [dict(SHOTGUN, hand=True)]
+    b.tick(snap(ring, inv=held))
+    clock[0] = 0.3
+    act = b.tick(snap(ring, dot=dot, motion=26, inv=held, aim_pitch=pitch))
+    assert "zl" in act["hold"] and "zr" not in act["hold"]
+    if key:
+        assert key in act["hold"]
+    clock[0] = 0.6
+    act = b.tick(snap(ring, dot=chest(ring[0]), motion=26, inv=held, aim_pitch=0.0))
+    assert {"zl", "zr"} <= set(act["hold"])
+    assert b.stats["unaims_in_5m"] == 0
+
+
+def test_crowd_corrects_pitch_instead_of_firing_during_and_after_a_boosted_shot():
+    b, clock = bot()
+    held = [dict(SHOTGUN, hand=True)]
+    b.tick(snap(CROWD, inv=held))
+    clock[0] = 0.3
+    b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=held))
+    bad = (0.0, 0.0, 100.0)
+    clock[0] = 0.4
+    act = b.tick(snap(CROWD, dot=bad, motion=29, inv=held, aim_pitch=0.8))
+    assert "zr" not in act["hold"] and not R.SHOT_TAIL_KEYS.intersection(act["hold"])
+    clock[0] = 0.45
+    act = b.tick(snap(CROWD, dot=bad, motion=26, inv=held, aim_pitch=0.8))
+    assert "zr" not in act["hold"] and not R.SHOT_TAIL_KEYS.intersection(act["hold"])
+    clock[0] = 0.4 + R.SHOT_TAIL_S + 0.1
+    act = b.tick(snap(CROWD, dot=bad, motion=26, inv=held, aim_pitch=0.8))
+    assert "rup" in act["hold"] and "zr" not in act["hold"]
+
+
+def test_point_blank_does_not_override_a_laser_pointing_at_the_floor():
+    b, clock = bot()
+    ring = [at(120, 0)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    act = b.tick(snap(ring, dot=(0.0, -100.0, 70.0), motion=26, aim_pitch=1.0))
+    assert "zr" not in act["hold"] and "rup" in act["hold"]
+
+
+@pytest.mark.parametrize("dot", [(0.0, 100.0, 50.0), (40.0, 140.0, 40.0)])
+def test_point_blank_never_overrides_a_short_miss_with_stale_level_pitch(dot):
+    b, clock = bot()
+    ring = [at(120, 0)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    ap = math.atan2(R.MUZZLE_H - R.CHEST_H, 120.0)
+    act = b.tick(snap(ring, dot=dot, motion=26, aim_pitch=ap))
+    assert "zr" not in act["hold"]
+
+
+def test_a_close_body_hit_still_fires_without_the_point_blank_exception():
+    b, clock = bot()
+    ring = [at(100, 5)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    act = b.tick(snap(ring, dot=chest(ring[0]), motion=26))
+    assert {"zl", "zr"} <= set(act["hold"])
+
+
+def test_a_target_that_moves_behind_does_not_hide_a_front_threat(monkeypatch):
+    monkeypatch.setattr(R, "QUICK_TURN", False)
+    b, clock = bot()
+    b.tick(snap([at(250, 0), at(350, 80), at(300, -100)]))
+    assert b.target == 10
+    clock[0] = R.RAMPAGE_RETARGET_S + 0.1
+    ring = [at(250, 160), at(350, 0), at(300, -100)]
+    act = b.tick(snap(ring, dot=chest(ring[1]), motion=26))
+    assert b.target == 11 and {"zl", "zr"} <= set(act["hold"])
+    assert not {"rleft", "rright"}.intersection(act["hold"])
+
+
+@pytest.mark.parametrize("weapon,fire", [(SHOTGUN, True), (M92F, False)])
+def test_only_the_held_shotgun_gets_a_three_dimensional_spread_cone(weapon, fire):
+    b, clock = bot()
+    ring = [at(400, 8), at(350, 70), at(300, -100)]
+    inv = [dict(weapon, hand=True)]
+    b.tick(snap(ring, inv=inv))
+    clock[0] = 0.3
+    act = b.tick(snap(ring, dot=(0.0, 110.0, 450.0), motion=26, inv=inv))
+    assert ("zr" in act["hold"]) is fire
+
+
+def test_crowd_laser_dropout_requires_a_recent_confirmed_ray():
+    b, clock = bot()
+    ring = [at(300, 0), at(350, 70), at(300, -100)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    assert "zr" not in b.tick(snap(ring, motion=26))["hold"]
+    clock[0] = 0.4
+    assert "zr" in b.tick(snap(ring, dot=chest(ring[0]), motion=26))["hold"]
+    clock[0] = 0.5
+    assert "zr" in b.tick(snap(ring, motion=29))["hold"]
+    clock[0] = 0.4 + R.FLICKER_S + 0.1
+    assert "zr" not in b.tick(snap(ring, motion=26))["hold"]
+
+
+@pytest.mark.parametrize("position,heading,muzzle", [
+    ((100.0, 0.0, 0.0), 0.0, None),
+    ((0.0, 0.0, 0.0), 0.5, None),
+    ((0.0, 0.0, 0.0), 0.0, (100.0, 140.0, 30.0)),
+])
+def test_crowd_laser_dropout_does_not_reuse_a_ray_after_the_player_moves(position, heading, muzzle, monkeypatch):
+    monkeypatch.setattr(R, "QUICK_TURN", False)
+    b, clock = bot()
+    ring = [at(300, 0), at(350, 70), at(300, -100)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    assert "zr" in b.tick(snap(ring, dot=chest(ring[0]), motion=26))["hold"]
+    clock[0] = 0.4
+    sample = snap(ring, motion=26)
+    sample["player"].update(pos=position, rot=heading)
+    if muzzle is not None:
+        sample["laser"]["from"] = muzzle
+    assert "zr" not in b.tick(sample)["hold"]
+
+
+def test_a_short_wall_ray_releases_a_blocked_target_for_another_crowd_threat(monkeypatch):
+    monkeypatch.setattr(R, "QUICK_TURN", False)
+    b, clock = bot()
+    ring = [at(400, 0), at(450, 40), at(300, -100)]
+    b.tick(snap(ring))
+    for now in (0.3, 0.3 + R.WALL_DROP_S + 0.05, 0.3 + R.WALL_DROP_S + 0.15):
+        clock[0] = now
+        act = b.tick(snap(ring, dot=(0.0, 130.0, 150.0), motion=26))
+    assert b.target == 11 and "zr" not in act["hold"] and "rleft" in act["hold"]
+    clock[0] += 0.3
+    act = b.tick(snap(ring, dot=chest(ring[1]), motion=26))
+    assert {"zl", "zr"} <= set(act["hold"])
