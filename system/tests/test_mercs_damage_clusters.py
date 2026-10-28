@@ -65,7 +65,8 @@ def test_bearing_is_off_his_facing_in_the_drivers_heading_convention():
     (event(enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))]), RE5, 'crowd_gun_down'),
     (event(held=['zl', 'zr'], enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))]), RE5,
      'crowd_4_in_2m'),
-    (event(enemies=[enemy(10, 30), enemy(150, 0)]), RE5, 'grabbed_front'),          # a Majini on him (HELD_R)
+    (event(enemies=[enemy(10, 30), enemy(150, 0)]), RE5, 'grabbed_front'),          # on him, no motion byte (HELD_R)
+    (event(player={'motion': 0}, enemies=[enemy(10, 30), enemy(150, 0)]), RE5, 'faced_melee'),   # the motion says free
     (event(held=['zl'], enemies=[enemy(300, 120)]), RE5, 'aimed_away_or_behind'),  # gun up, the nearest 120 deg off
     (event(enemies=[enemy(120, -150)]), RE5, 'aimed_away_or_behind'),              # one close behind him
     (event(hp=(250, 150), enemies=[enemy(100, 0)], snap={'inventory': [{'id': 0x305, 'rounds': 0}]}), RE5,

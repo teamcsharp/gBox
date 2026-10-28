@@ -224,10 +224,11 @@ class Tuner:
                 continue
             if not isinstance(n, dict) or self.now() - (n.get('at') or 0) > EVIDENCE_S:
                 continue
-            if type(n.get('x')) not in (int, float) or type(n.get('z')) not in (int, float):
-                continue
-            key = (n.get('stage') or '*', int(n['x'] // GRID_CM), int(n['z'] // GRID_CM))
-            cells.setdefault(key, []).append((n['x'], n['z']))
+            for xk, zk in (('x', 'z'), ('gx', 'gz')):          # where he stopped, and the goal he ran for
+                if type(n.get(xk)) not in (int, float) or type(n.get(zk)) not in (int, float):
+                    continue
+                key = (n.get('stage') or '*', int(n[xk] // GRID_CM), int(n[zk] // GRID_CM))
+                cells.setdefault(key, []).append((n[xk], n[zk]))
         out = {}
         for (stage, _cx, _cz), pts in sorted(cells.items(), key=lambda kv: -len(kv[1])):
             if len(pts) >= EVIDENCE_MIN:

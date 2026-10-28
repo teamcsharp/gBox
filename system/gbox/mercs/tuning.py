@@ -164,11 +164,19 @@ def steer(title, pos, heading, dist) -> float:
         return heading
 
 
-def note_dead_end(title, pos, base=None, now=None) -> None:
-    """Where a relocation stopped against a wall (the driver's stuck branch): one line in dead_ends.jsonl."""
+def dead_ends(title) -> list:
+    """The round's learned dead ends as (x, 0, z) points (a driver's own dead-end list, seeded at round start)."""
+    return [(float(x), 0.0, float(z)) for x, z, _r in (_state.get(title) or {}).get('avoid') or ()]
+
+
+def note_dead_end(title, pos, goal=None, base=None, now=None) -> None:
+    """Where a relocation stopped against a wall and the goal it ran for (x, y, z), from the driver's stuck branch:
+    one line in dead_ends.jsonl."""
     try:
         line = {'at': time.time() if now is None else now, 'stage': (_state.get(title) or {}).get('stage'),
                 'x': round(float(pos[0])), 'z': round(float(pos[1]))}
+        if goal is not None and len(goal) >= 3:
+            line.update(gx=round(float(goal[0])), gz=round(float(goal[2])))
         path = root(base) / title / DEAD_ENDS
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open('a', encoding='utf-8') as f:
