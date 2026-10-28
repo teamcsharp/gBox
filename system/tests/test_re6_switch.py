@@ -1803,6 +1803,7 @@ def test_live_weapon_switches_to_a_loaded_gun_and_queues_another_for_the_next_ro
 
 
 def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monkeypatch):
+    monkeypatch.setattr(R, "AUTO_SWITCH", True)                             # (off in play: the operator, 2026-10-28)
     monkeypatch.setattr(R, "WANT_WEAPON", 3)
     monkeypatch.setattr(R, "WANT_WEAPON_AT", 1.0)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))

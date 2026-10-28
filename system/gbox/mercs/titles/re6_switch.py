@@ -1772,6 +1772,9 @@ AIM_LOCK = True
 CAM_OWNED, QFPS_OFF, QFPS_VT, QFPS_PITCH = P_CAMERA, 0x16A0, 0x25C4080, 0x2C0   # (P_CAMERA / CAM_OWNER: the co-op readers')
 PITCH_DEG_PER_UNIT, PITCH_DEG_AT_0 = 23.0, -1.5
 LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.25, math.radians(1.5), math.radians(0.4)
+# Never learned far downward (operator 2026-10-28 #5458: "always pointing the gun down ... shooting at the ground in front of
+# enemies"): the learned correction goes at most LOCK_BIAS_DOWN (about 1 degree) below the target's own slope.
+LOCK_BIAS_DOWN = 0.04
 # The pitch guard (live 20:00-20:22: up_aim_s 28.6 s over five rounds, most on High Seas Fortress / Requiem for War):
 # the written pitch never runs more than LOCK_UP_SLACK above the target's own slope, nor above CLOSE_PITCH for one that
 # is not up there itself; the learned correction is held to LOCK_BIAS_MAX (about 6 deg).
@@ -1934,6 +1937,10 @@ SHOTGUN_MAGNUM_TYPES = frozenset({0x104, 0x105, 0x106, 0x107, 0x108})
 # weapon asked for in the app - a loaded shotgun (the Assault Shotgun first) is the weapon until the circle thins.
 # stats crowd_shotgun_s.
 CROWD_GUN_N, CROWD_GUN_R = 3, 500.0
+# Off (operator 2026-10-28: "the bot spend so much time changing their weapon I hate it I need them to stop changing weapons
+# I need them to only just have the weapon they need and to just be blasting it"): no switch of his own (the crowd's
+# shotgun, a grab's pick); the app's weapon (WANT_WEAPON) and a grenade's gun-back still switch.
+AUTO_SWITCH = False
 SHOTGUN_ORDER = (0x105, 0x104, 0x106)
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
 # and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
@@ -2661,6 +2668,8 @@ class Bot:
         pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, or resting."""
         want = WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None
         held = p.get("guns") or {}
+        if want is None and not AUTO_SWITCH:
+            return None
         if want is None:
             px, py, pz = p["pos"]
             crowd = sum(1 for e in (self._snap or {}).get("enemies") or () if (e.get("hp") or 0) > 0
@@ -3090,7 +3099,7 @@ class Bot:
                 and abs(view[1] - self.lock_view[1]) <= LOCK_STILL
             if settled:                                          # the view at rest: learn the pitch's correction
                 err_units = math.degrees(w[2] - view[1]) / PITCH_DEG_PER_UNIT
-                self.pitch_bias = max(-LOCK_BIAS_MAX, min(LOCK_BIAS_MAX, self.pitch_bias + LOCK_BIAS_GAIN * err_units))
+                self.pitch_bias = max(-LOCK_BIAS_DOWN, min(LOCK_BIAS_MAX, self.pitch_bias + LOCK_BIAS_GAIN * err_units))
         self.lock_view = view
         pitch = (math.degrees(want_pitch) - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + self.pitch_bias
         if point is None:                                    # the pitch guard: never far above his own slope
