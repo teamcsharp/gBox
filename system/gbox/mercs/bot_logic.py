@@ -56,6 +56,7 @@ KNOBS: dict[str, list[tuple]] = {
         ("BONUS_RUN", "Capsule run (time bonuses)", "Objectives", "bool", 0, 1, 1, ""),
         ("BONUS_SHOOT_R", "Capsule shot range (cm)", "Objectives", "float", 500, 4000, 100, ""),
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "climbs and QTEs"),
+        ("AUTO_SWITCH", "Automatic weapon switching", "Weapons", "bool", 0, 1, 1, "off: he keeps the gun in hand and blasts"),
         ("GRAB_SWAP", "Shotgun/magnum after a grab", "Weapons", "bool", 0, 1, 1, ""),
         ("GRAB_DETONATE", "Set the bomb off from a grab", "Weapons", "bool", 0, 1, 1, ""),
         ("SURVIVAL_HP", "Survival mode under health", "Survival", "float", 0.1, 0.7, 0.05, ""),

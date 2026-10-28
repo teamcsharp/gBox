@@ -103,7 +103,13 @@
       });
       doc.body.append(tab, panel);
     }
-    function paint() { if (panel) panel.innerHTML = html(state.view, state.message, { ...state, ...target }); if (tab) tab.textContent = open ? "›" : "‹"; }
+    let shown = null;                                    // the PiP's session id when it has no live settings yet
+    function paint() {
+      if (panel) panel.innerHTML = target ? html(state.view, state.message, { ...state, ...target })
+        : `<h3>Bot logic</h3><p class="bl-msg">This game has no live bot settings or mods in gBox yet; they appear here as `
+          + `each game is modded (Ghidra hooks, mods, character swappers). RE5 and RE6 on Switch have them now.</p>`;
+      if (tab) tab.textContent = open ? "›" : "‹";
+    }
     function alive(bound) {
       if (target !== bound || current && current() !== bound.sid) throw new Error("The displayed game changed. Refresh its controls.");
     }
@@ -210,10 +216,24 @@
       paint();
       if (open && !state.view) return refresh();
     }
+    let lookedUp = null;                                 // the sid whose live session row was fetched (once per sid)
+    function lookup(nextState) {
+      // the PiP's own session record can be stale after a MercMode handover or lack the adapter / state fields
+      // (2026-10-28: the operator never saw the arrow): the Spark's live session row for the shown sid decides instead
+      const sid = nextState.sid;
+      if (!api || lookedUp === sid) return;
+      lookedUp = sid;
+      Promise.resolve(api("/api/sessions?live=1", undefined, "GET")).then(data => {
+        const rows = Array.isArray(data) ? data : (data && Array.isArray(data.sessions) ? data.sessions : []);
+        const row = rows.find(r => r && r.session_id === sid);
+        if (row && eligible(row)) update({ ...nextState, session: row });
+      }).catch(() => { if (lookedUp === sid) lookedUp = null; });
+    }
     function update(nextState) {
       ensure();
       const session = nextState?.session;
       const next = nextState?.on && nextState.sid === session?.session_id && eligible(session) ? session : null;
+      if (!next && nextState?.on && typeof nextState.sid === "string") lookup(nextState);
       const same = next && target && next.session_id === target.sid && next.game_id === target.gameId
         && next.adapter === target.adapter && workerOf(next) === target.worker && pcOf(next) === target.pc;
       if (!same && (target || next)) {
@@ -222,8 +242,11 @@
         state = empty(); paint();
         if (open && target) refresh();
       }
-      tab?.classList.toggle("ready", !!target);
-      if (!target && open) toggle(false);
+      // the tab is MercMode's (operator 2026-10-28: "the tab is a mercmode tab. Not just 5 and 6"): on for whatever game
+      // the PiP shows; one without live settings says so when opened
+      shown = nextState?.on && typeof nextState.sid === "string" ? nextState.sid : null;
+      tab?.classList.toggle("ready", !!(target || shown));
+      if (!target && !shown && open) toggle(false);
     }
     return { update, toggle, set, setMod, reset, refresh, state: () => ({ ...state, ...target, open }) };
   }
