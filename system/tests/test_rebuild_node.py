@@ -52,7 +52,8 @@ def test_rebuild_queues_the_tool_on_that_worker(tmp_path):
     assert body["worker"] == {"id": "w1", "name": "JAYBUILT", "os": "windows"} and body["stopped"] == []
     job = store.get("job", body["job_id"])
     assert job["tool"] == "rebuild_node" and job["state"] == "queued" and job["require_worker"] == "w1"
-    assert job["input"] == {"force": False, "restart": True, "drain_s": 90.0, "delay_s": 6.0, "stop_jobs": []}
+    assert job["input"] == {"force": False, "restart": True, "drain_s": 90.0, "delay_s": 6.0, "stop_jobs": [],
+                            "enable_remote_admin": False}
     assert not job["agent_use"]
     assert _jobs(store, "session_op") == []
 

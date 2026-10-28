@@ -69,6 +69,7 @@ _exit = os._exit
 
 
 class RebuildIn(BaseModel):
+    enable_remote_admin: bool = False  # explicit per-installation opt-in; ordinary rebuilds never enable recovery
     force: bool = False        # restart although game sessions are still up here / the self-check failed / the Spark is busy
     restart: bool = True       # False: update and check only
     drain_s: float = Field(default=90, ge=0, le=900)     # how long to wait for this node's game sessions to close first
@@ -440,6 +441,16 @@ def run(inp: RebuildIn, ctx) -> dict:
         con.step(4, "check", "Self-check")
         receipt, may_restart = step_check(con, config_path())
         steps.append(receipt)
+        if may_restart and HOST_OS == 'windows':
+            from .desktop_supervisor import install as install_recovery
+            try:
+                recovery = install_recovery(ctx.config, config_path(), ROOT, opt_in=inp.enable_remote_admin)
+                if recovery['status'] != 'skipped':
+                    steps.append(_receipt('recovery', recovery['status'], recovery['detail']))
+                    con.line(recovery['detail'], WINDOW['check'][1])
+            except Exception as exc:
+                steps.append(_receipt('recovery', 'failed', type(exc).__name__))
+                con.line('Remote recovery task could not be registered; it is not confirmed installed.', WINDOW['check'][1])
         con.step(5, "restart", "Restart")
         receipt, mode, detail = step_restart(con, ctx, inp, may_restart)
         steps.append(receipt)

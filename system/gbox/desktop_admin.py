@@ -135,7 +135,7 @@ class AdminQueue:
             row = {'id': body.request_id, 'authority': body.installation, 'worker_id': wid,
                    'actor': actor, 'op': body.op, 'force': True, 'created': now,
                    'expires_at': now + COMMAND_S, 'state': 'queued', 'request_sha256': digest,
-                   'epoch': health.get('epoch', owner.get('epoch')),
+                   'epoch': owner.get('epoch') if body.op == 'rebuild' else health.get('epoch'),
                    'controller_id': health.get('controller_id'), 'enable_remote_admin': body.enable_remote_admin}
             row['sessions'] = [{'session_id': session['session_id'], 'pid': session['detail']['pid'],
                                 'created': session['detail']['process_created']}
@@ -267,7 +267,9 @@ class AdminQueue:
             for evidence in body.closed_sessions:
                 session = self.store.get('session', evidence.session_id) or {}
                 expected = allowed.get(evidence.session_id) or {}
-                if body.status != 'requested' or expected.get('pid') != evidence.pid \
+                # A replacement launch may fail after these exact processes
+                # exited. Closure evidence is independent of launch success.
+                if expected.get('pid') != evidence.pid \
                         or expected.get('created') != evidence.created \
                         or not evidence.session_id.startswith(row['worker_id']+'-') \
                         or (session.get('detail') or {}).get('pid') != evidence.pid \

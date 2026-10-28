@@ -192,12 +192,15 @@ def test_successful_rebuild_requires_and_records_fresh_worker_return(admin):
         admin.store.put('job', job['id'], job)
         return job
     admin.submit = submit
+    admin.poll(AUTH, KEY, poll(epoch=None, worker_id=None, worker_state='unavailable'))
     body = AdminRequest(installation=AUTH, request_id=RID, op='rebuild', force=True, enable_remote_admin=True)
     row = admin.request(WID, body, 'agent')
     job = admin.store.get('job', row['job_id'])
     assert row['state'] == 'rebuilding' and authorized_rebuild(admin.store, job)
     admin.store.put('job', job['id'], job | {'state': 'succeeded', 'output': {'restart': 'scheduled'}})
     assert record(admin)['state'] == 'requested'
+    admin.poll(AUTH, KEY, poll(epoch=EPOCH, worker_id=WID))
+    assert record(admin)['state'] == 'requested'  # old worker answering is not a verified restart
     admin.poll(AUTH, KEY, poll(epoch='1'*32, worker_state='unavailable', worker_id=None))
     assert record(admin)['state'] == 'service_returned'
     owner = admin.store.get('federation', AUTH)
@@ -262,7 +265,8 @@ def test_http_agent_rebuild_keeps_actor_and_existing_permissions(cfg):
     assert client.post('/api/workers/'+WID+'/admin', json=body | {'request_id': '2'*32}).status_code == 403
 
 
-def test_verified_closed_sessions_only_retire_exact_original_worker_rows(admin):
+@pytest.mark.parametrize('launch_status', ['requested', 'unknown', 'failed'])
+def test_verified_closed_sessions_only_retire_exact_original_worker_rows(admin, launch_status):
     sid = WID+'-'+'1'*32
     other = '2'*16+'-'+'2'*32
     for identity, pid in ((sid, 123), (other, 456)):
@@ -275,10 +279,10 @@ def test_verified_closed_sessions_only_retire_exact_original_worker_rows(admin):
                      {'session_id': sid, 'pid': 124, 'created': 99.},
                      {'session_id': sid, 'pid': 123, 'created': 100.}):
         with pytest.raises(HTTPException):
-            admin.result(AUTH, KEY, RID, AdminResult(controller_id=CONTROL, status='requested',
+            admin.result(AUTH, KEY, RID, AdminResult(controller_id=CONTROL, status=launch_status,
                                                    closed_sessions=[evidence]))
         assert admin.store.get('session', sid)['state'] == 'running'
-    result = AdminResult(controller_id=CONTROL, status='requested',
+    result = AdminResult(controller_id=CONTROL, status=launch_status,
                          closed_sessions=[{'session_id': sid, 'pid': 123, 'created': 99.}])
     assert admin.result(AUTH, KEY, RID, result)['accepted']
     assert admin.store.get('session', sid)['exit']['via'] == 'desktop_admin_recovery'
