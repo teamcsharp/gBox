@@ -1663,6 +1663,10 @@ DEDICATED = [
     ("tetris_ds", lambda t, p: t.startswith("tetris ds") and p == "nds",
      lambda: __import__("gbox.tetris_ds", fromlist=["x"]).roster(),
      lambda ctx, game, e, work: __import__("gbox.tetris_ds", fromlist=["x"]).extract_run(ctx, game, e, work)),
+    # Tetris (Nintendo Famicom): the 16 CHR pages (64 tiles each) as PNG atlases + PPU palette (gbox.tetris_nes)
+    ("tetris_nes", lambda t, p: __import__("gbox.tetris_nes", fromlist=["x"]).title_test(t, p),
+     lambda: __import__("gbox.tetris_nes", fromlist=["x"]).roster(),
+     lambda ctx, game, e, work: __import__("gbox.tetris_nes", fromlist=["x"]).extract_run(ctx, game, e, work)),
     ("re4gc", lambda t, p: "resident evil 4" in t and p == "gamecube",
      _one("LEON", "leon", "Leon S. Kennedy", ["Leon", "Leon Kennedy", "RE4 Leon"]), _re4_run),
     # 007 Agent Under Fire GC: every body model of the cast (Bond's outfits, henchmen, bosses, npcs, the 16 multiplayer
