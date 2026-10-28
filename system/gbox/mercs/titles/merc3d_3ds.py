@@ -9,7 +9,7 @@ Measured live on the Spark 2026-10-27 (docs/research/merc3d-ram.md), names from 
                          0x87FBCC): +0x18 the states, +0x1C how many, +0x20 the current one, +0x24 the previous one. The
                          state object's class names the screen (cMerceTitlePressStartState, cMerceMainMissionSelectState,
                          cMerceStageMainState, cMerceStageYouAreDeadState ...).
-    sPlayer  [0x8D5898]  +0x20 the first node of its unit list; a node's +0x14 is the unit (uPl< Chris > ...): +0x40 pos (x,
+    sPlayer  [0x8D5898]  +0x20 the first node of its unit list; a node's +0x10 is the unit (uPl< Chris > ...): +0x40 pos (x,
                          y up, z; cm), +0x50 rotation quaternion (heading = 2 atan2(qy, qw), 0 = +z, positive toward +x),
                          +0xCC4 f32 vitality, +0xCCC f32 its maximum (uCharaBase mVitality / mMaxVitality: 1000 / 1000)
     sMission [0x8D58D0]  +0x18 mMissionID, +0x1C mCharaID, +0x64 f32 mElaps (seconds played), +0x68 f32 mLimitSec (seconds
@@ -40,7 +40,9 @@ S_AREA, S_PLAYER, S_ENEMY, S_MISSION, S_SAVE = 0x8BE7A4, 0x8D5898, 0x8D5948, 0x8
 AREA_DEPTH, AREA_STACK, AREA_MAX = 0x3818, 0x3820, 8
 AREA_FLOW, FLOW_VT = 0x1C, 0x87FBCC
 FLOW_STATES, FLOW_COUNT, FLOW_CUR, FLOW_PREV = 0x18, 0x1C, 0x20, 0x24
-SP_FIRST, NODE_NEXT, NODE_OWNER = 0x20, 0x8, 0x14
+# a unit-list node: {vtable 0x899630, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27 on the i9: the
+# player's node 0x8567154 held uPl< Chris > at +0x10; +0x14 is 0, so 0x14 left the bot with "no player")
+SP_FIRST, NODE_NEXT, NODE_OWNER = 0x20, 0x8, 0x10
 # sEnemy +0x1C: a unit list (first node +0x24, the sentinel +0x20 that the last node's link points back to); a node is
 # {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27, mission 1-3)
 SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x24, 0x8995B8, 0x10, 64
