@@ -654,6 +654,7 @@ def test_no_bomb_readied_with_two_within_three_metres():
 
 def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
+    monkeypatch.setattr(R, "FLASH_BURST_S", 0.0)                             # one flash here (the flurry: its own test)
     near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
             (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))                       # five at 3-3.8 m
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
@@ -665,7 +666,7 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     snap["player"]["equipped"] = 11
     acts = run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
     assert {"hold": ("zl",)} in acts and {"hold": ("zl", "zr")} in acts and bot.stats["flashes"] == 1
-    acts = run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
     assert {"tap": "dright"} in acts                                          # the gun back
     snap["player"]["equipped"] = 0
     bot.melee_at = -1e9
@@ -680,6 +681,26 @@ def test_three_close_get_a_flash_then_the_gun_back_and_the_melee_fever(monkeypat
     run(bot, snap, clock, 3)
     assert bot.nade is None or bot.nade["kind"] != "flash"
     assert all("zl" not in a.get("hold", ()) for a in acts)                   # kicks, no quick shots
+
+
+def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(monkeypatch):
+    """Operator 2026-10-28: "They still lift the grenade for use but never throw it" / "spamming a flurry of flash
+    grenades": ZL + ZR held NADE_THROW_S (not one tick), and another flash at once while FLASH_N stay close."""
+    monkeypatch.setattr(R, "NADES", True)
+    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
+            (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 3)
+    snap["player"]["equipped"] = 11                                           # the flash in hand
+    acts = run(bot, snap, clock, int((R.NADE_AIM_S + R.NADE_THROW_S) / 0.05) + 2)
+    assert sum(1 for a in acts if a.get("hold") == ("zl", "zr")) >= int(R.NADE_THROW_S / 0.05)   # held, not tapped
+    acts = run(bot, snap, clock, 30)
+    assert bot.stats["flashes"] >= 2 and bot.stats.get("flash_burst_throws", 0) >= 1
+    assert {"tap": "dright"} not in acts or bot.stats["flashes"] >= 2             # no gun back mid-flurry
+    assert bot.stats["bomb_drops"] == 0
 
 
 def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(monkeypatch):
@@ -715,7 +736,7 @@ def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(m
     run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
     assert bot.stats["frags"] == 1
     snap["player"]["equipped"] = 2                                            # the game's pick after the throw: the knife
-    acts = run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
     assert {"tap": "dright"} in acts and bot.nade is not None                 # not his gun yet: on to it
     snap["player"]["equipped"] = 0
     run(bot, snap, clock, 1)

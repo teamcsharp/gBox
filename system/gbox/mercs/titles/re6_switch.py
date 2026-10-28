@@ -1689,6 +1689,11 @@ QUICK_ACTION_NAMES = frozenset({"cPlAction_pl_act_attack_ex", "cPlAction_pl_act_
                                 "cPlAction_pl_act_jake_hand_quick_attack"})   # his quick attacks (re6_switch_mods)
 SURROUND_N = 8
 NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
+# The throw (operator 2026-10-28 04:3x: "They still lift the grenade for use but never throw it"): ZL + ZR held NADE_THROW_S
+# (one 50 ms tick was missed at Citron's frame pace: the grenade came up, the gun went back, nothing flew); a flash is
+# followed by another while FLASH_N are still within FLASH_R, for up to FLASH_BURST_S ("spamming a flurry of flash
+# grenades", stats flash_burst_throws), the flash kept in hand between them.
+NADE_THROW_S, FLASH_BURST_S, FLASH_BURST_AIM_S = 0.3, 3.0, 0.1
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
                                         # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
                                         # remote bomb)
@@ -3586,7 +3591,7 @@ class Bot:
                 return self._go("nade", "nade_back", {"hold": ()}, "the wheel moved off the grenade: the gun back")
             if now - n["at"] < NADE_AIM_S:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade readied")
-            n.update(phase="thrown", at=now)
+            n.update(phase="throw", at=now)
             self.stats[{"flash": "flashes", "frag": "frags", "fire": "fires"}[n["kind"]]] += 1
             kinds = self.stats.setdefault("throws_by_kind", {})
             kinds[n["kind"]] = kinds.get(n["kind"], 0) + 1
@@ -3609,7 +3614,16 @@ class Bot:
                 self.nade_kills = (snap.get("kills"), now)
             self.stats["grenade_throws"] += 1
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
+        if n["phase"] == "throw":
+            if now - n["at"] < NADE_THROW_S:                   # the trigger held long enough for the game to take it
+                return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
+            n.update(phase="thrown", at=now)
         if n["phase"] == "thrown":
+            if (n["kind"] == "flash" and now - n["since"] < FLASH_BURST_S and eq == n["index"]
+                    and sum(1 for e in live if flat(e) <= FLASH_R) >= FLASH_N):
+                n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
+                self.stats["flash_burst_throws"] = self.stats.get("flash_burst_throws", 0) + 1
+                return self._go("nade", "nade_flash", {"hold": ("zl",)}, "the flurry: another flash")
             n.update(phase="back", at=now, steps=0)
             return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the triggers let go")
         if n["phase"] == "back":
