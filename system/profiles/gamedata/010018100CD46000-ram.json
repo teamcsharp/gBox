@@ -70,6 +70,10 @@
         }
       ],
       [
+        "replace_long_guns",
+        {}
+      ],
+      [
         "rampage_loadout",
         {
           "on": true

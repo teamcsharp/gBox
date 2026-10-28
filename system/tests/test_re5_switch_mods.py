@@ -177,6 +177,7 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
                                                ["mine_loadout", {"on": True}],
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
+                                               ["replace_long_guns", {}],                         # no sniper rifles
                                                ["rampage_loadout", {"on": True}]]
     assert rm.spec["mercs"]["round_ops"] == [
         ["loadout", {"on": True, "only": True, "weapons": ["0x0B", "0x1A", "0x1B"]}]]

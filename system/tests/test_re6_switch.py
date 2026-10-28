@@ -3079,3 +3079,14 @@ def test_a_way_out_into_a_wall_is_never_the_kites_heading(monkeypatch):
     west = min(costs, key=lambda h: abs(h + math.pi / 2))
     assert costs[east] >= R.WALL_COST and costs[west] < R.WALL_COST
     assert abs(R.Bot._open_heading({"pos": (900.0, 0.0, 500.0)}, []) - math.pi / 2) > 0.5   # not into the wall
+
+
+def test_no_loadout_keeps_a_sniper_rifle(mods):
+    """2026-10-28: "Do not let the bot use sniper rifles ... replace it with a rapid fire randomized magnum"."""
+    import random
+    for entry in range(0, 12):
+        try:
+            w, _x = mods.loadout_plan(entry, True, 5, random.Random(entry))
+        except Exception:
+            continue
+        assert not any(t in mods.SNIPER_TYPES for t, _c in w)
