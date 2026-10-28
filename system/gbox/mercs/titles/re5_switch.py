@@ -285,6 +285,7 @@ STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle)
 # is in range, wiggle free of a grab.
 ENGAGE_R, TOO_CLOSE, MAX_DY = 2200.0, 150.0, 300.0
 TURN_TOL, AIM_TOL = math.radians(14), math.radians(5)
+START_FACE_TOL = math.radians(10)          # round start: face open ground within this tolerance
 BODY_AIM_TOL = math.radians(12)          # the body this close to him: the gun comes up (the aim then takes over)
 TURN_FINE, FINE = math.radians(24), math.radians(5)   # inside these the stick goes in pulses (a tick on, a tick off)
 YAW_DEAD, PITCH_DEAD = math.radians(0.6), math.radians(0.6)
@@ -1398,6 +1399,7 @@ class Bot:
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
         self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
         self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
+        self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
@@ -1753,12 +1755,28 @@ class Bot:
             if run["detours"] > 3:
                 self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
                 self._bonus = None
+        # plan or refresh the learned-grid route toward this statue
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            nav.plan((px, pz), (bx, bz), now)
         off = math.radians(70) * run["side"] if now < run["detour_until"] else 0.0
+        # learned-grid navigation: A* waypoints when the grid has a route, else the straight line
+        nav = getattr(self, "_nav", None)
+        nav_wp = None
+        if nav is not None and off == 0.0:
+            nav_wp = nav.next_waypoint((px, pz))
+            if nav_wp is not None:
+                wx, wz = nav_wp
+                err = wrap(heading(wx - px, wz - pz) - p["rot"])
+                self.doing = "walk"
+                self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
+                            f"{len(open_)} left - nav route")
+                return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
         err = wrap(heading(bx - px, bz - pz) + off - p["rot"])
         self.doing = "walk"
         self.why = (f"time bonus {b.get('secs')} s at {d / 100:.1f} m (dy {by - py:+.0f}), "
                     f"{len(open_)} left" + (" - a detour" if off else ""))
-        return {"hold": (("lup", "b") if d > BONUS_WALK_R else ("lup",)) + self._turn(err, TURN_TOL)}
+        return {"hold": ((("lup", "b") if d > BONUS_WALK_R else ("lup",))) + self._turn(err, TURN_TOL)}
 
     def _watch_whips(self, p, now) -> None:
         """A turn of WHIP_DEG or more one way, then WHIP_BACK_DEG back within WHIP_S of its end: a whip."""
@@ -2181,9 +2199,13 @@ class Bot:
             self._reloc_due = True
 
     def _trail_tick(self, p, now) -> None:
-        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT."""
+        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT.
+        The navigator's grid is folded from the same trail and the wall memory."""
         if not self._trail or now - self._trail[-1][0] >= TRAIL_EVERY_S:
             self._trail = (self._trail + [(now, tuple(p["pos"]))])[-TRAIL_KEPT:]
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            nav.update(self._trail, self._walls)
 
     def _reloc_goal(self, p, live, snap, now):
         """Where to relocate: a point he knows is open - his own trail (TRAIL_AGE_S old or more, RELOC_GOAL_MIN away)
@@ -2890,6 +2912,8 @@ class Bot:
         self._errs, self._band_round = [], {}
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
         self._trail, self._dead_ends = [], []
+        self._start_facing_done = False
+        self._start_idle_s = 0.0
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
@@ -2899,6 +2923,33 @@ class Bot:
             self.mines.new_round(now)
         tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
+        # the learned occupancy-grid navigator (re5_switch_nav): seeded from the trail and walls each tick
+        stage_name = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
+            from .re5_switch_nav import Navigator
+            self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
+
+    def _start_face_open(self, p, now) -> dict | None:
+        """Once per round: face the most open compass direction before moving.
+        Uses the learned grid when it has data; otherwise a short hold to look around.
+        Tracks start_idle_s (the acceptance metric: under 1 s)."""
+        nav = getattr(self, "_nav", None)
+        px, py, pz = p["pos"]
+        rot = p.get("rot") or 0.0
+        if nav is not None and nav.grid.cells:
+            best_h, _cost = nav.grid.best_heading(px, pz, rot)
+            err = wrap(best_h - rot)
+            if abs(err) > START_FACE_TOL:
+                self.doing = "turn"
+                self.why = f"start: facing open ground ({math.degrees(err):+.0f} deg)"
+                self._start_idle_s = now - self._round_t0
+                self.stats["start_idle_s"] = round(self._start_idle_s, 2)
+                return {"hold": self._turn(err, START_FACE_TOL)}
+        # grid empty or already facing open: done
+        self._start_facing_done = True
+        self._start_idle_s = now - self._round_t0
+        self.stats["start_idle_s"] = round(self._start_idle_s, 2)
+        return None
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -3090,6 +3141,11 @@ class Bot:
             return {"tap": "dleft" if cursor > want else "dright"}
         self.dead_since = None
         self._round_start(snap, now)
+        # start each round facing open ground (once per round, before any movement)
+        if not getattr(self, "_start_facing_done", True):
+            act = self._start_face_open(p, now)
+            if act is not None:
+                return act
         self._score_hits(snap, now)
         last, self._hp_track = self._hp_track, (p.get("ptr"), p.get("hp"))
         if last is not None and last[0] == p.get("ptr") and type(p.get("hp")) is int and type(last[1]) is int                 and p["hp"] < last[1]:
@@ -4027,6 +4083,9 @@ class RE5Switch(Driver):
         self.stats = stats
 
         def release():                                      # the round's end or the bot stopping: the game's pace back
+            nav = getattr(self, "_nav", None)
+            if nav is not None:
+                nav.save()
             self._mods(m, snapshot(m), False)
         return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir)
 
