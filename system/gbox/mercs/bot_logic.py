@@ -53,6 +53,7 @@ KNOBS: dict[str, list[tuple]] = {
         ("SPIN_DEG_S", "Max turn speed (deg/s)", "Aim", "float", 60, 360, 10, ""),
         ("AIM_LOCK", "RAM aim lock", "Aim", "bool", 0, 1, 1, "aims by writing the camera"),
         ("CLOSE_R", "Close-threat range (cm)", "Aim", "float", 300, 1000, 25, "only these are targets"),
+        ("CEILING_R", "Aim at ones right above him (cm)", "Aim", "float", 0, 600, 25, "0: never aim up at the floor above"),
         ("BONUS_RUN", "Capsule run (time bonuses)", "Objectives", "bool", 0, 1, 1, ""),
         ("BONUS_SHOOT_R", "Capsule shot range (cm)", "Objectives", "float", 500, 4000, 100, ""),
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "climbs and QTEs"),

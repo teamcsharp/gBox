@@ -1080,7 +1080,8 @@ def test_with_the_lock_the_camera_is_written_onto_the_target_and_no_camera_key_s
     assert "LOCK" in bot.stats["aim"]
 
 
-def test_one_hanging_from_the_ceiling_right_above_is_locked_and_shot_and_one_far_off_another_floor_is_not():
+def test_one_hanging_from_the_ceiling_right_above_is_locked_and_shot_and_one_far_off_another_floor_is_not(monkeypatch):
+    monkeypatch.setattr(R, "CEILING_R", 400.0)                               # (off in play since 2026-10-28)
     far = (0.0, 600.0, 900.0, 700)                                            # 6 m up, 9 m off: no threat to him
     bot0, clock0, snap0, writes0 = lock_brain((far,), laser=((0.0, 660.0, 900.0), (20.0, 145.0, 30.0), 0.86))
     acts0 = run(bot0, snap0, clock0, 10)
