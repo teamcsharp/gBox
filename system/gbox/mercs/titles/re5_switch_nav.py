@@ -140,6 +140,29 @@ class OccupancyGrid:
         """A cell the bot has actually walked (not merely assumed)."""
         return self.cost(k) <= C_WALKED
 
+    def openness(self, x: float, z: float, heading: float, cells_ahead: int = 3) -> float:
+        """The summed cost of the cells along a ray from (x, z) at `heading` (rad, 0 = +Z).
+        Lower is more open.  Unknown cells cost C_UNKNOWN; walls cost C_WALL."""
+        total = 0.0
+        for i in range(1, cells_ahead + 1):
+            dist = i * CELL
+            cx = x + math.sin(heading) * dist
+            cz = z + math.cos(heading) * dist
+            total += self.cost(_key(cx, cz))
+        return total
+
+    def best_heading(self, x: float, z: float, current: float,
+                     samples: int = 8) -> tuple[float, float]:
+        """Sample `samples` compass directions around (x, z); return (best_heading, its_openness).
+        The current heading is included so a good-enough facing is kept."""
+        best_h, best_cost = current, float("inf")
+        for i in range(samples):
+            h = current + 2.0 * math.pi * i / samples
+            c = self.openness(x, z, h)
+            if c < best_cost:
+                best_h, best_cost = h, c
+        return best_h, best_cost
+
     # -- A* ---------------------------------------------------------------------
 
     def _neighbours(self, k: tuple[int, int]):

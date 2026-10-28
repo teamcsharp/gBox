@@ -165,3 +165,57 @@ def test_bot_saves_nav_grid_on_release():
         # verify the file was written
         files = list(pathlib.Path(td).rglob("*.json"))
         assert len(files) >= 1
+
+
+# --- start-facing-open-ground tests ---------------------------------------------
+
+
+def test_grid_best_heading_picks_open_direction():
+    g = OccupancyGrid("StartFace")
+    # wall to the east (positive X)
+    for z in range(-300, 400, 100):
+        g.mark_wall(500, z)
+    # walked corridor to the north (positive Z)
+    for z in range(0, 800, 100):
+        g.mark_walked(0, z)
+    best_h, cost = g.best_heading(0, 0, 0.0)
+    # the best heading should be roughly north (0 rad = +Z), not east (pi/2)
+    assert abs(best_h) < math.pi / 4
+    assert cost < g.openness(0, 0, math.pi / 2)  # north cheaper than east
+
+
+def test_bot_start_faces_open_ground():
+    b, clock = bot()
+    b._round_started = b._round_t0 = 0.0
+    b._start_facing_done = False
+    nav = Navigator("StartBot")
+    # wall to the east
+    for z in range(-300, 400, 100):
+        nav.grid.mark_wall(500, z)
+    # open to the north
+    for z in range(0, 800, 100):
+        nav.grid.mark_walked(0, z)
+    b._nav = nav
+    # bot starts facing east (into the wall)
+    s = snap()
+    s["player"]["rot"] = math.pi / 2
+    act = b.tick(s)
+    # should be turning, not walking forward into the wall
+    assert b.doing == "turn"
+    assert "open ground" in b.why
+    assert "rleft" in act["hold"] or "rright" in act["hold"]
+
+
+def test_bot_start_idle_tracked():
+    b, clock = bot()
+    b._round_started = b._round_t0 = 0.0
+    b._start_facing_done = False
+    nav = Navigator("IdleTrack")
+    for z in range(0, 800, 100):
+        nav.grid.mark_walked(0, z)
+    b._nav = nav
+    clock[0] = 0.5
+    b.tick(snap())
+    # after the first tick, start_idle_s should be recorded
+    assert "start_idle_s" in b.stats
+    assert b.stats["start_idle_s"] >= 0.0

@@ -277,6 +277,7 @@ STEER_RAY_CM = 50.0                      # a shorter ray (the dot at the muzzle)
 # is in range, wiggle free of a grab.
 ENGAGE_R, TOO_CLOSE, MAX_DY = 2200.0, 150.0, 300.0
 TURN_TOL, AIM_TOL = math.radians(14), math.radians(5)
+START_FACE_TOL = math.radians(10)          # round start: face open ground within this tolerance
 BODY_AIM_TOL = math.radians(12)          # the body this close to him: the gun comes up (the aim then takes over)
 TURN_FINE, FINE = math.radians(24), math.radians(5)   # inside these the stick goes in pulses (a tick on, a tick off)
 YAW_DEAD, PITCH_DEAD = math.radians(0.6), math.radians(0.6)
@@ -2913,6 +2914,8 @@ class Bot:
         self._errs, self._band_round = [], {}
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
         self._trail, self._dead_ends = [], []
+        self._start_facing_done = False
+        self._start_idle_s = 0.0
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
@@ -2927,6 +2930,28 @@ class Bot:
         if getattr(self, "_nav", None) is None or self._nav.grid.stage != stage_name:
             from .re5_switch_nav import Navigator
             self._nav = Navigator(stage_name, learn_dir=self._learn_dir)
+
+    def _start_face_open(self, p, now) -> dict | None:
+        """Once per round: face the most open compass direction before moving.
+        Uses the learned grid when it has data; otherwise a short hold to look around.
+        Tracks start_idle_s (the acceptance metric: under 1 s)."""
+        nav = getattr(self, "_nav", None)
+        px, py, pz = p["pos"]
+        rot = p.get("rot") or 0.0
+        if nav is not None and nav.grid.cells:
+            best_h, _cost = nav.grid.best_heading(px, pz, rot)
+            err = wrap(best_h - rot)
+            if abs(err) > START_FACE_TOL:
+                self.doing = "turn"
+                self.why = f"start: facing open ground ({math.degrees(err):+.0f} deg)"
+                self._start_idle_s = now - self._round_t0
+                self.stats["start_idle_s"] = round(self._start_idle_s, 2)
+                return {"hold": self._turn(err, START_FACE_TOL)}
+        # grid empty or already facing open: done
+        self._start_facing_done = True
+        self._start_idle_s = now - self._round_t0
+        self.stats["start_idle_s"] = round(self._start_idle_s, 2)
+        return None
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:
@@ -3116,6 +3141,11 @@ class Bot:
             return {"tap": "dleft" if cursor > want else "dright"}
         self.dead_since = None
         self._round_start(snap, now)
+        # start each round facing open ground (once per round, before any movement)
+        if not getattr(self, "_start_facing_done", True):
+            act = self._start_face_open(p, now)
+            if act is not None:
+                return act
         self._score_hits(snap, now)
         last, self._hp_track = self._hp_track, (p.get("ptr"), p.get("hp"))
         if last is not None and last[0] == p.get("ptr") and type(p.get("hp")) is int and type(last[1]) is int                 and p["hp"] < last[1]:
