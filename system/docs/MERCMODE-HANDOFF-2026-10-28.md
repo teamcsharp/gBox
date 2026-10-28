@@ -2,6 +2,23 @@
 
 This is for the next agent continuing the operator's MercMode work. The previous agent (Claude) stopped at its usage limit; its subagents are stopped until 2026-11-02. Read the whole document before acting.
 
+## 0. Start here (if you were told "continue from here")
+
+Run this loop until the operator says stop. Don't wait to be asked for each step.
+
+1. **Check the live state** on the Spark (section 3: API and round data).
+   - Is MercMode playing on lilspark (`GET /api/mercmode`: current_run phase `playing`, and the predecessor-to-playing handover under 3 s)?
+   - Is the i9 online and looping?
+   - Read the last 5 RE5 and RE6 rows in `curriculum/*/rounds.jsonl`: kills, combo_best, bonuses_taken, deaths, wall_push_s, unaims_in_5m, flashes and flash_qtes.
+2. **Take the top open item** in section 5, in order: stream, RE5 navigation, RE6 S rank, RAM swaps, panels, i9.
+   - Fix it with a small, tested PR, merge it, and let the 15-minute auto-deploy ship it (or run `~/bin/gbox_autodeploy.sh`).
+   - Then compare the next rounds' counters with the ones before. If a number got worse, revert.
+3. **Every operator message is a directive.**
+   - Act on it in the bot code when it's a quick fix; otherwise file a Hermes ticket (section 3) with their exact words and metrics.
+   - Record standing rules in this file's section 1.
+4. **Merge finished work.** Merge other open PRs (Hermes drafts included) when their tests pass and they match the operator's taste (section 6). Use `gh pr ready N`, then merge.
+5. **Keep the operator informed** in short, plain updates: what changed live, what the numbers show, and anything only they can do (relaunch a PC, close a game).
+
 ## 1. What the operator wants
 
 **MercMode:** gBox's endless Mercenaries mode. It plays RE5 and RE6 on Switch ("No Mercy") back to back, streamed by gBox to the operator's app and PiP:
