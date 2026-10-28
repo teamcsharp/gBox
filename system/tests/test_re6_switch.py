@@ -105,13 +105,16 @@ def ui(g, line, name):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_caches():
-    """The unit caches are per main base, and every fake guest here shares BASE."""
+def _fresh_caches(tmp_path, monkeypatch):
+    """The unit caches are per main base, and every fake guest here shares BASE; the stage coverage is this test's."""
     for cache in (R._FOUND, R._MISS, R._ACTION_NAMES):
         cache.clear()
     R._BONUS.update(base=None)
     R.TITLE.since = None
+    monkeypatch.setattr(R, "COVERAGE_PATH", str(tmp_path / "re6_coverage.json"))
+    R._COVERAGE["data"] = None
     yield
+    R._COVERAGE["data"] = None
 
 
 def round_guest(phase=R.PHASE_PLAYING, hp=900, timer=97.5, enemies=((300.0, 0.0, 500.0, 700),), player=True,
@@ -226,6 +229,7 @@ def test_round_screens(phase, hp, hud, want):
 
 
 def test_dead_and_results_units_name_their_screens(monkeypatch):
+    monkeypatch.setattr(R, "REPLAY_ON_DEATH", True)                                  # (off in play: a new round drawn)
     g = round_guest()
     over = ui(g, 18, "uIdGameover00")
     scr = R.screen(g)
@@ -279,9 +283,11 @@ def test_menus_walk_to_no_mercy(name, offset, value, where, target, key):
     assert (scr["where"], scr["cursor"], scr["target"]) == (where, value, target) and R.step(scr) == key
 
 
-def test_the_character_select_finds_chris_by_his_id_as_the_list_grows():
+def test_the_character_select_finds_chris_by_his_id_as_the_list_grows(monkeypatch):
     # a fresh save lists Leon 0, Chris 2, Jake 4, Agent 8 (index 1 = Chris); once Helena (1) unlocks she takes index 1
     # (live 2026-10-27: the second walk picked uPl01HelenaAsia at index 1) and Chris moves to index 2
+    monkeypatch.setattr(R, "PICK", R._Pick())
+    R.PICK.queued = {"character": 2, "stage": None}                            # Chris queued
     for ids, want in (((0, 2, 4, 8), 1), ((0, 1, 2, 4, 8), 2), ((0, 1, 2, 3, 4, 5, 6, 8), 2), ((0, 4, 8), R.PLAYER_TARGET)):
         g = menu_guest("uIdStartUp32", R.PLAYER_CURSOR, 0)
         u = g.lines[18][-1]
@@ -305,13 +311,17 @@ def test_the_stage_select_draws_a_random_unlocked_stage_once_a_visit(monkeypatch
     assert R.screen(g)["target"] == 4
     R.request(stage=5)                                                             # locked: a random one that starts
     assert R.screen(g)["target"] in (1, 4, 7)
+    R.PICK.stage = 4
     assert R.screen(round_guest())["where"] == "playing"                           # the round is up: drawn anew next
-    assert R.PICK.stage is None and R.PICK.queued == {}
+    assert R.PICK.stage is None and R.PICK.queued == {} and R.PICK.last["stage"] == 4
+    assert R.coverage()["stages"] == {R.STAGES[4]: 1}                              # counted, kept on disk
     seen = set()
     for _ in range(40):
         R.PICK.reset()
         seen.add(R.screen(g)["target"])
-    assert seen == {1, 4, 7}
+    assert seen == {1, 7}                                                          # the least played first
+    R._COVERAGE["data"] = None
+    assert R.coverage()["stages"] == {R.STAGES[4]: 1}                              # read back from the file
     locked = menu_guest("uIdStartUp31", R.MENU_CURSOR, 0)                          # no bit readable: Urban Chaos
     assert R.screen(locked)["target"] == R.STAGE_TARGET
 
@@ -319,6 +329,7 @@ def test_the_stage_select_draws_a_random_unlocked_stage_once_a_visit(monkeypatch
 def test_the_character_select_puts_a_random_costume_on_the_character_then_confirms(monkeypatch):
     import random
     monkeypatch.setattr(R, "PICK", R._Pick(random.Random(3)))
+    R.PICK.queued = {"character": 2, "stage": None}                                # Chris queued
     g = menu_guest("uIdStartUp32", R.PLAYER_CURSOR, 2)                             # on Chris, every character listed
     u = g.lines[18][-1]
     g.i32(u + R.PLAYER_COUNT, 9)
@@ -1379,6 +1390,46 @@ def test_a_grabs_b_prompt_counts_the_holds_own_b_presses():
     snap["prompts"] = []
     run(bot, snap, clock, 1)
     assert bot.stats["prompts_seen"] == 1 and bot.stats["prompts_taken"] == 1 and bot.stats["climbs"] == 0
+def test_every_visit_draws_a_random_listed_character_and_the_round_reports_its_draws(monkeypatch):
+    import random
+    monkeypatch.setattr(R, "PICK", R._Pick(random.Random(11)))
+    ids = (0, 1, 2, 3, 4, 5, 6, 8)
+    seen = set()
+    for _ in range(40):
+        g = menu_guest("uIdStartUp32", R.PLAYER_CURSOR, 0)
+        u = g.lines[18][-1]
+        g.i32(u + R.PLAYER_COUNT, len(ids))
+        for i, cid in enumerate(ids):
+            g.i32(u + R.PLAYER_IDS + 4 * i, cid)
+        scr = R.screen(g)
+        seen.add(ids[scr["target"]])
+        assert all(R.screen(g)["target"] == scr["target"] for _ in range(3))     # one draw a visit
+        R.PICK.reset()
+    assert len(seen) >= 6 and seen <= set(ids)                                    # every listed one comes up
+    R.PICK.stage, R.PICK.character, R.PICK.costume = 3, 5, 2
+    assert R.screen(round_guest())["where"] == "playing"
+    out = R.RE6Switch().progress(R.snapshot(round_guest()))
+    assert out["stage"] == R.STAGES[3] and out["character"] == "Sherry" and out["costume"] == 2
+    assert out["stage_coverage"] == f"{R.STAGES[3]}:1" and R.coverage()["characters"] == {"Sherry": 1}
+    assert R.REPLAY_ON_DEATH is False and R.continue_target() == R.CONTINUE_NO   # a death: NO, the selects again
+
+
+def test_each_stage_keeps_its_lessons_once_a_round(tmp_path):
+    g = round_guest(enemies=((0.0, 0.0, 1500.0, 700),))
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (300.0, 0.0, 900.0))
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)
+    snap = R.snapshot(g)
+    snap["navmesh"] = R.NavMesh(*u_mesh(), name="soft\stage\s1218\s1218")
+    bot.held = lambda p, now: False
+    snap["kills"] = 12
+    run(bot, snap, clock, 5)
+    book = json.loads((tmp_path / "stages" / "s1218.json").read_text())
+    assert book["visits"] == 1 and book["bonuses"] == [[300, 0, 900]] and book["nav"]["triangles"] == 14
+    bot._round_started = 99.0                                                 # the next round
+    run(bot, snap, clock, 1)
+    book = json.loads((tmp_path / "stages" / "s1218.json").read_text())
+    assert book["visits"] == 2 and book["best_kills"] == 12
 
 
 def test_no_new_bomb_under_half_health():
@@ -1708,6 +1759,7 @@ def test_the_driver_tells_the_bot_when_auto_qte_is_on(mods):
 
 
 def test_dead_it_answers_continue_yes_by_the_cursor_and_counts_the_replay(monkeypatch):
+    monkeypatch.setattr(R, "REPLAY_ON_DEATH", True)                                  # (off in play: a new round drawn)
     g = round_guest(hp=0)
     over = ui(g, 18, "uIdGameover00")
     bot, clock, snap = brain(g)
