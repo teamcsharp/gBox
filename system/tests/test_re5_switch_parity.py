@@ -143,6 +143,29 @@ def test_the_loadout_draw_is_powerful_without_repeats_and_the_override_wins():
     assert ids(g, 15) == [0x201, 0x10D, 0x203, 0x111, 0, 0x116, 0, 0x10D, 0, 0x101, 0, 0x100]
 
 
+def test_the_loadout_is_drawn_again_for_every_round_when_each_round_is_on():
+    """MercMode's draw (operator 2026-10-27: "replace the pistol with any random shotgun or magnum", "random weapons
+    from the game and campaign"): magnums, shotguns and machine guns only, other guns every round."""
+    g = parity_guest()
+    ad = Adapter(g)
+    pool = ["0x1B", "0x1A", "0x0B", "0x19", "0x16", "0x15", "0x1D"]
+    allowed = {0x11B, 0x11A, 0x10B, 0x119, 0x116, 0x115, 0x11D}
+    assert SM.tool_run(ad, "loadout", None, True, seed=3, each_round=True, weapons=pool)["verified"]
+    assert set(ids(g, 15)[k] for k in (1, 3, 5, 7)) <= allowed
+    assert "loadout_redrawn" not in SM.maintain(ad, {"player": {"ptr": 0x1000}})    # this round's player: no draw
+    assert "loadout_redrawn" not in SM.maintain(ad, {"player": {"ptr": 0x1000}})
+    draws = set()
+    for n in range(2, 8):                                                            # each new round's player
+        assert SM.maintain(ad, {"player": {"ptr": 0x1000 * n}})["loadout_redrawn"] is True
+        guns = [ids(g, 15)[k] for k in (1, 3, 5, 7)]
+        assert set(guns) <= allowed and len(set(guns)) == 4
+        draws.add(tuple(guns))
+    assert len(draws) > 1
+    assert ids(g, 14)[1] == 0x106 and ids(g, 14)[9] == 0x101                        # grenades and knives stay
+    SM.tool_run(ad, "loadout", None, False)
+    assert "loadout_redrawn" not in SM.maintain(ad, {"player": {"ptr": 0x9000}})    # off: never drawn again
+
+
 def test_template_ops_and_the_bombs_compose_and_revert_all_puts_every_block_back():
     g = parity_guest()
     ad = Adapter(g)

@@ -427,17 +427,20 @@ def weapon_override(g: RE5Switch, weapon=None, only: bool = False) -> dict:
             "template_banks": res["blocks"]}
 
 
-def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True) -> dict:
+def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: bool = False) -> dict:
     """Every gun in every Mercenaries loadout drawn from the powerful campaign weapons (weapons: a pool of them),
     without repeats inside a block, the long guns as magnums (the PS3 tool's); on=False: the game's guns back. An
-    active weapon_override wins over the draw."""
+    active weapon_override wins over the draw. each_round: maintain() draws again whenever a new round's player shows
+    up, so every round brings other guns (operator 2026-10-27: "i want the characters using random weapons from the
+    game and campaign in mercenaries"; the game copies the blocks at a round's start, so a draw lands a round later)."""
     import random
     if not on:
         g.state.pop("loadout", None)
         return {"loadout": "the game's", **compose_templates(g)}
     pool = [(int(w, 0) if isinstance(w, str) else int(w)) | 0x100 for w in (weapons or [])]
     pool = [w for w in pool if w in POWERFUL] or list(POWERFUL)
-    g.state["loadout"] = {"seed": seed if seed is not None else random.random(), "pool": pool}
+    g.state["loadout"] = {"seed": seed if seed is not None else random.random(), "pool": pool,
+                          "each_round": bool(each_round)}
     res = compose_templates(g)
     if g.state.get("weapon_override"):
         return {"loadout": "the weapon override", "weapon_override": g.state["weapon_override"], **res}
@@ -978,6 +981,16 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 if kept:
                     out["spray_kept"] = True
             _confirm_weapon(st, snap)
+            dr = st.get("loadout")
+            if enabled and dr and dr.get("each_round") and p and p.get("ptr"):
+                if dr.get("player") is None:
+                    dr["player"] = p["ptr"]
+                elif dr["player"] != p["ptr"]:               # a new round's player: the next round's guns drawn now
+                    import random
+                    dr["player"], dr["seed"] = p["ptr"], random.random()
+                    drawn = compose_templates(RE5Switch(ad))
+                    out["loadout_redrawn"] = bool(drawn.get("verified"))
+                    out["writes"] += drawn.get("blocks_written", 0)
             kt = st.get("kill_time")
             if enabled and kt and kt.get("on"):
                 out["writes"] += _maintain_kill_time(RE5Switch(ad), kt, snap)
@@ -1195,7 +1208,7 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
         elif op == "weapon_override":
             res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
         elif op == "loadout":
-            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on)))
+            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on), bool(extra.get("each_round"))))
         elif op == "replace_rockets":
             res.update(replace_rockets(g, extra.get("seed")))
         elif op == "replace_long_guns":
