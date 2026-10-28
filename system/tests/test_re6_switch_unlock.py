@@ -284,3 +284,41 @@ def test_profile_records_the_evidence_chain():
     assert ev["main_build_id"] == "061D2A06CD700785E987C42CE2D72231" and len(ev["main_nso_sha256"]) == 64
     assert "main+0xad5d40" in ev["routines"]["title_gate"] and "live_acceptance" in ev
     assert any("NO MERCY" in s for s in p["scope"])
+
+
+def test_apply_uses_adapter_facade_when_wr_absent():
+    """Regression: gbox.re6_switch_unlock._write_u32 must fall back to adapter.write_memory()
+    when the memory object does not expose a .wr() method (the real SwitchLinuxAdapter facade
+    exposes read_memory / write_memory but no .wr attribute — the previous code path raised
+    AttributeError in the write-back check)."""
+    g = Guest(flag=0x10)
+    g.show(0, "uIdTitle00")
+
+    # Simulate an adapter-like facade: only read_memory / write_memory, no .wr method
+    class FacadeAdapter:
+        def __init__(self, guest):
+            self._g = guest
+            self.writes = []
+            self.module_base = None
+
+        def rd(self, a, n):
+            return self._g.rd(a, n)
+
+        def write_memory(self, a, data):
+            self.writes.append((a, bytes(data)))
+            self._g.put(a, data)
+
+        def rows(self):
+            return self._g.rows()
+
+    facade = FacadeAdapter(g)
+    st = U.apply(facade)
+
+    # The write must land on the guest via the facade's write_memory, not fail
+    assert g.flags() == [0x11, 0x11], "bit 0 not set in both cSystemInfo copies"
+    assert st["writes"], "no write record returned"
+    # Both copies should have been written
+    assert len(facade.writes) == 2, f"expected 2 adapter writes, got {len(facade.writes)}"
+    # Addresses match the FLAG_ADDRS offsets from system_info
+    info = st["system_info"]
+    assert [w["address"] for w in st["writes"]] == [info + off for off in U.FLAG_ADDRS]

@@ -232,7 +232,8 @@ class RE6Switch:
     def status(self) -> dict:
         st = {"game": GAME, "module_base": hex(self.base), "infinite_ammo": bool(self.state.get("infinite_ammo")),
               "infinite_tablets": bool(self.state.get("infinite_tablets")),
-              "infinite_stamina": bool(self.state.get("infinite_stamina")), "fire_rate_x": self.state.get("fire_rate", 1.0)}
+              "infinite_stamina": bool(self.state.get("infinite_stamina")), "fire_rate_x": self.state.get("fire_rate", 1.0),
+              "qte_ram": bool(self.state.get("qte_ram"))}
         kt = self.state.get("kill_time", {})
         st["kill_time_s"] = kt.get("seconds_max", kt.get("seconds", KILL_TIME_S)) if kt.get("on") else 0.0
         snap = R.snapshot(self.m)
@@ -544,6 +545,16 @@ GM_CLOCK, GM_KILLS = 0x3DF0, 0x408C
 # The tracking field the research notes (+0x4698 tracks the timer too)
 GM_CLOCK_TRACK = 0x4698
 
+# QTE / grab struggle tracking (auto_qte_ram research).
+# Player +0x6E2 (u8) names the action: 0 free, 1 hit, 2/64/66 a quick shot, 3 knocked down,
+# 8 then 9 / 25 held by a zombie.  +0x6D2 is a copy.  +0x598 (u16) is the motion: 4012 / 4018
+# only while held.  The request asks for a RAM write that frees a grab; no safe write location is
+# known yet, so this mod watches the struggle and logs the memory around +0x6E2 on every
+# transition, for the live research that finds one.
+QTE_WINDOW = 0x40                    # bytes read either side of +0x6E2 on a transition
+QTE_LOG_N = 8                        # the last grabs kept in the log
+HELD_STATES = frozenset({8, 9, 25})  # the player's held-by-a-zombie action bytes
+
 
 def kill_time(g: RE6Switch, on: bool, seconds=None, seconds_max=None) -> dict:
     """Switch the per-kill time bonus; the driver's maintain() applies it each snapshot.
@@ -633,6 +644,54 @@ def maintain_kill_time(ad, snap=None) -> dict:
         except Exception as error:  # noqa: BLE001 - a lost adapter must not stop the bot's next snapshot
             return {"kill_time": True, "added": 0.0, "verified": False,
                     "reason": f"kill time unavailable: {type(error).__name__}: {str(error)[:120]}"}
+
+
+def qte_ram(g: RE6Switch, on: bool = True) -> dict:
+    """Watch the player's grab / QTE struggle in RAM: on every transition into or out of a held
+    state (action +0x6E2 in {8, 9, 25}) log the memory window around +0x6E2 so a later live run
+    can find the field that frees the grab.  Read-only: nothing is written into the game."""
+    g.state["qte_ram"] = bool(on)
+    return {"qte_ram": bool(on), "verified": True,
+            "note": "watching +0x6E2 for held states; a window of %#x bytes around it is logged on "
+                    "every transition" % QTE_WINDOW}
+
+
+def _qte_window(ad, player: int) -> dict:
+    """A snapshot of the memory around the player's action byte (+0x6E2)."""
+    base = player + R.P_STATE - QTE_WINDOW
+    try:
+        raw = ad.read_memory(base, 2 * QTE_WINDOW + 1)
+    except (ValueError, OSError):
+        return {}
+    return {"at": hex(R.P_STATE), "window": hex(QTE_WINDOW), "bytes": raw.hex()}
+
+
+def maintain_qte_ram(ad, snap=None) -> dict:
+    """Per-snapshot QTE watcher: detects held-state transitions and logs the surrounding memory.
+    Returns {} when the mod is off or no transition happened this snapshot."""
+    st = ORIG.get(id(ad), {})
+    if not st.get("qte_ram"):
+        return {}
+    p = (snap or {}).get("player")
+    if not p:
+        return {}
+    state = p.get("state")
+    now = p.get("now", 0.0)
+    held = state in HELD_STATES
+    was = st.get("qte_held", False)
+    if held == was:
+        return {}
+    st["qte_held"] = held
+    log = st.setdefault("qte_log", [])
+    entry = {"held": held, "state": state, "motion": p.get("motion"), "hp": p.get("hp"),
+             "at": round(now, 3)}
+    if held:
+        entry["window"] = _qte_window(ad, p["ptr"])
+    log.append(entry)
+    del log[:-QTE_LOG_N]
+    st["qte_grabs"] = st.get("qte_grabs", 0) + (1 if held else 0)
+    st["qte_freed"] = st.get("qte_freed", 0) + (0 if held else 1)
+    return {"qte_ram": True, "transition": entry, "grabs": st["qte_grabs"], "freed": st["qte_freed"]}
 
 
 def fire_interval(index: int, k: float) -> float:
@@ -746,6 +805,10 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
             if not kt.get("verified", True):
                 out["verified"] = False
                 out["reason"] = kt.get("reason", "")
+        # The QTE / grab watcher: read-only, logs transitions for the auto_qte_ram research.
+        qr = maintain_qte_ram(ad, snap)
+        if qr:
+            out["qte_ram"] = qr
         return out
 
 
@@ -781,6 +844,8 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
             return auto_qte(g, bool(on))
         if op == "kill_time":
             return kill_time(g, bool(on), seconds=_extra.get("seconds"), seconds_max=_extra.get("seconds_max"))
+        if op == "qte_ram":
+            return qte_ram(g, bool(on))
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"))
@@ -793,4 +858,4 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
                     "merc_loadout": merc_loadout(g, False)}
         raise ValueError(f"re6_switch_mods: unknown op {op!r} (status, infinite_ammo, infinite_tablets, "
                          "infinite_stamina, infinite_grenades, unlock_characters, unlock_stages, auto_qte, kill_time, "
-                         "fire_rate, merc_loadout, revert_all)")
+                         "qte_ram, fire_rate, merc_loadout, revert_all)")

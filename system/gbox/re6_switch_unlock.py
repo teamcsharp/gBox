@@ -218,7 +218,7 @@ def _write_u32(m, a: int, value: int):
     writer = getattr(m, "wr", None)
     if callable(writer):
         writer(a, data)
-    else:
+    elif hasattr(m, "write_memory"):
         m.write_memory(a, data)
     back = u32(m, a)
     if back != value:

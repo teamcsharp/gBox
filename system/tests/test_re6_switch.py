@@ -1019,6 +1019,66 @@ def test_apply_ops_dispatches_kill_time(mods, monkeypatch):
     assert failed == [] and mods.ORIG[id(ad)]["kill_time"]["on"] is True
 
 
+def test_qte_ram_watches_grab_transitions_and_logs_the_window(mods):
+    g = round_guest(state=0)
+    ad = Adapter(g)
+    mods.run(ad, "qte_ram", on=True)
+    # no transition yet: nothing logged
+    res = mods.maintain(ad, R.snapshot(g))
+    assert "qte_ram" not in res
+    # into a hold: the window around +0x6E2 is logged
+    g.put(R.snapshot(g)["player"]["ptr"] + R.P_STATE, bytes([8]))
+    snap = R.snapshot(g)
+    snap["player"]["now"] = 1.0
+    res = mods.maintain(ad, snap)
+    assert res["qte_ram"]["transition"]["held"] is True and res["qte_ram"]["grabs"] == 1
+    assert "window" in res["qte_ram"]["transition"]
+    win = res["qte_ram"]["transition"]["window"]
+    assert win["at"] == hex(R.P_STATE) and len(win["bytes"]) == 2 * (2 * mods.QTE_WINDOW + 1)
+    # still held: no new transition
+    res = mods.maintain(ad, R.snapshot(g))
+    assert "qte_ram" not in res
+    # freed: logged without the window
+    g.put(R.snapshot(g)["player"]["ptr"] + R.P_STATE, bytes([0]))
+    snap = R.snapshot(g)
+    snap["player"]["now"] = 3.5
+    res = mods.maintain(ad, snap)
+    assert res["qte_ram"]["transition"]["held"] is False and res["qte_ram"]["freed"] == 1
+    assert "window" not in res["qte_ram"]["transition"]
+    # the log keeps both entries
+    st = mods.ORIG[id(ad)]
+    assert len(st["qte_log"]) == 2 and st["qte_log"][0]["held"] is True and st["qte_log"][1]["held"] is False
+
+
+def test_qte_ram_off_logs_nothing(mods):
+    g = round_guest(state=8)
+    ad = Adapter(g)
+    mods.run(ad, "qte_ram", on=True)
+    mods.run(ad, "qte_ram", on=False)
+    res = mods.maintain(ad, R.snapshot(g))
+    assert "qte_ram" not in res
+    assert mods.ORIG[id(ad)].get("qte_grabs", 0) == 0
+
+
+def test_qte_ram_status_reports(mods):
+    g = round_guest()
+    ad = Adapter(g)
+    mods.run(ad, "qte_ram", on=True)
+    st = mods.run(ad, "status")
+    assert st["qte_ram"] is True
+    mods.run(ad, "qte_ram", on=False)
+    st = mods.run(ad, "status")
+    assert st["qte_ram"] is False
+
+
+def test_apply_ops_dispatches_qte_ram(mods, monkeypatch):
+    from gbox import mercs_bot
+    g = round_guest()
+    ad = Adapter(g)
+    failed = mercs_bot.apply_ops(ad, [("qte_ram", {"on": True})], {"map_id": R.MAP_ID, "platform": "switch"})
+    assert failed == [] and mods.ORIG[id(ad)]["qte_ram"] is True
+
+
 def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back(mods):
     g = round_guest()
     table = weapon_table(g)
