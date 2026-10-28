@@ -73,7 +73,8 @@ BOOT_KEY = "a"                          # the gore warning: the first screen RAM
 # The Mercenaries main menu (cMerceMainMainState): R opens the mission select, L the character select, START launches
 # the mission sMission names; B there autosaves and leaves for the title, so it is never pressed on that screen.
 STEPS = {"gore_warning": "a", "press_start": "start", "demo": "start", "title_menu": "a", "select_player": "a",
-         "duo_menu": "b", "records": "b", "options": "b", "special": "b"}
+         "duo_menu": "b", "records": "b", "options": "b", "special": "b",
+         "results": "a"}                    # the result screens after a round: A through them, back to the main menu
 MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead")
 LEVELS = 5                              # LV.1-LV.5 in the select (the sixth, EX, is not in this list)
 CHARACTERS: tuple = ()                  # the roster's order is read from the character select next

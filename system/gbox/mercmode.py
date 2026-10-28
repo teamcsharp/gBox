@@ -85,11 +85,12 @@ TITLES = {
             'reason': 'RE6 PS3 (BLUS30855) has a verified native RPCS3 launch but no verified Mercenaries combat driver, menu cursor, timer or terminal-round reader.'},
     # the catalog's '(USA)' 7z holds the EUR image (CTR-P-ABMP, title 0004000000038B00): the map and boundaries name its TID
     'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': '0004000000038B00', 'platform': '3ds',
-               'game_ids': ('0ed22ae742e1b56b',), 'playable': False, 'modes': ['mercenaries'],
-               'driver': 'gbox.mercs.titles.merc3d_3ds', 'native_complete': True,
-               'reason': 'The 3DS RAM map and the native menus to a round are measured (gbox.citra_memory, '
-                         'gbox.mercs.titles.merc3d_3ds, docs/research/merc3d-ram.md); the combat bot and a full live round '
-                         'are not verified yet.'},
+               'game_ids': ('0ed22ae742e1b56b',), 'playable': True, 'modes': ['mercenaries'],
+               'characters': 8, 'stages': 15, 'driver': 'gbox.mercs.titles.merc3d_3ds', 'native_complete': True,
+               # playable for the i9's own MercMode loop (operator 2026-10-27 19:14: "on the i9 nuc, in the pip, I want
+               # mercenaries 3d looping"); lilspark's titles stay re5 / re6. The bot's controls are provisional
+               # (merc3d_bot.CONTROLS) until they are measured on the i9.
+               'notes': 'RetroArch citra_libretro; RAM through gbox.citra_memory; docs/research/merc3d-ram.md'},
     're3': {'name': 'Resident Evil 3: Nemesis', 'map_id': 'SLUS-00923', 'platform': 'psx',
             'game_ids': (), 'playable': False,
             'modes': ['mercenaries'],
