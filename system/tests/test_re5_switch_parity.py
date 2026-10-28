@@ -166,6 +166,44 @@ def test_the_loadout_is_drawn_again_for_every_round_when_each_round_is_on():
     assert "loadout_redrawn" not in SM.maintain(ad, {"player": {"ptr": 0x9000}})    # off: never drawn again
 
 
+def test_single_shotgun_draw_removes_miniguns_and_preserves_every_non_gun_record():
+    g = parity_guest()
+    ad = Adapter(g)
+    allowed = {0x104, 0x116, 0x117, 0x119}
+    raw = {i: g.rd(block_at(i), SM.TEMPLATE_REC * SM.TEMPLATE_RECS) for i in SM.MERC_DESC}
+    draws = set()
+    for seed in range(6):
+        out = SM.tool_run(ad, "loadout", None, True, weapons=["0x04", "0x16", "0x17", "0x19"],
+                          seed=seed, only=True)
+        assert out["verified"]
+        guns = []
+        for i in SM.MERC_DESC:
+            for k in range(SM.TEMPLATE_RECS):
+                at = k * SM.TEMPLATE_REC
+                original = raw[i][at:at + SM.TEMPLATE_REC]
+                old_id = struct.unpack_from("<I", original)[0]
+                current = g.rd(block_at(i) + at, SM.TEMPLATE_REC)
+                if SM._is_gun(old_id) and old_id & 0xFF not in SM.THROWN_ITEMS:
+                    wid = struct.unpack_from("<I", current)[0]
+                    assert wid in allowed
+                    if i == 15:
+                        guns.append(wid)
+                else:
+                    assert current == original           # first aid, knives, ammo, grenades, placement unchanged
+        assert len(set(guns)) == 1                       # one shotgun choice for this round's character
+        draws.add(guns[0])
+    assert len(draws) > 1
+
+
+def test_an_unsupported_explicit_pool_never_falls_back_to_miniguns():
+    g = parity_guest()
+    ad = Adapter(g)
+    before = g.rd(block_at(15), SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    with pytest.raises(ValueError, match="unsupported"):
+        SM.loadout(SM.RE5Switch(ad), weapons=["0x19", "0x0F"], only=True)
+    assert g.rd(block_at(15), len(before)) == before and not ad.writes
+
+
 def test_template_ops_and_the_bombs_compose_and_revert_all_puts_every_block_back():
     g = parity_guest()
     ad = Adapter(g)

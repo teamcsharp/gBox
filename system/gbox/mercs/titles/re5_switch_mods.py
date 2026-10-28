@@ -74,7 +74,7 @@ NO_AMMO_SKIP = ("NONE", "Empty", "KNIFE", "STUNROD")         # no rounds to spen
 UPG_TABLE, UPG_STRIDE = 0x1D13B28, 0x210
 P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
-FIRE_MAX = 80.0                                              # the default (the operator's x80)
+FIRE_MAX = 30.0                                              # the operator's round loadout, 2026-10-28
 FIRE_TOP = 1000.0                                            # the PS3 panel's top; the frame rate caps it long before
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
@@ -91,6 +91,7 @@ MAIN_SPAN = 0x2800000                                        # main's mapping (a
 REC_ID, REC_COUNT, REC_GRID, REC_HAND, REC_UPG = 0x0, 0x4, 0x14, 0x18, 0x1C
 KNIFE_IDS = frozenset({0x100, 0x101, 0x10E, 0x114, 0x123, 0x124})   # the knives and WP00 (never a gun to replace)
 POWERFUL = (0x11B, 0x11A, 0x119, 0x115, 0x10D, 0x11C, 0x11D, 0x116, 0x10C, 0x120, 0x10B)   # the PS3 tool's draw
+LOADOUT_WEAPONS = frozenset(POWERFUL) | {0x104, 0x117}          # explicit pools also accept Ithaca and Jail Breaker
 MAGNUMS = (0x10B, 0x11A, 0x11B)
 # rampage_loadout (the 5 m rampage, operator 16:05: "blasting endless magnums or shotguns"): a block with no shotgun or
 # magnum on a D-pad slot gets RAMPAGE_GUN in its first such gun slot that is not the gun in hand (its own full
@@ -337,6 +338,7 @@ def compose_templates(g: RE5Switch) -> dict:
         t = bytearray(raw)
         used: list = []
         rng = random.Random(f"{(draw or {}).get('seed')}:{ptr - g.base:x}")
+        choice = rng.choice(draw["pool"]) if draw and draw.get("only") else None
         for k in range(TEMPLATE_RECS):
             o = k * TEMPLATE_REC
             idw, = struct.unpack_from("<I", t, o + REC_ID)
@@ -346,7 +348,7 @@ def compose_templates(g: RE5Switch) -> dict:
                 new = 0x100 | override["item"]
             elif not override and draw and _is_gun(idw) and (idw & 0xFF) not in THROWN_ITEMS:
                 pool = [w for w in draw["pool"] if w not in used] or draw["pool"]
-                new = rng.choice(pool)
+                new = choice if choice is not None else rng.choice(pool)
                 if new in LONG_GUNS:
                     new = rng.choice([w for w in MAGNUMS if w not in used] or MAGNUMS)
                 used.append(new)
@@ -427,10 +429,11 @@ def weapon_override(g: RE5Switch, weapon=None, only: bool = False) -> dict:
             "template_banks": res["blocks"]}
 
 
-def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: bool = False) -> dict:
+def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: bool = False, only: bool = False) -> dict:
     """Every gun in every Mercenaries loadout drawn from the powerful campaign weapons (weapons: a pool of them),
     without repeats inside a block, the long guns as magnums (the PS3 tool's); on=False: the game's guns back. An
-    active weapon_override wins over the draw. each_round: maintain() draws again whenever a new round's player shows
+    active weapon_override wins over the draw. only: one draw per character loadout, shared by all its gun slots.
+    The profile's round_ops draws before native inventory construction. each_round: maintain() draws again whenever a new round's player shows
     up, so every round brings other guns (operator 2026-10-27: "i want the characters using random weapons from the
     game and campaign in mercenaries"; the game copies the blocks at a round's start, so a draw lands a round later)."""
     import random
@@ -438,9 +441,11 @@ def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: 
         g.state.pop("loadout", None)
         return {"loadout": "the game's", **compose_templates(g)}
     pool = [(int(w, 0) if isinstance(w, str) else int(w)) | 0x100 for w in (weapons or [])]
-    pool = [w for w in pool if w in POWERFUL] or list(POWERFUL)
+    if any(w not in LOADOUT_WEAPONS for w in pool):
+        raise ValueError("loadout: unsupported weapon in the requested pool")
+    pool = pool or list(POWERFUL)
     g.state["loadout"] = {"seed": seed if seed is not None else random.random(), "pool": pool,
-                          "each_round": bool(each_round)}
+                          "each_round": bool(each_round), "only": bool(only)}
     res = compose_templates(g)
     if g.state.get("weapon_override"):
         return {"loadout": "the weapon override", "weapon_override": g.state["weapon_override"], **res}
@@ -1208,7 +1213,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
         elif op == "weapon_override":
             res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
         elif op == "loadout":
-            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on), bool(extra.get("each_round"))))
+            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on), bool(extra.get("each_round")),
+                               bool(extra.get("only"))))
         elif op == "replace_rockets":
             res.update(replace_rockets(g, extra.get("seed")))
         elif op == "replace_long_guns":
