@@ -2777,7 +2777,9 @@ def create_app(config: Config) -> FastAPI:
                         if mercmode.presentation_launch(store,w,j):
                             # The operator's continuous presentation is foreground work.
                             # Keep exact-session/watch fences and memory/telemetry limits.
-                            reason=background_testing.admission_reason(w,background_testing.excluded(store),101,
+                            # MercMode the operator dispatched there from the app is theirs: no background tick either.
+                            excluded=set() if mercmode.operator_dispatch(store,w['name']) else background_testing.excluded(store)
+                            reason=background_testing.admission_reason(w,excluded,101,
                                 allow_active=True,require_gpu=False)
                         elif (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason

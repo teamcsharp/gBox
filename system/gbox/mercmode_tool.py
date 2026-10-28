@@ -19,6 +19,11 @@ class MercModeIn(BaseModel):
     stalemate_cut: StrictBool | None=None # gbox.mercs.stalemate: the bots cut the clock when no enemy shows for 15 s
     stalemate_cut_s: int | None=None      # ... to this many seconds (1..60; default 5)
     coop_ratio: Literal['off','1:1','2:1','3:1','4:1','5:1','6:1','8:1','10:1','only'] | None=None  # co-op : solo turns (Switch)
+    # a dispatch from the app (gbox.mercmode DISPATCH_FEATURE): start / stop / switch this PC's MercMode, its PiP here
+    command: Literal['start','stop','switch'] | None=None
+    title: Literal['re4','re5','re6','re3','merc3d'] | None=None
+    pip: StrictBool | None=None
+    dispatch_id: str | None=None          # the central dispatch's id, kept on this PC
 
 
 class MercModeOut(BaseModel):

@@ -9,9 +9,89 @@
   const coopLabel=r=>r==='off'?'Off (solo turns only)':r==='only'?'Co-op only':`${r} co-op to solo`;
   const coopSelect=(attr,value)=>`<select ${attr} aria-label="Bot+bot split-screen turns">${COOP_RATIOS.map(r=>`<option value="${r}" ${r===(COOP_RATIOS.includes(value)?value:'off')?'selected':''}>${coopLabel(r)}</option>`).join('')}</select>`;
   const COOP_NOTE='RE6 plays No Mercy in split screen; RE5 plays Mercenaries United in split screen (its No Mercy is single-player only).';
-  function render(data){
+  // --- dispatch (operator 2026-10-27: "i want to be able to dispatch autoplay titles happening on different instance of
+  // gbox from gbox. So the first request is to play mercenaries 3d on that computer pip mode"): a title, the PC it runs on,
+  // Start / Stop, and "Show in PiP on that PC" (that PC's app shows its own run, gbox/mercmode.py DISPATCH) ---
+  const OPERATOR_PCS=['jaybuiltfinale'];       // the operator's own PC: listed, never chosen for them (gbox/mercmode.py)
+  const isOperatorPc=h=>!!h?.operator_pc||OPERATOR_PCS.includes(String(h?.name||'').toLowerCase());
+  const clip=(text,n)=>{text=String(text||'');return text.length>n?text.slice(0,n-1)+'…':text;};
+  // every title some PC lists, the ones an online PC can play first
+  function titleChoices(data){
+    const seen=new Map();
+    for(const h of data?.hosts||[])for(const t of h.titles||[]){
+      const row=seen.get(t.title)||{title:t.title,name:t.name||t.title,playable:false};
+      row.playable=row.playable||!!(t.playable&&h.online);seen.set(t.title,row);
+    }
+    return [...seen.values()].sort((a,b)=>Number(b.playable)-Number(a.playable));
+  }
+  // the PCs for one title: [{name, ok, reason, operator}] - ok = online and that PC can play it (its copy, its driver)
+  function runOn(data,title){
+    return (data?.hosts||[]).map(h=>{
+      const t=(h.titles||[]).find(x=>x.title===title);
+      const reason=!h.online?'offline':!t?'not listed on this PC':t.playable?'':(t.reason||'unavailable');
+      return {name:h.name,ok:!reason,reason,operator:isOperatorPc(h)};
+    });
+  }
+  // the PC preselected: the one chosen before if it can still play it, else the first able PC that is not the operator's
+  function defaultHost(choices,chosen){
+    return (choices.find(c=>c.ok&&c.name===chosen)||choices.find(c=>c.ok&&!c.operator)||{}).name||'';
+  }
+  function dispatchHTML(data,state={}){
+    const titles=titleChoices(data);
+    if(!titles.length)return '';
+    const title=(titles.find(t=>t.title===state.title)||titles.find(t=>t.playable)||titles[0]).title;
+    const name=(titles.find(t=>t.title===title)||{}).name||title;
+    const choices=runOn(data,title),host=defaultHost(choices,state.host);
+    const row=(data.hosts||[]).find(h=>h.name===host);
+    const rounds=Math.max(1,Math.min(20,Math.round(Number(state.rounds??row?.settings?.rounds_per_title))||1));
+    const why=choices.filter(c=>!c.ok).map(c=>`${escape(c.name)}: ${escape(c.reason)}`).join(' · ');
+    return `<fieldset class="mm-dispatch" data-dispatch><legend>Run autoplay on a PC</legend>`+
+      `<label>Title <select data-dispatch-title aria-label="Title">${titles.map(t=>`<option value="${escape(t.title)}"${t.title===title?' selected':''}>${escape(t.name)}${t.playable?'':' · unavailable'}</option>`).join('')}</select></label> `+
+      `<label>Run on <select data-dispatch-host aria-label="PC to run it on">${host?'':'<option value="" selected>No PC can play it now</option>'}${choices.map(c=>`<option value="${escape(c.name)}"${c.name===host?' selected':''}${c.ok?'':' disabled'}>${escape(c.name)}${c.operator?' (your PC)':''}${c.ok?'':` · ${escape(clip(c.reason,70))}`}</option>`).join('')}</select></label> `+
+      `<label>Rounds per title <input type="number" data-dispatch-rounds min="1" max="20" value="${rounds}" style="width:4em"></label> `+
+      `<label><input type="checkbox" data-dispatch-pip ${state.pip===false?'':'checked'}> Show in PiP on that PC</label>`+
+      `<p><button type="button" data-dispatch-start ${host?'':'disabled'}>Start</button> <button type="button" data-dispatch-stop ${row&&(row.current_run||row.settings?.enabled)?'':'disabled'}>Stop</button></p>`+
+      (host?'':`<p><small>No online PC can play ${escape(name)} now. ${why}</small></p>`)+`</fieldset>`;
+  }
+  function readDispatch(root){
+    const q=sel=>root?.querySelector?.(sel);
+    return {title:q('[data-dispatch-title]')?.value||'',host:q('[data-dispatch-host]')?.value||'',
+      rounds:Number(q('[data-dispatch-rounds]')?.value)||1,pip:q('[data-dispatch-pip]')?.checked!==false};
+  }
+  // Start: that title alone on that PC (switching now when it plays another title there); Stop: MercMode off there and its
+  // MercMode game closed. The server checks the PC again (its copy of the game, its driver, the operator's own PC).
+  async function dispatchAction(api,data,{action,host,title,rounds,pip}){
+    const row=(data?.hosts||[]).find(h=>h.name===host);
+    if(!row)throw Error('Choose the PC to run it on.');
+    if(action==='stop'){await api('/api/mercmode',{host,command:'stop'});return `MercMode stopped on ${host}.`;}
+    if(action!=='start')throw Error('Unknown dispatch action');
+    const t=(row.titles||[]).find(x=>x.title===title);
+    if(!row.online)throw Error(`${host} is offline.`);
+    if(!t)throw Error(`${host} does not list that title.`);
+    if(!t.playable)throw Error(`${t.name} is not playable on ${host}: ${t.reason||'unavailable'}`);
+    const playing=row.current_run?.mercmode?.title;
+    const command=playing&&playing!==title?'switch':'start';
+    const n=Math.max(1,Math.min(20,Math.round(Number(rounds))||1));
+    await api('/api/mercmode',{host,command,title,titles:[title],rounds_per_title:n,pip:!!pip});
+    return `${command==='switch'?'Switching to':'Starting'} ${t.name} on ${host}${pip?'; that PC shows it in its PiP':''}.`;
+  }
+  // one PC's current run, the app's dispatch there and what its scheduler waits for, with Watch (my PiP) and Stop
+  function runHTML(host,watch){
+    const run=host.current_run,d=host.dispatch;
+    const live=run?.session_id&&['playing','starting'].includes(run.phase);
+    const parts=[];
+    if(run)parts.push(`<b>${escape(run.phase)}: ${escape(run.title||run.game_id||'a game')}</b>${run.mercmode?` · ${Number(run.mercmode_rounds)||0} verified rounds. ${host.settings?.enabled?'Next title follows the native round end.':'Autobot stays in this game; title rotation is off.'}`:''}`);
+    else parts.push('<b>Nothing playing</b>');
+    if(d?.command)parts.push(`<small>Dispatched: ${escape(d.command)}${d.title?' '+escape(TITLE_NAMES[d.title]||d.title):''}${d.pip?' · PiP on this PC':''}${d.applied===false?' · on its way to this PC':''}${d.lapsed?` · ${escape(d.lapsed)}`:''}</small>`);
+    if(host.scheduler_note&&!(run&&run.phase==='playing'))parts.push(`<small>Scheduler: ${escape(host.scheduler_note)}</small>`);
+    return `<p class="mm-run" data-mm-run>${parts.join(' ')} ${watch&&live?`<button type="button" data-watch="${escape(run.session_id)}">Watch</button>`:''}`+
+      `${run||host.settings?.enabled?` <button type="button" data-host-stop>Stop</button>`:''}</p>`;
+  }
+  function render(data,options={}){
     return `<div class="gbox-mercmode"><h3>MercMode</h3><p>Finish each round before switching games. Random characters and stages use each title’s verified controls. Your gameplay modifiers stay selected.</p>`+
+      dispatchHTML(data,options.dispatch||{})+
       (data.hosts||[]).map(host=>`<fieldset data-host="${escape(host.name)}" data-worker="${escape(host.id)}"><legend>${escape(host.name)} · ${host.online?'online':'offline'}</legend>
+        ${runHTML(host,!!options.watch)}
         <label><input type="checkbox" data-enabled ${host.settings?.enabled?'checked':''}> MercMode on this PC</label><p><small>Turning this off keeps the current game and autobot playing Mercenaries; only cross-title rotation stops.</small></p>
         <label style="display:block"><input type="checkbox" data-presentation ${host.settings?.presentation_priority?'checked':''}> Continuous presentation: start despite busy CPU/GPU</label>
         ${host.scheduler_owner==='local'?`<p><small>This PC runs its own scheduler, including while disconnected. ${host.settings_source==='unobserved_local_scheduler'?'Local settings have not yet been observed. ':''}${host.command?.job?`Requested setting: ${escape(host.desired_settings?.enabled?'on':'off')} · ${escape(host.command.state||'queued')}${host.command.error?` · ${escape(host.command.error)}`:''}.`:''}</small></p>`:''}
@@ -23,7 +103,6 @@
         <p><button type="button" data-save>Save this PC</button> <button type="button" data-prepare ${host.online?'':'disabled'}>Check cached assets</button>
         ${host.current_run?.mercmode?`<button type="button" data-stay="${escape(host.current_run.session_id)}">Stay in this game (autobot)</button>`:''}
         ${host.adoptable_solo_session&&!host.current_run?`<button type="button" data-adopt="${escape(host.adoptable_solo_session)}" ${host.settings?.enabled?'':'disabled'}>Use current solo bot</button>`:''}</p>
-        ${host.current_run?.mercmode?`<p><b>${escape(host.current_run.phase)}: ${escape(host.current_run.title)}</b> · ${Number(host.current_run.mercmode_rounds)||0} verified rounds. ${host.settings?.enabled?'Next title follows the native round end.':'Autobot stays in this game; title rotation is off.'}</p>`:''}
         <small>RE5 retains installed data and shader caches. RPCS3 still boots through its menus; instant saved-state loading is unavailable.</small>
         ${host.history?.last_round?`<p>Last verified round: ${escape(host.history.last_round.map_id)} · ${escape(host.history.last_round.character||'character not decoded')} · ${escape(host.history.last_round.witness?.screen)}</p>`:''}
         ${host.preparation?.checked_at?`<p>Cached assets checked ${escape(new Date(host.preparation.checked_at*1000).toLocaleString())}. ${host.preparation.rpcs3?.re5_installed_data_present?'RE5 installed data found.':'RE5 installed data not found in this runtime.'}</p>`:''}
@@ -32,25 +111,49 @@
       `<p data-status role="status"></p></div>`;
   }
   function mount(options){
-    const target=options.root,api=options.api;
+    const target=options.root,api=options.api,watch=typeof options.watch==='function'?options.watch:null;
     if(!target||typeof api!=='function')throw Error('MercMode needs a root element and authenticated API');
-    let disposed=false,timer=null;
+    let disposed=false,timer=null,last=null,chosen={};
     async function refresh(){
       const data=await api('/api/mercmode');
       if(disposed)return data;
-      target.innerHTML=render(data);
+      last=data;
+      target.innerHTML=render(data,{watch,dispatch:chosen});
       for(const field of target.querySelectorAll?.('[data-host]')||[]){
         const host=(data.hosts||[]).find(h=>h.name===field.dataset.host),q=field.querySelector('[data-mm-queue]');
         if(host&&q)wireQueue(q,{api,host,catalog:data.catalog,done:message=>{showStatus(message);refresh().catch(showError);},fail:showError});
       }
       return data;
     }
+    // a title or PC chosen in "Run on": the PC list follows the title (only PCs that can play it are selectable)
+    function change(event){
+      const form=event.target?.closest?.('[data-dispatch]');
+      if(!form||!last)return;
+      chosen={...chosen,...readDispatch(form)};
+      if(event.target.hasAttribute?.('data-dispatch-title'))form.outerHTML=dispatchHTML(last,chosen);
+    }
     async function click(event){
-      const button=event.target.closest?.('button'),host=button?.closest('[data-host]');
+      const button=event.target.closest?.('button');
+      const action=button?.hasAttribute?.('data-dispatch-start')?'start':button?.hasAttribute?.('data-dispatch-stop')?'stop':null;
+      if(action){                              // "Run on": Start / Stop that title on that PC
+        const form=button.closest('[data-dispatch]');
+        button.disabled=true;
+        try{chosen={...chosen,...readDispatch(form)};showStatus(await dispatchAction(api,last,{action,...chosen}));await refresh();}
+        catch(error){showError(error);}finally{if(button.isConnected)button.disabled=false;}
+        return;
+      }
+      const host=button?.closest('[data-host]');
       if(!button||!host||(button.getAttributeNames?.()||[]).some(n=>n.startsWith('data-mm-')))return;    // queue buttons have their own handlers
+      if(button.hasAttribute('data-watch')){   // that PC's run in my PiP
+        try{await watch?.(button.dataset.watch,host.dataset.host);showStatus(`Watching ${host.dataset.host}'s game in your PiP.`);}
+        catch(error){showError(error);}
+        return;
+      }
       button.disabled=true;
       try{
-        if(button.hasAttribute('data-save')){
+        if(button.hasAttribute('data-host-stop')){
+          showStatus(await dispatchAction(api,last,{action:'stop',host:host.dataset.host}));await refresh();
+        }else if(button.hasAttribute('data-save')){
           const titles=[...host.querySelectorAll('[data-title]:checked')].map(x=>x.dataset.title);
           const stalemate=host.querySelector('[data-stalemate]'),stalemateS=host.querySelector('[data-stalemate-s]');
           await api('/api/mercmode',{host:host.dataset.host,enabled:host.querySelector('[data-enabled]').checked,
@@ -74,8 +177,9 @@
     function showError(error){showStatus(error.message||String(error));}
     function showStatus(text){const status=target.querySelector('[data-status]');if(status)status.textContent=text;}
     target.addEventListener('click',click);
+    target.addEventListener('change',change);
     const ready=refresh().catch(error=>{if(!disposed)target.textContent='MercMode: '+error.message;throw error;});
-    return {ready,refresh,dispose(){disposed=true;clearTimeout(timer);target.removeEventListener('click',click);}};
+    return {ready,refresh,dispose(){disposed=true;clearTimeout(timer);target.removeEventListener('click',click);target.removeEventListener('change',change);}};
   }
   async function stay(api,sid){
     if(!sid)throw Error('Select the current MercMode game first.');
@@ -102,7 +206,8 @@
       ||hosts.find(h=>worker&&h.name===worker)||null;
   }
   // --- the DJ queue: what plays next (title, mode, character, stage; blank = random) and the queue ahead ---
-  const TITLE_NAMES={re4:'Resident Evil 4',re5:'Resident Evil 5',re6:'Resident Evil 6'};
+  const TITLE_NAMES={re4:'Resident Evil 4',re5:'Resident Evil 5',re6:'Resident Evil 6',re3:'Resident Evil 3',
+    merc3d:'Resident Evil: The Mercenaries 3D'};
   function describe(entry,catalog){
     const known=catalog?.[entry.title],stage=entry.stage==null?'random stage':(known?.stages?.[entry.stage]||`stage ${entry.stage}`);
     return [TITLE_NAMES[entry.title]||entry.title,entry.mode||(known&&Object.keys(known.modes).length>1?'random mode':null),
@@ -301,5 +406,5 @@
     return {action:'none'};
   }
   return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,describe,
-    STALEMATE,stalemateSeconds,pipOwnRun};
+    STALEMATE,stalemateSeconds,titleChoices,runOn,defaultHost,dispatchHTML,readDispatch,dispatchAction,runHTML,pipOwnRun};
 });

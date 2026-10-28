@@ -166,6 +166,12 @@ class Federation:
                 raise HTTPException(422,'Bounded observed scheduler metadata is required')
             try:observed={**observed,'settings':mercmode.normalize(observed['settings'])}
             except (KeyError,ValueError):raise HTTPException(422,'Invalid observed MercMode settings') from None
+        # its own scheduler's current run, warm pool, next pick and the app's dispatch there (GET /api/mercmode shows
+        # them for this PC); a report that is not this worker's own, or too large, is dropped, never the whole snapshot
+        live=body.get('mercmode_run')
+        if live is not None:
+            from . import mercmode
+            if not mercmode.valid_live(live,wid):live=None
         with self.store.lock:
             old=self.store.get('federation',authority)
             if old and not hmac.compare_digest(old['key_hash'],digest):
@@ -211,6 +217,8 @@ class Federation:
             self.store.put('worker',wid,worker|{'last_seen':now,'address':address,'federation':provenance})
             if observed is not None:
                 self.store.put('mercmode_observed',worker['name'],{'authority':authority,'worker_id':wid,'at':now,**observed})
+            if live is not None:
+                self.store.put('mercmode_observed_run',worker['name'],{'authority':authority,'worker_id':wid,'at':now,**live})
             for sid,item,previous in validated:
                 # Omitted sessions remain last-known; only a positive ended row closes one.
                 row=(previous or {})|item|{'worker_id':wid,'federation':provenance}

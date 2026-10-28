@@ -2611,7 +2611,8 @@ $('#mercmode-open').onclick=async()=>{
   if(!window.GBoxMercMode){toast('Mercenaries screensaver controls are updating.');return;}
   host.hidden=false;
   mercModePanel=GBoxMercMode.mount({root:host,api:async(path,body)=>{
-    const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;}});
+    const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;},
+    watch:sid=>pipShow(sid)});                  // "Watch": another PC's MercMode run in this PC's PiP
   await mercModePanel.ready;
 };
 
@@ -4857,6 +4858,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     const m = JSON.parse(e.message.slice(5));
     if (m.ev === "padscan") syncNativePads();
     else if (m.ev === "padtakeover") padTakeoverPip(m);   // your pad has the PiP's game for a moment (its badge)
+    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipShow(m.sid).catch(error => toast(error.message));   // MercMode panel: Watch
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);

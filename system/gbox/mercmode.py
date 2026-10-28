@@ -63,6 +63,22 @@ PREPARE_FEATURE = 'mercmode_prepare'    # worker feature: autoplay op=prepare dr
 WARM_MIN_FREE_BYTES = 8 * 1024**3       # memory guard: an extra emulator needs this much free RAM on the host ...
 WARM_MAX_MEMORY_PERCENT = 80            # ... and the host under this much used, both measured in the last 30 s
 QUEUE_MAX = 20
+# Dispatch from the app (operator 2026-10-27: "i want to be able to dispatch autoplay titles happening on different instance
+# of gbox from gbox. So the first request is to play mercenaries 3d on that computer pip mode"): POST /api/mercmode with a
+# command starts, stops or switches MercMode on any PC, and "pip" asks that PC's app to show its own run in its PiP.
+DISPATCH = 'mercmode_dispatch'          # host -> the app's last dispatch there: {id, command, title, pip, by, operator, at,
+                                        #          worker, worker_id, lapsed?}
+LIVE = 'mercmode_observed_run'          # host -> a paired local scheduler's own run, warm pool, next pick and dispatch
+                                        # (desktop bridge snapshot "mercmode_run"; the central status shows them)
+DISPATCH_COMMANDS = ('start', 'stop', 'switch')
+DISPATCH_FEATURE = 'mercmode_dispatch'  # worker feature: its mercmode tool takes command / title / pip and every title
+OPERATOR_PCS = frozenset({'jaybuiltfinale'})   # the operator's own PC (casefolded): only the operator starts things there
+LIVE_TTL_S = 120.0                      # a paired PC's reported run older than this is not shown as its current run
+LIVE_RUN_KEYS = ('worker', 'worker_id', 'session_id', 'game_id', 'title', 'phase', 'started', 'up', 'playing_since', 'job',
+                 'autoplay_job', 'mercmode', 'mercmode_rounds', 'mercmode_rotate_requested', 'mercmode_pinned', 'handover',
+                 'yield', 'warm_from', 'prelaunched', 'stop_requested', 'mercmode_switch', 'mod', 'build')
+LIVE_PHASES = ('launching', 'starting', 'playing')
+LIBRARY_EVIDENCE_S = 24 * 3600.0        # a paired PC's library listing of a game proves its copy there this long
 TITLES = {
     're4': {'name': 'Resident Evil 4', 'map_id': 'G4BE08', 'platform': 'gamecube',
             'game_ids': ('78ab9efa2e310db4', 'e42c9b780c07c437'), 'playable': True,
@@ -257,6 +273,8 @@ def presentation_launch(store, worker, job):
     if job.get('tool')!='launch_game':return False
     from .screensaver import STATE,ACTOR
     cfg=settings(store,worker['name']);run=store.get(STATE,worker['name']) or {}
+    # the operator's dispatch from the app counts as the presentation they asked for (operator_dispatch)
+    cfg=cfg|{'presentation_priority':cfg['presentation_priority'] or operator_dispatch(store,worker['name'])}
     # the edition this host plays (preferred_editions, e.g. RE5 Switch No Mercy), not only the native one: 2026-10-26
     # the Switch preload and launch were held by the 70% background budget while the PS3 ids alone counted as foreground
     edition=lambda t:title_spec(t,cfg)
@@ -569,6 +587,179 @@ def configure(store, host, patch):
     return row
 
 
+# --- dispatch from the app: start / stop / switch MercMode on any PC, its PiP on that PC ---
+
+def find_host(workers, host):
+    """The current registration of the PC named `host`, or of the PC one of whose worker ids is `host` (every restart
+    registers a new id; an older id still names its PC). None when nothing matches."""
+    from .screensaver import _current_workers
+    rows = list(workers or [])
+    if not isinstance(host, str) or not host:
+        return None
+    current = _current_workers(rows)
+    named = next((w for w in current if w.get('name') == host), None)
+    if named:
+        return named
+    name = next((w.get('name') for w in rows if w.get('id') == host), None)
+    return next((w for w in current if w.get('name') == name), None) if name else None
+
+
+def operator_pc(name) -> bool:
+    return str(name or '').casefold() in OPERATOR_PCS
+
+
+def operator_initiated(store, actor, parent_job='') -> bool:
+    """The operator's own request: the app sends no actor header ("operator"). Never an agent, Hermes, MCP, a scheduler or
+    a worker; a worker tool's callback only inside the operator's own mercmode job (a central dispatch relayed to a PC
+    keeps the operator as its actor: gbox.desktop_bridge submits it locally under the central actor)."""
+    if parent_job:
+        job = store.get('job', parent_job) or {}
+        return job.get('tool') == 'mercmode' and job.get('actor') == 'operator' and not job.get('agent_use')
+    return actor == 'operator'
+
+
+def title_reason(store, worker, title, cfg=None, sessions=None):
+    """Why `title` cannot play on this PC (None = it can): its verified driver, the PC's OS and tools, and this PC's own
+    copy of the game (a launch there, its read-only probe, or for a paired PC its own library: inventory())."""
+    if title not in TITLES:
+        return f'Unknown MercMode title {title!r}'
+    row = next((r for r in inventory(store, worker, cfg, sessions) if r['title'] == title), None)
+    if row and row['playable']:
+        return None
+    return (row or {}).get('reason') or 'not playable on this PC'
+
+
+def plan_dispatch(store, worker, patch, *, command=None, title=None, pip=None, operator=False):
+    """The settings patch a dispatch implies and its validation (before anything is saved or relayed).
+
+    start: MercMode on with these titles (`title` alone = that one title); switch: `title` plays next, now; stop: MercMode
+    off and this PC's MercMode game closed. Every title it starts must be playable on that PC. JAYBUILTFINALE is the
+    operator's own PC: nothing but the operator starts or commands MercMode there; automation only on PCs ticked for
+    background testing (and the PC's own admission still waits for idle time). Raises PermissionError (403), ValueError
+    (422) or LookupError (422, a title not playable there)."""
+    from . import background_testing as background
+    patch = dict(patch or {})
+    name = worker.get('name')
+    if command is not None and command not in DISPATCH_COMMANDS:
+        raise ValueError('command is one of: ' + ', '.join(DISPATCH_COMMANDS))
+    if pip is not None and command not in ('start', 'switch'):
+        raise ValueError('pip goes with command start or switch')
+    if title is not None and title not in TITLES:
+        raise ValueError(f'Unknown MercMode title {title!r}')
+    starts = command in ('start', 'switch') or patch.get('enabled') is True
+    if operator_pc(name) and not operator and (starts or command):
+        raise PermissionError(f"{name} is the operator's own PC: only the operator starts or commands MercMode there, "
+                              'from the gBox app')
+    if not operator and command in ('start', 'switch') and not background.allowed(worker, background.excluded(store)):
+        raise PermissionError(f'{name} is not ticked for background testing: automation may not start MercMode there')
+    if command == 'switch' and not title:
+        raise ValueError('switch needs the title to play next')
+    if command == 'stop':
+        patch['enabled'] = False
+    elif command == 'start':
+        patch['enabled'] = True
+        if title and 'titles' not in patch:
+            patch['titles'] = [title]
+    elif command == 'switch':
+        patch['enabled'] = True
+        titles = list(patch.get('titles') or settings(store, name)['titles'])
+        if title not in titles:
+            titles = (titles + [title])[-3:]
+        patch['titles'] = titles
+    cfg = normalize(patch, settings(store, name))          # unknown / out-of-range settings: ValueError
+    if command in ('start', 'switch'):
+        sessions = session_rows(store)
+        wanted = [title] if command == 'switch' else (patch.get('titles') if 'titles' in patch else None)
+        reasons = {t: title_reason(store, worker, t, cfg, sessions) for t in (wanted or cfg['titles'])}
+        bad = {t: r for t, r in reasons.items() if r}
+        if (wanted and bad) or (not wanted and len(bad) == len(reasons)):
+            raise LookupError('; '.join(f"{TITLES[t]['name'] if t in TITLES else t} is not playable on {name}: {r}"
+                                        for t, r in bad.items()))
+    return patch
+
+
+def record_dispatch(store, worker, *, command, title=None, pip=None, actor='operator', operator=False,
+                    dispatch_id=None, now=None):
+    """The app's dispatch on this PC, as its scheduler and its app read it (GET /api/mercmode hosts[].dispatch). A
+    central dispatch relayed to a paired PC keeps its id there, so the PC's app sees one dispatch whichever server it
+    reads."""
+    now = time.time() if now is None else now
+    row = {'id': dispatch_id if isinstance(dispatch_id, str) and re.fullmatch('[a-f0-9]{32}', dispatch_id) else uuid.uuid4().hex,
+           'command': command, 'title': title, 'pip': bool(pip) and command in ('start', 'switch'), 'by': str(actor)[:60],
+           'operator': bool(operator), 'at': now, 'worker': worker.get('name'), 'worker_id': worker.get('id')}
+    store.put(DISPATCH, worker['name'], row)
+    return row
+
+
+def operator_dispatch(store, host) -> bool:
+    """MercMode on this PC was started from the app by the operator: the operator's own action, so its turns start and
+    launch without the agents' admission (input idle time, the background-testing tick). The measured memory headroom,
+    a game already running there and a busy worker still hold it. It lapses when MercMode is turned off there or the
+    operator takes a game over at that PC (the PC then waits for idle time again, as before)."""
+    row = store.get(DISPATCH, host) or {}
+    return bool(row.get('operator') and row.get('command') in ('start', 'switch') and not row.get('lapsed')
+                and settings(store, host)['enabled'])
+
+
+def lapse_dispatch(store, host, why):
+    row = store.get(DISPATCH, host) or {}
+    if row.get('operator') and not row.get('lapsed'):
+        store.put(DISPATCH, host, row | {'lapsed': str(why)[:200]})
+
+
+def live_snapshot(store, host, note=None):
+    """What this PC's own scheduler reports to the central beside its settings (gbox.desktop_bridge snapshot
+    "mercmode_run"): its current run, warm pool, next pick, the app's dispatch and why it waits. Ids and phases only."""
+    from .screensaver import STATE
+    run = store.get(STATE, host) or None
+    out = None
+    if run:
+        out = {k: run[k] for k in LIVE_RUN_KEYS if k in run}
+        if isinstance(out.get('mercmode'), dict):        # the turn's title, never its bulky prepare receipt
+            out['mercmode'] = {k: v for k, v in out['mercmode'].items() if k in ('title', 'map_id', 'rounds_per_title', 'coop')}
+        before = run.get('mercmode_predecessor')
+        if isinstance(before, dict) and isinstance(before.get('session_id'), str):
+            out['mercmode_predecessor'] = {'session_id': before['session_id']}
+    warm = [{'title': t, 'state': r.get('state'), 'session_id': r.get('session_id'), 'at': r.get('at')}
+            for t, r in sorted(warm_pool(store, host).items())][:4]
+    nxt = store.get(NEXT, host)
+    return {'run': out, 'warm': warm, 'next': {'title': nxt.get('title'), 'at': nxt.get('at')} if nxt else None,
+            'dispatch': store.get(DISPATCH, host), 'note': str(note)[:300] if note else None}
+
+
+def valid_live(body, worker_id) -> bool:
+    """A paired PC's live report: bounded, this worker's own sessions only, nothing that could launch or stop."""
+    try:
+        if not isinstance(body, dict) or set(body) - {'run', 'warm', 'next', 'dispatch', 'note'} \
+                or len(json.dumps(body, allow_nan=False).encode()) > 16000:
+            return False
+    except (ValueError, TypeError, RecursionError):
+        return False
+    own = lambda sid: sid is None or isinstance(sid, str) and sid.startswith(worker_id + '-') and len(sid) <= 200
+    run = body.get('run')
+    if run is not None:
+        if not isinstance(run, dict) or set(run) - set(LIVE_RUN_KEYS) - {'mercmode_predecessor'} \
+                or run.get('phase') not in LIVE_PHASES or not own(run.get('session_id')) \
+                or run.get('worker_id', worker_id) != worker_id:
+            return False
+    warm = body.get('warm') or []
+    if not isinstance(warm, list) or len(warm) > 4 or any(not isinstance(r, dict) or not own(r.get('session_id')) for r in warm):
+        return False
+    return all(body.get(k) is None or isinstance(body[k], dict) for k in ('next', 'dispatch')) \
+        and (body.get('note') is None or isinstance(body['note'], str) and len(body['note']) <= 300)
+
+
+def observed_live(store, worker, now=None) -> dict:
+    """A paired PC's last live report, from its own authority and current worker, while fresh ({} otherwise)."""
+    now = time.time() if now is None else now
+    row = store.get(LIVE, worker.get('name')) or {}
+    authority = (worker.get('federation') or {}).get('authority')
+    if authority and row.get('authority') == authority and row.get('worker_id') == worker.get('id') \
+            and 0 <= now - float(row.get('at') or 0) <= LIVE_TTL_S:
+        return row
+    return {}
+
+
 def observation(store,worker):
     """Last local scheduler observation from this worker's paired authority."""
     row=store.get(OBSERVED,worker['name']) or {}
@@ -671,6 +862,7 @@ def inventory(store, worker, cfg=None, sessions=None):
             prepared=host_preparation(store,worker)
             known=sessions if sessions is not None else session_rows(store)
             same=_host_matcher(store,worker)
+            authority=(worker.get('federation') or {}).get('authority')
             for game in games:
                 gid=game['game_id']
                 # a restart gives the same PC a new worker id: the registered aliases keep its launch history
@@ -684,6 +876,14 @@ def inventory(store, worker, cfg=None, sessions=None):
                 if probe and 0<=time.time()-probe.get('checked_at',0)<=1800:
                     candidate={'verified':probe.get('reachable') is True,'source':'worker_local_path_probe',
                                'checked_at':probe.get('checked_at'),'reason':probe.get('reason','')}
+                elif not candidate['verified'] and authority:
+                    # a paired PC's own library: its bridge reports only entries whose file it found on that PC
+                    # (gbox.federation snapshot: local_availability.verified), refreshed as it walks its catalog
+                    listed=store.get('federation_catalog',authority+':'+gid) or {}
+                    seen=listed.get('last_seen')
+                    if listed.get('authority')==authority and type(seen) in (int,float) \
+                            and 0<=time.time()-seen<=LIBRARY_EVIDENCE_S:
+                        candidate={'verified':True,'source':'paired_local_library','checked_at':seen}
                 if game is games[0] or candidate['verified']:
                     access=candidate;selected_game=game
                 if candidate['verified']:break       # preferred accessible exact disc, never another disc's evidence
