@@ -25,6 +25,7 @@
       return serial(async () => {
         if (state.on) return state;
         const session = await io.resolve(requested);
+        if (requested?.current && !requested.current()) return false;
         if (!session || !session.sid) throw Error('Start or select an emulation session first.');
         Object.assign(state, { on: true, sid: session.sid, local: !!session.local,
           aspect: validAspect(session.aspect) ? session.aspect : validAspect(requested?.aspect) ? requested.aspect : 4 / 3,
@@ -43,9 +44,10 @@
     function restore() {
       return serial(async () => { const result = await io.windowMode({ on: false }); clear(); return result; });
     }
-    function follow(from, session) {
+    function follow(from, session, { current = () => true, prepare = () => {} } = {}) {
       return serial(async () => {
-        if (!state.on || state.sid !== from || !session?.sid) return false;
+        if (!state.on || state.sid !== from || !session?.sid || !current()) return false;
+        prepare();
         state.sid = session.sid; state.local = !!session.local;
         io.render(state); io.pad(state.local ? null : state.sid); io.present();
         return true; // same window, bounds, aspect and return mode

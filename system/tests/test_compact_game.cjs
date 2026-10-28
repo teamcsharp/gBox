@@ -128,16 +128,32 @@ function followRig({ready='true',look,health={state:'running',age_s:.1},timers=g
   const state={on:true,sid:'old',local:false};const changes=[],reads=[];
   const wv={dataset:{ready},executeJavaScript:async code=>{if(code.includes('.picture('))return look(state);}};
   const context=vm.createContext({GBoxSessionContinuity:{create:value=>{io=value;return {}; }},COMPACT:state,
+    pipSelection:{revision:0,allows:()=>true},
     compactSession:null,compactTitle:'old',compactStreamUrl:'old-url',sessionTitle:s=>s.title,closePipMenu:()=>changes.push('closed modifiers'),
     S:{apiUrl:'http://spark'},gbox:{token:async()=> 'test'},document:{querySelector:()=>wv},$:()=>image,
     compactApi:async(path,body,method)=>{reads.push([path,method]);if(health instanceof Error)throw health;return health;},
     setTimeout:timers.setTimeout,clearTimeout:timers.clearTimeout,
-    compactController:{follow:async(from,s)=>{changes.push(s.sid);state.sid=s.sid;}}});
+    compactController:{follow:async(from,s,options)=>{if(!options.current())return false;options.prepare();changes.push(s.sid);state.sid=s.sid;return true;}}});
   const start=html.indexOf('const compactContinuity =');
-  vm.runInContext(html.slice(start,html.indexOf('setInterval(() => compactContinuity',start)),context);
+  vm.runInContext(html.slice(start,html.indexOf('async function pipFollowSelected()',start)),context);
   return {follow:(session,from)=>io.follow(session,from),
-    force:(session,from)=>context.compactFollow(session,from,{force:true}),changes,reads,image,state};
+    force:(session,from)=>context.compactFollow(session,from,{force:true}),changes,reads,image,state,selection:context.pipSelection};
 }
+test('an old frame probe cannot replace a newer explicit instance choice',async()=>{
+  let finish; const x=followRig({look:()=>new Promise(resolve=>{finish=resolve;})});
+  const following=x.follow({session_id:'new',title:'RE5'},'old');
+  await new Promise(resolve=>setImmediate(resolve)); x.selection.revision++; finish({visible:true,poster:'old-selection-frame'});
+  await following; assert.deepEqual(x.changes,[]); assert.equal(x.state.sid,'old');
+});
+
+test('queued follow validates selection before changing presentation or pad target',async()=>{
+  let finish;const x=fixture({windowMode:value=>new Promise(resolve=>{finish=()=>resolve({on:value.on});})});
+  const opening=x.ctl.enter();await Promise.resolve();await Promise.resolve();
+  let current=true,prepared=0;
+  const old=x.ctl.follow('session-1',{sid:'stale',local:false},{current:()=>current,prepare:()=>prepared++});
+  current=false;finish();await opening;assert.equal(await old,false);
+  assert.equal(prepared,0);assert.equal(x.ctl.state.sid,'session-1');assert.deepEqual(x.pads,[null]);
+});
 test('compact following never displays a parked MercMode target even when its frame is fresh',async()=>{
   for(const force of [false,true]){
     const x=followRig({look:()=>({visible:true,poster:'parked-frame'})});

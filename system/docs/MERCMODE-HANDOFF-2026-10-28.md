@@ -21,6 +21,8 @@ Run this loop until the operator says stop. Don't wait to be asked for each step
 
 ## 1. What the operator wants
 
+**PiP stream picker directive, 2026-10-28:** the right-click menu starts with a horizontal previous / per-instance thumbnail / next carousel. Choosing a stream changes viewing only. Keep the last selected instance as the default on reload and follow its current session after autoplay title changes, without selecting a warmed predecessor or taking control of another game.
+
 **Standing acceptance rule, 2026-10-28:** "If the round isn't an S rank or the character gets killed, then that round is a failure." Evaluate completed rounds by survival and native S-or-better rank; kills, combo and bonus counters are diagnostics, not a substitute for success. Missing rank evidence is unverified, never a pass.
 
 **Urgent RE6 directive, 2026-10-28:** the operator sees the gun pointing down, shots into walls beside enemies and into the ground in front of enemies. Fix target acquisition and actual aim/fire alignment before claiming improved survival. Keep the no-camera-whip and no-wall-shot rules.

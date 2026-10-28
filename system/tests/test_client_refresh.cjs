@@ -169,6 +169,7 @@ test('missing saved session preserves window bounds and retains an automatic ret
   const src = html.slice(html.indexOf('async function restoreClientView()'), html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
   const calls = [], value = { sid: 'exact-old', compact: true, section: 'play' }, EMB = {};
   const ctx = vm.createContext({ EMB, clientViewNavigation: 0, clientViewRestoring: true,
+    pipSelection:{preference:null},
     clientRefresh: { pending: () => value, retain() {}, remember() {}, done: () => calls.push('consumed') },
     document: { querySelector: selector => selector === '#wv' ? { gboxReady: Promise.resolve(), executeJavaScript: async () => ({ missing: [] }) } : { click() {} } }, loadPlay: async () => calls.push('load'),
     compactController: { enter: async v => { assert.equal(v.sid, 'exact-old'); throw Error('session unavailable'); } },
@@ -185,6 +186,7 @@ test('restoration waits for the guest and restores two streams before entering n
   let ready;const wv={gboxReady:new Promise(r=>ready=r),executeJavaScript:async script=>{assert.match(script,/main-A/);calls.push('guest');return {restored:['main-A'],missing:[]};}};
   let pending=value;
   const ctx=vm.createContext({EMB:{},clientViewNavigation:0,clientViewRestoring:true,
+    pipSelection:{preference:null},
     clientRefresh:{pending:()=>pending,retain(){},remember(){},done:()=>{pending=null;calls.push('done');}},
     document:{querySelector:s=>s==='#wv'?wv:{click(){}}},loadPlay:async()=>calls.push('load'),
     compactController:{enter:async v=>{assert.equal(v.sid,'pip-B');assert.equal(v.preserveGuest,true);calls.push('compact');}},
@@ -218,6 +220,7 @@ async function restorationRig() {
   requests.push({kind:'guest',script});return {missing:available?[]:['native-old'],view:{...guest}};
  }};
  const context=vm.createContext({EMB,clientRefresh:ctl,
+  pipSelection:{preference:null},
   Date:class extends Date{static now(){return at;}},
   document:{addEventListener:(type,fn)=>listeners[type]=fn,querySelector:selector=>selector==='#wv'?wv:{click:()=>clicks.push(selector)}},
   addEventListener:()=>{},setInterval:fn=>{timers.push(fn);return timers.length;},
