@@ -189,11 +189,14 @@ def test_the_bombs_place_and_area_pickups_are_never_pressed():
     assert b2.doing != "prompt"
 
 
-def test_a_ledge_prompt_only_on_the_way_to_a_statue_off_his_level_and_its_spot_logged():
+def test_a_ledge_prompt_is_taken_whenever_no_majini_is_on_him_and_its_spot_logged():
     b, clock = bot()
     ledge = prompt(label=9, kind=2, owner=0x5D00001000)
-    act = b.tick(snap([], pr=ledge, bonuses=[at(1200, 0)]))               # a statue on his level: not now
-    assert b.doing != "prompt" and b.stats["traverse_spots"].startswith("9@")
+    act = b.tick(snap([], pr=ledge, bonuses=[at(1200, 0)]))               # 2026-10-28: taken wherever it shows (doors too)
+    assert b.doing == "prompt" and act["hold"] == ("y",) and b.stats["traverse_spots"].startswith("9@")
+    b3, _ = bot()
+    b3.tick(snap([at(150, 0)], pr=ledge, bonuses=[at(1200, 0)]))          # one on him: the fight first
+    assert b3.doing != "prompt"
     b2, clock2 = bot()
     b2.tick(snap([], bonuses=[at(1200, 0, y=-300.0)]))                    # a statue 3 m below
     clock2[0] = 0.05
