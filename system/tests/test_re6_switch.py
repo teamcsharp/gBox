@@ -1919,7 +1919,7 @@ def test_the_snapshot_finds_the_time_and_combo_bonuses_by_their_action():
 def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
-    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
+    g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
     u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                   # 10 m ahead
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, 12)
@@ -1937,7 +1937,7 @@ def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch)
 def test_no_bonus_shot_with_a_bomb_out(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
-    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))
+    g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
     bot, clock, snap = brain(g)
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, -1500.0))
@@ -1955,7 +1955,9 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(mon
     run(bot, snap, clock, 6)
     assert bot.doing != "bonus" and bot.stats["bonus_shots"] == 0
     R._BONUS.update(base=None)                                                         # another guest at the same base
-    g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, 60.0, 500.0), (20.0, 145.0, 30.0), 0.86))
+    for cache in (R._FOUND, R._MISS):                                                  # (its laser too)
+        cache.clear()
+    g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, R.BONUS_H, 500.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                       # a wall at 5 m: the dot short
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
