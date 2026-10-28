@@ -71,11 +71,15 @@ TAP_ON, TAP_OFF = 1, 2                 # ticks of R1 down / up when tapping (a m
 HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
-HEAL_SAFE_R, HEAL_CRITICAL = 400.0, 0.25   # no heal started with a Majini this near unless health is this low: RE5's
+HEAL_SAFE_R, HEAL_CRITICAL = 250.0, 0.25   # no heal started with a Majini this near unless health is this low: RE5's
                                        # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26). Was
-                                       # 500 / 0.15: 23 of today's 30 deaths came with a heal deferred, 14 from 1-3 HP -
-                                       # one more ordinary hit (84-196 HP, 91 % under 200) killed at 15 %. The stage's own
-                                       # heal_critical (impact_lessons: its largest single hit x HEAL_COVER) can raise it
+                                       # 400 / 0.25 (2026-10-26), itself down from 500 / 0.15 (23 of today's 30 deaths
+                                       # came with a heal deferred, 14 from 1-3 HP). The 2.5-4 m band still deferred the
+                                       # heal while melee could land: request #5130 (19763d7aef4edc39) "heal deferred
+                                       # 2.5 m, Majini 240.0 cm" with a 160-200 HP loss. 250 = RE5's own melee range
+                                       # (IMPACT_MELEE_R): only a Majini actually within melee reach defers the heal.
+                                       # The stage's own heal_critical (impact_lessons: its largest single hit x
+                                       # HEAL_COVER) can raise it
 IMPACT_MELEE_R, IMPACT_CLOSE_R, IMPACT_BOSS_R = 250.0, 450.0, 700.0   # the nearest Majini at a hit: melee / close / boss
                                        # kinds of attacker in the round map's hit events and the impact lessons
 WEAPON_NAMES = {0x02: "M92F", 0x03: "VZ61", 0x0B: "M29", 0x12: "Barry's handgun", 0x15: "Gatling", 0x20: "Dragunov"}

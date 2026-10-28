@@ -195,10 +195,10 @@ def test_no_heal_starts_with_a_majini_near_unless_health_is_critical(tmp_path):
     spray = {'slot':6,'id':0x304,'type':3,'item':4,'grid':4,'rounds':1,'hand':False}
     gun = {'slot':0,'id':0x10B,'type':1,'item':0x0B,'grid':3,'rounds':6,'hand':True}
     player = {'ptr':PLAYER,'pos':(0.,0.,0.),'hp':300,'hp_max':1000,'action':0}
-    near = {'ptr':0x30700000,'slot':0,'pos':(0.,0.,300.),'hp':800,'hp_max':800}
+    near = {'ptr':0x30700000,'slot':0,'pos':(0.,0.,200.),'hp':800,'hp_max':800}
     snap = {'player':player,'inventory':[gun,spray],'enemies':[near]}
-    assert bot._heal(player,snap,10.) is None                       # 30 %: a Majini 3 m away, the fight first
-    assert bot.stats['heal_deferred'].startswith('1 Majini within 4 m at 30%')   # HEAL_SAFE_R 400 since 2026-10-26
+    assert bot._heal(player,snap,10.) is None                       # 30 %: a Majini 2 m away, the fight first
+    assert bot.stats['heal_deferred'].startswith('1 Majini within 2 m at 30%')   # HEAL_SAFE_R 250 (melee range, 2026-10-28)
     assert bot._seek_health(player,snap | {'health_items':[{'ptr':3,'id':0x305,'pos':(800.,0.,0.),'evidence':'native item table'}]},10.) is None
     snap['enemies'] = []
     assert bot._heal(player,snap,10.) == {'tap':'triangle'}        # nobody near: the heal
