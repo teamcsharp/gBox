@@ -648,6 +648,53 @@ def _decode_nav(m, nav: int) -> NavMesh | None:
     return NavMesh(verts, tris, links, name)
 
 
+# --- the game's own button prompts ----------------------------------------------------------------------------------------
+# The operator, 17:39-17:52: "seeing them miss QTE events"; "failing to notice the on screen prompts for telling it to
+# climb ledges"; a frame with a "(B)" climb prompt beside Chris and "(Y) 9mm Ammo" at the bottom left. Ghidra:
+# sActionButton (singleton main+0x28E7AF0, 0x1D20 bytes) holds one ButtonMgr per player (0x398 each from +0x50; its +0xC
+# the player index, its cPad at +0x10); a mgr shows up to two ButtonUnits (+0x248, +0x2E0; 0x98 each): +0xC shown,
+# +0x10 the cActionButton asking (its +0x30 the action type, +0x38 the logical button), +0x1C that type again. The
+# press check main+0x31F0C0 writes the button's pad mask into the unit's +0x28 every frame (main+0x2218870 maps the
+# logical button to it) and main+0x31D4F0 runs the action once that mask is pressed. The pad mask is the PS3 layout
+# the port kept, shown with the Switch's buttons in the same places: 0x4000 cross = B (climb, the frame's "(B)"),
+# 0x8000 square = Y (pick up, "(Y) 9mm Ammo"), 0x2000 circle = A, 0x1000 triangle = X, L1 0x400, R1 0x800, L2 0x100,
+# R2 0x200, the D-pad 0x10-0x80; 0x10000-0x80000 the stick (a mash). prompts() lists the shown ones.
+S_ACTION_BUTTON, AB_MGR, AB_MGR_SIZE, AB_MGRS, AB_UNITS = 0x28E7AF0, 0x50, 0x398, 8, (0x248, 0x2E0)
+PAD_KEYS = ((0x4000, "b"), (0x8000, "y"), (0x2000, "a"), (0x1000, "x"), (0x0800, "r"), (0x0400, "l"),
+            (0x0200, "zr"), (0x0100, "zl"), (0x0010, "dup"), (0x0020, "dright"), (0x0040, "ddown"), (0x0080, "dleft"))
+PAD_STICK = 0xF0000
+
+
+def prompts(m, base: int, index: int = 0) -> list | None:
+    """The game's shown button prompts for this player: [{type, button, pad, key, ab}] (key: the Switch button to press,
+    "stick" for a mash of the stick, None for a mask with no known button); None when the reads fail."""
+    try:
+        sab = u64(m, base + S_ACTION_BUTTON)
+        if not ptr_ok(sab):
+            return None
+        raw = m.rd(sab + AB_MGR, AB_MGR_SIZE * AB_MGRS)
+        out = []
+        for k in range(AB_MGRS):
+            mgr = AB_MGR_SIZE * k
+            if struct.unpack_from("<i", raw, mgr + 0xC)[0] != index:
+                continue
+            for u in AB_UNITS:
+                if not raw[mgr + u + 0xC]:
+                    continue
+                ab = struct.unpack_from("<Q", raw, mgr + u + 0x10)[0]
+                pad = struct.unpack_from("<I", raw, mgr + u + 0x28)[0]
+                typ = struct.unpack_from("<i", raw, mgr + u + 0x1C)[0]
+                button = _i32(m, ab + 0x38) if ptr_ok(ab) else None
+                key = next((name for bit, name in PAD_KEYS if pad & bit), None)
+                if key is None and pad & PAD_STICK:
+                    key = "stick"
+                out.append({"type": typ, "button": button, "pad": pad, "key": key, "ab": ab})
+            break
+        return out
+    except (ValueError, OSError, struct.error):
+        return None
+
+
 def game_man(m, base: int) -> int:
     gm = u64(m, base + S_GAMEMAN)
     return gm if ptr_ok(gm) else 0
@@ -692,7 +739,8 @@ def snapshot(m) -> dict:
             snap["camera"] = own_camera(m, p) if coop else camera(m, base, snap["player"]["pos"])
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base, snap["player"]["pos"])
             snap["aim_cam"] = aim_cam(m, base, p)
-            snap["navmesh"] = navmesh(m, base)                # this player's own camera state (the aim lock)
+            snap["navmesh"] = navmesh(m, base)
+            snap["prompts"] = prompts(m, base, index or 0)                # this player's own camera state (the aim lock)
             if (snap["player"].get("bomb") or {}).get("out"):
                 snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
@@ -1569,6 +1617,19 @@ BONUS_LOG_N = 12
 # aim lock's writer the camera's yaw is written onto the way (no turning keys). stats nav_paths, nav_fails (no path:
 # straight at it as before).
 NAV_WALK, NAV_REACH_R, NAV_REPLAN_S = True, 90.0, 1.5
+# Taking the game's prompts (snapshot prompts; operator 16:54: "if they hit an enemy and they get an opportunity to do a
+# QTE event, they must activate that QTE event immediately"; 17:50-17:52 the climb prompts, "it should be aware that
+# there's a button press that's required for it to relocate to the next area"; take pickups "when they're free and
+# safe"): a shown prompt's button is pressed at once (a stick mask: the stick round), again every PROMPT_REPEAT_S while
+# it stays (a mash); a pickup (Y) only with nobody within PROMPT_SAFE_R; none while a bomb or an item is in his hand
+# (the remote's ZR, a grenade's throw). A prompt gone within PROMPT_TAKEN_S of a press counts as taken. stats
+# prompts_seen / prompts_taken, prompt_types {type: [seen, taken, key]}, prompt_latency_ms (the mean from shown to
+# pressed), climbs (B taken while not held), pickups (Y taken); the B spots are logged per stage for the nav
+# (learn_dir / PROMPT_SPOTS_FILE: {stage: [[x, y, z, type], ...]}).
+PROMPTS, PROMPT_REPEAT_S, PROMPT_TAKEN_S, PROMPT_SAFE_R = True, 0.15, 1.5, 300.0
+PROMPT_SKIP_KEYS = frozenset({"r"})     # R: the heal hint shown whenever he is hurt (live 17:55: types 1 / 26 with
+                                        # button 34 at 780 / 900 health) - tablets stay with the tablet rules
+PROMPT_SPOTS_FILE, PROMPT_SPOTS_N, PROMPT_SAVE_S = "re6_prompt_spots.json", 200, 30.0
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
 # and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
 # grabbing all the time bonuses, that's when the match truly begins and they can begin to make a stand"; 16:55: a round
@@ -1594,7 +1655,7 @@ HANG_S = 6.0
 #   t_turn_foe_front seconds turning with the gun down while a zombie stood in front within reach (none, by design)
 LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25, 0.25
 DOINGS = ("fire", "aim", "raise", "turn", "unaim", "quick_turn", "quick_shot", "melee", "held", "tablet", "reload",
-          "walk", "no_foes", "dead", "bomb", "crowd", "nade", "bonus")
+          "walk", "no_foes", "dead", "bomb", "crowd", "nade", "bonus", "prompt")
 AIM_COUNTERS = ("trigger_s", "pulls_hit", "pulls_miss", "first_pull_n", "first_pull_s", "t_turn_foe_front")
 SURVIVAL = ("held", "tablet", "reload")
 
@@ -1639,6 +1700,17 @@ class Bot:
                   "cc_vs_aimed"):
             self.stats.setdefault(k, 0.0)
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
+        for k in ("prompts_seen", "prompts_taken", "climbs", "pickups"):
+            self.stats.setdefault(k, 0)
+        self.prompt_live: dict = {}                          # shown prompts: {(ab, type): {since, pressed, at}}
+        self.prompt_spots_path = Path(learn_dir) / PROMPT_SPOTS_FILE if learn_dir else None
+        self.prompt_spots: dict = {}
+        self.prompt_saved = -1e9
+        if self.prompt_spots_path is not None and self.prompt_spots_path.exists():
+            try:
+                self.prompt_spots = dict(json.loads(self.prompt_spots_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                self.prompt_spots = {}
         for k in ("nav_paths", "nav_fails"):
             self.stats.setdefault(k, 0)
         self.nav_path, self.nav_goal, self.nav_at = None, None, -1e9   # the walk's waypoints; toward what; planned when
@@ -2003,6 +2075,7 @@ class Bot:
         self._taunt_watch(snap, now)
         self._down_tick(p, snap, now)
         self._hazard_tick(p, live, flat, now)
+        self._prompt_shown = self._prompt_book(p, snap, now)
         self._lock_tick(snap, now)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
@@ -2045,9 +2118,14 @@ class Bot:
             self._gun_down()
             self.still = None
             self.wiggle += 1
+            if "b" in WIGGLE[self.wiggle % len(WIGGLE)]:
+                self._prompt_pressed("b", now)
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
+        took = self._prompt(p, snap, now)                        # the game's own prompt: pressed at once
+        if took is not None:
+            return took
         escape = self._bomb_escape(p, snap, now)
         if escape is not None:
             return escape
@@ -2596,6 +2674,92 @@ class Bot:
             elif combo == 0:
                 self.stats["pursuit_lapses"] += 1
                 self.pursuit = None
+
+    def _prompt_book(self, p, snap, now) -> list:
+        """The shown prompts against the last tick's: new ones counted seen (prompt_types), gone ones after a press
+        within PROMPT_TAKEN_S counted taken (a B one a climb, a Y one a pickup). The shown ones, newest first."""
+        shown = snap.get("prompts")
+        if shown is None:
+            return []
+        cur = {(q["ab"], q["type"]): q for q in shown}
+        types = self.stats.setdefault("prompt_types", {})
+        for key, q in cur.items():
+            if key not in self.prompt_live:
+                self.prompt_live[key] = {"since": now, "pressed": None, "at": -1e9, "q": q}
+                self.stats["prompts_seen"] += 1
+                row = types.setdefault(str(q["type"]), [0, 0, q.get("key")])
+                row[0] += 1
+                if q.get("key") == "b":
+                    self._prompt_spot(p, snap, q)
+        for key in [k for k in self.prompt_live if k not in cur]:
+            live = self.prompt_live.pop(key)
+            if live["pressed"] is not None and now - live["at"] <= PROMPT_TAKEN_S:
+                q = live["q"]
+                self.stats["prompts_taken"] += 1
+                types.setdefault(str(q["type"]), [0, 0, q.get("key")])[1] += 1
+                if q.get("key") == "b" and not self.in_hold:
+                    self.stats["climbs"] += 1
+                elif q.get("key") == "y":
+                    self.stats["pickups"] += 1
+        return sorted(cur.values(), key=lambda q: -self.prompt_live[(q["ab"], q["type"])]["since"])
+
+    def _prompt_spot(self, p, snap, q) -> None:
+        """A B prompt's spot, logged per stage (the nav's climb links to be)."""
+        mesh = snap.get("navmesh")
+        stage = getattr(mesh, "name", "") or "unknown"
+        spots = self.prompt_spots.setdefault(stage, [])
+        x, y, z = p["pos"]
+        if any(math.dist((x, y, z), s_[:3]) < 150.0 for s_ in spots):
+            return
+        spots.append([round(x), round(y), round(z), q["type"]])
+        del spots[:-PROMPT_SPOTS_N]
+        now = self.clock()
+        if self.prompt_spots_path is not None and now - self.prompt_saved >= PROMPT_SAVE_S:
+            self.prompt_saved = now
+            try:
+                self.prompt_spots_path.parent.mkdir(parents=True, exist_ok=True)
+                self.prompt_spots_path.write_text(json.dumps(self.prompt_spots), encoding="utf-8")
+            except OSError:
+                pass
+
+    def _prompt_pressed(self, key: str, now) -> None:
+        """Every shown prompt asking for key counts as pressed now (its latency the first time)."""
+        for live in self.prompt_live.values():
+            if live["q"].get("key") != key:
+                continue
+            if live["pressed"] is None:
+                live["pressed"] = now
+                n = self.stats.get("prompt_presses", 0) + 1
+                mean = self.stats.get("prompt_latency_ms", 0.0)
+                self.stats["prompt_latency_ms"] = round(mean + ((now - live["since"]) * 1000.0 - mean) / n, 1)
+                self.stats["prompt_presses"] = n
+            live["at"] = now
+
+    def _prompt(self, p, snap, now) -> dict | None:
+        """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
+        take this tick."""
+        shown = getattr(self, "_prompt_shown", None) or []
+        if not PROMPTS or not shown:
+            return None
+        eq = p.get("equipped")
+        if (p.get("bomb") or {}).get("out") or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.nade is not None:
+            return None
+        px, py, pz = p["pos"]
+        near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in snap.get("enemies") or ()
+                    if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY), default=math.inf)
+        for q in shown:
+            key, live = q.get("key"), self.prompt_live[(q["ab"], q["type"])]
+            if (key is None or key in PROMPT_SKIP_KEYS or (key == "y" and near < PROMPT_SAFE_R)
+                    or now - live["at"] < PROMPT_REPEAT_S):
+                continue
+            self._prompt_pressed(key, now)
+            self._gun_down()
+            if key == "stick":
+                self.wiggle += 1
+                return self._go("prompt", "prompt_stick", {"hold": tuple(k for k in WIGGLE[self.wiggle % len(WIGGLE)] if k != "b")},
+                                f"a prompt (type {q['type']}): the stick round")
+            return self._go("prompt", "prompt_" + key, {"tap": key}, f"a prompt (type {q['type']}): {key.upper()}")
+        return None
 
     def _nav_heading(self, p, goal, snap, now) -> float | None:
         """The heading of the next nav-mesh waypoint toward goal (None: no mesh, or no path - straight at it)."""
