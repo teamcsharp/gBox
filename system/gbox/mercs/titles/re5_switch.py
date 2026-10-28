@@ -39,6 +39,7 @@ import time
 
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
+from . import re5_switch_prompt
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -357,6 +358,28 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
 HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, False
 GOV_COUNTERS = ("gov_drops",)
+# The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
+# hourglass: re5_switch_prompt's live finding, label 112 press:y on the statue - up 23 samples in six minutes, never
+# pressed, bonuses_taken 0). snap prompt (sActionButton's shown button) is taken the moment it shows, ahead of the
+# fight, by its type:
+#   enemy   one a Majini owns or names (Break free, a dodge, a finisher) or a stick QTE: always (not kind 0 alone: the
+#           start's box, uOm088a, is a kind 0 press:y too)
+#   dying   Resuscitate (label 55): always            bonus   the hourglass (label 112): always
+#   pickup  Pick up (label 1): with nobody within PICKUP_CLEAR_R and none of his bombs within MINE_CLEAR_R
+#   traverse  a stage spot's action (TRAVERSE_LABELS, or another of his own press:y): only on the way to a statue or a
+#           pursued Majini off his level (no blind Y: #1370's presses wait for the prompt now); each spot logged
+#   (never the bomb's Place, label 100: the mines module's; never kind 3's area pickups: ammo is infinite)
+# The press by the prompt's mode: press / release / mash - the keys one tick, let go the next (a fresh press each
+# time); wiggle - the left stick left / right by turns; rotate - the left stick round; the axes - back and forth.
+# Counters: prompts_seen and prompts_seen_<type>, prompts_taken (gone within PROMPT_TAKE_S of the first press),
+# prompt_presses, prompt_latency_s (the mean seconds from shown to the first press), ledge_jumps (traverse prompts
+# taken), level_changes (his height changing by LEVEL_DY within LEVEL_CHANGE_S of one); stats traverse_spots: the
+# last spots (label @ x, y, z).
+PROMPTS, PICKUP_CLEAR_R, MINE_CLEAR_R, PROMPT_TAKE_S, LEVEL_CHANGE_S = True, 250.0, 250.0, 3.0, 3.0
+PROMPT_TYPES = ("enemy", "dying", "bonus", "pickup", "traverse", "other")
+PROMPT_COUNTERS = ("prompts_seen", "prompts_taken", "prompt_presses", "ledge_jumps", "level_changes")     + tuple("prompts_seen_" + t for t in PROMPT_TYPES)
+ROTATE = (("lup",), ("lup", "lleft"), ("lleft",), ("lleft", "ldown"), ("ldown",), ("ldown", "lright"), ("lright",),
+          ("lright", "lup"))
 # The turret sweep (operator 17:38: "with as many threats that they have around them within a five meter circle, they
 # should be holding down the trigger and just spinning around getting all of these people that are ganging up on them";
 # kept from 16:12 / 16:47: no whipping, nothing dizzying). It replaces the rampage (RAMPAGE stays off): SWEEP_N or more
@@ -425,7 +448,7 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -551,7 +574,7 @@ LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25,
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
           "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm", "sweep",
-          "relocate")
+          "relocate", "prompt")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
 MINES, MINE_EVERY_S = True, 9.0
@@ -647,7 +670,7 @@ def class_name(m, obj) -> str | None:
         raw = bytes(m.rd(u64(m, dti + DTI_NAME), 40)).split(b"\0")[0]
         name = raw.decode("ascii")
         return name if name.isidentifier() else None
-    except (ValueError, OSError, struct.error, UnicodeDecodeError):
+    except (ValueError, OSError, OverflowError, struct.error, UnicodeDecodeError):
         return None
 
 
@@ -864,6 +887,9 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
+            if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
+                snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
+                snap["prompt_read"] = True
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 snap["ground_mines"] = ground_mines(m, base)
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
@@ -899,6 +925,18 @@ def snapshot(m) -> dict:
         if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
             snap["scoring_players"] = 2                     # a team round: the score is both players'
     return snap
+
+
+_PROMPT_TABLE: dict = {}                 # main base -> its key table is this reader's (re5_switch_prompt.table_ok)
+
+
+def prompt_table_ok(m, base: int) -> bool:
+    """re5_switch_prompt's key table check, once a boot (main's base)."""
+    if base not in _PROMPT_TABLE:
+        if len(_PROMPT_TABLE) > 16:
+            _PROMPT_TABLE.clear()
+        _PROMPT_TABLE[base] = re5_switch_prompt.table_ok(m, base)
+    return _PROMPT_TABLE[base]
 
 
 def own_screen(snap: dict) -> str:
@@ -1183,6 +1221,12 @@ class Bot:
         self._kills_prev = None
         self._sweep_st, self._sweep_last, self._sweep_t = None, None, None   # the turret sweep
         self._gov = (None, None)                         # (heading, when) at the last tick: the heading governor
+        self._pr = None                                  # the prompt being answered (PROMPTS): its button, since, presses
+        self._pr_lat: list = []                          # seconds from shown to the first press
+        self._goal_dy = None                             # the statue / pursued Majini's height off his level (traverse)
+        self._level_watch = None                         # (his height, until) after a traverse prompt: level_changes
+        self.stats.setdefault("traverse_spots", "")
+        self.stats.setdefault("prompt_latency_s", 0)
         self._clears: list = []                          # this round's sweep seconds to clear the circle
         self._dwell = None                               # {"anchor", "since"}: the spot he stands at (keep moving)
         self._dwells: list = []                          # this round's finished dwells (seconds)
@@ -1357,6 +1401,7 @@ class Bot:
         tgt = min(census, key=cost)
         key = tgt.get("ptr", tgt.get("slot"))
         d = math.hypot(tgt["pos"][0] - px, tgt["pos"][2] - pz)
+        self._goal_dy = tgt["pos"][1] - py
         if self._pur is None or self._pur["target"] != key:
             if self._pur is None:
                 self.stats["pursuits"] += 1
@@ -1452,6 +1497,14 @@ class Bot:
         bx, by, bz = b["pos"]
         d = math.hypot(bx - px, bz - pz)
         err = wrap(heading(bx - px, bz - pz) - p["rot"])
+        self._goal_dy = by - py                          # a ledge's prompt on the way is taken (PROMPTS: traverse)
+        if d <= KNIFE_R and snap.get("prompt_read"):     # at it: its own prompt takes it (Y, PROMPTS); walk into it
+            run["knife_since"] = run["knife_since"] or now
+            if now - run["knife_since"] > KNIFE_TRY_S * (KNIFE_RETRIES + 1):
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # no prompt here: another one first
+                self._bonus = None
+            self.doing, self.why = "walk", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: into it for its prompt"
+            return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
         if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
             if abs(err) > KNIFE_FACE:
                 self.doing, self.why = "turn", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: facing it"
@@ -1473,7 +1526,7 @@ class Bot:
             return {"hold": ("l", "zr") if swing else ("l",)}
         if d < run["best"] - 50.0:                       # on the way: run (walk the last metres), a detour when stuck
             run["best"], run["best_at"] = d, now
-        elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY:
+        elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY                 and not snap.get("prompt_read"):         # (with the prompt read, Y waits for the ledge's own prompt)
             run["jumped"] = True                         # stuck at a ledge above (or below) it: the context action
             run["best_at"] = now                         # (Y: "Jump down" - the 16:24 frame on the roof - or a ladder)
             self.stats["bonus_jumps"] += 1
@@ -2019,6 +2072,100 @@ class Bot:
                 self.stats["calm_caps"] += 1
         return {**act, "hold": tuple(keys)}
 
+    def _prompt_type(self, pr, snap) -> str:
+        enemies = {e.get("ptr") for e in snap.get("enemies") or () if e.get("ptr")}
+        label, kind = pr.get("label"), pr.get("kind")
+        if pr.get("owner") in enemies or pr.get("target") in enemies or pr.get("mode") in (6, 7, 8, 9):
+            return "enemy"                               # a Majini's (a grab, a dodge, a finisher) or a stick QTE
+        if kind == re5_switch_prompt.KIND_ENEMY and not pr.get("owner"):
+            return "enemy"                               # (a grab whose owner was not read)
+        if label == re5_switch_prompt.LABEL_RESUSCITATE:
+            return "dying"
+        if label == re5_switch_prompt.LABEL_TIME_BONUS:
+            return "bonus"
+        if label == re5_switch_prompt.LABEL_PICKUP and kind == re5_switch_prompt.KIND_PLAYER:
+            return "pickup"
+        if kind == re5_switch_prompt.KIND_PLAYER and label != re5_switch_prompt.LABEL_PLACE                 and (label in re5_switch_prompt.TRAVERSE_LABELS or pr.get("token") == "press:y"):
+            return "traverse"
+        return "other"
+
+    def _prompt_wanted(self, kind, p, snap) -> bool:
+        if kind in ("enemy", "dying", "bonus"):
+            return True
+        px, py, pz = p["pos"]
+        if kind == "pickup":
+            near = any((e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PICKUP_CLEAR_R
+                       and abs(e["pos"][1] - py) <= MAX_DY for e in snap.get("enemies") or ())
+            mine = any(math.hypot(g["pos"][0] - px, g["pos"][2] - pz) <= MINE_CLEAR_R
+                       for g in snap.get("ground_mines") or ())
+            busy = self.healing is not None or self.escape is not None                 or (self.mines is not None and self.mines.state != "idle")
+            return not (near or mine or busy)
+        if kind == "traverse":
+            return self._goal_dy is not None and abs(self._goal_dy) > LEVEL_DY
+        return False
+
+    def _prompt(self, p, snap, now):
+        """The game's shown prompt (snap prompt) answered by its type and mode (PROMPTS above); None when there is none
+        or it is not one to take."""
+        pr = snap.get("prompt") if PROMPTS else None
+        st = self._pr
+        lw = self._level_watch
+        if lw is not None:
+            if abs(p["pos"][1] - lw[0]) > LEVEL_DY:
+                self.stats["level_changes"] += 1
+                self._level_watch = None
+            elif now > lw[1]:
+                self._level_watch = None
+        if st is not None and (pr is None or pr.get("button") != st["button"] or pr.get("label") != st["label"]):
+            if st["presses"] and now - st["first"] <= PROMPT_TAKE_S:
+                self.stats["prompts_taken"] += 1         # pressed, and gone (or another in its place)
+                if st["type"] == "traverse":
+                    self.stats["ledge_jumps"] += 1
+            self._pr = st = None
+        if pr is None:
+            return None
+        if st is None:
+            kind = self._prompt_type(pr, snap)
+            st = self._pr = {"button": pr.get("button"), "label": pr.get("label"), "type": kind, "since": now,
+                             "first": None, "presses": 0, "phase": 0}
+            self.stats["prompts_seen"] += 1
+            self.stats["prompts_seen_" + kind] += 1
+            if kind == "traverse":                       # the stage's spot: logged (the ledges learned later)
+                x, y, z = p["pos"]
+                spots = [s_ for s_ in (self.stats.get("traverse_spots") or "").split(" | ") if s_]
+                spots = (spots + [f"{pr.get('label')}@{x:.0f},{y:.0f},{z:.0f}"])[-8:]
+                self.stats["traverse_spots"] = " | ".join(spots)
+        if not self._prompt_wanted(st["type"], p, snap):
+            return None
+        if st["first"] is None:
+            st["first"] = now
+            self._pr_lat.append(now - st["since"])
+            del self._pr_lat[:-50]
+            self.stats["prompt_latency_s"] = round(sum(self._pr_lat) / len(self._pr_lat), 3)
+            if st["type"] == "traverse":
+                self._level_watch = (p["pos"][1], now + LEVEL_CHANGE_S)
+        st["presses"] += 1
+        st["phase"] += 1
+        self.stats["prompt_presses"] += 1
+        token = pr.get("token") or ""
+        if st["presses"] == 1 and not self.in_hold and (st["type"] == "dying" or token == "mash:wiggle"):
+            k = "dying" if st["type"] == "dying" else "holds"   # (the round's holds / dying, as the held rule counts)
+            self.stats[k] = self.stats.get(k, 0) + 1
+            self.in_hold = True
+        self.doing = "held" if st["type"] in ("enemy", "dying") else "prompt"
+        self.why = f"prompt {st['type']}: {token} (label {pr.get('label')})"
+        if token == "mash:wiggle":
+            return {"hold": WIGGLE[st["phase"] % len(WIGGLE)]}
+        if token == "stick:rotate":
+            return {"hold": ROTATE[st["phase"] % len(ROTATE)]}
+        if token in ("stick:y", "stick:x"):
+            pair = (("lup",), ("ldown",)) if token == "stick:y" else (("lleft",), ("lright",))
+            return {"hold": pair[st["phase"] % 2]}
+        keys = tuple(pr.get("keys") or ())
+        if not keys:
+            return None
+        return {"hold": keys if st["phase"] % 2 else ()}  # one tick down, one up: a fresh press each time
+
     def _governor(self, act, snap, now) -> dict:
         """HEADING_GOV: his heading turned faster than HEADING_GOV_DEG_S since the last tick: no turn stick this tick
         (a grab's escape left alone)."""
@@ -2449,6 +2596,10 @@ class Bot:
             if now - self._hit_at > 0.5:                 # his health fell (a hit, a blast; a squeeze counts once)
                 self.stats["hits_taken"] += 1
             self._hit_at = now
+        act = self._prompt(p, snap, now)                 # the game's own prompt: taken the moment it shows
+        if act is not None:
+            self._gun_down()
+            return act
         if self.quick:                                       # the quick turn: the stick back, + B, let go
             self.doing, self.why = "quick_turn", f"step {self.quick}"
             step, self.quick = self.quick, (self.quick + 1) % 4
@@ -2552,6 +2703,7 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
         if self.blocked:
             self.blocked = {k: t for k, t in self.blocked.items() if t > now}
             rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
