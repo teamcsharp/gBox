@@ -1,0 +1,23 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "010018100CD46000",
+  "event_id": "5078-example-1",
+  "snapshot": {
+    "player": {"pos": [0, 0, 0], "rot": 0.0, "hp": 160, "hp_max": 1000, "motion": 0, "state": 0, "action": 0},
+    "enemies": [
+      {"pos": [0.4, 0, 0.3], "hp": 100, "class": "majini"},
+      {"pos": [-0.5, 0, 0.4], "hp": 100, "class": "majini"},
+      {"pos": [0.3, 0, -0.5], "hp": 100, "class": "majini"},
+      {"pos": [-0.4, 0, -0.3], "hp": 100, "class": "majini"},
+      {"pos": [0.6, 0, 0.1], "hp": 100, "class": "majini"},
+      {"pos": [-0.2, 0, 0.6], "hp": 100, "class": "majini"}
+    ],
+    "held": {"item": 272},
+    "inventory": [
+      {"id": "0x110", "item": 272, "rounds": 30, "cap": 60, "hand": true, "type": 1, "grid": 0}
+    ],
+    "prompt": null,
+    "laser": null
+  },
+  "logic": {"deaths": 0, "held": 0}
+}
