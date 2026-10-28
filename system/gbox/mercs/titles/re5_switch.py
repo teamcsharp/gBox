@@ -507,6 +507,7 @@ GOV_COUNTERS = ("gov_drops",)
 # prompt_presses, prompt_latency_s (the mean seconds from shown to the first press), ledge_jumps (traverse prompts
 # taken), level_changes (his height changing by LEVEL_DY within LEVEL_CHANGE_S of one); stats traverse_spots: the
 # last spots (label @ x, y, z).
+PROMPT_CLEAR_R = 250.0                    # Bot._prompt_wanted: a door / ledge prompt waits while one is this near
 PROMPTS, PICKUP_CLEAR_R, MINE_CLEAR_R, PROMPT_TAKE_S, LEVEL_CHANGE_S = True, 250.0, 250.0, 3.0, 3.0
 PROMPT_TYPES = ("enemy", "dying", "bonus", "pickup", "traverse", "other")
 PROMPT_COUNTERS = ("prompts_seen", "prompts_taken", "prompt_presses", "ledge_jumps", "level_changes")     + tuple("prompts_seen_" + t for t in PROMPT_TYPES)
@@ -2486,7 +2487,11 @@ class Bot:
         if kind == "pickup":
             return False                                # unlimited ammo/items: ordinary pickups never interrupt play
         if kind == "traverse":
-            return self._goal_dy is not None and abs(self._goal_dy) > LEVEL_DY
+            # doors, ledges, ladders: taken whenever they show (operator 2026-10-28, a door's "Y Open" ignored: "the bot
+            # fails to respond to key commands"), unless a Majini is on him (the fight first)
+            px, py, pz = p["pos"]
+            return not any((e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PROMPT_CLEAR_R
+                           and abs(e["pos"][1] - py) <= LEVEL_DY for e in snap.get("enemies") or ())
         return False
 
     def _prompt(self, p, snap, now):
