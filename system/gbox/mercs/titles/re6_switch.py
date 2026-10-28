@@ -2645,7 +2645,8 @@ class Bot:
 
     def _weapon_switch(self, p, now) -> dict | None:
         """The wanted weapon into his hands - the app's (WANT_WEAPON), else a shotgun for a crowd on him, else a grab's
-        pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, or resting."""
+        pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, resting, or the
+        bonus run is on (no interrupting the capsule run)."""
         want = WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None
         held = p.get("guns") or {}
         if want is None:
@@ -2665,6 +2666,8 @@ class Bot:
             if want is not None and eq == want:
                 self.stats["weapon_in_hand"] = want
             return None
+        if self.stats.get("phase") == "bonus_run":
+            return None                                      # the capsule run: no weapon switch interrupting it
         if now < self.weapon_rest or (p.get("bomb") or {}).get("out") or self.nade is not None \
                 or self.bomb_phase is not None:
             return None
@@ -4121,9 +4124,22 @@ class Bot:
         return self._go("bonus", "bonus_run", {"hold": walk + side + self._turn(err, TURN_TOL)},
                         f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
 
+    def _bonus_sight(self, p, b, snap) -> bool:
+        """The nav mesh's line from him to the bonus's middle (~1.3 m up): False when a wall is between them.
+        Off the mesh or another level: True (the laser's probe decides)."""
+        mesh = snap.get("navmesh")
+        if mesh is None:
+            return True
+        pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
+        try:
+            return mesh.clear(p["pos"], pt) is not False
+        except Exception:
+            return True
+
     def _bonus_shoot(self, p, b, snap, now) -> dict | None:
         """A bonus shot through the lock: its centre locked onto, the gun up, the trigger down while the laser's ray runs
-        through it (not ending short); the ray short of it BONUS_SEE_S on: out of sight for BONUS_UNSEEN_S (None: walk)."""
+        through it (not ending short); the ray short of it BONUS_SEE_S on with a clear nav-mesh line: out of sight for
+        BONUS_UNSEEN_S (None: walk there). A wall by the nav mesh: out of sight at once (walk, don't wait on the laser)."""
         pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
         if self.bshot is None or self.bshot[0] != b["ptr"]:
             self.bshot = (b["ptr"], now)
@@ -4138,8 +4154,10 @@ class Bot:
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
             on = near_ray(origin, dot, pt, BONUS_HIT_R)
             short = math.dist(origin, dot) < math.dist(origin, pt) - FIRE_SLACK
-        if not on and now - self.bshot[1] > BONUS_SEE_S and (short or lz is None or not lz.get("up")):
-            self.bonus_unseen[b["ptr"]] = now + BONUS_UNSEEN_S   # the ray never reached it: walk there
+        wall = not self._bonus_sight(p, b, snap)
+        if wall or (not on and now - self.bshot[1] > BONUS_SEE_S
+                    and (short or lz is None or not lz.get("up"))):
+            self.bonus_unseen[b["ptr"]] = now + BONUS_UNSEEN_S   # the ray never reached it / a wall: walk there
             self.stats["bonus_unseen"] += 1
             self.bshot = None
             self._gun_down()
