@@ -1897,7 +1897,10 @@ def windup(e, me=None) -> str | None:
 # walks). One on his level within CLOSE_R: only those, the lock's pitch never above CLOSE_PITCH. Low health (under
 # SURVIVAL_HP): survival - only the ones within CLOSE_R, backing away from the nearest, no long shots, no upward aim
 # (stats survival_s). stats up_aim_s: the camera's pitch over UP_AIM with no vertical threat (target 0).
-AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 180.0, 0.0, 600.0, math.radians(15), 0.35, math.radians(20)
+AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 100.0, 0.0, 600.0, math.radians(8), 0.35, math.radians(20)
+# AIM_DY 100 / CLOSE_PITCH 8 deg (operator 2026-10-28: "why is it aiming up for no reason? ... It causes losing"; live
+# Rail Yard: the lock wrote +18 deg at one 2.7 m off on a container 1.3 m up, AIM_DY 180 had him on his level and the
+# pitch guard's floor of 15 deg let it): his level is within 1 m, and the lock's pitch for one on it stays under 13 deg.
 # CEILING_R 0 (operator 2026-10-28, the gun up at a brick wall with nothing there: "these are the moments in which they are
 # basically risking their life and ruining the entire run"): one on the floor above is never aimed at through the
 # ceiling; only a big one (BIG_HP, a boss) off his level is. A live bot_logic knob sets it back.
@@ -2641,15 +2644,17 @@ class Bot:
             return None
         self.wiggle += 1
         self.stats["held_prompt_presses"] = self.stats.get("held_prompt_presses", 0) + 1
+        stick = tuple(k for k in WIGGLE[self.wiggle % len(WIGGLE)] if k != "b")
         if "stick" in keys:
-            return self._go("held", "held_prompt", {"hold": tuple(k for k in WIGGLE[self.wiggle % len(WIGGLE)] if k != "b")},
-                            "held: the prompt's stick, round")
-        buttons = tuple(sorted(set(keys)))
+            return self._go("held", "held_prompt", {"hold": stick}, "held: the prompt's stick, round")
+        # the button mashed AND the stick worked every tick (operator 2026-10-28: "They need to mash these buttons and
+        # throttle these sticks when it's asking for it staying ahead of the indicator")
+        buttons = tuple(sorted(set(k for k in keys if k != "stick")))
         if self.wiggle % 2:
             for k in buttons:
                 self._prompt_pressed(k, now)                     # (prompts_taken counts it as the prompt's press)
-        return self._go("held", "held_prompt", {"hold": buttons if self.wiggle % 2 else ()},
-                        f"held: the prompt's {'+'.join(buttons).upper()}, mashed")
+        return self._go("held", "held_prompt", {"hold": (buttons if self.wiggle % 2 else ()) + stick},
+                        f"held: the prompt's {'+'.join(buttons).upper()} mashed, the stick round")
 
     def _grab_swap(self, p, now) -> None:
         """A grab: a random loaded shotgun or magnum other than the gun in hand, switched to once he is free."""
