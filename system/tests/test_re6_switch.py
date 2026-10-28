@@ -967,8 +967,9 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     snap["enemies"] = [snap["enemies"][0]]                                    # only the one upstairs: still after him
     acts = run(bot, snap, clock, 2)
     assert bot.stats["act"] == "pursue" and bot.stats["pursuits"] == 1 and bot.stats["census_alive"] == 1
-    acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # not moving (stairs): a side step
-    assert bot.stats["pursuit_stuck"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # no progress: bounded back/side recovery
+    assert bot.stats["movement_blocks"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    assert snap["enemies"][0]["ptr"] in bot._walk_skip
     snap["kills"] = (snap.get("kills") or 0) + 1                              # the kill before the lapse
     run(bot, snap, clock, 1)
     assert bot.stats["pursuit_kills"] == 1
@@ -1350,13 +1351,16 @@ def test_the_bonus_run_walks_the_nav_mesh_way_round():
     snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
     acts = run(bot, snap, clock, 2)
     assert bot.stats["nav_paths"] == 1 and "nav mesh" in bot.why
-    assert "rleft" in acts[0]["hold"] and "lup" in acts[0]["hold"]           # toward +x (east) first, not north
-    bot.ram = lambda addr, pitch, yaw: True                                   # with the lock's writer: the yaw written
+    assert "rleft" in acts[0]["hold"] and "lup" not in acts[0]["hold"]       # face +x before walking east
+    writes = []
+    bot.ram = lambda *args: writes.append(args) or True                       # available to aiming, never navigation
     snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.1, "yaw": 0.0}
     for b in snap["bonuses"]:
         bot.bonus_unseen[b["ptr"]] = 1e9                                      # out of sight: walked to, not shot
     acts = run(bot, snap, clock, 1)
-    assert acts[0]["hold"] == ("lup",)
+    assert acts[0]["hold"] == ("rleft",) and writes == []                   # navigation remains a governed stick turn
+    snap["camera"]["yaw"] = math.pi / 2
+    assert run(bot, snap, clock, 1)[0]["hold"] == ("lup",)
 
 
 def test_the_bonus_run_takes_the_nearest_by_the_way_there():
@@ -1608,8 +1612,10 @@ def test_one_behind_a_wall_is_never_aimed_at_and_is_walked_to_by_the_mesh():
     snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
     acts = run(bot, snap, clock, 6)
     assert all("zl" not in a.get("hold", ()) for a in acts)                  # never aimed at the wall
-    assert writes and all(abs(w[2]) > 1.0 for w in writes)                    # the camera onto the way (east), not him
-    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "walk_nav" and "lup" in acts[-1]["hold"]
+    assert writes == [] and all("rleft" in a.get("hold", ()) for a in acts)  # governed turn east; no camera RAM snap
+    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "pursue" and "lup" not in acts[-1]["hold"]
+    snap["camera"]["yaw"] = math.pi / 2                                    # observed facing now permits movement
+    assert "lup" in run(bot, snap, clock, 1)[0]["hold"]
     snap["enemies"][0]["pos"] = (500.0, 0.0, 100.0)                           # down the corridor: in sight
     bot._sight_cache.clear()
     acts = run(bot, snap, clock, 6)
