@@ -4320,7 +4320,12 @@ function compactHover(show) {
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.('#pipmenu, #compact-media') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+// only the picture itself (the stream, the embedded game, the page behind them) leaves the PiP on a double click - never a
+// panel, a menu or a pop-up inside it (operator 2026-10-28: "If I double click or triple click inside of a panel or a pop up
+// or a menu inside of the picture in picture mode, do not exit picture in picture mode")
+const COMPACT_PANELS = '#pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
+  + '#rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
+addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
 addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
