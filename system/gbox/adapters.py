@@ -303,7 +303,8 @@ class MjpegStream:
 
     def _spawn(self):
         self.spawned = self.clock()
-        self.proc = proc = self._popen(self.argv)
+        from .cpu_affinity import fast_argv
+        self.proc = proc = self._popen(fast_argv(self.argv))
         threading.Thread(target=self._read, args=(proc,), daemon=True, name=f"mjpeg-reader-{self.label}").start()
 
     def _event(self, kind: str, **detail):
@@ -2235,7 +2236,8 @@ class StandaloneAdapter(Adapter):
         self.log_path = logs / f"{self.name}-{self.port}.log"
         env = {**os.environ, **provision.linux_audio_env(), "DISPLAY": self.display.name,
                "QT_QPA_PLATFORM": "xcb", **self.env}
-        self.proc = subprocess.Popen(argv, env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT)
+        from .cpu_affinity import fast_argv
+        self.proc = subprocess.Popen(fast_argv(argv), env=env, stdout=open(self.log_path, "wb"), stderr=subprocess.STDOUT)
         from . import memory_card_sessions
         memory_card_sessions.launched(self)
         self._p(80, f"{self.name} started; attaching the debugger")
@@ -5013,7 +5015,8 @@ class SwitchLinuxAdapter(StandaloneAdapter):
         env = {**os.environ, **provision.linux_audio_env(), "DISPLAY": self.display.name, "QT_QPA_PLATFORM": "xcb",
                **self.env}
         out = open(self.log_path, "ab") if self.log_path else subprocess.DEVNULL
-        self.proc = subprocess.Popen(argv, env=env, stdout=out, stderr=subprocess.STDOUT)
+        from .cpu_affinity import fast_argv
+        self.proc = subprocess.Popen(fast_argv(argv), env=env, stdout=out, stderr=subprocess.STDOUT)
 
     def _settle(self) -> None:
         try:
