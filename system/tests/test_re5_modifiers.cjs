@@ -508,12 +508,12 @@ test('shell binds controls to the exact currently opened session and authenticat
   assert.doesNotMatch(fs.readFileSync(require.resolve('../clients/web/viz/re5-modifiers.js'), 'utf8'), /write_memory|read_memory|Bearer|x-gbox-actor/);
 });
 
-test('time per kill defaults to ten seconds and preserves explicit historical settings', async () => {
+test('time per kill defaults to five seconds and preserves explicit historical settings', async () => {
   const row = M.DEFINITIONS.find(d => d.op === 'kill_time');
   assert.equal(row.multiplier, undefined);                     // a toggle never sends seconds, so the range is kept
   assert.match(M.html({ status: { ...BASE, kill_time_on: true } }), /3 s per kill/);
   assert.match(M.html({ status: BASE }), /data-re5-range="kill_time"[^>]*value="3"/);
-  assert.match(M.html({status:{...BASE,kill_time_range:undefined}}), /data-re5-range="kill_time"[^>]*value="10"/);
+  assert.match(M.html({status:{...BASE,kill_time_range:undefined}}), /data-re5-range="kill_time"[^>]*value="5"/);
   const status = { ...structuredClone(BASE), kill_time_on: true, kill_time_range: '10' };
   const on = M.html({ status });
   assert.match(on, /10 s per kill/);
