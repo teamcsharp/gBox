@@ -188,6 +188,25 @@ def requested_round_analysis(request) -> bool:
         return False  # Missing/offline evidence never relaxes ownership.
 
 
+def requested_damage_cluster(request) -> bool:
+    """A cause batch of RE damage incidents (gbox.mercs.damage_clusters): admitted only while the server's own cluster
+    document names this exact request and still holds incidents. A copied context or an unreachable server is not."""
+    context = request.get('context') or {}
+    cid = context.get('damage_cluster_id')
+    if (request.get('source') != 'mercs_damage_cluster' or request.get('author') != 'agent'
+            or request.get('kind') != 'report' or context.get('damage_cluster') is not True
+            or context.get('operator_requested') is not True or request.get('status') not in ('open', 'in_progress')
+            or not isinstance(cid, str) or not re.fullmatch(r'[a-f0-9]{16}', cid)):
+        return False
+    try:
+        doc = _api('/api/mercs/damage-clusters/' + cid)
+        return (doc.get('id') == cid and doc.get('request_id') == request['id']
+                and doc.get('game_id') == context.get('game_id')
+                and (doc.get('episodes') or 0) + (doc.get('deaths') or 0) > 0)
+    except Exception:
+        return False                               # missing/unreachable durable owner is not authorization
+
+
 def _verified(memo, check, request) -> bool:
     """check(request), one of the server-evidence checks above, run once per request in a tick: tick() hands sync() and
     candidates() one memo over the same request snapshot, so candidates() reuses what sync() just verified instead of
@@ -248,11 +267,13 @@ def re_games() -> set:
 
 
 def re_report(item, request, games) -> bool:
-    """An RE auto-report: a verified round analysis (damage, missed shots, aim) or a verified player-damage batch of
-    an RE Mercenaries game, still open. Spark2 takes these before anything else (operator 2026-10-27: "make sure that
-    spark2 and all it has is put toward processing any auto report tickets from RE")."""
+    """An RE auto-report: a verified round analysis (damage, missed shots, aim), a verified player-damage batch or a
+    verified damage cause batch (gbox.mercs.damage_clusters) of an RE Mercenaries game, still open. Spark2 takes these
+    before anything else (operator 2026-10-27: "make sure that spark2 and all it has is put toward processing any auto
+    report tickets from RE")."""
     return (item.get('lane') == 'inbox' and (request or {}).get('status') in ('open', 'in_progress')
-            and (item.get('round_analysis_verified') is True or item.get('damage_batch_verified') is True)
+            and (item.get('round_analysis_verified') is True or item.get('damage_batch_verified') is True
+                 or item.get('damage_cluster_verified') is True)
             and item.get('game_id') in games)
 
 
@@ -265,6 +286,10 @@ def sync(data, favorites, requests, *, now, verified=None):
     if len({g['game_id'] for g in favorites['items']}) != favorites['count']:
         raise ValueError('Duplicate favorite snapshot; dispatch deferred')
     favorite_ids = {g['game_id'] for g in favorites['items']}
+    try:
+        re_ids = re_games()
+    except Exception:  # noqa: BLE001 - no MercMode title table: no RE single is held back
+        re_ids = set()
     children = {(r.get('context') or {}).get('hermes_favorite_game'): r for r in requests
                 if (r.get('context') or {}).get('hermes_favorite_game')}
     for item in data['items'].values():
@@ -295,8 +320,22 @@ def sync(data, favorites, requests, *, now, verified=None):
         context = request.get('context') or {}
         body = str(request.get('body') or request.get('title') or '').lstrip()
         actionable = request.get('source') in ('gap', 'characters')
+        if request.get('source') == 'player_damage' and context.get('game_id') in re_ids:
+            # An RE game's per-run damage report is a member of its cause batches (gbox.mercs.damage_clusters):
+            # the batch is worked, one logic change per cause, never the single run (operator 2026-10-27 19:12)
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None:
+                old['damage_batch_verified'] = False
+                old['damage_batch_hold'] = 'batched by cause: its damage cluster batches are worked instead'
+            continue
         damage_report = _verified(verified, requested_player_damage, request)
         round_analysis = _verified(verified, requested_round_analysis, request)
+        damage_cluster = _verified(verified, requested_damage_cluster, request)
+        if request.get('source') == 'mercs_damage_cluster' and not damage_cluster:
+            old = data['items'].get('inbox:' + request['id'])
+            if old is not None:
+                old['damage_cluster_verified'] = False
+            continue                                # auto_report alone cannot forge a cause batch
         if request.get('source') == 'player_damage' and not damage_report:
             old = data['items'].get('inbox:' + request['id'])
             if old is not None:
@@ -333,7 +372,7 @@ def sync(data, favorites, requests, *, now, verified=None):
                     favorite_unlock_work=bool(context.get('favorite_default')),
                     session_observer=bool(context.get('session_observer')),
                     launch_failure=bool(context.get('launch_failure')),
-                    operator_requested=bool(context.get('replacement_requested') or damage_report),
+                    operator_requested=bool(context.get('replacement_requested') or damage_report or damage_cluster),
                     read_only=context.get('read_only') is True,
                     round_analysis_verified=round_analysis,
                     required_inference_node=context.get('required_inference_node'),
@@ -341,6 +380,8 @@ def sync(data, favorites, requests, *, now, verified=None):
                     character=context.get('character'))
         if damage_report:
             item.update(damage_batch_verified=True, damage_batch_hold='')
+        if damage_cluster:
+            item.update(damage_cluster_verified=True, signature=context.get('signature'))
     data.update(favorites_count=len(favorite_ids), synced_at=now)
 
 
@@ -485,6 +526,9 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
                   ((j.get('input') or {}).get('game') or {}).get('game_id') for j in native}
     running = [i.get('game_id') for i in data['items'].values()
                if i.get('dispatch_state') in ('queued', 'uncertain') or i.get('request_id') in owned]
+    clusters_running = [i.get('game_id') for i in data['items'].values()
+        if (i.get('dispatch_state') in ('queued','uncertain') or i.get('request_id') in owned)
+        and i.get('damage_cluster_verified')]
     analysis_running = [i.get('game_id') for i in data['items'].values()
         if (i.get('dispatch_state') in ('queued','uncertain') or i.get('request_id') in owned)
         and (i.get('round_analysis_verified') or
@@ -514,6 +558,11 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
             # spark2 at full load; one at a time left 112 reports waiting).
             shared = _verified(verified, requested_round_analysis, by_id.get(rid,{})) \
                 and analysis_running.count(item.get('game_id')) < ANALYSIS_PER_GAME
+        if item.get('damage_cluster_verified'):
+            # A cause batch edits bot code in its own worktree and starts no game: a few per game run beside the
+            # MercMode session that keeps that game busy (DAMAGE_CLUSTERS_PER_GAME).
+            shared = _verified(verified, requested_damage_cluster, by_id.get(rid, {})) \
+                and clusters_running.count(item.get('game_id')) < DAMAGE_CLUSTERS_PER_GAME
         if (rid and rid in busy_requests or item.get('retry_at', 0) > now
                 or item.get('game_id') and item['game_id'] in busy_games and not shared
                 or item.get('request_uncertain') or item.get('dispatch_state') in ('queued', 'uncertain')):
@@ -522,6 +571,10 @@ def candidates(data, requests, native, owned, on_main, *, now, verified=None):
         if (req.get('source') == 'player_damage' or 'damage_batch_verified' in item) \
                 and (item.get('damage_batch_verified') is not True or not _verified(verified, requested_player_damage, req)):
             continue                            # a later failed sync cannot leave an old eligibility proof usable
+        if (req.get('source') == 'mercs_damage_cluster' or 'damage_cluster_verified' in item) \
+                and (item.get('damage_cluster_verified') is not True
+                     or not _verified(verified, requested_damage_cluster, req)):
+            continue
         if item.get('lane') == 'inbox' and is_live_coaching(req):
             continue                                       # live coaching: the agents' inbox hook, never Hermes
         from . import hermes_result_review
@@ -618,6 +671,8 @@ PAID_NO_PROGRESS_MAX = 3         # a ticket that did not advance its checkpoint 
                                  # "Make sure that kimi isn't being burnt on requests that are failing" - #1440 at 62 attempts /
                                  # 11 no-progress runs, #1813 22 / 21, #1915 25 / 25 were still dispatched to Kimi / Z.AI every 6 h)
 ANALYSIS_PER_GAME = 12           # read-only verified round analyses running at once for one game (candidates)
+DAMAGE_CLUSTERS_PER_GAME = 3     # damage cause batches (gbox.mercs.damage_clusters) worked at once for one game
+DAMAGE_CLUSTER_SPARK2_FIRST_S = 3600   # a new cause batch waits this long for sparkDeux before a paid node may take it
 
 
 def _operator_playing():
@@ -635,8 +690,8 @@ def _operator_playing():
 def launches_emulator(item) -> bool:
     """Queue items whose agents start an emulator on this machine: the favorite runtime stage (replacement tested
     in a running game) and inbox repairs that need gameplay acceptance."""
-    if item.get('read_only') is True:
-        return False
+    if item.get('read_only') is True or item.get('damage_cluster_verified') is True:
+        return False                    # a cause batch is bot code + unit tests; the live MercMode turns measure it
     if item.get('lane') == 'favorite':
         return next_stage(item) in EMULATOR_STAGES
     return bool(item.get('repair')) and not item.get('extraction_engineering')
@@ -734,6 +789,18 @@ def _prompt(item, playing=None):
                        'reset, move, relaunch, or capture GPU draws on the operator session. Work from '
                        'owned files with REA/Ghidra and publish tested readers and reusable assets. '
                        'Keep replacement testing on a separate agent-owned session. ')
+        elif item.get('damage_cluster_verified'):
+            header += ('This is a batched RE Mercenaries damage cluster (gbox/mercs/damage_clusters.py): many observed '
+                       'hits of one game that share one cause signature. The request holds the counts, the trend per '
+                       'turn, representative examples (the fields recorded at each hit, ledger links for frames), the '
+                       'suspected bot decision and the implicated code. Make ONE logic change in that bot code that '
+                       'would prevent the most incidents of this cluster - not one change per example - with focused '
+                       'unit tests built from the example fields, and publish it as a draft PR. One change per batch; '
+                       'no unrelated fixes. Do not launch games, send input, or stop, restart, reset or swap MercMode '
+                       'sessions or gBox: the live bots measure the change after a deploy (GET '
+                       '/api/mercs/damage-clusters?game=' + str(item.get('game_id') or '') + ' lists the cluster per '
+                       'turn). Post the PR link and the effect you expect on the request, then mark it done; the batch '
+                       'reopens itself if the cause keeps coming after the fix is live. ')
         elif item.get('extraction_engineering'):
             header += ('This is offline native extraction engineering. Read the exact failed job, accepted '
                        'receipt, source selection and every failed entry on the request. Diagnose source access '
@@ -992,10 +1059,14 @@ def tick(*, now=None):
                 # going towards solving these issues I am mentioning"); nothing listed: its slot stays free this tick
                 listed = len(data.get('priority') or [])
                 choices = [v for v in choices if priority_rank(v[1], data) < listed
-                           and (v[1].get('no_progress_runs') or 0) < PAID_NO_PROGRESS_MAX]   # not the ones that keep failing
+                           and (v[1].get('no_progress_runs') or 0) < PAID_NO_PROGRESS_MAX   # not the ones that keep failing
+                           and not (v[1].get('damage_cluster_verified') and not v[1].get('last_dispatched')
+                                    and now - (v[1].get('created') or now) < DAMAGE_CLUSTER_SPARK2_FIRST_S)]
             # Spark2: every waiting RE auto-report before other work, the newest round first (the bot that played it is
             # the one running now), past the lane balance; with none waiting it takes other work, so it never idles
-            chosen = min(reports, key=lambda v: (priority_rank(v[1], data), -(v[1].get('created') or 0), v[0])) \
+            # cause batches (one change fixes many reports) before single round analyses
+            chosen = min(reports, key=lambda v: (priority_rank(v[1], data), 0 if v[1].get('damage_cluster_verified')
+                                                 else 1, -(v[1].get('created') or 0), v[0])) \
                 if reports else choose(choices, data)
             if not chosen:
                 continue
@@ -1006,7 +1077,8 @@ def tick(*, now=None):
                 # PRIORITY_PER_GAME in the same tick (operator 2026-10-24: "more RE6 tasks pumped into it")
                 game, listed = item['game_id'], {str(x) for x in data.get('priority') or []}
                 shared = lambda i: i.get('lane') == 'inbox' and not launches_emulator(i) and (
-                    i.get('request_id') in listed or i.get('round_analysis_verified') is True and i.get('game_id') in games)
+                    i.get('request_id') in listed or (i.get('round_analysis_verified') is True
+                                                      or i.get('damage_cluster_verified') is True) and i.get('game_id') in games)
                 running = sum(i.get('game_id') == game and i.get('dispatch_state') in ('queued', 'uncertain')
                               for i in data['items'].values())
                 options = [v for v in options if v[1].get('game_id') != game

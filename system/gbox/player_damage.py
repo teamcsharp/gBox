@@ -122,12 +122,16 @@ def ingest(store, sid, event, moment_provider=None, now=None, frozen_moment=None
         ref = store.put_artifact(json.dumps({"event": event, "moment": packet}, allow_nan=False).encode(),
             f"damage-{event['event_id']}-receipt.json", "application/json",
             {"session_id": sid, "damage_event_id": event["event_id"], "observed_at": event["observed_at"]})
-        store.put(KIND, eid, {"id": eid, "event_id": event["event_id"], "run_id": event["run_id"],
+        row = {"id": eid, "event_id": event["event_id"], "run_id": event["run_id"],
             "session_id": sid, "game_id": session.get("game_id"), "round_id": event["round_id"],
             "observed_at": event["observed_at"],
             "received_at": received_at, "fingerprint": fingerprint, "receipt": ref.sha256,
             "loss": event["loss"], "hp_before": event["hp_before"], "hp_after": event["hp_after"],
-            "state": "pending", "attempts": 0, "cause": "unknown", "self_damage": "unknown"})
+            "state": "pending", "attempts": 0, "cause": "unknown", "self_damage": "unknown"}
+        store.put(KIND, eid, row)
+    # Its cause-cluster incident (RE Mercenaries games only); never fails the acknowledged receipt.
+    from .mercs import damage_clusters
+    damage_clusters.record_event(store, row, event)
     return {"accepted": True, "event_id": event["event_id"], "state": "pending"}
 
 
@@ -192,7 +196,8 @@ def update_summary(store, event, rid):
         req = store.get("request", rid)
         if req is None:
             raise ValueError("damage batch request disappeared")
-        if req.get("status") == "done":
+        if req.get("status") == "done" and not (req.get("context") or {}).get("batched_into"):
+            # A run batched into cause clusters (gbox.mercs.damage_clusters) stays closed: its batches take new damage.
             req.update(status="open", completed=None)
         req["messages"] = [m for m in req.get("messages", []) if m.get("id") != summary["id"]] + [summary]
         store.put("request", rid, req)
