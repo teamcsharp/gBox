@@ -41,6 +41,7 @@ NO_CHANGE_S = 48 * 3600               # a closed batch with no bot change live t
 ROUND_MAX_S = 900.0                   # a hit belongs to its session's first round ending at most this long after it
 ROUNDS_READ = 600                     # newest Notebook rounds kept per title
 TERMINAL = ('completed', 'died')
+CODE_KINDS = ('reload', 'restart')    # the changes a batch's fix arrives by (tuning trials are judged by the tuner)
 
 # Round faults: (key, label, value(observed) -> number, a round counts as marked at >= this, rule in words)
 def _n(observed, *keys):
@@ -410,7 +411,7 @@ class Learning:
                 continue
             title = c['title']
             rounds = self.rounds(title)
-            change = next((ch for ch in self.changes(title, since=closed)), None)
+            change = next((ch for ch in self.changes(title, since=closed) if ch.get('kind') in CODE_KINDS), None)
             text, verdict_ = None, None
             if change is None:
                 if now - closed >= NO_CHANGE_S and (c.get('episodes') or 0) + (c.get('deaths') or 0) > 0:

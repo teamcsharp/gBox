@@ -678,6 +678,10 @@ class Clusters:
             from .learning import Learning
             learning = Learning(store, data_dir, now=now)
         self.learning = learning          # gbox.mercs.learning: rounds, round faults, changes and their effect
+        self.tuner = None                 # gbox.mercs.tuner: tier (a), the learned constants the bots read
+        if learning is not None and data_dir:
+            from .tuner import Tuner
+            self.tuner = Tuner(store, data_dir, learning, now=now)
         self.last = None
 
     # backfill ---------------------------------------------------------------------------------------------------------
@@ -798,9 +802,12 @@ class Clusters:
             labelled, deaths = label_all(incidents)
             changes = self.learning.track_changes(sorted({c['title'] for c in clusters.values()}
                                                          | {c['title'] for c in round_faults.values()}))
+            tuned = self.tuner.tune(labelled, deaths) if self.tuner is not None else []
             self.learning.effects(labelled, deaths)
             followed = self.learning.follow_up({**clusters, **round_faults})
-            learning = {'changes_recorded': len(changes), 'follow_ups': followed, 'round_faults': len(round_faults)}
+            learning = {'changes_recorded': len(changes), 'follow_ups': followed, 'round_faults': len(round_faults),
+                        'tuning': [{k: x.get(k) for k in ('title', 'stage', 'status', 'param', 'old', 'new')}
+                                   for x in tuned]}
         self.sync_priority()
         self.last = {'at': self.now(), 'backfilled': backfilled, 'clusters': len(clusters), 'batches': len(batches),
                      'singles_closed': linked, 'totals': totals, 'learning': learning}
@@ -1197,6 +1204,9 @@ def install(app, store, config, auth, runner=None):
         """The self-improvement loop at a glance: per title the rounds, the clusters with their rate per round and
         batch, the changes that went live and their measured effect, the learned tuning in force."""
         out = runner.learning.summary(game or None) if runner.learning is not None else {'titles': {}}
+        if runner.tuner is not None:
+            for title, entry in out.get('titles', {}).items():
+                entry['tuner'] = runner.tuner.summary(title)
         page = runner.listing(game or None, top=50)
         out.update(clusters=page['clusters'], round_faults=page.get('round_faults', []),
                    what_kills_him=page['what_kills_him'], last_pass=page['last_pass'])
