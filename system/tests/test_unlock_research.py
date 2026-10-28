@@ -20,6 +20,7 @@ def rig():
             row=body|{'id': f'{len(posts)+20:016x}', 'number':len(posts), 'status':'open', 'created': 100}
             requests.append(row);return row
         return {'/api/hermes/task-mode': {'enabled':True}, '/api/requests':requests,
+                '/api/requests?lite=1':requests,
                 '/api/favorites':{'count':len(games),'items':games}, '/api/sessions':sessions}[path]
     return state,api,lambda v:saved.append(copy.deepcopy(v)),requests,games,posts,saved
 

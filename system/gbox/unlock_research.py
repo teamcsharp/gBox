@@ -120,7 +120,7 @@ def reconcile(state, api, save, *, now=None, limit=40):
         return {'status': 'disabled'}
     if not api('/api/hermes/task-mode').get('enabled'):
         return {'status': 'paused_with_hermes'}
-    requests = api('/api/requests')
+    requests = api('/api/requests?lite=1')
     children = {(r.get('context') or {}).get(KEY): r for r in requests if (r.get('context') or {}).get(KEY)}
     games = targets(api('/api/favorites'), api('/api/sessions'), state['enabled_at'])
     parent = state.get('parent_request_id')

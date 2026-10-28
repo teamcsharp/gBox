@@ -3296,23 +3296,41 @@ $("#reqfilters").addEventListener("click", e => {
   refreshInbox();
 });
 function refreshInbox(explicit = true) { return inboxPoll(explicit); }
-// #712: the list renders the newest INBOX_PAGE.limit requests and older ones on demand: all 1,500+ requests with their
-// threads were ~59,000 DOM nodes, a 9 s first render and hundreds of eagerly loaded screenshots.
+// #4485: the inbox list renders the newest INBOX_PAGE.limit requests and older ones on demand; the full history was
+// 46 MB over Wi-Fi and the 8 s request timed out every minute. The list fetch is paged (newest N full rows); the
+// toolbar counts come from the lightweight summary endpoint (counts by status/source plus the newest N lite rows).
 const INBOX_PAGE = { limit: 40, step: 40, reuse: false };
 // An unchanged history (same ETag from the control plane) arrives as {unchanged} and the previous answer object is
 // reused: no ~8 MB copy into the page and no re-render key over it. Older main processes have no apiTagged.
 const REQUESTS_TAG = { etag: null, last: null };
 const REQUESTS = GBoxLivePoll.cachedRead(async () => {
-  if (!gbox.apiTagged) return gbox.api("/api/requests");
-  const r = await gbox.apiTagged("/api/requests", REQUESTS_TAG.etag);
+  const url = `/api/requests?limit=${INBOX_PAGE.limit}`;
+  if (!gbox.apiTagged) return gbox.api(url);
+  const r = await gbox.apiTagged(url, REQUESTS_TAG.etag);
   if (r.ok && r.unchanged && REQUESTS_TAG.last) return REQUESTS_TAG.last;
   if (!r.ok) return r;
   REQUESTS_TAG.etag = r.etag; REQUESTS_TAG.last = { ok: true, data: r.data, etag: r.etag };
   return REQUESTS_TAG.last;
 }, { ttl: 0 });
+// #4485: the summary route answers counts by status and source plus the newest N lite rows, so the toolbar badge and
+// filter buttons stay accurate without pulling the full list. Polled on its own cadence (the counts change less often
+// than the newest page's rows).
+const SUMMARY_TAG = { etag: null, last: null };
+const SUMMARY = GBoxLivePoll.cachedRead(async () => {
+  const url = "/api/requests?summary=1";
+  if (!gbox.apiTagged) return gbox.api(url);
+  const r = await gbox.apiTagged(url, SUMMARY_TAG.etag);
+  if (r.ok && r.unchanged && SUMMARY_TAG.last) return SUMMARY_TAG.last;
+  if (!r.ok) return r;
+  SUMMARY_TAG.etag = r.etag; SUMMARY_TAG.last = { ok: true, data: r.data, etag: r.etag };
+  return SUMMARY_TAG.last;
+}, { ttl: 0 });
 const inboxPoll = singleFlightPoll(async () => {
   inboxAt = Date.now();
-  const r = await REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0); INBOX_PAGE.reuse = false; if (!r.ok) return;
+  const [r, s] = await Promise.all([REQUESTS.get(INBOX_PAGE.reuse ? 120000 : 0), SUMMARY.get(0)]);
+  INBOX_PAGE.reuse = false; if (!r.ok) return;
+  // #4485: the list is paged (newest N full rows); the counts come from the summary endpoint's by_status/by_source.
+  const summaryCounts = s.ok ? s.data.counts : null;
   // #2801: standing per-game background work (kept open for the Hermes queue) is listed under Background work only
   const background = r.data.filter(GBoxInboxGroups.standing), all = r.data.filter(x => !GBoxInboxGroups.standing(x));
   const roots = all.filter(x => (!x.automated || x.context?.auto_report) && !x.parent_request_id), children = new Map();
@@ -3323,7 +3341,13 @@ const inboxPoll = singleFlightPoll(async () => {
   const hasPending = x => x.status !== "done" || (children.get(x.id) || []).some(hasPending);
   const pending = roots.filter(hasPending).length;
   $("#tb-count").textContent = pending;
-  const counts = { all: roots.length, pending, completed: roots.length - pending, background: background.filter(x => x.status !== "done").length };
+  // #4485: the filter badges prefer the summary endpoint's full-history counts; the paged list alone undercounts.
+  const totalRoots = summaryCounts ? (summaryCounts.by_status.open || 0) + (summaryCounts.by_status.in_progress || 0)
+      + (summaryCounts.by_status.done || 0) + (summaryCounts.by_status.blocked || 0) : roots.length;
+  const totalPending = summaryCounts ? (summaryCounts.by_status.open || 0) + (summaryCounts.by_status.in_progress || 0)
+      + (summaryCounts.by_status.blocked || 0) : pending;
+  const counts = { all: totalRoots, pending: totalPending, completed: totalRoots - totalPending,
+                   background: summaryCounts ? (summaryCounts.by_source.api || 0) : background.filter(x => x.status !== "done").length };
   for (const button of document.querySelectorAll("[data-request-filter]")) {
     const mode = button.dataset.requestFilter;
     button.textContent = mode === "background" ? `Background work (${counts.background} active)` : `${mode === "all" ? "All" : mode === "pending" ? "Pending" : "Completed"} (${counts[mode]})`;

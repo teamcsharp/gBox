@@ -72,7 +72,7 @@ def snapshot(report_id):
     from . import hermes_work_queue as Q
     from . import hermes_result_review
     jobs = _api('/api/jobs?limit=30')
-    requests = _api('/api/requests')
+    requests = _api('/api/requests?lite=1')
     progress = _api('/api/requests/' + report_id)
     failures = _api('/api/jobs?state=failed,rejected&limit=100')
     failures.sort(key=lambda j: j.get('tool') not in ('characters', 'rom_export', 'romexport', 'analyze_binary', 'ghidra_script'))

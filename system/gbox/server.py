@@ -6245,6 +6245,7 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/requests")
     def req_list(request: Request, status: str = "", source: str = "", group: int = 0, lite: int = 0,
+                 limit: int = 0, offset: int = 0, summary: int = 0,
                  actor=Depends(auth)):
         # The desktop inbox polls this every few seconds and it is the whole history (~8 MB, ~1 s to build). An unchanged
         # inbox answers 304 from a hash of the stored rows, without decoding, organizing or sending them (#712).
@@ -6255,10 +6256,15 @@ def create_app(config: Config) -> FastAPI:
         # body_chars. 7 MB instead of 46 MB on 2026-10-27, when the queue pump's full fetch took ~4 s of this process
         # every tick and the game streams it relays stalled. SQLite drops the threads before Python decodes, and the
         # encoded answer is kept for its ETag, so an unchanged inbox is answered from memory too.
+        # limit/offset (#4485): the desktop inbox renders the newest N and loads older on demand; a paged fetch
+        # avoids the 46 MB download over Wi-Fi that timed out the 8 s request every minute.
+        # summary=1 (#4485): counts by status and source plus the newest N lite rows, so the app's status bar
+        # and badge polls stay light without pulling the full list.
         import hashlib
         from fastapi.responses import JSONResponse
         digest = store.digest("request")
-        tag = f'"{digest}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "") + ("|lite" if lite else "")).encode()).hexdigest()[:8]}"'
+        tag = f'"{digest}:{hashlib.sha1((f"{status}|{source}" + (f"|group" if group else "") + ("|lite" if lite else "")
+            + (f"|limit{limit}" if limit else "") + (f"|offset{offset}" if offset else "") + ("|summary" if summary else "")).encode()).hexdigest()[:8]}"'
         if request.headers.get("if-none-match") == tag:
             return Response(status_code=304, headers={"etag": tag})
         from . import inbox
@@ -6266,13 +6272,25 @@ def create_app(config: Config) -> FastAPI:
         def listing(docs):
             rs = [r for r in inbox.organize(docs) if (not status or r["status"] in status.split(",")) and (not source or r["source"] == source)]
             return sorted(rs, key=lambda r: r["created"], reverse=True)
+        if summary:
+            rows = listing(store.all("request", without=inbox.LITE_DROPPED))
+            counts = {"by_status": {}, "by_source": {}}
+            for r in rows:
+                counts["by_status"][r["status"]] = counts["by_status"].get(r["status"], 0) + 1
+                counts["by_source"][r["source"]] = counts["by_source"].get(r["source"], 0) + 1
+            newest = [inbox.lite(r) for r in rows[:limit or 40]]
+            return JSONResponse(_clean({"counts": counts, "newest": newest, "total": len(rows)}), headers={"etag": tag})
         if not lite:
             rs = listing(store.all("request"))
+            if limit:
+                rs = rs[offset:offset + limit]
             return JSONResponse(_clean(inbox.grouped(rs) if group else rs), headers={"etag": tag})
         with lite_lock:                                    # one build per change, however many callers ask at once
             body = lite_answers.get(tag)
             if body is None:
                 rs = [inbox.lite(r) for r in listing(store.all("request", without=inbox.LITE_DROPPED))]
+                if limit:
+                    rs = rs[offset:offset + limit]
                 body = JSONResponse(_clean(inbox.grouped(rs) if group else rs)).body
                 for old in [t for t in lite_answers if not t.startswith(f'"{digest}:')]:
                     del lite_answers[old]                  # answers for an older inbox
