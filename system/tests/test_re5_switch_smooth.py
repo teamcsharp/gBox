@@ -13,6 +13,7 @@ from gbox.mercs.titles import re5_switch as R
 @pytest.fixture(autouse=True)
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
+    monkeypatch.setattr(R, "CROWD_FIRE", False)   # (these test the paths under the crowd fire; tests/test_re5_switch_crowd.py)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     monkeypatch.setattr(R, "SMOOTH", True)                      # these test the smoothing (off by default since 13:00)
 
