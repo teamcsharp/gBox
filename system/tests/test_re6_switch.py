@@ -1451,7 +1451,7 @@ def test_a_grabs_b_prompt_counts_the_holds_own_b_presses():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
     snap["prompts"] = [{"type": 18, "button": 17, "pad": 0x4000, "key": "b", "ab": 0x6000}]
     acts = run(bot, snap, clock, 3)
-    assert any("b" in a.get("hold", ()) for a in acts) and bot.stats["act"] == "break_free"
+    assert any("b" in a.get("hold", ()) for a in acts) and bot.stats["act"] in ("break_free", "held_prompt")
     snap["prompts"] = []
     run(bot, snap, clock, 1)
     assert bot.stats["prompts_seen"] == 1 and bot.stats["prompts_taken"] == 1 and bot.stats["climbs"] == 0
@@ -3032,3 +3032,20 @@ def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(m
     snap2["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={0x115: (11, 5)})
     run(bot2, snap2, clock2, 1)
     assert bot2.stats["bomb_drops"] == 0
+
+
+def test_a_hold_presses_the_prompts_own_button():
+    """2026-10-28: a J'avo's knife ring failed - in a hold only B and the stick were tried; the shown prompt's button is
+    pressed and let go tick by tick, the stick rotated for a stick prompt."""
+    bot = R.Bot.__new__(R.Bot)
+    bot.stats, bot.wiggle = {}, 0
+    bot._go = lambda doing, act, out, why: out
+    bot._prompt_pressed = lambda key, now: None
+    bot._prompt_shown = [{"key": "r", "ab": 1, "type": 3}]
+    outs = [bot._held_prompt(0.0) for _ in range(4)]
+    assert ("r",) in [o["hold"] for o in outs] and () in [o["hold"] for o in outs]
+    bot._prompt_shown = [{"key": "stick", "ab": 1, "type": 9}]
+    out = bot._held_prompt(0.0)
+    assert out["hold"] and "b" not in out["hold"]
+    bot._prompt_shown = []
+    assert bot._held_prompt(0.0) is None and bot.stats["held_prompt_presses"] == 5
