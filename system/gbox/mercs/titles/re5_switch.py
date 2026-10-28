@@ -2524,11 +2524,16 @@ class Bot:
         if kind == "pickup":
             return False                                # unlimited ammo/items: ordinary pickups never interrupt play
         if kind == "traverse":
-            # doors, ledges, ladders: taken whenever they show (operator 2026-10-28, a door's "Y Open" ignored: "the bot
-            # fails to respond to key commands"), unless a Majini is on him (the fight first)
+            # doors, ledges, ladders and a Majini's melee prompt next to him ("Y Kick"): always taken (operator
+            # 2026-10-28: "they need to handle and resolve any QTE events that ever pop up. So if an enemy says that they
+            # need to be kicked, they need to press Y and do that event. No matter what automatically, always.")
+            return True
+        if kind == "other":                             # any other prompt with a Majini at arm's length: his finisher
+            pr = snap.get("prompt") or {}
             px, py, pz = p["pos"]
-            return not any((e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PROMPT_CLEAR_R
-                           and abs(e["pos"][1] - py) <= LEVEL_DY for e in snap.get("enemies") or ())
+            return pr.get("label") != re5_switch_prompt.LABEL_PLACE and any(
+                (e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PROMPT_CLEAR_R
+                and abs(e["pos"][1] - py) <= LEVEL_DY for e in snap.get("enemies") or ())
         return False
 
     def _prompt(self, p, snap, now):
