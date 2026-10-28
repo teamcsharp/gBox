@@ -232,6 +232,24 @@ def test_real_incident_fixtures_replay_deterministically(name):
         fx['cluster']['signature']
 
 
+def test_crowd_gun_down_fixture_fights_instead_of_escaping():
+    """#5078: 4+ within 2 m with the gun lowered — the bot escapes (gun down) instead of crowd-firing.
+
+    The fix: _escape returns None when 4+ enemies are within 2 m, so the decision falls through to
+    _rampage (CROWD_FIRE) which keeps the gun up and firing until the circle is clear.
+    """
+    fx = json.loads((FIXTURES / 're5_switch_crowd_gun_down.json').read_text())
+    result = incident_replay.replay(fx, ticks=15)
+    keys = incident_replay.keys(result)
+    # The gun must come up and fire (zl + zr), not stay down through an escape
+    assert 'zl' in keys, f'gun never raised: {[t["doing"] for t in result["ticks"]]}'
+    assert 'zr' in keys, f'never fired: {[t["doing"] for t in result["ticks"]]}'
+    # The bot should reach crowd fire, not stay in escape
+    doings = [t['doing'] for t in result['ticks']]
+    assert 'fire' in doings, f'never reached crowd fire: {doings}'
+    assert 'escape' not in doings, f'escaped instead of fighting: {doings}'
+
+
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})

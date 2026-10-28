@@ -2979,6 +2979,9 @@ class Bot:
 
     def _escape(self, p, live, flat, now) -> dict | None:
         """A ring (RING_*): run out through the widest gap between their bearings; None when not ringed."""
+        # 4+ within 2 m: the crowd fire keeps the gun up; escaping lowers it into the cluster (#5078)
+        if CROWD_FIRE and sum(1 for e in live if flat(e) <= 200.0) >= 4:
+            return None
         if self.escape is not None:
             out, until = self.escape
             if now < until:
