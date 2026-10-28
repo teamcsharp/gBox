@@ -113,7 +113,8 @@ def test_the_regular_aim_holds_no_stick_in_the_shot_motion():
     assert "rleft" in act["hold"]
 
 
-def test_one_behind_while_another_is_in_front_sweeps_two_in_front_do_not():
+def test_one_behind_while_another_is_in_front_sweeps_two_in_front_do_not(monkeypatch):
+    monkeypatch.setattr(R, "QUICK_TURN", False)                   # (the one behind is nearer: else the quick turn)
     b, clock = bot()
     b.tick(snap([at(250, 0), at(200, 170)]))
     assert b.doing == "sweep"
@@ -162,7 +163,7 @@ def test_the_circle_clear_ends_the_sweep_counts_it_and_he_moves_on():
     clock[0] = 2.5
     act = b.tick(snap(far, kills=6, motion=26))
     assert b.stats["sweep_clears"] == 1 and b.stats["crowd_cleared_s"] == 2.0 and b.stats["sweep_kills"] == 3
-    assert b.doing == "relocate" and b.stats["relocations"] == 1
+    assert b.doing in ("relocate", "quick_turn") and b.stats["relocations"] == 1
     assert "ldown" in act["hold"] or {"lup", "b"} <= set(act["hold"])
 
 
@@ -192,7 +193,7 @@ def test_no_spot_held_past_the_dwell_limit_with_majini_about_he_goes_back_along_
     clock[0] = 7.1
     act = b.tick(snap(foes))
     assert b.stats["relocations"] == 1
-    assert b.doing == "relocate" and "ldown" in act["hold"] and b.quick == 0   # the way out behind him: backing toward it, turning
+    assert b.doing == "quick_turn" and act["hold"] == ("ldown",) and b.quick == 2   # the way out behind him: the quick turn
     assert abs(abs(math.degrees(b._reloc["head"])) - 180) < 1 and b._reloc["goal"] == (0.0, 0.0, -1000.0)
 
 
@@ -338,8 +339,35 @@ def test_a_heading_turning_faster_than_the_governor_releases_the_turn_stick(monk
     assert b.stats["gov_drops"] == 1
 
 
-def test_no_quick_turn_for_one_behind_the_body_turns_by_the_stick():
+def test_one_close_behind_gets_the_quick_turn_exempt_from_the_governor():
     b, clock = bot()
     act = b.tick(snap([at(200, 170)]))
-    assert b.quick == 0 and act["hold"] != ("ldown",) and {"rleft", "rright"} & set(act["hold"])
+    assert act["hold"] == ("ldown",) and b.quick == 2 and b.stats["behind_turns"] == 1 and b.doing == "quick_turn"
+    clock[0] = 0.05
+    assert b.tick(snap([at(200, 170)], rot=math.radians(60)))["hold"] == ("ldown", "b")   # the game's 180 under way
+    clock[0] = 0.1
+    b.tick(snap([at(200, 170)], rot=math.radians(150)))
+    assert b.stats["gov_drops"] == 0
+
+
+def test_the_trigger_is_let_go_before_a_quick_turn_never_in_the_shot_motion():
+    b, clock = bot()
+    b.aim_since, b.fire_down = 0.0, True
+    act = b.tick(snap([at(200, 170)], motion=29))
+    assert "zr" not in act["hold"] and b.quick == 0 and b.doing == "quick_turn"
+    clock[0] = 0.1
+    act = b.tick(snap([at(200, 170)], motion=26))
+    assert act["hold"] == ("ldown",) and b.quick == 2
+
+
+def test_no_quick_turn_with_one_nearer_in_front_and_no_back_and_forth():
+    b, clock = bot()
+    b.tick(snap([at(150, 0), at(250, 170)]))
     assert b.stats["quick_turns"] == 0
+    b2, clock2 = bot()
+    b2.tick(snap([at(250, 170)]))
+    assert b2.stats["quick_turns"] == 1
+    for k in range(1, 30):                                         # the turn plays; then one behind again at 2.5 m
+        clock2[0] = 0.08 * k
+        b2.tick(snap([at(250, 170)]))
+    assert b2.stats["quick_turns"] == 1                            # within QUICK_BACK_S: no turning back
