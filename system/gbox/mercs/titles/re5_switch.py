@@ -435,10 +435,10 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # shotgun): the rampage's path, front-facing and calm. CROWD_FIRE_N or more on his level within RAMPAGE_R, or one
 # within CROWD_FIRE_CLOSE_R: the shotgun (else the magnum) comes up by its D-pad slot, the gun stays up while anyone is
 # within RAMPAGE_R (never an unaim there), the target the nearest in front (within CROWD_FRONT of his facing), else the
-# nearest, held until it dies or leaves; the trigger only with the aim on a Majini (the dot, the ray through one, point
-# blank, or the target inside CROWD_CONE: the shotgun's spread), the aim turned to the target by the stick between shots
-# only (never in the shot motion: fire_rate's time scale) and its pitch held on a chest (P_AIM_PITCH,
-# SWEEP_PITCH_BAND); no quick turn (QUICK_TURN off), the heading governor over all. Counters: crowd_fire_s,
+# nearest, held until it dies or leaves; the trigger only with the aim on a Majini (the dot, the ray through one,
+# or a shotgun's three-dimensional CROWD_CONE reaching him), the aim turned toward the target's
+# chest between shots only (never in the shot motion: fire_rate's time scale). A horizontal bearing alone cannot confirm
+# a shot: the dot can be on the ground or a wall. The heading and shot-tail governors apply. Counters: crowd_fire_s,
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
@@ -498,7 +498,7 @@ GOV_COUNTERS = ("gov_drops",)
 #   enemy   one a Majini owns or names (Break free, a dodge, a finisher) or a stick QTE: always (not kind 0 alone: the
 #           start's box, uOm088a, is a kind 0 press:y too)
 #   dying   Resuscitate (label 55): always            bonus   the hourglass (label 112): always
-#   pickup  Pick up (label 1): with nobody within PICKUP_CLEAR_R and none of his bombs within MINE_CLEAR_R
+#   pickup  Pick up (label 1): skipped; the operator uses unlimited ammo and items
 #   traverse  a stage spot's action (TRAVERSE_LABELS, or another of his own press:y): only on the way to a statue or a
 #           pursued Majini off his level (no blind Y: #1370's presses wait for the prompt now); each spot logged
 #   (never the bomb's Place, label 100: the mines module's; never kind 3's area pickups: ammo is infinite)
@@ -1788,6 +1788,22 @@ class Bot:
                     return s_, fam
         return best
 
+    @staticmethod
+    def _crowd_hit(origin, dot, foot, spread=False):
+        """A live shot reaches a body; only a shotgun gets its full 3-D spread cone."""
+        if dot_on(dot, foot):
+            return True
+        chest = (foot[0], foot[1] + CHEST_H, foot[2])
+        reach, distance = math.dist(origin, dot), math.dist(origin, chest)
+        if reach < 1.0 or distance < 1.0 or reach < distance - WALL_SLACK:
+            return False                            # the laser stopped on geometry before him
+        if through(origin, dot, foot):
+            return True
+        if not spread:
+            return False
+        cosine = sum((dot[k] - origin[k]) * (chest[k] - origin[k]) for k in range(3)) / (reach * distance)
+        return math.acos(max(-1.0, min(1.0, cosine))) <= CROWD_CONE
+
     def _rampage(self, p, live, flat, snap, now):
         """Anyone on his level within RAMPAGE_R: the gun up, the trigger down, the nearest inside held (above)."""
         px, py, pz = p["pos"]
@@ -1830,15 +1846,17 @@ class Bot:
         elif type(kills) is int and r["kills0"] is None:
             r["kills0"] = kills
         # the target: the one held while inside and alive; a grab-range one takes over; one change per RAMPAGE_RETARGET_S
-        cur = next((e for e in ring if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
-        nearest = min(ring, key=flat)
+        candidates = ([e for e in ring if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) <= now] or ring) \
+            if crowd else ring
+        cur = next((e for e in candidates if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        nearest = min(candidates, key=flat)
         if crowd:                                        # the nearest in front first: one direction at a time
-            front = [e for e in ring if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= CROWD_FRONT]
+            front = [e for e in candidates if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= CROWD_FRONT]
             near_front = min(front, key=flat) if front else None
             if near_front is not None and flat(near_front) < 2.0 * flat(nearest) + 100.0:
                 nearest = near_front
         tgt = cur
-        wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in ring) else None
+        wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in candidates) else None
         if wu is not None and wu is not cur:             # winding up: him first, at once
             tgt, r["retarget_at"] = wu, now
             self.stats["windup_picks"] += 1
@@ -1846,6 +1864,8 @@ class Bot:
             if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
                 tgt = nearest
                 r["retarget_at"] = now
+        elif crowd and near_front is not None and cur not in front and now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
+            tgt, r["retarget_at"] = near_front, now   # do not hold a departed rear target while threats face the gun
         key = tgt.get("ptr", tgt.get("slot"))
         if key != self.target:
             self._set_target(key, now)
@@ -1879,13 +1899,28 @@ class Bot:
             self._lower_pitch, self._first_ray = self._ray_pitch, True
             self._first_check, self._raise_is_reroll, self._reroll_next = False, True, False
         lz = snap.get("laser") or {}
+        ready = now - self.aim_since >= READY_S
+        if crowd and ready:
+            if lz.get("up") and lz.get("from") and lz.get("at"):
+                self.last_ray, self.ray_seen = (tuple(lz["from"]), tuple(lz["at"])), now
+                r["ray_pose"] = (tuple(p["pos"]), p["rot"])
+            elif self.last_ray is not None and self.ray_seen is not None and p.get("motion") in MOTION_AIM \
+                    and now - self.ray_seen <= FLICKER_S and r.get("ray_pose") is not None \
+                    and math.dist(p["pos"], r["ray_pose"][0]) <= WALL_SLACK \
+                    and abs(wrap(p["rot"] - r["ray_pose"][1])) <= AIM_TOL \
+                    and (not lz.get("from") or not any(lz["from"])
+                         or math.dist(lz["from"], self.last_ray[0]) <= WALL_SLACK):
+                lz = {"up": True, "from": self.last_ray[0], "at": self.last_ray[1]}
         keys = {"zl"}
         aim_off = abs(body_err)
+        pitch_err = None
+        ray_len = None
         weapon = f"0x{held['item']:03x}" if held else "gun"
         if lz.get("up") and lz.get("from") and lz.get("at"):
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
             chest = (tgt["pos"][0], tgt["pos"][1] + CHEST_H, tgt["pos"][2])
             yaw_err, pitch_err = ray_error(origin, dot, chest)
+            ray_len = math.dist(origin, dot)
             aim_off = abs(yaw_err)
             where = dot_on(dot, tgt["pos"])
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": yaw_err, "where": where,
@@ -1893,26 +1928,50 @@ class Bot:
                             "class": tgt.get("class"), "foot": tuple(tgt["pos"]), "hp_max": tgt.get("hp_max"),
                             "item": held.get("item") if held else None, "shooter": tuple(p["pos"]),
                             "gate": "rampage" + (f": dot on {where}" if where else "")}
-            keys |= self._yaw(yaw_err)
-            if not crowd and dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
-                keys |= self._pitch(pitch_err)
-            on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
-                dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
+            if crowd:
+                spread = self._rampage_gun([held] if held else [])[1] == "shotgun"
+                on = ready and any(self._crowd_hit(origin, dot, e["pos"], spread) for e in ring)
+                blocked = (ready and not on and ray_len >= POINT_BLANK_RAY
+                           and ray_len < math.dist(origin, chest) - FIRE_SLACK
+                           and abs(yaw_err) <= CROWD_CONE and abs(pitch_err) <= CROWD_CONE)
+                wall = r.get("wall")
+                if blocked:
+                    if wall is None or wall[0] != key:
+                        r["wall"] = (key, now)
+                    elif now - wall[1] >= WALL_DROP_S:
+                        self.blocked[key] = now + WALL_BLOCK_S
+                        self.stats["wall_blocks"] += 1
+                        r["wall"] = None               # another nearby threat on the next tick, gun still raised
+                else:
+                    r["wall"] = None
+                if not on:
+                    keys |= self._yaw(yaw_err)
+            else:
+                keys |= self._yaw(yaw_err)
+                if dist >= CLOSE_PITCH_R and ray_len >= STEER_RAY_CM:
+                    keys |= self._pitch(pitch_err)
+                on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
+                    dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
         else:
+            if crowd:
+                r["wall"] = None                        # missing aim evidence does not extend a wall observation
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": body_err, "where": None,
                             "laserless": True, "weapon": weapon, "gate": "rampage: the gun coming up"}
             keys |= self._yaw(body_err)
-            on = abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
-        if dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
+            on = not crowd and abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
+        ap = p.get("aim_pitch")
+        want_pitch = math.atan2(tgt["pos"][1] + CHEST_H - py - MUZZLE_H, max(dist, 1.0))
+        if not crowd and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
             on = True                                    # point blank in front: on him
         if crowd:
             self.stats["crowd_fire_s"] = round(self.stats["crowd_fire_s"] + dt, 2)
-            ap = p.get("aim_pitch")
-            if ap is not None and now - self.aim_since >= READY_S:   # the aim's own pitch on a chest, never the sky
-                if ap < SWEEP_PITCH_BAND[0]:
-                    keys.add("rdown")
-                elif ap > SWEEP_PITCH_BAND[1]:
-                    keys.add("rup")
+            if ready and not on:
+                # Close muzzle/dot geometry is unreliable. The game's own aim pitch has the opposite sign; target
+                # his actual chest elevation, not a fixed band that admits shots into the ground several metres away.
+                if ap is not None and (dist < CLOSE_PITCH_R or ray_len is None or ray_len < STEER_RAY_CM):
+                    keys |= self._pitch(want_pitch + ap)
+                elif pitch_err is not None and ray_len >= STEER_RAY_CM:
+                    keys |= self._pitch(pitch_err)
             if p.get("motion") == MOTION_SHOT:           # the shot plays at fire_rate's time scale: no stick in it
                 if keys & {"rleft", "rright", "rup", "rdown"}:
                     self.stats["shot_stick_drops"] += 1
@@ -2439,14 +2498,8 @@ class Bot:
     def _prompt_wanted(self, kind, p, snap) -> bool:
         if kind in ("enemy", "dying", "bonus"):
             return True
-        px, py, pz = p["pos"]
         if kind == "pickup":
-            near = any((e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PICKUP_CLEAR_R
-                       and abs(e["pos"][1] - py) <= MAX_DY for e in snap.get("enemies") or ())
-            mine = any(math.hypot(g["pos"][0] - px, g["pos"][2] - pz) <= MINE_CLEAR_R
-                       for g in snap.get("ground_mines") or ())
-            busy = self.healing is not None or self.escape is not None                 or (self.mines is not None and self.mines.state != "idle")
-            return not (near or mine or busy)
+            return False                                # unlimited ammo/items: ordinary pickups never interrupt play
         if kind == "traverse":
             return self._goal_dy is not None and abs(self._goal_dy) > LEVEL_DY
         return False
