@@ -337,7 +337,13 @@ CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # unaims_in_5m (target 0), behind_turns, offscreen_aim_s (the aim over OFFSCREEN_ERR off the nearest inside, target 0),
 # whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
 RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = False, 500.0, 0.6, math.radians(100)
-RAMPAGE_FAMILIES = ("shotgun", "magnum")
+RAMPAGE_FAMILIES = ("shotgun", "automatic", "magnum")   # the crowd's gun: a shotgun, else the Gatling / AK-74 / an
+                                         # SMG (re5_weapons "automatic", #1395's loadouts), else a magnum
+# Near focus (operator 20:2x: "Stop having the bot worry about enemies that are far away whenever they're surrounded by
+# people that are nearby"): with a Majini on his level within RAMPAGE_R, no target, dot switch, confirmed shot, aim line
+# pick or combo kill beyond NEAR_FOCUS_R - the fight's pool is the near ones. far_picks_while_crowded: ticks aimed at
+# one beyond it anyway (target 0).
+NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # Crowd fire (operator 19:25: "completely surrounded with threats that they were unable to dispatch. They should have
 # pulled out their shotgun and did crowd control"; 19:5x: "give the bot rapid fire shotguns for crowd control ... this
 # bot is swarmed and is barely shooting"; live 19:50 / 19:53: unaims_in_5m 32 / 53, behind_threat_s 39 / 64, no
@@ -489,7 +495,8 @@ PURSUIT_COUNTERS = ("pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuc
 CROWD_MOVES, CROWD_N, CROWD_R, CROWD_BURST_S, CROWD_MOVE_S, CROWD_GAP_S = True, 3, 600.0, 1.2, 0.5, 2.5
 CROWD_COUNTERS = ("crowd_moves",)
 SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
-THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
+THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "far_picks_while_crowded",
+                   "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
                    "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS + AIMFAULT_COUNTERS + PURSUIT_COUNTERS \
     + CROWD_COUNTERS
@@ -1221,6 +1228,7 @@ class Bot:
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
+        self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -2822,6 +2830,10 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
+        crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
+        if crowded:                                      # someone near: the far ones are no concern now
+            live = [e for e in live if flat(e) <= NEAR_FOCUS_R] or live
+        self._crowded = crowded
         act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first (off)
         if act is not None:
             return act
@@ -3021,9 +3033,11 @@ class Bot:
         self._pitch_up(origin, dot, chest, tgt, dist, now)
         if self._threat_now and dist > THREAT_CAP_R:
             self.stats["far_aim_ticks"] += 1                 # (none expected: every path above is capped)
+        if self._crowded and dist > NEAR_FOCUS_R:
+            self.stats["far_picks_while_crowded"] += 1       # (target 0: the pool above is the near ones)
         ray_len, chest_len = math.dist(origin, dot), math.dist(origin, chest)
         dot_e = next((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
-                      and dot_on(dot, e["pos"])), None)
+                      and dot_on(dot, e["pos"]) and not (self._crowded and flat(e) > NEAR_FOCUS_R)), None)
         if on and where is None and not point_blank and ray_len < chest_len - WALL_SLACK and dot_e is None:
             on = False                                   # the ray ends on something short of him: no shot
             if self._wall_since is None:
