@@ -194,6 +194,9 @@ def create_app(config: Config) -> FastAPI:
     reviewer.routes(app, config, auth)
     from .mercs import round_reports
     round_reports.install(app, store, config, auth)
+    # RE damage incidents by cause -> one batch request per cause per game (GET /api/mercs/damage-clusters)
+    from .mercs import damage_clusters
+    damage_clusters.install(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
