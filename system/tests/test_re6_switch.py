@@ -3055,14 +3055,16 @@ def test_a_hold_presses_the_prompts_own_button():
     bot.stats, bot.wiggle = {}, 0
     bot._go = lambda doing, act, out, why: out
     bot._prompt_pressed = lambda key, now: None
-    bot._prompt_shown = [{"key": "r", "ab": 1, "type": 3}]
+    bot._prompt_shown = [{"key": "b", "ab": 1, "type": 3}]
     outs = [bot._held_prompt(0.0) for _ in range(4)]
     holds = [o["hold"] for o in outs]
-    assert any("r" in h for h in holds) and any("r" not in h for h in holds)   # mashed: pressed and let go
-    assert all(set(h) - {"r"} for h in holds)                                  # the stick worked every tick too
+    assert any("b" in h for h in holds) and any("b" not in h for h in holds)   # mashed: pressed and let go
+    assert all(set(h) - {"b"} for h in holds)                                  # the stick worked every tick too
     bot._prompt_shown = [{"key": "stick", "ab": 1, "type": 9}]
     out = bot._held_prompt(0.0)
     assert out["hold"] and "b" not in out["hold"]
+    bot._prompt_shown = [{"key": "r", "ab": 1, "type": 3}]                        # the heal hint: never pressed in a hold
+    assert bot._held_prompt(0.0) is None
     bot._prompt_shown = []
     assert bot._held_prompt(0.0) is None and bot.stats["held_prompt_presses"] == 5
 
