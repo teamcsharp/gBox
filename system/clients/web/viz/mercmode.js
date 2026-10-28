@@ -266,6 +266,40 @@
     return {show:true,phase:run.phase,title:run.title||'',progress:Math.round(progress),
       text:`Loading ${run.title||'the next title'}…`,sub:'MercMode is switching titles; the next game boots in the background.'};
   }
+  // --- "pip mode" on a PC whose own MercMode / autoplay runs locally (operator 2026-10-27, i9-NUC: "on the i9 nuc replace
+  // the stream in the pip with the mercenaries 3d playing as an instance in the pip window"; "in the pip, I want mercenaries
+  // 3d looping in the window going through rounds showing the bot"): the PiP shows this PC's own game window, follows its
+  // run through every title switch, and goes back to the game it showed before (the Spark's stream) when the local run
+  // stops. A dispatch with "Show in PiP on that PC" (hosts[].dispatch.pip) also opens a closed PiP for it, once.
+  //   host: this PC's row from its own scheduler's GET /api/mercmode
+  //   view: {shown: the PiP's session or null, running: that session still runs, last: what this follower put in the PiP,
+  //          away: the operator moved the PiP off this PC's run, handled / closed: dispatch ids already acted on}
+  //   -> {action: none | wait | enter | follow | away | closed | return | restore, sid?, from?, id?, remember?}
+  // Never over this PC's own other game (the operator playing here); the operator's choice of another game or a closed
+  // PiP stands until this PC's MercMode stops or a new dispatch comes.
+  function pipOwnRun(host,view={}){
+    const run=host?.current_run||null,shown=view.shown||null;
+    const sid=run?.session_id&&run.phase==='playing'&&!run.handover?run.session_id:null;
+    const d=host?.dispatch||null,wants=!!(d?.pip&&d.id&&['start','switch'].includes(d.command)&&!d.lapsed);
+    if(!sid){
+      // this PC's run stopped (not between titles): the PiP goes back to what it showed before, or gives the window back
+      if(!run&&shown&&shown===view.last&&!view.running)return {action:view.returnTo?'return':'restore',from:shown};
+      return {action:run?'wait':'none'};
+    }
+    if(shown===sid)return {action:'none'};
+    if(view.away)return {action:'none'};
+    if(view.last===sid)return {action:shown?'away':'closed',id:d?.id};      // moved off it / closed while it plays: by the operator
+    if(!shown){
+      if(wants&&view.handled!==d.id&&view.closed!==d.id)return {action:'enter',sid,id:d.id};
+      return {action:'none'};
+    }
+    // the PiP shows another game: another PC's (the Spark's stream) or one of this PC's MercMode games (the title before,
+    // a parked one, the one this follower showed) moves to this PC's current game; this PC's own other game stays
+    const here=!!host.id&&String(shown).startsWith(host.id+'-');
+    const ours=shown===view.last||shown===run.mercmode_predecessor?.session_id||(host.warm||[]).some(w=>w?.session_id===shown);
+    if(ours||!here)return {action:'follow',from:shown,sid,id:d?.id,remember:!here&&!ours};
+    return {action:'none'};
+  }
   return {render,mount,stay,hostFor,menuHTML,menuAction,transition,queueHTML,queueAction,formOptions,readForm,wireQueue,describe,
-    STALEMATE,stalemateSeconds};
+    STALEMATE,stalemateSeconds,pipOwnRun};
 });

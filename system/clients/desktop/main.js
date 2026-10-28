@@ -391,6 +391,21 @@ function pickHoldReleaseAll(why) {
 ipcMain.handle("api", async (_e, p, body, method) => { const authority=settings().apiUrl;
   try { pickHoldTrack(p, body); return { ok: true, authority, data: await api(p, body, method) }; }
   catch (e) { return { ok: false, authority, error: e.message }; } });
+// This PC's own scheduler, whichever library the window uses (operator 2026-10-27, i9-NUC: "replace the stream in the pip
+// with the mercenaries 3d playing as an instance in the pip window"): the PiP reads this PC's own MercMode / autoplay run
+// from its local control plane and shows that game's own window instead of another PC's stream. One read-only GET.
+ipcMain.handle("mercmode:local", async () => {
+  try {
+    if (!connection) return { ok: false, error: "This PC's gBox is starting." };
+    const url = connection.snapshot().localUrl;
+    if (!connection.ready(url)) return { ok: false, authority: url, error: "This PC's gBox is starting or reconnecting." };
+    const t = await connection.token(url);
+    if (!t) return { ok: false, authority: url, error: "This PC's API credential is not available yet." };
+    const r = await fetch(url + "/api/mercmode", { headers: { authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return { ok: false, authority: url, error: `${r.status} ${(await r.text()).slice(0, 200)}` };
+    return { ok: true, authority: url, data: await r.json() };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
 // a GET whose answer the renderer already holds (same tag) comes back without the data: no copy into the page either
 ipcMain.handle("api:tagged", async (_e, p, have) => {
   try {

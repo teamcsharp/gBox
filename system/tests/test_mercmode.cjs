@@ -175,3 +175,58 @@ test('play with bot: the team role, Player 2 by an in-place restart, then the au
  const failing=async(path,body)=>path==='/api/jobs'?{id:'x',state:'failed',error:'no pad'}:{};
  await assert.rejects(M.menuAction(failing,{name:'lilspark'},'play_with_bot',{session_id:'w1-sw',game_id:'52d15709be0fda1a'}),/mercs_team: no pad/);
 });
+// "pip mode" (operator 2026-10-27, i9-NUC: "replace the stream in the pip with the mercenaries 3d playing as an instance in
+// the pip window"): this PC's own MercMode run in its PiP as its own window, through title switches, back to the stream after
+const i9={name:'i9-NUC',id:'i9',settings:{enabled:true,titles:['merc3d']},
+ current_run:{phase:'playing',session_id:'i9-merc',title:'Resident Evil: The Mercenaries 3D',mercmode:{title:'merc3d'}}};
+test('pip mode: the Spark stream in the PiP gives way to this PC\'s own MercMode game, and comes back when it stops',()=>{
+ // the PiP shows the Spark's MercMode stream: it moves to this PC's own game and remembers the stream
+ assert.deepEqual(M.pipOwnRun(i9,{shown:'spark-re6',running:true}),{action:'follow',from:'spark-re6',sid:'i9-merc',id:undefined,remember:true});
+ assert.deepEqual(M.pipOwnRun(i9,{shown:'i9-merc',last:'i9-merc'}),{action:'none'});
+ // a cold title switch: the old window closed, the next title is still launching - the PiP waits (embedTick holds it)
+ const launching={...i9,current_run:{phase:'launching',title:'Resident Evil 5'}};
+ assert.equal(M.pipOwnRun(launching,{shown:'i9-merc',last:'i9-merc',running:false}).action,'wait');
+ // ...and follows the next title once it plays (also from a parked warm game or the title before)
+ const next={...i9,current_run:{phase:'playing',session_id:'i9-re5',mercmode:{title:'re5'},mercmode_predecessor:{session_id:'i9-merc'}}};
+ assert.deepEqual(M.pipOwnRun(next,{shown:'i9-merc',last:'i9-merc',running:false}),{action:'follow',from:'i9-merc',sid:'i9-re5',id:undefined,remember:false});
+ assert.equal(M.pipOwnRun({...next,warm:[{session_id:'i9-parked'}]},{shown:'i9-parked'}).action,'follow');
+ // the local run stops: back to the stream it replaced, or the window comes back when there was none
+ const stopped={...i9,current_run:null};
+ assert.deepEqual(M.pipOwnRun(stopped,{shown:'i9-re5',last:'i9-re5',running:false,returnTo:{sid:'spark-re6'}}),{action:'return',from:'i9-re5'});
+ assert.deepEqual(M.pipOwnRun(stopped,{shown:'i9-re5',last:'i9-re5',running:false}),{action:'restore',from:'i9-re5'});
+ // a game left running there (the operator's now) or a PiP this follower never touched is left alone
+ assert.equal(M.pipOwnRun(stopped,{shown:'i9-re5',last:'i9-re5',running:true}).action,'none');
+ assert.equal(M.pipOwnRun(stopped,{shown:'spark-re6',running:true}).action,'none');
+});
+test('pip mode never takes the operator\'s own game here, nor a PiP the operator moved or closed',()=>{
+ // this PC's own other game (the operator playing on the i9) stays in the PiP
+ assert.deepEqual(M.pipOwnRun(i9,{shown:'i9-operator-game',running:true}),{action:'none'});
+ // the operator moved the PiP off the local game, or closed it, while it played: their choice stands
+ assert.equal(M.pipOwnRun(i9,{shown:'spark-re6',last:'i9-merc'}).action,'away');
+ assert.equal(M.pipOwnRun(i9,{shown:null,last:'i9-merc'}).action,'closed');
+ assert.equal(M.pipOwnRun(i9,{shown:'spark-re6',away:true}).action,'none');
+ // a handed-over run (the operator took the pad there) is theirs: nothing moves
+ assert.equal(M.pipOwnRun({...i9,current_run:{...i9.current_run,handover:'pad'}},{shown:'spark-re6'}).action,'wait');
+ // no PiP open: only a dispatch with "Show in PiP on that PC" opens it, once
+ assert.deepEqual(M.pipOwnRun(i9,{shown:null}),{action:'none'});
+ const asked={...i9,dispatch:{id:'d1',command:'start',title:'merc3d',pip:true}};
+ assert.deepEqual(M.pipOwnRun(asked,{shown:null}),{action:'enter',sid:'i9-merc',id:'d1'});
+ assert.equal(M.pipOwnRun(asked,{shown:null,handled:'d1'}).action,'none');
+ assert.equal(M.pipOwnRun(asked,{shown:null,closed:'d1'}).action,'none');
+ assert.equal(M.pipOwnRun({...asked,dispatch:{...asked.dispatch,pip:false}},{shown:null}).action,'none');
+ assert.equal(M.pipOwnRun({...asked,dispatch:{...asked.dispatch,lapsed:'operator took over'}},{shown:null}).action,'none');
+ assert.equal(M.pipOwnRun({...asked,current_run:{phase:'starting',session_id:'i9-merc'}},{shown:null}).action,'wait');
+});
+test('the desktop reads this PC\'s own scheduler for the PiP, read-only, whichever library the window uses',()=>{
+ const fs=require('node:fs'),path=require('node:path');
+ const main=fs.readFileSync(path.join(__dirname,'../clients/desktop/main.js'),'utf8');
+ const preload=fs.readFileSync(path.join(__dirname,'../clients/desktop/preload.js'),'utf8');
+ const page=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
+ const handler=main.slice(main.indexOf('ipcMain.handle("mercmode:local"'));
+ assert.match(handler.slice(0,900),/connection\.snapshot\(\)\.localUrl/);
+ assert.match(handler.slice(0,900),/fetch\(url \+ "\/api\/mercmode", \{ headers:/);
+ assert.doesNotMatch(handler.slice(0,900),/method:\s*"POST"/);
+ assert.match(preload,/mercmodeLocal: \(\) => ipcRenderer\.invoke\("mercmode:local"\)/);
+ assert.match(page,/GBoxMercMode\.pipOwnRun\(host,/);
+ assert.match(page,/!\(typeof mercPipHold === 'function' && mercPipHold\(COMPACT\.sid\)\)\) await compactRestore\(\)/);
+});
