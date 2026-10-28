@@ -143,8 +143,136 @@ def round_guest(phase=R.PHASE_PLAYING, hp=1000, timer=97.5, enemies=((300.0, 0.0
     return g
 
 
-# --- RAM -----------------------------------------------------------------------------------------------------------
+# --- instant RAM weapon swap (the P_HAND clear + set, as re6_switch's P_EQUIPPED write) --------------------------
 
+def test_instant_ram_swap_clears_old_hand_and_sets_new(monkeypatch):
+    """With a weapon_ram writer, the bot writes the new slot's hand field directly (no D-pad taps)."""
+    monkeypatch.setattr(R, "RAMPAGE", True)
+    # Two enemies near to trigger rampage ring
+    enemies = ((200.0, 0.0, 200.0, 800), (300.0, 0.0, 200.0, 800))
+    g = round_guest(enemies=enemies)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+
+    # Inventory: slot 2 (grid 5, dright) is a shotgun (0x04), slot 3 (grid 7, ddown) is the main gun (0x02)
+    # Current hand: slot 3 (grid 7, the M92F) — rampage will swap to shotgun, then restore main gun
+    # Slot 2: shotgun (type 1, item 0x04), grid 5, hand=0
+    o2 = R.P_INV + R.INV_SLOT * 2
+    g.i32(p + o2 + R.INV_ID, 0x0104)
+    g.i32(p + o2 + R.INV_GRID, 5)
+    g.i32(p + o2 + R.INV_HAND, 0)
+    # Slot 3: main gun (type 1, item 0x02), grid 7, hand=1
+    o3 = R.P_INV + R.INV_SLOT * 3
+    g.i32(p + o3 + R.INV_ID, 0x0102)
+    g.i32(p + o3 + R.INV_GRID, 7)
+    g.i32(p + o3 + R.INV_HAND, 1)
+
+    writes = []
+
+    def fake_write(player_ptr, new_slot_addr):
+        writes.append((player_ptr, new_slot_addr))
+        # Clear old hand
+        for k in range(R.INV_SLOTS):
+            oo = R.P_INV + R.INV_SLOT * k
+            h = struct.unpack_from("<i", g.rd(player_ptr + oo + R.INV_HAND, 4))[0]
+            if h == 1:
+                g.i32(player_ptr + oo + R.INV_HAND, 0)
+        # Set new hand
+        g.i32(new_slot_addr + R.INV_HAND, 1)
+        return True
+
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], weapon_ram=fake_write)
+    snap = R.snapshot(g)
+    snap["player"]["ptr"] = p
+    snap["kills"] = 0
+
+    # Tick 1: enemies present — bot enters rampage, swaps to shotgun via D-pad
+    clock[0] += 0.1
+    bot.tick(snap)
+    assert bot._ramp is not None, "bot did not enter rampage"
+    assert bot.stats.get("rampage_swaps", 0) >= 1, "no rampage swap recorded"
+
+    # Simulate the D-pad swap actually changing the hand fields (shotgun now in hand)
+    g.i32(p + o2 + R.INV_HAND, 1)
+    g.i32(p + o3 + R.INV_HAND, 0)
+
+    # Kill the enemies (clear the ring) — write HP=0 in guest memory
+    for e in snap["enemies"]:
+        g.i32(e["ptr"] + R.E_HP, 0)
+    # Re-read snapshot so inventory reflects the shotgun now in hand
+    snap = R.snapshot(g)
+    snap["player"]["ptr"] = p
+    snap["kills"] = 0
+
+    # Tick 2: ring clear — bot restores the main gun via RAM
+    # Advance clock past SWAP_GAP_S (1.0s) so the restore can fire
+    clock[0] += 1.1
+    bot.tick(snap)
+
+    # The bot should have made at least one RAM write (the restore)
+    assert writes, "no RAM write made — rampage restore did not trigger"
+    # Verify the hand fields are correct: slot 2 (shotgun) hand=0, slot 3 (main) hand=1
+    shotgun_hand = struct.unpack_from("<i", g.rd(p + o2 + R.INV_HAND, 4))[0]
+    main_hand = struct.unpack_from("<i", g.rd(p + o3 + R.INV_HAND, 4))[0]
+    assert shotgun_hand == 0, "shotgun slot hand not cleared"
+    assert main_hand == 1, "main gun slot hand not set"
+    assert bot.stats.get("weapon_ram_swaps", 0) >= 1
+
+
+def test_ram_swap_failure_falls_back_to_dpad(monkeypatch):
+    """When the RAM writer fails on restore, the bot falls back to D-pad stepping."""
+    monkeypatch.setattr(R, "RAMPAGE", True)
+    enemies = ((200.0, 0.0, 200.0, 800), (300.0, 0.0, 200.0, 800))
+    g = round_guest(enemies=enemies)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    # Slot 2: shotgun (type 1, item 0x04), grid 5, hand=0
+    o2 = R.P_INV + R.INV_SLOT * 2
+    g.i32(p + o2 + R.INV_ID, 0x0104)
+    g.i32(p + o2 + R.INV_GRID, 5)
+    g.i32(p + o2 + R.INV_HAND, 0)
+    # Slot 3: main gun (type 1, item 0x02), grid 7, hand=1
+    o3 = R.P_INV + R.INV_SLOT * 3
+    g.i32(p + o3 + R.INV_ID, 0x0102)
+    g.i32(p + o3 + R.INV_GRID, 7)
+    g.i32(p + o3 + R.INV_HAND, 1)
+
+    def failing_write(player_ptr, new_slot_addr):
+        return False
+
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], weapon_ram=failing_write)
+    snap = R.snapshot(g)
+    snap["player"]["ptr"] = p
+    snap["kills"] = 0
+
+    # Tick 1: enemies present — bot enters rampage, swaps to shotgun via D-pad
+    clock[0] += 0.1
+    bot.tick(snap)
+    assert bot._ramp is not None, "bot did not enter rampage"
+
+    # Simulate the D-pad swap actually changing the hand fields (shotgun now in hand)
+    g.i32(p + o2 + R.INV_HAND, 1)
+    g.i32(p + o3 + R.INV_HAND, 0)
+
+    # Kill the enemies (clear the ring)
+    for e in snap["enemies"]:
+        g.i32(e["ptr"] + R.E_HP, 0)
+    snap = R.snapshot(g)
+    snap["player"]["ptr"] = p
+    snap["kills"] = 0
+
+    # Tick 2: ring clear — bot tries RAM restore, fails, falls back to D-pad
+    clock[0] += 1.1
+    act2 = bot.tick(snap)
+    assert bot.stats.get("weapon_ram_fails", 0) >= 1, "no RAM failure recorded"
+    # D-pad fallback should be present (the restore press)
+    assert act2 is not None and act2.get("hold"), f"no D-pad fallback action found in {act2}"
+    d_pads = act2.get("hold", ())
+    assert any(k in ("dup", "dleft", "dright", "ddown") for k in d_pads), \
+        f"no D-pad key in fallback action {d_pads}"
+
+
+# --- RAM -----------------------------------------------------------------------------------------------------------
 def test_module_base_is_found_by_signature_and_rechecked():
     g = round_guest()
     assert R.module_base(g) == BASE and g.module_base == BASE

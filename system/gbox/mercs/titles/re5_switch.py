@@ -1034,6 +1034,33 @@ def inventory(m, player: int) -> list:
     return out
 
 
+def weapon_writer(m):
+    """The instant weapon swap's writer for this session: write(player_ptr, slot_addr) -> True once the hand fields
+    are written and read back (clear the old, set the new). None without the session's adapter or with modifications
+    off (the D-pad steps)."""
+    ad = getattr(m, "adapter", None)
+    if ad is None or getattr(m, "mercs_no_modifications", False):
+        return None
+
+    def write(player_ptr: int, new_slot_addr: int) -> bool:
+        try:
+            # Find the currently equipped slot and clear it
+            raw = ad.read_memory(player_ptr + P_INV, INV_SLOT * INV_SLOTS)
+            for k in range(INV_SLOTS):
+                o = INV_SLOT * k
+                hand = struct.unpack_from("<i", raw, o + INV_HAND)[0]
+                if hand == 1:
+                    ad.write_memory(player_ptr + P_INV + o + INV_HAND, struct.pack("<i", 0))
+                    if struct.unpack("<i", ad.read_memory(player_ptr + P_INV + o + INV_HAND, 4))[0] != 0:
+                        return False
+            # Set the new slot's hand field
+            ad.write_memory(new_slot_addr + INV_HAND, struct.pack("<i", 1))
+            return struct.unpack("<i", ad.read_memory(new_slot_addr + INV_HAND, 4))[0] == 1
+        except (RuntimeError, ValueError, OSError):
+            return False
+    return write
+
+
 def snapshot(m) -> dict:
     """The round from RAM: the player, the live enemies and the Mercenaries counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "timer_start": None, "score": None, "kills": None,
@@ -1380,10 +1407,11 @@ class Bot:
     aim stands in."""
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, release=None, m=None, learn_dir=None,
-                 lessons=None):
+                 lessons=None, weapon_ram=None):
         self.stats = stats if stats is not None else {}
         self.clock = clock
         self.release = release                  # the driver's: the live mods' state put back when the bot stops
+        self.weapon_ram = weapon_ram            # the instant swap's writer (weapon_writer); None: D-pad steps
         for k in ("shots", "hits", "turns", "quick_turns", "backoffs", "wiggles", "holds", "laserless", "reraise",
                   "restale", "heal_starts", "heals", "heal_failures", "escapes", "burst_backoffs"):
             self.stats.setdefault(k, 0)
@@ -1861,7 +1889,29 @@ class Bot:
         inv = snap.get("inventory") or ()
         held = next((s_ for s_ in inv if s_.get("hand")), None)
         if not ring:
-            self._ramp, self._restore = None, None       # keep the equipped gun when the circle clears
+            if self._ramp is not None:                   # the circle is clear: the main gun back when the gun is down
+                self._restore, self._ramp = self._ramp.get("main"), None
+            if self._restore is not None and self.aim_since is None and held is not None \
+                    and held.get("item") != self._restore and now - self._swap_at >= SWAP_GAP_S:
+                back = next((s_ for s_ in inv if s_.get("item") == self._restore and s_.get("grid") in QUICK), None)
+                self._swap_at = now
+                if back is None:
+                    self._restore = None
+                    return None
+                self.stats["rampage_swaps"] += 1
+                # Instant RAM swap when the writer is available: write the hand fields directly.
+                if self.weapon_ram is not None and p.get("ptr"):
+                    if self.weapon_ram(p["ptr"], back["addr"]):
+                        self.stats["weapon_ram_swaps"] = self.stats.get("weapon_ram_swaps", 0) + 1
+                        self.doing, self.why = "raise", "the circle clear: the main gun back (RAM)"
+                        return None
+                    else:
+                        self.stats["weapon_ram_fails"] = self.stats.get("weapon_ram_fails", 0) + 1
+                        # Fall through to D-pad on failure
+                self.doing, self.why = "raise", "the circle clear: the main gun back"
+                return {"hold": (QUICK[back["grid"]],)}
+            if held is not None and held.get("item") == self._restore:
+                self._restore = None
             return None
         kills = snap.get("kills")
         if self._ramp is None:
@@ -4184,7 +4234,7 @@ class RE5Switch(Driver):
             if nav is not None:
                 nav.save()
             self._mods(m, snapshot(m), False)
-        return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir)
+        return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir, weapon_ram=weapon_writer(m))
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]
