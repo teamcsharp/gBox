@@ -4468,6 +4468,11 @@ class Bot:
             if not detonate:
                 self.bomb_since = now
             return self._go("bomb", tag, {"hold": ()}, "the triggers let go")
+        if self.bomb_phase in ("thrown", "det_wait") and live and p:
+            px, _, pz = p["pos"]
+            on_him = [e for e in live if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= BOMB_FIGHT_R]
+            if on_him:
+                return None
         if self.bomb_phase == "det_wait" and now - self.bomb_phase_at > BOMB_TAKE_S:   # no blast yet: once more
             self.bomb_phase, self.bomb_phase_at, self.bomb_steps = "det_aim", now, 0
         return self._go("bomb", tag, {"hold": ()}, "waiting on the bomb")
