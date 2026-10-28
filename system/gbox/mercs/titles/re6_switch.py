@@ -1618,7 +1618,7 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 # moment one that was not flashed comes within FEVER_BREAK_R); the hand and incendiary grenades turn about into clusters
 # NADE_MIN_R..NADE_MAX_R off, at most every FRAG_GAP_S. stats flashes, fever_kicks, fever_kills, fever_breaks, frags,
 # fires (the incendiaries), grenade_kills. The switch-off: bot_options nades=false.
-NADES = True                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+NADES = False                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
@@ -1798,7 +1798,7 @@ AIM_LOCK_R, BIG_HP, OFF_FLOOR_AIM_H, OFF_FLOOR_HIT_R = 1500.0, 900, 60.0, 90.0
 # into a crowd the lock sweeps while he backs out. stats sweeps (targets left after SWEEP_SHOTS), targets_shot,
 # targets_per_min (targets shot at a minute since the first aimed shot).
 SWEEP_SHOTS, CC_CROWD_R, CLOSING_W = 3, 400.0, 0.5
-FLASH = True                            # the flash alone at FLASH_N within FLASH_R (NADES adds the hand / incendiary
+FLASH = False                            # the flash alone at FLASH_N within FLASH_R (NADES adds the hand / incendiary
                                         # grenades and the melee fever after a flash)
 # Down (operator 16:22: "when the character is down, They need to raise their weapon and blast like mad, nailing each
 # and every target nearby to clear the area ... fire rate tripled ... so they can rise again"). MercMode 16:30, read
@@ -1941,6 +1941,9 @@ CROWD_GUN_N, CROWD_GUN_R = 3, 500.0
 # I need them to only just have the weapon they need and to just be blasting it"): no switch of his own (the crowd's
 # shotgun, a grab's pick); the app's weapon (WANT_WEAPON) and a grenade's gun-back still switch.
 AUTO_SWITCH = False
+# NADES / FLASH off by default (operator 2026-10-28: "i dont want them bringing up the item screen at all ... just shooting and
+# changing weapons via ram"): a grenade is equipped through the D-pad item wheel; back on once RAM swaps land (#5276).
+FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
 SHOTGUN_ORDER = (0x105, 0x104, 0x106)
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
 # and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
@@ -2738,10 +2741,16 @@ class Bot:
                 return out
         if self.down:
             return self._down_fight(p, snap, now)
-        ran = self._bonus_run(p, live, flat, snap, now)          # phase 1: the bonuses first
+        # shoot first (operator 2026-10-28: "just have the bot firing on the enemy like mad if they are in the vicinity of
+        # them ... I need him mainly shooting"): one in sight on his level within FIRE_ZONE_R - no bonus run, no green
+        # detour, the fight below (stats fire_zone_s)
+        hot = any(flat(e) <= FIRE_ZONE_R and abs(e["pos"][1] - py) <= AIM_DY and not self.is_blocked(e, now) for e in live)
+        if hot:
+            self.stats["fire_zone_s"] = round(self.stats.get("fire_zone_s", 0.0) + TICK_S, 2)
+        ran = None if hot else self._bonus_run(p, live, flat, snap, now)   # phase 1: the bonuses first
         if ran is not None:
             return ran
-        saved = self._green_save(p, live, flat, snap, now)       # the match: a green bonus for a running-out combo
+        saved = None if hot else self._green_save(p, live, flat, snap, now)   # a green bonus for a running-out combo
         if saved is not None:
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him

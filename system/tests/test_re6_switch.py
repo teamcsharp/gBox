@@ -2071,7 +2071,8 @@ def test_the_bonus_run_walks_to_the_nearest_bonus_and_breaks_it_with_the_physica
     assert bot.stats["phase"] == "match" and bot.doing != "bonus"
 
 
-def test_the_bonus_run_fights_a_blocker_first_and_leaves_one_that_will_not_break():
+def test_the_bonus_run_fights_a_blocker_first_and_leaves_one_that_will_not_break(monkeypatch):
+    monkeypatch.setattr(R, "FIRE_ZONE_R", 0.0)                              # (the run itself; shoot-first: off here)
     g = round_guest(enemies=((0.0, 0.0, 200.0, 700),))                        # one at 2 m: in the way
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 800.0))
     bot, clock, snap = brain(g)
