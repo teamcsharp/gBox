@@ -98,17 +98,20 @@ GM_GAME_MODE, GM_STAGE, GM_COSTUME = 0xCC, 0x3C78, 0x3CA4   # sGameMan: the roun
 
 class _Pick:
     """This menu visit's draws, kept until the round is up (screen() says playing), then drawn afresh at the next
-    selects: the stage among the unlocked ones, the costume among the listed ones; a queued round (request) names the
-    character and / or the stage (None = random, MercMode's convention); no queue: PLAYER_ID, a random stage."""
+    selects (operator 2026-10-27 18:03: "a random character / costume each and every round ... and level ... cycling
+    through all of the levels"): the stage the least played among the unlocked ones (coverage, ties at random), a
+    random character among the select's listed ones, a random costume among his; a queued round (request) names the
+    character and / or the stage (None = drawn). last: the round that went up (stage, character, costume)."""
 
     def __init__(self, rng=None):
         self.rng = rng or random.Random()
         self.queued: dict = {}
-        self.stage = self.costume = None
+        self.stage = self.costume = self.character = None
         self.costume_of = None
+        self.last: dict = {}
 
     def reset(self) -> None:
-        self.stage = self.costume = self.costume_of = None
+        self.stage = self.costume = self.costume_of = self.character = None
 
     consumed: dict = {}                                     # the last queued pick a round started with (not again)
 
@@ -136,6 +139,55 @@ def request(character=None, stage=None) -> dict:
     return dict(pick)
 
 
+# Coverage (the same message: "learning and studying and cycling through all of the levels"): the rounds each stage and
+# character went up, kept in learn dir / COVERAGE_FILE (gbox-data/mercs/learned/<title>/): the stage select draws the
+# least played; the driver's progress reports the round's stage, character, costume and the coverage.
+COVERAGE_FILE = "re6_coverage.json"
+COVERAGE_PATH = None                    # (tests point it elsewhere; None: the deployment's learn dir)
+_COVERAGE: dict = {"data": None}
+
+
+def _coverage_path():
+    if COVERAGE_PATH is not None:
+        return Path(COVERAGE_PATH)
+    try:
+        from .. import lessons as L
+        return L.ROOT.parent / "learned" / MAP_ID / COVERAGE_FILE
+    except Exception:                                        # noqa: BLE001 - no learn dir: this run only
+        return None
+
+
+def coverage() -> dict:
+    """{"stages": {name: rounds}, "characters": {name: rounds}} (read once, then kept)."""
+    if _COVERAGE["data"] is None:
+        data = {"stages": {}, "characters": {}}
+        path = _coverage_path()
+        if path is not None and path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                data["stages"].update({str(k): int(v) for k, v in (raw.get("stages") or {}).items()})
+                data["characters"].update({str(k): int(v) for k, v in (raw.get("characters") or {}).items()})
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        _COVERAGE["data"] = data
+    return _COVERAGE["data"]
+
+
+def _count_round(stage, character) -> None:
+    data = coverage()
+    if isinstance(stage, int) and 0 <= stage < len(STAGES):
+        data["stages"][STAGES[stage]] = data["stages"].get(STAGES[stage], 0) + 1
+    if isinstance(character, int) and 0 <= character < len(CHARACTERS):
+        data["characters"][CHARACTERS[character]] = data["characters"].get(CHARACTERS[character], 0) + 1
+    path = _coverage_path()
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
+
+
 def stage_target(m, unit: int) -> int:
     """The stage select's target: the queued stage when it can start, else this visit's random draw among the stages
     whose bit is set (+0x58); STAGE_TARGET when the mask can't be read."""
@@ -148,13 +200,24 @@ def stage_target(m, unit: int) -> int:
         return STAGE_TARGET
     if PICK.stage not in open_:
         q = PICK.queued.get("stage")
-        PICK.stage = q if q in open_ else PICK.rng.choice(open_)
+        if q in open_:
+            PICK.stage = q
+        else:                                                # the least played, ties at random
+            played = coverage()["stages"]
+            low = min(played.get(STAGES[i], 0) for i in open_)
+            PICK.stage = PICK.rng.choice([i for i in open_ if played.get(STAGES[i], 0) == low])
     return PICK.stage
 
 
-def wanted_character() -> int:
+def wanted_character(ids=None) -> int:
+    """The queued character, else this visit's random draw among the select's listed ids (PLAYER_ID without them)."""
     q = PICK.queued.get("character")
-    return q if isinstance(q, int) else PLAYER_ID
+    if isinstance(q, int):
+        return q
+    listed = [i for i in ids or () if 0 <= i < len(CHARACTERS)]
+    if PICK.character is None or (listed and PICK.character not in listed):
+        PICK.character = PICK.rng.choice(listed) if listed else None
+    return PICK.character if PICK.character is not None else PLAYER_ID
 
 
 def costume_target(m, unit: int, cid: int) -> tuple[int | None, int | None]:
@@ -189,7 +252,8 @@ CONTINUE_CURSOR, CONTINUE_YES, CONTINUE_NO, CONTINUE_MENU = 0x50, 0, 1, 0x248   
 # publishes MercMode's round boundary at the death (its terminal witness "dead") and closes that round's evidence; the
 # bot counts the replay as the next round (stats rounds, deaths_continued, round_start_via "dead/retry") and marks its
 # start (_round_started) on its first tick alive with a full clock. REPLAY_ON_DEATH False answers NO instead.
-REPLAY_ON_DEATH = True
+REPLAY_ON_DEATH = False                 # (operator 18:03: a new stage and character every round - a death answers NO and
+                                        # the selects draw again; True replays the same round at once)
 ROUND_TIME_S, FRESH_ROUND_S = 120.0, 3.0   # No Mercy's clock; within this of it on the first tick alive: a new round
 
 
@@ -197,11 +261,11 @@ def player_target(m, unit: int) -> int:
     """The character select's cursor index for the wanted character (a queued one, else PLAYER_ID): its place in the
     select's own list of ids, which grows as characters unlock; PLAYER_TARGET when the list can't be read or lacks
     him."""
-    want = wanted_character()
     try:
         n = _i32(m, unit + PLAYER_COUNT)
         if 0 < n <= 16:
             ids = struct.unpack(f"<{n}i", m.rd(unit + PLAYER_IDS, 4 * n))
+            want = wanted_character(ids)
             if want in ids:
                 return ids.index(want)
             if PLAYER_ID in ids:
@@ -816,6 +880,9 @@ def screen(m, merc=None, now: float | None = None) -> dict:
         if (p.get("hp") or 0) <= 0:
             return out | {"where": "dead"}
         if phase == PHASE_PLAYING and (PICK.stage is not None or PICK.costume is not None or PICK.queued):
+            PICK.last = {"stage": PICK.stage, "character": PICK.character if PICK.character is not None
+                         else PICK.queued.get("character", PLAYER_ID), "costume": PICK.costume}
+            _count_round(PICK.last["stage"], PICK.last["character"])
             PICK.consumed, PICK.queued = PICK.queued or PICK.consumed, {}    # the round is up: the next selects draw anew
             PICK.reset()
         return out | {"where": "playing" if phase == PHASE_PLAYING else "loading"}
@@ -1790,6 +1857,8 @@ class Bot:
         self.pursue_spot, self.pursue_side_until = None, -1e9   # (since when, where) for the stuck check; a side step                       # this tick's player and camera yaw (crowd control's way out)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
+        self.stage_dir = Path(learn_dir) / "stages" if learn_dir else None   # what each stage taught (stage_book)
+        self.stage_seen = None                               # the stage this round's book was written for
         self.blast = None                                    # the blast under way: its toll, read for BOMB_LEARN_S
         self._prev_z, self._prev_hp = {}, None               # the last tick's zombies {id: (health, pos)}, his health
                                                              # (a blast seen this tick is read against them)
@@ -1826,6 +1895,49 @@ class Bot:
             self.continued = None
         if self._round_started is None:
             self._round_started = now
+        self._stage_book(snap)
+
+    def _stage_book(self, snap) -> None:
+        """Each stage's lessons (operator 18:03: "learning and studying and cycling through all of the levels"): once a
+        round, at its first tick with the stage's nav mesh and bonuses, learn_dir / stages / <stage>.json - the nav mesh
+        (name, size), the bonuses' spots, visits, the best kills of the rounds before; the next visit starts from them."""
+        k = snap.get("kills")
+        if isinstance(k, int):
+            self.stage_best = max(getattr(self, "stage_best", 0), k)
+        mesh = snap.get("navmesh")
+        name = getattr(mesh, "name", "") if mesh is not None else ""
+        if self.stage_dir is None or not name or not snap.get("bonuses"):
+            return
+        stage = name.replace("\\", "/").rsplit("/", 1)[-1]
+        key = (stage, self._round_started)
+        if self.stage_seen == key:
+            return
+        prev, self.stage_seen = self.stage_seen, key
+        if prev is not None and getattr(self, "stage_best", 0):
+            self._stage_write(prev[0], lambda b: b.update(best_kills=max(int(b.get("best_kills") or 0),
+                                                                         self.stage_best)))
+        self.stage_best = 0
+
+        def visit(book):
+            book["visits"] = int(book.get("visits") or 0) + 1
+            book["nav"] = {"name": name, "vertices": len(mesh.V), "triangles": len(mesh.T)}
+            spots = {tuple(b[:3]) for b in book.get("bonuses") or ()}
+            spots |= {(round(b["pos"][0]), round(b["pos"][1]), round(b["pos"][2])) for b in snap["bonuses"]}
+            book["bonuses"] = [list(b) for b in sorted(spots)][:32]
+        self._stage_write(stage, visit)
+
+    def _stage_write(self, stage: str, change) -> None:
+        path = self.stage_dir / f"{stage}.json"
+        try:
+            book = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, ValueError):
+            book = {}
+        change(book)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(book, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
 
     # --- what to fight -----------------------------------------------------------------------------------------------
     @staticmethod
@@ -3797,9 +3909,17 @@ class RE6Switch(Driver):
         return [tuple(str(button).split("+"))]
 
     def progress(self, snap: dict) -> dict:
-        return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-                "kills": snap.get("kills"), "max_combo": snap.get("max_combo"),
-                "mercenaries_phase": snap.get("mercenaries_phase"), "mode": "no_mercy"}
+        out = {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
+               "kills": snap.get("kills"), "max_combo": snap.get("max_combo"),
+               "mercenaries_phase": snap.get("mercenaries_phase"), "mode": "no_mercy"}
+        last = PICK.last
+        if last:                                             # the round's own draws (per round, for the report)
+            st, ch = last.get("stage"), last.get("character")
+            out.update(stage=STAGES[st] if isinstance(st, int) and 0 <= st < len(STAGES) else None,
+                       character=CHARACTERS[ch] if isinstance(ch, int) and 0 <= ch < len(CHARACTERS) else None,
+                       costume=last.get("costume"),
+                       stage_coverage=" ".join(f"{k}:{v}" for k, v in sorted(coverage()["stages"].items())))
+        return out
 
 
 DRIVER = RE6Switch
