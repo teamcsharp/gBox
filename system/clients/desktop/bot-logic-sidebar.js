@@ -30,7 +30,8 @@
     height:56px;border:1px solid #666;border-right:0;border-radius:6px 0 0 6px;background:#101014dc;color:#fff;cursor:pointer;
     font:16px system-ui;opacity:0;transition:opacity .15s;-webkit-app-region:no-drag}
   body.gbox-compact #bot-logic-tab.ready{display:block}
-  body.gbox-compact:hover #bot-logic-tab.ready,#bot-logic-tab.open{opacity:1}
+  body.gbox-compact #bot-logic-tab.ready{opacity:.55}
+  body.gbox-compact #bot-logic-tab.ready:hover,#bot-logic-tab.open{opacity:1}
   #bot-logic-tab.open{right:min(320px,85vw)}
   #bot-logic-panel{position:fixed;top:28px;right:0;bottom:0;width:min(320px,85vw);z-index:119;background:#101014f2;color:#ddd;
     font:11px system-ui;overflow:auto;padding:8px 10px;box-sizing:border-box;transform:translateX(105%);transition:transform .2s;
@@ -244,7 +245,7 @@
       }
       // the tab is MercMode's (operator 2026-10-28: "the tab is a mercmode tab. Not just 5 and 6"): on for whatever game
       // the PiP shows; one without live settings says so when opened
-      shown = nextState?.on && typeof nextState.sid === "string" ? nextState.sid : null;
+      shown = nextState?.on ? (typeof nextState.sid === "string" ? nextState.sid : "pip") : null;   // always in the PiP
       tab?.classList.toggle("ready", !!(target || shown));
       if (!target && !shown && open) toggle(false);
     }

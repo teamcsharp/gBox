@@ -168,7 +168,7 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
 
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
-    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 30}],
+    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 5}],
                                                ["mine_loadout", {"on": True}],
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill

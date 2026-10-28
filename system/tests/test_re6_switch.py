@@ -2343,9 +2343,10 @@ class Adapter:
 
 
 @pytest.fixture
-def mods():
+def mods(monkeypatch):
     from gbox.mercs.titles import re6_switch_mods as RM
     RM.ORIG.clear()
+    monkeypatch.setattr(RM, "FIRE_MAX", 80.0)       # the mechanics at any multiplier (play caps it at 5x, 2026-10-28)
     yield RM
     RM.ORIG.clear()
 
