@@ -1897,7 +1897,10 @@ def windup(e, me=None) -> str | None:
 # walks). One on his level within CLOSE_R: only those, the lock's pitch never above CLOSE_PITCH. Low health (under
 # SURVIVAL_HP): survival - only the ones within CLOSE_R, backing away from the nearest, no long shots, no upward aim
 # (stats survival_s). stats up_aim_s: the camera's pitch over UP_AIM with no vertical threat (target 0).
-AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 180.0, 400.0, 600.0, math.radians(15), 0.35, math.radians(20)
+AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 180.0, 0.0, 600.0, math.radians(15), 0.35, math.radians(20)
+# CEILING_R 0 (operator 2026-10-28, the gun up at a brick wall with nothing there: "these are the moments in which they are
+# basically risking their life and ruining the entire run"): one on the floor above is never aimed at through the
+# ceiling; only a big one (BIG_HP, a boss) off his level is. A live bot_logic knob sets it back.
 # The turn governor (the RE5 lesson, 19:05: a time scale raised while the shot plays turns any stick held then many
 # times too fast): his body's heading turning faster than SPIN_DEG_S, or his action one the mods speed up (a quick
 # attack, the magnum's shot), releases the sticks for that tick (a grab's escape exempt). stats spin_deg_s (the
