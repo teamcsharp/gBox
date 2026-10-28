@@ -195,8 +195,8 @@ def test_a_ledge_prompt_is_taken_whenever_no_majini_is_on_him_and_its_spot_logge
     act = b.tick(snap([], pr=ledge, bonuses=[at(1200, 0)]))               # 2026-10-28: taken wherever it shows (doors too)
     assert b.doing == "prompt" and act["hold"] == ("y",) and b.stats["traverse_spots"].startswith("9@")
     b3, _ = bot()
-    b3.tick(snap([at(150, 0)], pr=ledge, bonuses=[at(1200, 0)]))          # one on him: the fight first
-    assert b3.doing != "prompt"
+    act3 = b3.tick(snap([at(150, 0)], pr=ledge, bonuses=[at(1200, 0)]))   # one at arm's length: his melee - taken too
+    assert b3.doing == "prompt" and act3["hold"] == ("y",)
     b2, clock2 = bot()
     b2.tick(snap([], bonuses=[at(1200, 0, y=-300.0)]))                    # a statue 3 m below
     clock2[0] = 0.05
