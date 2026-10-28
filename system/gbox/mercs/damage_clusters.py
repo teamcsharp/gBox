@@ -595,6 +595,7 @@ def summarize(incidents, *, now, window_s=WINDOW_S):
             'id': cluster_id(gid, sig), 'game_id': gid, 'title': title, 'game': TITLE_NAMES.get(title, title or gid),
             'signature': sig, 'label': LABELS[sig], 'rule': RULES[sig], 'hits': len(hits),
             'episodes': sum(t['episodes'] for t in turns), 'deaths': len(deaths),
+            'batchable': sum(t['episodes'] for t in turns) + len(deaths) >= MIN_BATCH,
             'hp_lost': sum(i.get('loss') or 0 for i, _t, _e in hits),
             'share_of_hits': round(len(hits) / max(1, tot.get('hits') or 1), 3),
             'share_of_hp': round(sum(i.get('loss') or 0 for i, _t, _e in hits) / max(1, tot.get('hp_lost') or 1), 3),

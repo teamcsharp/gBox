@@ -1121,6 +1121,7 @@ window.taskVizCreate = canvas => {
       <p id="connection-note" role="status">Starting this PC's local gBox. Remote discovery runs in the background.</p>
       <button id="mercmode-open" type="button">Mercenaries screensaver</button><div id="mercmode-panel" hidden></div>
       <button id="mercs-reviewer-open" type="button">Mercenaries run reviewer ↗</button>
+      <button id="bot-learning-open" type="button" title="What hurts the RE bots, what changed and whether it helped">Bot learning</button><div id="bot-learning-panel" hidden></div>
       <div id="rebuild"><iframe src="about:blank" tabindex="-1"></iframe>
         <div class="rbhead"><b>Updating gBox</b><span class="mut" id="rbstat">starting…</span></div>
         <div id="rbflow"></div><aside id="rbside" class="mut">Click a step to see its output.</aside><pre id="rbcon"></pre></div>
@@ -1267,6 +1268,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/re4-modifiers.js"></script>
 <script src="../web/viz/re6-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
+<script src="../web/viz/bot-learning.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
 <script src="../web/viz/storage-purge.js"></script>
@@ -2606,6 +2608,15 @@ async function openMercsWindow(mode='reviewer'){
   return gbox.mercsOpen({origin:S.apiUrl,sid:EMB.authority&&EMB.authority!==S.apiUrl?null:sid||null,mode});
 }
 $('#mercs-reviewer-open').onclick=()=>openMercsWindow('reviewer').catch(error=>toast(error.message));
+let botLearningPanel=null;            // Control > Bot learning (clients/web/viz/bot-learning.js: GET /api/mercs/learning)
+$('#bot-learning-open').onclick=()=>{
+  const host=$('#bot-learning-panel');
+  if(botLearningPanel){botLearningPanel.dispose();botLearningPanel=null;host.hidden=true;return;}
+  if(!window.GBoxBotLearning){toast('Bot learning is updating.');return;}
+  host.hidden=false;
+  botLearningPanel=GBoxBotLearning.mount({root:host,api:async path=>{
+    const result=await gbox.api(path);if(!result.ok)throw Error(result.error||'Spark unavailable');return result.data;}});
+};
 $('#mercmode-open').onclick=async()=>{
   const host=$('#mercmode-panel');
   if(mercModePanel){mercModePanel.dispose();mercModePanel=null;host.hidden=true;return;}

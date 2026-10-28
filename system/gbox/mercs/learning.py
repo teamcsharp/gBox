@@ -470,7 +470,8 @@ class Learning:
                           if rounds else None,
                           'stages': _counts(r['stage'] for r in rounds),
                           'changes': [{k: c.get(k) for k in ('id', 'kind', 'at', 'modules', 'files', 'param', 'stage',
-                                                             'old', 'new', 'reason', 'effects', 'judged', 'status')}
+                                                             'old', 'new', 'reason', 'effects', 'judged', 'status',
+                                                             'causes')}
                                       for c in self.changes(title)[-20:]]}
             try:
                 from . import tuning
