@@ -1900,9 +1900,9 @@ BOOSTED_ACTIONS = frozenset({"cPlAction_pl_act_weapon_comn_quick_shot", "cPlActi
                              "cPlAction_pl_act_jake_hand_quick_attack"})   # (+ weapon_fire with a magnum: x3)
 MAGNUM_IDS = frozenset({0x07, 0x08})
 # Walking by the nav mesh (snapshot navmesh): the bonus run and the combo pursuit walk its path - toward the next
-# waypoint, the ones within NAV_REACH_R dropped, replanned every NAV_REPLAN_S, on a new goal or after a stall; with the
-# aim lock's writer the camera's yaw is written onto the way (no turning keys). stats nav_paths, nav_fails (no path:
-# straight at it as before).
+# waypoint, the ones within NAV_REACH_R dropped, replanned every NAV_REPLAN_S, on a new goal or after a stall.
+# Navigation turns through the governed right stick. Forward waits for observed facing;
+# a known failed enemy route is deferred rather than replaced with a straight walk. stats nav_paths, nav_fails.
 NAV_WALK, NAV_REACH_R, NAV_REPLAN_S = True, 90.0, 1.5
 # Taking the game's prompts (snapshot prompts; operator 16:54: "if they hit an enemy and they get an opportunity to do a
 # QTE event, they must activate that QTE event immediately"; 17:50-17:52 the climb prompts, "it should be aware that
@@ -2388,6 +2388,8 @@ class Bot:
     def tick(self, snap: dict) -> dict:
         now = self.clock()
         out = self._tick(snap, now)
+        from . import re6_switch_wall
+        out = re6_switch_wall.apply(self, snap, out, now)
         out = self._govern(snap, out, now)
         if "zl" in (out.get("hold") or ()):
             self._zl_at = now
@@ -2402,6 +2404,7 @@ class Bot:
             self.stats["unsafe_trigger_blocks"] += 1
             self.qshot_release, self.fire_down = False, False
             out = self._go("nade", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back first")
+        re6_switch_wall.feedback(self, snap, out, now)
         try:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never costs the round a tick
@@ -2462,6 +2465,7 @@ class Bot:
         return out
 
     def _tick(self, snap: dict, now: float) -> dict:
+        self._walk_target = None
         p = snap.get("player")
         self._snap = snap
         if snap.get("mercenaries_phase") != PHASE_PLAYING:
@@ -2827,14 +2831,18 @@ class Bot:
             return took
         if not self._aimable:                                    # every one in reach out of sight: a way round
             self._gun_down()
-            want = self._nav_heading(p, tgt["pos"], snap, now)
-            if want is not None:                                 # by the nav mesh's way to him
-                return self._go("walk", "walk_nav", {"hold": self._walk_keys(p, want, snap)},
-                                f"the nearest at {dist:.0f} cm is out of sight: walking the nav mesh to him")
+            if NAV_WALK and snap.get("navmesh") is not None:
+                chase = self._pursue(p, snap, now)
+                if chase is not None:
+                    return chase
+                return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
             if now - self.detour_at >= DETOUR_S:
                 self.detour_at, self.detour = now, "lright" if self.detour == "lleft" else "lleft"
                 self.stats["detours"] += 1
-            return self._go("walk", "walk_detour", {"hold": ("lup", self.detour) + self._turn(err, TURN_TOL)},
+            self._walk_target = tgt.get("ptr", tgt.get("slot"))
+            if getattr(self, "_walk_skip", {}).get(self._walk_target, -1e9) > now:
+                return self._go("walk", "walk_blocked", {"hold": ()}, "blocked enemy approach: releasing forward")
+            return self._go("walk", "walk_detour", {"hold": self._walk_keys(p, yaw + err, snap, (self.detour,))},
                             f"the nearest at {dist:.0f} cm is out of sight: walking round ({self.detour})")
         if self.aim_since is None:
             near_err = bearing(near_e) if near_e is not None else math.pi
@@ -2844,8 +2852,10 @@ class Bot:
                 return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
             if not front:
                 if dist > ENGAGE_R:                              # nobody in reach: walk to him along the camera
-                    return self._go("walk", "walk", {"hold": ("lup",) + self._turn(err, TURN_TOL)},
-                                    f"the nearest at {dist:.0f} cm: walking")
+                    chase = self._pursue(p, snap, now)
+                    if chase is not None:
+                        return chase
+                    return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
                 if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
                     self.stats["quick_turns"] += 1               # him behind: the quick turn
                     self.quick = 2
@@ -3429,7 +3439,7 @@ class Bot:
         return None
 
     def _nav_heading(self, p, goal, snap, now) -> float | None:
-        """The heading of the next nav-mesh waypoint toward goal (None: no mesh, or no path - straight at it)."""
+        """The next nav-mesh waypoint heading; None means no usable mesh or no path, distinguished by the caller."""
         mesh = snap.get("navmesh")
         if not NAV_WALK or mesh is None:
             return None
@@ -3448,23 +3458,33 @@ class Bot:
         return heading(w[0] - px, w[2] - pz)
 
     def _walk_keys(self, p, want: float, snap, side=()) -> tuple:
-        """Walking toward heading want: the camera's yaw written onto it when the lock's writer can (the stick up), else
-        the camera turned with the right stick as he walks."""
-        cam, ac = snap.get("camera"), snap.get("aim_cam")
-        if self.ram is not None and AIM_LOCK and ac and cam and self.ram(ac["addr"], ac["pitch"], want):
-            return ("lup",) + tuple(side)
+        """Turn with the governed stick; forward and side steps wait for observed facing. No navigation RAM writes."""
+        cam = snap.get("camera")
         err = wrap(want - (cam["yaw"] if cam else p["rot"]))
-        return ("lup",) + tuple(side) + self._turn(err, TURN_TOL)
+        turn = self._turn(err, TURN_TOL)
+        return (("lup",) + tuple(side) if abs(err) <= math.radians(25.) else ()) + turn
 
     def _pursue(self, p, snap, now) -> dict | None:
         """After the best zombie of the whole stage (his floor first, then the nearest): along the camera turned to him,
         a side step when the walk stalls. None: no zombie alive anywhere."""
-        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+        self._walk_skip = {k: until for k, until in getattr(self, "_walk_skip", {}).items() if until > now}
+        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
+                 and e.get("ptr", e.get("slot")) not in self._walk_skip]
         if not alive:
             return None
         px, py, pz = p["pos"]
-        e = min(alive, key=lambda z: (abs(z["pos"][1] - py) > MAX_DY,
-                                      math.hypot(z["pos"][0] - px, z["pos"][2] - pz)))
+        e = None
+        for candidate in sorted(alive, key=lambda z: (abs(z["pos"][1] - py) > MAX_DY,
+                                math.hypot(z["pos"][0] - px, z["pos"][2] - pz)))[:3]:
+            want = self._nav_heading(p, candidate["pos"], snap, now)
+            if NAV_WALK and snap.get("navmesh") is not None and want is None:
+                self._walk_skip[candidate.get("ptr", candidate.get("slot"))] = now + 12.
+                continue
+            e = candidate
+            break
+        if e is None:
+            return None
+        self._walk_target = e.get("ptr", e.get("slot"))
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         if self.combo_urgent and self.pursuit is None:
             self.stats["pursuits"] += 1
@@ -3479,7 +3499,6 @@ class Bot:
         side = (self.detour,) if now < self.pursue_side_until else ()
         if side:
             self.nav_path = None                                 # a stall: plan again after the side step
-        want = self._nav_heading(p, e["pos"], snap, now)
         keys = self._walk_keys(p, heading(e["pos"][0] - px, e["pos"][2] - pz) if want is None else want, snap, side)
         floor = "his floor" if abs(e["pos"][1] - py) <= MAX_DY else "another floor"
         return self._go("walk", "pursue", {"hold": keys}, f"after the nearest of {len(alive)} ({floor}, {d:.0f} cm)")
@@ -4128,11 +4147,15 @@ class Bot:
         if side:
             self.nav_path = None                                 # a stall: plan again after the side step
         want = self._nav_heading(p, b["pos"], snap, now) if d > 2 * BONUS_MELEE_R else None
+        if d > 2 * BONUS_MELEE_R and NAV_WALK and snap.get("navmesh") is not None and want is None:
+            self.bonus_skip[b["ptr"]] = now + BONUS_SKIP_S
+            self.stats["bonus_skips"] += 1
+            self.run_target, self.run_hit_since, self.nav_path = None, None, None
+            return None                                         # a failed native route never becomes a blind direct walk
         if want is not None:                                     # along the nav mesh's way to it
             return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, want, snap, side)},
                             f"the bonus run: a {kind} bonus at {d:.0f} cm by the nav mesh ({len(cands)} waiting)")
-        walk = ("lup",) if abs(err) < math.radians(60) or d > 3 * BONUS_MELEE_R else ()
-        return self._go("bonus", "bonus_run", {"hold": walk + side + self._turn(err, TURN_TOL)},
+        return self._go("bonus", "bonus_run", {"hold": self._walk_keys(p, heading(b["pos"][0] - px, b["pos"][2] - pz), snap, side)},
                         f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
 
     def _bonus_shoot(self, p, b, snap, now) -> dict | None:
