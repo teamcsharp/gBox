@@ -2287,7 +2287,11 @@ class Bot:
         cam = snap.get("camera")
         if cam and cam.get("pitch", 0.0) > UP_AIM and "zl" in (out.get("hold") or ()):
             tgt = next((e for e in snap.get("enemies") or () if e.get("ptr", e.get("slot")) == self.target), None)
-            if tgt is None or not (p.get("pos") and self._vertical_threat(p, tgt)):
+            up_to = None
+            if tgt is not None and p.get("pos"):                 # the target's own elevation from the camera
+                pt, c = aim_point(tgt, p["pos"]), cam["pos"]
+                up_to = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
+            if tgt is None or not (self._vertical_threat(p, tgt) or (up_to is not None and up_to >= UP_AIM - 0.1)):
                 self.stats["up_aim_s"] = round(self.stats["up_aim_s"] + TICK_S, 2)
         rot = p.get("rot")
         spin = 0.0
@@ -2306,8 +2310,9 @@ class Bot:
             if self._run_d is not None and self._run_d[0] == self.run_target and d > self._run_d[1] + 5.0:
                 self.stats["backtrack_m"] = round(self.stats["backtrack_m"] + (d - self._run_d[1]) / 100.0, 2)
             self._run_d = (self.run_target, d)
-        if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate"):
-            return out
+        if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate",
+                                                                "quick_turn", "quick_turn_settle"):
+            return out                                           # (a grab's escape and the quick turn: exempt)
         boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
                                                           and p.get("weapon_id") in MAGNUM_IDS)
         if (spin > SPIN_DEG_S or boosted) and set(hold) & STICK_KEYS:
@@ -2357,9 +2362,10 @@ class Bot:
         self._ppos = p["pos"]
         self._mesh = snap.get("navmesh")
         lz = snap.get("laser")
-        if lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) < WALL_AIM_R and any(
-                (e.get("hp") or 0) > 0 for e in snap.get("enemies") or ()):
-            self.stats["wall_aim_s"] = round(self.stats["wall_aim_s"] + TICK_S, 2)   # the aim on a wall
+        alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+        if lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) < WALL_AIM_R and alive and not any(
+                math.hypot(e["pos"][0] - lz["at"][0], e["pos"][2] - lz["at"][2]) <= WALL_AIM_R for e in alive):
+            self.stats["wall_aim_s"] = round(self.stats["wall_aim_s"] + TICK_S, 2)   # the aim on a wall (not on one)
         self._pos_of = {e.get("ptr", e.get("slot")): e["pos"] for e in snap.get("enemies") or ()}
         self._los_tick(snap, now)
         self._tablet_check(p, now)
