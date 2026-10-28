@@ -237,3 +237,77 @@ def test_a_fixture_needs_its_schema_and_a_replayable_title():
         incident_replay.replay({'schema': 'other'})
     with pytest.raises(ValueError):
         incident_replay.bot('BLUS30491')
+
+
+def test_re6_switch_bomb_wait_fights_close_enemies():
+    """bomb_act_damage: during 'thrown'/'det_wait', enemies on him make the bot fight instead of waiting."""
+    from gbox.mercs.titles.re6_switch import Bot, BOMB_FIGHT_R
+
+    # --- thrown phase: enemy within BOMB_FIGHT_R -> fight (None), not wait ---
+    b = Bot(clock=lambda: 10.0)
+    b.bomb_phase = "thrown"
+    b.bomb_phase_at = 8.0
+    b.bomb_at = (0.0, 0.0)
+    b.bomb_since = 8.0
+    b.bomb_from = (0.0, 0.0)
+
+    live = [{"pos": [100.0, 0.0, 0.0], "hp": 500}]
+    p = {"pos": [0.0, 0.0, 0.0]}
+    result = b._bomb_press(5, 10.0, live=live, p=p)
+    assert result is None, f"thrown with enemy at 100cm should fight, got {result}"
+
+    # --- det_wait phase: enemy within BOMB_FIGHT_R -> fight (None), not wait ---
+    b2 = Bot(clock=lambda: 10.0)
+    b2.bomb_phase = "det_wait"
+    b2.bomb_phase_at = 8.0
+    b2.bomb_at = (0.0, 0.0)
+    b2.bomb_since = 8.0
+    b2.bomb_from = (0.0, 0.0)
+
+    result2 = b2._bomb_press(5, 10.0, detonate=True, live=live, p=p)
+    assert result2 is None, f"det_wait with enemy at 100cm should fight, got {result2}"
+
+    # --- thrown phase: no enemies -> keep waiting ---
+    b3 = Bot(clock=lambda: 10.0)
+    b3.bomb_phase = "thrown"
+    b3.bomb_phase_at = 8.0
+    b3.bomb_at = (0.0, 0.0)
+    b3.bomb_since = 8.0
+    b3.bomb_from = (0.0, 0.0)
+
+    result3 = b3._bomb_press(5, 10.0, live=[], p=p)
+    assert result3 is not None and result3.get("hold") == (), \
+        f"thrown with no enemies should wait, got {result3}"
+
+    # --- det_wait phase: no enemies -> keep waiting ---
+    b4 = Bot(clock=lambda: 10.0)
+    b4.bomb_phase = "det_wait"
+    b4.bomb_phase_at = 8.0
+    b4.bomb_at = (0.0, 0.0)
+    b4.bomb_since = 8.0
+    b4.bomb_from = (0.0, 0.0)
+
+    result4 = b4._bomb_press(5, 10.0, detonate=True, live=[], p=p)
+    assert result4 is not None and result4.get("hold") == (), \
+        f"det_wait with no enemies should wait, got {result4}"
+
+    # --- enemy just outside BOMB_FIGHT_R -> keep waiting ---
+    b5 = Bot(clock=lambda: 10.0)
+    b5.bomb_phase = "thrown"
+    b5.bomb_phase_at = 8.0
+    b5.bomb_at = (0.0, 0.0)
+    b5.bomb_since = 8.0
+    b5.bomb_from = (0.0, 0.0)
+
+    far_live = [{"pos": [BOMB_FIGHT_R + 50.0, 0.0, 0.0], "hp": 500}]
+    result5 = b5._bomb_press(5, 10.0, live=far_live, p=p)
+    assert result5 is not None and result5.get("hold") == (), \
+        f"thrown with enemy at {BOMB_FIGHT_R + 50}cm should wait, got {result5}"
+
+
+def test_re6_switch_bomb_act_damage_fixture_replays_deterministically():
+    """The synthetic bomb_act_damage fixture replays deterministically."""
+    fx = json.loads((FIXTURES / "re6_switch_bomb_act_damage.json").read_text())
+    first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
+    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
+    assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))

@@ -1,0 +1,188 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "01002A000CD48000",
+  "event_id": "synthetic-bomb-act-damage-001",
+  "observed_at": 1793145719.3815753,
+  "hp_before": 600,
+  "hp_after": 450,
+  "hp_max": 900,
+  "loss": 150,
+  "held": [
+    "zl"
+  ],
+  "snapshot": {
+    "bonus_s": 0,
+    "camera": {
+      "pitch": 0.0,
+      "pos": [
+        582.15,
+        0.29,
+        -2411.57
+      ],
+      "target": [
+        582.15,
+        0.29,
+        -2411.57
+      ],
+      "unit": 0,
+      "yaw": 0.0
+    },
+    "combo": 0,
+    "combo_bonus": 0,
+    "combo_timer": 0.0,
+    "enemies": [
+      {
+        "hp": 400,
+        "hp_max": 700,
+        "pos": [
+          682.15,
+          0.29,
+          -2411.57
+        ],
+        "ptr": 401075830944,
+        "slot": 24
+      },
+      {
+        "hp": 400,
+        "hp_max": 700,
+        "pos": [
+          582.15,
+          0.29,
+          -2281.57
+        ],
+        "ptr": 401075830945,
+        "slot": 25
+      },
+      {
+        "hp": 400,
+        "hp_max": 700,
+        "pos": [
+          422.15,
+          0.29,
+          -2411.57
+        ],
+        "ptr": 401075830946,
+        "slot": 26
+      },
+      {
+        "hp": 400,
+        "hp_max": 700,
+        "pos": [
+          582.15,
+          0.29,
+          -2601.57
+        ],
+        "ptr": 401075830947,
+        "slot": 27
+      },
+      {
+        "hp": 400,
+        "hp_max": 700,
+        "pos": [
+          932.15,
+          0.29,
+          -2411.57
+        ],
+        "ptr": 401075831000,
+        "slot": 30
+      }
+    ],
+    "kills": 1,
+    "laser": {
+      "alpha": 0,
+      "at": [
+        882.15,
+        0.29,
+        -2411.57
+      ],
+      "from": [
+        582.15,
+        0.29,
+        -2411.57
+      ],
+      "up": false
+    },
+    "max_combo": 1,
+    "mercenaries_mode": "no_mercy",
+    "mercenaries_phase": 1,
+    "module_base": 260512432128,
+    "player": {
+      "ammo": 18,
+      "bomb": {
+        "count": 1,
+        "out": true
+      },
+      "equipped": 5,
+      "hp": 450,
+      "hp_max": 900,
+      "motion": 1540,
+      "pos": [
+        582.15,
+        0.29,
+        -2411.57
+      ],
+      "ptr": 401072455840,
+      "rot": 0.0,
+      "state": 0,
+      "tablets": 7
+    },
+    "bomb_pos": [
+      882.15,
+      0.29,
+      -2411.57
+    ],
+    "score": 300,
+    "timer": 74.49
+  },
+  "counters": {
+    "bombs_placed": 1,
+    "bomb_choices": 1,
+    "bomb_det_holds": 0,
+    "bomb_hits_taken": 150,
+    "deaths": 0,
+    "holds": 0,
+    "kills": 1,
+    "score": 300,
+    "tablet_misses": 0,
+    "tablet_presses": 0,
+    "tablets": 0,
+    "timer": 75.42
+  },
+  "decision": {
+    "act": "bomb_det",
+    "phase": "det_aim",
+    "aim": "bomb out, detonating"
+  },
+  "preceding_history": [
+    {
+      "at": 1793145718.0,
+      "combo": 0,
+      "held": [
+        "zl"
+      ],
+      "hp": 600,
+      "kills": 1,
+      "mine_events": [],
+      "navigation": {},
+      "plan": {
+        "target": {
+          "id": 401075830944,
+          "kind": "enemy"
+        }
+      },
+      "pos": [
+        582.15,
+        0.29,
+        -2411.57
+      ],
+      "rot": 0.0,
+      "score": 300
+    }
+  ],
+  "cluster": {
+    "id": "6101e38e9733a2a3",
+    "game_id": "115f9cdbba115432",
+    "signature": "bomb_act_damage",
+    "label": "health lost while busy with his bomb"
+  }
+}
