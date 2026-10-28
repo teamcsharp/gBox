@@ -168,14 +168,24 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
 
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
-    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}],
+    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 30}],
                                                ["mine_loadout", {"on": True}],
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
-                                               ["loadout", {"on": True, "each_round": True,      # never a pistol
-                                                            "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x16", "0x15",
-                                                                        "0x1D"]}],
                                                ["rampage_loadout", {"on": True}]]
+    assert rm.spec["mercs"]["round_ops"] == [
+        ["loadout", {"on": True, "only": True, "weapons": ["0x04", "0x16", "0x17", "0x19"]}]]
+
+
+def test_thirty_times_fire_rate_remains_only_in_the_shot_motion():
+    g = weapon_guest()
+    ad = Adapter(g)
+    p = player(g)
+    SM.run(ad, "fire_rate", multiplier=30)
+    SM.maintain(ad, {"player": {"ptr": p, "motion": 29}})
+    assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 30.0
+    SM.maintain(ad, {"player": {"ptr": p, "motion": 26}})
+    assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 1.0
 
 
 def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):

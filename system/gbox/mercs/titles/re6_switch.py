@@ -1346,6 +1346,12 @@ def line_hits(origin, toward, foot, reach: float) -> bool:
     return False
 
 
+def segment_hits(origin, dot, foot) -> bool:
+    """The measured laser ends on a body or intersects it before its endpoint; never extend a wall hit."""
+    reach = math.dist(origin, dot)
+    return reach >= 1.0 and (dot_on(dot, foot) is not None or line_hits(origin, dot, foot, reach))
+
+
 class BlastBook:
     """The remote bomb's reach in this title, learned from its blasts: each booked blast {me_cm, hp_lost, hit_cm,
     spared_cm, real, self_hit, at}; radius = the farthest reach of the blasts read where the bomb lay (the zombies it hurt,
@@ -1542,14 +1548,14 @@ AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, no
 # through walls.) A zombie the laser's ray ends short of (FIRE_SLACK, the ray on him within LOS_YAW / LOS_PITCH) is out
 # of sight for BLOCK_S; so is one the trigger worked on for NOHIT_S without his health falling, and one CC_MISS_N quick
 # shots in a row left whole. Those are never fired at, never the target while another is open, and crowd control leaves
-# them; the camera's line fires only within CAM_FIRE_R, or on one whose health fell to a shot within SEEN_S. All in reach
+# them; the camera's line guides acquisition, while aimed fire needs a current measured laser segment. All in reach
 # out of sight: he walks at the nearest with a side step swapped every DETOUR_S (a way round). A still laser is stale
 # only once the camera turned RAY_STALE_TURN under it (standing still behind a wall freezes it too).
 BLOCK_S, NOHIT_S, SEEN_S, NOHIT_GAP_S = 2.5, 1.0, 3.0, 0.5
 BLOCK_MIN_R = 200.0                     # never out of sight this near: crowd control always works on him (live 11:37:
                                         # quick shots that took no health marked ones at 87-92 cm, and he died twice)
-LASER_SEEN_S = 1.0                      # the laser's ray on him this recently: the camera's line may fire at him too
-CAM_FIRE_R = 1000.0
+LASER_SEEN_S = 1.0                      # retention for recent measured laser-hit telemetry
+CAM_FIRE_R = 1000.0                     # distance threshold for the camera_far_holds telemetry
 LOS_YAW, LOS_PITCH = math.radians(3), math.radians(3)
 RAY_STALE_TURN = math.radians(5)
 CC_MISS_N = 2
@@ -1758,7 +1764,8 @@ EMOTION_ACTION = "cPlAction_pl_act_emotion"
 # (PITCH_DEG_AT_0 at 0). Each tick the bot has a target it writes both - the yaw onto the camera's line through the
 # target's aim point, the pitch from that line's slope plus a correction learned once the view settles - and reads them
 # back: no camera keys for the aim. A write that fails or does not stick (LOCK_FAIL_N within LOCK_FAIL_S) puts the keys
-# back for LOCK_OFF_S. stats aim_locks (a new target locked), lock_write_ok / lock_write_fail / lock_overwritten,
+# back for LOCK_OFF_S; a settled lock whose measured ray still misses also yields to the sticks for that cooldown.
+# stats aim_locks (a new target locked), lock_write_ok / lock_write_fail / lock_overwritten / lock_ray_misses,
 # lock_fallbacks, aimed_shots / aimed_hits (a locked shot, and its target's health falling within LOCK_HIT_S),
 # boss_damage (health the big ones lost while locked), cc_vs_aimed (crowd-control quick shots per aimed shot).
 AIM_LOCK = True
@@ -1770,13 +1777,14 @@ LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.25, math.radian
 # is not up there itself; the learned correction is held to LOCK_BIAS_MAX (about 6 deg).
 LOCK_UP_SLACK = math.radians(5)
 LOCK_FAIL_N, LOCK_FAIL_S, LOCK_OFF_S, LOCK_HIT_S, LOCK_TOL = 5, 2.0, 3.0, 0.6, 0.02
+LOCK_RAY_SETTLE_S = 0.3                 # a stable lock must also converge on the actual laser, not just read back
 # Aimed fire (the same message: "any enemy on screen or within ~15 m in line of sight, including ceiling or hanging
 # enemies and bosses ... gets locked and shot at the magnum's rapid rate until dead; crowd-control quick shots only at
 # point blank; bosses and large enemies get priority focus fire"): with the lock, every one alive within AIM_LOCK_R
 # (3D - a ceiling's, a hanging one: no floor filter) or on his floor within ENGAGE_R is a target at any bearing (the
 # lock turns the camera); the big ones (BIG_HP max health and more: uEm2100 / 2210 / 2300 hold 1000 in MercMode's
-# census, the hordes 100-500) first. One off his floor is aimed at its own position (OFF_FLOOR_AIM_H up) and counted
-# on the line within OFF_FLOOR_HIT_R of it.
+# census, the hordes 100-500) first. One off his floor is aimed at its own position (OFF_FLOOR_AIM_H up), with the
+# same measured body-segment requirement as a target on his floor.
 AIM_LOCK_R, BIG_HP, OFF_FLOOR_AIM_H, OFF_FLOOR_HIT_R = 1500.0, 900, 60.0, 90.0
 # Aimed fire is the default (operator 17:24-17:28: "the bot is relying too much on quick attack ... blasting the Magnum
 # in rapid succession ... The quick shot is kind of a singular shot, so it basically locks him into just one enemy while
@@ -1898,15 +1906,16 @@ MAGNUM_IDS = frozenset({0x07, 0x08})
 NAV_WALK, NAV_REACH_R, NAV_REPLAN_S = True, 90.0, 1.5
 # Taking the game's prompts (snapshot prompts; operator 16:54: "if they hit an enemy and they get an opportunity to do a
 # QTE event, they must activate that QTE event immediately"; 17:50-17:52 the climb prompts, "it should be aware that
-# there's a button press that's required for it to relocate to the next area"; take pickups "when they're free and
-# safe"): a shown prompt's button is pressed at once (a stick mask: the stick round), again every PROMPT_REPEAT_S while
-# it stays (a mash); a pickup (Y) only with nobody within PROMPT_SAFE_R; none while a bomb or an item is in his hand
+# there's a button press that's required for it to relocate to the next area"): a shown prompt's button is pressed at
+# once (a stick mask: the stick round), again every PROMPT_REPEAT_S while it stays (a mash). The 2026-10-28 unlimited
+# items directive skips ordinary pickup (Y) prompts at every distance; held QTEs use their separate immediate handler.
+# No ordinary prompt while a bomb or an item is in his hand
 # (the remote's ZR, a grenade's throw). A prompt gone within PROMPT_TAKEN_S of a press counts as taken. stats
 # prompts_seen / prompts_taken, prompt_types {type: [seen, taken, key]}, prompt_latency_ms (the mean from shown to
 # pressed), climbs (B taken while not held), pickups (Y taken); the B spots are logged per stage for the nav
 # (learn_dir / PROMPT_SPOTS_FILE: {stage: [[x, y, z, type], ...]}).
 PROMPTS, PROMPT_REPEAT_S, PROMPT_TAKEN_S, PROMPT_SAFE_R = True, 0.15, 1.5, 300.0
-PROMPT_SKIP_KEYS = frozenset({"r"})     # R: the heal hint shown whenever he is hurt (live 17:55: types 1 / 26 with
+PROMPT_SKIP_KEYS = frozenset({"r", "y"})  # Y: item pickups; R: the heal hint shown whenever he is hurt (types 1 / 26 with
                                         # button 34 at 780 / 900 health) - tablets stay with the tablet rules
 PROMPT_SPOTS_FILE, PROMPT_SPOTS_N, PROMPT_SAVE_S = "re6_prompt_spots.json", 200, 30.0
 # The weapon in hand (operator 18:00: "if the bot is grabbed ... change their equipped weapon to a rapid fire shotgun
@@ -1998,7 +2007,7 @@ class Bot:
                   "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor",
                   "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee",
                   "yellows_taken", "greens_taken", "combo_saves", "bonus_unseen",
-                  "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "aimed_shots",
+                  "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "lock_ray_misses", "aimed_shots",
                   "aimed_hits", "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths",
                   "hazard_marks", "sweeps", "targets_shot"):
             self.stats.setdefault(k, 0)
@@ -2770,7 +2779,7 @@ class Bot:
             near_all = [e for e in self._aimable if math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R or flat(e) <= ENGAGE_R]
             if near_all:
                 front = near_all
-        tgt = self._choose(p, yaw, front or vis or live, now)
+        tgt = self._choose(p, yaw, front or vis or live or high, now)
         foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         self.stats["target_dist"] = round(dist)
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
@@ -2916,34 +2925,23 @@ class Bot:
         return self._aim(p, tgt, foot, dist, origin, dot, source, on_e, front, back, now)
 
     def _on_line(self, origin, dot, source, cands, now=None):
-        """The zombie the aim's line runs into first: the laser's dot on him or its ray through him, or the camera's line
-        through him within CAM_FIRE_R (further only on one hit within SEEN_S: the camera's line runs through walls).
-        None: nobody on the line."""
+        """The first body intersected by the measured laser segment. Camera alignment only guides acquisition;
+        neither old damage nor floor connectivity proves that a shot clears the current wall."""
         now = self.clock() if now is None else now
+        if source != "laser":
+            me = self._ppos or origin
+            if any(math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) > CAM_FIRE_R for e in cands):
+                self.stats["camera_far_holds"] += 1
+            return None
+        if getattr(self, "lock_redirect_at", None) == now:
+            return None                                        # this snapshot predates a material camera redirect
         best, best_d = None, math.inf
         for e in cands:
             foot = e["pos"]
             if self.is_blocked(e, now):
                 continue
-            ppos = self._ppos or origin
-            if abs(foot[1] - ppos[1]) > MAX_DY:                  # off his floor: near its aim point
-                hit = near_line(origin, dot, aim_point(e, ppos), OFF_FLOOR_HIT_R, AIM_LOCK_R + 600.0)
-                if hit and source == "laser":
-                    self.laser_seen[e.get("ptr", e.get("slot"))] = now
-            elif source == "laser":
-                hit = dot_on(dot, foot) is not None or through(origin, dot, foot)
-                if hit:                                          # the laser reaches him: in sight (LASER_SEEN_S)
-                    self.laser_seen[e.get("ptr", e.get("slot"))] = now
-            else:
-                hit = line_hits(origin, dot, foot, ENGAGE_R + 300.0)
-                tid = e.get("ptr", e.get("slot"))
-                me = self._ppos or origin                        # from him (the camera rides ~2.5 m behind)
-                far = math.hypot(foot[0] - me[0], foot[2] - me[2]) > CAM_FIRE_R
-                if hit and far and now - self.seen.get(tid, -1e9) > SEEN_S \
-                        and now - self.laser_seen.get(tid, -1e9) > LASER_SEEN_S:
-                    self.stats["camera_far_holds"] += 1          # far along the camera's line, never hit: not fired at
-                    hit = False
-            if hit:
+            if segment_hits(origin, dot, foot):
+                self.laser_seen[e.get("ptr", e.get("slot"))] = now
                 d = math.dist(origin, foot)
                 if d < best_d:
                     best, best_d = e, d
@@ -2966,7 +2964,7 @@ class Bot:
             foot = tgt["pos"]
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             yaw_err, pitch_err = ray_error(origin, dot, (foot[0], foot[1] + CHEST_H, foot[2]))
-        on = on_e is not None
+        on = on_e is not None and source == "laser" and getattr(self, "lock_redirect_at", None) != now
         auto = p.get("weapon_id") in AUTO_IDS
         trig = self._trigger(on, now, auto)
         if trig:
@@ -3023,7 +3021,7 @@ class Bot:
 
     def _off_floor(self, p, snap, now) -> list:
         """The living ones off his floor within AIM_LOCK_R (3D) and in sight: a ceiling's, a hanging one, a boss."""
-        if not self._lock_ready(snap, now):
+        if not (AIM_LOCK and self.ram is not None and snap.get("aim_cam") and snap.get("camera")):
             return []
         py = p["pos"][1]
         out = []
@@ -3053,7 +3051,8 @@ class Bot:
 
     def _lock(self, p, tgt, snap, now, point=None) -> bool:
         """The player camera's yaw onto the camera's line through tgt's aim point (or point), its pitch from that line's
-        slope plus the learned correction; written and read back. True: written this tick (no camera keys)."""
+        slope plus the learned correction; written and read back. A sustained actual-ray miss yields to the sticks.
+        True: written this tick (no camera keys); a material redirect must await a new laser sample before firing."""
         if tgt is None or not self._lock_ready(snap, now):
             self.lock_w = None
             return False
@@ -3068,6 +3067,20 @@ class Bot:
             self.lock_tid, self.lock_at = tid, now
             self.stats["aim_locks"] += 1
         view, w = (cam["yaw"], cam["pitch"]), self.lock_w
+        if w is None:
+            self.lock_at = now                                  # a fresh convergence grace after a cooldown
+        lz = snap.get("laser")
+        if point is None and w is not None and now - self.lock_at >= LOCK_RAY_SETTLE_S \
+                and lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) >= 1.0 \
+                and not segment_hits(lz["from"], lz["at"], tgt["pos"]):
+            yaw_err, pitch_err = ray_error(lz["from"], lz["at"], pt)
+            if max(abs(yaw_err), abs(pitch_err)) > LOCK_SETTLE:
+                self.lock_off_until = now + LOCK_OFF_S
+                self.lock_w = self.lock_view = None
+                self.pitch_bias = 0.0
+                self.stats["lock_ray_misses"] += 1
+                self.stats["lock_fallbacks"] += 1
+                return False                                   # readback succeeded, but the gun needs stick correction
         if w is not None:
             if abs(wrap(ac["yaw"] - w[1])) > 0.05:               # not what was written: the game set it since
                 self._lock_fail(now, "lock_overwritten")
@@ -3084,11 +3097,15 @@ class Bot:
             cap_deg = math.degrees(max(want_pitch, CLOSE_PITCH) + LOCK_UP_SLACK)
             pitch = min(pitch, (cap_deg - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + max(0.0, self.pitch_bias))
         pitch = max(-1.0, min(1.0, pitch))
+        redirected = abs(wrap(ac["yaw"] - want_yaw)) > LOCK_SETTLE \
+            or math.radians(abs(ac["pitch"] - pitch) * PITCH_DEG_PER_UNIT) > LOCK_SETTLE
         if not self.ram(ac["addr"], pitch, want_yaw):
             self._lock_fail(now, "lock_write_fail")
             self.lock_w = None
             return False
         self.stats["lock_write_ok"] += 1
+        if redirected:
+            self.lock_redirect_at = now
         self.lock_w = (pitch, want_yaw, want_pitch)
         return True
 
@@ -3400,15 +3417,12 @@ class Bot:
         eq = p.get("equipped")
         if (p.get("bomb") or {}).get("out") or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.nade is not None:
             return None
-        px, py, pz = p["pos"]
-        near = min((math.hypot(e["pos"][0] - px, e["pos"][2] - pz) for e in snap.get("enemies") or ()
-                    if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY), default=math.inf)
         for q in shown:
             key, live = q.get("key"), self.prompt_live[(q["ab"], q["type"])]
             hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
             heal = (key == "r" and hp_max and 1 < hp <= TABLET_LOW_HP * hp_max and not self.down
                     and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S)
-            if (key is None or (key in PROMPT_SKIP_KEYS and not heal) or (key == "y" and near < PROMPT_SAFE_R)
+            if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
                     or now - live["at"] < PROMPT_REPEAT_S):
                 continue
             if heal:
@@ -4682,7 +4696,7 @@ class RE6Switch(Driver):
                       "bomb_det_holds", "bomb_kicks", "bomb_hits_taken", "flashes", "frags", "fires", "fever_kicks",
                       "flash_qtes", "pushthroughs", "over_s", "surround_events", "confirmed_shots", "moving_shots", "long_shot_kills", "bomb_drops",
                       "quick_attacks", "quick_attack_kills", "pursuits", "pursuit_kills", "pursuit_lapses", "taunts",
-                      "aim_locks", "lock_write_ok", "lock_write_fail", "lock_fallbacks", "aimed_shots", "aimed_hits",
+                      "aim_locks", "lock_write_ok", "lock_write_fail", "lock_fallbacks", "lock_ray_misses", "aimed_shots", "aimed_hits",
                       "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths", "hazard_marks",
                       "taunts_seen",
                       "pursuit_stuck",

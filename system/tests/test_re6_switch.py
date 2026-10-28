@@ -1433,16 +1433,19 @@ def test_a_shown_prompt_is_pressed_at_once_and_counted_taken_when_it_goes():
     assert bot.stats["prompt_types"]["35"] == [1, 1, "b"] and bot.stats["prompt_latency_ms"] <= 100
 
 
-def test_a_pickup_waits_until_nobody_is_near_and_a_stick_prompt_gets_the_stick():
+def test_unlimited_items_skip_pickups_near_and_far_without_losing_other_prompts():
     bot, clock, snap = prompt_snap(enemies=((0.0, 0.0, 200.0, 700),), key="y", pad=0x8000, type=1)
     acts = run(bot, snap, clock, 2)
-    assert {"tap": "y"} not in acts                                           # one at 2 m: not now
+    assert {"tap": "y"} not in acts
     snap["enemies"][0]["pos"] = (0.0, 0.0, 900.0)
     acts = run(bot, snap, clock, 1)
-    assert acts[0] == {"tap": "y"}
+    assert {"tap": "y"} not in acts and bot.stats["act"] != "prompt_y"
+    snap["enemies"] = []
+    acts = run(bot, snap, clock, 1)
+    assert {"tap": "y"} not in acts and bot.stats["act"] != "prompt_y"
     snap["prompts"] = []
     run(bot, snap, clock, 1)
-    assert bot.stats["pickups"] == 1
+    assert bot.stats["pickups"] == 0 and bot.stats["prompts_taken"] == 0
     bot, clock, snap = prompt_snap(key="stick", pad=0xF0000, type=26)
     acts = run(bot, snap, clock, 1)
     assert "b" not in acts[0]["hold"] and set(acts[0]["hold"]) <= {"lup", "ldown", "lleft", "lright"}
@@ -1926,22 +1929,22 @@ def test_a_zombie_behind_a_wall_is_not_fired_at_and_the_next_one_is_the_target()
     assert not bot.is_blocked(snap["enemies"][0], clock[0])
 
 
-def test_the_cameras_line_fires_only_near_unless_the_zombie_was_hit():
+def test_the_cameras_line_only_guides_aim_even_when_the_zombie_was_recently_hit():
     far = ((0.0, 0.0, 1500.0, 700),)                                      # 15 m along the camera's line, no laser
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
     assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["camera_far_holds"] > 0
     bot.seen[snap["enemies"][0]["ptr"]] = clock[0]                           # his health fell to a shot just now
     acts = run(bot, snap, clock, 6)
-    assert any("zr" in a.get("hold", ()) for a in acts)
+    assert all("zr" not in a.get("hold", ()) for a in acts)
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     bot.laser_seen[snap["enemies"][0]["ptr"]] = 0.0                          # the laser reached him a moment ago
     acts = run(bot, snap, clock, 16)
-    assert any("zr" in a.get("hold", ()) for a in acts[:16])
+    assert all("zr" not in a.get("hold", ()) for a in acts)
     near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: within CAM_FIRE_R
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
-    assert any("zr" in a.get("hold", ()) for a in acts)
+    assert all("zr" not in a.get("hold", ()) for a in acts)
 
 
 def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
@@ -2313,7 +2316,7 @@ def test_a_gun_that_does_not_come_up_keeps_aiming_along_the_camera_and_looks_for
     acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 4)
     assert bot.stats["reraise"] == 1 and (BASE, "laser") not in R._FOUND
     assert all("zl" in a["hold"] for a in acts)                              # the gun never went down for it
-    assert "zr" in acts[-1]["hold"] or "zr" in acts[-2]["hold"]             # the camera's line runs through him: fire
+    assert all("zr" not in a["hold"] for a in acts)                        # camera alignment cannot confirm a hit
     assert bot.stats["aim"].endswith(("keys rleft,zl,zr", "keys zl,zr")) or "via camera" in bot.stats["aim"]
 
 

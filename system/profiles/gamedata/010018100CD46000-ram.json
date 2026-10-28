@@ -27,6 +27,16 @@
     "ready": true,
     "jump_at": "select_player",
     "package": [],
+    "round_ops": [
+      [
+        "loadout",
+        {
+          "on": true,
+          "only": true,
+          "weapons": ["0x04", "0x16", "0x17", "0x19"]
+        }
+      ]
+    ],
     "playing_ops": [
       [
         "infinite_ammo",
@@ -37,7 +47,7 @@
       [
         "fire_rate",
         {
-          "multiplier": 80
+          "multiplier": 30
         }
       ],
       [
@@ -57,22 +67,6 @@
         {
           "on": true,
           "seconds": 5
-        }
-      ],
-      [
-        "loadout",
-        {
-          "on": true,
-          "each_round": true,
-          "weapons": [
-            "0x1B",
-            "0x1A",
-            "0x0B",
-            "0x19",
-            "0x16",
-            "0x15",
-            "0x1D"
-          ]
         }
       ],
       [
