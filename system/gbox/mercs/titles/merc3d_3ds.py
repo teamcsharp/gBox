@@ -41,6 +41,9 @@ AREA_DEPTH, AREA_STACK, AREA_MAX = 0x3818, 0x3820, 8
 AREA_FLOW, FLOW_VT = 0x1C, 0x87FBCC
 FLOW_STATES, FLOW_COUNT, FLOW_CUR, FLOW_PREV = 0x18, 0x1C, 0x20, 0x24
 SP_FIRST, NODE_NEXT, NODE_OWNER = 0x20, 0x8, 0x14
+# sEnemy +0x1C: a unit list (first node +0x24, the sentinel +0x20 that the last node's link points back to); a node is
+# {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27, mission 1-3)
+SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x24, 0x8995B8, 0x10, 64
 P_POS, P_ROT, P_VIT, P_VIT_MAX = 0x40, 0x50, 0xCC4, 0xCCC
 M_MISSION, M_CHARA, M_ELAPSED, M_LEFT = 0x18, 0x1C, 0x64, 0x68
 M_SCORE, M_COMBO_SCORE, M_COMBO, M_COMBO_T = 0x7C, 0x80, 0x88, 0x94
@@ -189,6 +192,31 @@ def mission(m) -> dict | None:
             "combo_timer": round(at(M_COMBO_T, "<f"), 2)}
 
 
+def enemies(m) -> list[dict]:
+    """The units on sEnemy's list: [{slot, ptr, pos, hp, hp_max, class}] (uCharaBase vitality, cm)."""
+    se = _u32(m, S_ENEMY)
+    if not ptr_ok(se):
+        return []
+    out, node, seen = [], _u32(m, se + SE_FIRST), set()
+    while ptr_ok(node) and node != se + SE_SENTINEL and node not in seen and len(seen) < MAX_ENEMIES:
+        seen.add(node)
+        if _u32(m, node) != EN_NODE_VT:
+            break
+        u = _u32(m, node + EN_NODE_UNIT)
+        if ptr_ok(u):
+            try:
+                pos = struct.unpack("<3f", m.rd(u + P_POS, 12))
+                hp, = struct.unpack("<f", m.rd(u + P_VIT, 4))
+                hp_max, = struct.unpack("<f", m.rd(u + P_VIT_MAX, 4))
+            except (ValueError, OSError, RuntimeError, struct.error):
+                pos = None
+            if pos and all(math.isfinite(v) for v in pos):
+                out.append({"slot": len(out), "ptr": u, "pos": pos, "hp": hp, "hp_max": hp_max,
+                            "class": class_name(m, u)})
+        node = _u32(m, node + NODE_NEXT)
+    return out
+
+
 def snapshot(m) -> dict:
     """The round from RAM: the player and the mission counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "score": None, "kills": None, "combo": None,
@@ -202,6 +230,7 @@ def snapshot(m) -> dict:
             hp_max, = struct.unpack("<f", m.rd(p + P_VIT_MAX, 4))
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
                               "class": class_name(m, p)}
+        snap["enemies"] = enemies(m)
         mi = mission(m)
         if mi:
             snap.update({k: mi[k] for k in ("timer", "score", "combo", "combo_timer", "elapsed")},
@@ -348,6 +377,17 @@ class Merc3D(Driver):
             return where
         return "results" if where in MENU_HANDOFF else "loading"
 
+    def mission_complete(self, m, snap) -> bool:
+        """The mission ended on its own objective (cMerceStageEndState: "take down all hostiles" done, time left
+        or not): a finished round for the engine and MercMode (mercmode.TITLES['merc3d'] native_complete)."""
+        try:
+            return screen(m).get("state") == "cMerceStageEndState"
+        except (ValueError, OSError, RuntimeError, struct.error):
+            return False
+
+    def result_ready(self, snap, now) -> bool:
+        return True                             # the end state is the tally: score and time are final there
+
     def menu_handoff(self, m, snap, where) -> bool:
         if where != "results":
             return False
@@ -356,8 +396,13 @@ class Merc3D(Driver):
         except (ValueError, OSError, struct.error):
             return False
 
+    round_counters = ("confirmed_shots", "point_blank_shots", "close_shots", "long_shots", "sky_corrections", "kites",
+                      "los_blocks", "retargets")
+
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
-        raise NotImplementedError("the Mercenaries 3D bot lands with the enemy list (docs/research/merc3d-ram.md)")
+        from .merc3d_bot import Bot
+        self.stats = stats
+        return Bot(stats=stats, clock=clock)
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),

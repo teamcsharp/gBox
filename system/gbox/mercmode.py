@@ -86,7 +86,7 @@ TITLES = {
     # the catalog's '(USA)' 7z holds the EUR image (CTR-P-ABMP, title 0004000000038B00): the map and boundaries name its TID
     'merc3d': {'name': 'Resident Evil: The Mercenaries 3D', 'map_id': '0004000000038B00', 'platform': '3ds',
                'game_ids': ('0ed22ae742e1b56b',), 'playable': False, 'modes': ['mercenaries'],
-               'driver': 'gbox.mercs.titles.merc3d_3ds',
+               'driver': 'gbox.mercs.titles.merc3d_3ds', 'native_complete': True,
                'reason': 'The 3DS RAM map and the native menus to a round are measured (gbox.citra_memory, '
                          'gbox.mercs.titles.merc3d_3ds, docs/research/merc3d-ram.md); the combat bot and a full live round '
                          'are not verified yet.'},
@@ -806,8 +806,11 @@ def accept_boundary(store, run, body, *, parent_job, now=None):
             or type(witness.get('room')) is not int or witness['room']>>8!=4):
         raise ValueError('RE4 must be in its native Mercenaries room routine')
     if terminal == 'results':
+        # Mercenaries 3D missions end on their own objective with time left: its driver reads the stage's own end
+        # state (cMerceStageEndState) and the witness says mission_complete; no other title may end a round that way
+        native_done = witness.get('mission_complete') is True and spec.get('native_complete') is True
         if witness.get('tally_ready') is not True or not (witness.get('timer') == 0
-                or isinstance(witness.get('kills'), (int, float)) and witness['kills'] >= 150):
+                or isinstance(witness.get('kills'), (int, float)) and witness['kills'] >= 150 or native_done):
             raise ValueError('The native result tally is not complete')
     elif terminal == 'dead':
         if not isinstance(witness.get('hp'), (int, float)) or not math.isfinite(witness['hp']) or witness['hp'] > 0:
