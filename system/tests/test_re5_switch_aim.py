@@ -187,13 +187,17 @@ def test_writes_the_game_overwrites_stand_the_lock_down_for_the_round(monkeypatc
 
 # --- downed / kneeling targets: the aim tracks the real body height --------------------
 
-def test_a_downed_majini_is_aimed_at_the_ground_not_the_air():
+def test_a_downed_majini_is_aimed_at_the_ground_not_the_air(monkeypatch):
+    monkeypatch.setattr(R, "DOWNED_MOTIONS", frozenset({2, 85, 86, 87}))
+    monkeypatch.setattr(R, "KNEELING_MOTIONS", frozenset({12, 30}))   # (off in play until measured)
     b, _ = bot([])
     downed = {"ptr": 99, "pos": (0.0, 0.0, 800.0), "hp": 800, "hp_max": 800, "motion": 2}
     assert b._aim_h(downed, 800.0, 0.0) == R.DOWNED_AIM_H
 
 
-def test_a_kneeling_majini_is_aimed_lower_than_standing():
+def test_a_kneeling_majini_is_aimed_lower_than_standing(monkeypatch):
+    monkeypatch.setattr(R, "DOWNED_MOTIONS", frozenset({2, 85, 86, 87}))
+    monkeypatch.setattr(R, "KNEELING_MOTIONS", frozenset({12, 30}))   # (off in play until measured)
     b, _ = bot([])
     kneeling = {"ptr": 98, "pos": (0.0, 0.0, 800.0), "hp": 800, "hp_max": 800, "motion": 30}
     assert b._aim_h(kneeling, 800.0, 0.0) == R.KNEELING_AIM_H
@@ -201,7 +205,9 @@ def test_a_kneeling_majini_is_aimed_lower_than_standing():
     assert b._aim_h(standing, 800.0, 0.0) == R.CHEST_H
 
 
-def test_a_downed_majini_in_crowd_fire_gets_the_ground_aim():
+def test_a_downed_majini_in_crowd_fire_gets_the_ground_aim(monkeypatch):
+    monkeypatch.setattr(R, "DOWNED_MOTIONS", frozenset({2, 85, 86, 87}))
+    monkeypatch.setattr(R, "KNEELING_MOTIONS", frozenset({12, 30}))   # (off in play until measured)
     """The rampage / crowd-fire path uses _aim_h, not a hardcoded CHEST_H."""
     b, clock = bot([])
     downed = (0.0, 0.0, 300.0)

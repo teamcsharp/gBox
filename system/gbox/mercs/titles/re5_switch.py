@@ -87,8 +87,11 @@ WINDUP_MOTIONS = frozenset({80, 81, 60, 91})
 # Live 2026-10-27: 85-87 / 30 / 12 / 2 none (undocumented); the operator 2026-10-28 04:5x: the bot
 # "doesn't aim at them after they fall ... holds the trigger until they get back up".  These are the
 # fall / down / get-up states: the aim point drops with them.
-DOWNED_MOTIONS = frozenset({2, 85, 86, 87})                    # flat on the ground
-KNEELING_MOTIONS = frozenset({12, 30})                         # a knee down: the chest is lower, not on the ground
+# Off until measured live (operator 2026-10-28: "for some reason the bot is aiming down. If the bot has the ability to do
+# headshot or blasts in the chest. Do them"): #1495's guessed ids lowered the aim on standing Majini (motion 2 is
+# likely an ordinary one); the chest for everyone until the real downed / kneeling motions are sampled.
+DOWNED_MOTIONS = frozenset()                                 # was {2, 85, 86, 87} (unverified)                    # flat on the ground
+KNEELING_MOTIONS = frozenset()                               # was {12, 30} (unverified)                         # a knee down: the chest is lower, not on the ground
 DOWNED_AIM_H = 25.0                                          # cm above the feet: a body on the ground
 KNEELING_AIM_H = 70.0                                        # cm: a kneeling Majini's chest
 MAX_ENEMIES = 64
