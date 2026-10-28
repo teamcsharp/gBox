@@ -362,8 +362,11 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                         if value is not None and (key not in ("kills","score") or
                                 isinstance(value,(int,float)) and value>=max(0,last_stats.get(key) or 0)):
                             last_stats[key] = value
+                    native_done = bool(callable(getattr(drv, "mission_complete", None)) and drv.mission_complete(m, snap))
                     if outcome != "died":
-                        outcome = "completed" if last_stats.get("timer") == 0 or (last_stats.get("kills") or 0)>=150 else "ended"
+                        # a title whose missions end on their own objective (Mercenaries 3D: "take down all hostiles")
+                        # says so from its own end state (driver.mission_complete); the clock may still run then
+                        outcome = "completed" if last_stats.get("timer") == 0 or (last_stats.get("kills") or 0)>=150                             or native_done else "ended"
                     hold(set())
                     result_ready = getattr(drv,"result_ready",None)
                     if not round_closed and callable(result_ready) and not result_ready(snap,now):
@@ -373,7 +376,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     stats["result_tally_status"] = "terminal evidence closed"
                     terminal_witness = {'screen':'results','playing_observed':native_playing_seen,
                         'player_verified':native_playing_seen,'tally_ready':callable(result_ready),
-                        'timer':last_stats.get('timer'),'kills':last_stats.get('kills')}
+                        'timer':last_stats.get('timer'),'kills':last_stats.get('kills'),
+                        **({'mission_complete':True} if native_done else {})}
                     finish_evidence(now,outcome,last_stats)
                     if stats.get('mercmode_rotate_requested'):
                         return 'mercmode_boundary'
@@ -392,7 +396,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     if now - gone_since > ROUND_GONE_S:
                         if outcome != "died":
                             outcome = "completed" if where == "results" and (last_stats.get("timer") == 0
-                                or (last_stats.get("kills") or 0) >= 150) else "ended"
+                                or (last_stats.get("kills") or 0) >= 150
+                                or (terminal_witness or {}).get("mission_complete") is True) else "ended"
                         log("round", stats={k: v for k, v in stats.items() if isinstance(v, (int, float, str))})
                         return "round"
                 sleep(0.1)

@@ -224,3 +224,71 @@ def test_warm_probe_is_read_only_and_names_stable_screens():
     out = M.warm_probe(_guest("aMerceTitle", TITLE, 6))
     assert out["ready"] is True and out["screen"] == "press_start" and out["title"] == M.MAP_ID
     assert M.warm_probe(_guest("aMerceTitle", TITLE, 5))["ready"] is False
+
+
+def test_enemies_walk_sEnemys_unit_list():
+    g = _guest("aS0000", STAGE, 2)
+    se = g.obj("sEnemy", 0x120)
+    g.u32(M.S_ENEMY, se)
+    units = []
+    nodes = [g.obj("cNode", 0x30) for _ in range(3)]
+    for k, n in enumerate(nodes):
+        u = g.obj("uEm00Majini", 0x1000)
+        g.put(u + M.P_POS, struct.pack("<3f", 100.0 * k, 0.0, 50.0))
+        g.f32(u + M.P_VIT, 300.0 - 100 * k)
+        g.f32(u + M.P_VIT_MAX, 300.0)
+        g.u32(n, M.EN_NODE_VT)
+        g.u32(n + M.EN_NODE_UNIT, u)
+        g.u32(n + M.NODE_NEXT, nodes[k + 1] if k + 1 < len(nodes) else se + M.SE_SENTINEL)
+        units.append(u)
+    g.u32(se + M.SE_FIRST, nodes[0])
+    es = M.enemies(g)
+    assert [e["ptr"] for e in es] == units
+    assert es[2]["hp"] == 100.0 and es[1]["pos"] == (100.0, 0.0, 50.0) and es[0]["class"] == "uEm00Majini"
+
+
+def test_mission_complete_is_the_stage_end_state_only():
+    d = M.DRIVER()
+    assert d.mission_complete(_guest("aS0000", STAGE, 3), {}) is True          # cMerceStageEndState
+    assert d.mission_complete(_guest("aS0000", STAGE, 5), {}) is False         # failed (time up, objective not met)
+    assert d.mission_complete(_guest("aS0000", STAGE, 2), {}) is False
+
+
+def test_mercmode_accepts_a_native_mission_complete_only_for_merc3d():
+    import time
+    from gbox import mercmode
+    now = time.time()
+    run = {'session_id': 's1', 'worker_id': 'w', 'autoplay_job': 'j', 'playing_since': now - 100,
+           'mercmode': {'title': 'merc3d', 'map_id': '0004000000038B00'}}
+    parent = {'id': 'j', 'tool': 'autoplay', 'state': 'running', 'require_worker': 'w',
+              'input': {'session_id': 's1', 'op': 'start'}}
+
+    class Store:
+        def get(self, kind, key):
+            return parent if key == 'j' else None
+
+    body = {'session_id': 's1', 'round_id': 'a' * 32, 'at': now, 'map_id': '0004000000038B00', 'role': 'solo_p1',
+            'source': 'native_terminal_reader',
+            'witness': {'screen': 'results', 'playing_observed': True, 'player_verified': True, 'tally_ready': True,
+                        'timer': 41.5, 'kills': 12, 'mission_complete': True}}
+    assert mercmode.accept_boundary(Store(), run, body, parent_job=parent, now=now)['round_id'] == 'a' * 32
+    re5 = dict(run, mercmode={'title': 're5', 'map_id': 'BLUS30491'})
+    import pytest
+    with pytest.raises(ValueError, match='tally'):
+        mercmode.accept_boundary(Store(), re5, dict(body, map_id='BLUS30491'), parent_job=parent, now=now)
+
+
+def test_the_player_comes_from_the_live_node_layout():
+    """The exact bytes read live on the i9 (2026-10-27): sPlayer 0x82D7290, its node 0x8567154 = {0x899630, 0x82D72AC,
+    0x82D72AC, 0x899644, 0x8566420, 0, ...}; the unit is the word at +0x10."""
+    g = _guest("aS0000", STAGE, 2)
+    sp, node = 0x082D7290, 0x08567154
+    p = g.obj("uPl< Chris >", 0x1000)
+    g.u32(M.S_PLAYER, sp)
+    g.u32(sp, g.vtable("sPlayer"))
+    g.u32(sp + 0x20, node)
+    g.put(node, struct.pack("<8I", 0x899630, 0x082D72AC, 0x082D72AC, 0x899644, p, 0, 0, 0))
+    g.f32(p + M.P_VIT, 1000.0)
+    g.f32(p + M.P_VIT_MAX, 1000.0)
+    assert M.player_unit(g) == p
+    assert M.snapshot(g)["player"]["class"] == "uPl< Chris >"

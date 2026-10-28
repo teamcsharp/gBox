@@ -39,6 +39,7 @@ import time
 
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
+from . import re5_switch_aim, re5_switch_prompt
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -73,6 +74,14 @@ INV_OBJ = 0x30                           # -> the item's own object (heap); the 
                                          # 2026-10-27, the spray's slot two seconds after its last use)
 EMPTY_IDS = frozenset({0x0, 0x100})      # no item / WP00 NONE
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
+# A Majini's own motion (the player's +0x8F8, the same base class) and its action flags (+0xA23: 0x40 while an attack is
+# under way), read for the ones within WINDUP_READ_R (one read each). Found read-only on the live MercMode game
+# (2026-10-27 20:20-20:30, 4495 samples of the nearest Majini within 3 m, 32 of his hits and grabs): motion 80 is the
+# grab's lunge (from ~1.6 m, the grab ~0.6 s later: 26 % of its ticks end in an attack within 1 s, 54 grabs and 40 hits),
+# 81 another grab's, 60 and 91 swings (31 / 32 %), 7 the grab itself, 47 / 13 holding him; 4 standing, 40 walking (11 %:
+# the walk in), 85-87 / 30 / 12 / 2 none. The flag: 45 % (64 of 209 ticks set) against 4 % clear.
+E_MOTION, E_ACT, E_ATTACKING = 0x8F8, 0xA23, 0x40
+WINDUP_MOTIONS = frozenset({80, 81, 60, 91})
 MAX_ENEMIES = 64
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES, UI_MAX = 0x18, 0x30, 0x18, 32, 64
@@ -336,10 +345,29 @@ CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # unaims_in_5m (target 0), behind_turns, offscreen_aim_s (the aim over OFFSCREEN_ERR off the nearest inside, target 0),
 # whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
 RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = False, 500.0, 0.6, math.radians(100)
-RAMPAGE_FAMILIES = ("shotgun", "magnum")
+RAMPAGE_FAMILIES = ("shotgun", "automatic", "magnum")   # the crowd's gun: a shotgun, else the Gatling / AK-74 / an
+                                         # SMG (re5_weapons "automatic", #1395's loadouts), else a magnum
+# Near focus (operator 20:2x: "Stop having the bot worry about enemies that are far away whenever they're surrounded by
+# people that are nearby"): with a Majini on his level within RAMPAGE_R, no target, dot switch, confirmed shot, aim line
+# pick or combo kill beyond NEAR_FOCUS_R - the fight's pool is the near ones. far_picks_while_crowded: ticks aimed at
+# one beyond it anyway (target 0).
+NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
+# Crowd fire (operator 19:25: "completely surrounded with threats that they were unable to dispatch. They should have
+# pulled out their shotgun and did crowd control"; 19:5x: "give the bot rapid fire shotguns for crowd control ... this
+# bot is swarmed and is barely shooting"; live 19:50 / 19:53: unaims_in_5m 32 / 53, behind_threat_s 39 / 64, no
+# shotgun): the rampage's path, front-facing and calm. CROWD_FIRE_N or more on his level within RAMPAGE_R, or one
+# within CROWD_FIRE_CLOSE_R: the shotgun (else the magnum) comes up by its D-pad slot, the gun stays up while anyone is
+# within RAMPAGE_R (never an unaim there), the target the nearest in front (within CROWD_FRONT of his facing), else the
+# nearest, held until it dies or leaves; the trigger only with the aim on a Majini (the dot, the ray through one, point
+# blank, or the target inside CROWD_CONE: the shotgun's spread), the aim turned to the target by the stick between shots
+# only (never in the shot motion: fire_rate's time scale) and its pitch held on a chest (P_AIM_PITCH,
+# SWEEP_PITCH_BAND); no quick turn (QUICK_TURN off), the heading governor over all. Counters: crowd_fire_s,
+# shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
+CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
+CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
-                    "offscreen_aim_s", "whips", "rampage_swaps")
+                    "offscreen_aim_s", "whips", "rampage_swaps", "crowd_fire_s", "shotgun_swaps")
 # The calm camera (operator 16:47: "smoothly looking around so it's like organic and it doesn't cause any sort of
 # motion sickness because there's motion blur on the game"), shaped on the right stick every tick, whatever decided it
 # (the RAM aim lock waits: +0x3F5C is computed, a write does not stick - 16:55): a stick direction is never reversed
@@ -355,8 +383,57 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # read from RAM since the last tick over HEADING_GOV_DEG_S releases the turn stick this tick (gov_drops); no aim stick in
 # the shot motion (shot_stick_drops); the quick turn (180 deg in 0.3 s) is not used (QUICK_TURN off: the body turns by
 # the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
-HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, False
+HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
+# The quick turn back (operator 20:25: "you can do a quick turn by holding down and pressing B. Thats how you turn around
+# and deal with people behind you"): a Majini on his level within BEHIND_R more than QUICK_ERR off his heading, nobody
+# nearer in front: the trigger let go first (never in the boosted shot motion), the gun down, then the stick back, + B,
+# let go (behind_turns); the fight raises at the one now in front after the settle. At most one each QUICK_GAP_S, and
+# none within QUICK_BACK_S of the last unless the one behind is within GRAB_THREAT_R (no back and forth). The quick turn
+# is exempt from the heading governor (its 180 deg in 0.3 s is the game's own move).
+QUICK_BACK_S = 3.0
+# Wind-ups first (operator 19:25: "The bot should be able to tell who is transitioning into an attack animation and be
+# able to prioritize deactivating them with an attack"): a Majini on his level within WINDUP_R whose own motion is a
+# wind-up (WINDUP_MOTIONS: the grab's lunge, the swings) or whose attack flag is up is the target before any other (the
+# threat pick, the crowd fire, the dot's switch), the nearest such first; behind him, the quick turn's rule applies.
+# Counters: windup_seen (each one starting within WINDUP_R), windup_interrupts (one his shots hurt while it wound up and
+# no attack landed within WINDUP_HIT_S), hits_after_windup (his health falling, or a grab, within WINDUP_HIT_S of one).
+WINDUP, WINDUP_R, WINDUP_READ_R, WINDUP_HIT_S = True, 300.0, 600.0, 1.2
+WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "windup_picks")
+# The RAM aim lock (re5_switch_aim, the RE6 way of #1367; the coordinator 19:06: "even better aim"): with the gun up,
+# the aim moved by RAM toward the target instead of the right stick - the player's heading by the yaw error, the camera
+# pitch (uCameraQFPS +0x1B0) by the pitch error, each at most AIM_LOCK_YAW_DEG_S / AIM_LOCK_PITCH_DEG_S (all of it within
+# AIM_LOCK_SNAP_DEG: no overshoot, no snap), every write read back; the errors from the laser's ray when it is long
+# enough to steer by, else from his heading and the chest's elevation. While the gun comes up the camera pitch goes to
+# the target's elevation first (no raise from an old +57 deg). A failed read-back: the stick as before (aim_lock_fails).
+# OFF until one live round shows the writes hold (no private slot for the write test). Counters: aim_lock_ticks,
+# aim_lock_fails, aim_lock_prepitch.
+AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = False, 140.0, 90.0, 1.5
+AIM_LOCK_HELD = 0.03                     # rad: the next frame's state this near the write: it held (else, 6 times and
+                                         # more often than held, the lock stands down for the round: aim_lock_unheld)
+AIM_LOCK_COUNTERS = ("aim_lock_ticks", "aim_lock_fails", "aim_lock_prepitch", "aim_lock_unheld")
 GOV_COUNTERS = ("gov_drops",)
+# The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
+# hourglass: re5_switch_prompt's live finding, label 112 press:y on the statue - up 23 samples in six minutes, never
+# pressed, bonuses_taken 0). snap prompt (sActionButton's shown button) is taken the moment it shows, ahead of the
+# fight, by its type:
+#   enemy   one a Majini owns or names (Break free, a dodge, a finisher) or a stick QTE: always (not kind 0 alone: the
+#           start's box, uOm088a, is a kind 0 press:y too)
+#   dying   Resuscitate (label 55): always            bonus   the hourglass (label 112): always
+#   pickup  Pick up (label 1): with nobody within PICKUP_CLEAR_R and none of his bombs within MINE_CLEAR_R
+#   traverse  a stage spot's action (TRAVERSE_LABELS, or another of his own press:y): only on the way to a statue or a
+#           pursued Majini off his level (no blind Y: #1370's presses wait for the prompt now); each spot logged
+#   (never the bomb's Place, label 100: the mines module's; never kind 3's area pickups: ammo is infinite)
+# The press by the prompt's mode: press / release / mash - the keys one tick, let go the next (a fresh press each
+# time); wiggle - the left stick left / right by turns; rotate - the left stick round; the axes - back and forth.
+# Counters: prompts_seen and prompts_seen_<type>, prompts_taken (gone within PROMPT_TAKE_S of the first press),
+# prompt_presses, prompt_latency_s (the mean seconds from shown to the first press), ledge_jumps (traverse prompts
+# taken), level_changes (his height changing by LEVEL_DY within LEVEL_CHANGE_S of one); stats traverse_spots: the
+# last spots (label @ x, y, z).
+PROMPTS, PICKUP_CLEAR_R, MINE_CLEAR_R, PROMPT_TAKE_S, LEVEL_CHANGE_S = True, 250.0, 250.0, 3.0, 3.0
+PROMPT_TYPES = ("enemy", "dying", "bonus", "pickup", "traverse", "other")
+PROMPT_COUNTERS = ("prompts_seen", "prompts_taken", "prompt_presses", "ledge_jumps", "level_changes")     + tuple("prompts_seen_" + t for t in PROMPT_TYPES)
+ROTATE = (("lup",), ("lup", "lleft"), ("lleft",), ("lleft", "ldown"), ("ldown",), ("ldown", "lright"), ("lright",),
+          ("lright", "lup"))
 # The turret sweep (operator 17:38: "with as many threats that they have around them within a five meter circle, they
 # should be holding down the trigger and just spinning around getting all of these people that are ganging up on them";
 # kept from 16:12 / 16:47: no whipping, nothing dizzying). It replaces the rampage (RAMPAGE stays off): SWEEP_N or more
@@ -391,7 +468,13 @@ SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_
 RELOCATE, DWELL_R, DWELL_MAX_S, RELOC_CROWD_N, RELOC_CROWD_R, RELOC_GAP_S = True, 250.0, 7.0, 6, 800.0, 4.0
 RELOC_SENSE_R, KITE_DEG, RELOC_STATUE_DEG, RELOC_DIST, RELOC_MAX_S = 1500.0, 35.0, 60.0, 800.0, 3.0
 RELOC_BLOCK_R, RELOC_PROGRESS_CM, RELOC_STUCK_S = 150.0, 40.0, 0.8
-RELOC_COUNTERS = ("relocations", "reloc_stuck")     # hits_taken: the engine's own per-round delta field
+# (operator 19:5x: "run face forward at a corner and away from the enemies while the enemies gather behind them"; live
+# 19:50 / 19:53: 48 / 68 relocations a round, 12 / 16 stuck): a relocation only with nobody within 5 m (boxed in: stand
+# and shotgun), to a point he knows is open - his own trail, a point every TRAIL_EVERY_S kept TRAIL_KEPT, TRAIL_AGE_S old
+# or more, RELOC_GOAL_MIN away - or a standing statue, the clearest of Majini, never through them, never within
+# DEAD_END_R of a run that stuck (the last DEAD_ENDS_KEPT: reloc_dead_ends). None known: he stays and fights.
+TRAIL_EVERY_S, TRAIL_KEPT, TRAIL_AGE_S, RELOC_GOAL_MIN, DEAD_END_R, DEAD_ENDS_KEPT = 1.5, 60, 4.0, 500.0, 300.0, 16
+RELOC_COUNTERS = ("relocations", "reloc_stuck", "reloc_dead_ends", "unaim_holds")     # hits_taken: the engine's own per-round delta field
 # The aim's own pitch up close (live 17:27: "Why is he looking up?" - pitch_up_last "the laser +62 deg, wanted -24 deg,
 # 2.3 m ... ray 50.0 m"; raise_up_last "first ray +28 deg, the last aim before +62 deg"): the laser's muzzle -> dot line
 # misreads up close, the pitch stick followed it up, and the next raise kept the pitch. Now, aimed at a Majini on his
@@ -425,7 +508,8 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS
+    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
+    + AIM_LOCK_COUNTERS + WINDUP_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -447,7 +531,8 @@ PURSUIT_COUNTERS = ("pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuc
 CROWD_MOVES, CROWD_N, CROWD_R, CROWD_BURST_S, CROWD_MOVE_S, CROWD_GAP_S = True, 3, 600.0, 1.2, 0.5, 2.5
 CROWD_COUNTERS = ("crowd_moves",)
 SETTLE_COUNTERS = ("pitch_brakes", "raise_settle_ticks", "pitch_reversals")
-THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "pitch_up_ticks",
+THREAT_COUNTERS = ("threat_ticks", "threat_caps", "threat_switches", "far_aim_ticks", "far_picks_while_crowded",
+                   "pitch_up_ticks",
                    "pitch_up_target_high", "pitch_up_raise", "pitch_up_retarget", "pitch_up_other", "raise_up_first",
                    "raise_first_rays") + SKY_COUNTERS + SETTLE_COUNTERS + AIMFAULT_COUNTERS + PURSUIT_COUNTERS \
     + CROWD_COUNTERS
@@ -551,7 +636,7 @@ LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25,
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
           "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm", "sweep",
-          "relocate")
+          "relocate", "prompt")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
 MINES, MINE_EVERY_S = True, 9.0
@@ -647,7 +732,7 @@ def class_name(m, obj) -> str | None:
         raw = bytes(m.rd(u64(m, dti + DTI_NAME), 40)).split(b"\0")[0]
         name = raw.decode("ascii")
         return name if name.isidentifier() else None
-    except (ValueError, OSError, struct.error, UnicodeDecodeError):
+    except (ValueError, OSError, OverflowError, struct.error, UnicodeDecodeError):
         return None
 
 
@@ -864,6 +949,11 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
+            if AIM_LOCK:                                 # the camera pitch and heading the aim lock writes
+                snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
+            if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
+                snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
+                snap["prompt_read"] = True
             if any(s["id"] == MINE_ITEM for s in snap["inventory"]):   # the bombs on the ground (re5_switch_mines)
                 snap["ground_mines"] = ground_mines(m, base)
             if snap["player"]["hp"] <= 0:                   # dead: "Continue?" and its cursor, once it is up
@@ -875,6 +965,7 @@ def snapshot(m) -> dict:
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
+    ppos = (snap.get("player") or {}).get("pos")
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
         if ptr_ok(arr) and 0 < n <= MAX_ENEMIES:
@@ -886,8 +977,16 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
+                act = None                               # his motion and action flags, near him only
+                if ppos is not None and hp > 0 and math.hypot(pos[0] - ppos[0], pos[2] - ppos[2]) <= WINDUP_READ_R:
+                    try:
+                        raw = m.rd(e + E_MOTION, E_ACT - E_MOTION + 1)
+                        act = (raw[0], raw[E_ACT - E_MOTION])
+                    except (ValueError, OSError):
+                        act = None
                 snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
-                                        "class": enemy_class(m, e)})
+                                        "class": enemy_class(m, e), "motion": act[0] if act else None,
+                                        "act": act[1] if act else None})
     gs = game_sys(m, base)
     if ptr_ok(gs):
         raw = m.rd(gs + GS_PHASE, GS_SCORE + 4 - GS_PHASE)
@@ -899,6 +998,18 @@ def snapshot(m) -> dict:
         if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
             snap["scoring_players"] = 2                     # a team round: the score is both players'
     return snap
+
+
+_PROMPT_TABLE: dict = {}                 # main base -> its key table is this reader's (re5_switch_prompt.table_ok)
+
+
+def prompt_table_ok(m, base: int) -> bool:
+    """re5_switch_prompt's key table check, once a boot (main's base)."""
+    if base not in _PROMPT_TABLE:
+        if len(_PROMPT_TABLE) > 16:
+            _PROMPT_TABLE.clear()
+        _PROMPT_TABLE[base] = re5_switch_prompt.table_ok(m, base)
+    return _PROMPT_TABLE[base]
 
 
 def own_screen(snap: dict) -> str:
@@ -1164,6 +1275,10 @@ class Bot:
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
         self._ap_now = None                              # this tick's P_AIM_PITCH (the pitch-up details)
+        self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
+        self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
+        self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
+        self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -1183,10 +1298,17 @@ class Bot:
         self._kills_prev = None
         self._sweep_st, self._sweep_last, self._sweep_t = None, None, None   # the turret sweep
         self._gov = (None, None)                         # (heading, when) at the last tick: the heading governor
+        self._pr = None                                  # the prompt being answered (PROMPTS): its button, since, presses
+        self._pr_lat: list = []                          # seconds from shown to the first press
+        self._goal_dy = None                             # the statue / pursued Majini's height off his level (traverse)
+        self._level_watch = None                         # (his height, until) after a traverse prompt: level_changes
+        self.stats.setdefault("traverse_spots", "")
+        self.stats.setdefault("prompt_latency_s", 0)
         self._clears: list = []                          # this round's sweep seconds to clear the circle
         self._dwell = None                               # {"anchor", "since"}: the spot he stands at (keep moving)
         self._dwells: list = []                          # this round's finished dwells (seconds)
         self._reloc, self._reloc_ready, self._reloc_due, self._kite_side = None, -1e9, False, 1
+        self._trail, self._dead_ends = [], []           # his own trail (open, reachable); runs that stuck
         self._hp_track, self._hit_at = None, -1e9       # (player, health) last tick, the last fall: hits_taken
         self._cam = {"off": False, "down_since": None, "ap0": None, "on": False}   # the aim pitch guard
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s", "hits_taken"):
@@ -1305,6 +1427,7 @@ class Bot:
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
         self._bonus_tick(snap, now)
+        self._trail_tick(p, now)
         self._keep_moving(p, live, flat, now)
         self._watch_whips(p, now)
         self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
@@ -1357,6 +1480,7 @@ class Bot:
         tgt = min(census, key=cost)
         key = tgt.get("ptr", tgt.get("slot"))
         d = math.hypot(tgt["pos"][0] - px, tgt["pos"][2] - pz)
+        self._goal_dy = tgt["pos"][1] - py
         if self._pur is None or self._pur["target"] != key:
             if self._pur is None:
                 self.stats["pursuits"] += 1
@@ -1452,6 +1576,14 @@ class Bot:
         bx, by, bz = b["pos"]
         d = math.hypot(bx - px, bz - pz)
         err = wrap(heading(bx - px, bz - pz) - p["rot"])
+        self._goal_dy = by - py                          # a ledge's prompt on the way is taken (PROMPTS: traverse)
+        if d <= KNIFE_R and snap.get("prompt_read"):     # at it: its own prompt takes it (Y, PROMPTS); walk into it
+            run["knife_since"] = run["knife_since"] or now
+            if now - run["knife_since"] > KNIFE_TRY_S * (KNIFE_RETRIES + 1):
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # no prompt here: another one first
+                self._bonus = None
+            self.doing, self.why = "walk", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: into it for its prompt"
+            return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
         if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
             if abs(err) > KNIFE_FACE:
                 self.doing, self.why = "turn", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: facing it"
@@ -1473,7 +1605,7 @@ class Bot:
             return {"hold": ("l", "zr") if swing else ("l",)}
         if d < run["best"] - 50.0:                       # on the way: run (walk the last metres), a detour when stuck
             run["best"], run["best_at"] = d, now
-        elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY:
+        elif now - run["best_at"] > BONUS_JUMP_TRY_S and not run.get("jumped") and abs(by - py) > LEVEL_DY                 and not snap.get("prompt_read"):         # (with the prompt read, Y waits for the ledge's own prompt)
             run["jumped"] = True                         # stuck at a ledge above (or below) it: the context action
             run["best_at"] = now                         # (Y: "Jump down" - the 16:24 frame on the roof - or a ladder)
             self.stats["bonus_jumps"] += 1
@@ -1536,7 +1668,12 @@ class Bot:
         px, py, pz = p["pos"]
         dt = 0.0 if self._ramp_t is None else max(0.0, min(now - self._ramp_t, LOOK_STEP_MAX_S))
         self._ramp_t = now
-        ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY] if RAMPAGE else []
+        crowd = CROWD_FIRE and not RAMPAGE               # the calm crowd fire (CROWD_FIRE above); RAMPAGE: the old one
+        ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY] \
+            if (RAMPAGE or crowd) else []
+        if crowd and self._ramp is None and len(ring) < CROWD_FIRE_N \
+                and not any(flat(e) <= CROWD_FIRE_CLOSE_R for e in ring):
+            ring = []                                    # not crowded yet (once on, on while anyone is within 5 m)
         inv = snap.get("inventory") or ()
         held = next((s_ for s_ in inv if s_.get("hand")), None)
         if not ring:
@@ -1570,8 +1707,17 @@ class Bot:
         # the target: the one held while inside and alive; a grab-range one takes over; one change per RAMPAGE_RETARGET_S
         cur = next((e for e in ring if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         nearest = min(ring, key=flat)
+        if crowd:                                        # the nearest in front first: one direction at a time
+            front = [e for e in ring if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= CROWD_FRONT]
+            near_front = min(front, key=flat) if front else None
+            if near_front is not None and flat(near_front) < 2.0 * flat(nearest) + 100.0:
+                nearest = near_front
         tgt = cur
-        if cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
+        wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in ring) else None
+        if wu is not None and wu is not cur:             # winding up: him first, at once
+            tgt, r["retarget_at"] = wu, now
+            self.stats["windup_picks"] += 1
+        elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
             if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
                 tgt = nearest
                 r["retarget_at"] = now
@@ -1584,7 +1730,7 @@ class Bot:
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
-        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S:
+        if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
             if self.aim_since is not None:
                 self._gun_down()
             self.stats["behind_turns"] += 1
@@ -1598,6 +1744,7 @@ class Bot:
             if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
+                self.stats["shotgun_swaps"] += 1
                 self.doing, self.why = "raise", f"rampage: the {fam} up first"
                 self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
                 return {"hold": (QUICK[gun["grid"]],)}
@@ -1622,22 +1769,114 @@ class Bot:
                             "item": held.get("item") if held else None, "shooter": tuple(p["pos"]),
                             "gate": "rampage" + (f": dot on {where}" if where else "")}
             keys |= self._yaw(yaw_err)
-            if dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
+            if not crowd and dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
                 keys |= self._pitch(pitch_err)
+            on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
+                dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
         else:
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": body_err, "where": None,
                             "laserless": True, "weapon": weapon, "gate": "rampage: the gun coming up"}
             keys |= self._yaw(body_err)
+            on = abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
+        if dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
+            on = True                                    # point blank in front: on him
+        if crowd:
+            self.stats["crowd_fire_s"] = round(self.stats["crowd_fire_s"] + dt, 2)
+            ap = p.get("aim_pitch")
+            if ap is not None and now - self.aim_since >= READY_S:   # the aim's own pitch on a chest, never the sky
+                if ap < SWEEP_PITCH_BAND[0]:
+                    keys.add("rdown")
+                elif ap > SWEEP_PITCH_BAND[1]:
+                    keys.add("rup")
+            if p.get("motion") == MOTION_SHOT:           # the shot plays at fire_rate's time scale: no stick in it
+                if keys & {"rleft", "rright", "rup", "rdown"}:
+                    self.stats["shot_stick_drops"] += 1
+                keys -= {"rleft", "rright", "rup", "rdown"}
+            if AIM_LOCK and snap.get("aim_cam"):         # the RAM aim lock (the stick only as a fallback)
+                lzo = (tuple(lz["from"]), tuple(lz["at"])) if lz.get("up") and lz.get("from") and lz.get("at") \
+                    else (None, None)
+                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], CHEST_H, dist, *lzo), now)
+            if not on:                                   # the aim off them: turn, the trigger let go (the turn's pace)
+                if self.fire_down:
+                    self._trigger(False, now)
+                self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
+                self.doing = "aim"
+                self.why = ("crowd fire: %d within %.0f m; turning to the one %.1f m away (%+.0f deg)"
+                            % (len(ring), RAMPAGE_R / 100, dist / 100, math.degrees(body_err)))
+                return {"hold": tuple(sorted(keys))}
         if not self.fire_down:
             self.stats["rampage_shots"] += 1
-        keys |= self._trigger(True, now)                 # blasting from the first tick, whatever the dot is on
+        keys |= self._trigger(True, now)                 # blasting (crowd fire: with the aim on them)
         if aim_off > OFFSCREEN_ERR:
             self.stats["offscreen_aim_s"] = round(self.stats["offscreen_aim_s"] + dt, 2)
         self.doing = "fire"
-        self.why = (f"rampage: {len(ring)} within {RAMPAGE_R / 100:.0f} m, the nearest {flat(nearest) / 100:.1f} m; "
-                    f"on the one {dist / 100:.1f} m away ({math.degrees(body_err):+.0f} deg)")
+        self.why = ("%s: %d within %.0f m, the nearest %.1f m; on the one %.1f m away (%+.0f deg)"
+                    % ("crowd fire" if crowd else "rampage", len(ring), RAMPAGE_R / 100, flat(nearest) / 100,
+                       dist / 100, math.degrees(body_err)))
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
+
+    @staticmethod
+    def _winding(e) -> bool:
+        """His own motion is a wind-up (WINDUP_MOTIONS) or his attack flag is up."""
+        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING))
+
+    def _windup_tick(self, p, live, flat, now):
+        """The wind-ups within WINDUP_R on his level: counted as they start, resolved WINDUP_HIT_S later (an attack landed
+        on him: hits_after_windup; else hurt by him meanwhile: windup_interrupts); the nearest one now, or None."""
+        py = p["pos"][1]
+        winding = [e for e in live if flat(e) <= WINDUP_R and abs(e["pos"][1] - py) <= LEVEL_DY and self._winding(e)]
+        by = {e.get("ptr", e.get("slot")): e for e in live}
+        for e in winding:
+            k = e.get("ptr", e.get("slot"))
+            if k not in self._wu:
+                self._wu[k] = {"t": now, "hp0": e.get("hp") or 0, "hurt": False}
+                self.stats["windup_seen"] += 1
+        for k, w in list(self._wu.items()):
+            e = by.get(k)
+            if e is not None and (e.get("hp") or 0) < w["hp0"]:
+                w["hurt"] = True
+            if e is None and not w["hurt"]:
+                w["hurt"] = True                         # gone from the living: killed
+            if now - w["t"] >= WINDUP_HIT_S:
+                if self._hit_at >= w["t"] or self._grab_at >= w["t"]:
+                    self.stats["hits_after_windup"] += 1
+                elif w["hurt"]:
+                    self.stats["windup_interrupts"] += 1
+                del self._wu[k]
+        self._windup_e = min(winding, key=flat) if winding else None
+        return self._windup_e
+
+    def _quick_behind(self, p, live, flat, now):
+        """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
+        if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+            return None
+        px, py, pz = p["pos"]
+        bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        behind = [e for e in live if flat(e) <= BEHIND_R and abs(e["pos"][1] - py) <= LEVEL_DY and bear(e) > QUICK_ERR]
+        if not behind:
+            return None
+        e = min(behind, key=lambda x: (not self._winding(x), flat(x)))   # a wind-up first
+        if any(flat(f) < flat(e) and bear(f) <= math.radians(60) and (self._winding(f) or not self._winding(e))
+               for f in live):
+            return None                                  # one nearer in front (as dangerous): him first
+        if now - self.quick_at < QUICK_BACK_S and flat(e) > GRAB_THREAT_R:
+            return None                                  # just turned: no back and forth
+        if p.get("motion") == MOTION_SHOT or self.fire_down:
+            if self.fire_down:
+                self._trigger(False, now)                # the trigger let go first: the shot motion ends
+            self.doing, self.why = "quick_turn", "one behind: the trigger let go before the quick turn"
+            return {"hold": ("zl",) if self.aim_since is not None else ()}
+        self._gun_down()
+        key = e.get("ptr", e.get("slot"))
+        self._set_target(key, now)
+        self.target_at = now
+        self.stats["quick_turns"] += 1
+        self.stats["behind_turns"] += 1
+        self.quick = 2
+        self.doing, self.why = "quick_turn", (f"one {flat(e) / 100:.1f} m behind "
+                                              f"({math.degrees(bear(e)):.0f} deg): the quick turn")
+        return {"hold": ("ldown",)}
 
     def _sweep(self, p, live, flat, snap, now):
         """The turret sweep (SWEEP above): this tick's keys while it runs, None when the circle is not crowded."""
@@ -1752,9 +1991,41 @@ class Bot:
         if not RELOCATE or self._reloc is not None or self._sweep_st is not None or now < self._reloc_ready:
             return
         about = any(flat(e) <= RELOC_SENSE_R for e in live)
-        crowd = sum(1 for e in live if flat(e) <= RELOC_CROWD_R)
-        if (cur > DWELL_MAX_S and about) or (cur > 3.0 and crowd >= RELOC_CROWD_N):
+        boxed = any(flat(e) <= RAMPAGE_R for e in live)  # anyone within 5 m: stand and shotgun (CROWD_FIRE)
+        if cur > DWELL_MAX_S and about and not boxed:
             self._reloc_due = True
+
+    def _trail_tick(self, p, now) -> None:
+        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT."""
+        if not self._trail or now - self._trail[-1][0] >= TRAIL_EVERY_S:
+            self._trail = (self._trail + [(now, tuple(p["pos"]))])[-TRAIL_KEPT:]
+
+    def _reloc_goal(self, p, live, snap, now):
+        """Where to relocate: a point he knows is open - his own trail (TRAIL_AGE_S old or more, RELOC_GOAL_MIN away)
+        or a standing statue on his level - farthest from the Majini (each within RELOC_SENSE_R pushing by 1/d), never
+        within DEAD_END_R of a run that stuck, nor one whose way runs through the crowd. (heading, statue?, goal) or
+        None."""
+        px, py, pz = p["pos"]
+        cands = [(pos, False) for t, pos in self._trail if now - t >= TRAIL_AGE_S]
+        cands += [(tuple(b["pos"]), True) for b in snap.get("bonuses") or ()]
+        near = [e for e in live if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= RELOC_SENSE_R]
+        best = None
+        for pos, statue in cands:
+            d = math.hypot(pos[0] - px, pos[2] - pz)
+            if d < RELOC_GOAL_MIN or abs(pos[1] - py) > LEVEL_DY:
+                continue
+            if any(math.hypot(pos[0] - q[0], pos[2] - q[2]) <= DEAD_END_R for q in self._dead_ends):
+                continue                                 # a run stuck there before: a dead end
+            head = heading(pos[0] - px, pos[2] - pz)
+            through = any(abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - head)) <= math.radians(30)
+                          and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < d for e in near)
+            if through:
+                continue                                 # its way runs through them
+            crowd = sum(1.0 / max(math.hypot(e["pos"][0] - pos[0], e["pos"][2] - pos[2]), 100.0) for e in near)
+            score = crowd * 1000.0 - (0.3 if statue else 0.0)   # the clearest; a statue (phase 1) by a little
+            if best is None or score < best[0]:
+                best = (score, head, statue, pos)
+        return None if best is None else best[1:]
 
     def _relocate(self, p, live, flat, snap, now):
         """A relocation (RELOCATE above): the run's keys while it lasts, None otherwise."""
@@ -1766,23 +2037,12 @@ class Bot:
             self._reloc_due = False
             if now < self._reloc_ready:
                 return None
-            vx = vz = 0.0
-            for e in live:                               # away from them all, the nearer pushing harder
-                dx, dz = px - e["pos"][0], pz - e["pos"][2]
-                d = max(math.hypot(dx, dz), 50.0)
-                if d <= RELOC_SENSE_R:
-                    vx, vz = vx + dx / (d * d), vz + dz / (d * d)
-            head = p["rot"] if not (vx or vz) else wrap(heading(vx, vz) + math.radians(KITE_DEG) * self._kite_side)
-            statue = None
-            for b in snap.get("bonuses") or ():          # a standing statue that way: run to it (an open spot)
-                off = abs(wrap(heading(b["pos"][0] - px, b["pos"][2] - pz) - head))
-                if abs(b["pos"][1] - py) <= LEVEL_DY and off <= math.radians(RELOC_STATUE_DEG) \
-                        and (statue is None or off < statue[0]):
-                    statue = (off, b)
-            if statue is not None:
-                head = heading(statue[1]["pos"][0] - px, statue[1]["pos"][2] - pz)
+            goal = self._reloc_goal(p, live, snap, now)
+            if goal is None:
+                return None                              # nowhere known open and clear: stand and fight here
+            head, statue, gpos = goal
             r = self._reloc = {"since": now, "head": head, "from": (px, pz), "best": 0.0, "best_at": now,
-                               "quick": False, "statue": statue is not None}
+                               "quick": False, "statue": statue, "goal": gpos}
             self.stats["relocations"] += 1
             self._reloc_ready = now + RELOC_GAP_S
             self._gun_down()
@@ -1797,15 +2057,20 @@ class Bot:
         if moved >= RELOC_DIST or now - r["since"] >= RELOC_MAX_S or blocked or stuck:
             if stuck and not blocked and moved < RELOC_DIST:
                 self.stats["reloc_stuck"] += 1
+                self.stats["reloc_dead_ends"] += 1
+                self._dead_ends = (self._dead_ends + [(px, py, pz), tuple(r["goal"])])[-DEAD_ENDS_KEPT:]
                 self._kite_side = -self._kite_side       # a wall that way: loop the other way next time
             self._reloc, self._dwell = None, None
             return None
+        if r.get("goal") is not None:                    # on toward the goal (a point he knows is open)
+            r["head"] = heading(r["goal"][0] - px, r["goal"][2] - pz)
         err = wrap(r["head"] - p["rot"])
-        if not QUICK_TURN and abs(err) > QUICK_ERR:      # the way out behind him: back toward it while turning
+        can_quick = QUICK_TURN and not r["quick"] and now - self.quick_at > QUICK_BACK_S
+        if abs(err) > QUICK_ERR and not can_quick:       # the way out behind him: back toward it while turning
             r["best_at"] = max(r["best_at"], now)
             self.doing, self.why = "relocate", f"relocating: turning to the way out {math.degrees(err):+.0f} deg"
             return {"hold": ("ldown",) + self._turn(err)}
-        if QUICK_TURN and abs(err) > QUICK_ERR and not r["quick"] and now - self.quick_at > QUICK_GAP_S:
+        if abs(err) > QUICK_ERR:
             r["quick"], r["best_at"] = True, now + 0.6   # the way out behind him: one quick turn, then the run
             self.stats["quick_turns"] += 1
             self.quick = 2
@@ -1859,6 +2124,8 @@ class Bot:
                                          f"for {now - self._away_since:.1f} s: to him")
         self._example("aim_away", p, now, f"aim {math.degrees(off):.0f} deg off the one {flat(e) / 100:.1f} m away")
         self._away_since = None
+        if CROWD_FIRE and flat(e) <= RAMPAGE_R:
+            return {"hold": ("zl",)}                     # (the caller turns the aim: the gun stays up within 5 m)
         self._gun_down()
         return {"hold": self._turn(err)}
 
@@ -1930,6 +2197,13 @@ class Bot:
         if K_PLAN and best is not min(live, key=lambda e: self._cost(p, e)):
             self.stats["k_range_picks"] += 1                 # a choice the learned range changed
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        wu = self._windup_e
+        if wu is not None and any(e is wu for e in live):   # winding up: the target before any other
+            if wu is not cur:
+                self.stats["windup_picks"] += 1
+                self.target_at = now
+            self._set_target(wu.get("ptr", wu.get("slot")), now)
+            return wu
         nearest = min(live, key=flat)
         front = [e for e in live if flat(e) <= ENGAGE_R
                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
@@ -2019,6 +2293,150 @@ class Bot:
                 self.stats["calm_caps"] += 1
         return {**act, "hold": tuple(keys)}
 
+    def _prompt_type(self, pr, snap) -> str:
+        enemies = {e.get("ptr") for e in snap.get("enemies") or () if e.get("ptr")}
+        label, kind = pr.get("label"), pr.get("kind")
+        if pr.get("owner") in enemies or pr.get("target") in enemies or pr.get("mode") in (6, 7, 8, 9):
+            return "enemy"                               # a Majini's (a grab, a dodge, a finisher) or a stick QTE
+        if kind == re5_switch_prompt.KIND_ENEMY and not pr.get("owner"):
+            return "enemy"                               # (a grab whose owner was not read)
+        if label == re5_switch_prompt.LABEL_RESUSCITATE:
+            return "dying"
+        if label == re5_switch_prompt.LABEL_TIME_BONUS:
+            return "bonus"
+        if label == re5_switch_prompt.LABEL_PICKUP and kind == re5_switch_prompt.KIND_PLAYER:
+            return "pickup"
+        if kind == re5_switch_prompt.KIND_PLAYER and label != re5_switch_prompt.LABEL_PLACE                 and (label in re5_switch_prompt.TRAVERSE_LABELS or pr.get("token") == "press:y"):
+            return "traverse"
+        return "other"
+
+    def _prompt_wanted(self, kind, p, snap) -> bool:
+        if kind in ("enemy", "dying", "bonus"):
+            return True
+        px, py, pz = p["pos"]
+        if kind == "pickup":
+            near = any((e.get("hp") or 0) > 0 and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= PICKUP_CLEAR_R
+                       and abs(e["pos"][1] - py) <= MAX_DY for e in snap.get("enemies") or ())
+            mine = any(math.hypot(g["pos"][0] - px, g["pos"][2] - pz) <= MINE_CLEAR_R
+                       for g in snap.get("ground_mines") or ())
+            busy = self.healing is not None or self.escape is not None                 or (self.mines is not None and self.mines.state != "idle")
+            return not (near or mine or busy)
+        if kind == "traverse":
+            return self._goal_dy is not None and abs(self._goal_dy) > LEVEL_DY
+        return False
+
+    def _prompt(self, p, snap, now):
+        """The game's shown prompt (snap prompt) answered by its type and mode (PROMPTS above); None when there is none
+        or it is not one to take."""
+        pr = snap.get("prompt") if PROMPTS else None
+        st = self._pr
+        lw = self._level_watch
+        if lw is not None:
+            if abs(p["pos"][1] - lw[0]) > LEVEL_DY:
+                self.stats["level_changes"] += 1
+                self._level_watch = None
+            elif now > lw[1]:
+                self._level_watch = None
+        if st is not None and (pr is None or pr.get("button") != st["button"] or pr.get("label") != st["label"]):
+            if st["presses"] and now - st["first"] <= PROMPT_TAKE_S:
+                self.stats["prompts_taken"] += 1         # pressed, and gone (or another in its place)
+                if st["type"] == "traverse":
+                    self.stats["ledge_jumps"] += 1
+            self._pr = st = None
+        if pr is None:
+            return None
+        if st is None:
+            kind = self._prompt_type(pr, snap)
+            st = self._pr = {"button": pr.get("button"), "label": pr.get("label"), "type": kind, "since": now,
+                             "first": None, "presses": 0, "phase": 0}
+            self.stats["prompts_seen"] += 1
+            self.stats["prompts_seen_" + kind] += 1
+            if kind == "traverse":                       # the stage's spot: logged (the ledges learned later)
+                x, y, z = p["pos"]
+                spots = [s_ for s_ in (self.stats.get("traverse_spots") or "").split(" | ") if s_]
+                spots = (spots + [f"{pr.get('label')}@{x:.0f},{y:.0f},{z:.0f}"])[-8:]
+                self.stats["traverse_spots"] = " | ".join(spots)
+        if not self._prompt_wanted(st["type"], p, snap):
+            return None
+        if st["first"] is None:
+            st["first"] = now
+            self._pr_lat.append(now - st["since"])
+            del self._pr_lat[:-50]
+            self.stats["prompt_latency_s"] = round(sum(self._pr_lat) / len(self._pr_lat), 3)
+            if st["type"] == "traverse":
+                self._level_watch = (p["pos"][1], now + LEVEL_CHANGE_S)
+        st["presses"] += 1
+        st["phase"] += 1
+        self.stats["prompt_presses"] += 1
+        token = pr.get("token") or ""
+        if st["presses"] == 1 and not self.in_hold and (st["type"] == "dying" or token == "mash:wiggle"):
+            k = "dying" if st["type"] == "dying" else "holds"   # (the round's holds / dying, as the held rule counts)
+            self.stats[k] = self.stats.get(k, 0) + 1
+            self.in_hold = True
+        self.doing = "held" if st["type"] in ("enemy", "dying") else "prompt"
+        self.why = f"prompt {st['type']}: {token} (label {pr.get('label')})"
+        if token == "mash:wiggle":
+            return {"hold": WIGGLE[st["phase"] % len(WIGGLE)]}
+        if token == "stick:rotate":
+            return {"hold": ROTATE[st["phase"] % len(ROTATE)]}
+        if token in ("stick:y", "stick:x"):
+            pair = (("lup",), ("ldown",)) if token == "stick:y" else (("lleft",), ("lright",))
+            return {"hold": pair[st["phase"] % 2]}
+        keys = tuple(pr.get("keys") or ())
+        if not keys:
+            return None
+        return {"hold": keys if st["phase"] % 2 else ()}  # one tick down, one up: a fresh press each time
+
+    def _writer(self):
+        if self._ram is None and self._m is not None:
+            self._ram = re5_switch_aim.aim_writer(self._m) or False
+        return self._ram or None
+
+    def _lock_aim(self, snap, keys, yaw_err, pitch_err, now):
+        """AIM_LOCK: the aim moved by RAM - the heading by yaw_err, the camera pitch by pitch_err (radians: + = a larger
+        heading / up), each at most its rate this tick (all of it within AIM_LOCK_SNAP_DEG), read back: the right-stick
+        keys dropped. Off, no camera, no writer or a failed read-back: the keys as they were."""
+        st = snap.get("aim_cam")
+        if not AIM_LOCK or not st or (yaw_err is None and pitch_err is None) or self._lock_off:
+            return keys
+        w = self._writer()
+        if w is None:
+            return keys
+        last = self._lock_last                           # did the game keep the last write? (the next frame's state)
+        if last is not None and now - last[2] <= 0.25:
+            held = (last[0] is None or abs(st["pitch"] - last[0]) <= AIM_LOCK_HELD) and                 (last[1] is None or abs(wrap(st["heading"] - last[1])) <= AIM_LOCK_HELD)
+            self._lock_score[0 if held else 1] += 1
+            if self._lock_score[1] >= 6 and self._lock_score[1] > self._lock_score[0]:
+                self._lock_off = True                    # written, read back, then overwritten: the stick again
+                self.stats["aim_lock_unheld"] += 1
+                return keys
+        dt = max(1.0 / 30.0, min(now - self._lock_t, LOOK_STEP_MAX_S)) if self._lock_t is not None else 1.0 / 30.0
+        self._lock_t = now
+
+        def step(err, rate):
+            lim = math.radians(rate) * dt
+            return err if abs(err) <= math.radians(AIM_LOCK_SNAP_DEG) else max(-lim, min(lim, err))
+        h = wrap(st["heading"] + step(yaw_err, AIM_LOCK_YAW_DEG_S)) if yaw_err is not None else None
+        pt = st["pitch"] + step(pitch_err, AIM_LOCK_PITCH_DEG_S) if pitch_err is not None else None
+        if w(st, pt, h):
+            self.stats["aim_lock_ticks"] += 1
+            self._lock_last = (pt, h, now)
+            return set(keys) - {"rleft", "rright", "rup", "rdown"}
+        self.stats["aim_lock_fails"] += 1
+        return keys
+
+    def _lock_errors(self, p, snap, foot, aim_h, dist, origin=None, dot=None):
+        """(yaw, pitch) errors for the lock: from the laser's ray when it is long enough to steer by, else his heading
+        to the target and the chest's elevation against the camera's pitch."""
+        chest = (foot[0], foot[1] + aim_h, foot[2])
+        if origin is not None and dot is not None and math.dist(origin, dot) >= STEER_RAY_CM:
+            return ray_error(origin, dot, chest)
+        px, py, pz = p["pos"]
+        st = snap.get("aim_cam") or {}
+        yaw = wrap(heading(chest[0] - px, chest[2] - pz) - p["rot"])
+        want = math.atan2(chest[1] - (py + MUZZLE_H), max(dist, 1.0))
+        return yaw, (want - st["pitch"]) if st.get("pitch") is not None else None
+
     def _governor(self, act, snap, now) -> dict:
         """HEADING_GOV: his heading turned faster than HEADING_GOV_DEG_S since the last tick: no turn stick this tick
         (a grab's escape left alone)."""
@@ -2028,8 +2446,9 @@ class Bot:
             speed = abs(math.degrees(wrap(rot - g[0]))) / (now - g[1])
         self._gov = (rot, now) if rot is not None else (None, now)
         hold = act.get("hold")
-        if not HEADING_GOV or speed is None or speed <= HEADING_GOV_DEG_S or not hold or self.doing == "held"                 or not {"rleft", "rright"} & set(hold):
-            return act
+        if not HEADING_GOV or speed is None or speed <= HEADING_GOV_DEG_S or not hold or self.doing == "held" \
+                or not {"rleft", "rright"} & set(hold) or self.quick or now - self.quick_at < QUICK_SETTLE_S + 0.3:
+            return act                                   # (the quick turn: the game's own 180, exempt)
         self.stats["gov_drops"] += 1
         return {**act, "hold": tuple(k for k in hold if k not in ("rleft", "rright"))}
 
@@ -2254,9 +2673,12 @@ class Bot:
         self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
         self._bonus_seen_round = False
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
+        self._trail, self._dead_ends = [], []
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
+        self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
+        self._wu, self._windup_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
 
@@ -2449,6 +2871,10 @@ class Bot:
             if now - self._hit_at > 0.5:                 # his health fell (a hit, a blast; a squeeze counts once)
                 self.stats["hits_taken"] += 1
             self._hit_at = now
+        act = self._prompt(p, snap, now)                 # the game's own prompt: taken the moment it shows
+        if act is not None:
+            self._gun_down()
+            return act
         if self.quick:                                       # the quick turn: the stick back, + B, let go
             self.doing, self.why = "quick_turn", f"step {self.quick}"
             step, self.quick = self.quick, (self.quick + 1) % 4
@@ -2464,8 +2890,17 @@ class Bot:
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
         motion = p.get("motion")                         # None: no motion byte (the health / stick heuristics)
-        held = motion in MOTION_HELD or near < HELD_R or p.get("hp") == DYING_HP
-        if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or self.held(p, now):
+        # Held means the game's own grab (his motion, or its Break free prompt), never a Majini merely close: the
+        # learning loop's replay (#1403) found him shaking the stick with one within HELD_R that held nothing while
+        # swarmed ("RE5 swarmed with the gun LOWERED = 20 deaths" in 24 h). HELD_R stands in only without a motion byte;
+        # the stuck rule (the sticks pressed, no move) only with nobody within RAMPAGE_R (geometry, not a crowd).
+        grab_prompt = ((snap.get("prompt") or {}).get("label") == re5_switch_prompt.LABEL_BREAK_FREE)
+        held = motion in MOTION_HELD or grab_prompt or (motion is None and near < HELD_R) or p.get("hp") == DYING_HP
+        if motion in MOTION_HELD and not self._was_held:
+            self._grab_at = now                          # a grab began (hits_after_windup)
+        self._was_held = motion in MOTION_HELD
+        stuck = self.held(p, now) and (motion is None or near > RAMPAGE_R)
+        if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
             if held:                                         # held, or dying: break free / recover (RAM says so)
                 if not self.in_hold:
                     kind = "dying" if p.get("hp") == DYING_HP else "holds"
@@ -2552,6 +2987,7 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        self._goal_dy = None                             # (set again by the bonus run / the pursuit this tick)
         if self.blocked:
             self.blocked = {k: t for k, t in self.blocked.items() if t > now}
             rest = [e for e in live if e.get("ptr", e.get("slot")) not in self.blocked]
@@ -2584,7 +3020,18 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
-        act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first
+        crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
+        if crowded:                                      # someone near: the far ones are no concern now
+            live = [e for e in live if flat(e) <= NEAR_FOCUS_R] or live
+        self._crowded = crowded
+        self._windup_tick(p, live, flat, now)
+        act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
+        if act is not None:
+            return act
+        act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first (off)
+        if act is not None:
+            return act
+        act = self._rampage(p, live, flat, snap, now)   # crowded: the shotgun, front-facing (CROWD_FIRE)
         if act is not None:
             return act
         act = self._relocate(p, live, flat, snap, now)  # then keep moving: no spot held long
@@ -2594,9 +3041,6 @@ class Bot:
         if act is not None:
             return act
         act = self._pursue(p, live, flat, snap, now)
-        if act is not None:
-            return act
-        act = self._rampage(p, live, flat, snap, now)
         if act is not None:
             return act
         urgent = self._combo_urgent(snap)
@@ -2639,7 +3083,7 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
-            if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R):
+            if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R) and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
@@ -2680,7 +3124,7 @@ class Bot:
             self.ray_seen, self.last_ray = now, ray
             if ray != self.ray_key:
                 self.ray_key, self.ray_since = ray, now
-            elif now - self.ray_since > RAY_STALE_S:
+            elif now - self.ray_since > RAY_STALE_S and not (CROWD_FIRE and near <= RAMPAGE_R):
                 self.doing, self.why = "restale", f"the ray unchanged {RAY_STALE_S:.0f} s"
                 self.stats["restale"] += 1                   # a frozen ray: not a live aim
                 self._gun_down()
@@ -2698,6 +3142,11 @@ class Bot:
             self.doing, self.why = "raise", f"the gun coming up (motion {motion})"
             if self.fire_down:
                 self._trigger(False, now)
+            if AIM_LOCK and snap.get("aim_cam"):         # no raise from an old pitch: the target's elevation first
+                _yaw, perr = self._lock_errors(p, snap, foot, CHEST_H, dist)
+                if perr is not None and abs(perr) > math.radians(AIM_LOCK_SNAP_DEG) \
+                        and self._lock_aim(snap, {"zl"}, None, perr, now) == {"zl"}:
+                    self.stats["aim_lock_prepitch"] += 1
             if SKY_GUARD and motion == MOTION_AIMED and waited > SKY_BLIND_S \
                     and (self._ray_pitch is None or self._ray_pitch > -math.radians(5)):
                 self.stats["sky_blind_ticks"] += 1           # aimed, no dot anywhere: the ray on the sky; down
@@ -2706,6 +3155,8 @@ class Bot:
             return {"hold": ("zl",)}
         origin, dot = ray
         frozen = self._frozen_dot(p, dot, fresh_ray)
+        if frozen and CROWD_FIRE and near <= RAMPAGE_R:
+            frozen = False                               # one within 5 m: no re-raise (the gun stays up)
         if frozen:                                       # the dot stood still while the aim moved: no live aim
             self.stats["frozen_dots"] += 1
             self.doing, self.why = "restale", f"the dot frozen {FROZEN_TICKS} ticks while the aim moved"
@@ -2750,6 +3201,14 @@ class Bot:
                 and (now - self.unaim_since < UNAIM_HOLD_S or now - self.aim_since < MIN_UP_S)
             if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
                 far_off = False
+        if far_off and alt is None and CROWD_FIRE and near <= RAMPAGE_R:
+            self.stats["unaim_holds"] += 1               # one within 5 m: the gun stays up, the aim turns to him
+            self.doing, self.why = "aim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m: turning "
+                                           f"the aim (one within {RAMPAGE_R / 100:.0f} m: the gun stays up)")
+            keys = {"zl"} | (self._yaw(yaw_err) if motion != MOTION_SHOT else set())
+            if self.fire_down:
+                self._trigger(False, now)
+            return {"hold": tuple(sorted(keys))}
         if far_off:
             if alt is None:                                  # nobody near the aim: gun down, turn the body
                 self.stats["unaims"] += 1
@@ -2773,9 +3232,11 @@ class Bot:
         self._pitch_up(origin, dot, chest, tgt, dist, now)
         if self._threat_now and dist > THREAT_CAP_R:
             self.stats["far_aim_ticks"] += 1                 # (none expected: every path above is capped)
+        if self._crowded and dist > NEAR_FOCUS_R:
+            self.stats["far_picks_while_crowded"] += 1       # (target 0: the pool above is the near ones)
         ray_len, chest_len = math.dist(origin, dot), math.dist(origin, chest)
         dot_e = next((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")
-                      and dot_on(dot, e["pos"])), None)
+                      and dot_on(dot, e["pos"]) and not (self._crowded and flat(e) > NEAR_FOCUS_R)), None)
         if on and where is None and not point_blank and ray_len < chest_len - WALL_SLACK and dot_e is None:
             on = False                                   # the ray ends on something short of him: no shot
             if self._wall_since is None:
@@ -2820,6 +3281,13 @@ class Bot:
             self._close_sky_since = None
         fix = self._aim_away(p, live, flat, origin, dot, confirmed, now)
         if fix is not None:
+            if CROWD_FIRE and near <= RAMPAGE_R:         # one within 5 m: the aim turns to him, the gun stays up
+                e = next((x for x in live if x.get("ptr", x.get("slot")) == self.target), None)
+                if e is not None:
+                    err = ray_error(origin, dot, (e["pos"][0], e["pos"][1] + CHEST_H, e["pos"][2]))[0]
+                    self.aim_since = self.aim_since or now
+                    self.doing = "aim"
+                    return {"hold": tuple(sorted({"zl"} | (self._yaw(err) if motion != MOTION_SHOT else set())))}
             return fix
         if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
             other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
@@ -2845,7 +3313,7 @@ class Bot:
             self.stats["through_shots"] += 1
         crowd = [e for e in live if flat(e) <= CROWD_R]
         if CROWD_MOVES and len(crowd) >= CROWD_N and now - self.aim_since >= CROWD_BURST_S and now >= self._crowd_ready \
-                and not (confirmed and dist > LONG_R):
+                and not (confirmed and dist > LONG_R) and not (CROWD_FIRE and near <= RAMPAGE_R):
             self._crowd_keys = self._escape_keys(p, crowd)
             self._crowd_until, self._crowd_ready = now + CROWD_MOVE_S, now + CROWD_MOVE_S + CROWD_GAP_S
             self.stats["crowd_moves"] += 1
@@ -2894,6 +3362,8 @@ class Bot:
         if motion == MOTION_SHOT and keys & {"rleft", "rright", "rup", "rdown"}:
             keys -= {"rleft", "rright", "rup", "rdown"}  # the shot plays at fire_rate's time scale: the stick waits
             self.stats["shot_stick_drops"] += 1
+        if AIM_LOCK and snap.get("aim_cam"):             # the RAM aim lock: the aim by RAM, the stick only as a fallback
+            keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, foot, aim_h, dist, origin, dot), now)
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "

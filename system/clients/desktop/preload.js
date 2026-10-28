@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("gbox", {
   token: () => ipcRenderer.invoke("token"),
   api: (path, body, method) => ipcRenderer.invoke("api", path, body, method),
   apiTagged: (path, etag) => ipcRenderer.invoke("api:tagged", path, etag),
+  mercmodeLocal: () => ipcRenderer.invoke("mercmode:local"),   // this PC's own MercMode run (its PiP shows that window)
   audioVolume: value => ipcRenderer.invoke("audio:volume", value),
   sparkStatus: () => ipcRenderer.invoke("spark:status"),
   sparkAction: a => ipcRenderer.invoke("spark:action", a),

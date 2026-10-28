@@ -15,7 +15,7 @@
   "mercs": {
     "driver": "gbox.mercs.titles.merc3d_3ds",
     "menus": "gbox.mercs.titles.merc3d_3ds",
-    "ready": false,
+    "ready": true,
     "jump_at": "mercs_main",
     "package": [],
     "playing_ops": [],

@@ -33,6 +33,7 @@ import random
 from .mercs import warm_boot
 import threading
 import time
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -219,13 +220,16 @@ def opted_in(store, worker: dict, cfg: dict) -> bool:
 
 
 def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: float | None = None) -> str | None:
-    """Why this PC may not start a screensaver game now (None = it may)."""
+    """Why this PC may not start a screensaver game now (None = it may). MercMode the operator started on this PC from the
+    app (gbox.mercmode.operator_dispatch) is their own action: no idle wait and no background-testing tick, but never over
+    a game already running there or a worker busy with jobs, and only with measured memory headroom."""
     from . import background_testing as background
-    if not opted_in(store, worker, cfg):
+    from . import mercmode
+    dispatched = mercmode.operator_dispatch(store, worker['name'])
+    if not dispatched and not opted_in(store, worker, cfg):
         return "not opted in to the autoplay screensaver (Tasks menu or the screensaver's PC list)"
     if not worker.get("online"):
         return "offline"
-    from . import mercmode
     warm = mercmode.warm_sessions(store, worker['name'])
     if worker.get("active_jobs"):
         # a MercMode warm switch may go ahead while only this scheduler's own pause / preload jobs are in flight there
@@ -237,8 +241,8 @@ def worker_reason(store, worker: dict, cfg: dict, running: list[dict], now: floa
     if any(s.get("session_id", "").startswith(worker["id"] + "-") and s.get("session_id") not in warm for s in running):
         return "a game is already running there"
     merc_cfg=mercmode.settings(store,worker['name'])
-    if merc_cfg['enabled'] and merc_cfg['presentation_priority']:
-        return background.admission_reason(worker,background.excluded(store),101,now=now,
+    if merc_cfg['enabled'] and (merc_cfg['presentation_priority'] or dispatched):
+        return background.admission_reason(worker,set() if dispatched else background.excluded(store),101,now=now,
                                            allow_active=True,require_gpu=False)
     if worker.get("os") == "windows" and (worker.get("idle_seconds") or 0) < cfg["idle_minutes"] * 60:
         return f"waiting for {cfg['idle_minutes']} minutes without operator input"
@@ -288,6 +292,7 @@ class Screensaver:
         self.wake = None                                 # install(): the schedule loop's event; nudge() sets it
         self._status_lock = threading.Lock()             # GET /api/mercmode: one computation at a time, shared
         self._status_cache: tuple[float, dict | None] = (0.0, None)
+        self.notes: dict[str, str] = {}                  # PC name -> what its last tick did or waits for (MercMode panel)
 
     def games(self, cfg) -> list[dict]:
         """The games a demo may play: the operator's most played, plus (roulette) favorites with demo builds."""
@@ -338,6 +343,8 @@ class Screensaver:
                     reason = ('scheduled by this PC\'s local control plane' if _local_scheduler(w)
                               else worker_reason(self.store, w, host_cfg, running, now))
                     out[w["name"]] = reason or self._start(w, host_cfg, now)
+                if w["name"] in out:
+                    self.notes[w["name"]] = str(out[w["name"]])[:300]
         return out
 
     def nudge(self, why: str = '') -> None:
@@ -476,8 +483,10 @@ class Screensaver:
                 prepared=self.store.get(mercmode.PREPARATION,w['name']) or {}
                 if ('mercmode' in w.get('tools',[]) and now-prepared.get('requested_at',-1e9)>=300
                         and any(r.get('backend_playable') for r in mercmode.inventory(self.store,w,merc_cfg))):
-                    job=self.submit(JobRequest(tool='mercmode',input={'op':'prepare'},agent_use=True,
-                        low_priority=True,require_worker=w['id']),actor=ACTOR,
+                    # read-only file probes; for the operator's dispatch they need no agent admission either
+                    background=not mercmode.operator_dispatch(self.store,w['name'])
+                    job=self.submit(JobRequest(tool='mercmode',input={'op':'prepare'},agent_use=background,
+                        low_priority=background,require_worker=w['id']),actor=ACTOR,
                         origin={'via':'MercMode host readiness','worker':w['name']})
                     self.store.put(mercmode.PREPARATION,w['name'],prepared|{'requested_at':now,
                         'job':_jid(job),'state':'checking'})
@@ -574,7 +583,7 @@ class Screensaver:
             run |= {"phase": "starting", "session_id": sess["session_id"], "up": now - START_GRACE if jumped else now,
                     **({"jumped": True} if jumped else {})}
             self.store.put(STATE, w["name"], run)
-            if run.get('mercmode') and not run.get('mercmode_rotate_requested'):
+            if run.get('mercmode') and not run.get('mercmode_rotate_requested') and not run.get('stop_requested'):
                 # the next title boots beside this one from the moment this one is up (a cold start after a service
                 # restart has the pool warm again before the first round ends; operator 2026-10-26)
                 self._prelaunch(w, run, mercmode.settings(self.store, w['name']), now)
@@ -601,6 +610,8 @@ class Screensaver:
             self.store.put("slabel", sid, {"session_id": sid, "owner": "you", "ts": now,
                                            "label": f"{run['title']}: autoplay, handed over by the screensaver"})
             self._warm_release(w, running, now, 'the operator took over this PC')   # no paused agent games left behind
+            from . import mercmode                       # someone is at this PC: its next turn waits for idle time again
+            mercmode.lapse_dispatch(self.store, w['name'], 'the operator took over a game on this PC')
             return self._finish(w, run, now, f"handed to the operator ({run['handover']}): plays on until Stop")
         if run.get('mercmode'):
             from . import mercmode
@@ -618,6 +629,8 @@ class Screensaver:
                     phase = 'starting'
                     run = run | {'phase':phase,'up':now-START_GRACE,'mercmode_resume_job':True}
                     self.store.put(STATE,w['name'],run)
+        if run.get('stop_requested'):                   # stopped from the app while it launched: closed now it is up
+            return self._stop(w, run, now, run['stop_requested'])
         if run.get("yield") or (not run.get('mercmode_pinned') and (not cfg["enabled"] or not opted_in(self.store, w, cfg))):
             return self._stop(w, run, now, run.get("yield") or "screensaver turned off")
         if run.get('mercmode'):
@@ -1155,6 +1168,65 @@ class Screensaver:
             return None
         return run
 
+    # --- dispatch from the app (gbox.mercmode plan_dispatch / record_dispatch; the settings are saved first) ---
+    def dispatch(self, w, row, now: float | None = None) -> str:
+        """Apply the app's command on this PC's own MercMode: start (the next tick starts it, now), switch (its title plays
+        next, the current turn ends now) or stop (this PC's MercMode game closes; never a game the operator took over,
+        never one MercMode did not launch)."""
+        from . import mercmode
+        now = time.time() if now is None else now
+        command, title = row.get('command'), row.get('title')
+        with self.lock:
+            run = self.store.get(STATE, w['name'])
+            if command == 'stop':
+                self.store.delete(mercmode.NEXT, w['name'])
+                out = self._request_stop(w, run, now, 'MercMode stopped from the app') if run else 'nothing was playing'
+            elif command == 'switch':
+                playing = (run or {}).get('mercmode') or {}
+                if playing.get('title') == title and not run.get('mercmode_rotate_requested'):
+                    self.store.delete(mercmode.NEXT, w['name'])
+                    out = f"already playing {run.get('title') or title}"
+                else:
+                    self.store.put(mercmode.NEXT, w['name'], {'title': title, 'selection': None, 'at': now,
+                                                              'dispatch': row.get('id')})
+                    if run and playing and not run.get('handover') and not run.get('yield'):
+                        self.store.put(STATE, w['name'], {k: v for k, v in run.items() if k not in (
+                            'mercmode_stay', 'mercmode_stay_round', 'mercmode_warm_attempts', 'mercmode_prelaunch')}
+                            | {'mercmode_rotate_requested': True, 'mercmode_switch': title})
+                        out = f"switching to {mercmode.TITLES[title]['name']} now"
+                    else:
+                        out = f"{mercmode.TITLES[title]['name']} plays next"
+            else:
+                out = 'starting' if not run else f"already {run.get('phase')} {run.get('title') or ''}".strip()
+            self.notes[w['name']] = out
+        self.nudge(f'dispatch: {command}')
+        return out
+
+    def _owned_launch(self, w, run) -> bool:
+        """This run's game is one this scheduler launched itself on exactly this PC (never an adopted or operator game)."""
+        job = self.store.get('job', run.get('job')) or {}
+        sid = run.get('session_id') or ''
+        return bool(job.get('tool') == 'launch_game' and job.get('actor') == ACTOR and not run.get('warm_adoption')
+                    and job.get('require_worker') == w['id'] == run.get('worker_id') and sid.startswith(w['id'] + '-'))
+
+    def _request_stop(self, w, run, now, why) -> str:
+        sid = run.get('session_id')
+        if run.get('handover') or (sid and (self.store.get('slabel', sid) or {}).get('owner') == 'you'):
+            return self._finish(w, run, now, why + ': the operator has that game, it plays on')
+        if not sid:
+            job = self.store.get('job', run.get('job')) or {}
+            if job.get('state') == 'queued' and job.get('tool') == 'launch_game' and job.get('actor') == ACTOR:
+                self.store.put('job', job['id'], job | {'state': 'cancelled', 'finished': now,
+                                                       'error': 'MercMode was stopped from the app before this launch started'})
+                return self._finish(w, run, now, why)
+            if job.get('state') in ('failed', 'rejected', 'invalid', 'cancelled'):
+                return self._finish(w, run, now, why)
+            self.store.put(STATE, w['name'], run | {'stop_requested': why})
+            return 'stopping once its launch is up'
+        if self._owned_launch(w, run):
+            return self._stop(w, run, now, why)
+        return self._finish(w, run, now, why + ': MercMode did not launch that game, so it was left running')
+
     def restart_bot(self, sid: str, *, requested_by: str = 'operator', why: str = 'F5 recovery',
                     now: float | None = None) -> str | None:
         """Start this scheduler's own autobot again on its current run (F5 found it stopped or quiet): the same autoplay
@@ -1360,6 +1432,9 @@ class Screensaver:
         hosts=[]
         for w in _current_workers(self.workers()):
             observed=mercmode.observation(self.store,w)
+            # a paired PC runs its own scheduler: its run, pool and next pick are what it reports (gbox.desktop_bridge)
+            live=mercmode.observed_live(self.store,w) if _local_scheduler(w) else {}
+            own_run=self.store.get(STATE,w['name'])
             command=self.store.get(mercmode.COMMAND,w['name']) or {}
             if command.get('worker_id')!=w['id']:command={}
             job=self.store.get('job',command.get('job')) if command.get('job') else None
@@ -1370,8 +1445,18 @@ class Screensaver:
                 and (t:=telemetry_get(s['session_id'])).get('running') is True
                 and (t.get('stats') or {}).get('team_role')=='solo_p1'
                 and (t.get('stats') or {}).get('screen')=='playing'),None) if not w.get('federation') else None
+            dispatch=self.store.get(mercmode.DISPATCH,w['name'])
+            applied=live.get('dispatch') if isinstance(live.get('dispatch'),dict) else None
+            if applied and (not dispatch or applied.get('id')==dispatch.get('id')
+                            or (applied.get('at') or 0)>=(dispatch.get('at') or 0)):
+                dispatch=applied|{'applied':True}         # what that PC's own scheduler applied (its app reads this)
+            elif dispatch and _local_scheduler(w):
+                dispatch=dispatch|{'applied':False}
+            pool=mercmode.warm_pool(self.store,w['name'])
             hosts.append({'name':w['name'],'id':w['id'],'online':bool(w.get('online')),
-                'current_run':self.store.get(STATE,w['name']),'adoptable_solo_session':candidate,
+                'current_run':own_run or live.get('run'),'adoptable_solo_session':candidate,
+                'dispatch':dispatch,'operator_pc':mercmode.operator_pc(w['name']),
+                'scheduler_note':live.get('note') if _local_scheduler(w) else self.notes.get(w['name']),
                 'settings':actual,
                 'settings_source':'local_scheduler_observation' if observed else
                     'unobserved_local_scheduler' if _local_scheduler(w) else 'this_control_plane',
@@ -1383,8 +1468,8 @@ class Screensaver:
                 # the warm pool: titles waiting paused for their turn, and the title picked to play next
                 'warm':[{'title':t,'state':r.get('state'),'session_id':r.get('session_id'),'at':r.get('at'),
                          'prepare_job':r.get('prepare_job'),'prepared':r.get('prepared'),'prepare_failed':r.get('prepare_failed')}
-                        for t,r in sorted(mercmode.warm_pool(self.store,w['name']).items())],
-                'next':self.store.get(mercmode.NEXT,w['name'])})
+                        for t,r in sorted(pool.items())] if pool or not live else list(live.get('warm') or []),
+                'next':self.store.get(mercmode.NEXT,w['name']) or live.get('next')})
         from .mercs.research_profiles import coverage, VERSION
         for h in hosts:
             sid = (h['current_run'] or {}).get('session_id')
@@ -1421,7 +1506,12 @@ class Report(BaseModel):
 
 
 class MercModeSettings(BaseModel):
-    host: str
+    host: str                                   # the PC: its name, or one of its worker ids
+    # a dispatch from the app (gbox.mercmode plan_dispatch): start / stop / switch MercMode on that PC now
+    command: Literal['start', 'stop', 'switch'] | None = None
+    title: str | None = None                    # switch: the title to play next (start: the one title to play)
+    pip: bool | None = None                     # start / switch: that PC's app shows its own run in its PiP
+    dispatch_id: str | None = None              # a central dispatch relayed to a paired PC keeps its id there
     enabled: bool | None = None
     titles: list[str] | None = None
     rounds_per_title: int | None = None
@@ -1598,34 +1688,71 @@ def install(app, store, config, auth, submit, workers, archive):
         return {'adopted':True,'session_id':body.session_id,'host':body.host,'run':run}
 
     @app.post('/api/mercmode')
-    def mercmode_settings(body: MercModeSettings, actor=Depends(auth)):
+    def mercmode_settings(body: MercModeSettings, parent_job: str=Header(default='',alias='x-gbox-parent-job'),
+                          actor=Depends(auth)):
+        """A PC's MercMode settings, and the app's dispatch there (operator 2026-10-27: "dispatch autoplay titles
+        happening on different instance of gbox from gbox"): command start / stop / switch, pip = that PC's app shows its
+        own run in its PiP. A paired PC (its own local scheduler) gets them relayed as one mercmode job; this control
+        plane's own PCs apply them here."""
         from . import mercmode
-        worker=next((w for w in workers() if w.get('name')==body.host),None)
+        # the PC's current record (online first, gbox.mercmode.find_host), as the adopt route above: a PC that relaunched
+        # leaves older records under its name, and the first of them (live 2026-10-27: i9-NUC's offline, unpaired
+        # 5e0a22ad96d6484b) skipped the relay to its local scheduler, so the i9's settings were stored here and never reached it
+        worker=mercmode.find_host(workers(),body.host)
         if worker is None:
-            raise HTTPException(422,'Choose an exact registered worker name')
+            raise HTTPException(422,'Choose an exact registered PC (its name or a worker id)')
+        host=worker['name']
+        operator=mercmode.operator_initiated(store,actor,parent_job)
+        command=body.command
+        features=worker.get('features') or []
+        patch=body.model_dump(exclude_none=True,exclude={'host','command','title','pip','dispatch_id'})
         try:
-            patch=body.model_dump(exclude_none=True,exclude={'host'})
-            desired=mercmode.configure(store,body.host,patch)
+            patch=mercmode.plan_dispatch(store,worker,patch,command=command,title=body.title,pip=body.pip,
+                                         operator=operator)
+        except PermissionError as exc:
+            raise HTTPException(403,str(exc)) from None
+        except (ValueError,LookupError) as exc:
+            raise HTTPException(422,str(exc).strip("'\"")) from None
+        if _local_scheduler(worker) and mercmode.DISPATCH_FEATURE not in features and command:
+            # an older mercmode tool there forbids the dispatch fields: say so instead of a job that fails on that PC
+            raise HTTPException(409,f'{host} runs an older gBox without remote dispatch: relaunch gBox on that PC '
+                                    '(or press F5 there to update it), then try again')
+        try:
+            desired=mercmode.configure(store,host,patch)
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from None
-        store.audit(actor,'mercmode.settings',body.host,patch)
+        dispatched=None
+        if command:
+            dispatched=mercmode.record_dispatch(store,worker,command=command,title=body.title,pip=body.pip,actor=actor,
+                operator=operator,dispatch_id=body.dispatch_id if parent_job else None)
+        store.audit(actor,'mercmode.dispatch' if command else 'mercmode.settings',host,
+                    patch|({'command':command,'title':body.title,'pip':bool(body.pip),'dispatch':dispatched['id'],
+                            'operator':operator} if dispatched else {}))
         if _local_scheduler(worker):
-            previous=store.get(mercmode.COMMAND,body.host) or {}
+            previous=store.get(mercmode.COMMAND,host) or {}
             old_job=store.get('job',previous.get('job')) if previous.get('job') else None
-            if not (previous.get('settings')==desired and previous.get('worker_id')==worker['id'] and old_job
+            if dispatched or not (previous.get('settings')==desired and previous.get('worker_id')==worker['id'] and old_job
                     and old_job.get('require_worker')==worker['id'] and old_job.get('tool')=='mercmode'
                     and old_job.get('state') not in ('failed','invalid','cancelled','rejected')):
                 # an older worker's mercmode tool forbids unknown fields and cannot warm-launch anyway
                 relay={k:v for k,v in desired.items()
-                       if (k!='keep_warm' or mercmode.WARM_FEATURE in (worker.get('features') or []))
-                       and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in (worker.get('features') or []))
-                       and (k != 'coop_ratio' or mercmode.COOP_FEATURE in (worker.get('features') or []))
+                       if (k!='keep_warm' or mercmode.WARM_FEATURE in features)
+                       and (k not in mercmode.STALEMATE_KEYS or mercmode.STALEMATE_FEATURE in features)
+                       and (k != 'coop_ratio' or mercmode.COOP_FEATURE in features)
                        and not (k=='preferred_editions' and not v)}      # unset: never sent to a worker that lacks it
-                job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':body.host,**relay},
-                    require_worker=worker['id']),actor=actor,
-                    origin={'via':'MercMode local scheduler settings','worker':body.host})
-                store.put(mercmode.COMMAND,body.host,{'job':_jid(job),'settings':desired,'at':time.time(),
-                    'worker_id':worker['id'],'state':'queued'})
+                if dispatched:
+                    relay|={'command':command,'dispatch_id':dispatched['id'],
+                            **({'title':body.title} if body.title else {}),
+                            **({'pip':dispatched['pip']} if command in ('start','switch') else {})}
+                # the operator's own dispatch is foreground work there; automation's waits for that PC's admission
+                job=submit(JobRequest(tool='mercmode',input={'op':'configure','host':host,**relay},
+                    require_worker=worker['id'],agent_use=bool(dispatched) and not operator),actor=actor,
+                    origin={'via':'MercMode dispatch' if dispatched else 'MercMode local scheduler settings','worker':host})
+                store.put(mercmode.COMMAND,host,{'job':_jid(job),'settings':desired,'at':time.time(),
+                    'worker_id':worker['id'],'state':'queued',
+                    **({'command':command,'dispatch':dispatched['id']} if dispatched else {})})
+        elif dispatched:
+            saver.dispatch(worker,dispatched)
         return saver.mercmode_status(fresh=True)
 
     @app.post('/api/mercmode/prepare')

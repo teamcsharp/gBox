@@ -135,3 +135,17 @@ AutoSave, Final.
 ## Controls (measured so far)
 
 The left stick moves: up ran +398 cm in 1 s along +x while facing +x. R raises the gun.
+
+## The player's body and the aim (statics, to confirm live)
+
+- **Upper-body states.** The upper body runs its own states, named by DTI: Upper::WaitState, AimState, FireState,
+  ReloadState, ChangeWeaponState, UseItemState and FullMoveWaitState.
+- **uPlayer properties:** mActiveStatus +0xD48, mLowerStatus +0xD4A, mUpperStatus +0xD4B, mRotateStatus +0xD4C,
+  mPlayerFlag +0xD64.
+- **The laser sight** is uLaserSight, a uWeapon subclass: DTI 0x8DB4A8, vtable 0x8823F4, size 0x1080, class id
+  0x80050A00. It is the aim ray (muzzle to dot) that the bot's "fire only on a confirmed line" needs.
+- **Roster** (the uPl< ... > classes): Chris, Jill, HUNK, Rebecca, Barry, Claire, Wesker and Krauser. Each has a Cos2
+  costume except Krauser.
+- **Round end.** Missions such as 1-3 end on their objective ("Take down all hostiles"), often with time left, in
+  cMerceStageEndState. The driver's `mission_complete` reports that state. MercMode accepts such a round as finished
+  only for titles marked `native_complete` (merc3d).

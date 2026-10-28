@@ -1020,14 +1020,18 @@ def test_with_the_lock_the_camera_is_written_onto_the_target_and_no_camera_key_s
     assert "LOCK" in bot.stats["aim"]
 
 
-def test_one_hanging_from_the_ceiling_within_fifteen_metres_is_locked_and_shot():
-    hang = (0.0, 600.0, 900.0, 700)                                           # 6 m up: off his floor
-    pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 900.0)
+def test_one_hanging_from_the_ceiling_right_above_is_locked_and_shot_and_one_far_off_another_floor_is_not():
+    far = (0.0, 600.0, 900.0, 700)                                            # 6 m up, 9 m off: no threat to him
+    bot0, clock0, snap0, writes0 = lock_brain((far,), laser=((0.0, 660.0, 900.0), (20.0, 145.0, 30.0), 0.86))
+    acts0 = run(bot0, snap0, clock0, 10)
+    assert not any("zr" in a.get("hold", ()) for a in acts0) and bot0.stats["offlevel_skips"] >= 1
+    hang = (0.0, 600.0, 300.0, 700)                                           # 6 m up, 3 m off: right above him
+    pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 300.0)
     bot, clock, snap, writes = lock_brain((hang,), laser=(pt, (20.0, 145.0, 30.0), 0.86))
     acts = run(bot, snap, clock, 10)
     assert writes and any("zr" in a.get("hold", ()) for a in acts) and bot.stats["aimed_shots"] >= 1
     c = snap["camera"]["pos"]
-    assert writes[-1][2] == pytest.approx(R.heading(-c[0], 900.0 - c[2]), abs=1e-4)
+    assert writes[-1][2] == pytest.approx(R.heading(-c[0], 300.0 - c[2]), abs=1e-4)
     bot2, clock2, snap2 = brain(round_guest(enemies=(hang,), cam_yaw=0.0, laser=(pt, (20.0, 145.0, 30.0), 0.86)))
     bot2.held = lambda p, now: False
     acts2 = run(bot2, snap2, clock2, 10)                                      # without the lock: off his floor, ignored
@@ -1035,7 +1039,7 @@ def test_one_hanging_from_the_ceiling_within_fifteen_metres_is_locked_and_shot()
 
 
 def test_the_big_one_gets_the_focus_fire_first():
-    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 600.0, 500), (500.0, 0.0, 1000.0, 1000)))
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 800.0, 500), (500.0, 0.0, 1000.0, 1000)))   # none within 6 m
     snap["enemies"][1]["hp_max"] = 1000
     run(bot, snap, clock, 4)
     c = snap["camera"]["pos"]
@@ -1530,6 +1534,271 @@ def test_greens_wait_for_the_match_and_save_a_running_out_combo():
     assert bot.stats["greens_taken"] == 1 and bot.stats["combo_saves"] == 1
 
 
+def test_the_nav_mesh_line_of_sight_stops_at_its_walls():
+    mesh = R.NavMesh(*u_mesh(size=200.0))
+    assert mesh.clear((100.0, 0.0, 100.0), (100.0, 0.0, 500.0)) is False     # across the hole: a wall between
+    assert mesh.clear((100.0, 0.0, 100.0), (500.0, 0.0, 100.0)) is True      # along the floor
+    assert mesh.clear((500.0, 0.0, 100.0), (500.0, 0.0, 500.0)) is True
+    assert mesh.clear((100.0, 0.0, 100.0), (100.0, 900.0, 500.0)) is None    # another level: the laser decides
+
+
+def test_one_behind_a_wall_is_never_aimed_at_and_is_walked_to_by_the_mesh():
+    hidden = (100.0, 0.0, 500.0, 700)                                         # beyond the hole from him
+    bot, clock, snap, writes = lock_brain((hidden,))
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
+    acts = run(bot, snap, clock, 6)
+    assert all("zl" not in a.get("hold", ()) for a in acts)                  # never aimed at the wall
+    assert writes and all(abs(w[2]) > 1.0 for w in writes)                    # the camera onto the way (east), not him
+    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "walk_nav" and "lup" in acts[-1]["hold"]
+    snap["enemies"][0]["pos"] = (500.0, 0.0, 100.0)                           # down the corridor: in sight
+    bot._sight_cache.clear()
+    acts = run(bot, snap, clock, 6)
+    assert any("zl" in a.get("hold", ()) for a in acts)
+
+
+def test_the_lasers_probe_takes_one_out_of_sight_when_the_ray_stops_short():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),),
+                                          laser=((0.0, R.CHEST_H, 400.0), (20.0, 145.0, 30.0), 0.86))   # a wall at 4 m
+    run(bot, snap, clock, int((R.READY_S + R.LOS_PROBE_S) / 0.05) + 6)
+    assert bot.stats["los_blocks"] >= 1 and bot.is_blocked(snap["enemies"][0], clock[0])
+    assert bot.stats["wall_aim_s"] == 0                                       # 4 m: not a wall at the muzzle
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (20.0, 145.0, 120.0), "up": True}   # 90 cm from the muzzle
+    run(bot, snap, clock, 4)
+    assert bot.stats["wall_aim_s"] > 0
+
+
+def test_a_close_one_beats_a_far_one_and_low_health_is_survival():
+    bot, clock, snap, writes = lock_brain(((300.0, 0.0, 300.0, 700), (0.0, 0.0, 1200.0, 700)))   # 4.2 m and 12 m
+    run(bot, snap, clock, 4)
+    assert bot.target == snap["enemies"][0]["ptr"] and bot.close_threat
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 2000.0, 700),))        # one far off in front
+    snap["player"]["hp"] = 250                                                # under 35 %: survival
+    acts = run(bot, snap, clock, 8)
+    assert bot.survival and bot.stats["survival_s"] > 0 and all("zr" not in a.get("hold", ()) for a in acts)
+    snap["enemies"] = [{"slot": 0, "ptr": 0x9100, "pos": (0.0, 0.0, 400.0), "hp": 700, "hp_max": 700}]
+    acts = run(bot, snap, clock, 6)
+    assert any("zl" in a.get("hold", ()) for a in acts)                       # the one closing in: shot
+    assert any("ldown" in a.get("hold", ()) for a in acts)                    # backing away from him
+
+
+def test_the_turn_governor_releases_the_sticks_on_a_whip_and_in_a_sped_up_action():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 2)
+    snap["player"]["action"] = "cPlAction_pl_act_weapon_comn_quick_shot"     # x10 while it runs
+    out = bot._govern(snap, {"hold": ("lup", "rleft", "zl")}, clock[0] + 0.05)
+    assert out["hold"] == ("zl",) and bot.stats["boost_releases"] == 1 and bot.stats["whips"] == 0
+    snap["player"]["action"] = "cPlAction_pl_act_walk"
+    bot._rot_prev = (clock[0], 0.0)
+    snap["player"]["rot"] = math.radians(90)                                  # 90 deg in 0.05 s: a whip
+    out = bot._govern(snap, {"hold": ("lup", "zl")}, clock[0] + 0.05)
+    assert out["hold"] == ("zl",) and bot.stats["spin_deg_s"] >= 1000 and bot.stats["whips"] == 1
+
+
+def test_aiming_up_with_no_vertical_threat_is_counted():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    snap["camera"]["pitch"] = math.radians(30)                                # the camera up at the rafters
+    run(bot, snap, clock, 8)
+    assert bot.stats["up_aim_s"] > 0
+
+
+def test_wind_ups_are_read_from_the_enemies_actions():
+    me = (0.0, 0.0, 0.0)
+    e = lambda a, z: {"pos": (0.0, 0.0, z), "action": a}
+    assert R.windup(e("cEm1000ActAtkOneHand", 300.0), me) == "melee"
+    assert R.windup(e("cEm5000ActCatch", 400.0), me) == "melee"
+    assert R.windup(e("cEm1000ActIkakuKnife", 900.0), me) is None            # too far for a melee wind-up
+    assert R.windup(e("cEm1000ActWalkGunL", 1200.0), me) == "ranged"
+    assert R.windup(e("cEm5000ActDmgDown", 200.0), me) is None and R.windup(e("cEm5000ActWalk", 200.0), me) is None
+    g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))
+    en = R.u64(g, R.u64(g, R.u64(g, BASE + R.S_ENEMY) + R.E_ARRAY))         # the first enemy
+    g.q(en + 0x13F0, g.obj("cEm5000ActCatch", 0x100))
+    assert R.snapshot(g)["enemies"][0]["action"] == "cEm5000ActCatch"
+
+
+def test_the_one_winding_up_is_stopped_first_and_counted():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 300.0, 700), (200.0, 0.0, 420.0, 700)))
+    snap["enemies"][0]["action"] = "cEm5000ActWalk"
+    snap["enemies"][1]["action"] = "cEm5000ActCatch"                         # the farther one reaches for him
+    run(bot, snap, clock, 3)
+    assert bot.target == snap["enemies"][1]["ptr"] and bot.stats["windup_seen"] == 1
+    snap["enemies"][1]["action"] = "cEm5000ActDmgDown"                       # shot out of it
+    run(bot, snap, clock, 1)
+    assert bot.stats["windup_interrupts"] == 1
+    snap["enemies"][1]["action"] = "cEm1000ActAtkOneHand"
+    snap["enemies"][1]["pos"] = (100.0, 0.0, 150.0)
+    run(bot, snap, clock, 1)
+    snap["player"]["hp"] -= 100                                               # it landed
+    run(bot, snap, clock, 1)
+    assert bot.stats["hits_after_windup"] == 1
+
+
+def test_two_winding_up_get_the_flash(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    two = ((0.0, 0.0, 400.0, 700), (150.0, 0.0, 420.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    for e in snap["enemies"]:
+        e["action"] = "cEm1000ActAtkOneHandDash"
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 3)
+    assert bot.nade and bot.nade["kind"] == "flash"
+
+
+def test_grenades_spam_into_several_clusters_and_take_the_bombs_place_when_they_are_close(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    two = ((0.0, 0.0, 700.0, 700), (100.0, 0.0, 760.0, 700), (-100.0, 0.0, 740.0, 700),
+           (700.0, 0.0, 300.0, 700), (760.0, 0.0, 380.0, 700), (740.0, 0.0, 220.0, 700))   # two clusters
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5)})
+    run(bot, snap, clock, 2)
+    snap["player"]["equipped"] = bot.nade["index"]
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    first = bot.stats["grenade_throws"]
+    clock[0] += R.NADE_GAP_S
+    run(bot, snap, clock, 2)
+    assert first == 1 and bot.nade is not None                                # straight into the next cluster
+    assert R.Bot._clusters([e for e in snap["enemies"]], lambda e: math.hypot(e["pos"][0], e["pos"][2])) == 2
+
+
+def test_throw_speed_runs_the_grenade_throw_twenty_times_faster(mods, monkeypatch):
+    monkeypatch.setattr(R, "QA_FAST", False)
+    g = round_guest()
+    ad = Adapter(g)
+    weapon_table(g)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.f32(p + mods.UNIT_DELTA, 1.0)
+    g.put(p + R.P_SLOTS + 8, bytes([1, 9]) + struct.pack("<H", 0x113))       # the hand grenade, equipped
+    g.i32(p + R.P_EQUIPPED, 9)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
+    mods.run(ad, "fire_rate", multiplier=4, magnum=8, throw=16)
+    snap = R.snapshot(g)
+    assert snap["player"]["weapon_id"] == 0x13
+    mods.maintain(ad, snap, clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 20.0
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0 and mods.ORIG[id(ad)]["throw_fast"] == 1
+
+
+def test_idle_seconds_count_nothing_pressed_with_zombies_about():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot._govern(snap, {"hold": ()}, clock[0] + 0.05)
+    bot._govern(snap, {"hold": ("lup",)}, clock[0] + 0.1)
+    assert bot.stats["idle_s"] == pytest.approx(R.TICK_S)
+def test_the_spread_fills_the_empty_weapon_slots_and_an_asked_weapon_goes_first(mods):
+    import random
+    w, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True)     # Chris: rifle, Lightning Hawk, knife
+    assert w[:3] == [(0x10F, 30), (0x107, 7), (0x119, 0xFFFF)]
+    assert w[3:] == [(0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3)]          # the magnum and the shotguns loaded
+    w2, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True, want=0x109)
+    assert w2[3] == (0x109, 6) and (0x108, 5) in w2                           # the sniper rifle asked for: in first
+    picks = set()
+    for seed in range(40):                                                    # Leon: Wing Shooter and Shotgun
+        w3, _x = mods.loadout_plan(0, True, 5, random.Random(seed), spread=True)
+        assert not any(t in mods.HANDGUN_TYPES for t, _c in w3)               # never a pistol
+        assert len({t for t, _c in w3 if t != 0}) == len([t for t, _c in w3 if t != 0])   # no gun twice
+        picks.add(w3[0])
+    assert len(picks) >= 4 and picks <= set(mods.PISTOL_SWAPS)                # drawn fresh: many campaign guns
+    w4, _x = mods.loadout_plan(0, True, 5, random.Random(1))                  # without the spread: his own pistol
+    assert w4[0] == (0x103, 18)
+
+
+def weapon_guest(types):
+    g = round_guest()
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    for i, t in enumerate(types):                                             # weapon slots 0.. (index = wheel index)
+        g.put(p + R.P_SLOTS + R.SLOT_STRIDE * i + 8, bytes([1, i]) + struct.pack("<H", t))
+    return g, p
+
+
+def test_live_weapon_switches_to_a_loaded_gun_and_queues_another_for_the_next_round(mods, monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    g, p = weapon_guest((0x10F, 0x107, 0x119, 0x104))
+    ad = Adapter(g)
+    out = mods.run(ad, "live_weapon", weapon="Shotgun")
+    assert out["loaded"] and out["wheel_index"] == 3 and R.WANT_WEAPON == 3
+    out = mods.run(ad, "live_weapon", weapon=0x10B)                           # the Anti-Materiel Rifle: not loaded
+    assert not out["loaded"] and out["next_round"] and mods.ORIG[id(ad)]["next_weapon"] == 0x10B
+    assert (0x10B, 10) in mods.ASKED and R.WANT_WEAPON == 3                   # (the switch stays on the shotgun)
+    names = {w["name"]: w for w in mods.run(ad, "weapons")["weapons"]}
+    assert names["Shotgun"]["loaded"] and names["Shotgun"]["wheel_index"] == 3 and not names["Hydra"]["loaded"]
+    assert len(names) >= 24 and mods.run(ad, "status")["live_weapon_sets"] == 2
+    with pytest.raises(ValueError):
+        mods.run(ad, "live_weapon", weapon="Banana")
+
+
+def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", 3)
+    monkeypatch.setattr(R, "WANT_WEAPON_AT", 1.0)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x104: 3})
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "dright"} in acts and bot.stats["weapon_switches"] >= 1
+    snap["player"]["equipped"] = 3
+    run(bot, snap, clock, 2)
+    assert bot.stats["weapon_in_hand"] == 3
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    crowd = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x105: 4})
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "dright"} in acts and bot.stats["crowd_shotgun_s"] > 0
+
+
+def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_of_it(monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
+    snap["player"].update(equipped=R.BOMB_INDEX, guns={0x10F: 0, 0x107: 1, 0x104: 3},
+                          bomb={"count": 4, "out": True})
+    snap["bomb_pos"] = (0.0, 0.0, 1500.0)                                    # 15 m off: clear of its reach
+    acts = run(bot, snap, clock, 3)
+    assert bot.grab_weapon in (1, 3) and bot.stats["weapon_swaps"] == 1
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] >= 1
+    snap["player"].update(state=0, bomb={"count": 4, "out": False})           # it went off; free
+    run(bot, snap, clock, 1)
+    assert bot.stats["grab_detonations"] == 1
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 4, "out": True})
+    snap["bomb_pos"] = (0.0, 0.0, 200.0)                                     # 2 m off: never from here
+    acts = run(bot, snap, clock, 3)
+    assert not any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] == 0
+
+
+def test_the_mods_tool_routes_an_re6_switch_session_to_its_own_ops(mods, monkeypatch):
+    from gbox import re5_mods_tool as T, tools
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    monkeypatch.setattr(R, "FLASH", True)
+    g, _p = weapon_guest((0x10F, 0x107, 0x119, 0x104))
+    ad = Adapter(g)
+    monkeypatch.setitem(tools.SESSIONS, "re6-1", (ad, {"game_id": "115f9cdbba115432", "title": "RE6"}))
+    out = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="live_weapon", weapon=0x104), None)["result"]
+    assert out["loaded"] and R.WANT_WEAPON == 3
+    out = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="bot_options", flash=False), None)["result"]
+    assert out["flash"] is False and not R.FLASH
+    st = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="status"), None)["result"]
+    assert st["bot"]["flash"] is False and st["live_weapon_sets"] == 1
+    assert T.is_switch_re6({"title_id": "01002a000cd48000"}) and not T.is_switch_re6({"game_id": "52d15709be0fda1a"})
+
+
+def test_the_pitch_guard_never_writes_far_above_the_targets_own_slope():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    bot.pitch_bias = 0.25                                                     # a learned correction at its cap
+    run(bot, snap, clock, 4)
+    c = snap["camera"]["pos"]
+    own = math.degrees(math.atan2(R.CHEST_H - c[1], math.hypot(-c[0], 900.0 - c[2])))
+    cap = (math.degrees(R.CLOSE_PITCH) + math.degrees(R.LOCK_UP_SLACK) - R.PITCH_DEG_AT_0) / R.PITCH_DEG_PER_UNIT + 0.25
+    assert writes and all(w[1] <= cap + 1e-6 for w in writes) and own < 0
+    assert R.LOCK_BIAS_MAX <= 0.25
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
@@ -1661,7 +1930,7 @@ def test_the_snapshot_finds_the_time_and_combo_bonuses_by_their_action():
 def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
-    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
+    g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
     u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                   # 10 m ahead
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, 12)
@@ -1679,7 +1948,7 @@ def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch)
 def test_no_bonus_shot_with_a_bomb_out(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
-    g = round_guest(enemies=(), laser=((0.0, 40.0, 1000.0), (20.0, 145.0, 30.0), 0.86))
+    g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
     bot, clock, snap = brain(g)
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, -1500.0))
@@ -1697,7 +1966,9 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(mon
     run(bot, snap, clock, 6)
     assert bot.doing != "bonus" and bot.stats["bonus_shots"] == 0
     R._BONUS.update(base=None)                                                         # another guest at the same base
-    g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, 60.0, 500.0), (20.0, 145.0, 30.0), 0.86))
+    for cache in (R._FOUND, R._MISS):                                                  # (its laser too)
+        cache.clear()
+    g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, R.BONUS_H, 500.0), (20.0, 145.0, 30.0), 0.86))
     bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                       # a wall at 5 m: the dot short
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
@@ -2468,7 +2739,7 @@ def test_fire_rate_magnum_and_throw_multipliers(mods):
 def test_merc_loadout_writes_nothing_into_a_table_that_is_not_this_builds(mods):
     g = round_guest()
     table = loadout_table(g)
-    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x10E, 30))   # Chris's rifle: another gun
+    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x109, 99))   # Chris's rifle: a foreign pair
     ad = Adapter(g)
     out = mods.run(ad, "merc_loadout")
     assert out["verified"] is False and out["writes"] == 0 and ad.writes == []

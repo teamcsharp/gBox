@@ -49,7 +49,7 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     m = MN.Mines({})
     m.new_round(0.0)
     assert m.tick(p(), snap(), foes((1200, 0)), 5.0) is None                    # too soon
-    assert m.tick(p(), snap(), foes((700, 0)), MN.EVERY_S + 1) is None          # one within FOE_CLEAR_CM (his blast)
+    assert m.tick(p(), snap(), foes((400, 0)), MN.EVERY_S + 1) is None          # one within FOE_CLEAR_CM (his blast)
     assert m.stats["mine_status"] == "a Majini too close to place one"
     m.last_at, m.last_pos = 0.0, (500.0, 0.0, 0.0)
     assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1) is None         # still beside the last site
@@ -156,6 +156,7 @@ def bot_snap(inv, enemies=((0.0, 0.0, 900.0),), motion=0):
 def switch_bot(monkeypatch):
     from gbox.mercs.titles import re5_switch as R
     monkeypatch.setattr(R, "PS3_BRAIN", False)
+    monkeypatch.setattr(R, "CROWD_FIRE", False)   # (these test the paths under the crowd fire; tests/test_re5_switch_crowd.py)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
     clock = [0.0]
     return R, R.Bot(stats={}, clock=lambda: clock[0]), clock

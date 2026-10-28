@@ -1265,6 +1265,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/mercs-clock.js"></script>
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/re4-modifiers.js"></script>
+<script src="../web/viz/re6-modifiers.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
@@ -2611,7 +2612,8 @@ $('#mercmode-open').onclick=async()=>{
   if(!window.GBoxMercMode){toast('Mercenaries screensaver controls are updating.');return;}
   host.hidden=false;
   mercModePanel=GBoxMercMode.mount({root:host,api:async(path,body)=>{
-    const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;}});
+    const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;},
+    watch:sid=>pipShow(sid)});                  // "Watch": another PC's MercMode run in this PC's PiP
   await mercModePanel.ready;
 };
 
@@ -3709,7 +3711,8 @@ async function embedTick() {
     if(!r.ok&&!mine)return;
     // Remote PiP keeps its picture while the game restarts. Its continuity poll
     // reconnects only this game's replacement, without changing window bounds.
-    if (COMPACT.on && COMPACT.local && !mine&&r.ok) await compactRestore();
+    // ...the PiP of this PC's own MercMode run waits for its next title instead (mercPipHold: a cold title switch)
+    if (COMPACT.on && COMPACT.local && !mine&&r.ok&&!(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -4012,6 +4015,95 @@ setInterval(() => compactContinuity.poll(), 2000); // keep polling while hidden/
 addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
 const compactEnter = () => compactController.enter();
 const compactRestore = () => compactController.restore();
+// This PiP shows a running game, wherever it plays: opened if it is closed, moved in place if it shows another game - this
+// PC's own game as its window (natively, no stream), another PC's as its stream.
+async function pipShow(sid) {
+  const session = await sessionById(sid);
+  if (!session || session.state !== 'running' || session.worker_online === false)
+    throw Error('That game is not running now (or its PC is offline). Your view was not changed.');
+  if (!COMPACT.on) return compactController.enter({ sid });
+  if (COMPACT.sid === sid) return COMPACT;
+  if (session.detail?.local_window && session.detail.worker_name === S.workerName) {
+    compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
+    await compactController.follow(COMPACT.sid, { sid, local: true });
+    return COMPACT;
+  }
+  await compactFollow(session, COMPACT.sid, { force: true });
+  return COMPACT;
+}
+// "pip mode" (operator 2026-10-27, i9-NUC: "on the i9 nuc replace the stream in the pip with the mercenaries 3d playing as
+// an instance in the pip window"): while this PC's own MercMode / autoplay run plays, the PiP shows that game's own window
+// instead of another PC's stream, follows it through every title switch, and goes back to the stream it showed before when
+// the local run stops (GBoxMercMode.pipOwnRun decides; this PC's own scheduler answers through main.js mercmode:local).
+// A cold title switch closes the game window: the PiP waits for the next title (MERC_PIP_HOLD_MS) instead of closing.
+const MERC_PIP_KEY = 'gbox.mercmode.pip', MERC_PIP_HOLD_MS = 180000, MERC_PIP_EVERY_MS = 3000;
+const MERC_PIP = { handled: '', closed: '', last: '', away: false, dispatch: '', returnTo: null, lostAt: 0, busy: false };
+try { const saved = JSON.parse(localStorage.getItem(MERC_PIP_KEY) || '{}');
+  MERC_PIP.handled = String(saved.handled || ''); MERC_PIP.closed = String(saved.closed || ''); } catch {}
+const mercPipSave = () => { try { localStorage.setItem(MERC_PIP_KEY, JSON.stringify({ handled: MERC_PIP.handled, closed: MERC_PIP.closed })); } catch {} };
+// embedTick: the game window of this PC's run, shown by this follower, closed - a title switch: hold the PiP for the next one
+function mercPipHold(sid) {
+  try {
+    if (!sid || MERC_PIP.last !== sid) return false;
+    MERC_PIP.lostAt ||= Date.now();
+    return Date.now() - MERC_PIP.lostAt < MERC_PIP_HOLD_MS;
+  } catch { return false; }                                      // (before this script line ran: nothing to hold)
+}
+// this PC's row from its own scheduler; an older main process (no mercmode:local): the window's server, if it lists the run
+async function mercOwnHost() {
+  let data = null;
+  try { const r = gbox.mercmodeLocal ? await gbox.mercmodeLocal() : null; if (r?.ok) data = r.data; } catch {}
+  if (!data && Date.now() - (MERC_PIP.fallbackAt || 0) >= 10000) {       // the shared server's status: at most every 10 s
+    MERC_PIP.fallbackAt = Date.now();
+    data = await compactApi('/api/mercmode', undefined, 'GET').catch(() => null);
+  }
+  return (data?.hosts || []).find(h => h.name === S.workerName) || null;
+}
+// the game to go back to: that PC's current MercMode game now (its run may have moved on meanwhile), else the same session
+async function mercReturnTarget(back) {
+  if (!back?.sid) return null;
+  const data = await compactApi('/api/mercmode', undefined, 'GET').catch(() => null);
+  const host = data ? GBoxMercMode.hostFor(data, back.sid, back.worker) : null;
+  const run = host && host.name !== S.workerName ? host.current_run : null;
+  const sid = run?.session_id && ['playing', 'starting'].includes(run.phase) ? run.session_id : back.sid;
+  const row = await sessionById(sid).catch(() => null);
+  return row?.state === 'running' && row.worker_online !== false ? sid : null;
+}
+async function mercPipLeave(back) {
+  Object.assign(MERC_PIP, { last: '', lostAt: 0, returnTo: null });
+  const sid = back ? await mercReturnTarget(back) : null;
+  if (sid) { await pipShow(sid); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
+  else if (COMPACT.on && COMPACT.local) await compactRestore();
+}
+async function mercPipPoll() {
+  if (MERC_PIP.busy || !window.GBoxMercMode?.pipOwnRun || !S?.workerName || !gbox.api) return;
+  MERC_PIP.busy = true;
+  try {
+    const host = await mercOwnHost();
+    if (!host) return;
+    const d = host.dispatch;
+    if (d?.id && d.id !== MERC_PIP.dispatch) { MERC_PIP.dispatch = d.id; MERC_PIP.away = false; }   // a new dispatch: asked again
+    if (!host.current_run) MERC_PIP.away = false;                // the operator's choice lasts while this PC's MercMode runs
+    const shown = COMPACT.on ? COMPACT.sid : null;
+    const row = shown ? await sessionById(shown).catch(() => null) : null;
+    const plan = GBoxMercMode.pipOwnRun(host, { shown, running: row?.state === 'running', last: MERC_PIP.last, away: MERC_PIP.away,
+      handled: MERC_PIP.handled, closed: MERC_PIP.closed, returnTo: MERC_PIP.returnTo });
+    if (plan.action === 'enter' || plan.action === 'follow') {
+      if (plan.action === 'follow' && (!COMPACT.on || COMPACT.sid !== plan.from)) return;     // the view moved meanwhile
+      const returnTo = plan.remember ? { sid: plan.from, worker: row?.detail?.worker_name || null } : MERC_PIP.returnTo;
+      await pipShow(plan.sid);
+      Object.assign(MERC_PIP, { last: plan.sid, lostAt: 0, returnTo }, plan.id ? { handled: plan.id } : {}); mercPipSave();
+      if (plan.action === 'enter' || plan.remember)
+        toast(`${sessionTitle(await sessionById(plan.sid).catch(() => null)) || 'This PC\'s game'} plays here: the PiP shows it on this PC`);
+    } else if (plan.action === 'away') Object.assign(MERC_PIP, { away: true, last: '', returnTo: null });
+    else if (plan.action === 'closed') { Object.assign(MERC_PIP, { away: true, last: '', returnTo: null }, plan.id ? { closed: plan.id } : {}); mercPipSave(); }
+    else if (plan.action === 'return' || plan.action === 'restore') await mercPipLeave(plan.action === 'return' ? MERC_PIP.returnTo : null);
+    else if (MERC_PIP.last && MERC_PIP.lostAt && Date.now() - MERC_PIP.lostAt >= MERC_PIP_HOLD_MS && COMPACT.on && COMPACT.sid === MERC_PIP.last)
+      await mercPipLeave(MERC_PIP.returnTo);                    // no next title came in time
+  } catch (error) { console.warn('MercMode PiP:', error.message); }
+  finally { MERC_PIP.busy = false; }
+}
+setInterval(() => { if (document.visibilityState !== 'hidden' || COMPACT.on) mercPipPoll(); }, MERC_PIP_EVERY_MS);
 // create() reads context() at once, before loadSettings() has set S: a throw here would stop the whole page script
 const clientRefresh = GBoxClientRefresh.create({ storage: sessionStorage, readState: gboxState,
   context: () => ({ origin: S?.apiUrl, sid: COMPACT.on ? COMPACT.sid : EMB.sid, compact: COMPACT.on, aspect: COMPACT.aspect,
@@ -4271,6 +4363,7 @@ async function pipModifiers(m, opening) {
 }
 // the mod panel this session gets: RE5 / RE6 (re5-modifiers.js) or RE4 GameCube on Dolphin (re4-modifiers.js)
 function pipPanel(session) {
+  if (globalThis.GBoxRE6Modifiers?.eligible(session)) return { module: GBoxRE6Modifiers, selector: '.re6-modifiers' };
   if (GBoxRE5Modifiers.panelEligible(session)) return { module: GBoxRE5Modifiers, selector: '.re5-modifiers' };
   if (globalThis.GBoxRE4Modifiers?.eligible(session)) return { module: GBoxRE4Modifiers, selector: '.re4-modifiers' };
   return null;
@@ -4767,6 +4860,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     const m = JSON.parse(e.message.slice(5));
     if (m.ev === "padscan") syncNativePads();
     else if (m.ev === "padtakeover") padTakeoverPip(m);   // your pad has the PiP's game for a moment (its badge)
+    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipShow(m.sid).catch(error => toast(error.message));   // MercMode panel: Watch
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);

@@ -155,7 +155,7 @@ def _adapter(monkeypatch, platform="3ds"):
     ad.proc, ad.content_path = _Proc(), "game.3ds"
     mem, attached = _Mem(), []
 
-    def attach(pid, signature, writable=False):
+    def attach(pid, signature, writable=False, wide_ok=True):
         attached.append((pid, signature, writable))
         return mem
 
@@ -184,16 +184,42 @@ def test_other_cores_keep_the_network_commands(monkeypatch):
     assert ad.citra_memory() is None and not attached
 
 
-def test_boot_retries_are_rate_limited(monkeypatch):
+def test_boot_retries_are_rate_limited_and_cheap(monkeypatch):
+    from gbox import adapters
     ad, _, _ = _adapter(monkeypatch)
     calls = []
+    now = [1000.0]
+    monkeypatch.setattr(adapters.time, "monotonic", lambda: now[0])
 
-    def attach(pid, signature, writable=False):
-        calls.append(pid)
+    def attach(pid, signature, writable=False, wide_ok=True):
+        calls.append(wide_ok)
         raise ValueError("no FCRAM page holds the game's code yet")
 
     monkeypatch.setattr(CM, "attach", attach)
     for _ in range(3):
         with pytest.raises(RuntimeError, match="not found yet"):
             ad.read_memory(0x100000, 4)
-    assert len(calls) == 1                                  # one 256 MiB scan per 2 s at most
+    assert calls == [False]                                 # one cheap attempt per CITRA_RETRY_S
+    for _ in range(4):
+        now[0] += adapters.CITRA_RETRY_S
+        with pytest.raises(RuntimeError):
+            ad.read_memory(0x100000, 4)
+    assert calls == [False, False, False, True, False]      # the wide scan after three cheap misses, then once a minute
+
+
+def test_locate_reads_fcram_sized_rows_first_and_skips_wide_ones_when_told(proc):
+    """A booting game: the cheap attach never reads a big row of the heap (only FCRAM-sized ones)."""
+    big = 0x6000000000
+    read_rows = []
+    real_read = proc.read
+    regions = proc.regions
+
+    def read(host, n):
+        if big <= host < big + 0x40000000:
+            read_rows.append(host)
+        return real_read(host, n)
+
+    proc.regions = lambda: regions() + [(big, big + 0x40000000, True, True)]
+    proc.read = read
+    where = CM.locate(proc.regions(), proc.read, SIG, wide_ok=False)
+    assert where["table"] == proc.table and not read_rows
