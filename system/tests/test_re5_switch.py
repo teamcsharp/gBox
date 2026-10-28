@@ -291,6 +291,7 @@ def _switch_fight(monkeypatch):
     """These tests drive the Switch's own fight (re5_switch.Bot._decide), kept behind PS3_BRAIN = False until the RE5
     PS3 combat core (tests/test_re5_switch_brain.py) has proven itself live."""
     monkeypatch.setattr(R, "PS3_BRAIN", False)
+    monkeypatch.setattr(R, "CROWD_FIRE", False)   # (these test the paths under the crowd fire; tests/test_re5_switch_crowd.py)
 
 OFF = {"from": (0.0, 0.0, 0.0), "at": (0.0, 0.0, 0.0), "up": False}
 

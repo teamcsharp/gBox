@@ -148,6 +148,8 @@ def test_a_grab_still_wins():
 
 def test_the_circle_clear_ends_the_sweep_counts_it_and_he_moves_on():
     b, clock = bot()
+    b._round_started = b._round_t0 = 0.0                           # (the round under way: its trail kept)
+    b._trail = [(-10.0, (0.0, 0.0, -900.0))]                       # a point of his own trail behind him: open
     ring = [at(300, 40), at(350, 100), at(250, -60)]
     b.tick(snap(ring, kills=3))
     clock[0] = 1.0
@@ -160,8 +162,8 @@ def test_the_circle_clear_ends_the_sweep_counts_it_and_he_moves_on():
     clock[0] = 2.5
     act = b.tick(snap(far, kills=6, motion=26))
     assert b.stats["sweep_clears"] == 1 and b.stats["crowd_cleared_s"] == 2.0 and b.stats["sweep_kills"] == 3
-    assert b.doing in ("relocate", "quick_turn") and b.stats["relocations"] == 1
-    assert act["hold"] == ("ldown",) or {"lup", "b"} <= set(act["hold"])
+    assert b.doing == "relocate" and b.stats["relocations"] == 1
+    assert "ldown" in act["hold"] or {"lup", "b"} <= set(act["hold"])
 
 
 def test_a_sweep_straight_after_the_last_keeps_its_way():
@@ -178,8 +180,10 @@ def test_a_sweep_straight_after_the_last_keeps_its_way():
 
 
 # --- keep moving -------------------------------------------------------------------------------------------------------
-def test_no_spot_held_past_the_dwell_limit_with_majini_about_he_runs_away_from_them_turned_to_one_side():
+def test_no_spot_held_past_the_dwell_limit_with_majini_about_he_goes_back_along_his_own_trail():
     b, clock = bot()
+    b._round_started = b._round_t0 = 0.0
+    b._trail = [(-20.0, (0.0, 0.0, -1000.0)), (-15.0, (600.0, 0.0, 600.0))]   # behind him, and toward them
     foes = [at(900, 0), at(1000, 20)]                              # in front, out of the sweep
     for k in range(0, 71):
         clock[0] = 0.1 * k
@@ -189,13 +193,13 @@ def test_no_spot_held_past_the_dwell_limit_with_majini_about_he_runs_away_from_t
     act = b.tick(snap(foes))
     assert b.stats["relocations"] == 1
     assert b.doing == "relocate" and "ldown" in act["hold"] and b.quick == 0   # the way out behind him: backing toward it, turning
-    want = math.degrees(R.wrap(math.pi + math.radians(R.KITE_DEG)))
-    assert abs(math.degrees(b._reloc["head"]) - want) < 15
+    assert abs(abs(math.degrees(b._reloc["head"])) - 180) < 1 and b._reloc["goal"] == (0.0, 0.0, -1000.0)
 
 
 def test_the_run_ends_after_its_distance_and_the_dwell_starts_again():
     b, clock = bot()
-    b._reloc_due = True
+    b._round_started = b._round_t0 = 0.0
+    b._reloc_due, b._trail = True, [(-10.0, (0.0, 0.0, 1500.0))]
     foes = [at(900, 180)]                                          # behind him: run ahead
     act = b.tick(snap(foes))
     assert b.doing == "relocate" and {"lup", "b"} <= set(act["hold"])
@@ -205,16 +209,28 @@ def test_the_run_ends_after_its_distance_and_the_dwell_starts_again():
     assert b._reloc is None and b.stats["reloc_stuck"] == 0
 
 
-def test_a_stuck_run_flips_the_kite_side():
+def test_a_stuck_run_marks_a_dead_end_and_the_next_goal_avoids_it():
     b, clock = bot()
-    b._reloc_due = True
+    b._round_started = b._round_t0 = 0.0
+    b._reloc_due, b._trail = True, [(-10.0, (0.0, 0.0, 1500.0))]
     foes = [at(900, 180)]
     b.tick(snap(foes))
     side = b._kite_side
     for k in range(1, 30):
         clock[0] = 0.1 * k
         b.tick(snap(foes))                                         # he does not move: a wall (he breaks free first)
-    assert b.stats["reloc_stuck"] == 1 and b._kite_side == -side and b._reloc is None
+    assert b.stats["reloc_stuck"] == 1 and b.stats["reloc_dead_ends"] == 1 and b._kite_side == -side and b._reloc is None
+    assert b._reloc_goal(snap(foes)["player"], [], snap(foes), clock[0]) is None   # that goal is a dead end now
+
+
+def test_no_relocation_while_anyone_is_within_5_m_and_none_through_the_crowd():
+    b, clock = bot()
+    b._trail = [(-10.0, (0.0, 0.0, 1500.0))]
+    b._dwell = {"anchor": (0.0, 0.0, 0.0), "since": -10.0}
+    b.tick(snap([at(400, 90)]))                                    # boxed in: stand and fight
+    assert b.stats["relocations"] == 0
+    p_ = snap([])["player"]
+    assert b._reloc_goal(p_, [{"ptr": 1, "pos": at(700, 0), "hp": 800}], snap([]), 0.0) is None   # its way runs through one
 
 
 def test_the_run_goes_to_a_standing_statue_that_way():

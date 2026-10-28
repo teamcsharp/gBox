@@ -14,6 +14,7 @@ MUZZLE = (0.0, 140.0, 30.0)
 @pytest.fixture(autouse=True)
 def _switch_fight(monkeypatch):
     monkeypatch.setattr(R, "PS3_BRAIN", False)
+    monkeypatch.setattr(R, "CROWD_FIRE", False)   # (these test the paths under the crowd fire; tests/test_re5_switch_crowd.py)
     monkeypatch.setattr(R, "HEAL_ENABLED", False)
 
 

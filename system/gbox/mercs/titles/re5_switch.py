@@ -338,9 +338,22 @@ CLOSE_COUNTERS = ("close_pitch_skips", "close_sky_reraises", "raise_rerolls")
 # whips (a turn of WHIP_DEG or more reversed by WHIP_BACK_DEG within WHIP_S: target near 0); rampage_weapon: the gun.
 RAMPAGE, RAMPAGE_R, RAMPAGE_RETARGET_S, RAMPAGE_BEHIND = False, 500.0, 0.6, math.radians(100)
 RAMPAGE_FAMILIES = ("shotgun", "magnum")
+# Crowd fire (operator 19:25: "completely surrounded with threats that they were unable to dispatch. They should have
+# pulled out their shotgun and did crowd control"; 19:5x: "give the bot rapid fire shotguns for crowd control ... this
+# bot is swarmed and is barely shooting"; live 19:50 / 19:53: unaims_in_5m 32 / 53, behind_threat_s 39 / 64, no
+# shotgun): the rampage's path, front-facing and calm. CROWD_FIRE_N or more on his level within RAMPAGE_R, or one
+# within CROWD_FIRE_CLOSE_R: the shotgun (else the magnum) comes up by its D-pad slot, the gun stays up while anyone is
+# within RAMPAGE_R (never an unaim there), the target the nearest in front (within CROWD_FRONT of his facing), else the
+# nearest, held until it dies or leaves; the trigger only with the aim on a Majini (the dot, the ray through one, point
+# blank, or the target inside CROWD_CONE: the shotgun's spread), the aim turned to the target by the stick between shots
+# only (never in the shot motion: fire_rate's time scale) and its pitch held on a chest (P_AIM_PITCH,
+# SWEEP_PITCH_BAND); no quick turn (QUICK_TURN off), the heading governor over all. Counters: crowd_fire_s,
+# shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
+CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
+CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
-                    "offscreen_aim_s", "whips", "rampage_swaps")
+                    "offscreen_aim_s", "whips", "rampage_swaps", "crowd_fire_s", "shotgun_swaps")
 # The calm camera (operator 16:47: "smoothly looking around so it's like organic and it doesn't cause any sort of
 # motion sickness because there's motion blur on the game"), shaped on the right stick every tick, whatever decided it
 # (the RAM aim lock waits: +0x3F5C is computed, a write does not stick - 16:55): a stick direction is never reversed
@@ -414,7 +427,13 @@ SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_
 RELOCATE, DWELL_R, DWELL_MAX_S, RELOC_CROWD_N, RELOC_CROWD_R, RELOC_GAP_S = True, 250.0, 7.0, 6, 800.0, 4.0
 RELOC_SENSE_R, KITE_DEG, RELOC_STATUE_DEG, RELOC_DIST, RELOC_MAX_S = 1500.0, 35.0, 60.0, 800.0, 3.0
 RELOC_BLOCK_R, RELOC_PROGRESS_CM, RELOC_STUCK_S = 150.0, 40.0, 0.8
-RELOC_COUNTERS = ("relocations", "reloc_stuck")     # hits_taken: the engine's own per-round delta field
+# (operator 19:5x: "run face forward at a corner and away from the enemies while the enemies gather behind them"; live
+# 19:50 / 19:53: 48 / 68 relocations a round, 12 / 16 stuck): a relocation only with nobody within 5 m (boxed in: stand
+# and shotgun), to a point he knows is open - his own trail, a point every TRAIL_EVERY_S kept TRAIL_KEPT, TRAIL_AGE_S old
+# or more, RELOC_GOAL_MIN away - or a standing statue, the clearest of Majini, never through them, never within
+# DEAD_END_R of a run that stuck (the last DEAD_ENDS_KEPT: reloc_dead_ends). None known: he stays and fights.
+TRAIL_EVERY_S, TRAIL_KEPT, TRAIL_AGE_S, RELOC_GOAL_MIN, DEAD_END_R, DEAD_ENDS_KEPT = 1.5, 60, 4.0, 500.0, 300.0, 16
+RELOC_COUNTERS = ("relocations", "reloc_stuck", "reloc_dead_ends", "unaim_holds")     # hits_taken: the engine's own per-round delta field
 # The aim's own pitch up close (live 17:27: "Why is he looking up?" - pitch_up_last "the laser +62 deg, wanted -24 deg,
 # 2.3 m ... ray 50.0 m"; raise_up_last "first ray +28 deg, the last aim before +62 deg"): the laser's muzzle -> dot line
 # misreads up close, the pitch stick followed it up, and the next raise kept the pitch. Now, aimed at a Majini on his
@@ -1231,6 +1250,7 @@ class Bot:
         self._dwell = None                               # {"anchor", "since"}: the spot he stands at (keep moving)
         self._dwells: list = []                          # this round's finished dwells (seconds)
         self._reloc, self._reloc_ready, self._reloc_due, self._kite_side = None, -1e9, False, 1
+        self._trail, self._dead_ends = [], []           # his own trail (open, reachable); runs that stuck
         self._hp_track, self._hit_at = None, -1e9       # (player, health) last tick, the last fall: hits_taken
         self._cam = {"off": False, "down_since": None, "ap0": None, "on": False}   # the aim pitch guard
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s", "hits_taken"):
@@ -1349,6 +1369,7 @@ class Bot:
         px, py, pz = p["pos"]
         self.stats["crowd_max"] = max(self.stats.get("crowd_max") or 0, sum(1 for e in live if flat(e) <= 400))
         self._bonus_tick(snap, now)
+        self._trail_tick(p, now)
         self._keep_moving(p, live, flat, now)
         self._watch_whips(p, now)
         self.stats["census_count"] = sum(1 for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
@@ -1589,7 +1610,12 @@ class Bot:
         px, py, pz = p["pos"]
         dt = 0.0 if self._ramp_t is None else max(0.0, min(now - self._ramp_t, LOOK_STEP_MAX_S))
         self._ramp_t = now
-        ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY] if RAMPAGE else []
+        crowd = CROWD_FIRE and not RAMPAGE               # the calm crowd fire (CROWD_FIRE above); RAMPAGE: the old one
+        ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY] \
+            if (RAMPAGE or crowd) else []
+        if crowd and self._ramp is None and len(ring) < CROWD_FIRE_N \
+                and not any(flat(e) <= CROWD_FIRE_CLOSE_R for e in ring):
+            ring = []                                    # not crowded yet (once on, on while anyone is within 5 m)
         inv = snap.get("inventory") or ()
         held = next((s_ for s_ in inv if s_.get("hand")), None)
         if not ring:
@@ -1623,6 +1649,11 @@ class Bot:
         # the target: the one held while inside and alive; a grab-range one takes over; one change per RAMPAGE_RETARGET_S
         cur = next((e for e in ring if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         nearest = min(ring, key=flat)
+        if crowd:                                        # the nearest in front first: one direction at a time
+            front = [e for e in ring if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= CROWD_FRONT]
+            near_front = min(front, key=flat) if front else None
+            if near_front is not None and flat(near_front) < 2.0 * flat(nearest) + 100.0:
+                nearest = near_front
         tgt = cur
         if cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
             if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
@@ -1651,6 +1682,7 @@ class Bot:
             if gun is not None and not gun.get("hand") and now - self._swap_at >= SWAP_GAP_S:
                 self._swap_at = now                      # the shotgun / magnum first (one press, the gun down)
                 self.stats["rampage_swaps"] += 1
+                self.stats["shotgun_swaps"] += 1
                 self.doing, self.why = "raise", f"rampage: the {fam} up first"
                 self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
                 return {"hold": (QUICK[gun["grid"]],)}
@@ -1675,20 +1707,46 @@ class Bot:
                             "item": held.get("item") if held else None, "shooter": tuple(p["pos"]),
                             "gate": "rampage" + (f": dot on {where}" if where else "")}
             keys |= self._yaw(yaw_err)
-            if dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
+            if not crowd and dist >= CLOSE_PITCH_R and math.dist(origin, dot) >= STEER_RAY_CM:
                 keys |= self._pitch(pitch_err)
+            on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
+                dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
         else:
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": body_err, "where": None,
                             "laserless": True, "weapon": weapon, "gate": "rampage: the gun coming up"}
             keys |= self._yaw(body_err)
+            on = abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
+        if dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
+            on = True                                    # point blank in front: on him
+        if crowd:
+            self.stats["crowd_fire_s"] = round(self.stats["crowd_fire_s"] + dt, 2)
+            ap = p.get("aim_pitch")
+            if ap is not None and now - self.aim_since >= READY_S:   # the aim's own pitch on a chest, never the sky
+                if ap < SWEEP_PITCH_BAND[0]:
+                    keys.add("rdown")
+                elif ap > SWEEP_PITCH_BAND[1]:
+                    keys.add("rup")
+            if p.get("motion") == MOTION_SHOT:           # the shot plays at fire_rate's time scale: no stick in it
+                if keys & {"rleft", "rright", "rup", "rdown"}:
+                    self.stats["shot_stick_drops"] += 1
+                keys -= {"rleft", "rright", "rup", "rdown"}
+            if not on:                                   # the aim off them: turn, the trigger let go (the turn's pace)
+                if self.fire_down:
+                    self._trigger(False, now)
+                self.stats["idle_in_5m_s"] = round(self.stats["idle_in_5m_s"] + dt, 2)
+                self.doing = "aim"
+                self.why = ("crowd fire: %d within %.0f m; turning to the one %.1f m away (%+.0f deg)"
+                            % (len(ring), RAMPAGE_R / 100, dist / 100, math.degrees(body_err)))
+                return {"hold": tuple(sorted(keys))}
         if not self.fire_down:
             self.stats["rampage_shots"] += 1
-        keys |= self._trigger(True, now)                 # blasting from the first tick, whatever the dot is on
+        keys |= self._trigger(True, now)                 # blasting (crowd fire: with the aim on them)
         if aim_off > OFFSCREEN_ERR:
             self.stats["offscreen_aim_s"] = round(self.stats["offscreen_aim_s"] + dt, 2)
         self.doing = "fire"
-        self.why = (f"rampage: {len(ring)} within {RAMPAGE_R / 100:.0f} m, the nearest {flat(nearest) / 100:.1f} m; "
-                    f"on the one {dist / 100:.1f} m away ({math.degrees(body_err):+.0f} deg)")
+        self.why = ("%s: %d within %.0f m, the nearest %.1f m; on the one %.1f m away (%+.0f deg)"
+                    % ("crowd fire" if crowd else "rampage", len(ring), RAMPAGE_R / 100, flat(nearest) / 100,
+                       dist / 100, math.degrees(body_err)))
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
 
@@ -1805,9 +1863,41 @@ class Bot:
         if not RELOCATE or self._reloc is not None or self._sweep_st is not None or now < self._reloc_ready:
             return
         about = any(flat(e) <= RELOC_SENSE_R for e in live)
-        crowd = sum(1 for e in live if flat(e) <= RELOC_CROWD_R)
-        if (cur > DWELL_MAX_S and about) or (cur > 3.0 and crowd >= RELOC_CROWD_N):
+        boxed = any(flat(e) <= RAMPAGE_R for e in live)  # anyone within 5 m: stand and shotgun (CROWD_FIRE)
+        if cur > DWELL_MAX_S and about and not boxed:
             self._reloc_due = True
+
+    def _trail_tick(self, p, now) -> None:
+        """His own trail: a point every TRAIL_EVERY_S (where he has been is open and reachable), the last TRAIL_KEPT."""
+        if not self._trail or now - self._trail[-1][0] >= TRAIL_EVERY_S:
+            self._trail = (self._trail + [(now, tuple(p["pos"]))])[-TRAIL_KEPT:]
+
+    def _reloc_goal(self, p, live, snap, now):
+        """Where to relocate: a point he knows is open - his own trail (TRAIL_AGE_S old or more, RELOC_GOAL_MIN away)
+        or a standing statue on his level - farthest from the Majini (each within RELOC_SENSE_R pushing by 1/d), never
+        within DEAD_END_R of a run that stuck, nor one whose way runs through the crowd. (heading, statue?, goal) or
+        None."""
+        px, py, pz = p["pos"]
+        cands = [(pos, False) for t, pos in self._trail if now - t >= TRAIL_AGE_S]
+        cands += [(tuple(b["pos"]), True) for b in snap.get("bonuses") or ()]
+        near = [e for e in live if math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= RELOC_SENSE_R]
+        best = None
+        for pos, statue in cands:
+            d = math.hypot(pos[0] - px, pos[2] - pz)
+            if d < RELOC_GOAL_MIN or abs(pos[1] - py) > LEVEL_DY:
+                continue
+            if any(math.hypot(pos[0] - q[0], pos[2] - q[2]) <= DEAD_END_R for q in self._dead_ends):
+                continue                                 # a run stuck there before: a dead end
+            head = heading(pos[0] - px, pos[2] - pz)
+            through = any(abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - head)) <= math.radians(30)
+                          and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) < d for e in near)
+            if through:
+                continue                                 # its way runs through them
+            crowd = sum(1.0 / max(math.hypot(e["pos"][0] - pos[0], e["pos"][2] - pos[2]), 100.0) for e in near)
+            score = crowd * 1000.0 - (0.3 if statue else 0.0)   # the clearest; a statue (phase 1) by a little
+            if best is None or score < best[0]:
+                best = (score, head, statue, pos)
+        return None if best is None else best[1:]
 
     def _relocate(self, p, live, flat, snap, now):
         """A relocation (RELOCATE above): the run's keys while it lasts, None otherwise."""
@@ -1819,23 +1909,12 @@ class Bot:
             self._reloc_due = False
             if now < self._reloc_ready:
                 return None
-            vx = vz = 0.0
-            for e in live:                               # away from them all, the nearer pushing harder
-                dx, dz = px - e["pos"][0], pz - e["pos"][2]
-                d = max(math.hypot(dx, dz), 50.0)
-                if d <= RELOC_SENSE_R:
-                    vx, vz = vx + dx / (d * d), vz + dz / (d * d)
-            head = p["rot"] if not (vx or vz) else wrap(heading(vx, vz) + math.radians(KITE_DEG) * self._kite_side)
-            statue = None
-            for b in snap.get("bonuses") or ():          # a standing statue that way: run to it (an open spot)
-                off = abs(wrap(heading(b["pos"][0] - px, b["pos"][2] - pz) - head))
-                if abs(b["pos"][1] - py) <= LEVEL_DY and off <= math.radians(RELOC_STATUE_DEG) \
-                        and (statue is None or off < statue[0]):
-                    statue = (off, b)
-            if statue is not None:
-                head = heading(statue[1]["pos"][0] - px, statue[1]["pos"][2] - pz)
+            goal = self._reloc_goal(p, live, snap, now)
+            if goal is None:
+                return None                              # nowhere known open and clear: stand and fight here
+            head, statue, gpos = goal
             r = self._reloc = {"since": now, "head": head, "from": (px, pz), "best": 0.0, "best_at": now,
-                               "quick": False, "statue": statue is not None}
+                               "quick": False, "statue": statue, "goal": gpos}
             self.stats["relocations"] += 1
             self._reloc_ready = now + RELOC_GAP_S
             self._gun_down()
@@ -1850,9 +1929,13 @@ class Bot:
         if moved >= RELOC_DIST or now - r["since"] >= RELOC_MAX_S or blocked or stuck:
             if stuck and not blocked and moved < RELOC_DIST:
                 self.stats["reloc_stuck"] += 1
+                self.stats["reloc_dead_ends"] += 1
+                self._dead_ends = (self._dead_ends + [(px, py, pz), tuple(r["goal"])])[-DEAD_ENDS_KEPT:]
                 self._kite_side = -self._kite_side       # a wall that way: loop the other way next time
             self._reloc, self._dwell = None, None
             return None
+        if r.get("goal") is not None:                    # on toward the goal (a point he knows is open)
+            r["head"] = heading(r["goal"][0] - px, r["goal"][2] - pz)
         err = wrap(r["head"] - p["rot"])
         if not QUICK_TURN and abs(err) > QUICK_ERR:      # the way out behind him: back toward it while turning
             r["best_at"] = max(r["best_at"], now)
@@ -1912,6 +1995,8 @@ class Bot:
                                          f"for {now - self._away_since:.1f} s: to him")
         self._example("aim_away", p, now, f"aim {math.degrees(off):.0f} deg off the one {flat(e) / 100:.1f} m away")
         self._away_since = None
+        if CROWD_FIRE and flat(e) <= RAMPAGE_R:
+            return {"hold": ("zl",)}                     # (the caller turns the aim: the gun stays up within 5 m)
         self._gun_down()
         return {"hold": self._turn(err)}
 
@@ -2401,6 +2486,7 @@ class Bot:
         self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
         self._bonus_seen_round = False
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
+        self._trail, self._dead_ends = [], []
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
@@ -2736,7 +2822,10 @@ class Bot:
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
-        act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first
+        act = self._sweep(p, live, flat, snap, now)     # crowded within 5 m: the turret sweep first (off)
+        if act is not None:
+            return act
+        act = self._rampage(p, live, flat, snap, now)   # crowded: the shotgun, front-facing (CROWD_FIRE)
         if act is not None:
             return act
         act = self._relocate(p, live, flat, snap, now)  # then keep moving: no spot held long
@@ -2746,9 +2835,6 @@ class Bot:
         if act is not None:
             return act
         act = self._pursue(p, live, flat, snap, now)
-        if act is not None:
-            return act
-        act = self._rampage(p, live, flat, snap, now)
         if act is not None:
             return act
         urgent = self._combo_urgent(snap)
@@ -2832,7 +2918,7 @@ class Bot:
             self.ray_seen, self.last_ray = now, ray
             if ray != self.ray_key:
                 self.ray_key, self.ray_since = ray, now
-            elif now - self.ray_since > RAY_STALE_S:
+            elif now - self.ray_since > RAY_STALE_S and not (CROWD_FIRE and near <= RAMPAGE_R):
                 self.doing, self.why = "restale", f"the ray unchanged {RAY_STALE_S:.0f} s"
                 self.stats["restale"] += 1                   # a frozen ray: not a live aim
                 self._gun_down()
@@ -2858,6 +2944,8 @@ class Bot:
             return {"hold": ("zl",)}
         origin, dot = ray
         frozen = self._frozen_dot(p, dot, fresh_ray)
+        if frozen and CROWD_FIRE and near <= RAMPAGE_R:
+            frozen = False                               # one within 5 m: no re-raise (the gun stays up)
         if frozen:                                       # the dot stood still while the aim moved: no live aim
             self.stats["frozen_dots"] += 1
             self.doing, self.why = "restale", f"the dot frozen {FROZEN_TICKS} ticks while the aim moved"
@@ -2902,6 +2990,14 @@ class Bot:
                 and (now - self.unaim_since < UNAIM_HOLD_S or now - self.aim_since < MIN_UP_S)
             if alt is None and hold:                         # a moment off him, or just raised: the aim turns, gun up
                 far_off = False
+        if far_off and alt is None and CROWD_FIRE and near <= RAMPAGE_R:
+            self.stats["unaim_holds"] += 1               # one within 5 m: the gun stays up, the aim turns to him
+            self.doing, self.why = "aim", (f"aim {math.degrees(yaw_err):+.0f} deg off at {dist / 100:.1f} m: turning "
+                                           f"the aim (one within {RAMPAGE_R / 100:.0f} m: the gun stays up)")
+            keys = {"zl"} | (self._yaw(yaw_err) if motion != MOTION_SHOT else set())
+            if self.fire_down:
+                self._trigger(False, now)
+            return {"hold": tuple(sorted(keys))}
         if far_off:
             if alt is None:                                  # nobody near the aim: gun down, turn the body
                 self.stats["unaims"] += 1
@@ -2972,6 +3068,13 @@ class Bot:
             self._close_sky_since = None
         fix = self._aim_away(p, live, flat, origin, dot, confirmed, now)
         if fix is not None:
+            if CROWD_FIRE and near <= RAMPAGE_R:         # one within 5 m: the aim turns to him, the gun stays up
+                e = next((x for x in live if x.get("ptr", x.get("slot")) == self.target), None)
+                if e is not None:
+                    err = ray_error(origin, dot, (e["pos"][0], e["pos"][1] + CHEST_H, e["pos"][2]))[0]
+                    self.aim_since = self.aim_since or now
+                    self.doing = "aim"
+                    return {"hold": tuple(sorted({"zl"} | (self._yaw(err) if motion != MOTION_SHOT else set())))}
             return fix
         if piece(SMOOTH_DOT) and not on and other is not None and self.target != other:
             other_where = dot_on(dot, on_e["pos"])           # the dot on another Majini, not yet the target: shoot him
@@ -2997,7 +3100,7 @@ class Bot:
             self.stats["through_shots"] += 1
         crowd = [e for e in live if flat(e) <= CROWD_R]
         if CROWD_MOVES and len(crowd) >= CROWD_N and now - self.aim_since >= CROWD_BURST_S and now >= self._crowd_ready \
-                and not (confirmed and dist > LONG_R):
+                and not (confirmed and dist > LONG_R) and not (CROWD_FIRE and near <= RAMPAGE_R):
             self._crowd_keys = self._escape_keys(p, crowd)
             self._crowd_until, self._crowd_ready = now + CROWD_MOVE_S, now + CROWD_MOVE_S + CROWD_GAP_S
             self.stats["crowd_moves"] += 1
