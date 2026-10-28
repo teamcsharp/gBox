@@ -6248,7 +6248,19 @@ def _running_file(config) -> Path:
 # Select + R2 fast-forward ramp and Select + L2 rewind: gbox/rewind.py (started per session in _launch_game)
 
 
+def _live_game_pids() -> list[int]:
+    out = []
+    for ad, _ in list(SESSIONS.values()):
+        proc = getattr(ad, "proc", None)
+        if proc is not None and proc.poll() is None:
+            out.append(proc.pid)
+    return out
+
+
 def track_emulator(config, sid: str, pid: int | None, add: bool = True) -> None:
+    if add and pid and sys.platform.startswith('linux'):
+        from .cpu_affinity import ensure_keeper            # playing games on the fast cores, warm ones on the slow
+        ensure_keeper(_live_game_pids)
     f = _running_file(config)
     try:
         d = json.loads(f.read_text()) if f.exists() else {}
