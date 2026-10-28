@@ -1617,7 +1617,7 @@ NADES = True                            # (on per profile, re6_switch_mods bot_o
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
 FLASH_N, FLASH_R, NADE_CLEAR_R = 3, 500.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
-FLASH_GAP_S = 1.5                       # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m;
+FLASH_GAP_S = 5.0                       # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m;
                                         # 21:0x: "Have them throw flashbangs all the time" - 3 within 5 m, 1.5 s apart)
 # The push-through (operator 21:0x: "If they're overwhelmed, have them just throw flashbangs in order to just disarm and
 # get out of the situation ... use shotguns to force them out of the way, and use flashbangs to disarm them and work
@@ -1694,6 +1694,10 @@ NADE_N, NADE_MIN_R, NADE_MAX_R, NADE_CLUSTER_R = 3, 500.0, 1000.0, 300.0
 # followed by another while FLASH_N are still within FLASH_R, for up to FLASH_BURST_S ("spamming a flurry of flash
 # grenades", stats flash_burst_throws), the flash kept in hand between them.
 NADE_THROW_S, FLASH_BURST_S, FLASH_BURST_AIM_S = 0.3, 3.0, 0.1
+# Flash, then fight (operator 05:4x, a round of 13 kills and rank E: "just running in the corner and throwing grenades
+# and failing to fight"): the flurry only while FLASH_BURST_N are within FLASH_BURST_R (truly swarmed), and the next
+# flash FLASH_GAP_S after the last - the stun's window is for the fever's kicks and shots, not more throws.
+FLASH_BURST_N, FLASH_BURST_R = 5, 300.0
 # Where it lands (operator 2026-10-28 05:0x: "she is throwing the grenades off of a cliff and is facing a wall. I need her
 # throwing them at the ground and then using the commotion to dispatch, melee, flee"): every grenade, the flash too,
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
@@ -3664,7 +3668,7 @@ class Bot:
             if now - n["at"] < NADE_RELEASE_S:                   # ZR let go, ZL still held: the throw goes now
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade let go")
             if (n["kind"] == "flash" and now - n["since"] < FLASH_BURST_S and eq == n["index"]
-                    and sum(1 for e in live if flat(e) <= FLASH_R) >= FLASH_N):
+                    and sum(1 for e in live if flat(e) <= FLASH_BURST_R) >= FLASH_BURST_N):
                 n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
                 self.stats["flash_burst_throws"] = self.stats.get("flash_burst_throws", 0) + 1
                 return self._go("nade", "nade_flash", {"hold": ("zl",)}, "the flurry: another flash")

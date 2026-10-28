@@ -687,8 +687,8 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     """Operator 2026-10-28: "They still lift the grenade for use but never throw it" / "spamming a flurry of flash
     grenades": ZL + ZR held NADE_THROW_S (not one tick), and another flash at once while FLASH_N stay close."""
     monkeypatch.setattr(R, "NADES", True)
-    near = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700),
-            (200.0, 0.0, 320.0, 700), (-200.0, 0.0, 330.0, 700))
+    near = ((0.0, 0.0, 220.0, 700), (100.0, 0.0, 240.0, 700), (-100.0, 0.0, 250.0, 700),
+            (150.0, 0.0, 200.0, 700), (-150.0, 0.0, 210.0, 700))                   # five within 3 m: swarmed
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     bot.held = lambda p, now: False
     bot.melee_at = bot.qshot_at = clock[0] + 100
@@ -1708,6 +1708,7 @@ def test_two_winding_up_get_the_flash(monkeypatch):
 
 def test_grenades_spam_into_several_clusters_and_take_the_bombs_place_when_they_are_close(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)
+    monkeypatch.setattr(R, "FLASH_GAP_S", 1.5)                               # (frags here; the flash gap: its own rule)
     two = ((0.0, 0.0, 700.0, 700), (100.0, 0.0, 760.0, 700), (-100.0, 0.0, 740.0, 700),
            (700.0, 0.0, 300.0, 700), (760.0, 0.0, 380.0, 700), (740.0, 0.0, 220.0, 700))   # two clusters
     bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
