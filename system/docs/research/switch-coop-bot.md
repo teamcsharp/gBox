@@ -312,6 +312,67 @@ the operator's background-testing tick once Citron is set up there:
 6. RE5's No Mercy flag in split screen (`cGameSys+0xA76 = 1` at the stage select): does the No Mercy enemy set load?
 7. Frames: the split-screen round with both bots, and with the operator as P1, labelled real.
 
+## Live runs (2026-10-27, a guarded private Citron session on the Spark)
+
+Real frames are in `~/gBox_alt/scratch/agent/switch/coop/runs/` (run 1).
+
+- **RE6 run 1.**
+  - The menus walk reached THE MERCENARIES NO MERCY and took SPLIT.
+  - Citron's Controller Applet came up: "Players 1-2", Player 1 and Player 2 as Pro Controllers on "Use Current
+    Config", "Connected 1 2", OK enabled, and the game's own line "Play with 2 players on one screen. (Only P1's
+    Leaderboard data will be submitted.)". One Return closed it.
+  - Player 1's keys then took the stage select to Rail Yard.
+  - The next screen is **RE6's split lobby**: "THE MERCENARIES NO MERCY · Rail Yard", Player 1 joined (Leon, DEFAULT),
+    Player 2's slot "Press -/+ to join", and the hints "L / R Change skills, - Change stage, X / Y Character select, A
+    Start game, B Quit game".
+  - Its unit is not in the screen table yet. The title unit stays listed, so the first reader called it the title and
+    pressed A, which does nothing while Player 2's slot is empty. The reader now names it `split_lobby`, and Player 2
+    presses + there.
+- **RE6 run 2** aborted 16 s into the boot on the guard's stream-gap rule (367 ms), with Citron pinned to the little
+  cores.
+- **Still to see live:** Player 2's + join, Player 2's pointer, laser and camera in a split round, Player 2's stick, and
+  RE5's split-screen menus.
+- **RE5's character select** (static): in split screen it seems to run once per player. `uIdStartUp22 +0x1C4` names
+  the player selecting, and `cGameSys +0x794 + 0x20 * player` holds that player's choice (`main+0x5B12E4`). Player 2's
+  A is pressed there.
+## How it is built (#1363, #1369, #1371)
+
+- **Citron** (`gbox/switch_coop.py`, `SwitchLinuxAdapter`):
+  - A co-op launch reads its own copy of the emulator's config folder (`runtime/<emu>/coop-config/<token>/`) with
+    Player 2 on the keys in section 3. The node's shared `qt-config.ini` never gets Player 2.
+  - `send_input_player(events, player=2)` types Player 2's keys after validating the whole batch, and only for a
+    verified co-op launch of the running process.
+  - A watcher presses OK on the Controller Applet dialog.
+  - `prepare_teammate_pad(restart=True)` adds Player 2 by restarting the title in place.
+- **The bots** (`re5_switch` / `re6_switch`, `gbox/mercs/titles/switch_team.py`):
+  - A memory view per player (`View`) reads that player's own pointer, laser and camera (section 4).
+  - `Teammate` adds the partner action for a dying or held partner and follows back when the bot is far.
+  - `shape()` leaves the operator's targets to them and splits a crowd between two bots.
+  - `Pair` runs two brains on one engine loop, with Player 2's keys prefixed `p2:`.
+  - `CoopDriver` plays either mode, and `MenuPartner` presses Player 2's A on the character select.
+- **The app** (`teamplay`, `SessionRuntime`, `mercs_bot`, the team tool, the panel, MercMode):
+  - Roles: `teammate_p2` (operator P1, bot P2) and `bots_p1_p2` (bots on both).
+  - Player 2's keys reach Player 2's pad only once Player 2's actor and pad are proved.
+  - MercMode's `coop_turns` is off by default.
+
+## Starting co-op
+
+- **Operator + bot**:
+  1. In an RE5 or RE6 Switch session's PiP, open Team and training.
+  2. Choose "Player 2: follow and protect human Player 1" and save.
+  3. Press "Connect Player 2 and restart this title now". This restarts the title in the same session with Player 2
+     connected, and the round in progress is lost.
+  4. Start the autobot.
+  5. Drive the menus with your pad: RE6 No Mercy > SPLIT, or RE5 Mercenaries United > SPLIT-SCREEN. gBox presses OK on
+     the controller dialog, and the bot confirms Player 2's character a few seconds after you pick yours.
+- **Bot + bot**:
+  - In your own session: the same steps with "Bots on Player 1 and Player 2", and the bot walks the menus too.
+  - For MercMode: set "Bot+bot split-screen turns" (co-op : solo, off by default, for example 6:1) in its settings
+    panel or the PiP menu. From the next launch, each Switch turn draws co-op or solo by that ratio, and co-op rounds
+    count as team rounds.
+- **Play with bot**: in the PiP MercMode menu of an RE5 / RE6 Switch session. It sets the teammate role, restarts the
+  title with Player 2 connected and starts the autobot, all in one go.
+
 ## Reproducing the static findings
 
 - `main` dumps: RE5 `~/gBox_alt/scratch/agent/switch/re5/main-EBFFDB22....nso`, RE6
