@@ -21,6 +21,22 @@ Run this loop until the operator says stop. Don't wait to be asked for each step
 
 ## 1. What the operator wants
 
+**Standing acceptance rule, 2026-10-28:** "If the round isn't an S rank or the character gets killed, then that round is a failure." Evaluate completed rounds by survival and native S-or-better rank; kills, combo and bonus counters are diagnostics, not a substitute for success. Missing rank evidence is unverified, never a pass.
+
+**Urgent RE6 directive, 2026-10-28:** the operator sees the gun pointing down, shots into walls beside enemies and into the ground in front of enemies. Fix target acquisition and actual aim/fire alignment before claiming improved survival. Keep the no-camera-whip and no-wall-shot rules.
+
+**Follow-up directives, 2026-10-28:** the operator also sees RE5 aiming away from surrounding threats and running face-first against a wall (screenshot: Sheva, score 133700, timer 05:05.65). Recover from blocked movement and prioritize accurate crowd fire. With unlimited ammo/items, take no ordinary item pickups; preserve combat/QTE, escape, traversal and time/combo bonus actions.
+
+**Boss directive, 2026-10-28:** recognize bosses as serious threats, prioritize threatening reachable bosses, and dispatch them quickly with sustained automatic-magnum fire. The screenshot shows a large axe wielder beside dying Jill. Keep immediate grab/QTE escapes and healing ahead of weapon setup; verify boss damage and survival rather than merely counting weapon switches.
+
+**Latest weapon directive, 2026-10-28:** "i want them either using a random shotgun or the bow and arrow with 30x fire rate and rapid fire on it." Remove miniguns from use. Randomize the supported shotgun/bow choice per round; this latest allowed-weapon instruction supersedes the earlier magnum preference, while boss threat priority remains. Preserve first-aid availability and movement suppression during boosted shots.
+
+**Live sidebar directive, 2026-10-28:** fire rates, behavior and modification settings must be adjustable for the active game session from the sliding MercMode PiP sidebar, with applied values and errors visible.
+
+**Instant equip directive, 2026-10-28:** replace inventory/menu/slot cycling with verified native RAM equip requests and readback for guns, flashbangs and mines. Do not guess an equip address or treat a changed item ID as proof of a functional equipped weapon.
+
+**Combat follow-through, 2026-10-28:** raising a weapon must lead promptly to effective fire against reachable threats. A blocked target must cause retargeting or movement toward a firing position, not prolonged wall-facing aim. Latest screenshot also confirms this failure in RE6 (Agent, 4 kills, score 1340, 49 seconds remaining).
+
 **MercMode:** gBox's endless Mercenaries mode. It plays RE5 and RE6 on Switch ("No Mercy") back to back, streamed by gBox to the operator's app and PiP:
 - no loading screens or waiting between rounds;
 - the autobot plays well and improves every round;
