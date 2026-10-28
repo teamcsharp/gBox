@@ -1532,12 +1532,19 @@ BOMB_HOLD_S = 8.0                       # out this long: off once he is clear
 #          (else the incendiary), never nearer than its blast;
 #   combo: with the combo window under COMBO_LOW_S the nearest open zombie is the target (kicked at arm's length), a bomb
 #          out goes off with one on it; stats combo_breaks (it lapsed with one in reach), combo_best.
-NADES = False                           # off by default: on per profile (re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
+# The whole kit (operator 17:42: "over the course of the match the bot is also using all of their grenades. Basically
+# the bot should be flashbanging these guys and then going up and doing melee attacks on them and hitting them with QTE
+# events"): on - the flash at FLASH_N within FLASH_R, then the fever (in among the stunned ones, kicks; FEVER_S, left the
+# moment one that was not flashed comes within FEVER_BREAK_R); the hand and incendiary grenades turn about into clusters
+# NADE_MIN_R..NADE_MAX_R off, at most every FRAG_GAP_S. stats flashes, fever_kicks, fever_kills, fever_breaks, frags,
+# fires (the incendiaries), grenade_kills. The switch-off: bot_options nades=false.
+NADES = True                            # (on per profile, re6_switch_mods bot_options nades=); the wheel measured live 14:17 (_wheel_key; the D-pad's right from an item lands
                                         # on wheel index 0, between the guns it steps 0 -> 1 -> 2 -> 0; a throw leaves the
                                         # game's own pick of a gun in hand - the knife, index 2 - so the gun back is to his)
 NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the flash (11) and the bomb (12) first
-FLASH_N, FLASH_R, NADE_CLEAR_R = 5, 400.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
-FLASH_GAP_S = 12.0                      # 115 fever kicks in 12 min, kills a minute down a fifth): 5+, at most every 12 s
+FLASH_N, FLASH_R, NADE_CLEAR_R = 4, 500.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
+FLASH_GAP_S = 12.0                      # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m)
+FRAG_GAP_S, FEVER_BREAK_R = 10.0, 250.0
 # The flash when they are on him, within FLASH_R (live 14:31: with "nobody within 3 m" none was ever thrown), no call-off
 # but a hold, no facing.
 # The bomb dropped while backing out of a crowd (BOMB_DROP_N within CC_BACK_R, him above BOMB_MIN_HP, BOMB_GAP_S since
@@ -1847,6 +1854,9 @@ class Bot:
         self.bomb_face_t, self._tick_hp, self._tick_at = 0.0, None, None   # this bomb's facing; last tick's health
         self.nade, self.nade_last, self.nade_kills = None, -1e9, None   # the throw under way; its kills (count, when)
         self.fever_until = -1e9                              # the melee fever after a flash
+        self.flashed, self.fever_k, self.frag_last = set(), None, -1e9   # the flashed ones; kills then; the last grenade
+        for k in ("fever_kills", "fever_breaks"):
+            self.stats.setdefault(k, 0)
         self.flash_last = -1e9                               # the last flash thrown
         self.combo_prev, self.combo_urgent = 0, False
         self.surrounded = False                              # 8+ within 4 m last tick
@@ -2814,7 +2824,9 @@ class Bot:
                 q = live["q"]
                 self.stats["prompts_taken"] += 1
                 types.setdefault(str(q["type"]), [0, 0, q.get("key")])[1] += 1
-                if q.get("key") == "b" and not self.in_hold:
+                if now - self.fever_until < 1.0 and not self.in_hold:
+                    self.stats["finishers"] = self.stats.get("finishers", 0) + 1   # taken among the flashed ones
+                elif q.get("key") == "b" and not self.in_hold:
                     self.stats["climbs"] += 1
                 elif q.get("key") == "y":
                     self.stats["pickups"] += 1
@@ -3008,7 +3020,8 @@ class Bot:
             if (len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
                     and now - self.flash_last >= FLASH_GAP_S):
                 group, kind = near, "flash"
-            elif not NADES or any(flat(e) < NADE_START_R for e in live):   # (FLASH alone: no grenades)
+            elif (not NADES or any(flat(e) < NADE_START_R for e in live)   # (FLASH alone: no grenades)
+                  or now - self.frag_last < FRAG_GAP_S):
                 return None
             else:
                 for e in vis:
@@ -3016,7 +3029,8 @@ class Bot:
                         continue
                     c = [z for z in vis if math.hypot(z["pos"][0] - e["pos"][0], z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R]
                     if len(c) >= NADE_N and all(flat(z) >= NADE_MIN_R * 0.8 for z in c):
-                        for k in ("frag", "fire"):
+                        turn = ("fire", "frag") if self.stats["fires"] < self.stats["frags"] else ("frag", "fire")
+                        for k in turn:                               # the hand and incendiary grenades in turn
                             if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0:
                                 group, kind = c, k
                                 break
@@ -3065,8 +3079,13 @@ class Bot:
             if n["kind"] == "flash":
                 if NADES:                                        # the fever only with the full grenade set
                     self.fever_until = now + FEVER_S + 0.6
+                    me = p["pos"]                                # the flashed ones: in among them; another closing ends it
+                    self.flashed = {e.get("ptr", e.get("slot")) for e in snap.get("enemies") or ()
+                                    if (e.get("hp") or 0) > 0 and math.dist(me, e["pos"]) <= FLASH_R + 200.0}
+                    self.fever_k = snap.get("kills")
                 self.flash_last = now
             else:
+                self.frag_last = now
                 self.nade_kills = (snap.get("kills"), now)
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "thrown":
@@ -3181,6 +3200,14 @@ class Bot:
         kick at arm's length every CC_KICK_GAP_S (the gauge is kept full), the camera turned to one on the flank; between
         them he steps back. None: nobody that close (the gun's bursts go on)."""
         fever = now < self.fever_until
+        if fever and any(flat(e) <= FEVER_BREAK_R and e.get("ptr", e.get("slot")) not in self.flashed for e in live):
+            self.fever_until, fever = now, False                 # one not flashed on him: back to aimed fire
+            self.stats["fever_breaks"] += 1
+        k_now = (getattr(self, "_snap", None) or {}).get("kills")
+        if isinstance(k_now, int) and isinstance(self.fever_k, int) and k_now > self.fever_k:
+            if fever or now - self.fever_until < 0.6:
+                self.stats["fever_kills"] += k_now - self.fever_k
+            self.fever_k = k_now if fever else None
         close = [e for e in live if flat(e) <= (FEVER_R if fever else CC_R) and abs(bearing(e)) <= CC_CONE]
         if not close:
             return None
