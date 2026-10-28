@@ -722,18 +722,56 @@ def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(m
     assert bot.nade is None and bot.stats["nade_wheel"][-1]["to"] == 9
 
 
-def test_a_throw_is_called_off_with_the_gun_back_first_when_one_comes_close(monkeypatch):
-    monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
+def test_a_grenade_in_hand_is_thrown_with_one_close_and_a_throw_is_called_off_only_before(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
     cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
     bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
     bot.held = lambda p, now: False
     snap["player"].update(equipped=0, nades={0x113: (9, 5)})
     run(bot, snap, clock, 2)
+    assert bot.nade is not None and bot.nade["kind"] == "frag"
     snap["player"]["equipped"] = 9                                            # the frag in hand ...
-    snap["enemies"][0]["pos"] = (0.0, 0.0, 100.0)                             # ... and one at arm's length
-    acts = run(bot, snap, clock, 2)
-    assert {"tap": "dright"} in acts and bot.stats["nade_aborts"] == 1        # the gun back before anything
-    assert all(a.get("hold") != ("zl", "zr") for a in acts)                   # never ZL + ZR with it in hand
+    snap["enemies"].append(dict(snap["enemies"][0], pos=(0.0, 0.0, 100.0), ptr=0x7777, slot=9))   # ... one at arm's length
+    acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["frags"] == 1         # thrown at the cluster, not put away
+    assert bot.stats["nade_aborts"] == 0 and bot.stats["throws_by_kind"] == {"frag": 1}
+    assert bot.stats["unsafe_trigger_blocks"] == 0
+    bot2, clock2, snap2 = brain(round_guest(enemies=cluster, cam_yaw=0.0))  # not in hand yet: called off for the fight
+    bot2.held = lambda p, now: False
+    snap2["player"].update(equipped=0, nades={0x113: (9, 5)})
+    run(bot2, snap2, clock2, 1)
+    snap2["enemies"][0]["pos"] = (0.0, 0.0, 100.0)
+    acts = run(bot2, snap2, clock2, 2)
+    assert bot2.stats["nade_aborts"] == 1 and bot2.stats["frags"] == 0        # the gun stays in hand for the fight
+
+
+def test_a_grenade_lifted_outside_a_throw_is_thrown_at_the_best_cluster_four_metres_off(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    foes = ((0.0, 0.0, 250.0, 700),                                           # one near him ...
+            (600.0, 0.0, 600.0, 700), (700.0, 0.0, 650.0, 700), (650.0, 0.0, 560.0, 700))   # ... three together 8.5 m off
+    bot, clock, snap = brain(round_guest(enemies=foes, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=10, nades={0x113: (9, 5), 0x114: (10, 3)})   # the incendiary in his hand, no throw
+    acts = run(bot, snap, clock, int((R.NADE_FACE_S + R.NADE_AIM_S) / 0.05) + 4)
+    assert bot.stats["held_item_throws"] == 1 and bot.stats["fires"] == 1
+    assert {"hold": ("zl", "zr")} in acts and bot.stats["unsafe_trigger_blocks"] == 0
+    assert bot.stats["throws_by_kind"] == {"fire": 1}
+    assert all(a.get("tap") != "dright" for a in acts[:acts.index({"hold": ("zl", "zr")})])   # never put away first
+
+
+def test_a_frag_starts_with_one_near_him_when_the_cluster_is_clear_of_its_blast(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    foes = ((0.0, 0.0, 250.0, 700),                                           # one 2.5 m off (no NADE_START_R refusal)
+            (0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=foes, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5)})
+    bot._crowd_control = lambda *a, **k: None
+    for _ in range(20):
+        run(bot, snap, clock, 1)
+        if bot.nade is not None:
+            break
+    assert bot.nade is not None and bot.nade["kind"] == "frag"
 
 
 def test_the_combo_running_down_makes_the_nearest_the_target_and_a_lapse_is_counted():
@@ -761,7 +799,7 @@ def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     snap["player"]["equipped"] = 12                                           # the remote bomb in hand
     acts = run(bot, snap, clock, 6)
     assert all(not ({"zl", "zr"} <= set(a.get("hold", ()))) for a in acts)
-    assert {"tap": "dright"} in acts and bot.stats["unsafe_trigger_blocks"] >= 1
+    assert acts[0] == {"tap": "dright"} and bot.stats["item_gun_backs"] >= 1   # put away before ZL ever lifts it
 
 
 def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(monkeypatch):
