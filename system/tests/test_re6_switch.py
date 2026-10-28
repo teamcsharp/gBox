@@ -1698,6 +1698,15 @@ def test_the_spread_fills_the_empty_weapon_slots_and_an_asked_weapon_goes_first(
     assert w[3:] == [(0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3)]          # the magnum and the shotguns loaded
     w2, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True, want=0x109)
     assert w2[3] == (0x109, 6) and (0x108, 5) in w2                           # the sniper rifle asked for: in first
+    picks = set()
+    for seed in range(40):                                                    # Leon: Wing Shooter and Shotgun
+        w3, _x = mods.loadout_plan(0, True, 5, random.Random(seed), spread=True)
+        assert not any(t in mods.HANDGUN_TYPES for t, _c in w3)               # never a pistol
+        assert len({t for t, _c in w3 if t != 0}) == len([t for t, _c in w3 if t != 0])   # no gun twice
+        picks.add(w3[0])
+    assert len(picks) >= 4 and picks <= set(mods.PISTOL_SWAPS)                # drawn fresh: many campaign guns
+    w4, _x = mods.loadout_plan(0, True, 5, random.Random(1))                  # without the spread: his own pistol
+    assert w4[0] == (0x103, 18)
 
 
 def weapon_guest(types):
@@ -2717,7 +2726,7 @@ def test_fire_rate_magnum_and_throw_multipliers(mods):
 def test_merc_loadout_writes_nothing_into_a_table_that_is_not_this_builds(mods):
     g = round_guest()
     table = loadout_table(g)
-    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x10E, 30))   # Chris's rifle: another gun
+    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x109, 99))   # Chris's rifle: a foreign pair
     ad = Adapter(g)
     out = mods.run(ad, "merc_loadout")
     assert out["verified"] is False and out["writes"] == 0 and ad.writes == []

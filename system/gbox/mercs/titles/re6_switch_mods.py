@@ -175,6 +175,13 @@ MAGNUM_TYPES = frozenset({0x107, 0x108})
 # (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
 SPREAD = ((0x108, 5), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))
 ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
+# No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
+# magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,
+# each loadout's handgun is swapped for a gun drawn fresh at every select from the campaign's shotguns, magnums and
+# machine guns (never a pistol, never one the loadout already has).
+HANDGUN_TYPES = frozenset({0x101, 0x102, 0x103, 0x10C, 0x10D, 0x128})
+PISTOL_SWAPS = ((0x104, 8), (0x105, 7), (0x106, 3), (0x107, 7), (0x108, 5), (0x10E, 30), (0x10F, 30), (0x111, 30),
+                (0x110, 286))
 LOADOUTS = (                                             # this build's entries: id, weapons, start list (live dump)
     (0x0000, ((0x103, 18), (0x104, 8)), ((0x116, 4), (0x201, 50), (0x202, 8))),
     (0x1000, ((0x111, 30), (0x109, 6), (0x2112, 5120)), ((0x204, 60), (0x203, 30))),
@@ -499,8 +506,13 @@ def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = Fals
         pair = (want, WEAPON_MAG.get(want, 10))              # spread one (never his first gun)
         free = next((i for i, q in enumerate(w) if q == EMPTY), None)
         w[free if free is not None else N_WEAPONS - 1] = pair
-    if spread:                                               # the magnums and shotguns into the empty slots
-        for pair in SPREAD:
+    if spread:                                               # no pistol: a random campaign gun in its place
+        for i, (t, _c) in enumerate(w):
+            if t in HANDGUN_TYPES:
+                picks = [q for q in PISTOL_SWAPS if all(q[0] != u for u, _c2 in w)]
+                if picks:
+                    w[i] = rng.choice(picks)
+        for pair in SPREAD:                                  # the magnums and shotguns into the empty slots
             if all(t != pair[0] for t, _c in w):
                 free = next((i for i, q in enumerate(w) if q == EMPTY), None)
                 if free is None:
@@ -527,7 +539,7 @@ def _loadout_ok(entry: int, raw: bytes) -> bool:
     hd = struct.unpack_from("<5H", raw, 0)
     if hd[0] != eid or hd[1] != 900 or hd[2] != 900 or hd[3] != 0 or hd[4] != L_TAG_VALUE:
         return False
-    allowed = set(_padded(weapons, N_WEAPONS)) | set(SWAPS) | set(SPREAD) | {EMPTY} | set(ASKED)
+    allowed = set(_padded(weapons, N_WEAPONS)) | set(SWAPS) | set(SPREAD) | set(PISTOL_SWAPS) | {EMPTY} | set(ASKED)
     for cur, orig in zip(_pairs(raw, L_WEAPONS, N_WEAPONS), _padded(weapons, N_WEAPONS)):
         if cur != orig and not (orig[0] == ROCKET and cur in SWAPS) and cur not in allowed:
             return False   # (a magnum moved to slot 0 leaves the build's own guns, rearranged)
