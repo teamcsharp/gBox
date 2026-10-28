@@ -510,6 +510,9 @@ def _warm_priority(ad, nice: int) -> None:
                        capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         pass
+    # and its cores (2026-10-27): booting / parked on the slow cores at idle disk priority, playing on the fast ones
+    from .cpu_affinity import place
+    place(pids, background=nice >= 10)
 
 
 def _park_warm(ad, game, owned) -> dict:
