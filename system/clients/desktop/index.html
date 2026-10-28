@@ -3840,7 +3840,8 @@ const VIEW = { mode: "auto", pip: null };                    // mode: auto (game
 // Compact PiP uses this same window, game and input path. It never launches another emulator.
 let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null, compactSession = null;
 let clientUpdateState = { pending: false, restart: false };
-const botLogicSidebar = GBoxBotLogicSidebar.create({ api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
+const botLogicSidebar = GBoxBotLogicSidebar.create({ current: () => compactCurrentSid(),
+  api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
 const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
@@ -3955,12 +3956,12 @@ const compactController = GBoxCompactGame.create({
     }
     if (controls) controls.querySelector('.compact-title').textContent = compactTitle;
     compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
-    botLogicSidebar.update(state);                      // the bot logic sidebar (the right edge's arrow)
     if (state.on && !state.local) {
       if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; stream.dataset.streamFollow = 'game'; document.body.append(stream); }
       stream.classList.add('on');
       if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
+    botLogicSidebar.update({ ...state, session: compactSession }); // bind after the displayed stream changes
     if (!state.on) compactHover(false);
     updateCompactMedia(state.on);
     renderClientUpdate();
