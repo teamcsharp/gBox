@@ -138,13 +138,27 @@ def test_with_one_near_a_far_one_is_never_the_target_nor_shot():
     assert b.stats["confirmed_shots"] == 0
 
 
-def test_the_crowds_gun_is_a_shotgun_else_an_automatic_else_a_magnum():
+def test_the_crowds_gun_prefers_a_magnum_then_shotgun_then_automatic():
     b, _ = bot()
     gatling = {"slot": 2, "id": 0x115, "type": 1, "item": 0x15, "rounds": 100, "cap": 100, "grid": 7, "hand": False}
     magnum = {"slot": 3, "id": 0x10B, "type": 1, "item": 0x0B, "rounds": 6, "cap": 6, "grid": 1, "hand": False}
-    assert b._rampage_gun([magnum, gatling])[1] == "automatic"
-    assert b._rampage_gun([magnum, gatling, SHOTGUN])[1] == "shotgun"
+    assert b._rampage_gun([magnum, gatling])[1] == "magnum"
+    assert b._rampage_gun([magnum, gatling, SHOTGUN])[1] == "magnum"
     assert b._rampage_gun([magnum])[1] == "magnum"
+    assert b._rampage_gun([gatling, SHOTGUN])[1] == "shotgun"
+
+
+@pytest.mark.parametrize("weapon", [0x0B, 0x1A, 0x1B])
+def test_the_held_magnum_fires_on_the_body_without_swapping_to_a_shotgun(weapon):
+    b, clock = bot()
+    held = dict(SHOTGUN, slot=2, id=0x100 | weapon, item=weapon, grid=3, hand=True)
+    inv = [SHOTGUN, dict(held, slot=3, grid=1, hand=False), held]
+    act = b.tick(snap(CROWD, inv=inv))
+    assert "zl" in act["hold"] and not set(act["hold"]) & set(R.QUICK.values())
+    clock[0] = 0.2
+    act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"])
+    assert b.stats["rampage_weapon"] == "magnum" and b.stats["rampage_swaps"] == 0
 
 
 @pytest.mark.parametrize("dot,pitch,key", [
