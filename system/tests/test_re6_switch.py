@@ -1822,6 +1822,56 @@ def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monk
     assert {"tap": "dright"} in acts and bot.stats["crowd_shotgun_s"] > 0
 
 
+def test_instant_ram_swap_writes_the_equipped_index_and_skips_the_dpad(monkeypatch):
+    """With a weapon_ram writer, the bot writes the wanted wheel index to P_EQUIPPED directly (no D-pad taps)."""
+    monkeypatch.setattr(R, "WANT_WEAPON", 3)
+    monkeypatch.setattr(R, "WANT_WEAPON_AT", 1.0)
+    g = round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    # Set up weapon slots: type 0x10F at wheel 0, 0x107 at wheel 1, 0x104 at wheel 3
+    for i, t in enumerate((0x10F, 0x107, 0x104)):
+        wheel = (0, 1, 3)[i]
+        g.put(p + R.P_SLOTS + R.SLOT_STRIDE * wheel + 8, bytes([1, wheel]) + struct.pack("<H", t))
+    g.i32(p + R.P_EQUIPPED, 0)  # currently equipped: wheel 0
+
+    writes = []
+
+    def fake_write(player_ptr, wheel_index):
+        writes.append((player_ptr, wheel_index))
+        g.i32(player_ptr + R.P_EQUIPPED, wheel_index)
+        return True
+
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], weapon_ram=fake_write)
+    bot.held = lambda p, now: False
+    snap = R.snapshot(g)
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x104: 3}, ptr=p)
+    acts = run(bot, snap, clock, 2)
+    assert writes == [(p, 3)]  # one RAM write to wheel 3
+    assert bot.stats["weapon_ram_swaps"] == 1
+    assert not any("dright" in a.get("tap", "") for a in acts)  # no D-pad taps
+    # The equipped index in the guest now reads 3
+    assert struct.unpack("<i", g.rd(p + R.P_EQUIPPED, 4))[0] == 3
+
+
+def test_ram_swap_failure_falls_back_to_dpad(monkeypatch):
+    """When the RAM writer fails, the bot falls back to D-pad stepping."""
+    monkeypatch.setattr(R, "WANT_WEAPON", 3)
+    monkeypatch.setattr(R, "WANT_WEAPON_AT", 1.0)
+
+    def failing_write(player_ptr, wheel_index):
+        return False
+
+    clock = [0.0]
+    bot = R.Bot(stats={}, clock=lambda: clock[0], weapon_ram=failing_write)
+    bot.held = lambda p, now: False
+    snap = R.snapshot(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x104: 3})
+    acts = run(bot, snap, clock, 2)
+    assert bot.stats["weapon_ram_fails"] == 1
+    assert {"tap": "dright"} in acts  # D-pad fallback
+
+
 def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_of_it(monkeypatch):
     monkeypatch.setattr(R, "WANT_WEAPON", None)
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))

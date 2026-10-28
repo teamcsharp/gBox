@@ -1270,6 +1270,24 @@ def aim_writer(m):
     return write
 
 
+def weapon_writer(m):
+    """The instant weapon swap's writer for this session: write(player_ptr, wheel_index) -> True once the equipped
+    index is written and read back. None without the session's adapter or with modifications off (the D-pad steps)."""
+    ad = getattr(m, "adapter", None)
+    if ad is None or getattr(m, "mercs_no_modifications", False):
+        return None
+
+    def write(player_ptr: int, wheel_index: int) -> bool:
+        try:
+            addr = player_ptr + P_EQUIPPED
+            ad.write_memory(addr, struct.pack("<i", wheel_index))
+            back = struct.unpack("<i", ad.read_memory(addr, 4))[0]
+        except (RuntimeError, ValueError, OSError):
+            return False
+        return back == wheel_index
+    return write
+
+
 def aim_point(e, ppos) -> tuple:
     """Where to aim at e: his chest on (or near) his floor; one off it (a ceiling's, a hanging one) at its own position
     OFF_FLOOR_AIM_H up."""
@@ -1988,7 +2006,7 @@ class Bot:
     tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
     again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None, weapon_ram=None):
         from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
@@ -2054,6 +2072,7 @@ class Bot:
             self.stats.setdefault(k, 0)
         self.nav_path, self.nav_goal, self.nav_at = None, None, -1e9   # the walk's waypoints; toward what; planned when
         self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
+        self.weapon_ram = weapon_ram                         # the instant swap's writer (weapon_writer); None: D-pad steps
         self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
         self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
         self.lock_shots: list = []                           # aimed shots waiting for their target's health to fall
@@ -2683,6 +2702,19 @@ class Bot:
             return None
         if now - self.weapon_tap_at < WEAPON_TAP_S:
             return None
+        # Instant RAM swap when the writer is available: write the wanted wheel index to P_EQUIPPED directly.
+        if self.weapon_ram is not None and p.get("ptr"):
+            if self.weapon_ram(p["ptr"], want):
+                self.stats["weapon_switches"] += 1
+                self.stats["weapon_ram_swaps"] = self.stats.get("weapon_ram_swaps", 0) + 1
+                self.weapon_tap_at = now
+                self.weapon_taps = 0
+                self._gun_down()
+                return self._go("reload", "weapon_switch", {"hold": ()},
+                                f"RAM swap to wheel {want} (now {eq})")
+            else:
+                self.stats["weapon_ram_fails"] = self.stats.get("weapon_ram_fails", 0) + 1
+                # Fall through to D-pad stepping on failure
         if self.weapon_taps >= WEAPON_TRIES:
             self.weapon_rest, self.weapon_taps = now + WEAPON_REST_S, 0
             return None
@@ -4795,7 +4827,7 @@ class RE6Switch(Driver):
         if learn_dir is None:                                    # the deployment: gbox-data/mercs/learned/<title>
             from .. import lessons as L
             learn_dir = L.ROOT.parent / "learned" / MAP_ID
-        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m))
+        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), weapon_ram=weapon_writer(m))
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]
