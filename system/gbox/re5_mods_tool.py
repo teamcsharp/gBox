@@ -1525,6 +1525,10 @@ class RE5ModsIn(BaseModel):
     flash: bool | None = None
     aim_lock: bool | None = None
     bomb_drop: bool | None = None
+    # bot_logic (RE5 / RE6 on Switch): the operator's live bot settings (gbox.mercs.bot_logic), {name: value}; reset: true
+    # (every one) or [names] back to the shipped values
+    values: dict | None = None
+    reset: bool | list[str] | None = None
 
 
 class RE5ModsOut(BaseModel):
@@ -1544,6 +1548,9 @@ def re5_mods(inp: RE5ModsIn, ctx):
     playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if (inp.op or "").strip().lower() == "bot_logic" and (is_switch_re6(g) or is_switch_re5(g)):
+        from .mercs import bot_logic                     # the operator's live bot settings (the PiP's sidebar)
+        return {"result": bot_logic.handle("re6" if is_switch_re6(g) else "re5", inp.values, inp.reset)}
     if is_switch_re6(g):                                 # RE6 on Switch: its own ops
         from .mercs.titles import re6_switch_mods as R6
         extra = {k: v for k, v in (("weapon", inp.weapon), ("seconds", inp.seconds), ("nades", inp.nades),
