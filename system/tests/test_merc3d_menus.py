@@ -1,75 +1,226 @@
-"""Mercenaries 3D (3DS) menus module (gbox.mercs.titles.merc3d_3ds): an honest stub for a title with no
-measured RAM map. Every read is `unknown` / None, BOOT_KEY is the neutral `start` (never A, whose title
-action is unconfirmed), and nothing registers a roster or stage list — the mission-select automation and
-`playable: True` flip are gated on a live Citra/Azahara RAM measurement that has not happened yet."""
-import pytest
+"""Mercenaries 3D (3DS) driver (gbox.mercs.titles.merc3d_3ds) on a fake guest: screens named by the area stack's flow
+states and the classes the game's own DTIs give, the player and the mission counters from RAM."""
+import struct
 
-from gbox import mercmode
 from gbox.mercs.titles import merc3d_3ds as M
 
 
-class Mem:
+class Guest:
+    """A sparse little-endian 3DS guest with MT objects: obj(name) builds a vtable whose getDTI names the class."""
+
     def __init__(self):
-        self.b = {}
+        M._NAMES.clear()                             # vtables are per build in the game; each fake reuses addresses
+        self.mem = {}
+        self.code = 0x00700000                       # stubs, vtables, names (code / ro)
+        self.heap = 0x08300000
+        self.vts = {}
+
+    def put(self, a, data):
+        for i, b in enumerate(data):
+            self.mem[a + i] = b
+
+    def u32(self, a, v):
+        self.put(a, struct.pack("<I", v & 0xFFFFFFFF))
+
+    def f32(self, a, v):
+        self.put(a, struct.pack("<f", v))
 
     def rd(self, a, n):
-        return bytes(n)
+        return bytes(self.mem.get(a + i, 0) for i in range(n))
 
-    def put(self, a, fmt, *v):
-        pass
+    def _code(self, n):
+        a = self.code
+        self.code += (n + 15) & ~15
+        return a
+
+    def vtable(self, name):
+        if name not in self.vts:
+            vt, stub, dti, s = self._code(0x40), self._code(12), self._code(0x30), self._code(len(name) + 1)
+            self.put(s, name.encode() + b"\0")
+            self.u32(dti + 4, s)
+            self.u32(stub, 0xE59F0000)
+            self.u32(stub + 4, 0xE12FFF1E)
+            self.u32(stub + 8, dti)
+            self.u32(vt + 0x14, stub)
+            self.vts[name] = vt
+        return self.vts[name]
+
+    def obj(self, name, size=0x100):
+        a = self.heap
+        self.heap += (size + 0xFF) & ~0xFF
+        self.u32(a, self.vtable(name))
+        return a
+
+    def area(self, name, states, current):
+        a = self.obj(name, 0x80)
+        arr = self.obj("MtArray", 4 * len(states) + 16)
+        for i, st in enumerate(states):
+            self.u32(arr + 4 * i, self.obj(st, 0x50))
+        f = a + M.AREA_FLOW
+        self.u32(f, M.FLOW_VT)
+        self.u32(f + M.FLOW_STATES, arr)
+        self.u32(f + M.FLOW_COUNT, len(states))
+        self.u32(f + M.FLOW_CUR, current)
+        return a
+
+    def stack(self, *areas):
+        sa = self.obj("sGameArea", 0x3900)
+        self.u32(M.S_AREA, sa)
+        self.u32(sa + M.AREA_DEPTH, len(areas))
+        for i, a in enumerate(areas):
+            self.u32(sa + M.AREA_STACK + 4 * i, a)
+
+    def player(self, hp=1000.0, pos=(-402.85, 60.97, -3192.98), quat=(0.0, 0.7022, 0.0, 0.7120)):
+        sp = self.obj("sPlayer", 0x30)
+        node = self.obj("cUnitNode", 0x20)
+        p = self.obj("uPl< Chris >", 0x1000)
+        self.u32(M.S_PLAYER, sp)
+        self.u32(sp + M.SP_FIRST, node)
+        self.u32(node + M.NODE_OWNER, p)
+        self.put(p + M.P_POS, struct.pack("<3f", *pos))
+        self.put(p + M.P_ROT, struct.pack("<4f", *quat))
+        self.f32(p + M.P_VIT, hp)
+        self.f32(p + M.P_VIT_MAX, 1000.0)
+        return p
 
 
-def test_declares_nothing_measured():
-    assert M.STAGES == () and M.CHARACTERS == () and M.STEPS == {} and M.CURSORED == ()
-    assert M.player(Mem()) is None
-    assert M.unlocked(Mem()) is None
-    assert M.menu_state(Mem()) is None
+TITLE = ["cMerceTitleInitState", "cMerceTitleMainState", "cMerceTitleFinalState", "cMerceTitleSystemCheckState",
+         "cMerceTitleGoreWarningState", "cMerceTitleCapcomLogoState", "cMerceTitlePressStartState",
+         "cMerceTitleDemoState", "cMerceTitleMainMenuState", "cMerceTitleSpecialState", "cMerceTitleOptionMainState",
+         "cMerceTitleDummyState"]
+MAIN = ["cMerceMainInitState", "cMerceMainMainState", "cMerceMainFinalState", "cMerceMainAutoSaveState",
+        "cMerceMainMissionSelectState", "cMerceMainCharacterSelectState", "cMerceMainDuoMenuState",
+        "cMerceMainRecordState"]
+STAGE = ["cMerceStageInitState", "cMerceStageStartState", "cMerceStageMainState", "cMerceStageEndState",
+         "cMerceStageFinalState", "cMerceStageFailedState", "cMerceStageYouAreDeadState"]
 
 
-def test_screen_is_honestly_unknown_out_of_round():
-    assert M.screen(Mem()) == {"where": "unknown", "cursor": None, "target": None}
+def _guest(area, states, current):
+    g = Guest()
+    g.stack(g.obj("aGame"), g.obj("aMerceArea"), g.area(area, states, current))
+    return g
 
 
-def test_boot_key_is_start_never_a():
-    # A's title action is unconfirmed on 3DS, so a blind advance must use the neutral start key.
-    assert M.BOOT_KEY == "start"
-    assert M.step(Mem()) is None
-    assert M.step({"where": "unknown"}) is None
+def test_class_names_come_from_the_dti():
+    g = Guest()
+    p = g.obj("uPl< Chris >")
+    assert M.class_name(g, p) == "uPl< Chris >"
+    assert M.class_name(g, 0x08F00000) is None                # no vtable there
 
 
-def test_no_step_wander_or_press_without_a_measured_cursor():
-    assert M.wandered(Mem()) is None
-    assert M.wandered({"where": "unknown"}) is None
-    assert M.pressed(Mem(), "a") is None
-    assert M.pressed({"where": "unknown"}, "dright") is None
+def test_title_screens_and_their_keys():
+    for index, where, key in ((4, "gore_warning", "a"), (5, "loading", None), (6, "press_start", "start"),
+                              (7, "demo", "start")):
+        scr = M.screen(_guest("aMerceTitle", TITLE, index))
+        assert scr["where"] == where and scr["area"] == "aMerceTitle" and scr["state"] == TITLE[index]
+        assert M.step(scr) == key
 
 
-def test_menu_state_hook_falls_through_without_inventing_a_screen(monkeypatch):
-    # even if menu_state later reports something, only a real 'where' is surfaced; offsets stay unmeasured
-    monkeypatch.setattr(M, "menu_state", lambda m: {"where": "select_stage", "cursor": 3})
-    scr = M.screen(Mem())
-    assert scr == {"where": "select_stage", "cursor": 3, "target": None}
+def test_mercenaries_menus():
+    M.PICK.reset()
+    assert M.screen(_guest("aMerceMain", MAIN, 0))["where"] == "loading"
+    assert M.screen(_guest("aMerceMain", MAIN, 3))["where"] == "saving"
+    assert M.step(M.screen(_guest("aMerceMain", MAIN, 7))) == "b"           # records: back out
 
 
-def test_merc3d_is_registered_but_not_playable():
-    t = mercmode.TITLES["merc3d"]
-    assert t["map_id"] == "CTR-ABRE" and t["platform"] == "3ds"
-    assert t["game_ids"] == ("0ed22ae742e1b56b",)
-    assert t["playable"] is False
-    assert "reason" in t and "no measured offsets" in t["reason"]
-    assert t["modes"] == ["mercenaries"]
+def _select_guest(level=0, open_=1, tab=0, tabs=0, mission=0):
+    g = _guest("aMerceMain", MAIN, 4)
+    top = M.areas(g)[-1][0]
+    arr = struct.unpack("<I", g.rd(top + M.AREA_FLOW + M.FLOW_STATES, 4))[0]
+    st = struct.unpack("<I", g.rd(arr + 4 * 4, 4))[0]
+    gui = g.obj("uGUI_MissionSelectSub", 0x400)
+    g.u32(st + M.STATE_GUI, gui)
+    g.put(gui + M.MS_LEVEL, struct.pack("<5i", level, open_, 5, tab, tabs))
+    sm = g.obj("sMission", 0x130)
+    g.u32(M.S_MISSION, sm)
+    g.put(sm + M.M_MISSION, struct.pack("<h", mission))
+    return g
 
 
-def test_no_fabricated_roster_or_stage_list():
-    # catalog() only names verified titles; merc3d must not expose a guessed roster for the DJ queue.
-    assert mercmode.catalog().get("merc3d") is None
-    with pytest.raises(ValueError, match="no verified roster or stage list"):
-        mercmode.queue_entry({"title": "merc3d", "mode": "mercenaries"})
-    assert mercmode.queue_entry({"title": "merc3d"}) == {"title": "merc3d", "mode": None,
-                                                         "character": None, "stage": None}
+def test_main_menu_visits_the_selects_then_starts():
+    M.PICK.reset()
+    main = M.screen(_guest("aMerceMain", MAIN, 1))
+    assert main["where"] == "mercs_main" and M.step(main) == "r"   # never B there: it autosaves and leaves
+    M.PICK.mission_done = True
+    assert M.step(main) == "l"
+    M.PICK.chara_done = True
+    assert M.step(main) == "start"
+    M.PICK.reset()
 
 
-def test_normalize_accepts_the_title_and_rejects_duplicates():
-    assert mercmode.normalize({"titles": ["merc3d"]})["titles"] == ["merc3d"]
-    with pytest.raises(ValueError):
-        mercmode.normalize({"titles": ["merc3d", "merc3d"]})
+def test_mission_select_walks_to_a_random_open_level_then_a_tab():
+    M.PICK.reset()
+    M.PICK.level = 0
+    scr = M.screen(_select_guest(level=2, open_=1))                # the cursor on a locked level
+    assert scr["where"] == "select_stage" and scr["inside"] is False
+    assert scr["target"] == 0 and M.step(scr) == "up"
+    scr = M.screen(_select_guest(level=0, open_=1))
+    assert M.step(scr) == "a"                                      # opens LV.1
+    M.PICK.tab = 2
+    scr = M.screen(_select_guest(level=0, open_=1, tab=0, tabs=3))
+    assert scr["inside"] is True and scr["target"] == 2 and M.step(scr) == "right"
+    scr = M.screen(_select_guest(level=0, open_=1, tab=2, tabs=3))
+    assert M.step(scr) == "a"
+    M.pressed(scr, "a")
+    assert M.PICK.mission_done is True
+    M.PICK.reset()
+
+
+def test_random_draws_stay_inside_what_is_open():
+    M.PICK.reset()
+    for _ in range(50):
+        M.PICK.reset()
+        assert M.PICK.level_for(1) == 0
+        assert 0 <= M.PICK.tab_for(3) < 3
+    M.PICK.reset()
+
+
+def test_the_round_by_stage_state_and_vitality():
+    g = _guest("aS0000", STAGE, 2)
+    g.player(hp=1000.0)
+    assert M.screen(g)["where"] == "playing"
+    g = _guest("aS0000", STAGE, 2)
+    g.player(hp=0.0)
+    assert M.screen(g)["where"] == "dead"
+    assert M.screen(_guest("aS0000", STAGE, 5))["where"] == "results"       # time up, objective not met
+    assert M.screen(_guest("aS0000", STAGE, 6))["where"] == "dead"
+    assert M.screen(_guest("aS0000", STAGE, 1))["where"] == "loading"
+
+
+def test_nothing_readable_is_unknown():
+    assert M.screen(Guest())["where"] == "unknown"
+
+
+def test_snapshot_reads_the_player_and_the_mission():
+    g = _guest("aS0000", STAGE, 2)
+    g.player()
+    sm = g.obj("sMission", 0x130)
+    g.u32(M.S_MISSION, sm)
+    g.f32(sm + M.M_ELAPSED, 63.734)
+    g.f32(sm + M.M_LEFT, 86.262)
+    g.u32(sm + M.M_SCORE, 1200)
+    g.u32(sm + M.M_COMBO, 3)
+    g.f32(sm + M.M_COMBO_T, 2.5)
+    snap = M.snapshot(g)
+    p = snap["player"]
+    assert p["hp"] == 1000.0 and p["hp_max"] == 1000.0 and p["class"] == "uPl< Chris >"
+    assert abs(p["pos"][0] + 402.85) < 1e-3
+    assert abs(p["rot"] - 1.5569) < 1e-3                         # facing +x (live: running "up" moved +x)
+    assert snap["timer"] == 86.26 and snap["elapsed"] == 63.73 and snap["score"] == 1200
+    assert snap["combo"] == 3 and snap["combo_timer"] == 2.5
+
+
+def test_driver_hands_rounds_to_the_engine():
+    d = M.DRIVER()
+    g = _guest("aS0000", STAGE, 2)
+    g.player()
+    assert d.screen(g, None) == "playing"
+    assert d.screen(_guest("aS0000", STAGE, 5), None) == "results"
+    assert d.screen(_guest("aMerceMain", MAIN, 4), None) == "results"     # back at the selects: the menus' turn
+    assert d.menu_handoff(_guest("aMerceMain", MAIN, 4), {}, "results") is True
+
+
+def test_warm_probe_is_read_only_and_names_stable_screens():
+    out = M.warm_probe(_guest("aMerceTitle", TITLE, 6))
+    assert out["ready"] is True and out["screen"] == "press_start" and out["title"] == M.MAP_ID
+    assert M.warm_probe(_guest("aMerceTitle", TITLE, 5))["ready"] is False

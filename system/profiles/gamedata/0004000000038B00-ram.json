@@ -1,0 +1,27 @@
+{
+  "format": "gbox-ram-map/1",
+  "id": "0004000000038B00",
+  "title": "Resident Evil: The Mercenaries 3D (3DS, EUR CTR-P-ABMP, .code sha256 85a34c86...821be)",
+  "platform": "3ds",
+  "endian": "little",
+  "pointer_size": 4,
+  "match": {"title_id": "0004000000038B00", "game_ids": ["0ed22ae742e1b56b"]},
+  "regions": [],
+  "notes": [
+    "The catalog names the 7z '(USA)', but the image inside is the EUR build (product CTR-P-ABMP, title 0004000000038B00); its .code is the one gbox.merc3d_exe pins.",
+    "Guest virtual addresses (ARM11, code at 0x100000, .data 0x8AA000, .bss to 0x92F000, heap 0x08000000, linear heap 0x14000000), read through Citra's page table in the RetroArch process (gbox.citra_memory): the citra core has no libretro memory map.",
+    "MT Framework Mobile: every manager is a singleton whose mpInstance sits in .bss; a class is named by its vtable (slot 5 is getDTI, the DTI's name at +4). docs/research/merc3d-ram.md has the measurements."
+  ],
+  "mercs": {
+    "driver": "gbox.mercs.titles.merc3d_3ds",
+    "menus": "gbox.mercs.titles.merc3d_3ds",
+    "ready": false,
+    "jump_at": "mercs_main",
+    "package": [],
+    "playing_ops": [],
+    "units_per_m": 100,
+    "rules": {"mode": "mercenaries"}
+  },
+  "groups": {},
+  "fields": {}
+}

@@ -1546,6 +1546,7 @@ class RetroArchAdapter(CommandAdapter):
         prepared = time.monotonic()
         plan = self._audio_plan()                          # before _argv: the session cfg names driver + device
         argv = self._argv(rom)
+        self.content_path = rom                            # the content the core loads (3DS: its code signature)
         configured = time.monotonic()
         from .scene_support import video_driver
         self.video_driver = video_driver(argv)             # Examine 3D capability matrix (gbox/scene_support.py)
@@ -2103,8 +2104,35 @@ class RetroArchAdapter(CommandAdapter):
             out += bytes(int(b, 16) for b in r[2:])
         return bytes(out)
 
+    def citra_memory(self):
+        """A 3DS session's guest memory (the citra core gives RetroArch no memory map): Citra's own page table inside
+        this RetroArch process (gbox.citra_memory), found from the game's code signature, again after the process
+        changes. None for any other core."""
+        from . import citra_memory as CM
+        if not CM.is_citra(self) or not self.proc or self.proc.poll() is not None:
+            return None
+        pid = self.proc.pid                                 # vglrun and nice exec: this is RetroArch itself
+        mem = getattr(self, "_citra", None)
+        if mem is not None and mem.pid == pid:
+            return mem
+        now = time.monotonic()
+        if now - getattr(self, "_citra_tried", 0.0) < 2.0:  # still booting: one 256 MiB scan per 2 s at most
+            raise RuntimeError(getattr(self, "_citra_error", "3DS guest memory not found yet"))
+        self._citra_tried = now
+        try:
+            mem = CM.attach(pid, CM.code_signature(getattr(self, "content_path", None)), writable=True)
+        except (OSError, ValueError) as e:
+            self._citra_error = f"3DS guest memory not found yet: {e}"
+            raise RuntimeError(self._citra_error) from e
+        mem.pid, self._citra = pid, mem
+        return mem
+
     def read_memory(self, address: int, length: int) -> bytes:
-        """Core memory map first (native addresses); else the RAM view RetroArch exposes for achievements."""
+        """Core memory map first (native addresses); else the RAM view RetroArch exposes for achievements. 3DS (citra):
+        guest virtual addresses through Citra's page table."""
+        citra = self.citra_memory()
+        if citra is not None:
+            return citra.rd(address, length)
         r = self._read("READ_CORE_MEMORY", address, length)
         if isinstance(r, bytes):
             return r
@@ -2114,6 +2142,12 @@ class RetroArchAdapter(CommandAdapter):
         raise RuntimeError(f"memory read failed: {r} | {r2}")
 
     def write_memory(self, address: int, data: bytes) -> dict:
+        citra = self.citra_memory()
+        if citra is not None:                                   # 3DS: written in place, then read back
+            citra.wr(address, data)
+            if citra.rd(address, len(data)) != data:
+                raise RuntimeError(f"3DS write at {address:#x} not confirmed by read-back")
+            return {"written": len(data), "via": "citra_page_table", "verified": True}
         if len(data) > 512:                                     # RetroArch parses a command from a 2 KB buffer: one
             n, via = 0, None                                    # WRITE_CORE_MEMORY carries at most 674 bytes
             for k in range(0, len(data), 512):
