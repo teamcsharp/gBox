@@ -77,7 +77,7 @@ GAMES = {'e7ca89bbeb67360d': RE5_PS3, '78ab9efa2e310db4': RE4_GC, 'e42c9b780c07c
          '0871eee3b68cdea3': RE4_PS2, '52d15709be0fda1a': RE5_SWITCH, '115f9cdbba115432': RE6_SWITCH}
 HELD_MOTIONS = frozenset({100, 106, 107, 113, 114})   # re5_switch MOTION_HELD (107 grabbed, 106 held, 113/100/114 strangled)
 DYING_MOTIONS = frozenset({40, 47, 51})                # re5_switch P_MOTION: dying at 1 HP (8 is dead)
-HELD_R = 25.0                                          # re5_switch HELD_R: a Majini this near is on him, whatever the motion
+HELD_R = 25.0                                          # re5_switch HELD_R: a Majini this near holds him (no motion byte only, #1408)
 HELD_STATES = frozenset({8, 9, 25})                    # re6_switch HELD_STATES (P_STATE 3: knocked down)
 HEAL_IDS = frozenset({0x304, 0x305, 0x307, 0x309})     # RE5 First Aid Spray, green herb, mixed herbs (both editions)
 AIM_KEYS = frozenset({'zl', 'l1'})                     # Switch ZL / the PS3 bot's L1 raise the gun
@@ -295,7 +295,8 @@ def features(event, game_id=None) -> dict:
     bombs.sort()
     motion, state, action = p.get('motion'), p.get('state'), p.get('action')
     words = action.lower() if isinstance(action, str) else ''
-    grabbed = bool((title == RE5_SWITCH and (motion in HELD_MOTIONS or (near and near[0]['d'] < HELD_R)))
+    grabbed = bool((title == RE5_SWITCH and (motion in HELD_MOTIONS
+                                             or (motion is None and near and near[0]['d'] < HELD_R)))
                    or (title == RE6_SWITCH and state in HELD_STATES)
                    or state == 'grabbed' or (title == RE5_PS3 and action == 4)
                    or any(w in words for w in GRAB_WORDS))
