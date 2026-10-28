@@ -37,6 +37,7 @@ import math
 import struct
 import time
 
+from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
@@ -2059,6 +2060,7 @@ class Bot:
                 self.stats["reloc_stuck"] += 1
                 self.stats["reloc_dead_ends"] += 1
                 self._dead_ends = (self._dead_ends + [(px, py, pz), tuple(r["goal"])])[-DEAD_ENDS_KEPT:]
+                tuning.note_dead_end(MAP_ID, (px, pz), r["goal"])
                 self._kite_side = -self._kite_side       # a wall that way: loop the other way next time
             self._reloc, self._dwell = None, None
             return None
@@ -2681,6 +2683,8 @@ class Bot:
         self._wu, self._windup_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
+        tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
+        self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
 
     def _gun_down(self) -> None:
         if self.fire_down and self._now is not None:

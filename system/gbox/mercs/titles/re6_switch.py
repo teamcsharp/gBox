@@ -30,6 +30,7 @@ import struct
 import time
 from pathlib import Path
 
+from .. import tuning                      # learned per-stage constants (gbox/mercs/tuning.py)
 from ..driver import Driver
 
 TITLE_ID = "01002A000CD48000"
@@ -2086,12 +2087,14 @@ class Bot:
                 self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.stats["round_start_via"] = "dead/retry"
                 self._round_started = now
+                tuning.apply(MAP_ID, tuning.stage_name(STAGES, PICK.last.get("stage")), self.stats)
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
                 self.tablet_wait, self.tablet_missed = None, False
                 self.look.new_round()
             self.continued = None
         if self._round_started is None:
             self._round_started = now
+            tuning.apply(MAP_ID, tuning.stage_name(STAGES, PICK.last.get("stage")), self.stats)
         self._stage_book(snap)
 
     def _stage_book(self, snap) -> None:
