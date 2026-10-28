@@ -967,8 +967,9 @@ def test_with_none_on_his_floor_he_goes_after_the_stages_nearest_and_counts_the_
     snap["enemies"] = [snap["enemies"][0]]                                    # only the one upstairs: still after him
     acts = run(bot, snap, clock, 2)
     assert bot.stats["act"] == "pursue" and bot.stats["pursuits"] == 1 and bot.stats["census_alive"] == 1
-    acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # not moving (stairs): a side step
-    assert bot.stats["pursuit_stuck"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    acts = run(bot, snap, clock, int(R.PURSUE_STUCK_S / 0.05) + 3)            # no progress: bounded back/side recovery
+    assert bot.stats["movement_blocks"] >= 1 and any({"lleft", "lright"} & set(a["hold"]) for a in acts)
+    assert snap["enemies"][0]["ptr"] in bot._walk_skip
     snap["kills"] = (snap.get("kills") or 0) + 1                              # the kill before the lapse
     run(bot, snap, clock, 1)
     assert bot.stats["pursuit_kills"] == 1
@@ -1350,13 +1351,16 @@ def test_the_bonus_run_walks_the_nav_mesh_way_round():
     snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
     acts = run(bot, snap, clock, 2)
     assert bot.stats["nav_paths"] == 1 and "nav mesh" in bot.why
-    assert "rleft" in acts[0]["hold"] and "lup" in acts[0]["hold"]           # toward +x (east) first, not north
-    bot.ram = lambda addr, pitch, yaw: True                                   # with the lock's writer: the yaw written
+    assert "rleft" in acts[0]["hold"] and "lup" not in acts[0]["hold"]       # face +x before walking east
+    writes = []
+    bot.ram = lambda *args: writes.append(args) or True                       # available to aiming, never navigation
     snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.1, "yaw": 0.0}
     for b in snap["bonuses"]:
         bot.bonus_unseen[b["ptr"]] = 1e9                                      # out of sight: walked to, not shot
     acts = run(bot, snap, clock, 1)
-    assert acts[0]["hold"] == ("lup",)
+    assert acts[0]["hold"] == ("rleft",) and writes == []                   # navigation remains a governed stick turn
+    snap["camera"]["yaw"] = math.pi / 2
+    assert run(bot, snap, clock, 1)[0]["hold"] == ("lup",)
 
 
 def test_the_bonus_run_takes_the_nearest_by_the_way_there():
@@ -1429,16 +1433,19 @@ def test_a_shown_prompt_is_pressed_at_once_and_counted_taken_when_it_goes():
     assert bot.stats["prompt_types"]["35"] == [1, 1, "b"] and bot.stats["prompt_latency_ms"] <= 100
 
 
-def test_a_pickup_waits_until_nobody_is_near_and_a_stick_prompt_gets_the_stick():
+def test_unlimited_items_skip_pickups_near_and_far_without_losing_other_prompts():
     bot, clock, snap = prompt_snap(enemies=((0.0, 0.0, 200.0, 700),), key="y", pad=0x8000, type=1)
     acts = run(bot, snap, clock, 2)
-    assert {"tap": "y"} not in acts                                           # one at 2 m: not now
+    assert {"tap": "y"} not in acts
     snap["enemies"][0]["pos"] = (0.0, 0.0, 900.0)
     acts = run(bot, snap, clock, 1)
-    assert acts[0] == {"tap": "y"}
+    assert {"tap": "y"} not in acts and bot.stats["act"] != "prompt_y"
+    snap["enemies"] = []
+    acts = run(bot, snap, clock, 1)
+    assert {"tap": "y"} not in acts and bot.stats["act"] != "prompt_y"
     snap["prompts"] = []
     run(bot, snap, clock, 1)
-    assert bot.stats["pickups"] == 1
+    assert bot.stats["pickups"] == 0 and bot.stats["prompts_taken"] == 0
     bot, clock, snap = prompt_snap(key="stick", pad=0xF0000, type=26)
     acts = run(bot, snap, clock, 1)
     assert "b" not in acts[0]["hold"] and set(acts[0]["hold"]) <= {"lup", "ldown", "lleft", "lright"}
@@ -1608,8 +1615,10 @@ def test_one_behind_a_wall_is_never_aimed_at_and_is_walked_to_by_the_mesh():
     snap["navmesh"] = R.NavMesh(*u_mesh(size=200.0))
     acts = run(bot, snap, clock, 6)
     assert all("zl" not in a.get("hold", ()) for a in acts)                  # never aimed at the wall
-    assert writes and all(abs(w[2]) > 1.0 for w in writes)                    # the camera onto the way (east), not him
-    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "walk_nav" and "lup" in acts[-1]["hold"]
+    assert writes == [] and all("rleft" in a.get("hold", ()) for a in acts)  # governed turn east; no camera RAM snap
+    assert bot.stats["offscreen_skips"] >= 1 and bot.stats["act"] == "pursue" and "lup" not in acts[-1]["hold"]
+    snap["camera"]["yaw"] = math.pi / 2                                    # observed facing now permits movement
+    assert "lup" in run(bot, snap, clock, 1)[0]["hold"]
     snap["enemies"][0]["pos"] = (500.0, 0.0, 100.0)                           # down the corridor: in sight
     bot._sight_cache.clear()
     acts = run(bot, snap, clock, 6)
@@ -1920,22 +1929,22 @@ def test_a_zombie_behind_a_wall_is_not_fired_at_and_the_next_one_is_the_target()
     assert not bot.is_blocked(snap["enemies"][0], clock[0])
 
 
-def test_the_cameras_line_fires_only_near_unless_the_zombie_was_hit():
+def test_the_cameras_line_only_guides_aim_even_when_the_zombie_was_recently_hit():
     far = ((0.0, 0.0, 1500.0, 700),)                                      # 15 m along the camera's line, no laser
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
     assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["camera_far_holds"] > 0
     bot.seen[snap["enemies"][0]["ptr"]] = clock[0]                           # his health fell to a shot just now
     acts = run(bot, snap, clock, 6)
-    assert any("zr" in a.get("hold", ()) for a in acts)
+    assert all("zr" not in a.get("hold", ()) for a in acts)
     bot, clock, snap = brain(round_guest(enemies=far, cam_yaw=0.0))
     bot.laser_seen[snap["enemies"][0]["ptr"]] = 0.0                          # the laser reached him a moment ago
     acts = run(bot, snap, clock, 16)
-    assert any("zr" in a.get("hold", ()) for a in acts[:16])
+    assert all("zr" not in a.get("hold", ()) for a in acts)
     near = ((0.0, 0.0, 700.0, 700),)                                      # 7 m: within CAM_FIRE_R
     bot, clock, snap = brain(round_guest(enemies=near, cam_yaw=0.0))
     acts = run(bot, snap, clock, 30)
-    assert any("zr" in a.get("hold", ()) for a in acts)
+    assert all("zr" not in a.get("hold", ()) for a in acts)
 
 
 def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
@@ -2307,7 +2316,7 @@ def test_a_gun_that_does_not_come_up_keeps_aiming_along_the_camera_and_looks_for
     acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 4)
     assert bot.stats["reraise"] == 1 and (BASE, "laser") not in R._FOUND
     assert all("zl" in a["hold"] for a in acts)                              # the gun never went down for it
-    assert "zr" in acts[-1]["hold"] or "zr" in acts[-2]["hold"]             # the camera's line runs through him: fire
+    assert all("zr" not in a["hold"] for a in acts)                        # camera alignment cannot confirm a hit
     assert bot.stats["aim"].endswith(("keys rleft,zl,zr", "keys zl,zr")) or "via camera" in bot.stats["aim"]
 
 
