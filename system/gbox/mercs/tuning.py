@@ -139,6 +139,15 @@ def _apply(title, stage, stats, base):
         stats['tuning_version'] = data.get('version') or 'shipped'
         stats['tuning_params'] = ','.join(f'{k.rsplit(".", 1)[1]}={v}' for k, v in sorted(applied.items()))
         stats['tuning_avoid'] = len(spots)
+    try:                                     # the operator's live bot logic last: their word wins over the tuner's
+        from . import bot_logic
+        if str(title).upper() in bot_logic.MAP_IDS:
+            ops = bot_logic.apply_saved(title)
+            if stats is not None and ops:
+                stats['bot_logic'] = ','.join(f'{k}={v}' for k, v in sorted(ops.items()))
+    except Exception as exc:                 # noqa: BLE001 - the operator's settings never stop a round
+        if stats is not None:
+            stats['bot_logic_error'] = f'{type(exc).__name__}: {exc}'[:160]
     return applied
 
 
