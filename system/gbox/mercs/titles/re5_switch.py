@@ -407,7 +407,7 @@ WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "win
 # the target's elevation first (no raise from an old +57 deg). A failed read-back: the stick as before (aim_lock_fails).
 # OFF until one live round shows the writes hold (no private slot for the write test). Counters: aim_lock_ticks,
 # aim_lock_fails, aim_lock_prepitch.
-AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = False, 140.0, 90.0, 1.5
+AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = True, 140.0, 90.0, 1.5
 AIM_LOCK_HELD = 0.03                     # rad: the next frame's state this near the write: it held (else, 6 times and
                                          # more often than held, the lock stands down for the round: aim_lock_unheld)
 AIM_LOCK_COUNTERS = ("aim_lock_ticks", "aim_lock_fails", "aim_lock_prepitch", "aim_lock_unheld")
