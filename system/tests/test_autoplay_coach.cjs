@@ -247,3 +247,79 @@ test('the command dropdown closes when the pointer goes elsewhere, when the wind
   listeners.doc.pointerdown[0]({ target: { inside: true } });            // inside the menu: stays
   assert.ok(!made[2].removed);
 });
+
+// --- request #5300: each quick-command row gets a right-side cog that opens a sub-panel of the bot-logic it drives ----
+test('COMMAND_KNOBS maps every command on both titles to live bot-logic knob names', () => {
+  const C = require('../clients/web/viz/autoplay-coach.js');
+  const ids = C.COMMANDS.map(c => c[0]);
+  for (const title of ['re5', 're6']) {
+    assert.ok(C.COMMAND_KNOBS[title], `COMMAND_KNOBS.${title} exists`);
+    for (const id of ids) assert.ok(Array.isArray(C.COMMAND_KNOBS[title][id]), `${title}.${id} mapped`);
+  }
+  // spot-check the operator's example: Fight them! drives engage / flash-gap style knobs
+  assert.ok(C.COMMAND_KNOBS.re5.fight.includes('CROWD_FIRE'));
+  assert.ok(C.COMMAND_KNOBS.re6.fight.includes('FLASH_GAP_S'));
+});
+
+test('the cog on a command row opens a sub-panel that reads live bot-logic and writes a change back', async () => {
+  const C = require('../clients/web/viz/autoplay-coach.js');
+  const KNOBS = { verified: true, title: 're5', knobs: [
+    { name: 'CROWD_FIRE', label: 'Crowd fire', group: 'Crowd control', kind: 'bool', min: 0, max: 1, step: 1, help: '', value: true, default: true, set: false },
+    { name: 'CROWD_FIRE_N', label: 'Crowd size', group: 'Crowd control', kind: 'int', min: 2, max: 8, step: 1, help: '', value: 3, default: 3, set: false },
+    { name: 'RAMPAGE_R', label: 'Circle radius', group: 'Crowd control', kind: 'float', min: 300, max: 800, step: 25, help: '', value: 500, default: 500, set: false },
+    { name: 'AIM_LOCK', label: 'RAM aim lock', group: 'Aim', kind: 'bool', min: 0, max: 1, step: 1, help: '', value: false, default: false, set: false },
+  ] };
+  const jobs = new Map(), posts = [];
+  let jobSeq = 0;
+  const api = async (path, body, method) => {
+    if (method === 'POST' && path === '/api/jobs') {
+      posts.push(body);
+      const id = `j${++jobSeq}`;
+      jobs.set(id, { id, state: 'succeeded', output: { result: KNOBS } });
+      return { id, state: 'succeeded', output: { result: KNOBS } };
+    }
+    if (method === 'GET' && path.startsWith('/api/jobs/')) {
+      return jobs.get(path.split('/').pop());
+    }
+    if (body && path.endsWith('/directive')) return { directive: { label: 'x' } };
+    return {};
+  };
+  const made = [];
+  const handlers = {};
+  const doc = {
+    defaultView: { addEventListener() {}, removeEventListener() {} },
+    addEventListener(t, fn) { (handlers[t] ||= []).push(fn); }, removeEventListener() {},
+    querySelectorAll: () => [],
+    createElement() {
+      const el = { className: '', style: {}, innerHTML: '', removed: false, handlers: {},
+        setAttribute() {}, addEventListener(t, fn) { this.handlers[t] = fn; }, remove() { this.removed = true; },
+        contains: () => false, querySelector: sel => el._q?.(sel) || null };
+      made.push(el); return el;
+    },
+    body: { append() {} },
+  };
+  let clicks = null;
+  const button = { addEventListener(t, fn) { if (t === 'click') clicks = fn; }, setAttribute() {}, getBoundingClientRect: () => ({ left: 10, bottom: 20 }), focus() {} };
+  const input = { addEventListener() {}, value: '', setAttribute() {} }, status = { dataset: {} };
+  const host = { ownerDocument: doc, matches: () => true, querySelector: sel => sel === 'input' ? input : sel === '[data-coach-status]' ? status : sel === '[data-coach-cmds]' ? button : null };
+  const ctl = C.mount(host, { sid: 'w-1', api });
+  clicks({ preventDefault() {}, stopPropagation() {} });               // open the menu
+  const menu = made[0];
+  assert.match(menu.innerHTML, /data-cog="fight"/, 'each row carries a cog');
+  // click the fight cog
+  const cogClick = { stopPropagation() {} };
+  menu.handlers.click({ target: { closest: sel => sel === '[data-cog]' ? { dataset: { cog: 'fight' }, getBoundingClientRect: () => ({ right: 100, top: 50 }) } : null }, ...cogClick });
+  await new Promise(r => setImmediate(r));
+  const sub = made[1];
+  assert.equal(sub.className, 'coach-sub');
+  assert.match(sub.innerHTML, /Fight them!/);
+  assert.match(sub.innerHTML, /data-cs="CROWD_FIRE"/, 'mapped bool knob rendered');
+  assert.match(sub.innerHTML, /data-cs="CROWD_FIRE_N"/, 'mapped int knob rendered');
+  assert.match(sub.innerHTML, /data-cs="RAMPAGE_R"/, 'mapped float knob rendered');
+  assert.doesNotMatch(sub.innerHTML, /data-cs="AIM_LOCK"/, 'unmapped knob stays out');
+  // toggle the bool off -> writes through bot_logic
+  sub.handlers.change({ target: { dataset: { cs: 'CROWD_FIRE' }, type: 'checkbox', checked: false } });
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(posts.at(-1).input.values, { CROWD_FIRE: false });
+  ctl.dispose();
+});
