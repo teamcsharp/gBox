@@ -80,6 +80,10 @@ STEPS = {"gore_warning": "a", "press_start": "start", "demo": "start", "title_me
          "dead": "a"}                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
                                             # sat for minutes with the clock frozen and nothing pressed)
 MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead")
+MAIN_NOTICE_AFTER, MAIN_NOTICE_MAX = 3, 2
+# An unlock notice overlays cMerceMainMainState without changing its flow state. On the i9 (2026-10-28), 38 R
+# presses made no progress; one A through the same network pad cleared the notice and the bot reached gameplay.
+# Confirm only after repeated unchanged main-menu steps, at most twice per visit, then resume normal navigation.
 LEVELS = 5                              # LV.1-LV.5 in the select (the sixth, EX, is not in this list)
 CHARACTERS: tuple = ()                  # the roster's order is read from the character select next
 RELOAD_KEEP = ("PICK",)
@@ -98,6 +102,7 @@ class _Pick:
     def reset(self) -> None:
         self.level = self.tab = None
         self.mission_done = self.chara_done = False
+        self.main_key, self.main_presses, self.main_confirmations = None, 0, 0
 
     def level_for(self, open_levels: int) -> int:
         if self.level is None or not 0 <= self.level < max(1, open_levels):
@@ -320,11 +325,12 @@ def step(scr: dict) -> str | None:
     cursor walks (right / left) to a random mission, A picks it (back on the main menu)."""
     where = scr.get("where")
     if where == "mercs_main":
-        if not PICK.mission_done:
-            return "r"
-        if not PICK.chara_done:
-            return "l"
-        return "start"
+        key = "r" if not PICK.mission_done else "l" if not PICK.chara_done else "start"
+        if (getattr(PICK, "main_key", None) == key and getattr(PICK, "main_presses", 0) >= MAIN_NOTICE_AFTER
+                and getattr(PICK, "main_confirmations", 0) < MAIN_NOTICE_MAX):
+            return "a"
+        return key
+    PICK.main_key, PICK.main_presses, PICK.main_confirmations = None, 0, 0
     if where == "select_stage":
         cursor, target = scr.get("cursor"), scr.get("target")
         if not isinstance(cursor, int) or not isinstance(target, int):
@@ -345,7 +351,14 @@ def pressed(scr: dict, key: str) -> None:
     """The menus' memory of this visit: A on a mission tab picked the mission, A on the character select the
     character; a round's start (screen "playing") clears it for the next visit."""
     where = scr.get("where")
-    if key == "a" and where == "select_stage" and scr.get("inside") and scr.get("cursor") == scr.get("target"):
+    if where == "mercs_main":
+        if key == "a":
+            PICK.main_confirmations = getattr(PICK, "main_confirmations", 0) + 1
+            PICK.main_presses = 0
+        elif key in ("r", "l", "start"):
+            PICK.main_presses = (getattr(PICK, "main_presses", 0) if getattr(PICK, "main_key", None) == key else 0) + 1
+            PICK.main_key = key
+    elif key == "a" and where == "select_stage" and scr.get("inside") and scr.get("cursor") == scr.get("target"):
         PICK.mission_done = True
     elif key == "a" and where == "select_player":
         PICK.chara_done = True
