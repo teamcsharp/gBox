@@ -43,6 +43,11 @@ class Adapter:
         return {"address": a, "written": len(data), "verified": True}
 
 
+@pytest.fixture(autouse=True)
+def _mechanics_at_any_multiplier(monkeypatch):
+    monkeypatch.setattr(SM, "FIRE_MAX", 80.0)       # play caps it at 5x (2026-10-28); the mechanics at any multiplier
+
+
 def weapon_guest(names=NAMES, **kw):
     g = round_guest(**kw)
     for wid, name in names.items():

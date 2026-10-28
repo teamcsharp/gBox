@@ -1110,8 +1110,11 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
         throw = float(throw) if throw is not None else None
     except (TypeError, ValueError):
         raise ValueError("fire_rate multiplier / magnum / throw: numbers 1..80 (1 = the game's)") from None
-    if not 1.0 <= k <= FIRE_MAX or any(x is not None and not 1.0 <= x <= FIRE_MAX for x in (magnum, throw)):
+    if not 1.0 <= k <= 80.0 or any(x is not None and not 1.0 <= x <= 80.0 for x in (magnum, throw)):
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
+    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
+    magnum = min(magnum, FIRE_MAX) if magnum is not None else None
+    throw = min(throw, FIRE_MAX) if throw is not None else None
     recs = fire_records(g)
     if recs is None:
         return {"fire_rate_x": g.state.get("fire_rate", 1.0), "verified": False, "writes": 0,

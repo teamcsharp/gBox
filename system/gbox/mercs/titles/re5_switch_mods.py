@@ -206,6 +206,7 @@ def fire_rate(g: RE5Switch, mult) -> dict:
         raise ValueError("fire_rate multiplier: not yet on Switch: slower than the game's own rate (1..%g)" % FIRE_TOP)
     if not 1.0 <= k <= FIRE_TOP:
         raise ValueError(f"fire_rate multiplier: 1..{FIRE_TOP:g} (1 = the game's)")
+    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x)
     g.state["fire_rate"] = k
     restored = 0
     if k == 1.0 and g.state.get("scaled"):                   # off: the player's own pace back now (his round's player)
