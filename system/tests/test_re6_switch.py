@@ -1430,6 +1430,52 @@ def test_each_stage_keeps_its_lessons_once_a_round(tmp_path):
     run(bot, snap, clock, 1)
     book = json.loads((tmp_path / "stages" / "s1218.json").read_text())
     assert book["visits"] == 2 and book["best_kills"] == 12
+def flash_now(bot, snap, clock):
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 3)
+    assert bot.nade and bot.nade["kind"] == "flash"
+    snap["player"]["equipped"] = 11
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    assert bot.stats["flashes"] == 1
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+
+
+def test_four_within_five_metres_get_the_flash_and_the_fever_ends_when_an_unflashed_one_closes(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    four = ((0.0, 0.0, 450.0, 700), (150.0, 0.0, 430.0, 700), (-150.0, 0.0, 470.0, 700), (60.0, 0.0, 480.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    flash_now(bot, snap, clock)
+    assert clock[0] < bot.fever_until and len(bot.flashed) == 4
+    snap["kills"] = (snap.get("kills") or 0) + 2                              # two go down in the fever
+    run(bot, snap, clock, 2)
+    assert bot.stats["fever_kills"] == 2
+    late = {"slot": 9, "ptr": 0x9999, "pos": (0.0, 0.0, 180.0), "hp": 700, "hp_max": 700}
+    snap["enemies"] = snap["enemies"] + [late]                                # one that was not flashed, on him
+    run(bot, snap, clock, 1)
+    assert bot.fever_until <= clock[0] and bot.stats["fever_breaks"] == 1
+
+
+def test_frags_and_incendiaries_go_in_turn_at_most_every_ten_seconds(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=cluster, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5)})
+    run(bot, snap, clock, 2)
+    assert bot.nade["kind"] == "frag"
+    snap["player"]["equipped"] = 9
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    assert bot.stats["frags"] == 1 and bot.nade is None
+    run(bot, snap, clock, int(5.0 / 0.05))                                    # 5 s on: not again yet
+    assert bot.nade is None and bot.stats["fires"] == 0
+    clock[0] += R.FRAG_GAP_S
+    run(bot, snap, clock, 2)
+    assert bot.nade["kind"] == "fire"                                         # the incendiary's turn
 
 
 def test_no_new_bomb_under_half_health():
