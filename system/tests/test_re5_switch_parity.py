@@ -19,6 +19,11 @@ SAFARI = {0: (0x201, 30, 0), 1: (0x10D, -1, 0), 2: (0x203, 10, 0), 3: (0x111, -1
 
 
 @pytest.fixture(autouse=True)
+def _mechanics_at_any_multiplier(monkeypatch):
+    monkeypatch.setattr(SM, "FIRE_MAX", 80.0)       # play caps it at 5x (2026-10-28); the mechanics at any multiplier
+
+
+@pytest.fixture(autouse=True)
 def _fresh_state():
     for cache in (SM.ORIG, R._LASER, R._LASER_MISS, R._NOT_LASER):
         cache.clear()
