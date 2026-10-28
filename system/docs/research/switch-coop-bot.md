@@ -314,7 +314,7 @@ the operator's background-testing tick once Citron is set up there:
 
 ## Live runs (2026-10-27, a guarded private Citron session on the Spark)
 
-Real frames from run 1 are in `docs/evidence/switch-coop/`, cropped to nothing: the session's 1280x720 Xvfb display.
+Real frames from run 1 are in `docs/evidence/switch-coop/`, uncropped (the session's whole 1280x720 Xvfb display).
 They show the No Mercy menu, the controller applet, the stage select and the split lobby. The run script is
 `~/gBox_alt/scratch/agent/switch/coop/coop_run.py` on the Spark (`COOP_LULL=1` for a window with MercMode down).
 
