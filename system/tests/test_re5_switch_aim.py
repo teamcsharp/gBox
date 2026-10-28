@@ -122,7 +122,7 @@ CAM = {"qfps": CTRL + A.CTRL_QFPS, "player": PLAYER, "pitch": 0.0, "heading": 0.
 
 
 def test_on_live_and_off_means_no_writes(monkeypatch):
-    assert R.AIM_LOCK is True                      # live since 2026-10-27 21:1x (operator: "point the weapon at the threat")
+    assert R.AIM_LOCK is False                     # off 2026-10-28: its heading writes snapped the view (operator)
     monkeypatch.setattr(R, "AIM_LOCK", False)
     writes = []
     b, clock = bot(writes)
