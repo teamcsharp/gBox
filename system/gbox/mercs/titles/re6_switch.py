@@ -1703,6 +1703,9 @@ FLASH_BURST_N, FLASH_BURST_R = 5, 300.0
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
 # floor's height) while it is readied and thrown (stats nade_ground_locks).
 NADE_GROUND_MIN = 250.0
+# Off (operator 05:5x: "she keeps facing the wall. She keeps turning away and facing the wall"): the camera writes onto
+# a cluster's centre turned her to walls when they stood behind one (449 writes a round); the stick's turn faces them.
+NADE_GROUND_LOCK = False
 # After the throw (operator 05:1x: "they spend too much time choosing which weapon to use. Have them choose any of the
 # weapons from their inventory and just begin using those on the enemies the second they flashbang them"): the first
 # D-pad right at once, and any gun in hand ends it (not only the one he had; the knife, wheel index KNIFE_WHEEL, is
@@ -3729,6 +3732,8 @@ class Bot:
     def _nade_ground(self, p, live, snap, now, n) -> bool:
         """The camera onto the ground among them for the throw (NADE_GROUND_MIN above): a point toward n["to"], at least
         NADE_GROUND_MIN out, at his floor's height. True when the lock wrote it this tick."""
+        if not NADE_GROUND_LOCK:
+            return False
         me = p["pos"]
         tx, tz = n["to"]
         d = math.hypot(tx - me[0], tz - me[2])
