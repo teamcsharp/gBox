@@ -1954,6 +1954,11 @@ CROWD_GUN_N, CROWD_GUN_R = 3, 500.0
 AUTO_SWITCH = False
 # NADES / FLASH off by default (operator 2026-10-28: "i dont want them bringing up the item screen at all ... just shooting and
 # changing weapons via ram"): a grenade is equipped through the D-pad item wheel; back on once RAM swaps land (#5276).
+# The way out never into a wall (operator 2026-10-28: "the bot has navigated themselves into a corner ... There's nowhere to
+# go from the location where they run themselves"): a kite / back-off heading whose WALL_PROBE_R line leaves the nav
+# mesh costs WALL_COST (more than a crowd in the way).
+WALL_PROBE_R, WALL_COST = 350.0, 6.0
+_NAV_MESH = None
 FIRE_ZONE_R = 600.0                     # Bot._decide: one this near in sight on his level - the fight before any bonus
 SHOTGUN_ORDER = (0x105, 0x104, 0x106)
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
@@ -2528,6 +2533,8 @@ class Bot:
         self._score_hits(snap, now)
         self._ppos = p["pos"]
         self._mesh = snap.get("navmesh")
+        global _NAV_MESH
+        _NAV_MESH = self._mesh                               # Bot._way_costs: the ways that run into a wall
         lz = snap.get("laser")
         alive = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
         if lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) < WALL_AIM_R and alive and not any(
@@ -3561,12 +3568,22 @@ class Bot:
             if d <= KITE_SCAN_R:
                 near.append((heading(e["pos"][0] - px, e["pos"][2] - pz), 1.2 - d / KITE_SCAN_R))
         away = heading(avoid[0] - px, avoid[1] - pz) if avoid is not None else None
+        mesh = _NAV_MESH
         out = []
         for i in range(KITE_DIRS):
             h = -math.pi + 2 * math.pi * i / KITE_DIRS
             cost = sum(w * ((1.0 + math.cos(h - b)) / 2.0) ** 2 for b, w in near)
             if away is not None:
                 cost += 3.0 * (1.0 + math.cos(h - away)) / 2.0
+            if mesh is not None:                             # a wall within WALL_PROBE_R that way: never the way out
+                end = (px + WALL_PROBE_R * math.sin(h), p["pos"][1], pz + WALL_PROBE_R * math.cos(h))
+                try:                                         # ending off the floor (past a wall or a drop) or a wall
+                    k_end = mesh.locate(end)
+                    off = k_end is None or not mesh._inside(k_end, end[0], end[2])
+                    if mesh.locate(p["pos"]) is not None and (off or mesh.clear(p["pos"], end) is False):
+                        cost += WALL_COST
+                except Exception:                            # noqa: BLE001 - the mesh never stops a decision
+                    pass
             out.append((cost, h))
         return out
 

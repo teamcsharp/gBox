@@ -3065,3 +3065,15 @@ def test_a_hold_presses_the_prompts_own_button():
     assert out["hold"] and "b" not in out["hold"]
     bot._prompt_shown = []
     assert bot._held_prompt(0.0) is None and bot.stats["held_prompt_presses"] == 5
+
+
+def test_a_way_out_into_a_wall_is_never_the_kites_heading(monkeypatch):
+    """2026-10-28: he kited into corners - a heading whose WALL_PROBE_R line leaves the nav mesh costs WALL_COST."""
+    mesh = R.NavMesh([(0.0, 0.0, 0.0), (1000.0, 0.0, 0.0), (1000.0, 0.0, 1000.0), (0.0, 0.0, 1000.0)],
+                     [(0, 1, 2), (0, 2, 3)], [[1], [0]])
+    monkeypatch.setattr(R, "_NAV_MESH", mesh)
+    costs = {round(h, 2): c for c, h in R.Bot._way_costs({"pos": (900.0, 0.0, 500.0)}, [])}
+    east = min(costs, key=lambda h: abs(h - math.pi / 2))
+    west = min(costs, key=lambda h: abs(h + math.pi / 2))
+    assert costs[east] >= R.WALL_COST and costs[west] < R.WALL_COST
+    assert abs(R.Bot._open_heading({"pos": (900.0, 0.0, 500.0)}, []) - math.pi / 2) > 0.5   # not into the wall
