@@ -319,3 +319,11 @@ test('compact opening skips newer parked games and follows a selected parked gam
   await assert.rejects(onlyWarm.resolve({sid:warm.session_id}),/unavailable/);
   assert.deepEqual(onlyWarm.shown,[]);
 });
+
+test('a double click inside a PiP panel, menu or pop-up never leaves the PiP (operator 2026-10-28)', () => {
+  const html = require('fs').readFileSync(require.resolve('../clients/desktop/index.html'), 'utf8');
+  const m = html.match(/const COMPACT_PANELS = ([\s\S]*?);\r?\naddEventListener\('dblclick'/);
+  assert.ok(m, 'the panel list sits right before the double-click handler');
+  for (const sel of ['#bot-logic-panel', '#bot-logic-tab', '#pipmenu', '#compact-controls', '.re6-modifiers', '[role=dialog]'])
+    assert.ok(m[1].includes(sel), sel);
+});
