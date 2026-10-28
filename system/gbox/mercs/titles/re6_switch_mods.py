@@ -75,8 +75,8 @@ Where (measured live 2026-10-27 in a private Citron NEO session on the Spark; do
 from __future__ import annotations
 
 import struct
-import threading
 import time
+import threading
 
 from . import re6_switch as R
 
@@ -152,6 +152,36 @@ MAGNUMS = ((0x107, 7), (0x108, 5))                      # merc_loadout magnum=: 
 REMOTE_BOMB, HAND_GRENADE, INCENDIARY, FLASH = 0x116, 0x113, 0x114, 0x115
 THROWN = (REMOTE_BOMB, HAND_GRENADE, INCENDIARY, FLASH)  # given in this order while the start list has room
 THROWN_MAX = 5                                           # the grenades' and the remote bomb's carry limit (their records)
+# RE6's weapons by item id (the type is 0x100 + id): the game's own names, read live from its message table
+# (rGUIMessage soft\message\mes_item_eng: +0xA0 the count, +0xC0 a pointer per id; 2026-10-27 18:40), kept here for
+# when it can't be read. The live weapon op and the app's dropdown list these.
+WEAPON_NAMES = {
+    0: "Hand-To-Hand", 1: "Nine-Oh-Nine (909)", 2: "Picador", 3: "Wing Shooter", 4: "Shotgun", 5: "Assault Shotgun",
+    6: "Hydra", 7: "Lightning Hawk", 8: "Elephant Killer", 9: "Sniper Rifle", 10: "Semi-Auto Sniper Rifle",
+    11: "Anti-Materiel Rifle", 12: "Ammo Box 50", 13: "Triple Shot", 14: "MP-AF", 15: "Assault Rifle for Special Tactics",
+    16: "Bear Commander", 17: "Assault Rifle RN", 18: "Grenade Launcher", 23: "Crossbow", 24: "Survival Knife",
+    25: "Combat Knife", 26: "Stun Rod", 27: "Rocket Launcher", 40: "Triple Shot"}
+WEAPON_KIND = {1: "handgun", 2: "handgun", 3: "handgun", 12: "handgun", 13: "handgun", 40: "handgun", 4: "shotgun",
+               5: "shotgun", 6: "shotgun", 7: "magnum", 8: "magnum", 9: "sniper", 10: "sniper", 11: "sniper",
+               14: "machine gun", 15: "rifle", 16: "shotgun", 17: "rifle", 18: "launcher", 23: "crossbow",
+               27: "launcher", 0: "melee", 24: "melee", 25: "melee", 26: "melee"}
+WEAPON_MAG = {0x101: 15, 0x102: 16, 0x103: 18, 0x104: 8, 0x105: 7, 0x106: 3, 0x107: 7, 0x108: 5, 0x109: 6, 0x10A: 5,
+              0x10B: 10, 0x10C: 50, 0x10D: 20, 0x10E: 30, 0x10F: 30, 0x110: 286, 0x111: 30, 0x112: 6, 0x117: 1,
+              0x11B: 1, 0x128: 20, 0x100: 0xFFFF, 0x118: 0xFFFF, 0x119: 0xFFFF, 0x11A: 0xFFFF}
+SHOTGUN_TYPES = frozenset({0x104, 0x105, 0x106})
+MAGNUM_TYPES = frozenset({0x107, 0x108})
+# The spread (operator 18:00: "change what weapon is being used by the bot actively ... instantly use that weapon"): a
+# gun's model loads only for the round's loadout, so the empty weapon slots of every loadout get these at round set-up
+# (merc_loadout spread=): the magnums and the shotguns, ready for the live switch and the grab swap.
+SPREAD = ((0x108, 5), (0x107, 7), (0x104, 8), (0x105, 7), (0x106, 3))
+ASKED: set = set()                                       # the (type, magazine) pairs live_weapon put in the loadouts
+# No pistols (operator 2026-10-27 ~20:00: "for the characters in no mercy, replace the pistol with any random shotgun or
+# magnum"; "i want the characters using random weapons from the game and campaign in mercenaries"): with the spread,
+# each loadout's handgun is swapped for a gun drawn fresh at every select from the campaign's shotguns, magnums and
+# machine guns (never a pistol, never one the loadout already has).
+HANDGUN_TYPES = frozenset({0x101, 0x102, 0x103, 0x10C, 0x10D, 0x128})
+PISTOL_SWAPS = ((0x104, 8), (0x105, 7), (0x106, 3), (0x107, 7), (0x108, 5), (0x10E, 30), (0x10F, 30), (0x111, 30),
+                (0x110, 286))
 LOADOUTS = (                                             # this build's entries: id, weapons, start list (live dump)
     (0x0000, ((0x103, 18), (0x104, 8)), ((0x116, 4), (0x201, 50), (0x202, 8))),
     (0x1000, ((0x111, 30), (0x109, 6), (0x2112, 5120)), ((0x204, 60), (0x203, 30))),
@@ -295,7 +325,16 @@ class RE6Switch:
               "kill_time_added": self.state.get("kill_time_added", 0.0),
               "auto_qte_ram": bool(self.state.get("auto_qte_ram")),
               "struggles_completed": self.state.get("struggles_completed", 0),
-              "qte_rolled": list(self.state.get("qte_rolled") or ())}
+              "qte_rolled": list(self.state.get("qte_rolled") or ()),
+              "infinite_grenades": bool(self.state.get("infinite_grenades")), "auto_qte": bool(self.state.get("auto_qte")),
+              "quick_attack_x": self.state.get("quick_attack", 1.0),
+              "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X) if self.state.get("fire_rate") else 1.0,
+              "down_fire_x": self.state.get("down_fire", DOWN_FIRE_X) if self.state.get("fire_rate") else 1.0,
+              "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,
+              "live_weapon_sets": self.state.get("live_weapon_sets", 0)}
+        from . import re6_switch as B
+        st["bot"] = {"nades": B.NADES, "flash": B.FLASH, "aim_lock": B.AIM_LOCK, "bomb_drop": B.BOMB_DROP,
+                     "want_weapon": B.WANT_WEAPON}
         snap = R.snapshot(self.m)
         p = snap.get("player")
         if p:
@@ -444,7 +483,8 @@ def _padded(pairs, n: int) -> list[tuple[int, int]]:
     return list(pairs) + [EMPTY] * (n - len(pairs))
 
 
-def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = False) -> tuple[list, list]:
+def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = False, spread: bool = False,
+                 want=None) -> tuple[list, list]:
     """The entry's (weapons, start list) as merc_loadout leaves them: the rocket launcher swapped for a random magnum or
     shotgun at its magazine, the remote bomb and the grenades each at `thrown` (an existing pair raised, a missing one
     put in the start list's next empty pair while there is one); with magnum, a magnum in slot 0 - his own moved there
@@ -462,6 +502,22 @@ def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = Fals
             if free is not None:
                 w[free] = w[0]
             w[0] = MAGNUMS[0]
+    if want is not None and all(t != want for t, _c in w):  # the live weapon asked for: in an empty slot, else the last
+        pair = (want, WEAPON_MAG.get(want, 10))              # spread one (never his first gun)
+        free = next((i for i, q in enumerate(w) if q == EMPTY), None)
+        w[free if free is not None else N_WEAPONS - 1] = pair
+    if spread:                                               # no pistol: a random campaign gun in its place
+        for i, (t, _c) in enumerate(w):
+            if t in HANDGUN_TYPES:
+                picks = [q for q in PISTOL_SWAPS if all(q[0] != u for u, _c2 in w)]
+                if picks:
+                    w[i] = rng.choice(picks)
+        for pair in SPREAD:                                  # the magnums and shotguns into the empty slots
+            if all(t != pair[0] for t, _c in w):
+                free = next((i for i, q in enumerate(w) if q == EMPTY), None)
+                if free is None:
+                    break
+                w[free] = pair
     x = _padded(extras, N_EXTRAS)
     if thrown > 0:
         for kind in THROWN:
@@ -483,7 +539,7 @@ def _loadout_ok(entry: int, raw: bytes) -> bool:
     hd = struct.unpack_from("<5H", raw, 0)
     if hd[0] != eid or hd[1] != 900 or hd[2] != 900 or hd[3] != 0 or hd[4] != L_TAG_VALUE:
         return False
-    allowed = set(_padded(weapons, N_WEAPONS)) | set(SWAPS) | {EMPTY}
+    allowed = set(_padded(weapons, N_WEAPONS)) | set(SWAPS) | set(SPREAD) | set(PISTOL_SWAPS) | {EMPTY} | set(ASKED)
     for cur, orig in zip(_pairs(raw, L_WEAPONS, N_WEAPONS), _padded(weapons, N_WEAPONS)):
         if cur != orig and not (orig[0] == ROCKET and cur in SWAPS) and cur not in allowed:
             return False   # (a magnum moved to slot 0 leaves the build's own guns, rearranged)
@@ -494,7 +550,7 @@ def _loadout_ok(entry: int, raw: bytes) -> bool:
 
 
 def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int = THROWN_MAX, seed=None,
-                 magnum: bool = False) -> dict:
+                 magnum: bool = False, spread: bool = False) -> dict:
     """Every Mercenaries starting loadout (the table the game copies at a round's set-up, so the game itself creates the
     weapons and items): no rocket launcher - a random magnum or shotgun in its place - and the remote bomb, the hand,
     incendiary and flash grenades at `thrown` each where the start list has room. Only the changed (type, count) pairs
@@ -507,6 +563,9 @@ def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int
         raise ValueError("merc_loadout thrown: 0..5 of each grenade and the remote bomb") from None
     if not 0 <= thrown <= THROWN_MAX:
         raise ValueError("merc_loadout thrown: 0..5 of each grenade and the remote bomb")
+    nw = g.state.get("next_weapon")
+    if nw:                                                   # (kept across a bot reload: the table may hold it already)
+        ASKED.add((nw, WEAPON_MAG.get(nw, 10)))
     base = g.base + LOADOUT_BLOCK
     try:
         raw = g.ad.read_memory(base, LOADOUT_SIZE * len(LOADOUTS))
@@ -520,7 +579,7 @@ def merc_loadout(g: RE6Switch, on: bool = True, rocket: bool = True, thrown: int
     writes, swapped, given = 0, [], 0
     for i, cur in enumerate(entries):
         if on:
-            w, x = loadout_plan(i, rocket, thrown, rng, magnum=magnum)
+            w, x = loadout_plan(i, rocket, thrown, rng, magnum=magnum, spread=spread, want=g.state.get("next_weapon"))
         else:
             w, x = _padded(LOADOUTS[i][1], N_WEAPONS), _padded(LOADOUTS[i][2], N_EXTRAS)
         at = base + i * LOADOUT_SIZE
@@ -805,6 +864,87 @@ def quick_attack(g: RE6Switch, mult=10.0) -> dict:
     return {"quick_attack_x": k, "verified": True,
             "note": "his quick shots and physical attacks run %gx (cUnit mDeltaTime +0x30 while his action +0x13F0 is "
                     "one of them, 1.0 back after)" % k}
+
+
+def weapon_names(g: RE6Switch) -> dict:
+    """{id: name} for the weapons: the game's own message table (mes_item) when it can be found, else WEAPON_NAMES."""
+    names = dict(WEAPON_NAMES)
+    try:
+        sr = R.u64(g.m, g.base + R.SRES)
+        blk = g.ad.read_memory(sr, R.SRES_SIZE)
+        seen = set()
+        for o in range(0, len(blk), 8):
+            v = struct.unpack_from("<Q", blk, o)[0]
+            if v in seen or not R.ptr_ok(v) or g.base <= v < g.base + 0x3000000:
+                continue
+            seen.add(v)
+            path = g.ad.read_memory(v + 0xC, 0x30).split(b"\0")[0]
+            if not path.startswith(b"soft\\message\\mes_item_"):
+                continue
+            n = struct.unpack("<I", g.ad.read_memory(v + 0xA0, 4))[0]
+            arr = struct.unpack("<Q", g.ad.read_memory(v + 0xC0, 8))[0]
+            if not (41 <= n <= 4096 and R.ptr_ok(arr)):
+                break
+            ptrs = struct.unpack("<41Q", g.ad.read_memory(arr, 8 * 41))
+            for i in WEAPON_NAMES:
+                txt = g.ad.read_memory(ptrs[i], 64).split(b"\0")[0].decode("utf-8", "replace").strip()
+                if txt and "dummy" not in txt:
+                    names[i] = txt
+            break
+    except (ValueError, OSError, struct.error):
+        pass
+    return names
+
+
+def weapon_list(g: RE6Switch, player: int | None = None) -> list:
+    """Every weapon the live switch knows: [{id, type, name, kind, loaded (in his weapon slots now), wheel_index}]."""
+    names = weapon_names(g)
+    loaded = {}
+    if player:
+        try:
+            loaded = R.inventory_guns(g.m, player)
+        except (ValueError, OSError):
+            loaded = {}
+    return [{"id": i, "type": 0x100 + i, "name": names.get(i, WEAPON_NAMES[i]), "kind": WEAPON_KIND.get(i, "weapon"),
+             "loaded": (0x100 + i) in loaded, "wheel_index": loaded.get(0x100 + i)} for i in sorted(WEAPON_NAMES)]
+
+
+def _resolve_weapon(weapon) -> int:
+    if isinstance(weapon, int) or (isinstance(weapon, str) and weapon.strip().lstrip("-").isdigit()):
+        wid = int(weapon)
+        wid = wid - 0x100 if wid >= 0x100 else wid
+    else:
+        want = str(weapon or "").strip().casefold()
+        wid = next((i for i, n in WEAPON_NAMES.items() if n.casefold() == want), None)
+        if wid is None:
+            wid = next((i for i, n in WEAPON_NAMES.items() if want and want in n.casefold()), None)
+    if wid not in WEAPON_NAMES:
+        raise ValueError("live_weapon: one of %s (an id 0-40 or a name)" % ", ".join(sorted(set(WEAPON_NAMES.values()))))
+    return wid
+
+
+def live_weapon(g: RE6Switch, weapon) -> dict:
+    """The weapon he fights with, now: a gun in his weapon slots (loaded at the round's set-up) is switched to at once by
+    the game's own weapon switch (the bot's D-pad, WANT_WEAPON); one not loaded goes into every loadout for the next
+    round (merc_loadout spread / next_weapon) - never written into a slot now (its model would not be loaded)."""
+    wid = _resolve_weapon(weapon)
+    t = 0x100 + wid
+    from . import re6_switch as B
+    g.state["live_weapon_sets"] = g.state.get("live_weapon_sets", 0) + 1
+    snap = R.snapshot(g.m)
+    p = snap.get("player") or {}
+    guns = R.inventory_guns(g.m, p["ptr"]) if p.get("ptr") else {}
+    name = WEAPON_NAMES[wid]
+    if t in guns:
+        B.WANT_WEAPON, B.WANT_WEAPON_AT = guns[t], time.monotonic()
+        return {"verified": True, "weapon": name, "type": hex(t), "loaded": True, "wheel_index": guns[t],
+                "live_weapon_sets": g.state["live_weapon_sets"],
+                "note": "loaded this round: the bot switches to it now (the game's own weapon switch)"}
+    g.state["next_weapon"] = t
+    ASKED.add((t, WEAPON_MAG.get(t, 10)))
+    return {"verified": True, "weapon": name, "type": hex(t), "loaded": False, "next_round": True,
+            "live_weapon_sets": g.state["live_weapon_sets"],
+            "note": "not loaded this round: in every loadout from the next round set-up (then switched to)"}
 
 
 def magnum_speed(g: RE6Switch, mult) -> dict:
@@ -1102,12 +1242,20 @@ def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch |
         if op == "merc_loadout":
             return merc_loadout(g, bool(on), rocket=_extra.get("rocket", True) not in (False, "keep", "off"),
                                 thrown=_extra.get("thrown", THROWN_MAX), seed=_extra.get("seed"),
-                                magnum=_extra.get("magnum", False) not in (False, None, "off", 0))
+                                magnum=_extra.get("magnum", False) not in (False, None, "off", 0),
+                                spread=_extra.get("spread", False) not in (False, None, "off", 0))
         if op == "quick_attack":
             return quick_attack(g, 1.0 if on is False else (multiplier if multiplier is not None else 10.0))
         if op == "bot_options":
             return bot_options(g, nades=_extra.get("nades"), bomb_drop=_extra.get("bomb_drop"),
                                aim_lock=_extra.get("aim_lock"), flash=_extra.get("flash"))
+        if op in ("live_weapon", "weapon", "set_weapon"):
+            return live_weapon(g, _extra.get("weapon", multiplier))
+        if op in ("weapons", "weapon_list"):
+            snap = R.snapshot(g.m)
+            p = snap.get("player") or {}
+            return {"verified": True, "weapons": weapon_list(g, p.get("ptr")),
+                    "next_weapon": hex(g.state["next_weapon"]) if g.state.get("next_weapon") else None}
         if op == "magnum_speed":
             return magnum_speed(g, 1.0 if on is False else multiplier)
         if op == "throw_speed":

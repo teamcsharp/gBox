@@ -474,6 +474,20 @@ def inventory_items(m, p: int) -> dict:
     return out
 
 
+def inventory_guns(m, p: int) -> dict:
+    """His weapons now: {type: wheel index} for the live weapon slots (+0x9 index below WEAPON_INDEXES)."""
+    try:
+        raw = m.rd(p + P_SLOTS, SLOT_STRIDE * N_SLOTS)
+    except (ValueError, OSError):
+        return {}
+    out = {}
+    for o in range(0, SLOT_STRIDE * N_SLOTS, SLOT_STRIDE):
+        t, idx = struct.unpack_from("<H", raw, o + 0xA)[0], raw[o + 9]
+        if raw[o + 8] and idx < WEAPON_INDEXES and 0x100 <= t < 0x130 and t not in out:
+            out[t] = idx
+    return out
+
+
 _ACTION_NAMES: dict = {}
 
 
@@ -846,6 +860,7 @@ def snapshot(m) -> dict:
             snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
                               "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p),
+                              "guns": inventory_guns(m, p),
                               "action": unit_action(m, p)}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
@@ -1819,6 +1834,23 @@ PROMPTS, PROMPT_REPEAT_S, PROMPT_TAKEN_S, PROMPT_SAFE_R = True, 0.15, 1.5, 300.0
 PROMPT_SKIP_KEYS = frozenset({"r"})     # R: the heal hint shown whenever he is hurt (live 17:55: types 1 / 26 with
                                         # button 34 at 780 / 900 health) - tablets stay with the tablet rules
 PROMPT_SPOTS_FILE, PROMPT_SPOTS_N, PROMPT_SAVE_S = "re6_prompt_spots.json", 200, 30.0
+# The weapon in hand (operator 18:00: "if the bot is grabbed ... change their equipped weapon to a rapid fire shotgun
+# randomly or a magnum at random ... I want to be able to change what weapon is being used by the bot actively ...
+# instantly"): WANT_WEAPON (re6_switch_mods live_weapon, the app's dropdown) or, after a grab, a random loaded shotgun or
+# magnum (GRAB_SWAP) is the wheel index he switches to - the game's own weapon switch, the D-pad's right every
+# WEAPON_TAP_S (the guns cycle 0 -> 1 -> ... -> 0; from an item it lands on 0) until it is in hand, not while held, a
+# throw or a bomb is under way; WEAPON_TRIES presses without it: left for WEAPON_REST_S. stats weapon_switches (taps),
+# weapon_swaps (a grab's pick), weapon_in_hand. A grab with a bomb out and him outside the learned reach (+ margin): ZR
+# in the mash with the remote in hand (stats grab_det_presses; grab_detonations when it went off during the hold).
+WANT_WEAPON, WANT_WEAPON_AT = None, -1e9
+GRAB_SWAP, GRAB_DETONATE = True, True
+WEAPON_TAP_S, WEAPON_TRIES, WEAPON_REST_S = 0.35, 9, 5.0
+SHOTGUN_MAGNUM_TYPES = frozenset({0x104, 0x105, 0x106, 0x107, 0x108})
+# The shotgun clears the circle (operator 19:25, the RE5 rule): CROWD_GUN_N within CROWD_GUN_R on his level and no
+# weapon asked for in the app - a loaded shotgun (the Assault Shotgun first) is the weapon until the circle thins.
+# stats crowd_shotgun_s.
+CROWD_GUN_N, CROWD_GUN_R = 3, 500.0
+SHOTGUN_ORDER = (0x105, 0x104, 0x106)
 # The round plan, phase 1: the bonus run (operator 16:52: "You can't shoot it from a distance. You have to walk up to it
 # and dispatch the time bonus physically" ... "running from Checkpoint to Checkpoint, grabbing the time bonuses ... after
 # grabbing all the time bonuses, that's when the match truly begins and they can begin to make a stand"; 16:55: a round
@@ -1916,6 +1948,11 @@ class Bot:
         self._rot_prev = None                                # (when, his body heading) for the turn governor
         self._sight_cache: dict = {}
         self.lock_at = -1e9                                  # when the lock took its current target
+        for k in ("weapon_switches", "weapon_swaps", "grab_det_presses", "grab_detonations"):
+            self.stats.setdefault(k, 0)
+        self.grab_weapon, self.grab_weapon_at = None, -1e9   # a grab's pick (wheel index) and when
+        self.weapon_tap_at, self.weapon_taps, self.weapon_rest = -1e9, 0, -1e9
+        self.hold_bomb_out = False                           # a bomb was out when this hold began
         self.bonus_unseen: dict = {}                         # bonus -> until when it counts as out of sight
         self.bshot = None                                    # the bonus being shot: (ptr, since)
         for k in ("prompts_seen", "prompts_taken", "climbs", "pickups"):
@@ -2426,6 +2463,8 @@ class Bot:
                 if not self.in_hold:
                     self.stats["holds"] += 1
                     self.hold_since, self.hold_pressed = now, False
+                    self._grab_swap(p, now)
+                    self.hold_bomb_out = bool((p.get("bomb") or {}).get("out"))
                 self.in_hold = True
                 if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
                     self._gun_down()                         # the game's auto QTE: nothing pressed for a while
@@ -2441,12 +2480,18 @@ class Bot:
             self.wiggle += 1
             if "b" in WIGGLE[self.wiggle % len(WIGGLE)]:
                 self._prompt_pressed("b", now)
+            if held and self._grab_detonate(p, snap):            # the bomb set off from the mash
+                return self._go("held", "grab_detonate", {"hold": WIGGLE[self.wiggle % len(WIGGLE)] + ("zr",)},
+                                f"held (action {state}), the bomb out and him clear of it: set off (ZR)")
             return self._go("held", "break_free", {"hold": WIGGLE[self.wiggle % len(WIGGLE)]},
                             f"held (action {state}): B mashed, the stick round")
         self.in_hold = False
         took = self._prompt(p, snap, now)                        # the game's own prompt: pressed at once
         if took is not None:
             return took
+        switched = self._weapon_switch(p, now)                   # the weapon asked for (the app, a grab's pick)
+        if switched is not None:
+            return switched
         escape = self._bomb_escape(p, snap, now)
         if escape is not None:
             return escape
@@ -2455,10 +2500,73 @@ class Bot:
             self.move_at = now
         return act
 
+    def _grab_swap(self, p, now) -> None:
+        """A grab: a random loaded shotgun or magnum other than the gun in hand, switched to once he is free."""
+        if not GRAB_SWAP:
+            return
+        guns = p.get("guns") or {}
+        eq = p.get("equipped")
+        picks = [i for t, i in guns.items() if t in SHOTGUN_MAGNUM_TYPES and i != eq]
+        if picks:
+            self.grab_weapon, self.grab_weapon_at = random.choice(picks), now
+            self.stats["weapon_swaps"] += 1
+
+    def _grab_detonate(self, p, snap) -> bool:
+        """Held with the bomb out and the remote in hand, him outside the learned reach + margin: ZR in the mash."""
+        bomb = p.get("bomb") or {}
+        if not (GRAB_DETONATE and bomb.get("out") and p.get("equipped") == BOMB_INDEX):
+            return False
+        at = snap.get("bomb_pos")
+        if at is None:
+            return False
+        if math.hypot(at[0] - p["pos"][0], at[2] - p["pos"][2]) < self.book.safe:
+            return False
+        self.stats["grab_det_presses"] += 1
+        return True
+
+    def _weapon_switch(self, p, now) -> dict | None:
+        """The wanted weapon into his hands - the app's (WANT_WEAPON), else a shotgun for a crowd on him, else a grab's
+        pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, or resting."""
+        want = WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None
+        held = p.get("guns") or {}
+        if want is None:
+            px, py, pz = p["pos"]
+            crowd = sum(1 for e in (self._snap or {}).get("enemies") or () if (e.get("hp") or 0) > 0
+                        and abs(e["pos"][1] - py) <= MAX_DY and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CROWD_GUN_R)
+            gun = next((held[t] for t in SHOTGUN_ORDER if t in held), None)
+            if crowd >= CROWD_GUN_N and gun is not None:     # a crowd on him: the shotgun clears the circle
+                want = gun
+                self.stats["crowd_shotgun_s"] = round(self.stats.get("crowd_shotgun_s", 0.0) + TICK_S, 2)
+            else:
+                want = self.grab_weapon
+        guns = held.values()
+        eq = p.get("equipped")
+        if want is None or want not in guns or eq == want:
+            self.weapon_taps = 0
+            if want is not None and eq == want:
+                self.stats["weapon_in_hand"] = want
+            return None
+        if now < self.weapon_rest or (p.get("bomb") or {}).get("out") or self.nade is not None \
+                or self.bomb_phase is not None:
+            return None
+        if now - self.weapon_tap_at < WEAPON_TAP_S:
+            return None
+        if self.weapon_taps >= WEAPON_TRIES:
+            self.weapon_rest, self.weapon_taps = now + WEAPON_REST_S, 0
+            return None
+        self.weapon_tap_at = now
+        self.weapon_taps += 1
+        self.stats["weapon_switches"] += 1
+        self._gun_down()
+        return self._go("reload", "weapon_switch", {"tap": "dright"}, f"to the weapon at wheel {want} (now {eq})")
+
     def _hold_ended(self, now, snap) -> None:
         """A RAM hold's end: stats holds_freed_no_press (it ended before he pressed anything: the game's auto QTE) or
         holds_shaken, and hold_log - its length, whether he pressed, whether auto QTE was on - for the last HOLD_LOG_N."""
         self.in_hold = False
+        if self.hold_bomb_out and not (((snap.get("player") or {}).get("bomb")) or {}).get("out"):
+            self.stats["grab_detonations"] += 1                  # it went off while he was held
+        self.hold_bomb_out = False
         pressed = bool(self.hold_pressed)
         self.stats["holds_shaken" if pressed else "holds_freed_no_press"] += 1
         log = self.stats.setdefault("hold_log", [])

@@ -319,6 +319,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/mercs-clock.js"></script>
 <script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/re4-modifiers.js"></script>
+<script src="/viz/re6-modifiers.js"></script>
 <script src="/viz/re4-spawn.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
@@ -1604,7 +1605,9 @@ async function botDemoMenu(ev, gid, title) {
   const x = ev?.clientX ?? 0, y = ev?.clientY ?? 0;
   if (!(TRAY.ws || []).length) TRAY.ws = await api("/api/workers").catch(() => []);   // the tray has not polled yet
   if (anchor && !anchor.isConnected) return;
-  const modifiers = window.GBoxRE5Modifiers?.eligible(current) ? {
+  const modifiers = window.GBoxRE6Modifiers?.eligible(current) ? {
+    html: GBoxRE6Modifiers.sectionHTML(), mount: host => GBoxRE6Modifiers.mount(host, { session: current, api })
+  } : window.GBoxRE5Modifiers?.eligible(current) ? {
     html: GBoxRE5Modifiers.sectionHTML(), mount: host => GBoxRE5Modifiers.mount(host, { session: current, api,
       // what this game keeps across reloads (gbox/game_prefs.py), shown with the live values
       savedPrefs: () => api(`/api/sessions/${encodeURIComponent(current.session_id)}/game-prefs`) })

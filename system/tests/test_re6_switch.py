@@ -1691,6 +1691,101 @@ def test_idle_seconds_count_nothing_pressed_with_zombies_about():
     bot._govern(snap, {"hold": ()}, clock[0] + 0.05)
     bot._govern(snap, {"hold": ("lup",)}, clock[0] + 0.1)
     assert bot.stats["idle_s"] == pytest.approx(R.TICK_S)
+def test_the_spread_fills_the_empty_weapon_slots_and_an_asked_weapon_goes_first(mods):
+    import random
+    w, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True)     # Chris: rifle, Lightning Hawk, knife
+    assert w[:3] == [(0x10F, 30), (0x107, 7), (0x119, 0xFFFF)]
+    assert w[3:] == [(0x108, 5), (0x104, 8), (0x105, 7), (0x106, 3)]          # the magnum and the shotguns loaded
+    w2, _x = mods.loadout_plan(4, True, 5, random.Random(1), spread=True, want=0x109)
+    assert w2[3] == (0x109, 6) and (0x108, 5) in w2                           # the sniper rifle asked for: in first
+    picks = set()
+    for seed in range(40):                                                    # Leon: Wing Shooter and Shotgun
+        w3, _x = mods.loadout_plan(0, True, 5, random.Random(seed), spread=True)
+        assert not any(t in mods.HANDGUN_TYPES for t, _c in w3)               # never a pistol
+        assert len({t for t, _c in w3 if t != 0}) == len([t for t, _c in w3 if t != 0])   # no gun twice
+        picks.add(w3[0])
+    assert len(picks) >= 4 and picks <= set(mods.PISTOL_SWAPS)                # drawn fresh: many campaign guns
+    w4, _x = mods.loadout_plan(0, True, 5, random.Random(1))                  # without the spread: his own pistol
+    assert w4[0] == (0x103, 18)
+
+
+def weapon_guest(types):
+    g = round_guest()
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    for i, t in enumerate(types):                                             # weapon slots 0.. (index = wheel index)
+        g.put(p + R.P_SLOTS + R.SLOT_STRIDE * i + 8, bytes([1, i]) + struct.pack("<H", t))
+    return g, p
+
+
+def test_live_weapon_switches_to_a_loaded_gun_and_queues_another_for_the_next_round(mods, monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    g, p = weapon_guest((0x10F, 0x107, 0x119, 0x104))
+    ad = Adapter(g)
+    out = mods.run(ad, "live_weapon", weapon="Shotgun")
+    assert out["loaded"] and out["wheel_index"] == 3 and R.WANT_WEAPON == 3
+    out = mods.run(ad, "live_weapon", weapon=0x10B)                           # the Anti-Materiel Rifle: not loaded
+    assert not out["loaded"] and out["next_round"] and mods.ORIG[id(ad)]["next_weapon"] == 0x10B
+    assert (0x10B, 10) in mods.ASKED and R.WANT_WEAPON == 3                   # (the switch stays on the shotgun)
+    names = {w["name"]: w for w in mods.run(ad, "weapons")["weapons"]}
+    assert names["Shotgun"]["loaded"] and names["Shotgun"]["wheel_index"] == 3 and not names["Hydra"]["loaded"]
+    assert len(names) >= 24 and mods.run(ad, "status")["live_weapon_sets"] == 2
+    with pytest.raises(ValueError):
+        mods.run(ad, "live_weapon", weapon="Banana")
+
+
+def test_the_bot_switches_to_the_wanted_weapon_and_a_crowd_gets_the_shotgun(monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", 3)
+    monkeypatch.setattr(R, "WANT_WEAPON_AT", 1.0)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x104: 3})
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "dright"} in acts and bot.stats["weapon_switches"] >= 1
+    snap["player"]["equipped"] = 3
+    run(bot, snap, clock, 2)
+    assert bot.stats["weapon_in_hand"] == 3
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    crowd = ((0.0, 0.0, 300.0, 700), (100.0, 0.0, 350.0, 700), (-100.0, 0.0, 380.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=crowd, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, guns={0x10F: 0, 0x107: 1, 0x105: 4})
+    acts = run(bot, snap, clock, 2)
+    assert {"tap": "dright"} in acts and bot.stats["crowd_shotgun_s"] > 0
+
+
+def test_a_grab_picks_a_shotgun_or_magnum_and_sets_the_bomb_off_only_from_clear_of_it(monkeypatch):
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
+    snap["player"].update(equipped=R.BOMB_INDEX, guns={0x10F: 0, 0x107: 1, 0x104: 3},
+                          bomb={"count": 4, "out": True})
+    snap["bomb_pos"] = (0.0, 0.0, 1500.0)                                    # 15 m off: clear of its reach
+    acts = run(bot, snap, clock, 3)
+    assert bot.grab_weapon in (1, 3) and bot.stats["weapon_swaps"] == 1
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] >= 1
+    snap["player"].update(state=0, bomb={"count": 4, "out": False})           # it went off; free
+    run(bot, snap, clock, 1)
+    assert bot.stats["grab_detonations"] == 1
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 80.0, 700),), state=8, cam_yaw=0.0))
+    snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 4, "out": True})
+    snap["bomb_pos"] = (0.0, 0.0, 200.0)                                     # 2 m off: never from here
+    acts = run(bot, snap, clock, 3)
+    assert not any("zr" in a.get("hold", ()) for a in acts) and bot.stats["grab_det_presses"] == 0
+
+
+def test_the_mods_tool_routes_an_re6_switch_session_to_its_own_ops(mods, monkeypatch):
+    from gbox import re5_mods_tool as T, tools
+    monkeypatch.setattr(R, "WANT_WEAPON", None)
+    monkeypatch.setattr(R, "FLASH", True)
+    g, _p = weapon_guest((0x10F, 0x107, 0x119, 0x104))
+    ad = Adapter(g)
+    monkeypatch.setitem(tools.SESSIONS, "re6-1", (ad, {"game_id": "115f9cdbba115432", "title": "RE6"}))
+    out = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="live_weapon", weapon=0x104), None)["result"]
+    assert out["loaded"] and R.WANT_WEAPON == 3
+    out = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="bot_options", flash=False), None)["result"]
+    assert out["flash"] is False and not R.FLASH
+    st = T.re5_mods(T.RE5ModsIn(session_id="re6-1", op="status"), None)["result"]
+    assert st["bot"]["flash"] is False and st["live_weapon_sets"] == 1
+    assert T.is_switch_re6({"title_id": "01002a000cd48000"}) and not T.is_switch_re6({"game_id": "52d15709be0fda1a"})
 
 
 def test_no_new_bomb_under_half_health():
@@ -2631,7 +2726,7 @@ def test_fire_rate_magnum_and_throw_multipliers(mods):
 def test_merc_loadout_writes_nothing_into_a_table_that_is_not_this_builds(mods):
     g = round_guest()
     table = loadout_table(g)
-    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x10E, 30))   # Chris's rifle: another gun
+    g.put(table + mods.LOADOUT_SIZE * 4 + mods.L_WEAPONS, struct.pack("<2H", 0x109, 99))   # Chris's rifle: a foreign pair
     ad = Adapter(g)
     out = mods.run(ad, "merc_loadout")
     assert out["verified"] is False and out["writes"] == 0 and ad.writes == []
