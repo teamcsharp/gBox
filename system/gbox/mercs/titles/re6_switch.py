@@ -1748,7 +1748,9 @@ REPLAY_LOAD_S = 60.0                    # a death's YES replay loads this long a
 # ends as missed: stats bonuses_taken / bonuses_missed (per round: round_*, bonus_log).
 BONUS_PURSUIT = False                   # (shooting them: off - operator 16:52, they break only to a physical attack)
 BONUS_R, BONUS_DY, BONUS_SAFE_R = 2500.0, 600.0, 600.0
-BONUS_H, BONUS_HIT_R = 40.0, 45.0
+BONUS_H, BONUS_HIT_R = 130.0, 45.0     # the capsule's middle (a frame of one, 2026-10-27: a column ~2.6 m tall
+                                        # with its glowing part around 1.3 m up; 40 cm aimed at its foot - live,
+                                        # 12 bonus shots on High Seas Fortress broke none)
 BONUS_TRY_S, BONUS_SKIP_S = 2.5, 30.0   # (5 s a try wasted 20 s on 4 out of sight live 14:41)
 BONUS_RESET_N = 3                       # this many gone in one tick: the round started again (a replay), not breaks
 BONUS_LOG_N = 12
