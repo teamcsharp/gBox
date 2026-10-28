@@ -3974,8 +3974,21 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
-      controls.querySelector('button').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.querySelector('[data-full]').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      // the flawed-moment button (operator 2026-10-28: "when i click the icon, i basically want to tell it that the way it's
+      // handling the situation is flawed and to place a report for it. Sometimes they are running in a corner. Sometimes
+      // they are failing to deal with a threat"): a coaching report with the moment captured, and the bot told to change
+      // course at once (the explore command: off the wall / corner by another way, the goal dropped)
+      controls.querySelector('[data-flawed]').onclick = async () => {
+        const sid = COMPACT.sid;
+        if (!sid) { toast('No game in the PiP to report.'); return; }
+        const at = encodeURIComponent(sid);
+        const [note, cmd] = await Promise.all([
+          gbox.api(`/api/sessions/${at}/coach`, { text: 'Flawed handling (PiP button): the way the bot is handling this moment is wrong - running into a wall or corner, or failing to deal with a threat. Investigate this moment and fix it ASAP or the run will never win.' }),
+          gbox.api(`/api/sessions/${at}/directive`, { command: 'explore' })]);
+        toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.` : `Report not filed: ${note?.error || 'unknown error'}`);
+      };
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }

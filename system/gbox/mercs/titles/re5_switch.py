@@ -543,7 +543,7 @@ ROTATE = (("lup",), ("lup", "lleft"), ("lleft",), ("lleft", "ldown"), ("ldown",)
 SWEEP, SWEEP_R, SWEEP_N, SWEEP_EXIT_S, SWEEP_SAME_S = False, 500.0, 3, 0.4, 2.0   # off since 18:52 (#1383): back
                                          # only after the heading governor (HEADING_GOV) has its numbers
 MOTION_SHOT = 29                         # the shot motion (re5_switch_mods.MOTION_SHOT: the raised time scale)
-SWEEP_PITCH_BAND = (-0.05, 0.30)         # P_AIM_PITCH (+ = down): from 3 deg up to 17 deg down
+SWEEP_PITCH_BAND = (-0.05, 0.15)         # P_AIM_PITCH (+ = down): from 3 deg up to ~9 deg down (no leg shots, 2026-10-28)
 SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_clears", "sweep_clear_s",
                   "sweep_shot_waits", "shot_stick_drops")
 # Keep moving (operator 17:42: "If the RE5 bot doesn't get away from the enemies and tries maneuvering around the level
@@ -1530,7 +1530,9 @@ class Bot:
                                     "aim_h_cm": round(plan.aim_offset[1]), "zone": plan.zone,
                                     "fields": [f for f, _ in plan.field_confidence],
                                     "confidence": dict(plan.field_confidence)}
-            return max(KNEE_H, min(HEAD_H, float(plan.aim_offset[1])))
+            # never under his chest (operator 2026-10-28: "they will raise the gun and then lower the gun and shoot them
+            # in the leg"): K's learned height can only lift the aim toward the head
+            return max(CHEST_H, min(HEAD_H, float(plan.aim_offset[1])))
         return CHEST_H
 
     def _kcost(self, p, e, now) -> float:
@@ -3260,7 +3262,16 @@ class Bot:
             self.target, self.aim_since = None, None
             self.stats["directive_status"] = "dropped the target he kept at; choosing another for 15 s"
         elif cmd in ("next_area", "explore") and fresh:
-            self.stats["directive_status"] = "not yet on Switch: no level map to route by; fighting on where he stands"
+            # the PiP's wall button (operator 2026-10-28: "an icon I can click that ... informs the bot you are walking into
+            # a wall ... navigate the level in a different way where they actually look for the stairs or the ladder"):
+            # this spot and heading remembered as a wall, the wall recovery (back off, along his own trail) at once, the
+            # goal dropped; door / ledge / ladder prompts on the way are taken (#1488)
+            px, _py, pz = p["pos"]
+            self.wall_memory(px, pz, p.get("rot") or 0.0)
+            self._wall_start(p, now, True)
+            self._bonus = None
+            self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
+            self.stats["directive_status"] = "the operator's wall: remembered, backing off along his trail, another way"
         elif cmd == "missing" and fresh:
             self.stats["directive_status"] = ("the Switch fight closes the laser dot on him before every shot: no learned "
                                               "aim offset to reset")
