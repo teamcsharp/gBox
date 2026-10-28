@@ -72,6 +72,7 @@ HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
 HEAL_SAFE_R, HEAL_CRITICAL = 400.0, 0.25   # no heal started with a Majini this near unless health is this low: RE5's
+HEAL_CONTACT_R = 100.0                      # an in-progress heal is dropped only with a Majini this close at critical HP
                                        # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26). Was
                                        # 500 / 0.15: 23 of today's 30 deaths came with a heal deferred, 14 from 1-3 HP -
                                        # one more ordinary hit (84-196 HP, 91 % under 200) killed at 15 %. The stage's own
@@ -3346,6 +3347,21 @@ class Bot:
         self.stats["heal_deferred_ticks"] = self.stats.get("heal_deferred_ticks", 0) + 1
         return False
 
+    def _heal_in_progress(self, p, snap, hp, hp_max) -> bool:
+        """An in-progress heal continues while health is above the (learned) critical threshold (the heal is safe
+        enough), or at or under it with no Majini within contact range (the heal is the only chance). At or under
+        critical with a Majini on top (within HEAL_CONTACT_R), the fight wins and the caller drops the heal
+        (request #5129: 14 Majini, 1 on top, pressing Y at 1-3 HP)."""
+        critical = self._heal_critical()
+        if hp_max <= 0:
+            return False
+        if hp > critical * hp_max:
+            return True
+        near = any((e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
+                   and math.dist(p["pos"], e["pos"]) < HEAL_CONTACT_R
+                   for e in snap.get("enemies") or ())
+        return not near
+
     def _stage_key(self) -> str:
         return str(self.stats.get("stage") or "stage")
 
@@ -3458,6 +3474,13 @@ class Bot:
                 return self._heal_return_weapon(inv, state, now)
             self.stats["phase"] = "healing"
             if item.get("hand"):
+                # The cluster (request #5129): the bot sat at 1-3 HP pressing Y - a heal already under way must not be
+                # dropped by the fight-first defer unless health is under the (learned) critical threshold; above it
+                # the use continues to its bounded end.
+                if not self._heal_in_progress(p, snap, hp, hp_max):
+                    self.healing, self.heal_at = None, now
+                    self.stats["heal_status"] = "use interrupted; a Majini is close and health is above the critical threshold: fight first"
+                    return None
                 if now - state["last_use"] >= HEAL_USE_EVERY_S:
                     state["last_use"], state["uses"] = now, state["uses"] + 1
                     self.stats["heal_use_presses"] = self.stats.get("heal_use_presses", 0) + 1
