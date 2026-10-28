@@ -378,6 +378,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     tactical(snap, bot, where)
                 except Exception:                     # noqa: BLE001 - the map never costs the round a tick
                     pass
+            if where in D.IN_ROUND:
+                # Capture must see this sample's identity, including an unreadable one, before
+                # it can latch a preceding round's stage from the reused autoplay stats.
+                stats.update(drv.progress(snap))
             if capture is not None:                   # the run map: a sample 5 times a second (appends; never raises)
                 capture.observe(now, where, snap, bot, stats)
             if where not in D.IN_ROUND:
@@ -430,7 +434,6 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 continue
             gone_since = lost_since = None
             progress += 1
-            stats.update(drv.progress(snap))
             if where == "dead":
                 outcome = "died"
             last_stats = dict(stats)
@@ -444,19 +447,20 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 if stats.get('mercmode_rotate_requested'):
                     return 'mercmode_boundary'
             if notebook is not None and remembered is None and where == "playing":
-                mesh = snap.get("nav")
-                stage = getattr(mesh, "learning_sig", None) or str(getattr(snap.get("stage"), "key", "unknown"))
-                mode = stats.get("mercenaries_mode", "mercenaries")
-                remembered = (stage, mode, stats.get("character", "unknown"))
-                try:
-                    recalled = notebook.recall(stage, mode, stats)
-                    stats.update(round_memory_recalled=len(recalled), round_memory_db=str(notebook.path),
-                                 round_guide=str(notebook.root / "guide.json"))
-                    log("round_recall", stage=stage, mode=mode, lessons=recalled)
-                    if callable(getattr(bot, "recall", None)):
-                        bot.recall(recalled)
-                except Exception as exc:
-                    stats["round_notebook_error"] = str(exc)[:200]
+                stage_fn = getattr(drv, "learning_stage", None)
+                stage = stage_fn(snap) if callable(stage_fn) else D.Driver.learning_stage(drv, snap)
+                if stage is not None:                # an unreadable native ID must not latch an unrelated bucket
+                    mode = stats.get("mercenaries_mode", "mercenaries")
+                    remembered = (stage, mode, stats.get("character", "unknown"))
+                    try:
+                        recalled = notebook.recall(stage, mode, stats)
+                        stats.update(round_memory_recalled=len(recalled), round_memory_db=str(notebook.path),
+                                     round_guide=str(notebook.root / "guide.json"))
+                        log("round_recall", stage=stage, mode=mode, lessons=recalled)
+                        if callable(getattr(bot, "recall", None)):
+                            bot.recall(recalled)
+                    except Exception as exc:
+                        stats["round_notebook_error"] = str(exc)[:200]
             stats["ram_progress"] = progress
             if trace is not None:
                 trace.observe(snap, bot, stats, now, held, "before_decision")
