@@ -395,7 +395,7 @@ def test_bot_backs_off_one_in_front_only(monkeypatch):
 
 @pytest.mark.parametrize("snap,kind,pattern", [(bot_snap(motion=106), "holds", R.WIGGLE),
                                                (bot_snap(motion=113), "holds", R.WIGGLE),
-                                               (bot_snap((0.0, 0.0, 8.0)), "holds", R.WIGGLE),
+                                               (bot_snap((0.0, 0.0, 8.0), motion=None), "holds", R.WIGGLE),
                                                (bot_snap(hp=1), "dying", R.MASH),
                                                (bot_snap(hp=1, motion=106), "dying", R.WIGGLE)])
 def test_bot_breaks_free_when_held_and_resuscitates_when_dying(snap, kind, pattern):
@@ -555,3 +555,16 @@ def test_result_ready_waits_for_a_still_tally_so_mercmode_can_count_a_completed_
     for k in range(1, 32):                                 # a score that never settles ...
         last = d.result_ready(snap(9000 + k), 30.0 + 0.5 * k)
     assert last is True                                   # ... is final after fifteen seconds
+
+
+def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
+    """The game's own grab state, never proximity alone (the learning loop's #1403 replay: wiggling while swarmed)."""
+    b, clock = brain()
+    act = b.tick(bot_snap((0.0, 0.0, 8.0), motion=26))
+    assert b.doing != "held" and act["hold"] not in R.WIGGLE and b.stats.get("holds", 0) == 0
+    b2, _ = brain()
+    snap = bot_snap((0.0, 0.0, 8.0), motion=26)
+    snap["prompt"] = {"label": 28, "token": "mash:wiggle", "keys": (), "kind": 0, "mode": 6, "button": 1,
+                      "owner": 1, "target": 0}
+    b2.tick(snap)
+    assert b2.doing == "held"                                         # the game's Break free: the grab

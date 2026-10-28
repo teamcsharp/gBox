@@ -74,6 +74,14 @@ INV_OBJ = 0x30                           # -> the item's own object (heap); the 
                                          # 2026-10-27, the spray's slot two seconds after its last use)
 EMPTY_IDS = frozenset({0x0, 0x100})      # no item / WP00 NONE
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x38, 0x48, 0x60, 0x1EB8
+# A Majini's own motion (the player's +0x8F8, the same base class) and its action flags (+0xA23: 0x40 while an attack is
+# under way), read for the ones within WINDUP_READ_R (one read each). Found read-only on the live MercMode game
+# (2026-10-27 20:20-20:30, 4495 samples of the nearest Majini within 3 m, 32 of his hits and grabs): motion 80 is the
+# grab's lunge (from ~1.6 m, the grab ~0.6 s later: 26 % of its ticks end in an attack within 1 s, 54 grabs and 40 hits),
+# 81 another grab's, 60 and 91 swings (31 / 32 %), 7 the grab itself, 47 / 13 holding him; 4 standing, 40 walking (11 %:
+# the walk in), 85-87 / 30 / 12 / 2 none. The flag: 45 % (64 of 209 ticks set) against 4 % clear.
+E_MOTION, E_ACT, E_ATTACKING = 0x8F8, 0xA23, 0x40
+WINDUP_MOTIONS = frozenset({80, 81, 60, 91})
 MAX_ENEMIES = 64
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES, UI_MAX = 0x18, 0x30, 0x18, 32, 64
@@ -383,6 +391,14 @@ HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
 # none within QUICK_BACK_S of the last unless the one behind is within GRAB_THREAT_R (no back and forth). The quick turn
 # is exempt from the heading governor (its 180 deg in 0.3 s is the game's own move).
 QUICK_BACK_S = 3.0
+# Wind-ups first (operator 19:25: "The bot should be able to tell who is transitioning into an attack animation and be
+# able to prioritize deactivating them with an attack"): a Majini on his level within WINDUP_R whose own motion is a
+# wind-up (WINDUP_MOTIONS: the grab's lunge, the swings) or whose attack flag is up is the target before any other (the
+# threat pick, the crowd fire, the dot's switch), the nearest such first; behind him, the quick turn's rule applies.
+# Counters: windup_seen (each one starting within WINDUP_R), windup_interrupts (one his shots hurt while it wound up and
+# no attack landed within WINDUP_HIT_S), hits_after_windup (his health falling, or a grab, within WINDUP_HIT_S of one).
+WINDUP, WINDUP_R, WINDUP_READ_R, WINDUP_HIT_S = True, 300.0, 600.0, 1.2
+WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "windup_picks")
 # The RAM aim lock (re5_switch_aim, the RE6 way of #1367; the coordinator 19:06: "even better aim"): with the gun up,
 # the aim moved by RAM toward the target instead of the right stick - the player's heading by the yaw error, the camera
 # pitch (uCameraQFPS +0x1B0) by the pitch error, each at most AIM_LOCK_YAW_DEG_S / AIM_LOCK_PITCH_DEG_S (all of it within
@@ -493,7 +509,7 @@ BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", 
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
     + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
-    + AIM_LOCK_COUNTERS
+    + AIM_LOCK_COUNTERS + WINDUP_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
 # enemies are and is able to go and pursue them"). The census is sEnemy's whole array (snap enemies: every Majini in
@@ -949,6 +965,7 @@ def snapshot(m) -> dict:
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
+    ppos = (snap.get("player") or {}).get("pos")
     if ptr_ok(se):
         n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
         if ptr_ok(arr) and 0 < n <= MAX_ENEMIES:
@@ -960,8 +977,16 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
+                act = None                               # his motion and action flags, near him only
+                if ppos is not None and hp > 0 and math.hypot(pos[0] - ppos[0], pos[2] - ppos[2]) <= WINDUP_READ_R:
+                    try:
+                        raw = m.rd(e + E_MOTION, E_ACT - E_MOTION + 1)
+                        act = (raw[0], raw[E_ACT - E_MOTION])
+                    except (ValueError, OSError):
+                        act = None
                 snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
-                                        "class": enemy_class(m, e)})
+                                        "class": enemy_class(m, e), "motion": act[0] if act else None,
+                                        "act": act[1] if act else None})
     gs = game_sys(m, base)
     if ptr_ok(gs):
         raw = m.rd(gs + GS_PHASE, GS_SCORE + 4 - GS_PHASE)
@@ -1253,6 +1278,7 @@ class Bot:
         self._crowded = False                            # a Majini on his level within RAMPAGE_R this tick (NEAR_FOCUS)
         self._m, self._ram, self._lock_t = m, None, None  # the session (the aim lock's writer, made when first used)
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
+        self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -1687,7 +1713,11 @@ class Bot:
             if near_front is not None and flat(near_front) < 2.0 * flat(nearest) + 100.0:
                 nearest = near_front
         tgt = cur
-        if cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
+        wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in ring) else None
+        if wu is not None and wu is not cur:             # winding up: him first, at once
+            tgt, r["retarget_at"] = wu, now
+            self.stats["windup_picks"] += 1
+        elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
             if cur is None or now - r["retarget_at"] >= RAMPAGE_RETARGET_S:
                 tgt = nearest
                 r["retarget_at"] = now
@@ -1786,6 +1816,37 @@ class Bot:
         self.stats["aim"] = f"rampage d {dist:.0f} off {math.degrees(aim_off):+.1f} keys {','.join(sorted(keys))}"
         return {"hold": tuple(sorted(keys))}
 
+    @staticmethod
+    def _winding(e) -> bool:
+        """His own motion is a wind-up (WINDUP_MOTIONS) or his attack flag is up."""
+        return bool(WINDUP and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING))
+
+    def _windup_tick(self, p, live, flat, now):
+        """The wind-ups within WINDUP_R on his level: counted as they start, resolved WINDUP_HIT_S later (an attack landed
+        on him: hits_after_windup; else hurt by him meanwhile: windup_interrupts); the nearest one now, or None."""
+        py = p["pos"][1]
+        winding = [e for e in live if flat(e) <= WINDUP_R and abs(e["pos"][1] - py) <= LEVEL_DY and self._winding(e)]
+        by = {e.get("ptr", e.get("slot")): e for e in live}
+        for e in winding:
+            k = e.get("ptr", e.get("slot"))
+            if k not in self._wu:
+                self._wu[k] = {"t": now, "hp0": e.get("hp") or 0, "hurt": False}
+                self.stats["windup_seen"] += 1
+        for k, w in list(self._wu.items()):
+            e = by.get(k)
+            if e is not None and (e.get("hp") or 0) < w["hp0"]:
+                w["hurt"] = True
+            if e is None and not w["hurt"]:
+                w["hurt"] = True                         # gone from the living: killed
+            if now - w["t"] >= WINDUP_HIT_S:
+                if self._hit_at >= w["t"] or self._grab_at >= w["t"]:
+                    self.stats["hits_after_windup"] += 1
+                elif w["hurt"]:
+                    self.stats["windup_interrupts"] += 1
+                del self._wu[k]
+        self._windup_e = min(winding, key=flat) if winding else None
+        return self._windup_e
+
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
         if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
@@ -1795,9 +1856,10 @@ class Bot:
         behind = [e for e in live if flat(e) <= BEHIND_R and abs(e["pos"][1] - py) <= LEVEL_DY and bear(e) > QUICK_ERR]
         if not behind:
             return None
-        e = min(behind, key=flat)
-        if any(flat(f) < flat(e) and bear(f) <= math.radians(60) for f in live):
-            return None                                  # one nearer in front: him first
+        e = min(behind, key=lambda x: (not self._winding(x), flat(x)))   # a wind-up first
+        if any(flat(f) < flat(e) and bear(f) <= math.radians(60) and (self._winding(f) or not self._winding(e))
+               for f in live):
+            return None                                  # one nearer in front (as dangerous): him first
         if now - self.quick_at < QUICK_BACK_S and flat(e) > GRAB_THREAT_R:
             return None                                  # just turned: no back and forth
         if p.get("motion") == MOTION_SHOT or self.fire_down:
@@ -2135,6 +2197,13 @@ class Bot:
         if K_PLAN and best is not min(live, key=lambda e: self._cost(p, e)):
             self.stats["k_range_picks"] += 1                 # a choice the learned range changed
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        wu = self._windup_e
+        if wu is not None and any(e is wu for e in live):   # winding up: the target before any other
+            if wu is not cur:
+                self.stats["windup_picks"] += 1
+                self.target_at = now
+            self._set_target(wu.get("ptr", wu.get("slot")), now)
+            return wu
         nearest = min(live, key=flat)
         front = [e for e in live if flat(e) <= ENGAGE_R
                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= self.raise_tol(flat(e))]
@@ -2609,6 +2678,7 @@ class Bot:
             self.stats[k] = 0
         self._cam["off"] = False
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
+        self._wu, self._windup_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
 
@@ -2820,8 +2890,17 @@ class Bot:
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
         motion = p.get("motion")                         # None: no motion byte (the health / stick heuristics)
-        held = motion in MOTION_HELD or near < HELD_R or p.get("hp") == DYING_HP
-        if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or self.held(p, now):
+        # Held means the game's own grab (his motion, or its Break free prompt), never a Majini merely close: the
+        # learning loop's replay (#1403) found him shaking the stick with one within HELD_R that held nothing while
+        # swarmed ("RE5 swarmed with the gun LOWERED = 20 deaths" in 24 h). HELD_R stands in only without a motion byte;
+        # the stuck rule (the sticks pressed, no move) only with nobody within RAMPAGE_R (geometry, not a crowd).
+        grab_prompt = ((snap.get("prompt") or {}).get("label") == re5_switch_prompt.LABEL_BREAK_FREE)
+        held = motion in MOTION_HELD or grab_prompt or (motion is None and near < HELD_R) or p.get("hp") == DYING_HP
+        if motion in MOTION_HELD and not self._was_held:
+            self._grab_at = now                          # a grab began (hits_after_windup)
+        self._was_held = motion in MOTION_HELD
+        stuck = self.held(p, now) and (motion is None or near > RAMPAGE_R)
+        if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
             if held:                                         # held, or dying: break free / recover (RAM says so)
                 if not self.in_hold:
                     kind = "dying" if p.get("hp") == DYING_HP else "holds"
@@ -2945,6 +3024,7 @@ class Bot:
         if crowded:                                      # someone near: the far ones are no concern now
             live = [e for e in live if flat(e) <= NEAR_FOCUS_R] or live
         self._crowded = crowded
+        self._windup_tick(p, live, flat, now)
         act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
         if act is not None:
             return act
