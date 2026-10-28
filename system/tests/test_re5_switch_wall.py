@@ -90,3 +90,17 @@ def test_aiming_is_not_movement():
         clock[0] = 0.08 * k
         b.tick(snap(enemies=[foe]))
     assert b.stats["wall_hits"] == 0
+
+
+def test_no_stick_in_the_boosted_shot_nor_just_after_it():
+    """2026-10-28: fire_rate's x80 time scale is put back at the next snapshot; a run or turn begun in that gap teleported
+    him. No stick in the shot motion and SHOT_TAIL_S after it."""
+    b = R.Bot.__new__(R.Bot)
+    b.stats, b.doing, b.quick = {}, "relocate", 0
+    snap = {"player": {"motion": R.MOTION_SHOT}}
+    out = b._shot_tail({"hold": ("lup", "rleft", "zr")}, snap, 10.0)
+    assert out["hold"] == ("zr",)
+    out = b._shot_tail({"hold": ("lup",)}, {"player": {"motion": 0}}, 10.0 + R.SHOT_TAIL_S / 2)
+    assert out["hold"] == ()                                      # still in the tail
+    out = b._shot_tail({"hold": ("lup",)}, {"player": {"motion": 0}}, 10.0 + R.SHOT_TAIL_S + 0.01)
+    assert out["hold"] == ("lup",) and b.stats["shot_tail_drops"] == 2

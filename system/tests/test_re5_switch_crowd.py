@@ -62,7 +62,8 @@ def test_with_the_aim_on_the_nearest_in_front_the_trigger_holds_and_no_stick():
     assert b.target == 10 and b.stats["crowd_fire_s"] > 0
 
 
-def test_the_aim_off_them_lets_the_trigger_go_and_turns_between_shots_only():
+def test_the_aim_off_them_lets_the_trigger_go_and_turns_between_shots_only(monkeypatch):
+    monkeypatch.setattr(R, "SHOT_TAIL_S", 0.0)                          # (the post-shot pause: its own test)
     b, clock = bot()
     held = [dict(M92F, hand=False), dict(SHOTGUN, hand=True)]
     b.tick(snap(CROWD, inv=held))
