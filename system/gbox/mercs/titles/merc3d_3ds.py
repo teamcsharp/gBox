@@ -28,6 +28,7 @@ from __future__ import annotations
 import math
 import struct
 import time
+from dataclasses import dataclass
 
 from ..driver import Driver
 
@@ -189,6 +190,22 @@ def heading_of(q) -> float:
     return 2.0 * math.atan2(q[1], q[3])
 
 
+@dataclass(frozen=True)
+class MissionIdentity:
+    """The native mission ID, not a guessed human level name or a shared arena name."""
+    mission_id: int
+
+    @property
+    def key(self) -> str:
+        return f"mission-0x{self.mission_id:04x}"
+
+
+def mission_identity(value) -> MissionIdentity | None:
+    # The native selector packs (level << 8) | tab (docs/research/merc3d-ram.md).
+    # Reject unset/corrupt values without guessing the mission roster or unlocks.
+    return MissionIdentity(value) if type(value) is int and 0 <= value <= 0xFFFF else None
+
+
 def mission(m) -> dict | None:
     sm = _u32(m, S_MISSION)
     if not ptr_ok(sm):
@@ -230,7 +247,7 @@ def enemies(m) -> list[dict]:
 def snapshot(m) -> dict:
     """The round from RAM: the player and the mission counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "score": None, "kills": None, "combo": None,
-                  "combo_timer": None, "elapsed": None}
+                  "combo_timer": None, "elapsed": None, "stage": None}
     try:
         p = player_unit(m)
         if p:
@@ -244,7 +261,8 @@ def snapshot(m) -> dict:
         mi = mission(m)
         if mi:
             snap.update({k: mi[k] for k in ("timer", "score", "combo", "combo_timer", "elapsed")},
-                        mission_id=mi["mission_id"], chara_id=mi["chara_id"], combo_score=mi["combo_score"])
+                        mission_id=mi["mission_id"], chara_id=mi["chara_id"], combo_score=mi["combo_score"],
+                        stage=mission_identity(mi["mission_id"]))
     except (ValueError, OSError, RuntimeError, struct.error):
         pass
     return snap
@@ -424,7 +442,12 @@ class Merc3D(Driver):
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-                "kills": snap.get("kills"), "elapsed": snap.get("elapsed")}
+                "kills": snap.get("kills"), "elapsed": snap.get("elapsed"),
+                "mission_id": snap.get("mission_id"), "chara_id": snap.get("chara_id"),
+                "stage": self.learning_stage(snap)}
+
+    def learning_stage(self, snap: dict) -> str | None:
+        return getattr(snap.get("stage"), "key", None)
 
 
 DRIVER = Merc3D
