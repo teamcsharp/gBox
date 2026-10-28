@@ -810,6 +810,7 @@ def win_grab(pid: int) -> bytes:
 
 
 VGLRUN = "/opt/VirtualGL/bin/vglrun"
+CITRA_RETRY_S, CITRA_WIDE_S = 5.0, 60.0                # 3DS guest attach while the game boots (RetroArchAdapter.citra_memory)
 
 
 def _pad_binds() -> dict:
@@ -2117,11 +2118,18 @@ class RetroArchAdapter(CommandAdapter):
         if mem is not None and mem.pid == pid:
             return mem
         now = time.monotonic()
-        if now - getattr(self, "_citra_tried", 0.0) < 2.0:  # still booting: one 256 MiB scan per 2 s at most
+        # still booting: a cheap attach (FCRAM-sized rows only) every CITRA_RETRY_S, the wide one (every big row) at most
+        # every CITRA_WIDE_S after three cheap misses - 2026-10-27, the i9's first Merc3D boot: retries every 2 s over
+        # every big row of RetroArch are the likely reason its worker stopped answering the Spark 50 s in
+        tries = getattr(self, "_citra_tries", 0)
+        if now - getattr(self, "_citra_tried", -1e9) < CITRA_RETRY_S:
             raise RuntimeError(getattr(self, "_citra_error", "3DS guest memory not found yet"))
-        self._citra_tried = now
+        wide = tries >= 3 and now - getattr(self, "_citra_wide", -1e9) >= CITRA_WIDE_S
+        self._citra_tried, self._citra_tries = now, tries + 1
+        if wide:
+            self._citra_wide = now
         try:
-            mem = CM.attach(pid, CM.code_signature(getattr(self, "content_path", None)), writable=True)
+            mem = CM.attach(pid, CM.code_signature(getattr(self, "content_path", None)), writable=True, wide_ok=wide)
         except (OSError, ValueError) as e:
             self._citra_error = f"3DS guest memory not found yet: {e}"
             raise RuntimeError(self._citra_error) from e
