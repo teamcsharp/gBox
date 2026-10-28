@@ -31,6 +31,16 @@ Run this loop until the operator says stop. Don't wait to be asked for each step
 
 **Latest weapon directive, 2026-10-28:** "i want them either using a random shotgun or the bow and arrow with 30x fire rate and rapid fire on it." Remove miniguns from use. Randomize the supported shotgun/bow choice per round; this latest allowed-weapon instruction supersedes the earlier magnum preference, while boss threat priority remains. Preserve first-aid availability and movement suppression during boosted shots.
 
+**Live sidebar directive, 2026-10-28:** fire rates, behavior and modification settings must be adjustable for the active game session from the sliding MercMode PiP sidebar, with applied values and errors visible.
+
+**Instant equip directive, 2026-10-28:** replace inventory/menu/slot cycling with verified native RAM equip requests and readback for guns, flashbangs and mines. Do not guess an equip address or treat a changed item ID as proof of a functional equipped weapon.
+
+**Combat follow-through, 2026-10-28:** raising a weapon must lead promptly to effective fire against reachable threats. A blocked target must cause retargeting or movement toward a firing position, not prolonged wall-facing aim. Latest screenshot also confirms this failure in RE6 (Agent, 4 kills, score 1340, 49 seconds remaining).
+
+**i9 local loop directive, 2026-10-28:** run Mercenaries 3D and RE4 VR locally, learning and using verified native/Ghidra hooks, rotating after five matches per title. Present the game inside that PC's PiP; do not leave a separate fullscreen emulator idle on menus. Unsupported title capabilities must be reported honestly and implemented before claiming the loop works.
+
+**i9 remote administration authorization, 2026-10-28:** the operator grants full control of GBox on the i9, including remote updates, rebuilds, boot/relaunch and session recovery, so they need not walk to the computer to reload it. This supersedes the older no-touch operator-session restriction for necessary i9 GBox repair. Preserve game progress when possible, use authenticated scoped management operations, and verify recovery. The JAYBUILTFINALE restriction remains.
+
 **MercMode:** gBox's endless Mercenaries mode. It plays RE5 and RE6 on Switch ("No Mercy") back to back, streamed by gBox to the operator's app and PiP:
 - no loading screens or waiting between rounds;
 - the autobot plays well and improves every round;
