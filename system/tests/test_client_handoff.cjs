@@ -253,3 +253,23 @@ test('a relaunch request (rebuild_node) is honoured only from the verified worke
   const throwing=pipe({onRelaunch:()=>{throw Error('boom');}});throwing.feed({event:'ready'});throwing.feed({event:'relaunch',job:'j3'});
   assert.equal(throwing.control.ready(),true,'a failing handler never breaks the channel');
 });
+
+test('a second F5 within the window forces the restart that the idle check blocked (operator: "F5 to do it all")',async()=>{
+  const main=fs.readFileSync(require.resolve('../clients/desktop/main.js'),'utf8');
+  const src=main.slice(main.indexOf('function assertClientSender('),main.indexOf('let clientVersions ='));
+  const calls=[],timers=[];let handler;
+  const wc={mainFrame:{},reloadIgnoringCache:()=>calls.push('renderer')};
+  const ctx=vm.createContext({ipcMain:{handle:(_n,fn)=>{handler=fn;}},win:{webContents:wc},clientReloading:false,Date,
+    clientVersions:{read:async()=>({restart:true})},clientActivation:{},worker:{pid:42},workerControl:{stop:async()=>{throw Error('stuck');}},
+    clientHandoff:{...H,save:()=>{calls.push('save');return 'opaque';}},clientViews:require('../clients/desktop/client-view-store.cjs'),
+    inspectClientIdle:async()=>'active local game',compactWindow:{handoff:()=>({window:value().window})},
+    settings:()=>({autoStartWorker:true}),mini:null,pendingMini:null,miniSession:null,CLIENT_HANDOFF_FILE:'owned-fixture',
+    process:{pid:12,argv:['electron','app']},app:{relaunch:()=>calls.push('launch'),exit:()=>calls.push('exit')},
+    setTimeout:f=>timers.push(f),shutdownSessions:()=>calls.push('safe-cleanup'),startWorker:async()=>calls.push('resume')});
+  vm.runInContext(src,ctx);
+  const first=await handler({sender:wc,senderFrame:wc.mainFrame},value().state);
+  assert.equal(first.state,'pending');assert.match(first.force,/F5 again within 10 s/);
+  ctx.clientReloading=false;
+  const second=await handler({sender:wc,senderFrame:wc.mainFrame},value().state);
+  assert.equal(second.state,'relaunching');assert.ok(calls.includes('save')&&calls.includes('launch'));
+});
