@@ -23,6 +23,13 @@ import time
 CONTROLS = {"raise": "r", "fire": "a", "run": "b", "forward": "lup", "back": "ldown", "left": "lleft",
             "right": "lright", "aim_left": "lleft", "aim_right": "lright", "aim_up": "lup", "aim_down": "ldown"}
 TURN_LEFT_IS_LARGER = True              # stick left turns toward a larger heading (verified live before the flip)
+# The fire button is learned in play (live 2026-10-27, the i9: a whole round of R + A point blank left a 600-vitality
+# Majini at 600): while the gun is up on a target in front within FIRE_PROBE_R, a candidate that leaves his vitality
+# unchanged for FIRE_PROBE_S of trigger time gives way to the next. The working one is kept for the process (FIRE).
+FIRE_CANDIDATES = ("a", "y", "x", "r2", "l", "b")
+FIRE_PROBE_S, FIRE_PROBE_R = 1.5, 350.0
+FIRE = {"key": CONTROLS["fire"], "confirmed": False}
+RELOAD_KEEP = ("FIRE",)
 
 CC_R, CC_N = 260.0, 3                   # crowd control: this many foes inside this radius (cm)
 GRAB_R = 130.0                          # a foe this close behind / beside him: get out first
@@ -80,6 +87,7 @@ class Bot:
         self.kite_heading = None
         self.long_look = (None, 0.0, -1e9)  # (target, until, last started)
         self.doing, self.why = "idle", ""
+        self.probe = None                   # (target ptr, his vitality, trigger seconds so far, last tick)
 
     # --- the engine's interface ------------------------------------------------------------------------------------------
     def prompt_ok(self, button, snap, now) -> bool:
@@ -113,6 +121,31 @@ class Bot:
         if pitch_err is not None and abs(pitch_err) > math.radians(2.5):
             keys.add(CONTROLS["aim_up"] if pitch_err > 0 else CONTROLS["aim_down"])
         return keys
+
+    def _fire_key(self, tgt, dist, err, now) -> str:
+        """The trigger to press now: FIRE's key; while it is unconfirmed, a target close in front whose vitality does not
+        fall within FIRE_PROBE_S of trigger time moves FIRE to the next candidate (stats fire_key / fire_key_tried)."""
+        if FIRE["confirmed"] or dist > FIRE_PROBE_R or abs(err) > math.radians(20):
+            return FIRE["key"]
+        hp, ptr = tgt.get("hp"), tgt.get("ptr")
+        pr = self.probe
+        if pr is None or pr[0] != ptr:
+            self.probe = (ptr, hp, 0.0, now)
+            return FIRE["key"]
+        spent = pr[2] + min(0.2, max(0.0, now - pr[3]))
+        if isinstance(hp, (int, float)) and isinstance(pr[1], (int, float)) and hp < pr[1]:
+            FIRE["confirmed"] = True                # he took damage: this is the trigger
+            self.stats["fire_key"] = FIRE["key"]
+            return FIRE["key"]
+        if spent >= FIRE_PROBE_S:
+            i = FIRE_CANDIDATES.index(FIRE["key"]) if FIRE["key"] in FIRE_CANDIDATES else -1
+            FIRE["key"] = FIRE_CANDIDATES[(i + 1) % len(FIRE_CANDIDATES)]
+            self.stats["fire_key_tried"] = self.stats.get("fire_key_tried", "") + FIRE["key"] + " "
+            self._count("fire_key_switches")
+            self.probe = (ptr, hp, 0.0, now)
+            return FIRE["key"]
+        self.probe = (ptr, pr[1], spent, now)
+        return FIRE["key"]
 
     @staticmethod
     def _points(e) -> tuple:
@@ -227,7 +260,7 @@ class Bot:
         point_blank = dist < POINT_BLANK and abs(err) < math.radians(15)
         blind_ok = not long and ray is None and dist < FALLBACK_FIRE_R and abs(err) < math.radians(AIM_TOL_DEG)
         if confirmed or point_blank or blind_ok:
-            keys.add(CONTROLS["fire"])
+            keys.add(self._fire_key(tgt, dist, err, now))
             self._count("confirmed_shots" if confirmed else ("point_blank_shots" if point_blank else "close_shots"))
             if confirmed and dist > 800:
                 self._count("long_shots")
