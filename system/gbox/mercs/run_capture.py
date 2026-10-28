@@ -56,6 +56,7 @@ MAX_EVENTS = 4000
 MAX_RUNS = 4000           # doing changes
 MAX_BONUSES = 96
 WHY_CHARS = 80
+LABELLED_STILLS = 6       # the SVG names the longest standstills only (every one gets its ring)
 MIN_SAMPLES = 10          # a round shorter than 2 s gets no map
 MAX_KEEP = 200            # run maps kept per stage folder
 EXTENT_MAX = 40000        # cells kept in a stage's extent
@@ -285,8 +286,9 @@ class RunCapture:
                 self.doing.append([i, doing, phase, str(why)[:WHY_CHARS] if isinstance(why, str) and why else None])
             else:
                 self.dropped["doing"] += 1
+        hit = hp is not None and self._last_hp is not None and p.get("ptr") == self._ptr and hp < self._last_hp
         live = [e for e in snap.get("enemies") or () if isinstance(e, dict) and _xyz(e.get("pos")) is not None
-                and (_num(e.get("hp")) is None or e["hp"] > 0) and (_num(e.get("hp_max")) is None or e["hp_max"] > 1)]
+                and (_num(e.get("hp")) is None or e["hp"] > 0) and (_num(e.get("hp_max")) is None or e["hp_max"] > 1)]             if hit or i % ENEMY_EVERY == 0 else ()           # the enemies only when this sample keeps them
         if i % ENEMY_EVERY == 0:
             near = sorted(live, key=lambda e: math.hypot(e["pos"][0] - x, e["pos"][2] - z))[:ENEMY_MAX]
             self.enemies.append([i, [[round(e["pos"][0]), round(e["pos"][2])] for e in near]])
@@ -295,7 +297,7 @@ class RunCapture:
                                     _num(snap.get("kills"))])
         # his health: a fall is a hit (with who stood near), zero a death
         ptr = p.get("ptr")
-        if hp is not None and self._last_hp is not None and ptr == self._ptr and hp < self._last_hp:
+        if hit:
             near = sorted(((math.hypot(e["pos"][0] - x, e["pos"][2] - z), e) for e in live), key=lambda de: de[0])
             near = [(d, e) for d, e in near if d <= ATTACKER_R][:3]
             self.event(now, "hit", x, z, loss=int(self._last_hp - hp), hp=int(hp),
@@ -583,11 +585,13 @@ def svg(rec: dict, extent: dict | None = None) -> str:
     x0, x1, z0, z1 = min(xs) - cell, max(xs) + cell, min(zs) - cell, max(zs) + cell
     scale = 900.0 / max(x1 - x0, z1 - z0, 1.0)
     W, H = (x1 - x0) * scale, (z1 - z0) * scale
-    X = lambda x: (x0 - x) * scale + W                     # +x to the left (tactical.VIEW), +z up the page
+    X = lambda x, w=W: (x0 - x) * scale + w                # +x to the left (tactical.VIEW), +z up the page
     Z = lambda z: (z1 - z) * scale
     c = cell * scale
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + 88:.0f}" viewBox="0 0 {W:.0f} '
-           f'{H + 88:.0f}" font-family="sans-serif" font-size="13"><rect width="100%" height="100%" fill="#0e1116"/>']
+    W = max(W, 760.0)                                       # room for the words under a narrow stage
+    foot = 20 + 19 * (5 if rec.get("verdict") else 4)
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H + foot:.0f}" viewBox="0 0 {W:.0f} '
+           f'{H + foot:.0f}" font-family="sans-serif" font-size="13"><rect width="100%" height="100%" fill="#0e1116"/>']
     for (j, i0, i1), fill in _cell_runs(known, visited):     # each row's runs of one shade: one rect apiece
         out.append(f'<rect x="{X((i1 + 1) * cell):.1f}" y="{Z((j + 1) * cell):.1f}" width="{c * (i1 - i0 + 1):.1f}" '
                    f'height="{c:.1f}" fill="{fill}"/>')
@@ -602,11 +606,15 @@ def svg(rec: dict, extent: dict | None = None) -> str:
         col = ramp((a[0] - t0) / max(t1 - t0, 1e-6))
         out.append(f'<line x1="{X(a[1]):.1f}" y1="{Z(a[2]):.1f}" x2="{X(b[1]):.1f}" y2="{Z(b[2]):.1f}" stroke="{col}" '
                    f'stroke-width="2.5" stroke-linecap="round"/>')
-    for st in rec.get("standstills") or ():
+    stills = rec.get("standstills") or ()
+    named = {id(st) for st in sorted(stills, key=lambda st: -st["seconds"])[:LABELLED_STILLS]}
+    for st in stills:                                      # every ring; words on the longest few
         x, z = X(st["at"][0]), Z(st["at"][1])
-        out.append(f'<circle cx="{x:.1f}" cy="{z:.1f}" r="{8 + min(st["seconds"], 30):.1f}" fill="none" '
-                   f'stroke="#ffd166" stroke-width="2"/><text x="{x + 10:.1f}" y="{z - 10:.1f}" fill="#ffd166" '
-                   f'font-size="11">{_esc("%gs %s" % (st["seconds"], st.get("phase") or "?"))}</text>')
+        out.append(f'<circle cx="{x:.1f}" cy="{z:.1f}" r="{6 + min(st["seconds"], 30) / 2:.1f}" fill="none" '
+                   f'stroke="#ffd166" stroke-width="1.5" stroke-opacity="0.8"/>')
+        if id(st) in named:
+            out.append(f'<text x="{x + 10:.1f}" y="{z - 10:.1f}" fill="#ffd166" font-size="11">'
+                       f'{_esc("%gs %s" % (st["seconds"], st.get("phase") or "?"))}</text>')
     for bo in rec.get("bonuses") or ():
         x, z = X(bo["pos"][0]), Z(bo["pos"][1])
         if bo.get("taken"):
@@ -639,17 +647,20 @@ def svg(rec: dict, extent: dict | None = None) -> str:
                    f'stroke="#0e1116" stroke-width="2"/>')
     ex = rec.get("exploration") or {}
     cov = (ex.get("coverage") or {}).get("value")
-    label = (f'{rec.get("title")} {rec.get("stage")} - {rec.get("outcome") or "?"} - {ex.get("seconds", 0):g} s, '
-             f'{ex.get("distance_m", 0):g} m walked, {ex.get("cells", 0)} cells'
-             + (f' ({cov:.0%} of the known stage)' if cov is not None else "")
-             + f', {ex.get("start_area_s", 0):g} s within {ex.get("start_r_m", 10):g} m of the spawn, furthest '
-             f'{ex.get("max_from_spawn_m", 0):g} m')
-    out.append(f'<text x="8" y="{H + 22:.0f}" fill="#e6e6e6">{_esc(label)}</text>')
+    lines = [(f'{rec.get("title")} {rec.get("stage")} - {rec.get("outcome") or "?"} - {ex.get("seconds", 0):g} s, '
+              f'{ex.get("distance_m", 0):g} m walked, {ex.get("cells", 0)} cells'
+              + (f' ({cov:.0%} of the known stage)' if cov is not None else ""), "#e6e6e6"),
+             (f'{ex.get("start_area_s", 0):g} s within {ex.get("start_r_m", 10):g} m of the spawn, furthest '
+              f'{ex.get("max_from_spawn_m", 0):g} m from it; {rec.get("hits_taken_events", 0)} hits taken, '
+              f'{rec.get("bonuses_taken", 0)} statues taken, {rec.get("bonuses_missed", 0)} left standing', "#e6e6e6")]
     if rec.get("verdict"):
-        out.append(f'<text x="8" y="{H + 44:.0f}" fill="#ffd166">{_esc(rec["verdict"])}</text>')
-    out.append(f'<text x="8" y="{H + 66:.0f}" fill="#9aa0a6">path cyan (start) to amber (end); green start, white end, '
-               f'dashed the starting area; red hits, red X death, gold statue taken (ring: missed, grey: gone), green '
-               f'mine, cyan square prompt, white x stuck, yellow ring standing still; grey cells the known stage</text>')
+        lines.append((rec["verdict"], "#ffd166"))
+    lines += [("path cyan (start) to amber (end); green start, white end, dashed the starting area; red hits, red X "
+               "death;", "#9aa0a6"),
+              ("gold statue taken (ring: left standing, grey: gone); green mine, cyan square prompt, white x stuck, "
+               "yellow ring standing still; grey cells the known stage", "#9aa0a6")]
+    for k, (text, col) in enumerate(lines):
+        out.append(f'<text x="8" y="{H + 20 + 19 * k:.0f}" fill="{col}" font-size="12">{_esc(text)}</text>')
     return "".join(out) + "</svg>"
 
 
