@@ -314,7 +314,9 @@ the operator's background-testing tick once Citron is set up there:
 
 ## Live runs (2026-10-27, a guarded private Citron session on the Spark)
 
-Real frames are in `~/gBox_alt/scratch/agent/switch/coop/runs/` (run 1).
+Real frames from run 1 are in `docs/evidence/switch-coop/`, uncropped (the session's whole 1280x720 Xvfb display).
+They show the No Mercy menu, the controller applet, the stage select and the split lobby. The run script is
+`~/gBox_alt/scratch/agent/switch/coop/coop_run.py` on the Spark (`COOP_LULL=1` for a window with MercMode down).
 
 - **RE6 run 1.**
   - The menus walk reached THE MERCENARIES NO MERCY and took SPLIT.
@@ -328,8 +330,12 @@ Real frames are in `~/gBox_alt/scratch/agent/switch/coop/runs/` (run 1).
   - Its unit is not in the screen table yet. The title unit stays listed, so the first reader called it the title and
     pressed A, which does nothing while Player 2's slot is empty. The reader now names it `split_lobby`, and Player 2
     presses + there.
-- **RE6 run 2** aborted 16 s into the boot on the guard's stream-gap rule (367 ms), with Citron pinned to the little
-  cores.
+- **RE6 runs 2-4** were each stopped by the guard on a MercMode stream gap, every time before the lobby:
+  - run 2: 367 ms, 16 s into the boot, Citron on the little cores (taskset 10-14);
+  - run 3: 406 ms, in the gbox.service restart window, at the first sample once MercMode played again;
+  - run 4: 308 ms, after a clean boot, in the menus, with ionice -c3 as well.
+
+  The rest waits for a window with MercMode down.
 - **Still to see live:** Player 2's + join, Player 2's pointer, laser and camera in a split round, Player 2's stick, and
   RE5's split-screen menus.
 - **RE5's character select** (static): in split screen it seems to run once per player. `uIdStartUp22 +0x1C4` names
