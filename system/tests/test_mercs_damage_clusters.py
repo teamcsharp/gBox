@@ -62,7 +62,10 @@ def test_bearing_is_off_his_facing_in_the_drivers_heading_convention():
     (event('01002A000CD48000', player={'action': 'cPlAction_pl_act_buttobi_damage_common'},
            enemies=[enemy(150, 0)]), RE6, 'fall_knockdown'),
     (event(hp=(1, 0), enemies=[enemy(80, 0)]), RE5, 'fall_knockdown'),           # killed while dying at 1 HP
-    (event(enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))]), RE5, 'crowd_4_in_2m'),
+    (event(enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))]), RE5, 'crowd_gun_down'),
+    (event(held=['zl', 'zr'], enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))]), RE5,
+     'crowd_4_in_2m'),
+    (event(enemies=[enemy(10, 30), enemy(150, 0)]), RE5, 'grabbed_front'),          # a Majini on him (HELD_R)
     (event(held=['zl'], enemies=[enemy(300, 120)]), RE5, 'aimed_away_or_behind'),  # gun up, the nearest 120 deg off
     (event(enemies=[enemy(120, -150)]), RE5, 'aimed_away_or_behind'),              # one close behind him
     (event(hp=(250, 150), enemies=[enemy(100, 0)], snap={'inventory': [{'id': 0x305, 'rounds': 0}]}), RE5,
@@ -117,8 +120,8 @@ def test_a_death_goes_to_the_hit_that_put_him_down_and_re6_death_log_names_a_hol
     down = inc(event(hp=(400, 1), enemies=crowd, at=100.0, eid='event_00000001'))
     kill = inc(event(hp=(1, 0), enemies=[enemy(80, 0)], at=104.0, eid='event_00000002'))
     labelled, deaths = C.label_run([kill, down])
-    assert [s for _i, s, _t in labelled] == ['crowd_4_in_2m', 'fall_knockdown']
-    assert [(d[0]['event_id'], d[1]) for d in deaths] == [('event_00000001', 'crowd_4_in_2m')]
+    assert [s for _i, s, _t in labelled] == ['crowd_gun_down', 'fall_knockdown']
+    assert [(d[0]['event_id'], d[1]) for d in deaths] == [('event_00000001', 'crowd_gun_down')]
     # RE6: a killing hit with nobody close, and the driver's death_log for that death says a zombie held him
     entry = {'held': True, 'doing': 'nade', 'near_2m': 1, 'near_4m': 3, 'bomb_phase': None, 'bomb_cm': None}
     k6 = inc(event('01002A000CD48000', hp=(300, 0), enemies=[enemy(500, 0)], logic={'deaths': 4}, at=200.0,
@@ -182,7 +185,7 @@ def world(tmp_path, monkeypatch):
 
 
 def crowd_event(n, run='run_000000001', at=9_000.0):
-    return event(eid=f'event_{run[-3:]}{n:05d}', run=run, at=at + n * 5.0,
+    return event(eid=f'event_{run[-3:]}{n:05d}', run=run, at=at + n * 5.0, held=['zl', 'zr'],
                  enemies=[enemy(d, a) for d, a in ((60, 0), (90, 100), (120, -100), (190, 180))])
 
 
@@ -203,14 +206,15 @@ def test_ingest_records_the_incident_and_a_pass_batches_singles_into_one_request
     assert batch['context'] == {**batch['context'], 'damage_cluster': True, 'damage_cluster_id': cid,
                                 'signature': 'crowd_4_in_2m', 'game_id': RE5, 'auto_report': True,
                                 'operator_requested': True}
-    assert batch['title'] == 'Damage batch: RE5 Switch - crowd of 4+ within 2 m'
+    assert batch['title'] == 'Damage batch: RE5 Switch - swarmed (4+ within 2 m) with the gun up'
     assert 'ONE logic change' in batch['body'] and 'Bot._keep_moving' in batch['body']
     # both runs are closed into the batch; run 2's ranged hit is a cause too small to batch yet, and says so
     first, second = sorted(singles, key=lambda r: r['context']['damage_run_id'])
     first, second = store.get('request', first['id']), store.get('request', second['id'])
     for single in (first, second):
         assert single['status'] == 'done' and single['context']['batched_into'] == [batch['id']]
-        assert single['messages'][-1]['text'].startswith(f"Batched into #{batch['number']} (crowd of 4+ within 2 m)")
+        assert single['messages'][-1]['text'].startswith(
+            f"Batched into #{batch['number']} (swarmed (4+ within 2 m) with the gun up)")
     assert 'too small to batch yet' in second['messages'][-1]['text'] and 'ranged' in second['messages'][-1]['text']
     assert 'too small' not in first['messages'][-1]['text']
     assert sorted(store.get(C.CLUSTER, cid)['members']) == sorted([first['id'], second['id']])
@@ -226,7 +230,7 @@ def test_ingest_records_the_incident_and_a_pass_batches_singles_into_one_request
     assert len(priority) == 2 and len(priority[-1][0]) == 2       # both batches on the Hermes priority list
 
 
-def test_rolling_window_updates_the_batch_in_place_and_reopens_only_after_the_grace(world):
+def test_rolling_window_updates_the_batch_in_place(world):
     store, runner, clock, deliver, made, priority = world
     for n in range(3):
         deliver(crowd_event(n))
@@ -241,7 +245,8 @@ def test_rolling_window_updates_the_batch_in_place_and_reopens_only_after_the_gr
     req = store.get('request', rid)
     summary = [m for m in req['messages'] if m.get('id') == 'damage-cluster-summary']
     assert len(summary) == 1 and summary[0]['damage_cluster']['hits'] == 6
-    # Hermes ships a fix and closes it; the same cause soon after (inside the grace) does not reopen it
+    assert 'The PR must add a replay test' in req['body'] and '/replay' in req['body']
+    # closed by Hermes: more of the same cause does not reopen it by itself (learning.follow_up judges the effect)
     req.update(status='done', completed=clock[0])
     store.put('request', rid, req)
     for n in range(6, 12):
@@ -249,14 +254,6 @@ def test_rolling_window_updates_the_batch_in_place_and_reopens_only_after_the_gr
     clock[0] += 900
     runner.poll()
     assert store.get('request', rid)['status'] == 'done'
-    # ... but the cause still coming REOPEN_GRACE_S later reopens the same request
-    late = clock[0] + C.REOPEN_GRACE_S
-    for n in range(12, 12 + C.REOPEN_MIN):
-        deliver(crowd_event(n, run='run_000000009', at=late))
-    clock[0] = late + 120
-    runner.poll()
-    req = store.get('request', rid)
-    assert req['status'] == 'open' and any(m.get('id', '').startswith('reopen-') for m in req['messages'])
     assert len([r for r in store.all('request') if r['source'] == C.SOURCE]) == 1
 
 
