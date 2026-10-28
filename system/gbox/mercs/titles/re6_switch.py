@@ -2824,7 +2824,9 @@ class Bot:
                 q = live["q"]
                 self.stats["prompts_taken"] += 1
                 types.setdefault(str(q["type"]), [0, 0, q.get("key")])[1] += 1
-                if q.get("key") == "b" and not self.in_hold:
+                if now - self.fever_until < 1.0 and not self.in_hold:
+                    self.stats["finishers"] = self.stats.get("finishers", 0) + 1   # taken among the flashed ones
+                elif q.get("key") == "b" and not self.in_hold:
                     self.stats["climbs"] += 1
                 elif q.get("key") == "y":
                     self.stats["pickups"] += 1

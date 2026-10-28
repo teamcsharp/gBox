@@ -1452,6 +1452,11 @@ def test_four_within_five_metres_get_the_flash_and_the_fever_ends_when_an_unflas
     snap["kills"] = (snap.get("kills") or 0) + 2                              # two go down in the fever
     run(bot, snap, clock, 2)
     assert bot.stats["fever_kills"] == 2
+    snap["prompts"] = [{"type": 1, "button": 8, "pad": 0x200, "key": "zr", "ab": 0x7000}]   # a finisher's prompt
+    run(bot, snap, clock, 1)
+    snap["prompts"] = []
+    run(bot, snap, clock, 1)
+    assert bot.stats["finishers"] == 1
     late = {"slot": 9, "ptr": 0x9999, "pos": (0.0, 0.0, 180.0), "hp": 700, "hp_max": 700}
     snap["enemies"] = snap["enemies"] + [late]                                # one that was not flashed, on him
     run(bot, snap, clock, 1)
