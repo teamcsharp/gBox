@@ -6037,6 +6037,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
                               "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
+                              "refract_status",  # bounded local RE4 VR installation evidence; no setup or launch
                               "switch_mods",   # switch_mods: Switch builds as LayeredFS overlays (in place, no NSP copies)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib
