@@ -1704,6 +1704,10 @@ NADE_GROUND_MIN = 250.0
 # D-pad right at once, and any gun in hand ends it (not only the one he had; the knife, wheel index KNIFE_WHEEL, is
 # not a gun) - the fever's kicks and shots start then.
 KNIFE_WHEEL = 2
+# The release (operator 05:2x, still "lift their grenade but fail to throw it"): the game throws when ZR is let go
+# with ZL still held; ZL and ZR let go in the same tick called the throw off. ZR is released first and ZL kept
+# NADE_RELEASE_S (the flurry's throws, which kept ZL, were the ones that flew).
+NADE_RELEASE_S = 0.25
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
                                         # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
                                         # remote bomb)
@@ -3633,6 +3637,8 @@ class Bot:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
             n.update(phase="thrown", at=now)
         if n["phase"] == "thrown":
+            if now - n["at"] < NADE_RELEASE_S:                   # ZR let go, ZL still held: the throw goes now
+                return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade let go")
             if (n["kind"] == "flash" and now - n["since"] < FLASH_BURST_S and eq == n["index"]
                     and sum(1 for e in live if flat(e) <= FLASH_R) >= FLASH_N):
                 n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
