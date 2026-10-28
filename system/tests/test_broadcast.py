@@ -1065,3 +1065,92 @@ def test_a_pinned_pc_puts_its_mercmode_turn_on_air_never_a_warm_paused_game():
     rs[0]["mercmode"] = None                                   # no run marked (between turns): still never the warm one
     assert B.choose(pin, None, rs, current=None, now=0, watch_ttl_s=60, pc_match=match)[0] == "re4"
     assert B.choose({"mode": "auto"}, None, rs, current=None, now=0, watch_ttl_s=60)[0] == "re4"
+
+
+@pytest.mark.parametrize("selection", ["pc", "auto", "pinned_pc"])
+def test_machine_and_auto_feeds_follow_mercmode_turns_without_showing_warm_games(rig, selection):
+    from gbox.mercmode import WARM
+    from gbox.screensaver import STATE
+
+    hub, store, clock, session, frame, tick, _ = rig
+    session("spark-re5", "RE5")
+    clock.advance(1)
+    session("spark-re6", "RE6")
+    red, blue = jpg(color=(200, 0, 0)), jpg(color=(0, 0, 200))
+    frame("spark-re5", red)
+    frame("spark-re6", blue)
+    store.put(STATE, "lilspark", {"session_id": "spark-re5"})
+    store.put(WARM, "lilspark", {"re6": {"session_id": "spark-re6", "state": "ready"}})
+    feed = hub.attach("pc:lilspark" if selection == "pc" else "program")
+    if selection == "pinned_pc":
+        hub.set_program("pc", "lilspark")
+
+    tick()
+    assert (feed.sid, feed.read()) == ("spark-re5", red), "a newer warm capture is not gameplay"
+    store.put(STATE, "lilspark", {"session_id": "spark-re6"})
+    store.put(WARM, "lilspark", {"re5": {"session_id": "spark-re5", "state": "ready"}})
+    tick()
+    assert (feed.sid, feed.read()) == ("spark-re6", blue), "the previous turn must not remain on air when parked"
+
+    # During a handover there may only be warm sessions. Neither one's freshly captured paused screen is eligible.
+    store.put(STATE, "lilspark", {})
+    store.put(WARM, "lilspark", {name: {"session_id": "spark-" + name, "state": "ready"}
+                                for name in ("re5", "re6")})
+    tick()
+    assert feed.sid is None
+    assert feed.mode == "hold" and feed.read() == blue, "a short handover holds the last gameplay picture"
+    clock.advance(B.SWITCH_WAIT_S / 2)
+    frame("spark-re6", jpg(color=(0, 200, 0)))
+    tick()
+    assert feed.read() == blue, "the hold never reads a newly captured parked picture"
+    store.put(STATE, "lilspark", {"session_id": "spark-re5"})
+    store.put(WARM, "lilspark", {"re6": {"session_id": "spark-re6", "state": "ready"}})
+    frame("spark-re5", red)
+    tick()
+    assert (feed.sid, feed.mode, feed.read()) == ("spark-re5", "live", red), "a ready turn ends the hold immediately"
+    store.put(STATE, "lilspark", {})
+    store.put(WARM, "lilspark", {name: {"session_id": "spark-" + name, "state": "ready"}
+                                for name in ("re5", "re6")})
+    tick()
+    assert feed.mode == "hold" and feed.read() == red
+    clock.advance(B.SWITCH_WAIT_S + .1)
+    tick()
+    assert feed.mode == "slate" and feed.read() != red, "a handover that never finishes has a bounded hold"
+
+
+def test_auto_ignores_a_watched_or_current_session_that_has_become_warm():
+    rs = rows(("previous", "lilspark", True, True, 2), ("playing", "lilspark", False, True, 1))
+    rs[0]["mercmode"], rs[1]["mercmode"] = "warm", "run"
+    assert B.choose({"mode": "auto"}, {"session_id": "previous", "at": 99}, rs,
+                    current="previous", now=100, watch_ttl_s=60)[0] == "playing"
+    assert B.choose({"mode": "auto"}, None, rs[:1], current="previous", now=100,
+                    watch_ttl_s=60) == (None, "no game is running")
+
+
+def test_explicit_session_pin_can_still_show_a_warm_game():
+    rs = rows(("chosen", "lilspark", True, True, 2), ("playing", "lilspark", True, True, 1))
+    rs[0]["mercmode"], rs[1]["mercmode"] = "warm", "run"
+    assert B.choose({"mode": "session", "target": "chosen"}, None, rs,
+                    current="playing", now=100, watch_ttl_s=60) == ("chosen", "pinned")
+
+
+def test_feed_list_pc_summary_tracks_the_turn_and_never_names_a_warm_game(app):
+    from gbox.mercmode import WARM
+    from gbox.screensaver import STATE
+
+    store = app.state.store
+    store.put("session", "spark-warm", {"session_id": "spark-warm", "game_id": "re6", "title": "RE6",
+                                         "state": "running", "started": time.time() + 1})
+    store.put(STATE, "lilspark", {"session_id": "spark-a"})
+    store.put(WARM, "lilspark", {"re6": {"session_id": "spark-warm", "state": "ready"}})
+    c = TestClient(app)
+    frame = jpg()
+    body = len(frame).to_bytes(4, "big") + frame
+    assert c.post("/api/sessions/spark-warm/stream", content=body, headers=main(app)).status_code == 200
+    summary = c.get("/api/broadcast/feeds", headers=main(app)).json()["pcs"][0]
+    assert (summary["session_id"], summary["title"]) == ("spark-a", "Dead or Alive 2")
+    store.put(STATE, "lilspark", {})
+    store.put(WARM, "lilspark", {"re6": {"session_id": "spark-warm", "state": "ready"},
+                                "other": {"session_id": "spark-a", "state": "ready"}})
+    summary = c.get("/api/broadcast/feeds", headers=main(app)).json()["pcs"][0]
+    assert summary["session_id"] is None and summary["title"] is None

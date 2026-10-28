@@ -3905,18 +3905,18 @@ const compactController = GBoxCompactGame.create({
     const st = requested?.sid ? {} : await gboxState();
     const sid = requested?.sid || st.playing || st.session || EMB.sid;
     let session = sid ? await sessionById(sid) : null;
-    if (requested?.sid && (!session || session.state !== 'running')) {
+    if ((requested?.sid && (!session || session.state !== 'running')) || session?.warm) {
       const history = await gbox.api('/api/sessions?limit=200');
-      if (history.ok) session = GBoxSessionContinuity.resolve(requested.sid, history.data, session) || session;
+      if (history.ok) session = GBoxSessionContinuity.resolve(sid, history.data, session) || session;
     }
     // a "running" game whose PC is offline (#2870, gbox/server.py worker_online) is never put on screen: nothing would
     // come of it (operator 2026-10-26: i9-NUC's dead Mercenaries 3D session kept replacing the Spark's MercMode PiP)
     if (session && session.state === 'running' && session.worker_online === false)
       throw Object.assign(Error(`${sessionTitle(session) || 'This game'} runs on a PC that is offline; it was not opened. Your view was not changed.`), { offline: true });
-    if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
-    if (!session || session.state !== 'running') {
+    if ((!session || session.state !== 'running' || session.warm) && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
+    if (!session || session.state !== 'running' || session.warm) {
       const r = await liveSessions(0);
-      session = r.ok && r.data.filter(s => s.state === 'running' && s.worker_online !== false).sort((a,b) => (b.started || 0) - (a.started || 0))[0];
+      session = r.ok && r.data.filter(s => s.state === 'running' && !s.warm && s.worker_online !== false).sort((a,b) => (b.started || 0) - (a.started || 0))[0];
     }
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
@@ -3991,6 +3991,7 @@ const compactContinuity = GBoxSessionContinuity.create({
 // Otherwise the main window's view checks the first frame; a view not ready or silent for 5 s never holds the PiP on an
 // ended game (operator 2026-10-27, "stuck reconnecting" after a Spark restart): the stream's health decides then.
 async function compactFollow(session, from, { force = false } = {}) {
+  if (session?.warm) return; // a fresh paused frame is never the next MercMode turn
   const token = await gbox.token();
   const webview = document.querySelector('#wv'), sid = encodeURIComponent(session.session_id);
   const url = `${S.apiUrl}/api/sessions/${sid}/frame.jpg?token=${encodeURIComponent(token)}`;
