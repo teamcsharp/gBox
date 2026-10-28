@@ -876,6 +876,11 @@ def snapshot(m) -> dict:
                 except (ValueError, OSError):
                     continue
                 snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+        me = (snap.get("player") or {}).get("pos")
+        if me is not None:                                  # what the near ones are doing (their wind-ups)
+            for en in snap["enemies"]:
+                if en["hp"] > 0 and math.hypot(en["pos"][0] - me[0], en["pos"][2] - me[2]) <= ACTION_READ_R:
+                    en["action"] = unit_action(m, en["ptr"])
     gm = game_man(m, base)
     if gm:
         raw = m.rd(gm + GM_PHASE, 0x10)
@@ -1598,6 +1603,9 @@ NADE_UP_FROM = 11                       # from a gun, the wheel's up reaches the
 FLASH_N, FLASH_R, NADE_CLEAR_R = 4, 500.0, 200.0   # (3 flashed on every horde: MercMode 15:38-15:51, 30 flashes and
 FLASH_GAP_S = 12.0                      # 115 fever kicks in 12 min, kills a minute down a fifth; 17:42: 4+ within 5 m)
 FRAG_GAP_S, FEVER_BREAK_R = 10.0, 250.0
+SPAM_CLUSTERS, SPAM_S = 2, 3.0          # (operator 19:01: "able to spam them if needed") two clusters about: no gap
+BOMB_NADE_R = 800.0                     # the crowd for a bomb this near already: a grenade into it instead (no time to
+                                        # walk off a bomb); stats bomb_choices / nade_choices
 # The flash when they are on him, within FLASH_R (live 14:31: with "nobody within 3 m" none was ever thrown), no call-off
 # but a hold, no facing.
 # The bomb dropped while backing out of a crowd (BOMB_DROP_N within CC_BACK_R, him above BOMB_MIN_HP, BOMB_GAP_S since
@@ -1751,6 +1759,31 @@ BONUS_LOG_N = 12
 # sight for BLOCK_S (stats los_blocks). None in sight: walked toward by the nav mesh. stats wall_aim_s: the laser's dot
 # within WALL_AIM_R of the muzzle while zombies are about (the aim on a wall; target 0).
 SIGHT_S, LOS_PROBE_S, LOS_PROBE_ERR, WALL_AIM_R = 0.25, 0.3, math.radians(8), 150.0
+# Wind-ups (operator 19:25: "The bot should be able to tell who is transitioning into an attack animation and be able to
+# prioritize deactivating them with an attack"): each enemy within ACTION_READ_R has its action (+0x13F0) in the
+# snapshot. Live, MercMode 19:30 (Mining the Depths, 416 samples): the J'avo (uEm1000) threaten with a knife
+# (cEm1000ActIkakuKnife), attack one-handed (ActAtkOneHand / ...Dash) and walk with a gun raised (ActWalkGunL / R / B);
+# the zombies (uEm5000) start a grab with ActCatch (then ActNeckHangCS); hits put them in ActDmg*. A melee wind-up
+# within WINDUP_R, or a raised gun within RANGED_R, is the top target: the nearest of them before anyone else (the lock's
+# aimed magnum stops it; the kick and the prompts follow); two winding up within FLASH_R get the flash. stats
+# windup_seen (wind-ups begun), windup_interrupts (one in a wind-up hit into ActDmg*), hits_after_windup (his health
+# falling with one winding up within WINDUP_HIT_R).
+ACTION_READ_R, WINDUP_R, RANGED_R, WINDUP_HIT_R = 2000.0, 500.0, 1500.0, 250.0
+WINDUP_KEYS = ("Atk", "Attack", "Catch", "Ikaku", "Grab", "Bite", "Lunge", "Throw")
+RANGED_KEYS = ("WalkGun", "GunAim", "Shoot", "Shot", "Bow", "Rocket")
+
+
+def windup(e, me=None) -> str | None:
+    """'melee' / 'ranged' for one winding up an attack on him (by its action), else None."""
+    a = e.get("action") or ""
+    if not a or "Dmg" in a:
+        return None
+    d = math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) if me is not None else 0.0
+    if any(k in a for k in WINDUP_KEYS) and d <= WINDUP_R:
+        return "melee"
+    if any(k in a for k in RANGED_KEYS) and d <= RANGED_R:
+        return "ranged"
+    return None
 # Threats only (operator 19:09, a frame at low health aiming up at the ceiling with nothing there: "Aiming up for no reason
 # is how you get killed in this game ... if it's not in the vicinity, then she's basically risking her life"): an aim
 # target is one on his level (within AIM_DY) in sight, or a real vertical threat - one above him within CEILING_R, or a
@@ -1868,6 +1901,13 @@ class Bot:
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
         self.stats.setdefault("offscreen_skips", 0)
         self.stats.setdefault("wall_aim_s", 0.0)
+        for k in ("windup_seen", "windup_interrupts", "hits_after_windup", "grenade_throws", "spam_bursts",
+                  "flash_qtes", "bomb_choices", "nade_choices"):
+            self.stats.setdefault(k, 0)
+        for k in ("idle_s", "backtrack_m"):
+            self.stats.setdefault(k, 0.0)
+        self.windups: dict = {}                              # enemy -> when its wind-up began
+        self._wu_hp, self._run_d = None, None                # his health last tick; the bonus run's distance last tick
         for k in ("offlevel_skips", "whips"):
             self.stats.setdefault(k, 0)
         for k in ("up_aim_s", "survival_s", "spin_deg_s"):
@@ -2061,6 +2101,13 @@ class Bot:
         return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)) / math.pi)
 
     def _choose(self, p, yaw, live, now):
+        wound = [e for e in live if windup(e, p["pos"])]
+        if wound:                                                # about to attack him: stopped first
+            best = min(wound, key=lambda e: math.dist(p["pos"], e["pos"]))
+            if self.target != best.get("ptr", best.get("slot")):
+                self.target_at = now
+            self.target = best.get("ptr", best.get("slot"))
+            return best
         big = [e for e in live if (e.get("hp_max") or 0) >= BIG_HP and math.dist(p["pos"], e["pos"]) <= AIM_LOCK_R]
         locking = self._lock_ready(getattr(self, "_snap", {}) or {}, now)
         if big and locking:                                      # priority focus fire on the big ones
@@ -2249,6 +2296,16 @@ class Bot:
             self.stats["spin_deg_s"] = round(max(self.stats["spin_deg_s"], spin), 1)
         self._rot_prev = (now, rot) if isinstance(rot, (int, float)) else None
         hold = out.get("hold")
+        if (snap.get("mercenaries_phase") == PHASE_PLAYING and (p.get("hp") or 0) > 0 and not hold and "tap" not in out
+                and any((e.get("hp") or 0) > 0 for e in snap.get("enemies") or ())):
+            self.stats["idle_s"] = round(self.stats["idle_s"] + TICK_S, 2)   # nothing pressed with zombies about
+        bs = {b["ptr"]: b for b in snap.get("bonuses") or ()}
+        tb = bs.get(self.run_target) if self.stats.get("phase") == "bonus_run" else None
+        if tb is not None and p.get("pos"):
+            d = math.dist(p["pos"], tb["pos"])
+            if self._run_d is not None and self._run_d[0] == self.run_target and d > self._run_d[1] + 5.0:
+                self.stats["backtrack_m"] = round(self.stats["backtrack_m"] + (d - self._run_d[1]) / 100.0, 2)
+            self._run_d = (self.run_target, d)
         if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate"):
             return out
         boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
@@ -2330,6 +2387,7 @@ class Bot:
         self._quick_tick(p, snap, now)
         self._census_tick(p, snap, live)
         self._taunt_watch(snap, now)
+        self._windup_tick(p, snap, now)
         self._down_tick(p, snap, now)
         self._hazard_tick(p, live, flat, now)
         self._prompt_shown = self._prompt_book(p, snap, now)
@@ -2898,6 +2956,29 @@ class Bot:
             self.stats["hazard_s"] = round(self.stats["hazard_s"] + TICK_S, 2)
 
     # --- taunts -----------------------------------------------------------------------------------------------------
+    def _windup_tick(self, p, snap, now) -> None:
+        """Wind-ups begun (windup_seen), stopped by a hit (windup_interrupts), and his health falling with one winding up
+        close by (hits_after_windup)."""
+        me = p["pos"]
+        cur = {}
+        for e in snap.get("enemies") or ():
+            if (e.get("hp") or 0) <= 0:
+                continue
+            tid = e.get("ptr", e.get("slot"))
+            if windup(e, me):
+                cur[tid] = self.windups.get(tid, now)
+                if tid not in self.windups:
+                    self.stats["windup_seen"] += 1
+            elif tid in self.windups and "Dmg" in (e.get("action") or ""):
+                self.stats["windup_interrupts"] += 1         # hit out of it
+        hp = p.get("hp")
+        if isinstance(hp, int) and isinstance(self._wu_hp, int) and hp < self._wu_hp and any(
+                math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) <= WINDUP_HIT_R
+                for e in snap.get("enemies") or () if e.get("ptr", e.get("slot")) in self.windups):
+            self.stats["hits_after_windup"] += 1
+        self._wu_hp = hp if isinstance(hp, int) else self._wu_hp
+        self.windups = cur
+
     def _taunt_watch(self, snap, now) -> None:
         """The triggers: TAUNT_KILLS kills within TAUNT_KILLS_S, a blast's TAUNT_BLAST kills (bomb_kills / grenade_kills
         rising that much at once), a boss gone (one of BOSS_HP max health dead or freed); and a click's emotion seen."""
@@ -2994,6 +3075,7 @@ class Bot:
                 types.setdefault(str(q["type"]), [0, 0, q.get("key")])[1] += 1
                 if now - self.fever_until < 1.0 and not self.in_hold:
                     self.stats["finishers"] = self.stats.get("finishers", 0) + 1   # taken among the flashed ones
+                    self.stats["flash_qtes"] += 1
                 elif q.get("key") == "b" and not self.in_hold:
                     self.stats["climbs"] += 1
                 elif q.get("key") == "y":
@@ -3185,11 +3267,12 @@ class Bot:
             nades = p.get("nades") or {}
             group, kind = None, None
             near = [e for e in vis if flat(e) <= FLASH_R]
-            if (len(near) >= FLASH_N and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
+            winding = sum(1 for e in near if windup(e, p["pos"]) == "melee")
+            if ((len(near) >= FLASH_N or winding >= 2) and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0
                     and now - self.flash_last >= FLASH_GAP_S):
                 group, kind = near, "flash"
             elif (not NADES or any(flat(e) < NADE_START_R for e in live)   # (FLASH alone: no grenades)
-                  or now - self.frag_last < FRAG_GAP_S):
+                  or (now - self.frag_last < FRAG_GAP_S and self._clusters(vis, flat) < SPAM_CLUSTERS)):
                 return None
             else:
                 for e in vis:
@@ -3253,8 +3336,11 @@ class Bot:
                     self.fever_k = snap.get("kills")
                 self.flash_last = now
             else:
+                if now - self.frag_last < SPAM_S:
+                    self.stats["spam_bursts"] += 1               # one straight after another
                 self.frag_last = now
                 self.nade_kills = (snap.get("kills"), now)
+            self.stats["grenade_throws"] += 1
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "thrown":
             n.update(phase="back", at=now, steps=0)
@@ -3285,6 +3371,19 @@ class Bot:
         if isinstance(eq, int) and eq >= WEAPON_INDEXES:
             return "ddown" if eq < index else "dup"
         return "dup" if index >= NADE_UP_FROM else "ddown"
+
+    @staticmethod
+    def _clusters(vis, flat) -> int:
+        """Clusters of NADE_N within NADE_CLUSTER_R of one another NADE_MIN_R..NADE_MAX_R off (each zombie once)."""
+        left = [e for e in vis if NADE_MIN_R <= flat(e) <= NADE_MAX_R]
+        n = 0
+        while left:
+            e = left.pop(0)
+            group = [z for z in left if math.hypot(z["pos"][0] - e["pos"][0], z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R]
+            if len(group) + 1 >= NADE_N:
+                n += 1
+                left = [z for z in left if z not in group]
+        return n
 
     def _nade_done(self, n, now) -> None:
         log = self.stats.setdefault("nade_wheel", [])
@@ -3790,6 +3889,13 @@ class Bot:
         coming = sum(1 for e in live if BOMB_COMING_MIN_R <= flat(e) <= BOMB_STAND_R)
         if coming < BOMB_STAND_N and not self.bomb_drop:
             return None
+        nades = p.get("nades") or {}
+        if (not self.bomb_drop and NADES and min((flat(e) for e in live), default=1e9) < BOMB_NADE_R
+                and any((nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0 for k in ("frag", "fire"))):
+            self.stats["nade_choices"] += 1                      # they are already close: a grenade, not a bomb
+            self.frag_last = -1e9
+            return None
+        self.stats["bomb_choices"] += 1
         if self.bomb_drop:
             self.stats["bomb_drops"] += 1
         self.bomb_why = f"{crowd} on him: dropped as he backs out" if self.bomb_drop else f"{coming} coming at 5-12 m"
@@ -4178,6 +4284,8 @@ class RE6Switch(Driver):
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             st = re6_switch_mods.ORIG.get(id(ad)) or {}
             self.stats["recoil_x"] = st.get("magnum_speed", re6_switch_mods.MAGNUM_SPEED_X) if st.get("fire_rate") else 1.0
+            self.stats["throw_x"] = st.get("throw_speed", re6_switch_mods.THROW_SPEED_X) if st.get("fire_rate") else 1.0
+            self.stats["throw_fast"] = st.get("throw_fast", 0)
             self.stats["magnum_fast"] = st.get("magnum_fast", 0)
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")

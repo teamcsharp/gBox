@@ -1603,6 +1603,96 @@ def test_aiming_up_with_no_vertical_threat_is_counted():
     assert bot.stats["up_aim_s"] > 0
 
 
+def test_wind_ups_are_read_from_the_enemies_actions():
+    me = (0.0, 0.0, 0.0)
+    e = lambda a, z: {"pos": (0.0, 0.0, z), "action": a}
+    assert R.windup(e("cEm1000ActAtkOneHand", 300.0), me) == "melee"
+    assert R.windup(e("cEm5000ActCatch", 400.0), me) == "melee"
+    assert R.windup(e("cEm1000ActIkakuKnife", 900.0), me) is None            # too far for a melee wind-up
+    assert R.windup(e("cEm1000ActWalkGunL", 1200.0), me) == "ranged"
+    assert R.windup(e("cEm5000ActDmgDown", 200.0), me) is None and R.windup(e("cEm5000ActWalk", 200.0), me) is None
+    g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))
+    en = R.u64(g, R.u64(g, R.u64(g, BASE + R.S_ENEMY) + R.E_ARRAY))         # the first enemy
+    g.q(en + 0x13F0, g.obj("cEm5000ActCatch", 0x100))
+    assert R.snapshot(g)["enemies"][0]["action"] == "cEm5000ActCatch"
+
+
+def test_the_one_winding_up_is_stopped_first_and_counted():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 300.0, 700), (200.0, 0.0, 420.0, 700)))
+    snap["enemies"][0]["action"] = "cEm5000ActWalk"
+    snap["enemies"][1]["action"] = "cEm5000ActCatch"                         # the farther one reaches for him
+    run(bot, snap, clock, 3)
+    assert bot.target == snap["enemies"][1]["ptr"] and bot.stats["windup_seen"] == 1
+    snap["enemies"][1]["action"] = "cEm5000ActDmgDown"                       # shot out of it
+    run(bot, snap, clock, 1)
+    assert bot.stats["windup_interrupts"] == 1
+    snap["enemies"][1]["action"] = "cEm1000ActAtkOneHand"
+    snap["enemies"][1]["pos"] = (100.0, 0.0, 150.0)
+    run(bot, snap, clock, 1)
+    snap["player"]["hp"] -= 100                                               # it landed
+    run(bot, snap, clock, 1)
+    assert bot.stats["hits_after_windup"] == 1
+
+
+def test_two_winding_up_get_the_flash(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    two = ((0.0, 0.0, 400.0, 700), (150.0, 0.0, 420.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.melee_at = bot.qshot_at = clock[0] + 100
+    for e in snap["enemies"]:
+        e["action"] = "cEm1000ActAtkOneHandDash"
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 3)
+    assert bot.nade and bot.nade["kind"] == "flash"
+
+
+def test_grenades_spam_into_several_clusters_and_take_the_bombs_place_when_they_are_close(monkeypatch):
+    monkeypatch.setattr(R, "NADES", True)
+    two = ((0.0, 0.0, 700.0, 700), (100.0, 0.0, 760.0, 700), (-100.0, 0.0, 740.0, 700),
+           (700.0, 0.0, 300.0, 700), (760.0, 0.0, 380.0, 700), (740.0, 0.0, 220.0, 700))   # two clusters
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5)})
+    run(bot, snap, clock, 2)
+    snap["player"]["equipped"] = bot.nade["index"]
+    run(bot, snap, clock, int(R.NADE_AIM_S / 0.05) + 3)
+    snap["player"]["equipped"] = 0
+    run(bot, snap, clock, int(R.NADE_STEP_S / 0.05) + 3)
+    first = bot.stats["grenade_throws"]
+    clock[0] += R.NADE_GAP_S
+    run(bot, snap, clock, 2)
+    assert first == 1 and bot.nade is not None                                # straight into the next cluster
+    assert R.Bot._clusters([e for e in snap["enemies"]], lambda e: math.hypot(e["pos"][0], e["pos"][2])) == 2
+
+
+def test_throw_speed_runs_the_grenade_throw_twenty_times_faster(mods, monkeypatch):
+    monkeypatch.setattr(R, "QA_FAST", False)
+    g = round_guest()
+    ad = Adapter(g)
+    weapon_table(g)
+    p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)
+    g.f32(p + mods.UNIT_DELTA, 1.0)
+    g.put(p + R.P_SLOTS + 8, bytes([1, 9]) + struct.pack("<H", 0x113))       # the hand grenade, equipped
+    g.i32(p + R.P_EQUIPPED, 9)
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_weapon_fire", 0x100))
+    mods.run(ad, "fire_rate", multiplier=4, magnum=8, throw=16)
+    snap = R.snapshot(g)
+    assert snap["player"]["weapon_id"] == 0x13
+    mods.maintain(ad, snap, clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 20.0
+    g.q(p + mods.UNIT_ACTION, g.obj("cPlAction_pl_act_walk", 0x100))
+    mods.maintain(ad, R.snapshot(g), clock=lambda: 10.0)
+    assert struct.unpack("<f", g.rd(p + mods.UNIT_DELTA, 4))[0] == 1.0 and mods.ORIG[id(ad)]["throw_fast"] == 1
+
+
+def test_idle_seconds_count_nothing_pressed_with_zombies_about():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1500.0, 700),), cam_yaw=0.0))
+    bot._govern(snap, {"hold": ()}, clock[0] + 0.05)
+    bot._govern(snap, {"hold": ("lup",)}, clock[0] + 0.1)
+    assert bot.stats["idle_s"] == pytest.approx(R.TICK_S)
+
+
 def test_no_new_bomb_under_half_health():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700))
     bot, clock, snap = brain(round_guest(enemies=crowd, hp=400))
