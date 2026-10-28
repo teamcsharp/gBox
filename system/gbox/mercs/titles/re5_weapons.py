@@ -6,6 +6,8 @@ not claimed game limits or measured blast radii. A weapon preference never estab
 from dataclasses import dataclass
 import math
 
+from gbox.mercs import weapon_choice
+
 
 @dataclass(frozen=True)
 class Weapon:
@@ -142,13 +144,13 @@ def suitability(slot, snap, target):
         if not clearance(snap, target["pos"], weapon.clearance_cm):
             return -1000.0
         return 20.0
-    boss = (target.get("hp_max") or 0) >= 3000
+    boss = (target.get("hp_max") or 0) >= weapon_choice.BOSS_HP_MIN
     crowd = sum(1 for e in snap.get("enemies", ()) if (e.get("hp") or 0) > 0
-                and math.dist(target["pos"], e["pos"]) < 250) >= 3
-    score = {"handgun": 30, "automatic": 45, "shotgun": 55 if distance <= 800 else 15,
-             "rifle": 50 if distance >= 1200 else 25, "magnum": 60 if boss else 48}[family]
-    if family == "shotgun" and crowd and distance <= 800:
-        score += 10
+                and math.dist(target["pos"], e["pos"]) < weapon_choice.CROWD_RADIUS) >= weapon_choice.CROWD_COUNT
+    # The shared, title-agnostic scoring rule (one policy across RE4/RE5/RE6); the
+    # preferred-range penalty and loaded/clearance gates remain RE5-specific below.
+    score = weapon_choice.family_score(family, distance, boss, crowd)
+    score += weapon_choice.shotgun_crowd_bonus(family, crowd, distance)
     if distance > weapon.preferred_cm:
         score -= 10
     return score
