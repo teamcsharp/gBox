@@ -292,6 +292,13 @@ class DesktopBridge:
         return {'settings':M.settings(self.store,name),'history':history,
                 'preparation':M.host_preparation(self.store,worker)}
 
+    def scheduler_live(self,worker):
+        """This PC's own MercMode run, warm pool, next pick and the app's dispatch here, for the central's status (its
+        MercMode panel and every PiP following this PC). A separate snapshot field: an older central ignores it."""
+        from . import mercmode as M
+        saver=getattr(self.app.state,'autoplay_screensaver',None)
+        return M.live_snapshot(self.store,worker['name'],note=(getattr(saver,'notes',None) or {}).get(worker['name']))
+
     def install_demo_marker(self,command,job):
         marker=command.get('autoplay_on_launch')
         if not isinstance(marker,dict) or command.get('tool')!='launch_game':return False
@@ -455,7 +462,8 @@ class DesktopBridge:
                     sessions = self.sessions(worker)
                     self._central(client, 'POST', '/snapshot', json={'epoch': self.epoch, 'worker': worker,
                                   'sessions': sessions,'catalog':self.catalog_batch(),
-                                  'scheduler_owner':'local','mercmode':self.scheduler_snapshot(worker)})
+                                  'scheduler_owner':'local','mercmode':self.scheduler_snapshot(worker),
+                                  'mercmode_run':self.scheduler_live(worker)})
                     self.active_worker_id=worker['id']
                     self.state.update(connected=True, state='connected', last_connected=time.time(),
                                       worker_id=worker['id'], sessions=len(sessions), error=None)

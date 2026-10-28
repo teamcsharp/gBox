@@ -230,3 +230,74 @@ test('the desktop reads this PC\'s own scheduler for the PiP, read-only, whichev
  assert.match(page,/GBoxMercMode\.pipOwnRun\(host,/);
  assert.match(page,/!\(typeof mercPipHold === 'function' && mercPipHold\(COMPACT\.sid\)\)\) await compactRestore\(\)/);
 });
+// dispatch (operator 2026-10-27: "dispatch autoplay titles happening on different instance of gbox from gbox. So the first
+// request is to play mercenaries 3d on that computer pip mode"): a title, the PC it runs on, Start / Stop, its PiP there
+const m3d={title:'merc3d',name:'Resident Evil: The Mercenaries 3D'},re5={title:'re5',name:'Resident Evil 5'};
+const fleet={hosts:[
+ {name:'JAYBUILTFINALE',id:'jb',online:true,operator_pc:true,settings:{enabled:false},titles:[{...m3d,playable:true},{...re5,playable:true}]},
+ {name:'i9-NUC',id:'i9',online:true,settings:{enabled:false,rounds_per_title:4},titles:[{...m3d,playable:true},{...re5,playable:false,reason:'ROM access has not been verified on this PC'}]},
+ {name:'lilspark',id:'ls',online:true,settings:{enabled:true},titles:[{...m3d,playable:false,reason:'ROM access <none>'},{...re5,playable:true}],
+  current_run:{phase:'playing',session_id:'ls-re5',title:'Resident Evil 5',mercmode:{title:'re5'},mercmode_rounds:2}},
+ {name:'old-pc',id:'op',online:false,settings:{},titles:[{...m3d,playable:true}]}]};
+test('run on: only PCs that can play the title are selectable, the operator\'s own PC is never preselected',()=>{
+ const html=M.dispatchHTML(fleet,{title:'merc3d'});
+ assert.match(html,/<option value="i9-NUC" selected>i9-NUC<\/option>/);                       // first able PC, not JAYBUILTFINALE
+ assert.match(html,/<option value="JAYBUILTFINALE">JAYBUILTFINALE \(your PC\)<\/option>/);      // listed: the operator may choose it
+ assert.match(html,/<option value="lilspark" disabled>lilspark · ROM access &lt;none&gt;<\/option>/);
+ assert.match(html,/<option value="old-pc" disabled>old-pc · offline<\/option>/);
+ assert.match(html,/data-dispatch-pip checked/);assert.match(html,/data-dispatch-rounds min="1" max="20" value="4"/);
+ assert.doesNotMatch(html,/<pending>|<none>/);
+ // the operator chose their own PC: kept
+ assert.match(M.dispatchHTML(fleet,{title:'merc3d',host:'JAYBUILTFINALE'}),/<option value="JAYBUILTFINALE" selected>/);
+ // a title nobody can play: no PC, Start disabled, every reason shown
+ const none={hosts:[fleet.hosts[1]]};
+ const blocked=M.dispatchHTML(none,{title:'re5'});
+ assert.match(blocked,/data-dispatch-start disabled/);assert.match(blocked,/No online PC can play Resident Evil 5 now\. i9-NUC: ROM access has not been verified/);
+ assert.deepEqual(M.runOn(fleet,'merc3d').map(c=>[c.name,c.ok]),[['JAYBUILTFINALE',true],['i9-NUC',true],['lilspark',false],['old-pc',false]]);
+ assert.equal(M.titleChoices(fleet)[0].playable,true);
+});
+test('start dispatches one title to the chosen PC with its PiP; a PC playing another title switches; stop stops',async()=>{
+ const calls=[],api=async(path,body)=>{calls.push([path,body]);return {};};
+ assert.match(await M.dispatchAction(api,fleet,{action:'start',host:'i9-NUC',title:'merc3d',rounds:'7',pip:true}),/Starting Resident Evil: The Mercenaries 3D on i9-NUC; that PC shows it in its PiP/);
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'i9-NUC',command:'start',title:'merc3d',titles:['merc3d'],rounds_per_title:7,pip:true}]);
+ assert.match(await M.dispatchAction(api,{hosts:[{...fleet.hosts[2],titles:[{...m3d,playable:true},{...re5,playable:true}]}]},
+  {action:'start',host:'lilspark',title:'merc3d',rounds:1,pip:false}),/Switching to/);
+ assert.equal(calls.at(-1)[1].command,'switch');assert.equal(calls.at(-1)[1].pip,false);
+ assert.equal(await M.dispatchAction(api,fleet,{action:'stop',host:'lilspark'}),'MercMode stopped on lilspark.');
+ assert.deepEqual(calls.at(-1),['/api/mercmode',{host:'lilspark',command:'stop'}]);
+ const before=calls.length;
+ await assert.rejects(M.dispatchAction(api,fleet,{action:'start',host:'i9-NUC',title:'re5'}),/not playable on i9-NUC: ROM access/);
+ await assert.rejects(M.dispatchAction(api,fleet,{action:'start',host:'old-pc',title:'merc3d'}),/offline/);
+ await assert.rejects(M.dispatchAction(api,fleet,{action:'start',host:'',title:'merc3d'}),/Choose the PC/);
+ assert.equal(calls.length,before,'a refused dispatch sends nothing');
+});
+test('each PC shows its current run, the dispatch there and its scheduler, with Watch (my PiP) and Stop',async()=>{
+ const html=M.render(fleet,{watch:()=>{}});
+ assert.match(html,/<b>playing: Resident Evil 5<\/b> · 2 verified rounds/);
+ assert.match(html,/data-watch="ls-re5">Watch<\/button>/);
+ assert.equal((html.match(/data-watch=/g)||[]).length,1);                                       // only a live run
+ assert.doesNotMatch(M.render(fleet),/data-watch=/);                                            // no watcher, no button
+ const row=M.runHTML({name:'i9-NUC',settings:{enabled:true},scheduler_note:'waiting: a game is already running there',
+  dispatch:{command:'start',title:'merc3d',pip:true,applied:false}},true);
+ assert.match(row,/Nothing playing/);assert.match(row,/Dispatched: start Resident Evil: The Mercenaries 3D · PiP on this PC · on its way to this PC/);
+ assert.match(row,/Scheduler: waiting: a game is already running there/);assert.match(row,/data-host-stop/);
+ // clicks: Watch hands the session to the app's PiP; Run on's Start posts the dispatch; a PC's Stop stops it
+ const calls=[],watched=[],listeners=new Map();
+ const root={innerHTML:'',addEventListener:(n,fn)=>listeners.set(n,fn),removeEventListener:n=>listeners.delete(n),querySelector:()=>null};
+ const panel=M.mount({root,api:async(path,body)=>{calls.push([path,body]);return fleet;},watch:async(sid,host)=>watched.push([sid,host])});
+ await panel.ready;
+ const hostField={dataset:{host:'lilspark'}};
+ const watch={dataset:{watch:'ls-re5'},closest:sel=>sel==='button'?watch:sel==='[data-host]'?hostField:null,
+  hasAttribute:k=>k==='data-watch',getAttributeNames:()=>['data-watch']};
+ await listeners.get('click')({target:watch});
+ assert.deepEqual(watched,[['ls-re5','lilspark']]);
+ const form={querySelector:sel=>({'[data-dispatch-title]':{value:'merc3d'},'[data-dispatch-host]':{value:'i9-NUC'},
+  '[data-dispatch-rounds]':{value:'3'},'[data-dispatch-pip]':{checked:true}})[sel]};
+ const start={closest:sel=>sel==='button'?start:sel==='[data-dispatch]'?form:null,hasAttribute:k=>k==='data-dispatch-start',isConnected:true};
+ await listeners.get('click')({target:start});
+ assert.deepEqual(calls.find(c=>c[1]?.command),['/api/mercmode',{host:'i9-NUC',command:'start',title:'merc3d',titles:['merc3d'],rounds_per_title:3,pip:true}]);
+ const stop={closest:sel=>sel==='button'?stop:sel==='[data-host]'?hostField:null,hasAttribute:k=>k==='data-host-stop',getAttributeNames:()=>['data-host-stop'],isConnected:true};
+ await listeners.get('click')({target:stop});
+ assert.deepEqual(calls.filter(c=>c[1]?.command).at(-1),['/api/mercmode',{host:'lilspark',command:'stop'}]);
+ panel.dispose();assert.equal(listeners.size,0);
+});

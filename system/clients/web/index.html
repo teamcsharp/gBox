@@ -773,7 +773,9 @@ function mercsReviewerView(){ return '<details id="mercmode-web" class="pane" op
 mercsReviewerView.after = () => {
   MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'});
   const root = document.getElementById('mercmode-web-panel');
-  if (root && window.GBoxMercMode) GBoxMercMode.mount({ root, api: (path, body) => api(path, body) }).ready.catch(() => {});
+  // Watch: in the desktop app that PC's run goes into its PiP (GBOX: bridge), in a browser it opens in Sessions
+  if (root && window.GBoxMercMode) GBoxMercMode.mount({ root, api: (path, body) => api(path, body),
+    watch: sid => bnEmbedded() ? console.log("GBOX:" + JSON.stringify({ ev: "mercwatch", sid })) : show("Sessions", sid) }).ready.catch(() => {});
 };
 const HOME = { ctl: null, search: "" };
 const EXAM = { sid: null, cache: {}, viewer: null, mod: null, busy: new Map() };   // Examine 3D state (see examineView)
