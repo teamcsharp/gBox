@@ -738,7 +738,7 @@ def test_after_a_throw_the_game_picks_the_knife_and_the_gun_back_is_his_magnum(m
     snap["player"]["equipped"] = 2                                            # the game's pick after the throw: the knife
     acts = run(bot, snap, clock, int((R.NADE_STEP_S + R.NADE_THROW_S) / 0.05) + 3)
     assert {"tap": "dright"} in acts and bot.nade is not None                 # not his gun yet: on to it
-    snap["player"]["equipped"] = 0
+    snap["player"]["equipped"] = 1                                            # another gun of his: good enough, at once
     run(bot, snap, clock, 1)
     assert bot.nade is None and bot.stats["nade_wheel"][-1]["to"] == 9
 

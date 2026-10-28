@@ -1699,6 +1699,11 @@ NADE_THROW_S, FLASH_BURST_S, FLASH_BURST_AIM_S = 0.3, 3.0, 0.1
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
 # floor's height) while it is readied and thrown (stats nade_ground_locks).
 NADE_GROUND_MIN = 250.0
+# After the throw (operator 05:1x: "they spend too much time choosing which weapon to use. Have them choose any of the
+# weapons from their inventory and just begin using those on the enemies the second they flashbang them"): the first
+# D-pad right at once, and any gun in hand ends it (not only the one he had; the knife, wheel index KNIFE_WHEEL, is
+# not a gun) - the fever's kicks and shots start then.
+KNIFE_WHEEL = 2
 NADE_GAP_S, NADE_STEP_S, NADE_STEPS, NADE_AIM_S, NADE_FACE_S = 3.0, 0.45, 8, 0.3, 0.8   # the wheel's step pace is
                                         # the bomb's (live 13:43: at 0.2 s a step the wheel ran past the grenades to the
                                         # remote bomb)
@@ -3633,10 +3638,10 @@ class Bot:
                 n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
                 self.stats["flash_burst_throws"] = self.stats.get("flash_burst_throws", 0) + 1
                 return self._go("nade", "nade_flash", {"hold": ("zl",)}, "the flurry: another flash")
-            n.update(phase="back", at=now, steps=0)
+            n.update(phase="back", at=now - NADE_STEP_S, steps=0)
             return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the triggers let go")
         if n["phase"] == "back":
-            if eq is not None and (eq == n["gun"] if n["gun"] is not None else eq < WEAPON_INDEXES):   # his own gun
+            if isinstance(eq, int) and eq < WEAPON_INDEXES and eq != KNIFE_WHEEL:   # any gun of his: on with the fight
                 self._nade_done(n, now)
                 return None
             if n["steps"] >= NADE_STEPS:
