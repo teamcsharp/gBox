@@ -38,9 +38,9 @@ def bot():
     return b, clock
 
 
-def test_running_into_a_wall_stops_the_push_and_steps_back_then_takes_his_trail():
+def test_running_into_a_wall_stops_forward_and_only_counts_an_observed_escape():
     b, clock = bot()
-    b._trail = [(-10.0, (-600.0, 0.0, 0.0))]                       # where he came from: 6 m to his right-hand side
+    b._trail = [(-10.0, (-600.0, 0.0, 0.0))]                       # a distant point alone cannot verify a straight corridor
     statue = at(1500, 0)
     act = b.tick(snap(bonuses=[statue]))
     assert "lup" in act["hold"]
@@ -48,13 +48,14 @@ def test_running_into_a_wall_stops_the_push_and_steps_back_then_takes_his_trail(
         clock[0] = 0.08 * k
         act = b.tick(snap(bonuses=[statue]))
     assert b.stats["wall_hits"] == 1 and "lup" not in act["hold"] and "ldown" in act["hold"]   # the step back
-    assert len(b._walls) == 1 and b.stats["wall_push_s"] <= 0.1
+    assert len(b._walls) == 1 and b.stats["wall_push_s"] <= R.WALL_WINDOW_S + .1
     clock[0] = 0.75
     act = b.tick(snap(bonuses=[statue]))
-    assert "lup" in act["hold"] and abs(math.degrees(b._wall_rec["head"]) - (-90)) < 1   # the open way: his trail
-    clock[0] = 1.5
-    b.tick(snap(pos=(-300.0, 0.0, 0.0), bonuses=[statue]))
+    assert "lup" not in act["hold"] and b.stats["wall_recoveries"] == 0
+    clock[0] = .83
+    b.tick(snap(pos=(0.0, 0.0, -25.0), bonuses=[statue]))
     assert b.stats["wall_recoveries"] == 1
+    assert b._bonus is None and b._bonus_block[900] > clock[0], "the failed bonus cannot immediately request the same wall"
 
 
 def test_no_trail_known_back_the_way_he_came():
@@ -104,3 +105,159 @@ def test_no_stick_in_the_boosted_shot_nor_just_after_it():
     assert out["hold"] == ()                                      # still in the tail
     out = b._shot_tail({"hold": ("lup",)}, {"player": {"motion": 0}}, 10.0 + R.SHOT_TAIL_S + 0.01)
     assert out["hold"] == ("lup",) and b.stats["shot_tail_drops"] == 2
+
+
+def test_recovery_faces_its_observed_return_segment_before_any_forward_input(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(5):
+        clock[0] = k * .08
+        b.tick(snap(pos=(-80. + k * 20., 0., 0.)))
+    for k in range(5, 11):
+        clock[0] = k * .08
+        act = b.tick(snap())
+    assert b.stats["wall_hits"] == 1
+    assert "lup" not in act["hold"], "forward while still facing the wall repeats the collision"
+    assert {"rleft", "rright"} & set(act["hold"])
+
+
+def test_a_recovery_that_never_moves_is_not_counted_successful(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(50):
+        clock[0] = k * .08
+        b.tick(snap())
+    assert b.stats["wall_recoveries"] == 0
+
+
+@pytest.mark.parametrize("doing,hold", [("prompt", ("y",)), ("held", ("a",)), ("heal", ()),
+                                       ("quick_turn", ("ldown", "b")), ("fire", ("zl", "zr"))])
+def test_recovery_cannot_add_movement_to_priority_actions(doing, hold):
+    b, clock = bot()
+    b._wall_start(snap()["player"], 0., preempt=False)
+    b.doing = doing
+    assert b._wall_gov({"hold": hold}, snap(), .1) == {"hold": hold}
+
+
+def test_shot_tail_suppressed_forward_commands_cannot_teach_a_wall(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(12):
+        clock[0] = k * .08
+        s = snap()
+        s["player"]["motion"] = R.MOTION_SHOT
+        assert "lup" not in b.tick(s)["hold"]
+    assert b.stats["wall_hits"] == 0 and not b._walls
+
+
+def test_recovery_uses_no_forward_guess_when_the_only_trail_is_on_another_floor(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    b._trail = [(0., (-600., 500., 0.))]
+    for k in range(13):
+        clock[0] = k * .08
+        act = b.tick(snap())
+        if b.stats["wall_hits"]:
+            assert "lup" not in act["hold"]
+
+
+def test_observed_heading_unlocks_only_the_recorded_short_return_segment(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(5):
+        clock[0] = k * .08
+        b.tick(snap(pos=(-80. + k * 20., 0., 0.)))
+    for k in range(5, 11):
+        clock[0] = k * .08
+        b.tick(snap())
+    clock[0] += .08
+    act = b.tick(snap(rot=-math.pi / 2))
+    assert "lup" in act["hold"] and b._wall_rec["target"] == (-20., 0., 0.)
+    clock[0] += .08
+    act = b.tick(snap(pos=(-20., 0., 0.), rot=-math.pi / 2))
+    assert "lup" not in act["hold"] and b.stats["wall_recoveries"] == 1
+
+
+def test_combat_interruptions_do_not_consume_the_recovery_timer(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(7):
+        clock[0] = k * .08
+        b.tick(snap())
+    assert b._wall_rec is not None
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("zl", "zr")})
+    clock[0] += .08
+    assert b.tick(snap())["hold"] == ("zl", "zr") and b._wall_rec is None
+    clock[0] += 4.
+    b.tick(snap())
+    assert b.stats["wall_recoveries"] == 0 and b.stats.get("wall_recovery_failures", 0) == 0
+
+
+def test_retry_turn_finishes_at_its_fixed_heading(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(R, "HEADING_GOV", False)
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    for k in range(32):
+        clock[0] = k * .08
+        b.tick(snap())
+    assert b.stats.get("wall_recovery_failures") == 1
+    # Another wall is known in the return direction; cooldown must stop at its
+    # fixed recovery heading, not ask for a fresh 180-degree turn each tick.
+    b.wall_memory(0., 0., math.pi)
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup", "rright")})
+    clock[0] += .08
+    act = b.tick(snap(rot=math.pi))
+    assert not {"lup", "rleft", "rright"} & set(act["hold"])
+
+
+def test_return_follows_small_observed_corner_segments_without_a_diagonal_shortcut(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    points = [(-10., 0., -10.), (-5., 0., -10.), (0., 0., -10.), (0., 0., -5.), (0., 0., 0.)]
+    for k, point in enumerate(points):
+        clock[0] = k * .08
+        b.tick(snap(pos=point))
+    for k in range(5, 12):
+        clock[0] = k * .08
+        b.tick(snap())
+    assert b._wall_rec["target"] == (0., 0., -5.)
+    clock[0] += .08
+    b.tick(snap(pos=(0., 0., -5.), rot=math.pi))
+    assert b._wall_rec["target"] == (0., 0., -10.)
+
+
+def test_recovery_consumes_overshot_breadcrumbs_without_turning_back(monkeypatch):
+    b, clock = bot()
+    monkeypatch.setattr(b, "_tick", lambda s, now: {"hold": ("lup",)})
+    points = [(0., 0., -20.), (0., 0., -15.), (0., 0., -10.), (0., 0., -5.), (0., 0., 0.)]
+    for k, point in enumerate(points):
+        clock[0] = k * .08
+        b.tick(snap(pos=point))
+    for k in range(5, 12):
+        clock[0] = k * .08
+        b.tick(snap())
+    clock[0] += .08
+    act = b.tick(snap(pos=(0., 0., -8.), rot=math.pi))
+    assert b._wall_rec["target"] == (0., 0., -10.)
+    assert "lup" in act["hold"] and not {"rleft", "rright"} & set(act["hold"])
+    clock[0] += .08
+    act = b.tick(snap(pos=(0., 0., -16.), rot=math.pi))
+    assert b._wall_rec["target"] == (0., 0., -20.)
+    assert "lup" in act["hold"] and not {"rleft", "rright"} & set(act["hold"])
+    clock[0] += .08
+    act = b.tick(snap(pos=(0., 0., -24.), rot=math.pi))
+    assert b._wall_rec is None and b.stats["wall_recoveries"] == 1
+    assert "lup" not in act["hold"]
+
+
+def test_passing_a_corner_preserves_the_next_turn_and_rejects_large_lateral_displacement(monkeypatch):
+    from gbox.mercs.titles import re5_switch_wall as W
+    b, clock = bot()
+    W._state(b)["trail"] = [(-10., 0., -10.), (-5., 0., -10.), (0., 0., -10.), (0., 0., -5.), (0., 0., 0.)]
+    b._wall_start(snap()["player"], 0., preempt=False)
+    act = W._recover(b, {"hold": ("lup",)}, snap(pos=(0., 0., -12.), rot=math.pi)["player"], .1, R)
+    assert b._wall_rec["target"] == (-5., 0., -10.)
+    assert "lup" not in act["hold"] and {"rleft", "rright"} & set(act["hold"])
+    target = b._wall_rec["target"]
+    W._recover(b, {"hold": ("lup",)}, snap(pos=(-8., 0., -30.), rot=-math.pi / 2)["player"], .2, R)
+    assert b._wall_rec["target"] == target, "crossing a target plane far outside its segment does not consume it"
