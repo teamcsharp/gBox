@@ -2554,6 +2554,10 @@ class Bot:
                     self._grab_swap(p, now)
                     self.hold_bomb_out = bool((p.get("bomb") or {}).get("out"))
                 self.in_hold = True
+                shown = self._held_prompt(now)                   # the game's own prompt in the hold: its button
+                if shown is not None:
+                    self.hold_pressed = True
+                    return shown
                 if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
                     self._gun_down()                         # the game's auto QTE: nothing pressed for a while
                     self.still = None
@@ -2587,6 +2591,26 @@ class Bot:
         if set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}:
             self.move_at = now
         return act
+
+    def _held_prompt(self, now) -> dict | None:
+        """In a hold, whatever button the game's prompt shows, pressed and let go tick by tick (a mash, and a timing
+        ring's press inside its window), the stick round for a stick prompt (operator 2026-10-28, a J'avo's knife ring
+        failed: "I need the bot able to complete every QTE event"; the hold returned before the prompt reader, so only
+        B and the stick were ever tried). stats held_prompt_presses. None: no prompt shown."""
+        keys = [q.get("key") for q in (getattr(self, "_prompt_shown", None) or []) if q.get("key")]
+        if not keys:
+            return None
+        self.wiggle += 1
+        self.stats["held_prompt_presses"] = self.stats.get("held_prompt_presses", 0) + 1
+        if "stick" in keys:
+            return self._go("held", "held_prompt", {"hold": tuple(k for k in WIGGLE[self.wiggle % len(WIGGLE)] if k != "b")},
+                            "held: the prompt's stick, round")
+        buttons = tuple(sorted(set(keys)))
+        if self.wiggle % 2:
+            for k in buttons:
+                self._prompt_pressed(k, now)                     # (prompts_taken counts it as the prompt's press)
+        return self._go("held", "held_prompt", {"hold": buttons if self.wiggle % 2 else ()},
+                        f"held: the prompt's {'+'.join(buttons).upper()}, mashed")
 
     def _grab_swap(self, p, now) -> None:
         """A grab: a random loaded shotgun or magnum other than the gun in hand, switched to once he is free."""
