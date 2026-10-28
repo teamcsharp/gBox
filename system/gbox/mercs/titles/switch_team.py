@@ -426,29 +426,40 @@ class CoopDriver(Driver):
                 "active_players": rows, "reason": reason}
 
 
+LOBBY_JOIN_GAP_S, LOBBY_JOIN_MAX = 6.0, 3   # RE6's split lobby: Player 2's + this far apart, at most this often a visit
+
+
 class MenuPartner:
-    """Player 2's own presses between rounds: on the character select, A every MENU_GAP_S (a 0.3 s press) so Player 2
-    takes its character once Player 1 has; nothing anywhere else (Player 1 drives the shared menus). TEAMMATE waits
-    `after_s` on the select first, so the operator picks before the bot."""
+    """Player 2's own presses between rounds; Player 1 drives the shared menus. RE6's split lobby ("Press -/+ to join",
+    live 2026-10-27): Player 2's + to join, again after LOBBY_JOIN_GAP_S at most LOBBY_JOIN_MAX times a visit. A
+    character select: A every MENU_GAP_S. Each a 0.3 s press. TEAMMATE waits `after_s` on the screen first, so the
+    operator picks before the bot."""
 
     def __init__(self, send2, clock=time.monotonic, *, after_s: float = 0.0, sleep=time.sleep):
         self.send2, self.clock, self.after_s, self.sleep = send2, clock, after_s, sleep
-        self._since, self._last = None, -1e9
+        self._since, self._last, self._where, self._joins = None, -1e9, None, 0
         self.presses = 0
 
     def step(self, scr: dict) -> bool:
         now = self.clock()
-        if (scr or {}).get("where") != "select_player":
-            self._since = None
+        where = (scr or {}).get("where")
+        if where not in ("select_player", "split_lobby"):
+            self._since, self._where = None, None
             return False
-        if self._since is None:
-            self._since = now
-        if now - self._since < self.after_s or now - self._last < MENU_GAP_S:
-            return False
+        if where != self._where:
+            self._since, self._where, self._joins = now, where, 0
+        if where == "split_lobby":
+            if self._joins >= LOBBY_JOIN_MAX or now - self._since < self.after_s or now - self._last < LOBBY_JOIN_GAP_S:
+                return False
+            key, self._joins = "plus", self._joins + 1
+        else:
+            if now - self._since < self.after_s or now - self._last < MENU_GAP_S:
+                return False
+            key = "a"
         self._last = now
-        self.send2([{"key": "a", "down": True, "player": 2}])
+        self.send2([{"key": key, "down": True, "player": 2}])
         self.sleep(MENU_PRESS_S)
-        self.send2([{"key": "a", "down": False, "player": 2}])
+        self.send2([{"key": key, "down": False, "player": 2}])
         self.presses += 1
         return True
 

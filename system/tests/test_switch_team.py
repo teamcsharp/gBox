@@ -337,3 +337,31 @@ def test_player_two_takes_its_character_after_player_one():
     assert sent == [[{"key": "a", "down": True, "player": 2}], [{"key": "a", "down": False, "player": 2}]]
     clock[0] = 3.0
     assert not mp.step({"where": "select_player"})              # one press per MENU_GAP_S
+
+
+def test_re6_split_lobby_reads_as_the_lobby_only_in_a_split_screen_session():
+    # live 2026-10-27 (run 1): the split lobby left only the title unit among the known ones, and read as "title"
+    g = T6.menu_guest("uIdTitle00")
+    g.put(R6.ui_units(g)["uIdTitle00"] + R6.TITLE_MENU_OPEN, bytes([1]))
+    assert R6.screen(g)["where"] == "title"                        # solo: the title, as always
+    g.mercs_split_screen = True
+    scr = R6.screen(g)
+    assert scr["where"] == "split_lobby" and R6.step(scr) == "a"   # A starts the game once Player 2 has joined
+    other = T6.menu_guest("uIdTitle00", mode=R6.MODE_MERCENARIES)  # not No Mercy: a real title
+    other.put(R6.ui_units(other)["uIdTitle00"] + R6.TITLE_MENU_OPEN, bytes([1]))
+    other.mercs_split_screen = True
+    assert R6.screen(other)["where"] == "title"
+
+
+def test_player_two_joins_the_split_lobby_with_plus_a_few_times_at_most():
+    sent, clock = [], [0.0]
+    mp = S.MenuPartner(sent.append, clock=lambda: clock[0], sleep=lambda s: None)
+    for t in range(0, 40, 2):
+        clock[0] = float(t)
+        mp.step({"where": "split_lobby"})
+    downs = [rows[0]["key"] for rows in sent if rows[0]["down"]]
+    assert downs == ["plus"] * S.LOBBY_JOIN_MAX and all(rows[0]["player"] == 2 for rows in sent)
+    clock[0] = 50.0
+    mp.step({"where": "loading"})
+    clock[0] = 60.0
+    assert mp.step({"where": "split_lobby"})                      # a new visit: Player 2 may join again

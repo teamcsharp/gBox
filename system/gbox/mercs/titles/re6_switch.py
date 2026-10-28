@@ -216,7 +216,7 @@ def continue_target() -> int:
 
 BOOT_KEY = "a"                          # a screen RAM can't name out of a round (PRESS ANY BUTTON)
 STEPS = {"results": "plus", "alert_leaderboard": "b", "alert_ok": "a", "mercs_wrong_mode": "b", "press_any_button": "a",
-         "alert": "b"}
+         "alert": "b", "split_lobby": "a"}     # split_lobby: A starts the game (only once Player 2 has joined on its pad)
 MENU_HANDOFF = ("results", "alert_ok", "alert_leaderboard", "alert_wait", "alert", "select_stage", "select_player",
                 "dead")
 CURSORED = {"main_menu": ("dup", "ddown"), "play_game": ("dup", "ddown"), "extra_content": ("dup", "ddown"),
@@ -655,6 +655,11 @@ def screen(m, merc=None, now: float | None = None) -> dict:
             where, cursor, target = "play_game", _i32(m, ui["uIdStartUp01"] + MENU_CURSOR), PLAY_EXTRA_CONTENT
         elif "uIdStartUp00" in ui:
             where, cursor, target = "main_menu", _i32(m, ui["uIdStartUp00"] + MENU_CURSOR), MAIN_PLAY_GAME
+        elif "uIdTitle00" in ui and getattr(m, "mercs_split_screen", False) is True                 and snap.get("mercenaries_mode") == "no_mercy":
+            # split screen's lobby (a live run 2026-10-27, real frames): after the stage select, "THE MERCENARIES NO
+            # MERCY · <stage>", Player 1 joined, Player 2's slot "Press -/+ to join", A starts the game. Its own unit is
+            # not named yet; the title unit stays listed under it, and a real title never has the No Mercy mode set
+            where = "split_lobby"
         elif "uIdTitle00" in ui:
             ready = m.rd(ui["uIdTitle00"] + TITLE_MENU_OPEN, 1)[0] == 1
             if ready:
