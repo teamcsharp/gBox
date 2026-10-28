@@ -1290,6 +1290,8 @@ def test_the_bonus_run_walks_the_nav_mesh_way_round():
     assert "rleft" in acts[0]["hold"] and "lup" in acts[0]["hold"]           # toward +x (east) first, not north
     bot.ram = lambda addr, pitch, yaw: True                                   # with the lock's writer: the yaw written
     snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.1, "yaw": 0.0}
+    for b in snap["bonuses"]:
+        bot.bonus_unseen[b["ptr"]] = 1e9                                      # out of sight: walked to, not shot
     acts = run(bot, snap, clock, 1)
     assert acts[0]["hold"] == ("lup",)
 
@@ -1420,7 +1422,7 @@ def test_each_stage_keeps_its_lessons_once_a_round(tmp_path):
     clock = [0.0]
     bot = R.Bot(stats={}, clock=lambda: clock[0], learn_dir=tmp_path)
     snap = R.snapshot(g)
-    snap["navmesh"] = R.NavMesh(*u_mesh(), name="soft\stage\s1218\s1218")
+    snap["navmesh"] = R.NavMesh(*u_mesh(), name=r"soft\stage\s1218\s1218")
     bot.held = lambda p, now: False
     snap["kills"] = 12
     run(bot, snap, clock, 5)
@@ -1430,6 +1432,51 @@ def test_each_stage_keeps_its_lessons_once_a_round(tmp_path):
     run(bot, snap, clock, 1)
     book = json.loads((tmp_path / "stages" / "s1218.json").read_text())
     assert book["visits"] == 2 and book["best_kills"] == 12
+
+
+def test_a_yellow_in_sight_is_shot_through_the_lock_and_one_out_of_sight_walked_to():
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
+    u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1500.0))            # 15 m ahead
+    bot, clock, snap, writes = lock_brain(())
+    R._BONUS.update(base=None)                                                # (the bonus cache: this guest's pieces)
+    snap.update(R.snapshot(g))
+    snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.BONUS_H, 1500.0), "up": True}   # the dot on it
+    acts = run(bot, snap, clock, 8)
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["bonus_shots"] >= 1 and writes
+    assert all("lup" not in a.get("hold", ()) for a in acts)                  # shot from here, not walked to
+    snap["bonuses"] = []
+    run(bot, snap, clock, 1)
+    assert bot.stats["yellows_taken"] == 1 and u
+    R._BONUS.update(base=None)
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
+    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1500.0))
+    bot, clock, snap, writes = lock_brain(())
+    R._BONUS.update(base=None)                                                # (the bonus cache: this guest's pieces)
+    snap.update(R.snapshot(g))
+    snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.BONUS_H, 400.0), "up": True}    # a wall at 4 m
+    acts = run(bot, snap, clock, int(R.BONUS_SEE_S / 0.05) + 4)
+    assert bot.stats["bonus_unseen"] == 1 and bot.stats["bonus_shots"] == 0 and "lup" in acts[-1]["hold"]
+
+
+def test_greens_wait_for_the_match_and_save_a_running_out_combo():
+    g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
+    bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 0.0, 1200.0), cls="uSm5924")
+    bot, clock, snap, writes = lock_brain(())
+    R._BONUS.update(base=None)                                                # (the bonus cache: this guest's pieces)
+    snap.update(R.snapshot(g))
+    snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
+    snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.BONUS_H, 1200.0), "up": True}
+    snap.update(combo=6, combo_timer=10.0)
+    run(bot, snap, clock, 4)
+    assert bot.stats["phase"] == "match" and bot.stats["bonus_shots"] == 0    # a green waits while the combo is fine
+    snap["combo_timer"] = 2.0                                                 # running out
+    acts = run(bot, snap, clock, 6)
+    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["bonus_shots"] >= 1
+    snap["bonuses"] = []
+    run(bot, snap, clock, 1)
+    assert bot.stats["greens_taken"] == 1 and bot.stats["combo_saves"] == 1
 
 
 def test_no_new_bomb_under_half_health():

@@ -1714,6 +1714,15 @@ PROMPT_SPOTS_FILE, PROMPT_SPOTS_N, PROMPT_SAVE_S = "re6_prompt_spots.json", 200,
 BONUS_RUN = True
 BONUS_MELEE_R, BONUS_MELEE_CONE, BONUS_MELEE_GAP_S, BONUS_BLOCK_R = 150.0, math.radians(30), 0.45, 300.0
 BONUS_WALK_S, BONUS_HIT_S = 25.0, 4.0
+# Shooting them (operator 18:31, a frame of Ada by a green capsule: "these objects are able to be shot. These green ones
+# turn on combo time. The yellow ones are for time bonuses ... You can melee them or you can shoot them from afar"):
+# with the aim lock the bonus run's yellow (time) bonus is locked onto (its centre BONUS_H up) from up to BONUS_SHOOT_R
+# and shot while the laser's ray runs through it (not ending short of it); one the ray never reaches within BONUS_SEE_S
+# is out of sight for BONUS_UNSEEN_S - walked to by the nav mesh, broken by the attack at arm's length. The yellows are
+# phase 1's; a green (combo) bonus is kept for the match: shot (or kicked) when the combo window runs under
+# COMBO_LOW_S with one in sight, nobody within BONUS_BLOCK_R (stats combo_saves). stats yellows_taken, greens_taken,
+# bonus_shots, bonus_melee, bonus_unseen.
+BONUS_SHOOT_R, BONUS_SEE_S, BONUS_UNSEEN_S = 2500.0, 1.5, 8.0
 HANG_S = 6.0
 # "Look at the bot" (gbox.mercs.bot_look, as RE5 Switch): stats look (the last trigger pulls and what they did, the
 # decisions and why, the idle streak among zombies) and the round counters below, whose per-round amounts the engine
@@ -1764,6 +1773,7 @@ class Bot:
                   "moving_shots", "long_shot_kills", "quick_attacks", "quick_attack_kills", "fever_quick_shots",
                   "pursuits", "pursuit_kills", "pursuit_lapses", "pursuit_stuck", "census_alive", "census_floor",
                   "taunts", "taunts_seen", "taunt_multi", "taunt_blast", "taunt_boss", "bonus_melee",
+                  "yellows_taken", "greens_taken", "combo_saves", "bonus_unseen",
                   "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "aimed_shots",
                   "aimed_hits", "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths",
                   "hazard_marks", "sweeps", "targets_shot"):
@@ -1772,6 +1782,8 @@ class Bot:
                   "cc_vs_aimed"):
             self.stats.setdefault(k, 0.0)
         self.run_target, self.run_since, self.run_hit_since = None, -1e9, None   # the bonus run's bonus; since when
+        self.bonus_unseen: dict = {}                         # bonus -> until when it counts as out of sight
+        self.bshot = None                                    # the bonus being shot: (ptr, since)
         for k in ("prompts_seen", "prompts_taken", "climbs", "pickups"):
             self.stats.setdefault(k, 0)
         self.prompt_live: dict = {}                          # shown prompts: {(ab, type): {since, pressed, at}}
@@ -2269,6 +2281,9 @@ class Bot:
         ran = self._bonus_run(p, live, flat, snap, now)          # phase 1: the bonuses first
         if ran is not None:
             return ran
+        saved = self._green_save(p, live, flat, snap, now)       # the match: a green bonus for a running-out combo
+        if saved is not None:
+            return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
         if self.hazard is not None and not live:                 # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
@@ -2543,14 +2558,14 @@ class Bot:
             self.lock_w = None
             self.stats["lock_fallbacks"] += 1
 
-    def _lock(self, p, tgt, snap, now) -> bool:
-        """The player camera's yaw onto the camera's line through tgt's aim point, its pitch from that line's slope plus
-        the learned correction; written and read back. True: written this tick (no camera keys)."""
+    def _lock(self, p, tgt, snap, now, point=None) -> bool:
+        """The player camera's yaw onto the camera's line through tgt's aim point (or point), its pitch from that line's
+        slope plus the learned correction; written and read back. True: written this tick (no camera keys)."""
         if tgt is None or not self._lock_ready(snap, now):
             self.lock_w = None
             return False
         ac, cam = snap["aim_cam"], snap["camera"]
-        pt, c = aim_point(tgt, p["pos"]), cam["pos"]
+        pt, c = (point if point is not None else aim_point(tgt, p["pos"])), cam["pos"]
         want_yaw = heading(pt[0] - c[0], pt[2] - c[2])
         want_pitch = math.atan2(pt[1] - c[1], max(math.hypot(pt[0] - c[0], pt[2] - c[2]), 1.0))
         tid = tgt.get("ptr", tgt.get("slot"))
@@ -3261,6 +3276,10 @@ class Bot:
             r["taken"][ptr] = kind
             self.stats["bonuses_taken"] += 1
             self.stats[kind + "_bonuses_taken"] += 1
+            self.stats["yellows_taken" if kind == "time" else "greens_taken"] += 1
+            if kind == "combo" and isinstance(snap.get("combo"), int) and snap["combo"] > 0 \
+                    and (snap.get("combo_timer") or 0) < COMBO_LOW_S + 1.0:
+                self.stats["combo_saves"] += 1
             if ptr == self.bonus_target:
                 self.bonus_target = None
         r["seen"].update(cur)
@@ -3286,7 +3305,7 @@ class Bot:
         waiting, every waiting one left for now, a zombie in the way, or the bomb / an item in hand)."""
         bs = snap.get("bonuses")
         px, py, pz = p["pos"]
-        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now]
+        cands = [b for b in bs or () if self.bonus_skip.get(b["ptr"], -1e9) <= now and b.get("kind") != "combo"]
         self.stats["phase"] = "bonus_run" if cands else "match"
         eq = p.get("equipped")
         if (not BONUS_RUN or not cands or (p.get("bomb") or {}).get("out") or self.nade is not None
@@ -3308,6 +3327,16 @@ class Bot:
             if not cands:
                 self.run_target = None
                 return None
+        seen = [c for c in cands if self.bonus_unseen.get(c["ptr"], -1e9) <= now
+                and math.dist(p["pos"], c["pos"]) <= BONUS_SHOOT_R]
+        if self._lock_ready(snap, now) and (b is None or b not in seen) and seen:
+            b = min(seen, key=lambda c: math.dist(p["pos"], c["pos"]))   # one to shoot from here first
+            if b["ptr"] != self.run_target:
+                self.run_target, self.run_since, self.run_hit_since = b["ptr"], now, None
+        if b is not None and b in seen and reach(b) > BONUS_MELEE_R and self._lock_ready(snap, now):
+            shot = self._bonus_shoot(p, b, snap, now)
+            if shot is not None:
+                return shot
         if b is None:
             mesh = snap.get("navmesh") if NAV_WALK else None
             walk = {}
@@ -3355,6 +3384,64 @@ class Bot:
         walk = ("lup",) if abs(err) < math.radians(60) or d > 3 * BONUS_MELEE_R else ()
         return self._go("bonus", "bonus_run", {"hold": walk + side + self._turn(err, TURN_TOL)},
                         f"the bonus run: a {kind} bonus at {d:.0f} cm ({len(cands)} waiting)")
+
+    def _bonus_shoot(self, p, b, snap, now) -> dict | None:
+        """A bonus shot through the lock: its centre locked onto, the gun up, the trigger down while the laser's ray runs
+        through it (not ending short); the ray short of it BONUS_SEE_S on: out of sight for BONUS_UNSEEN_S (None: walk)."""
+        pt = (b["pos"][0], b["pos"][1] + BONUS_H, b["pos"][2])
+        if self.bshot is None or self.bshot[0] != b["ptr"]:
+            self.bshot = (b["ptr"], now)
+        if self.aim_since is None:
+            self.aim_since, self._raise_t, self.reraised = now, None, False
+        locked = self._lock(p, {"ptr": ("bonus", b["ptr"]), "pos": b["pos"]}, snap, now, point=pt)
+        if not locked:
+            return None
+        lz = snap.get("laser")
+        on = short = False
+        if lz is not None and lz.get("up") and now - self.aim_since >= READY_S:
+            origin, dot = tuple(lz["from"]), tuple(lz["at"])
+            on = near_ray(origin, dot, pt, BONUS_HIT_R)
+            short = math.dist(origin, dot) < math.dist(origin, pt) - FIRE_SLACK
+        if not on and now - self.bshot[1] > BONUS_SEE_S and (short or lz is None or not lz.get("up")):
+            self.bonus_unseen[b["ptr"]] = now + BONUS_UNSEEN_S   # the ray never reached it: walk there
+            self.stats["bonus_unseen"] += 1
+            self.bshot = None
+            self._gun_down()
+            return None
+        fire = set()
+        if on:
+            self.fire_down = True if p.get("weapon_id") in AUTO_IDS else not self.fire_down
+            if self.fire_down:
+                fire = {"zr"}
+                self.stats["bonus_shots"] += 1
+        else:
+            self.fire_down = False
+        kind = b["kind"]
+        return self._go("bonus", "bonus_fire" if fire else "bonus_aim", {"hold": tuple(sorted({"zl"} | fire))},
+                        f"a {kind} bonus at {math.dist(p['pos'], b['pos']):.0f} cm: "
+                        + ("shooting it (lock)" if on else "the lock on it"))
+
+    def _green_save(self, p, live, flat, snap, now) -> dict | None:
+        """The match: the combo window under COMBO_LOW_S, a green (combo) bonus in sight within BONUS_SHOOT_R and nobody
+        within BONUS_BLOCK_R - shot through the lock (kicked when it is right there)."""
+        combo, ct = snap.get("combo"), snap.get("combo_timer")
+        if not (isinstance(combo, int) and combo > 0 and isinstance(ct, (int, float)) and ct < COMBO_LOW_S):
+            return None
+        eq = p.get("equipped")
+        if ((p.get("bomb") or {}).get("out") or self.nade is not None or (isinstance(eq, int) and eq >= WEAPON_INDEXES)
+                or any(flat(e) <= BONUS_BLOCK_R for e in live) or not self._lock_ready(snap, now)):
+            return None
+        greens = [b for b in snap.get("bonuses") or () if b.get("kind") == "combo"
+                  and self.bonus_unseen.get(b["ptr"], -1e9) <= now and math.dist(p["pos"], b["pos"]) <= BONUS_SHOOT_R]
+        if not greens:
+            return None
+        b = min(greens, key=lambda c: math.dist(p["pos"], c["pos"]))
+        px, _, pz = p["pos"]
+        if math.hypot(b["pos"][0] - px, b["pos"][2] - pz) <= BONUS_MELEE_R and now - self.melee_at >= BONUS_MELEE_GAP_S:
+            self.melee_at = now
+            self.stats["bonus_melee"] += 1
+            return self._go("bonus", "bonus_melee", {"tap": "zr"}, "a green bonus for the combo: the attack")
+        return self._bonus_shoot(p, b, snap, now)
 
     def _bonus(self, p, live, flat, snap, now) -> dict | None:
         """A time / combo bonus in reach with nobody near (BONUS_SAFE_R): turned to, the gun up, the aim's ray closed
