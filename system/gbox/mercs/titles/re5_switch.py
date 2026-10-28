@@ -498,18 +498,32 @@ CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted")
 # is fought first. Phase 2, the match, once none is left or reachable. Counters: bonuses_seen, bonuses_taken (a statue
 # gone from the scan), bonuses_left, bonus_time_s (the round's time when the last went), time_gained (the clock's jumps
 # of BONUS_JUMP_S or more), bonus_runs, knife_swings, bonus_detours.
-BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S =     True, 0x1BD6D58, 1.0, 200.0, 250.0, 12.0, 20.0
+BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S = \
+    True, 0x1BD6D58, 1.0, 300.0, 250.0, 12.0, 20.0       # (a Majini within 3 m: the fight takes over the run - 21:0x)
 KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 90.0, math.radians(12), 0.35, 3.0, 2
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
 BONUS_COUNTERS = ("bonuses_seen", "bonuses_taken", "time_gained", "bonus_runs", "knife_swings", "bonus_detours",
                   "bonus_jumps")
+# The wall governor (operator 21:0x: "the bot running with his face in the wall as if he doesn't actually see ... that's
+# how you end up surrounded by zombies"; live 20:59-21:01: bonus_detours 4-7 a round, the run straight at a statue
+# through walls, then a side step for a fixed time). Over all movement, whatever decided it (the bonus run, the pursuit,
+# a relocation, the hunt, a walk), before the calm camera and the heading governor: the left stick forward (not aiming)
+# with under WALL_MIN_CM of progress in WALL_WINDOW_S is a wall - the push stops at once (wall_hits; wall_push_s the
+# seconds pushed without progress, target ~0), the spot and heading remembered for the round (a push there again on that
+# heading stops before it starts: wall_preempts), and a recovery: WALL_BACK_S stepping back, then WALL_GO_S along the most
+# open known way - toward a point of his own trail (where he has walked is open) the nearest to the way he was going
+# but at least WALL_TURN_DEG off it and off every wall remembered near, else back the way he came (wall_recoveries).
+# The routing (worktree re5-guided-runs) feeds it its own blocked spots through wall_memory().
+WALL_GOV, WALL_WINDOW_S, WALL_MIN_CM, WALL_BACK_S, WALL_GO_S = True, 0.35, 15.0, 0.25, 0.8
+WALL_MEM_R, WALL_MEM_DEG, WALL_TURN_DEG, WALL_MEM_KEPT = 120.0, 35.0, 50.0, 48
+WALL_COUNTERS = ("wall_hits", "wall_recoveries", "wall_push_s", "wall_preempts")
 # through_shots: pulls started on the "ray through him" gate alone (the dot on geometry just past him: 64 hits, 26
 # misses in the 15:26 turn), counted to decide whether that gate stays.
 AIMFAULT_COUNTERS = ("wall_shots", "wall_blocks", "wall_aim_s", "frozen_dots", "behind_threat_s", "aim_away_s", "aim_away_fixes",
                      "confirmed_shots", "long_shot_kills", "through_shots") + CLOSE_COUNTERS + RAMPAGE_COUNTERS \
-    + BONUS_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
+    + BONUS_COUNTERS + WALL_COUNTERS + CALM_COUNTERS + SWEEP_COUNTERS + RELOC_COUNTERS + CAM_COUNTERS + GOV_COUNTERS + PROMPT_COUNTERS \
     + AIM_LOCK_COUNTERS + WINDUP_COUNTERS
 # Combo pursuit (operator 15:25: "the Ghidra hook make him aware of the locations of any and all enemies in the level ...
 # so that in the event that he's unable to locate enemies to defeat, in order to maintain the combo, he knows where
@@ -1315,6 +1329,9 @@ class Bot:
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s", "hits_taken"):
             self.stats.setdefault(k, 0)
         self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
+        self._walls: list = []                           # the round's walls: (x, z, heading) (WALL_GOV)
+        self._wall_hist: list = []                       # (when, position) while the stick pushes forward
+        self._wall_push, self._wall_rec, self._wgov_t = None, None, None
         self.stats.setdefault("crowd_max", 0)
         for kind in FAULT_KINDS:
             self.stats.setdefault("ex_" + kind, "")
@@ -2439,6 +2456,79 @@ class Bot:
         want = math.atan2(chest[1] - (py + MUZZLE_H), max(dist, 1.0))
         return yaw, (want - st["pitch"]) if st.get("pitch") is not None else None
 
+    def wall_memory(self, x: float, z: float, heading_rad: float) -> None:
+        """A blocked spot and the heading into it (the routing's own, or the governor's): no push there again."""
+        self._walls = (self._walls + [(float(x), float(z), float(heading_rad))])[-WALL_MEM_KEPT:]
+
+    def _open_heading(self, p, push_head: float) -> float:
+        """The most open known way from here: toward a point of his trail (open: he walked it) nearest to the way he was
+        going yet at least WALL_TURN_DEG off it and off every wall remembered near; else back the way he came."""
+        px, _, pz = p["pos"]
+        near_walls = [w[2] for w in self._walls if math.hypot(w[0] - px, w[1] - pz) <= 2 * WALL_MEM_R] + [push_head]
+        best = None
+        for _t, pos in getattr(self, "_trail", []) or []:
+            d = math.hypot(pos[0] - px, pos[2] - pz)
+            if not 150.0 <= d <= 1500.0:
+                continue
+            h = heading(pos[0] - px, pos[2] - pz)
+            if any(abs(wrap(h - w)) < math.radians(WALL_TURN_DEG) for w in near_walls):
+                continue
+            off = abs(wrap(h - push_head))
+            if best is None or off < best[0]:
+                best = (off, h)
+        return best[1] if best is not None else wrap(push_head + math.pi)
+
+    def _wall_start(self, p, now, preempt: bool) -> None:
+        head = p["rot"]
+        if not preempt:
+            self.wall_memory(p["pos"][0], p["pos"][2], head)
+        self._wall_rec = {"back_until": now + WALL_BACK_S, "until": now + WALL_BACK_S + WALL_GO_S,
+                          "head": self._open_heading(p, head)}
+        self._wall_push, self._wall_hist = None, []
+
+    def _wall_gov(self, act, snap, now) -> dict:
+        """WALL_GOV: no push into a wall - this tick's movement keys, a recovery's while one runs."""
+        p, hold = snap.get("player"), act.get("hold")
+        dt = 0.0 if self._wgov_t is None else max(0.0, min(now - self._wgov_t, LOOK_STEP_MAX_S))
+        self._wgov_t = now
+        if not WALL_GOV or not p or hold is None or self.doing in ("held", "dead", "quick_turn") or "zl" in hold:
+            self._wall_push, self._wall_hist = None, []
+            return act
+        rec = self._wall_rec
+        if rec is not None:
+            if now < rec["until"]:                       # the recovery: a step back, then the open way
+                keys = [k for k in hold if k not in ("lup", "ldown", "lleft", "lright", "b", "rleft", "rright")]
+                if now < rec["back_until"]:
+                    keys.append("ldown")
+                else:
+                    keys += ["lup"] + list(self._turn(wrap(rec["head"] - p["rot"]), TURN_TOL))
+                self.doing = "walk"
+                self.why = f"wall: the open way {math.degrees(wrap(rec['head'] - p['rot'])):+.0f} deg"
+                return {**act, "hold": tuple(keys)}
+            self._wall_rec = None
+            self.stats["wall_recoveries"] += 1
+        if "lup" not in hold:
+            self._wall_push, self._wall_hist = None, []
+            return act
+        px, _, pz = p["pos"]
+        if any(math.hypot(w[0] - px, w[1] - pz) <= WALL_MEM_R and abs(wrap(p["rot"] - w[2])) <= math.radians(WALL_MEM_DEG)
+               for w in self._walls):
+            self.stats["wall_preempts"] += 1             # a wall met here on this heading: not again
+            self._wall_start(p, now, preempt=True)
+            return self._wall_gov(act, snap, now)
+        self._wall_push = self._wall_push or now
+        self._wall_hist = [x for x in self._wall_hist if now - x[0] <= 1.0] + [(now, p["pos"])]
+        old = next((x for x in self._wall_hist if now - x[0] >= WALL_WINDOW_S), None)
+        if old is not None:
+            moved = math.hypot(px - old[1][0], pz - old[1][2])
+            if moved < WALL_MIN_CM:
+                self.stats["wall_push_s"] = round(self.stats["wall_push_s"] + dt, 2)
+                self.stats["wall_hits"] += 1
+                self._example("wall_shot", p, now, f"pushing into a wall: {moved:.0f} cm in {WALL_WINDOW_S:.2f} s")
+                self._wall_start(p, now, preempt=False)
+                return self._wall_gov(act, snap, now)
+        return act
+
     def _governor(self, act, snap, now) -> dict:
         """HEADING_GOV: his heading turned faster than HEADING_GOV_DEG_S since the last tick: no turn stick this tick
         (a grab's escape left alone)."""
@@ -2674,6 +2764,7 @@ class Bot:
             self.stats["ex_" + kind] = ""
         self._bonus_known, self._bonus_block, self._bonus, self._timer_prev = {}, {}, None, None
         self._bonus_seen_round = False
+        self._walls, self._wall_hist, self._wall_push, self._wall_rec = [], [], None, None
         self._sweep_st, self._reloc, self._dwell, self._clears, self._dwells = None, None, None, [], []
         self._trail, self._dead_ends = [], []
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
@@ -2827,6 +2918,7 @@ class Bot:
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
+        act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         self._count_sticks(act, now)
