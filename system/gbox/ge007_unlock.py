@@ -21,13 +21,14 @@ ROM_SHA1 = 'abe01e4aeb033b6c0836819f549c791b26cfde83'   # 007 - GoldenEye (USA),
 SECTION, KEY, VALUE = 'Game', 'AllUnlocked', '1'
 SOURCE_EVIDENCE = {
     'repo': 'https://github.com/jkdansereau/goldeneye-pc-port',
-    'commit': 'fda76b69837e6c5aae436e0d3e798989e49b06d2',
+    'commit': '5b86a9bbeba89508a0c7d6b797361b7454ceda20',
     'files': {
         'port/src/video.c': 'configRegisterInt("Game.AllUnlocked", &portAllUnlocked, 0, 1)',
         'src/game/file2.c': 'fileGetIsCheatUnlocked and stage-status queries return unlocked/COMPLETED when portAllUnlocked',
         'port/src/main.c': 'portAllUnlockedApply seeds debug_enable_all_levels_flag + debug_007_unlock_flag (LEFTOVERDEBUG builds only)',
         'src/game/front.c': 'unlock_stage_select/unlock_chars/unlock_game_length/unlock_weapon_select/unlock_handicap/'
                             'unlock_control_style/unlock_aim_sight default TRUE; 007 mode gated by fileIs007ModeUnlocked || debug flag',
+        'data/ge007.ini': 'ships with [Game] AllUnlocked = 0; gBox overlays =1',
     },
 }
 CATEGORIES = ('characters', 'hidden_characters', 'modes', 'levels', 'stages', 'costumes', 'items', 'extras')
@@ -45,9 +46,11 @@ INVENTORY = {
                'evidence': 'cheat unlock checks compare against COMPLETED; cheat ids CHEAT_MAGNUM..CHEAT_GOLD_PP7'}],
     'extras': [{'name': 'cheats (CHEAT_UNLOCK_* set)', 'status': 'unlocked_by_override', 'evidence': 'fileGetIsCheatUnlocked'}],
 }
-NEXT_STEP = ('Boot the port on i9-NUC/Spark (idle, 2% audio, isolated data dir) with Game.AllUnlocked=1, select every '
-             'solo level, 007 mode, every cheat and MP arena/character; record results; test 2nd launch + rollback; '
-             'resolve the unknown entries (MP roster, costumes) via REA/Ghidra on the owned build.')
+NEXT_STEP = ('Boot the port on i9-NUC/Spark (idle, 2% audio, isolated data dir) with Game.AllUnlocked=1; in mission '
+             'select confirm every solo level selectable at every difficulty and 007 mode present; toggle F10 '
+             "'All unlocked' off and confirm mission select re-locks (proof the ini setting is live, not just pinned); "
+             'relaunch to confirm the key persists; rollback restores AllUnlocked=0; resolve MP roster/costumes via '
+             'REA/Ghidra on the owned build.')
 
 
 def profile() -> dict:
