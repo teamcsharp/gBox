@@ -338,6 +338,8 @@ def routes(app,store,config,auth,*,claim,accept_result,watch,take_input,rpc_resu
                    take_input=take_input,rpc_result=rpc_result,
                    boundary=lambda body,parent:app.state.autoplay_screensaver.round_boundary(body,parent))
     app.state.federation=fed
+    from .desktop_admin import routes as admin_routes
+    admin_routes(app,fed,config,auth)
 
     def key(request):return request.headers.get('x-gbox-federation-key','')
 

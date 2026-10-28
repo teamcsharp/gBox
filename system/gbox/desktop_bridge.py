@@ -188,7 +188,8 @@ class DesktopBridge:
         self._boundary_endpoint = endpoint(app, '/api/autoplay-screensaver/round-boundary')
 
     def status(self):
-        with self.lock:return dict(self.state)
+        with self.lock:return dict(self.state,epoch=self.epoch,installation=self.authority,
+                                   worker_id=self.active_worker_id)
 
     def configure(self, remote, token):
         remote = origin(remote)
@@ -208,6 +209,16 @@ class DesktopBridge:
             except FileExistsError:pass
             self.secret = file.read_text(encoding='ascii').strip()
             if not re.fullmatch(r'[a-f0-9]{64}', self.secret):raise ValueError('Invalid local federation identity')
+            # The opt-in recovery supervisor needs the existing paired channel
+            # after this desktop exits. DPAPI keeps it bound to this Windows user.
+            from .registry import HOST_OS
+            if HOST_OS == 'windows':
+                try:
+                    from .desktop_supervisor import save_pairing
+                    saved=save_pairing(self.cfg,self.authority,self.remote,self.secret,self.token)
+                    self.state['admin_pairing']='saved' if saved else 'not_enabled'
+                except (ImportError,OSError,ValueError,RuntimeError):
+                    self.state['admin_pairing']='unavailable'
             self.submissions = Submissions(self.store, self._submit, self.authority, remote,
                                            resolve=self.resolve_input,admit=self.admit_command)
             self.state.update(configured=True, remote=remote, state='connecting')
