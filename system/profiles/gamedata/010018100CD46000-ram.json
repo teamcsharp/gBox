@@ -67,6 +67,12 @@
         {
           "on": true
         }
+      ],
+      [
+        "flash_loadout",
+        {
+          "on": true
+        }
       ]
     ],
     "vocab": {

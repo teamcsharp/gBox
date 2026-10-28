@@ -40,7 +40,7 @@ import time
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
-from . import re5_switch_aim, re5_switch_prompt
+from . import re5_switch_aim, re5_switch_nades, re5_switch_prompt
 
 TITLE_ID = "010018100CD46000"
 MAP_ID = TITLE_ID                       # profiles/gamedata/010018100CD46000-ram.json
@@ -727,12 +727,16 @@ LOOK_FOE_R, LOOK_MOVE_CM_S, LOOK_PUBLISH_S, LOOK_STEP_MAX_S = 400.0, 40.0, 0.25,
 RAY_RANGE_CM, FLOOR_DY, PULL_SHORT_S = 4900.0, 25.0, 0.2
 DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_turn", "backoff", "burst_backoff",
           "escape", "heal", "held", "reload", "walk", "no_foes", "dead", "reposition", "mine", "rearm", "sweep",
-          "relocate", "prompt")
+          "relocate", "prompt", "flash")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
 MINES, MINE_EVERY_S = True, 9.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
+# Flash grenades when overwhelmed (re5_switch_nades; operator 2026-10-27 21:0x / 21:1x: "throw flash grenades and then
+# drop mines and leave the area"): the flash, a bomb at his heels once clear of them, out toward open ground or the next
+# statue, the gun back; re5_switch_mods.flash_loadout gives every loadout the flash on a D-pad grid
+NADES = True
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
 # same mind that we trained on the ps5"); False: the Switch's own fight below (_decide), kept until the PS3 core has
 # proven itself in MercMode turns
@@ -1467,6 +1471,7 @@ class Bot:
         self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
         from .re5_switch_mines import Mines
         self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
+        self.nades = re5_switch_nades.Nades(self.stats) if NADES else None
         self._gun_back_at = -1e9                  # the last D-pad tap for the gun with a throwable in hand
         self.stats.setdefault("gun_backs", 0)
         self._fire_t = None                       # the last tick the fighter held the trigger (trigger_s)
@@ -2867,6 +2872,8 @@ class Bot:
         self._wu, self._windup_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
+        if self.nades is not None:
+            self.nades.new_round(now)
         tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
         self._dead_ends = tuning.dead_ends(MAP_ID)       # the stage's learned dead ends, before this round's own
 
@@ -3116,6 +3123,10 @@ class Bot:
         act = self._heal(p, snap, live, flat, now)
         if act is not None:
             self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+        elif self.nades is not None and (act := self.nades.tick(p, snap, live, now, busy=self.escape is not None,
+                                                                  winding=self._winding, mines=self.mines)) is not None:
+            self._gun_down()                                 # (its own ZL / ZR: the fight raises afresh after it)
+            self.doing, self.why = "flash", str(self.stats.get("flash_status") or "")
         elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
                                                                   busy=self.escape is not None)) is not None:
             self._gun_down()
@@ -3811,6 +3822,8 @@ class Bot:
             self._track_combo(snap)
         if self.mines is not None and p:
             self.mines.watch(p, snap, now)                   # the bombs and their blasts, whatever ran this tick
+        if self.nades is not None and p:
+            self.nades.watch(p, snap, now)                   # his health falling, the melees on the flashed ones
         if p and doing != "none":
             pos = p["pos"]
             moving = bool(self._look_at is not None and dt and
@@ -3872,7 +3885,7 @@ class RE5Switch(Driver):
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
-                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
+                      "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + re5_switch_nades.COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS \
         + AIM_COUNTERS + tuple("t_" + d for d in DOINGS)
 
