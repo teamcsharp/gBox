@@ -22,7 +22,7 @@
     { op: "turn_speed", label: "Turning and aiming speed", field: "turn_speed_x", multiplier: 3, min: 0.25, max: 50, step: 0.25 },
     // on / off only: the worker retains the operator's seconds per kill
     { op: "kill_time", label: "Time added per kill", field: "kill_time_on", min: 0.1, max: 30, step: 0.1,
-      note: status => `${String(status?.kill_time_range || "10").includes("-") ? "Random " : ""}${status?.kill_time_range || "10"} s per kill` },
+      note: status => `${String(status?.kill_time_range || "5").includes("-") ? "Random " : ""}${status?.kill_time_range || "5"} s per kill` },
   ];
   const UNAVAILABLE = [
     { op: "aimbot", label: "Aimbot" },
@@ -76,7 +76,7 @@
   }
   function amount(status, definition) {
     const raw = readAmount(status, definition);
-    return typeof raw === "number" && Number.isFinite(raw) ? raw : definition.op === "kill_time" ? 10 : definition.multiplier;
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : definition.op === "kill_time" ? 5 : definition.multiplier;
   }
   function readAmount(status, definition) {
     if (definition.op !== "kill_time") return status?.[definition.field];

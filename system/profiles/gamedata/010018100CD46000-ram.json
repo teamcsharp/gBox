@@ -47,6 +47,19 @@
         }
       ],
       [
+        "infinite_spray",
+        {
+          "on": true
+        }
+      ],
+      [
+        "kill_time",
+        {
+          "on": true,
+          "seconds": 5
+        }
+      ],
+      [
         "loadout",
         {
           "on": true,

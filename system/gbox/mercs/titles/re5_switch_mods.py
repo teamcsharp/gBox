@@ -747,7 +747,7 @@ GS_LAST_BONUS, GS_SHOW_BONUS = 0x950, 0x954
 HOURGLASS_VT, HOURGLASS_PARENT_VT, HG_SECONDS, HOURGLASS_VALUES = 0x1BD6D58, 0x1BD71D8, 0x1EB8, (30, 60, 90)
 MIN_CLOCK_S = 1.0                 # no write leaves the countdown at or under this: 0 is the round's end
 ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
-KILL_TIME_S, KILL_TIME_MAX_S = 10.0, 30.0
+KILL_TIME_S, KILL_TIME_MAX_S = 5.0, 30.0   # operator 2026-10-27 21:5x: "five seconds added to the timer" per kill
 
 
 def _u64(g: RE5Switch, a: int) -> int:

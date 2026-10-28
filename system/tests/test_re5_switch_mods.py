@@ -170,6 +170,8 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
     assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}],
                                                ["mine_loadout", {"on": True}],
+                                               ["infinite_spray", {"on": True}],                 # sprays never run out
+                                               ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
                                                ["loadout", {"on": True, "each_round": True,      # never a pistol
                                                             "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x16", "0x15",
                                                                         "0x1D"]}],

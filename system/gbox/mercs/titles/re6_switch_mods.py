@@ -209,7 +209,7 @@ LOADOUTS = (                                             # this build's entries:
 # kill_time / add_time / set_time write the clock the same way (RE5's names: gbox.re5_mods_tool).
 GM_CLOCK = 0x4698
 CLOCK_MAX, CLOCK_MIN = 5999.99, 1.0                      # no write leaves the countdown at or under CLOCK_MIN
-KILL_TIME_S, KILL_TIME_MAX_S = 3.0, 30.0                 # operator 2026-10-27: "add 3 seconds to the clock per kill"
+KILL_TIME_S, KILL_TIME_MAX_S = 5.0, 30.0                 # operator 2026-10-27 21:5x: "five seconds added to the timer" per kill
 ADD_TIME_RANGE, SET_TIME_RANGE = (-3600, 3600), (1, 3600)
 # The game's own action-button struggle (Ghidra): sActionButton [main+0x28E7AF0] (constructor main+0x31B350) holds a
 # ButtonMgr per player at +0x50 + 0x398 * index (its update main+0x31D4F0), each with two ButtonUnits of 0x98 at +0x248

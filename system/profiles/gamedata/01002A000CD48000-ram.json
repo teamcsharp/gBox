@@ -90,7 +90,7 @@
         "kill_time",
         {
           "on": true,
-          "seconds": 3
+          "seconds": 5
         }
       ],
       [
