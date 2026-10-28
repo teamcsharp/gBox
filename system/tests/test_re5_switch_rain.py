@@ -102,7 +102,7 @@ def test_a_close_majini_twenty_degrees_off_gets_the_gun_without_a_body_turn(dist
 
 def test_one_in_front_is_fought_before_a_cheaper_one_beside():
     b, clock = bot()
-    ahead, beside = at(900, 5), at(500, 60)                          # nobody within THREAT_NEAR_R: in front first
+    ahead, beside = at(900, 5), at(550, 60)                          # nobody within 5 m (NEAR_FOCUS): in front first
     b.tick(snap([(ahead, 800), (beside, 800)]))
     assert b.target == 10 and b.doing == "raise"                     # ahead: the gun comes up, no turn
 
@@ -111,7 +111,7 @@ def test_one_beside_within_4_m_is_fought_before_one_ahead_beyond_8_m():
     b, clock = bot()
     ahead, beside = at(900, 5), at(300, 60)                          # operator 14:30: the immediate threat first
     b.tick(snap([(ahead, 800), (beside, 800)]))
-    assert b.target == 11 and b.stats["threat_ticks"] == 1 and b.stats["threat_caps"] == 1
+    assert b.target == 11 and b.stats["threat_ticks"] == 1           # (the far one out of the pool: NEAR_FOCUS)
 
 
 def test_a_ray_ending_on_the_majini_at_the_muzzle_fires():

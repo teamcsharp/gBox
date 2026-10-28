@@ -112,3 +112,23 @@ def test_the_aim_pitch_is_held_on_a_chest():
     clock[0] = 0.3
     act = b.tick(snap(CROWD, dot=chest(CROWD[0]), motion=26, inv=held, aim_pitch=-0.4))
     assert "rdown" in act["hold"] and "rup" not in act["hold"]
+
+
+def test_with_one_near_a_far_one_is_never_the_target_nor_shot():
+    b, clock = bot()
+    near, far = at(400, 50), at(1200, 0)                           # the far one straight ahead, the near one aside
+    b.tick(snap([near, far]))
+    assert b.target == 10
+    clock[0] = 0.3
+    act = b.tick(snap([near, far], dot=chest(far), motion=26))    # the dot lands on the far one
+    assert "zr" not in act["hold"] and b.target == 10 and b.stats["far_picks_while_crowded"] == 0
+    assert b.stats["confirmed_shots"] == 0
+
+
+def test_the_crowds_gun_is_a_shotgun_else_an_automatic_else_a_magnum():
+    b, _ = bot()
+    gatling = {"slot": 2, "id": 0x115, "type": 1, "item": 0x15, "rounds": 100, "cap": 100, "grid": 7, "hand": False}
+    magnum = {"slot": 3, "id": 0x10B, "type": 1, "item": 0x0B, "rounds": 6, "cap": 6, "grid": 1, "hand": False}
+    assert b._rampage_gun([magnum, gatling])[1] == "automatic"
+    assert b._rampage_gun([magnum, gatling, SHOTGUN])[1] == "shotgun"
+    assert b._rampage_gun([magnum])[1] == "magnum"
