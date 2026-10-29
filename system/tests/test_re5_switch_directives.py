@@ -78,12 +78,12 @@ def test_hunt_walks_to_the_nearest_far_majini_and_fight_finds_one_off_his_level(
     assert b.doing == "no_foes"                                      # without the command: he waits
 
 
-def test_score_shoots_the_nearest_and_next_area_is_not_on_switch_yet():
+def test_score_shoots_the_nearest_and_next_area_is_the_operators_wall():
     b, clock = bot()
     command(b, "score", 20)
     b.tick(snap([(0.0, 0.0, 1500.0), (400.0, 0.0, 300.0)]))
     assert b.target == 11
     b, clock = bot()
-    command(b, "next_area", 0)
+    command(b, "next_area", 0)                                     # the PiP's wall button (#1509): another way
     b.tick(snap([(0.0, 0.0, 500.0)]))
-    assert b.stats["directive_status"].startswith("not yet on Switch")
+    assert b.stats["directive_status"].startswith("the operator's wall")

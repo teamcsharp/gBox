@@ -238,3 +238,35 @@ test('desktop supplies session identity after updating the displayed stream; lab
   assert.match(h, /<fieldset disabled>/);
   assert.match(h, /data-bl-mod="fire_rate"[^>]* disabled/);
 });
+
+const WEAPONS = [{ id: 8, name: 'Elephant Killer', kind: 'magnum', loaded: false },
+  { id: 4, name: 'Shotgun', kind: 'shotgun', loaded: true }, { id: 1, name: 'Nine-Oh-Nine (909)', kind: 'handgun', loaded: true }];
+
+test('the weapon dropdown sits in the header, most powerful first, the current pick selected', () => {
+  const h = S.html({ ...VIEW, weapons: WEAPONS, weapon_current: 4 }, '', { status: STATUS, title: 're6', scope: '2' });
+  const head = h.slice(0, h.indexOf('</div>'));
+  assert.match(head, /<h3>Live controls · RE6<\/h3><select data-bl-weapon data-bl-scope="2"/);
+  const order = [...head.matchAll(/<option value="(\d+)"/g)].map(m => Number(m[1]));
+  assert.deepEqual(order, [8, 4, 1]);
+  assert.match(head, /<option value="4" selected>Shotgun · in hand now<\/option>/);
+  assert.match(head, /<option value="8">Elephant Killer<\/option>/);
+  assert.doesNotMatch(S.html(VIEW, '', { status: STATUS, title: 're6' }), /data-bl-weapon/);   // no list: no dropdown
+});
+
+test('picking a weapon asks bot_logic to equip it and shows the outcome', async () => {
+  const r = rig();
+  r.view.weapons = structuredClone(WEAPONS);
+  r.hook = async (url, body) => {
+    if (url !== '/api/jobs' || body.input.op !== 'bot_logic' || body.input.weapon === undefined) return null;
+    return ok({ ...structuredClone(r.view), weapon_current: body.input.weapon,
+      weapon_result: { verified: true, note: 'Elephant Killer: not loaded this round: in every loadout from the next round set-up' } });
+  };
+  assert.equal(await r.sb.refresh(), true);
+  assert.equal(await r.sb.equip(8), true);
+  const pick = r.jobs().find(c => c.body.input.weapon !== undefined);
+  assert.deepEqual(pick.body.input, { session_id: SESSION.session_id, op: 'bot_logic', weapon: 8 });
+  assert.match(r.sb.state().message, /Elephant Killer/);
+  assert.equal(r.sb.state().ok, true);
+  assert.equal(await r.sb.equip(99), false);                       // not in the list: refused, nothing sent
+  assert.equal(r.jobs().filter(c => c.body.input.weapon !== undefined).length, 1);
+});

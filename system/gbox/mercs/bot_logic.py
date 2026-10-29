@@ -32,6 +32,8 @@ KNOBS: dict[str, list[tuple]] = {
         ("HEADING_GOV_DEG_S", "Max turn speed (deg/s)", "Aim", "float", 60, 360, 10, "the camera never whips faster"),
         ("SHOT_TAIL_S", "No stick after a boosted shot (s)", "Aim", "float", 0, 0.5, 0.05, "the teleport guard"),
         ("AIM_LOCK", "RAM aim lock", "Aim", "bool", 0, 1, 1, "aims by writing the camera (can snap the view)"),
+        ("CAM_DOWN_GUARD", "Never aim at the feet", "Aim", "bool", 0, 1, 1,
+         "the gun comes up to the chest at any range; no shot into the floor"),
         ("WINDUP", "Attackers first", "Aim", "bool", 0, 1, 1, "a Majini winding up is shot first"),
         ("WINDUP_R", "Attacker range (cm)", "Aim", "float", 100, 600, 25, ""),
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "Y hourglass, ledges, QTEs"),
@@ -71,6 +73,16 @@ KNOBS: dict[str, list[tuple]] = {
     ],
 }
 MODULES = {"re5": "gbox.mercs.titles.re5_switch", "re6": "gbox.mercs.titles.re6_switch"}
+# The sidebar's weapon dropdown (operator 2026-10-28: "a drop down here that lists every weapon in the game in order of
+# the most powerful to the least powerful and allow me to select any weapon from the list and that weapon is instantly
+# equipped"): each title's player weapons, most powerful first (launchers, magnums, shotguns, rifles, machine guns,
+# handguns, melee; by firepower inside a class). RE5: re5_weapons ids (the enemies' Gatling gun and flamethrower left
+# out); RE6: re6_switch_mods.WEAPON_NAMES ids.
+WEAPON_POWER = {
+    "re5": (0x0D, 0x1B, 0x1A, 0x0B, 0x0C, 0x19, 0x17, 0x16, 0x04, 0x20, 0x1C, 0x05, 0x0F, 0x1D, 0x09, 0x13, 0x03,
+            0x12, 0x1E, 0x1F, 0x11, 0x10, 0x02),
+    "re6": (27, 11, 8, 7, 18, 6, 5, 4, 16, 10, 9, 15, 17, 14, 23, 13, 3, 2, 1, 12, 26, 25, 24, 0),
+}
 MAP_IDS = {"010018100CD46000": "re5", "01002A000CD48000": "re6"}
 PATH = Path(__file__).resolve().parents[2] / "gbox-data" / "mercs" / "bot-logic.json"
 _lock = threading.Lock()
@@ -171,3 +183,56 @@ def handle(title, values=None, reset=None, path: Path = PATH) -> dict:
             saved[name] = v
         _write(data, path)
     return status(t, path)
+
+
+def weapon_menu(ad, title, weapon=None) -> dict:
+    """The dropdown's rows and a pick's outcome: {"weapons": [{id, name, kind, loaded}] most powerful first,
+    "weapon_current": the pick in force, "weapon_result": what this pick did}. A pick is in hand now when this round
+    carries it (the bot switches to it: RE6 live_weapon, RE5 select_weapon by its D-pad slot) and, on RE5, every
+    character's main gun from the next round (weapon_override); RE6 puts one this round lacks in every loadout from the
+    next round. Reading the list never fails the settings (weapon_error says why it is empty)."""
+    t = _title(title)
+    out: dict = {}
+    if weapon is not None:
+        wid = int(weapon)
+        if wid not in WEAPON_POWER[t]:
+            raise ValueError(f"bot_logic: weapon {wid} is not in the {t} list")
+        out["weapon_result"] = _equip(ad, t, wid)
+    try:
+        out.update(_weapon_rows(ad, t))
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        out.update(weapons=[], weapon_error=f"{type(exc).__name__}: {exc}"[:200])
+    return out
+
+
+def _equip(ad, t: str, wid: int) -> dict:
+    if t == "re6":
+        from .titles import re6_switch_mods as R6
+        return R6.run(ad, "live_weapon", weapon=wid)
+    from .titles import re5_switch_mods as SW
+    over = SW.tool_run(ad, "weapon_override", on=True, weapon=wid)
+    now = SW.tool_run(ad, "select_weapon", on=True, weapon=wid)
+    name = (over.get("weapon_override") or {}).get("weapon") or hex(wid)
+    if now.get("queued"):
+        note = f"{name}: in hand now (the bot's D-pad) and every character's main gun from the next round"
+    else:
+        note = f"{name}: not in this round's quick slots - every character's main gun from the next round"
+    return {"verified": True, "weapon": name, "loaded": bool(now.get("queued")), "next_round": True, "note": note}
+
+
+def _weapon_rows(ad, t: str) -> dict:
+    if t == "re6":
+        from .titles import re6_switch_mods as R6
+        listing = R6.run(ad, "weapons")
+        rows = {w["id"]: w for w in listing.get("weapons") or []}
+        cur = listing.get("next_weapon")
+        return {"weapons": [{"id": i, "name": rows[i]["name"], "kind": rows[i]["kind"], "loaded": bool(rows[i]["loaded"])}
+                            for i in WEAPON_POWER["re6"] if i in rows],
+                "weapon_current": int(cur, 16) - 0x100 if isinstance(cur, str) else None}
+    from .titles import re5_switch_mods as SW, re5_weapons
+    g = SW.RE5Switch(ad)
+    loaded = {w["item"] for w in SW.eligible_guns(SW.R.snapshot(g.m).get("inventory"))}
+    over = g.state.get("weapon_override") or {}
+    return {"weapons": [{"id": i, "name": re5_weapons.WEAPONS[i].name, "kind": re5_weapons.WEAPONS[i].family,
+                         "loaded": i in loaded} for i in WEAPON_POWER["re5"] if i in re5_weapons.WEAPONS],
+            "weapon_current": over.get("item")}
