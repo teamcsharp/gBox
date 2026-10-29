@@ -3,6 +3,9 @@
 or one within 2 m - the shotgun up, the trigger with the aim on them, the aim turned to the nearest in front between
 shots only, never an unaim with anyone within 5 m."""
 import math
+import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +47,50 @@ def bot():
 
 
 CROWD = [at(250, 5), at(350, 60), at(300, -100)]
+
+
+@pytest.mark.parametrize("weapon", [0x04, 0x0B, 0x1A, 0x1B])
+@pytest.mark.parametrize("obstruction", ["off_target", "wall", "floor", "missing_ray"])
+def test_idle_incident_corrects_aim_then_keeps_firing_at_reachable_target(weapon, obstruction):
+    """#1576: firing attempts are no substitute for a reachable body in the crowd.
+
+    Replay the recorded enemy layout with explicit synthetic aim observations;
+    this verifies control decisions, not native damage or live survival.
+    """
+    path = Path(__file__).parent / "fixtures" / "mercs_incidents" / "re5_switch_idle_among_foes.json"
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    scene = copy.deepcopy(fixture["snapshot"])
+    scene["player"]["motion"] = 26
+    scene["inventory"] = [dict(SHOTGUN, id=0x100 | weapon, item=weapon, hand=True)]
+    b, clock = bot()
+    b.tick(scene)
+    target = next(e for e in scene["enemies"] if e["ptr"] == b.target)
+    body = chest(target["pos"])
+    delta = tuple(body[i] - MUZZLE[i] for i in range(3))
+    if obstruction == "off_target":
+        angle = math.radians(-30)
+        dot = (MUZZLE[0] + delta[0] * math.cos(angle) + delta[2] * math.sin(angle),
+               body[1], MUZZLE[2] - delta[0] * math.sin(angle) + delta[2] * math.cos(angle))
+    elif obstruction == "wall":
+        dot = tuple(MUZZLE[i] + delta[i] * 0.25 for i in range(3))
+    else:
+        dot = (0.0, -100.0, 70.0)
+    if obstruction != "missing_ray":
+        scene["laser"] = {"from": MUZZLE, "at": dot, "up": True}
+    clock[0] = 0.3
+    missed = b.tick(scene)
+    assert "zl" in missed["hold"] and "zr" not in missed["hold"]
+    if obstruction == "off_target":
+        assert {"rleft", "rright"}.intersection(missed["hold"])
+    idle = b.stats["idle_in_5m_s"]
+    scene["laser"] = {"from": MUZZLE, "at": body, "up": True}
+    for when in (0.6, 0.9, 1.2):
+        clock[0] = when
+        firing = b.tick(scene)
+        assert {"zl", "zr"} <= set(firing["hold"])
+        assert not set(R.QUICK.values()).intersection(firing["hold"])
+    assert b.stats["idle_in_5m_s"] == idle
+    assert b.stats["unaims_in_5m"] == 0
 
 
 def test_three_within_5_m_put_the_shotgun_up_first():
