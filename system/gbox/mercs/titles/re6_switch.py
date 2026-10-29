@@ -616,6 +616,7 @@ class NavMesh:
 
     def __init__(self, verts, tris, links, name=""):
         self.V, self.T, self.N, self.name = verts, tris, links, name
+        self.points, self.tris, self._links = self.V, self.T, None   # the tactical map's stage (gbox/mercs/tactical.py)
         self.C = [tuple(sum(verts[v][i] for v in t) / 3.0 for i in range(3)) for t in tris]
         self.edge_nb: list = []                              # per triangle: {edge (u, v sorted): the neighbour across}
         for k, t in enumerate(tris):
@@ -631,6 +632,20 @@ class NavMesh:
             for gx in range(int(min(xs) // NAV_CELL), int(max(xs) // NAV_CELL) + 1):
                 for gz in range(int(min(zs) // NAV_CELL), int(max(zs) // NAV_CELL) + 1):
                     self.grid.setdefault((gx, gz), []).append(k)
+
+    @property
+    def links(self) -> list:
+        """The tactical map's links: per triangle [(neighbour, its shared edge 0-2, cost)], from N (worked out once)."""
+        if self._links is None:
+            out = []
+            for k, t in enumerate(self.T):
+                row = []
+                for nb in self.N[k]:
+                    shared = set(t) & set(self.T[nb])
+                    row += [(nb, e, 0.0) for e in range(3) if {t[e], t[(e + 1) % 3]} <= shared][:1]
+                out.append(row)
+            self._links = out
+        return self._links
 
     def _inside(self, k, x, z) -> bool:
         (ax, _, az), (bx, _, bz), (cx, _, cz) = (self.V[v] for v in self.T[k])
