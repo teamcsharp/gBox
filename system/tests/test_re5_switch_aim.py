@@ -146,6 +146,23 @@ def test_on_the_aim_moves_by_ram_at_its_capped_rate_and_the_stick_rests(monkeypa
     assert 0 < head <= math.radians(R.AIM_LOCK_YAW_DEG_S) * R.LOOK_STEP_MAX_S + 1e-6   # toward him, capped
 
 
+def test_a_far_off_aim_stands_the_lock_down_and_the_stick_aims_toward_him(monkeypatch):
+    # #5181: the aim 16 deg off him and the lock would hold it there all round: the stick aims toward him
+    monkeypatch.setattr(R, "AIM_LOCK", True)
+    writes = []
+    b, clock = bot(writes)
+    foe = at(800, 0)
+    b.tick(snap([foe], cam=CAM))
+    n = b.stats.get("aim_lock_ticks", 0)                      # the settle ticks already wrote
+    clock[0] = 0.3
+    act = b.tick(snap([foe], dot=(-700.0, 140.0, 2000.0), cam=CAM))   # the dot 20 deg off, over the 16 deg line
+    assert b.stats["aim_lock_ticks"] == n                     # the lock stood down: no write while the aim is off him
+    assert len(writes) == n                                   # the stick aims toward him instead
+    clock[0] = 0.6
+    act = b.tick(snap([foe], dot=(-700.0, 140.0, 2000.0), cam=CAM))
+    assert b.stats["aim_lock_ticks"] == n                     # it does not stand back up mid misaim
+
+
 def test_a_failed_read_back_leaves_the_stick(monkeypatch):
     monkeypatch.setattr(R, "AIM_LOCK", True)
     writes = []
