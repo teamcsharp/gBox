@@ -166,3 +166,19 @@ def test_failed_probe_has_fixed_turn_heading_and_does_not_claim_success(monkeypa
     clock[0] += .08
     out = bot.tick(state)
     assert not {"rleft", "rright"} & set(out["hold"])
+
+
+def test_the_stick_is_turned_before_a_wall_on_the_nav_mesh():
+    # operator 2026-10-29: "running into a wall or an object ... despite this being an open level"
+    from types import SimpleNamespace
+    from gbox.mercs.titles import re6_switch as R6, re6_switch_wall as W
+    mesh = R6.NavMesh([(0.0, 0.0, 0.0), (400.0, 0.0, 0.0), (400.0, 0.0, 400.0), (0.0, 0.0, 400.0)],
+                      [(0, 1, 2), (0, 2, 3)], [[1], [0]])
+    bot = SimpleNamespace(in_hold=False, down=False, stats={})
+    snap = {"mercenaries_phase": R6.PHASE_PLAYING, "navmesh": mesh, "camera": {"yaw": 0.0},
+            "player": {"pos": (200.0, 0.0, 330.0), "rot": 0.0}}
+    out = W.mesh_guard(bot, snap, {"hold": ("lup",)})                 # straight at the wall 70 cm ahead
+    assert out["hold"] != ("lup",) and bot.stats["mesh_steers"] == 1
+    snap["player"]["pos"] = (200.0, 0.0, 100.0)                        # open floor ahead: untouched
+    assert W.mesh_guard(bot, snap, {"hold": ("lup",)}) == {"hold": ("lup",)}
+    assert W.mesh_guard(bot, snap, {"hold": ("lup", "zl")}) == {"hold": ("lup", "zl")}   # aiming: never steered

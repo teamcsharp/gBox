@@ -2461,6 +2461,7 @@ class Bot:
         now = self.clock()
         out = self._tick(snap, now)
         from . import re6_switch_wall
+        out = re6_switch_wall.mesh_guard(self, snap, out)          # the way probed on the nav mesh before the wall
         out = re6_switch_wall.apply(self, snap, out, now)
         out = self._govern(snap, out, now)
         if "zl" in (out.get("hold") or ()):
