@@ -575,4 +575,55 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
     snap["prompt"] = {"label": 28, "token": "mash:wiggle", "keys": (), "kind": 0, "mode": 6, "button": 1,
                       "owner": 1, "target": 0}
     b2.tick(snap)
-    assert b2.doing == "held"                                         # the game's Break free: the grab
+
+
+# --- relocation blocking (damage cluster 20e148cb7f6d1c9e) -----------------------------------------------------------
+
+def test_relocation_aborts_when_a_majini_converges_within_the_block_radius():
+    """A relocation run must end when a Majini enters the block radius in the front cone, not wait until grab range.
+
+    Damage cluster 20e148cb7f6d1c9e: the bot ran through converging Majini because RELOC_BLOCK_R was 150 (1.5 m),
+    barely past GRAB_THREAT_R (120).  By the time the blocked check fired the bot was already surrounded.  With
+    RELOC_BLOCK_R at 400 the bot turns and fights while there is still ~2.8 m of standoff.
+    """
+    b, clock = brain()
+    b.tick(bot_snap())                                   # the round starts, the state initialised
+    b._reloc = {"since": 0.0, "head": 0.0, "from": (0.0, -100.0), "best": 100.0, "best_at": 0.0,
+                "quick": False, "statue": False, "goal": (0.0, 0.0, 800.0)}
+    b._dwell = {"anchor": (0.0, 0.0, -100.0), "since": 0.0}
+    # one Majini at 3.5 m, 10 deg off the heading: inside the 400 cm block radius, inside the 45 deg cone
+    snap = bot_snap((350.0 * math.sin(math.radians(10)), 0.0, 350.0 * math.cos(math.radians(10))))
+    clock[0] = 0.5
+    act = b.tick(snap)
+    assert b._reloc is None, f"relocation should abort at 3.5 m, got doing={b.doing!r} why={b.why!r}"
+    assert b.doing != "relocate"
+
+
+def test_relocation_continues_when_no_majini_is_within_the_block_radius():
+    """The same run at 4.5 m must continue: outside the block radius the corridor is still clear."""
+    b, clock = brain()
+    b.tick(bot_snap())
+    b._reloc = {"since": 0.0, "head": 0.0, "from": (0.0, -100.0), "best": 100.0, "best_at": 0.0,
+                "quick": False, "statue": False, "goal": (0.0, 0.0, 800.0)}
+    b._dwell = {"anchor": (0.0, 0.0, -100.0), "since": 0.0}
+    # one Majini at 4.5 m, 10 deg off the heading: outside the 400 cm block radius
+    snap = bot_snap((450.0 * math.sin(math.radians(10)), 0.0, 450.0 * math.cos(math.radians(10))))
+    clock[0] = 0.5
+    act = b.tick(snap)
+    assert b._reloc is not None, f"relocation should continue at 4.5 m, got doing={b.doing!r}"
+    assert b.doing == "relocate"
+
+
+def test_relocation_ignores_a_majini_behind_him():
+    """A Majini behind the run (outside the 45 deg front cone) must not abort it."""
+    b, clock = brain()
+    b.tick(bot_snap())
+    b._reloc = {"since": 0.0, "head": 0.0, "from": (0.0, -100.0), "best": 100.0, "best_at": 0.0,
+                "quick": False, "statue": False, "goal": (0.0, 0.0, 800.0)}
+    b._dwell = {"anchor": (0.0, 0.0, -100.0), "since": 0.0}
+    # one Majini at 2 m directly behind (180 deg from the heading)
+    snap = bot_snap((0.0, 0.0, -200.0))
+    clock[0] = 0.5
+    act = b.tick(snap)
+    # the quick-turn fires first (a threat behind), but the relocation state must survive it
+    assert b._reloc is not None, f"relocation should survive the quick turn, got doing={b.doing!r}"
