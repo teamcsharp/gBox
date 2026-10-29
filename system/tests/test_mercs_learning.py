@@ -250,6 +250,39 @@ def test_crowd_gun_down_fixture_fights_instead_of_escaping():
     assert 'escape' not in doings, f'escaped instead of fighting: {doings}'
 
 
+def test_re5_switch_crowd_heals_under_50hp_with_enemies_near():
+    """#5072: switch_crowd_lowhp -- the bot fights at 29% HP instead of healing.
+
+    The fix: _heal's defer threshold is HEAL_CROWD_AT (50%) instead of HEAL_CRITICAL (25%),
+    so the bot heals even with enemies within 4 m when under 50% HP, not just under 25%.
+    """
+    from gbox.mercs.titles.re5_switch import Bot, HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL, HEAL_IDS, QUICK
+
+    # Fixture 0 from the cluster: hp=286/1000 (29%), 4 enemies within 5 m, heal in quick slot
+    fx = json.loads((FIXTURES / "re5_switch_crowd_lowhp.json").read_text())
+    fx["snapshot"]["player"]["hp"] = fx["hp_before"]  # 286 (29%)
+
+    # Before the fix: 29% > HEAL_CRITICAL (25%) -> heal deferred -> fights and dies
+    # After the fix: 29% < HEAL_CROWD_AT (50%) -> heal proceeds
+    result = incident_replay.replay(fx, ticks=5)
+    doings = [t["doing"] for t in result["ticks"]]
+    assert "heal" in doings, f"bot did not heal at 29% HP: {doings}"
+
+    # All 5 fixture examples are at 22-29% HP (all under HEAL_CROWD_AT)
+    for i in range(5):
+        f = json.loads((FIXTURES / f"re5_switch_crowd_lowhp_{i}.json").read_text())
+        hp_pct = f["hp_before"] / f["hp_max"]
+        assert hp_pct < HEAL_CROWD_AT, \
+            f"fixture {i} hp {hp_pct:.0%} not under HEAL_CROWD_AT ({HEAL_CROWD_AT:.0%})"
+
+
+def test_heal_defer_threshold_is_crowd_not_critical():
+    """The heal defer threshold when enemies are near is HEAL_CROWD_AT, not HEAL_CRITICAL."""
+    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_CRITICAL
+    assert HEAL_CROWD_AT > HEAL_CRITICAL, \
+        f"HEAL_CROWD_AT ({HEAL_CROWD_AT}) must be > HEAL_CRITICAL ({HEAL_CRITICAL})"
+
+
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
