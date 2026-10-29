@@ -709,6 +709,8 @@ HUNT_R = 1200.0                          # the "hunt" directive: closer than thi
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
 RUSH_R = 250.0
+MESH_PROBE_CM = 150.0                    # _mesh_guard: how far ahead his way is checked on the nav mesh
+MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
@@ -2927,6 +2929,34 @@ class Bot:
             self.stats["hits_per_trigger_s"] = round(self.stats["hits"] / self.stats["trigger_s"], 2)
 
     # --- the sticks and the trigger ------------------------------------------------------------------------------------
+    def _mesh_guard(self, act, snap) -> dict:
+        """Steer before the wall (operator 2026-10-29: "the bot is just running at this wall"): he walks along his facing
+        (lup) and turns with the right stick, so the way MESH_PROBE_CM ahead is checked on the stage's own nav mesh
+        (re5_switch_native_nav, #1535); off the floor - a wall, a fence, a drop - he turns toward the nearest clear
+        heading (walking on only when it is within 45 deg). stats mesh_steers, mesh_blocked."""
+        hold, mesh, p = act.get("hold"), snap.get("nav"), snap.get("player") or {}
+        if (mesh is None or not hold or "lup" not in hold or "zl" in hold or not p.get("pos")
+                or not hasattr(mesh, "floor_segment")):
+            return act
+        pos, rot = tuple(p["pos"]), p.get("rot") or 0.0
+
+        def clear(h):
+            end = (pos[0] + MESH_PROBE_CM * math.sin(h), pos[1], pos[2] + MESH_PROBE_CM * math.cos(h))
+            try:
+                return None if mesh.member(pos) is None else bool(mesh.floor_segment(pos, end))
+            except Exception:                               # noqa: BLE001 - the mesh never stops a decision
+                return None
+        if clear(rot) is not False:
+            return act
+        for turn in MESH_TURNS:
+            if clear(rot + turn):
+                self.stats["mesh_steers"] = self.stats.get("mesh_steers", 0) + 1
+                keys = tuple(k for k in hold if k not in ("rleft", "rright", "lup"))
+                keys += (("lup",) if abs(turn) <= math.radians(45) else ()) + (("rleft",) if turn > 0 else ("rright",))
+                return dict(act, hold=keys)
+        self.stats["mesh_blocked"] = self.stats.get("mesh_blocked", 0) + 1
+        return dict(act, hold=tuple(k for k in hold if k != "lup"))
+
     def _turn(self, err: float, tol: float = 0.0) -> tuple:
         """The body (gun down): the right stick, pulsed inside TURN_FINE so it does not swing past him."""
         if abs(err) <= tol:
@@ -3233,6 +3263,7 @@ class Bot:
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
+        act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
