@@ -8,7 +8,15 @@ publisher (gbox.mercs.tactical) sends a stage again when a frame's reply says ne
                                                {} when no frame came for TTL_S
     PUT  /api/autoplay/tactical/stage/{key}    a stage (the same key always carries the same layout)
     GET  /api/autoplay/tactical/stage/{key}    that stage, or 404
+    GET  /api/mercs/portraits/{title}          the title's enemy portraits: {"portraits": {class: {name, at, dist}}}
+    GET  /api/mercs/portraits/{title}/{cls}.jpg  one portrait (the legend's picture), or 404
 Frames come at most 10 a second per session and are a few KB; a stage is up to a few hundred KB, once per stage.
+
+Enemy portraits (operator 2026-10-29: "show them in the merc live map and run reviewer with profile pictures as a
+legend"): a frame's portrait hint ({"class", "dist"}: the bot's laser dot is on an enemy of that class, so he is under
+the crosshair) crops the session's newest picture around its centre - sized for his distance - into that class's
+portrait, kept on disk (gbox-data/mercs/portraits/<title>/<class>.jpg). A class gets a new one at most every
+PORTRAIT_EVERY_S, and only nearer PORTRAIT_BEST_CM than the one it has.
 """
 from __future__ import annotations
 
@@ -28,6 +36,7 @@ TTL_S = 600.0                     # a session's last frame is forgotten this lon
 LIVE_S = 3.0                      # a frame younger than this is live (the publisher sends 1-10 a second)
 STAGES_KEEP = 24
 KEY_RE = re.compile(r"[A-Za-z0-9._-]{1,120}")
+PORTRAIT_EVERY_S, PORTRAIT_BEST_CM, PORTRAIT_PX = 20.0, 350.0, 160
 SID_RE = re.compile(r"[\w.-]{1,120}")
 
 
@@ -130,9 +139,87 @@ class Store:
             return st
 
 
-def install(app, auth) -> Store:
+class Portraits:
+    """Each title's enemy portraits on disk: offer(title, hint, jpeg) crops the picture (crop_portrait) when the class
+    has none, or this one is nearer PORTRAIT_BEST_CM, at most every PORTRAIT_EVERY_S a class."""
+
+    def __init__(self, root, clock=time.time):
+        from pathlib import Path
+        self.root, self.clock = Path(root), clock
+        self.lock = threading.Lock()
+        self.tried: dict = {}
+
+    def _index_path(self, title):
+        return self.root / title / "index.json"
+
+    def index(self, title) -> dict:
+        try:
+            return json.loads(self._index_path(title).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def path(self, title, cls):
+        from .mercs import enemy_kinds
+        if not (enemy_kinds.valid_title(title) and enemy_kinds.valid_class(cls)):
+            return None
+        return self.root / title / f"{cls}.jpg"
+
+    def offer(self, title, hint, jpeg) -> bool:
+        from .mercs import enemy_kinds
+        if not isinstance(hint, dict) or not jpeg:
+            return False
+        cls, dist = hint.get("class"), hint.get("dist")
+        if not (enemy_kinds.valid_title(title) and enemy_kinds.valid_class(cls)) or not isinstance(dist, (int, float)):
+            return False
+        now = self.clock()
+        with self.lock:
+            if now - self.tried.get((title, cls), -1e9) < PORTRAIT_EVERY_S:
+                return False
+            have = self.index(title).get(cls)
+            if have and abs(dist - PORTRAIT_BEST_CM) >= abs((have.get("dist") or 1e9) - PORTRAIT_BEST_CM):
+                return False
+            self.tried[(title, cls)] = now
+        picture = crop_portrait(jpeg, dist)
+        if picture is None:
+            return False
+        with self.lock:
+            folder = self.root / title
+            folder.mkdir(parents=True, exist_ok=True)
+            tmp = folder / f".{cls}.tmp"
+            tmp.write_bytes(picture)
+            tmp.replace(folder / f"{cls}.jpg")
+            idx = self.index(title)
+            idx[cls] = {"name": enemy_kinds.name(title, cls), "at": round(now, 1), "dist": round(float(dist))}
+            tmp = folder / ".index.tmp"
+            tmp.write_text(json.dumps(idx, sort_keys=True), encoding="utf-8")
+            tmp.replace(self._index_path(title))
+        return True
+
+
+def crop_portrait(jpeg: bytes, dist: float) -> bytes | None:
+    """The square around the picture's centre (a touch above it: aimed at his chest, his head shows), its side the
+    picture's height times 300 cm / his distance (bounded 18-60 %), as a PORTRAIT_PX JPEG. None when it can't decode."""
+    try:
+        import io
+        from PIL import Image
+        im = Image.open(io.BytesIO(jpeg)).convert("RGB")
+        w, h = im.size
+        side = max(0.18 * h, min(0.6 * h, h * 300.0 / max(float(dist), 1.0)))
+        cx, cy = w / 2, h * 0.45
+        box = (int(max(0, cx - side / 2)), int(max(0, cy - side / 2)), int(min(w, cx + side / 2)), int(min(h, cy + side / 2)))
+        out = io.BytesIO()
+        im.crop(box).resize((PORTRAIT_PX, PORTRAIT_PX)).save(out, "JPEG", quality=85)
+        return out.getvalue()
+    except Exception:                                       # noqa: BLE001 - no portrait never costs a frame
+        return None
+
+
+def install(app, auth, frame_of=None, portraits_root=None) -> Store:
+    """frame_of(sid) -> the session's newest JPEG (the portraits' source); portraits_root: where they are kept."""
     store = Store()
     app.state.tactical_map = store
+    portraits = Portraits(portraits_root) if portraits_root is not None else None
+    app.state.enemy_portraits = portraits
 
     async def body_of(request: Request, limit: int):
         raw = await request.body()
@@ -146,9 +233,35 @@ def install(app, auth) -> Store:
     @app.post("/api/autoplay/tactical/{sid}")
     async def tactical_frame_put(sid: str, request: Request, actor=Depends(auth)):
         try:
-            return store.put_frame(sid, await body_of(request, FRAME_MAX))
+            frame = await body_of(request, FRAME_MAX)
+            reply = store.put_frame(sid, frame)
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
+        hint = frame.get("portrait") if isinstance(frame, dict) else None
+        if hint and portraits is not None and frame_of is not None:
+            try:
+                jpeg = frame_of(sid)
+            except Exception:                               # noqa: BLE001
+                jpeg = None
+            if jpeg:                                        # off the event loop: a decode and a crop
+                threading.Thread(target=portraits.offer, args=(frame.get("title"), hint, jpeg), daemon=True,
+                                 name="enemy-portrait").start()
+        return reply
+
+    @app.get("/api/mercs/portraits/{title}")
+    async def enemy_portraits(title: str, actor=Depends(auth)):
+        from .mercs import enemy_kinds
+        if portraits is None or not enemy_kinds.valid_title(title):
+            return {"portraits": {}}
+        return {"portraits": portraits.index(title)}
+
+    @app.get("/api/mercs/portraits/{title}/{name}")
+    async def enemy_portrait(title: str, name: str, actor=Depends(auth)):
+        from fastapi.responses import Response
+        path = portraits.path(title, name.removesuffix(".jpg")) if portraits is not None else None
+        if path is None or not path.is_file():
+            raise HTTPException(404, "no portrait yet")
+        return Response(path.read_bytes(), media_type="image/jpeg", headers={"cache-control": "max-age=60"})
 
     @app.get("/api/autoplay/tactical/stage/{key}")
     async def tactical_stage_get(key: str, actor=Depends(auth)):

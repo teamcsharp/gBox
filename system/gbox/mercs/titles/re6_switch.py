@@ -370,6 +370,23 @@ def ptr_ok(p) -> bool:
     return isinstance(p, int) and 0x1000000 <= p < (1 << 40)
 
 
+_ECLASSES: dict = {}                    # an enemy's vtable -> its class name (uEm5200 ...), named once a boot
+
+
+def enemy_class(m, e) -> str | None:
+    """His RAM class (uEm5200 / uEm5210 zombies, uEm1000 J'avo ...: the live map's legend, gbox/mercs/enemy_kinds.py),
+    one vtable read a tick; each vtable named once (class_name) and remembered."""
+    try:
+        vt = u64(m, e)
+    except (ValueError, OSError, struct.error):
+        return None
+    if vt not in _ECLASSES:
+        if len(_ECLASSES) > 256:
+            _ECLASSES.clear()
+        _ECLASSES[vt] = class_name(m, e)
+    return _ECLASSES[vt]
+
+
 def class_name(m, obj) -> str | None:
     """An MtObject's class from its vtable's getDTI (slot 5: adrp x0 / add x0 / ret)."""
     try:
@@ -891,7 +908,8 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
+                                        "class": enemy_class(m, e)})
         me = (snap.get("player") or {}).get("pos")
         if me is not None:                                  # what the near ones are doing (their wind-ups)
             for en in snap["enemies"]:
@@ -1502,6 +1520,11 @@ MELEE_R, MELEE_CONE, MELEE_GAP_S = 140.0, math.radians(40), 0.7
 CROWD_R, CROWD_N = 260.0, 2             # this many this near, or one within KEEP_R: he steps back while he fires
 KEEP_R = 200.0
 QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 200.0, math.radians(35), 1.5   # point blank only (450 until 16:30)
+# Hit back (operator 2026-10-29: "if the bot is hit in RE6, he needs to do a series of quick attacks in response. and i
+# want a slider in the mercmode panel for dictating how many quick shots the bot does in response to being attacked or
+# hurt"): health lost queues HIT_QS_N quick shots (both triggers: the game's quick shot, double damage and a stagger),
+# HIT_QS_GAP_S apart once he is free to act, while one stands within HIT_QS_R. stats hit_responses, hit_quick_shots.
+HIT_QS_N, HIT_QS_GAP_S, HIT_QS_R = 3, 0.35, 400.0
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -2115,6 +2138,7 @@ class Bot:
         self.tablet_dying, self.dying_since = False, None    # that press made while dying; dying since when
         self.keeping_off = False
         self.qshot_release = False
+        self.hit_qs = 0                                      # quick shots still owed for a hit (HIT_QS_N)
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.hold_since, self.hold_pressed = None, False     # the RAM hold under way: since when, anything pressed
         self.wiggle = 0
@@ -2548,6 +2572,9 @@ class Bot:
             self.stats["bomb_hits_taken"] += self._tick_hp - hp_now
         if self.stats.get("act") == "bomb_face" and self._tick_at is not None:
             self.stats["bomb_face_s"] = round(self.stats["bomb_face_s"] + min(now - self._tick_at, LOOK_STEP_MAX_S), 2)
+        if HIT_QS_N and isinstance(hp_now, int) and isinstance(self._tick_hp, int) and hp_now < self._tick_hp:
+            self.hit_qs = max(getattr(self, "hit_qs", 0), int(HIT_QS_N))     # hit: a series of quick shots back
+            self.stats["hit_responses"] = self.stats.get("hit_responses", 0) + 1
         self._tick_hp, self._tick_at = hp_now if isinstance(hp_now, int) else self._tick_hp, now
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
@@ -2589,6 +2616,17 @@ class Bot:
         self._census_tick(p, snap, live)
         self._taunt_watch(snap, now)
         self._windup_tick(p, snap, now)
+        if getattr(self, "hit_qs", 0) > 0:                       # hit: quick shots back at whoever is on him (HIT_QS_N)
+            close_by = [e for e in live if flat(e) <= HIT_QS_R]
+            if not close_by:
+                self.hit_qs = 0
+            elif not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S:
+                self.hit_qs -= 1
+                self.qshot_at = now
+                self.qshot_release = True
+                self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
+                return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
+                                f"hit: a quick shot back ({self.hit_qs} more)")
         self._down_tick(p, snap, now)
         self._hazard_tick(p, live, flat, now)
         self._prompt_shown = self._prompt_book(p, snap, now)

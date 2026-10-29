@@ -39,6 +39,8 @@ import time
 import zlib
 from urllib.parse import quote
 
+from . import enemy_kinds
+
 FORMAT = 1
 MAX_HZ = 10.0                     # frames a second at most while a round runs
 IDLE_S = 1.0                      # between rounds: a frame (the screen) a second
@@ -196,8 +198,9 @@ def take_plan(bot) -> dict:
             out = dict(raw)
             if isinstance(out.get("route"), list):
                 out["route"] = list(out["route"])           # the bot pops waypoints as it walks: a copy goes on
-            return out
+            return _with_aim(out, bot)
     out: dict = {"fallback": True}
+    _with_aim(out, bot)
     tgt = getattr(bot, "target", None)
     if isinstance(tgt, str) and tgt.startswith("bonus "):
         try:
@@ -209,6 +212,15 @@ def take_plan(bot) -> dict:
     route = getattr(bot, "route", None)
     if route and (out.get("target") or {}).get("kind") == "bonus" and getattr(bot, "route_for", None) == out["target"]["id"]:
         out["route"] = [tuple(w) for w in list(route)[:MAX_ROUTE]]
+    return out
+
+
+def _with_aim(out: dict, bot) -> dict:
+    """The bot's aim this tick (its _aimctx: the target, whether the laser's dot is on him, how far, his class), for the
+    frame's portrait hint. Never raises."""
+    ctx = getattr(bot, "_aimctx", None)
+    if isinstance(ctx, dict) and ctx.get("target") is not None:
+        out["aim"] = {k: ctx.get(k) for k in ("target", "where", "dist", "class")}
     return out
 
 
@@ -269,6 +281,25 @@ def _clean_plan(raw: dict, enemies: dict, bonuses: dict) -> dict:
 
 
 # --- the frame -------------------------------------------------------------------------------------------------------
+PORTRAIT_DIST = (150.0, 900.0)        # cm: the laser's dot on one this near is a portrait's moment (not a speck, not
+                                      # all shoulder)
+
+
+def portrait_hint(aim, classes: dict) -> dict | None:
+    """{"class", "dist"} when the bot's laser dot is on an enemy of a known class within PORTRAIT_DIST: he is under the
+    crosshair at the picture's centre, so the control plane crops the session's frame there for that type's portrait
+    (gbox/tactical_map.py)."""
+    if not isinstance(aim, dict) or not aim.get("where"):
+        return None
+    dist = aim.get("dist")
+    if not isinstance(dist, (int, float)) or not PORTRAIT_DIST[0] <= dist <= PORTRAIT_DIST[1]:
+        return None
+    cls = aim.get("class") or classes.get(aim.get("target"))
+    if not enemy_kinds.valid_class(cls):
+        return None
+    return {"class": cls, "dist": round(float(dist))}
+
+
 class Tracker:
     """Frames of one title's rounds (one per session, on the publisher's thread): remembers the hourglasses seen this
     round, so a taken one stays on the map (faded) after it leaves RAM; the stage of the navmesh in the snapshot, built
@@ -380,6 +411,7 @@ class Tracker:
                 'item':w.get('item'), 'slot':w.get('slot'), 'rounds':w.get('rounds'), 'capacity':w.get('cap')}.items()
                 if v is not None}
         enemies: dict = {}
+        classes: dict = {}                                  # ptr / slot -> RAM class (the portrait hint's target)
         awareness = {row.get("id"): row for row in (plan or {}).get("enemy_awareness", ())[:512]
                      if isinstance(row, dict) and row.get("visibility") in ("clear", "blocked", "unknown")}
         for e in snap.get("enemies") or ():
@@ -389,6 +421,12 @@ class Tracker:
                 continue                                    # the dead, and the crows (1 health)
             eid = _id(e.get("slot", e.get("id")))
             row = {"id": eid, "pos": pos}
+            cls = e.get("class")
+            if enemy_kinds.valid_class(cls):                # what it is (gbox/mercs/enemy_kinds.py): the map's legend
+                row.update(cls=cls, kind=enemy_kinds.name(self.title, cls))
+                classes[e.get("ptr", eid)] = classes[eid] = cls
+            if enemy_kinds.threat(hp_max):
+                row["threat"] = enemy_kinds.threat(hp_max)
             if self.title == "BLUS30491":
                 row["visibility"] = awareness.get(e.get("ptr", eid), {}).get("visibility", "unknown")
                 if ppos is not None:
@@ -410,6 +448,7 @@ class Tracker:
         for bid, b in self.seen.items():
             if bid not in standing and bid not in self.taken:
                 self.taken[bid] = dict(b, at=now)
+        raw_plan = plan
         plan = _clean_plan(plan or {}, enemies, standing)
         tgt = plan.get("target") or {}
         flags = plan.pop("enemy_flags", {})
@@ -420,6 +459,18 @@ class Tracker:
             if fl:
                 row["flags"] = sorted(fl)
         out["enemies"] = list(enemies.values())
+        kinds: dict = {}
+        for row in out["enemies"]:
+            if row.get("cls"):
+                k = kinds.setdefault(row["cls"], {"name": row["kind"], "count": 0})
+                k["count"] += 1
+                if row.get("threat"):
+                    k["threat"] = row["threat"]
+        if kinds:
+            out["kinds"] = kinds
+        hint = portrait_hint((raw_plan or {}).get("aim"), classes)
+        if hint:
+            out["portrait"] = hint
         out["bonuses"] = [dict(b, taken=False) for b in standing.values()] + \
                          [{"id": bid, "pos": b["pos"], "kind": b["kind"], "taken": True} for bid, b in self.taken.items()]
         if "nearest_bonus" not in plan:

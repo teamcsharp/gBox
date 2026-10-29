@@ -4818,7 +4818,8 @@ def create_app(config: Config) -> FastAPI:
                         server_jobs=_server_job_threads, saver=app.state.autoplay_screensaver,
                         prefs=app.state.game_prefs)
     from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
-    tactical_map.install(app, auth)
+    tactical_map.install(app, auth, frame_of=lambda sid: _live(sid)["frame"],   # enemy portraits from the picture
+                         portraits_root=config.data_dir / "mercs" / "portraits")
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 
