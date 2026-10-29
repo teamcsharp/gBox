@@ -8,6 +8,8 @@ check. Secrets stay out of the console and of every child's environment.
 import json
 import os
 import sys
+import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +19,45 @@ from gbox import node_rebuild as NR
 from gbox import worker_client_control as WCC
 from gbox.config import Config
 from gbox.registry import Cancelled, Ctx
+
+
+@pytest.mark.parametrize('wrapper_waits', [False, True])
+def test_timeout_releases_stdout_inherited_by_a_descendant(tmp_path, monkeypatch, wrapper_waits):
+    """A real wrapper/child pair reproduces the Git timeout's inherited pipe."""
+    import psutil
+    monkeypatch.setattr(NR, '_popen', subprocess.Popen)
+    child_record = tmp_path / 'owned-child.json'
+    script = tmp_path / 'wrapper.py'
+    script.write_text(
+        'import subprocess, sys, time, json, pathlib, psutil\n'
+        'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+        f'pathlib.Path({str(child_record)!r}).write_text(json.dumps([p.pid, psutil.Process(p.pid).create_time()]))\n'
+        'print("child started", flush=True)\n'
+        + ('time.sleep(60)\n' if wrapper_waits else ''), encoding='utf8')
+    reports, result, errors = [], [], []
+    con = NR.Console(SimpleNamespace(progress=lambda pct, msg: reports.append(msg)), flush_s=0)
+    def run():
+        try:
+            result.append(con.run([sys.executable, str(script)], lo=0, hi=100, timeout=2))
+        except BaseException as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        worker.join(10)
+        assert not worker.is_alive(), 'timed-out descendant still holds the console pipe'
+        assert errors == [] and result == [-1]
+        assert any('did not finish' in line for line in reports)
+    finally:
+        if child_record.exists():
+            pid, born = json.loads(child_record.read_text())
+            try:
+                child = psutil.Process(pid)
+                if child.create_time() == born and child.is_running():
+                    child.kill()
+            except psutil.NoSuchProcess:
+                pass
+        worker.join(3)
 
 PS1 = ('& "$Venv\\Scripts\\python.exe" -m pip install -q --upgrade pip\n'
        '& "$Venv\\Scripts\\python.exe" -m pip install -q "fastapi>=0.110" "pycaw==20260927"   # Windows per-app volume\n')
@@ -58,6 +99,10 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(ctx, "progress", lambda pct, msg: reports.append((pct, msg)))
     FakePopen.calls, FakePopen.answer = [], staticmethod(lambda cmd: (["fine"], 0))
     monkeypatch.setattr(NR, "_popen", FakePopen)
+    def fake_spawn(cmd, **kwargs):
+        proc = NR._popen(cmd, **kwargs)
+        return proc, proc.kill
+    monkeypatch.setattr(NR, '_spawn_command', fake_spawn)
     monkeypatch.setattr(NR, "_sleep", lambda s: None)
     monkeypatch.setattr(NR, "ROOT", root)
     monkeypatch.setattr(NR, "HOST_OS", "windows")
