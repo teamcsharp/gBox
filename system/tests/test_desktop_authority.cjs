@@ -22,6 +22,36 @@ test('remote returns in background without changing authority or replaying anyth
   assert.equal(c.snapshot().apiUrl,local);assert.equal(c.snapshot().remote.ready,true);assert.equal(probes,4);
   assert.equal(c.snapshot().generation,0);
 });
+
+test('a transient remote probe failure does not lock out an established control connection',async()=>{
+  let fail=false;
+  const c=connection({mode:'remote',probe:async(_url,kind)=>{
+    if(kind==='remote'&&fail)throw Error('probe timed out');
+    return {ok:true};
+  }});
+  await c.check();fail=true;
+  for(let n=1;n<3;n++){
+    await c.check();assert.equal(c.ready(remote),true);
+    assert.equal(c.snapshot().remote.retrying,true);
+    assert.equal(c.snapshot().apiUrl,remote);assert.equal(c.snapshot().generation,0);
+  }
+  await c.check();assert.equal(c.ready(remote),false);
+  fail=false;await c.check();assert.equal(c.ready(remote),true);
+  fail=true;await c.check();assert.equal(c.ready(remote),true,'successful probe resets consecutive failures');
+});
+
+test('probe grace never grants initial readiness or masks explicit unready responses',async()=>{
+  let answer='throw';
+  const c=connection({probe:async()=>{
+    if(answer==='throw')throw Error('unreachable');
+    return {ok:answer==='ready'};
+  }});
+  await c.check();assert.equal(c.ready(remote),false);
+  answer='ready';await c.check();assert.equal(c.ready(remote),true);
+  answer='unready';await c.check();assert.equal(c.ready(remote),false);
+  answer='ready';await c.check();answer='throw';await c.check();
+  assert.equal(c.ready(local),false,'local process identity has no remote network grace');
+});
 test('credentials and explicit server selection remain scoped; native game blocks switching',async()=>{
   let busy=true;const c=connection({canSwitch:()=>!busy});
   assert.equal(await c.token(local),'local-only');assert.equal(await c.token(remote),'remote-only');

@@ -150,6 +150,33 @@ test('fresh server frames reconnect a frozen image, but identical quiet pictures
   el.picture = 'server moved'; await h.dog.checkHealth(el); assert.equal(el.a['data-stream-state'], 'connected');
 });
 
+test('consecutive failed health polls preserve advancing video and operator input', async () => {
+  const h = harness(), el = h.img('/api/sessions/w-s/mjpeg?fps=30');
+  await h.dog.checkHealth(el);
+  h.state.health = async () => { throw new Error('health timed out'); };
+  for (let i = 1; i <= 8; i++) {
+    h.run(i * 4000); el.picture = 'live frame ' + i;
+    await h.dog.checkHealth(el);
+    assert.equal(el.a['data-stream-state'], 'connected');
+    assert.equal(h.dog.state(el).pending, false);
+    assert.equal(w.inputAllowed(el, 'w-s'), true);
+    assert.equal(el.a.src, '/api/sessions/w-s/mjpeg?fps=30');
+  }
+  // The media must keep providing evidence: once it freezes, recovery still runs.
+  h.run(40000); await h.dog.checkHealth(el);
+  assert.equal(el.a['data-stream-state'], 'reconnecting');
+  h.run(41000); assert.match(el.a.src, /reconnect=1/);
+});
+
+test('moving pictures do not override an explicit ended-session response', async () => {
+  const h = harness(), el = h.img('/api/sessions/w-s/mjpeg');
+  await h.dog.checkHealth(el);
+  el.picture = 'last frame'; h.state.health = async () => ({ state: 'ended' });
+  await h.dog.checkHealth(el);
+  assert.equal(el.a['data-stream-state'], 'ended');
+  assert.equal(w.inputAllowed(el, 'w-s'), false);
+});
+
 test('hanging health times out and aborts, permits another poll, and ignores late results', async () => {
   const h = harness(), el = h.img('/api/sessions/w-s/mjpeg'); let resolve, signal, calls = 0;
   h.state.health = (src, opts) => { calls++; signal = opts.signal; return new Promise(r => { resolve = r; }); };
