@@ -261,3 +261,21 @@ def test_passing_a_corner_preserves_the_next_turn_and_rejects_large_lateral_disp
     target = b._wall_rec["target"]
     W._recover(b, {"hold": ("lup",)}, snap(pos=(-8., 0., -30.), rot=-math.pi / 2)["player"], .2, R)
     assert b._wall_rec["target"] == target, "crossing a target plane far outside its segment does not consume it"
+
+
+def test_a_door_seen_once_is_walked_to_when_he_is_stuck(tmp_path, monkeypatch):
+    """2026-10-28: "I need them to be able to locate doors and exits ... and be able to navigate the level"."""
+    monkeypatch.setattr(R, "DOOR_FILE", tmp_path / "door_spots.json")
+    b = R.Bot.__new__(R.Bot)
+    b.stats, b.doing, b.why = {}, "", ""
+    b._turn = lambda err, tol: ("lleft",) if err > tol else (("lright",) if err < -tol else ())
+    b._remember_door(1000.0, 0.0, 0.0, 7)                     # a door prompt seen here once
+    assert b.stats["doors_known"] == 1
+    p = {"pos": (0.0, 0.0, 0.0), "rot": R.heading(1000.0, 0.0)}
+    b._pick_door(p, 10.0)
+    act = b._door_walk(p, 9999.0, 10.1)
+    assert "lup" in act["hold"] and b.stats["door_goals"] == 1
+    assert b._door_walk(p, 200.0, 10.2) is None               # a Majini close: the fight first
+    b._door_goal = (b._door_goal[0], 10.0 + R.DOOR_GO_S)
+    assert b._door_walk({"pos": (950.0, 0.0, 0.0), "rot": 0.0}, 9999.0, 11.0) is None   # there: the prompt rule
+    assert b.stats["door_reached"] == 1
