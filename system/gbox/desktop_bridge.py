@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+MEDIA_READ_S, MEDIA_WRITE_S, MEDIA_GRACE_S = 30.0, 15.0, 10.0
+
 from .store import canon, sha256
 
 _ID = re.compile(r'^[a-f0-9]{16,64}$')
@@ -589,9 +591,15 @@ class DesktopBridge:
         except (OSError,RuntimeError):pass
 
     def _media(self, wid, sid):
+        # A steady relay (operator 2026-10-29: the i9's stream kept "Reconnecting"; the central plane logged its upload
+        # cut every ~10 s): the upload's writes may wait MEDIA_WRITE_S for a busy receiver and the local stream's reads
+        # MEDIA_READ_S for a quiet picture (they were 5 s and 8 s), and a watch that blinks out for under MEDIA_GRACE_S
+        # keeps the relay up instead of tearing it down and starting again.
         headers = {'authorization': 'Bearer ' + self.cfg.token()}
-        with httpx.Client(base_url=self.cfg.public_url, headers=headers, timeout=8) as local, \
-             httpx.Client(base_url=self.remote, headers=self._headers(), timeout=5) as remote:
+        with httpx.Client(base_url=self.cfg.public_url, headers=headers,
+                          timeout=httpx.Timeout(10, read=MEDIA_READ_S)) as local, \
+             httpx.Client(base_url=self.remote, headers=self._headers(),
+                          timeout=httpx.Timeout(10, read=None, write=MEDIA_WRITE_S)) as remote:
             try:
                 # Use the sole worker's existing desktop capture/crop channel.
                 # This never starts another capture process in the bridge.
@@ -599,8 +607,12 @@ class DesktopBridge:
                                   params={'view': 'game', 'session': sid}) as response:
                     response.raise_for_status()
                     def frames():
+                        unwatched = None
                         for jpeg in jpeg_parts(response.iter_bytes()):
-                            if not self._running(sid) or sid not in self.watched:break
+                            if not self._running(sid):break
+                            if sid in self.watched:unwatched = None
+                            elif unwatched is None:unwatched = time.monotonic()
+                            elif time.monotonic() - unwatched > MEDIA_GRACE_S:break
                             yield len(jpeg).to_bytes(4,'big')+jpeg
                     remote.post('/api/sessions/' + sid + '/stream',content=frames(),
                                 headers={'content-type': 'application/octet-stream'}).raise_for_status()
