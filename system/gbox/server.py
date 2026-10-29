@@ -5646,6 +5646,17 @@ def create_app(config: Config) -> FastAPI:
                 lines.append("## Run kind\nBot demo (autoplay): the operator is watching it live, possibly from a PC they are active on. "
                              "Treat this as a live improvement report: analyse the session's state (gameplay memory, RAM/byte changes, "
                              "Ghidra on the running build) and keep the operator's input and session untouched; the PC is theirs.")
+            else:
+                try:
+                    from .background_testing import agent_owned as _ao
+                    agent = _ao(store.get("slabel", r.session_id), store.get("job", r.session_id.split("-", 1)[-1]))
+                except Exception:                     # noqa: BLE001  (the report goes in without the run kind)
+                    agent = None
+                if agent:
+                    lines.append("## Run kind\nAgent test session: this session was started by a gBox agent for testing. "
+                                 "Treat this as an agent test report: analyse the session's state (gameplay memory, RAM/byte changes, "
+                                 "Ghidra on the running build) to find the issue, then reproduce it on the agent test PC and fix the "
+                                 "underlying cause. Do not touch the operator's own saves or sessions.")
         if r.session_id and s_.get("mod"):
             lines.append(f"## Disc / model mod this session was launched with\n{s_['mod']}")
         kept = [(store.get("mod", m) or {"title": m}) for m in r.kept_mods[:30]]
