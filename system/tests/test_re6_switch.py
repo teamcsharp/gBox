@@ -807,9 +807,9 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 800.0, 700),), hp=1, state=3))
     act = run(bot, snap, clock, 1)[0]
     assert act == {"tap": "r"} and bot.stats["act"] == "tablet_dying" and bot.stats["dying_states"] == [3]
-    acts = run(bot, snap, clock, int(R.TABLET_CONFIRM_S / 0.05) + 1)          # the count stayed: the game ignored it
+    acts = run(bot, snap, clock, int((R.TABLET_CONFIRM_S + R.TABLET_RETRY_S) / 0.05) + 2)   # the count stayed: ignored
     assert bot.stats["tablet_misses"] == 1 and bot.stats["tablet_dying_taken"] == 0
-    assert {"tap": "r"} in acts and bot.stats["tablet_dying_presses"] == 2    # pressed again at once
+    assert {"tap": "r"} in acts and bot.stats["tablet_dying_presses"] == 2   # pressed again after the confirmed miss
     snap["player"].update(tablets=7, hp=300)                                  # this one took: back up
     run(bot, snap, clock, 1)
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
@@ -2264,9 +2264,9 @@ def test_a_tablet_counts_once_the_count_falls_and_an_ignored_press_is_pressed_ag
     assert bot.stats["tablets"] == 1 and bot.stats["tablet_misses"] == 0
     clock[0] += R.TABLET_GAP_S
     assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 2
-    acts = run(bot, snap, clock, int((R.TABLET_CONFIRM_S + R.TABLET_LOWER_S) / 0.05) + 3)   # the count stays: ignored
+    acts = run(bot, snap, clock, int((R.TABLET_CONFIRM_S + R.TABLET_RETRY_S) / 0.05) + 3)   # the count stays; ignored
     assert bot.stats["tablet_misses"] == 1 and bot.stats["tablets"] == 1
-    assert acts.count({"tap": "r"}) == 1 and acts[0] != {"tap": "r"}        # pressed again once the miss is known
+    assert acts.count({"tap": "r"}) == 1 and acts[0] != {"tap": "r"}   # the gun-down beat first, then the retry
     assert bot.stats["tablet_presses"] == 3
 
 

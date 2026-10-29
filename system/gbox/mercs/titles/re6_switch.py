@@ -2251,7 +2251,11 @@ class Bot:
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, False, False
         elif now - at >= TABLET_CONFIRM_S:
             self.stats["tablet_misses"] += 1
-            self.tablet_wait, self.tablet_missed, self.tablet_dying = None, True, False
+            # The game ignored that press. The retry's gap is measured from now, not from the swallowed press:
+            # re-pressing on TABLET_RETRY_S alone would land back inside the game's input-dead window (the press
+            # and its retry are both swallowed), so the bot spins in a loop of misses. Waiting TABLET_RETRY_S from
+            # the confirmed miss is what gives the gun a full beat down before the retry the game will accept.
+            self.tablet_wait, self.tablet_missed, self.tablet_dying, self.tablet_at = None, True, False, now
 
     def _dying(self, p, now) -> dict | None:
         """At 1 health (RE6's dying crawl): R for a tablet every DYING_GAP_S while the case holds one. None: no press
@@ -2735,6 +2739,12 @@ class Bot:
             self.tablet_wait = (p.get("tablets"), now)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
+        if self.tablet_missed and now - self.tablet_at < TABLET_RETRY_S:
+            # A swallowed press is being retried: the gun stays down through the retry gap so ZL has been up long
+            # enough for the game to accept the re-press the moment the gap ends (not one LOWER_S beat later — the
+            # bot was aiming the whole wait, keeping the gun up, so every retry re-paid the full gun-down delay).
+            self._gun_down()
+            return self._go("tablet", "tablet_retry_wait", {"hold": ()}, "a swallowed tablet: gun down for the retry")
         taunt = self._taunt(p, live, flat, now)
         if taunt is not None:
             return taunt

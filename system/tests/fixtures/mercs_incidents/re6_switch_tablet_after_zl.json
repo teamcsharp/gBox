@@ -1,0 +1,106 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "01002A000CD48000",
+  "event": {
+    "cluster_id": "54090060da6cd49c",
+    "cluster_signature": "round:tablet_misses",
+    "counters": {
+      "hp_before": 41,
+      "hp_after": 29,
+      "enemies": 5,
+      "tablets": 7
+    },
+    "tablets": 7
+  },
+  "snapshot": {
+    "phase": 2,
+    "merc": true,
+    "merc_phase": 2,
+    "merc_enemies": 14,
+    "merc_score": 0,
+    "merc_timer": 120.0,
+    "menu": false,
+    "menu_id": 0,
+    "dialog": false,
+    "dialog_id": 0,
+    "player": {
+      "pos": [
+        500,
+        0,
+        1200
+      ],
+      "rot": 0.0,
+      "hp": 41,
+      "hp_max": 78,
+      "tablets": 7,
+      "equipped": 0,
+      "state": 0,
+      "bomb": {
+        "count": 0,
+        "out": false
+      },
+      "nades": {},
+      "ammo": [
+        8,
+        44
+      ]
+    },
+    "camera": {
+      "pos": [
+        500,
+        2,
+        1200
+      ],
+      "yaw": 0.0,
+      "pitch": 0.0
+    },
+    "enemies": [
+      {
+        "pos": [
+          480,
+          0,
+          1210
+        ],
+        "hp": 700,
+        "state": 1
+      },
+      {
+        "pos": [
+          520,
+          0,
+          1210
+        ],
+        "hp": 700,
+        "state": 1
+      },
+      {
+        "pos": [
+          470,
+          0,
+          1220
+        ],
+        "hp": 700,
+        "state": 1
+      },
+      {
+        "pos": [
+          530,
+          0,
+          1220
+        ],
+        "hp": 700,
+        "state": 1
+      },
+      {
+        "pos": [
+          500,
+          0,
+          1230
+        ],
+        "hp": 700,
+        "state": 1
+      }
+    ],
+    "ground_mines": {}
+  }
+}
