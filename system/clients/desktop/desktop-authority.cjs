@@ -8,13 +8,27 @@ function create({localUrl,remoteUrl,mode='local',probe,readLocalToken,readRemote
   if(!localUrl||!remoteUrl)throw Error('Expected valid local and remote API origins');
   let active=mode==='remote'?'remote':'local',timer=null,pending=null,stopped=false,generation=0;
   const state={local:{ready:false,reason:'Local gBox is starting.'},remote:{ready:false,reason:'Checking remote connection.'}};
+  let remoteMisses=0;
   const snapshot=()=>({mode:active,apiUrl:active==='local'?localUrl:remoteUrl,localUrl,remoteUrl,generation,
                        local:{...state.local},remote:{...state.remote}});
   async function check() {
     if(pending)return pending;
     pending=Promise.allSettled([['local',localUrl],['remote',remoteUrl]].map(async([kind,url])=>{
-      try { const result=await probe(url,kind); state[kind]={ready:!!result?.ok,...result,checkedAt:now()}; }
-      catch(error){state[kind]={ready:false,reason:error.message||'Connection unavailable',checkedAt:now()};}
+      try {
+        const result=await probe(url,kind);
+        if(kind==='remote')remoteMisses=0;
+        state[kind]={ready:!!result?.ok,...result,checkedAt:now()};
+      }
+      catch(error){
+        // A single slow health probe must not reject all coaching/input requests
+        // before they even try the network. Only an established remote route gets
+        // two missed probes of grace; actual requests keep their own deadlines.
+        // Never grant initial readiness, mask an explicit failure response, or
+        // weaken the local worker's process/installation identity checks.
+        const retrying=kind==='remote'&&++remoteMisses<3&&state.remote.ready;
+        state[kind]={ready:!!retrying,retrying:!!retrying,
+          reason:error.message||'Connection unavailable',checkedAt:now()};
+      }
       onChange(snapshot()); // local readiness never waits for a remote probe
     })).then(()=>{onChange(snapshot());return snapshot();}).finally(()=>{pending=null;});
     return pending;

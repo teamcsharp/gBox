@@ -225,7 +225,7 @@
       try {
         const h = await bounded(s, opts => fetchHealth(src, opts));
         if (!current(el, s) || !h) return;
-        s.misses = 0;
+        s.misses = 0; s.failedPicture = null;
         if (h.state === 'ended') {
           s.ended = true; cancelRetry(s);
           status(el, el.getAttribute('data-stream-follow') === 'game' ? 'reconnecting' : 'ended');
@@ -251,7 +251,18 @@
         }
         if (!el.naturalWidth && now() - s.since >= blankAfter) reconnect(el, 'no picture');
       } catch {
-        if (current(el, s) && !s.ended && (++s.misses >= healthMisses || !el.naturalWidth)) reconnect(el, 'server unreachable');
+        if (!current(el, s) || s.ended) return;
+        s.misses++;
+        // A failed control-plane poll is not a broken video connection. Sampling only
+        // after successful health reads used to tear down moving LAN video on the
+        // third failed poll. Real rendered progress is independent media evidence;
+        // an initial/still/opaque picture cannot provide it. Keep the failed-poll
+        // count so a subsequent frozen picture still enters bounded recovery.
+        const shown = readPicture(el), previous = s.failedPicture ?? s.hash;
+        const advanced = shown !== null && previous !== null && shown !== previous;
+        s.failedPicture = shown;
+        if (advanced) { s.hash = shown; s.renderAt = now(); calm(el); }
+        else if (s.misses >= healthMisses || !el.naturalWidth) reconnect(el, 'server unreachable');
       }
       finally { s.checking = false; }
     }
