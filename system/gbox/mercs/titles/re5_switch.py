@@ -1509,6 +1509,7 @@ class Bot:
         self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
         from .re5_switch_mines import Mines
         self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
+        self.flashbang = None                     # the emergency flashbang throw (arm -> equip -> ZL throw), one at a time
         self._gun_back_at = -1e9                  # the last D-pad tap for the gun with a throwable in hand
         self.stats.setdefault("gun_backs", 0)
         self._fire_t = None                       # the last tick the fighter held the trigger (trigger_s)
@@ -3315,24 +3316,29 @@ class Bot:
         if self.mines is not None and snap.get("mine_settings"):
             self.mines.configure(snap["mine_settings"])          # the operator's `mines` op (re5_switch_mods.mines)
         self.mode = self._operator_command(p, snap, live, now)
-        act = self._heal(p, snap, live, flat, now)
+        # The operator's emergency flashbang (#5972): highest priority, every click throws another flash at his feet.
+        act = self._flashbang_throw(p, snap, now)
         if act is not None:
-            self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
-        elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
-                                                                  busy=self.escape is not None)) is not None:
-            self._gun_down()
-            self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
+            self.doing, self.why = "flashbang", str(self.stats.get("directive_status") or "")
         else:
-            act = self._escape(p, live, flat, now)
+            act = self._heal(p, snap, live, flat, now)
             if act is not None:
-                self.doing, self.why = "escape", f"{self.round_escapes} this round"
-            elif (act := self._gun_back(snap, now)) is not None:
+                self.doing, self.why = "heal", str(self.stats.get("heal_status") or "")
+            elif self.mines is not None and (act := self.mines.tick(p, snap, live, now,
+                                                                      busy=self.escape is not None)) is not None:
                 self._gun_down()
-                self.doing, self.why = "rearm", "the gun back first (a grenade or bomb in hand, or the operator's gun)"
-            elif self.fighter is not None:
-                act = self._fight(live, snap, now)
+                self.doing, self.why = "mine", str(self.stats.get("mine_status") or "")
             else:
-                act = self._decide(p, live, flat, near_e, near, snap, now)
+                act = self._escape(p, live, flat, now)
+                if act is not None:
+                    self.doing, self.why = "escape", f"{self.round_escapes} this round"
+                elif (act := self._gun_back(snap, now)) is not None:
+                    self._gun_down()
+                    self.doing, self.why = "rearm", "the gun back first (a grenade or bomb in hand, or the operator's gun)"
+                elif self.fighter is not None:
+                    act = self._fight(live, snap, now)
+                else:
+                    act = self._decide(p, live, flat, near_e, near, snap, now)
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
@@ -3377,6 +3383,8 @@ class Bot:
             self.stats["rushes"] = self.stats.get("rushes", 0) + 1
             self.stats["directive_status"] = "flash and rush: in among them, every prompt, the magnum; " + \
                 self._mine_now("a mine at the next safe moment")
+        elif cmd == "flashbang" and fresh:
+            self._emergency_flashbang_arm(p, snap, now)
         elif cmd == "missing" and fresh:
             self.stats["directive_status"] = ("the Switch fight closes the laser dot on him before every shot: no learned "
                                               "aim offset to reset")
@@ -3389,6 +3397,63 @@ class Bot:
         if m.state == "idle":
             m.last_at = self._now - m.every_s - 1.0 if self._now is not None else None   # due now: its checks still apply
         return ok
+
+    def _emergency_flashbang_arm(self, p, snap, now) -> None:
+        """The operator's emergency flashbang (#5972): detonate a flash at the player's position NOW.  Armed by the
+        single fresh `flashbang` directive read in _operator_command (this is the ONLY place it is consumed).  Every
+        click re-arms, so rapid clicks throw again once the last is done.  Clears the arm if there is no flash
+        grenade (WP08) in the inventory or on a D-pad slot."""
+        self.stats["emergency_flashes"] = self.stats.get("emergency_flashes", 0) + 1
+        inv = snap.get("inventory") or ()
+        flash = next((s for s in inv if s.get("item") == 0x08 and (s.get("rounds") or 0) > 0), None)
+        if flash is None:
+            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
+            self.flashbang = None
+            self.stats["directive_status"] = "EMERGENCY FLASHBANG: no flash grenade in the inventory"
+            return
+        if QUICK.get(flash.get("grid")) is None:
+            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
+            self.flashbang = None
+            self.stats["directive_status"] = "EMERGENCY FLASHBANG: the flash grenade is not on a D-pad slot"
+            return
+        self._gun_down()
+        self.flashbang = {"ptr": p.get("ptr"), "id": flash.get("id"), "equip_at": now, "last_equip": -1e9,
+                          "equips": 1, "in_hand": bool(flash.get("hand"))}
+        self.stats["directive_status"] = ("EMERGENCY FLASHBANG: throwing the flash grenade at my feet"
+                                          if self.flashbang["in_hand"] else
+                                          "EMERGENCY FLASHBANG: equipping the flash grenade then throwing at my feet")
+
+    def _flashbang_throw(self, p, snap, now) -> dict | None:
+        """The emergency flashbang's actual throw, ticked every frame once armed: equip the flash grenade via its
+        D-pad slot, then ZL throws it at his feet.  Does NOT re-read the directives reader (that would double-consume
+        the one-shot and never fire).  Rapid-clicks re-arm via _operator_command.  None when not armed or done."""
+        fb = self.flashbang
+        if fb is None:
+            return None
+        inv = snap.get("inventory") or ()
+        flash = next((s for s in inv if s.get("id") == fb["id"] and (s.get("rounds") or 0) > 0), None)
+        if flash is None:
+            self.flashbang = None
+            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
+            self.stats["directive_status"] = "EMERGENCY FLASHBANG: no flash grenade left"
+            return None
+        if flash.get("hand"):
+            # In hand: ZL throws it at his feet.  Only once per arm; done when the grenade leaves his hand.
+            self._gun_down()
+            fb["in_hand"] = True
+            return {"hold": ("zl",)}
+        key = QUICK.get(flash.get("grid"))
+        if key is None:
+            self.flashbang = None
+            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
+            self.stats["directive_status"] = "EMERGENCY FLASHBANG: the flash grenade is not on a D-pad slot"
+            return None
+        if now - fb["last_equip"] >= EQUIP_ACK_S and fb["equips"] < 4:
+            fb["last_equip"], fb["equips"] = now, fb["equips"] + 1
+            self._gun_down()
+            return {"tap": key}
+        return {"hold": ()}
+
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
