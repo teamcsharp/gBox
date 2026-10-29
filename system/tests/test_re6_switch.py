@@ -3114,3 +3114,19 @@ def test_tablets_are_confirmed_by_health_and_eaten_to_the_top_never_past_it():
     assert not bot.heal_chain                                                # full: no more
     clock[0] += R.TABLET_GAP_S
     assert {"tap": "r"} not in run(bot, snap, clock, 10)
+
+
+def test_a_hit_answers_with_a_series_of_quick_shots():
+    # operator 2026-10-29: "if the bot is hit in RE6, he needs to do a series of quick attacks in response" (HIT_QS_N)
+    g = round_guest(hp=900, enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0)
+    bot, clock, snap = brain(g)
+    run(bot, snap, clock, 2)
+    snap["player"]["hp"] = 780                                               # bitten
+    acts = run(bot, snap, clock, int(R.HIT_QS_N * (R.HIT_QS_GAP_S / 0.05)) + 6)
+    shots = [a for a in acts if a == {"hold": ("zl", "zr")}]
+    assert bot.stats["hit_responses"] == 1 and bot.stats["hit_quick_shots"] == R.HIT_QS_N == len(shots)
+    bot2, clock2, snap2 = brain(round_guest(hp=900, enemies=((0.0, 0.0, 3000.0, 700),), cam_yaw=0.0))
+    run(bot2, snap2, clock2, 2)
+    snap2["player"]["hp"] = 780                                              # shot from afar: nobody close to hit back
+    run(bot2, snap2, clock2, 20)
+    assert bot2.stats.get("hit_quick_shots", 0) == 0

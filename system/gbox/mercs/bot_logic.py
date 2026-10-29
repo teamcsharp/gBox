@@ -60,6 +60,8 @@ KNOBS: dict[str, list[tuple]] = {
         ("BONUS_RUN", "Capsule run (time bonuses)", "Objectives", "bool", 0, 1, 1, ""),
         ("BONUS_SHOOT_R", "Capsule shot range (cm)", "Objectives", "float", 500, 4000, 100, ""),
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "climbs and QTEs"),
+        ("HIT_QS_N", "Quick shots when he is hit (0 off)", "Crowd control", "int", 0, 10, 1,
+         "both triggers: the game's quick shot back at whoever hurt him"),
         ("MISS_QA_N", "Misses in a row before quick attacks (0 off)", "Crowd control", "int", 0, 10, 1, ""),
         ("MISS_QA_COUNT", "Quick attacks after those misses", "Crowd control", "int", 1, 10, 1, ""),
         ("FIRE_ZONE_R", "Shoot-first radius (cm)", "Crowd control", "float", 0, 2000, 50,
