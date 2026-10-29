@@ -546,7 +546,7 @@ SWEEP_COUNTERS = ("sweeps", "sweep_s", "sweep_kills", "sweep_reversals", "sweep_
 # max_dwell_s, hits_taken (his health falling).
 RELOCATE, DWELL_R, DWELL_MAX_S, RELOC_CROWD_N, RELOC_CROWD_R, RELOC_GAP_S = True, 250.0, 7.0, 6, 800.0, 4.0
 RELOC_SENSE_R, KITE_DEG, RELOC_STATUE_DEG, RELOC_DIST, RELOC_MAX_S = 1500.0, 35.0, 60.0, 800.0, 3.0
-RELOC_BLOCK_R, RELOC_PROGRESS_CM, RELOC_STUCK_S = 150.0, 40.0, 0.8
+RELOC_BLOCK_R, RELOC_PROGRESS_CM, RELOC_STUCK_S = 400.0, 40.0, 0.8
 # (operator 19:5x: "run face forward at a corner and away from the enemies while the enemies gather behind them"; live
 # 19:50 / 19:53: 48 / 68 relocations a round, 12 / 16 stuck): a relocation only with nobody within 5 m (boxed in: stand
 # and shotgun), to a point he knows is open - his own trail, a point every TRAIL_EVERY_S kept TRAIL_KEPT, TRAIL_AGE_S old
