@@ -1119,7 +1119,7 @@ def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead(
     near = (0.0, 0.0, 500.0, 700)
     bot, clock, snap, writes = lock_brain((near, (0.0, 0.0, 800.0, 700)),
                                           laser=((0.0, R.CHEST_H, 500.0), (20.0, 60.0, 30.0), 0.86))
-    snap["player"].update(hp=1, action="cPlAction_pl_act_dying_loop")
+    snap["player"].update(hp=400, action="cPlAction_pl_act_dying_loop")
     snap["kills"] = 20
     acts = run(bot, snap, clock, 6)
     assert bot.down and bot.stats["act"] in ("down_fire", "down_aim") and {"tap": "r"} not in acts
@@ -1137,6 +1137,12 @@ def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead(
     snap["player"]["action"] = "cPlAction_pl_act_wait"
     snap["enemies"] = [{"slot": 9, "ptr": 0x9999, "pos": (0.0, 0.0, 1500.0), "hp": 700, "hp_max": 700}]
     assert {"tap": "r"} in run(bot, snap, clock, 3)                          # up at 1 health: a tablet at once
+    snap["player"].update(hp=1, action="cPlAction_pl_act_dying_loop")       # down again, this time dying
+    run(bot, snap, clock, 2)
+    assert bot.down and bot.down_dying
+    snap["player"]["action"] = "cPlAction_pl_act_gets_up"                    # rises from dying: since_dying set
+    run(bot, snap, clock, 1)
+    snap["player"]["action"] = "cPlAction_pl_act_wait"
     snap["player"]["hp"] = 0
     run(bot, snap, clock, 1)
     assert bot.stats["dying_deaths"] == 1

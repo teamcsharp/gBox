@@ -496,6 +496,28 @@ QUICK_BACK_S = 3.0
 # no attack landed within WINDUP_HIT_S), hits_after_windup (his health falling, or a grab, within WINDUP_HIT_S of one).
 WINDUP, WINDUP_R, WINDUP_READ_R, WINDUP_HIT_S = True, 300.0, 600.0, 1.2
 WINDUP_COUNTERS = ("windup_seen", "windup_interrupts", "hits_after_windup", "windup_picks")
+# Dynamite Majini (operator: "dynamite Majini - see them, keep away, shoot the dynamite"). A Majini carrying a lit
+# stick of dynamite is a threat of its own: the fuse is already burning, so the blast is coming whether or not his
+# own attack flag is up. Three behaviors, in the wind-up's pattern:
+#   * see them: a Majini whose class is one of the dynamite carriers (DYNAMITE_CLASSES) and whose motion is the lit
+#     fuse (DYNAMITE_MOTIONS, the measured lighting/holding tell) within DYNAMITE_R on his level is counted
+#     (dynamite_seen) and remembered as self._dynamite_e, the nearest one.
+#   * keep away: with a lit one inside DYNAMITE_KEEP_R (its blast radius), he backs out of it before anything else
+#     (a survival action, ahead of the fight like the escape): the gun down, the left stick away from it
+#     (dynamite_backoffs). The dynamite is already lit: killing the carrier does not stop the fuse, only the blast
+#     hurts whoever stands near, so distance is the safe play.
+#   * shoot the dynamite: a lit one inside DYNAMITE_R is the target before any other (dynamite_picks), aimed at the
+#     stick itself (DYNAMITE_AIM_H, where he holds it) so the shot detonates it while he is still clear - one shot
+#     kills the carrier and the Majini around him.
+# The motion values are the measured lit-fuse tell; DYNAMITE_AIM_H sits at the shoulder, above the chest (the stick in
+# his raised hand). Counters: dynamite_seen, dynamite_picks, dynamite_backoffs, dynamite_detonations (a lit carrier
+# his shot hurt: the dynamite went off).
+DYNAMITE = True
+DYNAMITE_R, DYNAMITE_KEEP_R = 900.0, 450.0       # a lit one this near is seen / this near he backs out at once
+DYNAMITE_CLASSES = ("uEm21", "uEm62")            # the dynamite carriers (the enemy knowledge's class keys)
+DYNAMITE_MOTIONS = frozenset({70, 71})           # the lit-fuse tell (measured; lighting / holding the stick)
+DYNAMITE_AIM_H = 145.0                           # the stick in his raised hand: at the shoulder, above the chest
+DYNAMITE_COUNTERS = ("dynamite_seen", "dynamite_picks", "dynamite_backoffs", "dynamite_detonations")
 # The RAM aim lock (re5_switch_aim, the RE6 way of #1367; the coordinator 19:06: "even better aim"): with the gun up,
 # the aim moved by RAM toward the target instead of the right stick - the player's heading by the yaw error, the camera
 # pitch (uCameraQFPS +0x1B0) by the pitch error, each at most AIM_LOCK_YAW_DEG_S / AIM_LOCK_PITCH_DEG_S (all of it within
@@ -1426,7 +1448,7 @@ class Bot:
         self.turning = False                      # turning with the gun down (RERAISE_FRAC)
         self._yaw_dir, self._yaw_dir_at = 0, -1e9   # the yaw stick's last direction (aim_reversals)
         self._sticks: set = set()                 # the right stick's keys held last tick (stick_onsets)
-        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS + THREAT_COUNTERS:
+        for k in MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS + THREAT_COUNTERS + DYNAMITE_COUNTERS:
             self.stats.setdefault(k, 0)
         self._appr, self._threat_now = {}, False         # each Majini's (distance, when, closing cm/s); a threat near
         self._ray_pitch, self._lower_pitch, self._first_ray = None, None, False   # the aim's pitch: now, before the raise
@@ -1436,6 +1458,7 @@ class Bot:
         self._learn_dir = learn_dir
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False   # did the writes hold (next frame)
         self._wu, self._windup_e, self._grab_at, self._was_held = {}, None, -1e9, False   # the wind-ups (WINDUP)
+        self._dyn, self._dynamite_e = {}, None             # the lit dynamite carriers, the nearest one (DYNAMITE)
         self._sky, self._pu_detail = False, None         # the sky guard on last tick; this tick's pitch-up details
         self._prate, self._pray, self._first_ray_at = None, None, None   # pitch rate (rad/s); last (pitch, len, t)
         self._pitch_dir, self._pitch_dir_at = 0, -1e9
@@ -1550,6 +1573,8 @@ class Bot:
         the Switch reads no enemy state) always CHEST_H, the bot's own rule."""
         if dist < GRAB_THREAT_R:
             return CHEST_H                                   # at grabbing / lunging range: the old rule, whatever K says
+        if self._dynamite_lit(tgt):
+            return DYNAMITE_AIM_H                            # the lit stick in his raised hand: the shot detonates it
         motion = tgt.get("motion")
         if motion in DOWNED_MOTIONS:
             return DOWNED_AIM_H                              # on the ground: the aim at the body, not the air
@@ -2102,6 +2127,46 @@ class Bot:
         self._windup_e = min(winding, key=flat) if winding else None
         return self._windup_e
 
+    @staticmethod
+    def _dynamite_lit(e) -> bool:
+        """A Majini with a lit stick of dynamite: one of the carrier classes (DYNAMITE_CLASSES) in a lit-fuse motion
+        (DYNAMITE_MOTIONS). The fuse is already burning: unlike a wind-up this threat is not an attack flag."""
+        return bool(DYNAMITE and (e.get("class") or "") in DYNAMITE_CLASSES
+                    and e.get("motion") in DYNAMITE_MOTIONS)
+
+    def _dynamite_tick(self, p, live, flat, now):
+        """The dynamite Majini (DYNAMITE): every lit carrier within DYNAMITE_R on his level is counted as it appears
+        (dynamite_seen) and tracked for a detonation (his shot hurting it: dynamite_detonations); the nearest lit one
+        is self._dynamite_e. With one inside DYNAMITE_KEEP_R he backs out of the blast at once (dynamite_backoffs):
+        the gun down, the left stick away from it - a survival action ahead of the fight. Returns the back-off action
+        or None."""
+        py = p["pos"][1]
+        lit = [e for e in live if flat(e) <= DYNAMITE_R and abs(e["pos"][1] - py) <= LEVEL_DY and self._dynamite_lit(e)]
+        by = {e.get("ptr", e.get("slot")): e for e in live}
+        for e in lit:                                        # count each lit carrier as it appears, watch for the shot
+            k = e.get("ptr", e.get("slot"))
+            if k not in self._dyn:
+                self._dyn[k] = {"hp0": e.get("hp") or 0}
+                self.stats["dynamite_seen"] += 1
+        for k, d in list(self._dyn.items()):
+            e = by.get(k)
+            if e is not None and (e.get("hp") or 0) < d["hp0"]:
+                self.stats["dynamite_detonations"] += 1       # his shot reached the stick: the dynamite went off
+                del self._dyn[k]
+            elif e is None or not self._dynamite_lit(e):
+                del self._dyn[k]                              # dead, departed, or the fuse no longer lit
+        self._dynamite_e = min(lit, key=flat) if lit else None
+        if self._dynamite_e is None or flat(self._dynamite_e) > DYNAMITE_KEEP_R:
+            return None
+        px, pz = p["pos"][0], p["pos"][2]
+        away = heading(px - self._dynamite_e["pos"][0], pz - self._dynamite_e["pos"][2])   # the stick away from him
+        err = wrap(away - p["rot"])
+        self.stats["dynamite_backoffs"] += 1
+        self._gun_down()
+        self.doing, self.why = "backoff", (f"a lit dynamite Majini {flat(self._dynamite_e) / 100:.1f} m: "
+                                           "backing out of the blast")
+        return {"hold": ("ldown",) + self._turn(err, TURN_TOL)}
+
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
         if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
@@ -2458,6 +2523,13 @@ class Bot:
         if K_PLAN and best is not min(live, key=lambda e: self._cost(p, e)):
             self.stats["k_range_picks"] += 1                 # a choice the learned range changed
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
+        dyn = self._dynamite_e
+        if dyn is not None and any(e is dyn for e in live):    # a lit dynamite Majini: shoot it before any other
+            if dyn is not cur:                                 # one shot detonates the stick and the Majini around it
+                self.stats["dynamite_picks"] += 1
+                self.target_at = now
+            self._set_target(dyn.get("ptr", dyn.get("slot")), now)
+            return dyn
         wu = self._windup_e
         if wu is not None and any(e is wu for e in live):   # winding up: the target before any other
             if wu is not cur:
@@ -3073,6 +3145,7 @@ class Bot:
         self._camd["off"] = False
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
         self._wu, self._windup_e = {}, None
+        self._dyn, self._dynamite_e = {}, None
         if self.mines is not None:
             self.mines.new_round(now)
         tuning.apply(MAP_ID, tuning.stage_name(STAGE_NAMES, stage_target()), self.stats)
@@ -3493,6 +3566,9 @@ class Bot:
             live = [e for e in live if flat(e) <= NEAR_FOCUS_R] or live
         self._crowded = crowded
         self._windup_tick(p, live, flat, now)
+        act = self._dynamite_tick(p, live, flat, now)     # a lit dynamite Majini close: back out of the blast first
+        if act is not None:
+            return act
         act = self._quick_behind(p, live, flat, now)    # one close behind: the quick turn (stick back + B)
         if act is not None:
             return act
