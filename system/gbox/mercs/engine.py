@@ -22,6 +22,7 @@ as well through here as through the title's own playbook).
 from __future__ import annotations
 
 import time
+import traceback
 import uuid
 
 from . import driver as D
@@ -35,6 +36,24 @@ FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's 
 MASH_DOWN_S, MASH_UP_S = 0.045, 0.035         # a mash (a grab's SHAKE OFF): each press down / up this long - two game
                                               # frames down, one up, so every press is a new one to the game
 RECOVERY_DOWN_S = RECOVERY_UP_S = 1. / 60.    # verified RE5 self-recovery: one game frame down, one released
+# A bot's tick that raises costs that tick, never the round (operator 2026-10-28: a TypeError in the RE6 bot ended its
+# run 30 s into a round and Sherry stood still among the zombies until the clock ran out, 0 kills). Keys are let go, the
+# error and where it was are kept in stats (tick_errors, tick_error) and the lessons; this many in a row ends the run.
+TICK_ERRORS_MAX = 200
+
+
+def tick_error_where(exc) -> str:
+    """The innermost frame of a tick's exception in our own code (not the standard library, not site-packages):
+    file:line function."""
+    import sysconfig
+    lib = sysconfig.get_paths()["stdlib"].replace("\\", "/").lower()
+    frames = traceback.extract_tb(exc.__traceback__)
+    own = [f for f in frames if "site-packages" not in f.filename
+           and not f.filename.replace("\\", "/").lower().startswith(lib)] or frames
+    if not own:
+        return "?"
+    f = own[-1]
+    return f"{f.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{f.lineno} {f.name}"
 
 
 class Latency:
@@ -115,6 +134,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
+    tick_errors = 0                                  # TICK_ERRORS_MAX: ticks in a row that raised
     progress = 0
     frame_fn = getattr(drv, "frame", None)
     clock_frame = [None]                              # the game's frame (driver.frame) at the last decision
@@ -155,6 +175,21 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 lessons({"kind": kind, **fields})
             except Exception:                        # noqa: BLE001 - a lesson lost never stops the round
                 stats["local_log_errors"] = stats.get("local_log_errors", 0) + 1
+
+    def tick_failed(exc, in_a_row):
+        """A tick that raised (TICK_ERRORS_MAX): its keys let go, the error and where kept, the next tick after a frame.
+        -> the count in a row; past TICK_ERRORS_MAX the exception ends the run as before."""
+        in_a_row += 1
+        if in_a_row > TICK_ERRORS_MAX:
+            raise exc
+        error = f"{type(exc).__name__}: {str(exc)[:160]} at {tick_error_where(exc)}"
+        stats["tick_errors"] = stats.get("tick_errors", 0) + 1
+        if stats.get("tick_error") != error:
+            log("tick_error", error=error, trace="".join(traceback.format_exception(exc))[-2000:])
+        stats["tick_error"] = error
+        hold(set())
+        next_frame()
+        return in_a_row
 
     trace = None
     notebook = None
@@ -336,6 +371,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     raise
                 sleep(delay)
                 continue
+            except Exception as exc:                 # noqa: BLE001 - a reader's bug costs the tick (TICK_ERRORS_MAX)
+                tick_errors = tick_failed(exc, tick_errors)
+                continue
             read_retry.recovered(now)
             if snap.get('scoring_players') == 2:
                 solo_native_round = False
@@ -495,7 +533,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 if not mash:
                     sleep(0.15)
                 continue
-            act = bot.tick(snap)
+            try:
+                act = bot.tick(snap)
+                tick_errors = 0
+            except Exception as exc:                 # noqa: BLE001 - TICK_ERRORS_MAX: a bad tick never ends the round
+                tick_errors = tick_failed(exc, tick_errors)
+                continue
             if trace is not None:
                 trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None
