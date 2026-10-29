@@ -2746,6 +2746,39 @@ class Bot:
         return self._go("held", "held_prompt", {"hold": (buttons if self.wiggle % 2 else ()) + stick},
                         f"held: the prompt's {'+'.join(buttons).upper()} mashed, the stick round")
 
+    def _emergency_flashbang(self, p, snap, now) -> dict | None:
+        """The operator's emergency flashbang (#5972): every PiP click detonates another flash at the player's position
+        NOW - rapid-clickable, no cooldown.  The flash grenade is thrown straight at his own feet: no target selection,
+        no facing, no gap.  stats emergency_flashes."""
+        from ..directives import Reader
+        if getattr(self, "commands", None) is None:
+            self.commands = Reader()
+        try:
+            cmd, fresh = self.commands.current(self.stats, time.time())
+        except Exception:                                    # noqa: BLE001 - the command never stops a tick
+            return None
+        if cmd != "flashbang" or not fresh:
+            return None
+        nades = p.get("nades") or {}
+        flash = nades.get(NADE_TYPES["flash"])
+        if not flash or flash[1] <= 0:
+            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
+            return None
+        # Already throwing? Let it finish.
+        if self.nade is not None:
+            return None
+        self.stats["emergency_flashes"] = self.stats.get("emergency_flashes", 0) + 1
+        self.stats["flashes"] = self.stats.get("flashes", 0) + 1
+        # Throw at own feet: target = own position, no facing needed.
+        px, _, pz = p["pos"]
+        self.nade = {"kind": "flash", "index": flash[0], "phase": "face", "at": now, "steps": 0,
+                     "to": (px, pz), "since": now, "seen": [p.get("equipped")], "back_key": "dright",
+                     "gun": p.get("equipped") if isinstance(p.get("equipped"), int)
+                            and p.get("equipped") < WEAPON_INDEXES else None}
+        self.flash_last = now
+        self.nade_last = now
+        return self._go("nade", "nade_flash", {"hold": ("zl", "zr")}, "EMERGENCY FLASHBANG at my feet")
+
     def _wall_command(self, p, live, snap, now) -> dict | None:
         """The operator's wall (the PiP's wall button sends the explore / next_area command; operator 2026-10-28: "it
         basically tells the bot to navigate the level in a different way"): the bonus or goal he was walking to is left
@@ -2864,6 +2897,10 @@ class Bot:
         held = self._held_item(p, live, flat, snap, now)         # a grenade in hand: thrown; another item: put away
         if held is not None:
             return held
+        # The operator's emergency flashbang (#5972): every PiP click = another flash at his feet, no cooldown.
+        emergency = self._emergency_flashbang(p, snap, now)
+        if emergency is not None:
+            return emergency
         n = self.nade                                            # a throw with the grenade in hand (or the gun on its
         if n is not None and not self.down and (n["phase"] != "equip" or p.get("equipped") == n["index"]):
             cam = snap.get("camera")                             # way back) goes on before the near ones' fight - that

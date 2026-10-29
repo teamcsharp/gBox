@@ -28,6 +28,9 @@ COMMANDS = {
     # operator 2026-10-29: the PiP's flashbang button - "have the bot run up to the enemies activating as many QTE events
     # as possible on the enemies. And also discharging a rapid fire magnum on them. And placing a landmine."
     'rush': {'label': 'Flash and rush (in among them: every prompt, the magnum, a mine)', 'hold_s': 10},
+    # operator 2026-10-29 (#5972): "Emergency flashbang: detonate a flash at the player's position NOW" - rapid-clickable,
+    # no cooldown, every click detonates another flash at once.  The bot throws a flash grenade at its own feet.
+    'flashbang': {'label': 'Emergency flashbang (detonate a flash at my position NOW)', 'hold_s': 0},
 }
 MAX_HOLD_S = 600.0                                              # the longest a caller may make a standing mode last
 # typed words -> command (checked in order; the first match wins). Conservative: a plain note stays a plain note.
@@ -37,6 +40,8 @@ PATTERNS = (
                    r'(flee\w*|leav\w*|run\w*|retreat\w*|escap\w*|get\w* (away|out))|\bkeep (dropping|planting|laying) (land ?)?mines\b'
                    r'|\b(land ?)?mines while (fleeing|leaving|running|retreating|escaping)\b'),
     ('mine', r'\b(drop|plant|lay|place) (a |the )?mine\b|\bmine (and|then) (flee|run)\b'),
+    ('flashbang', r'\bflash ?bang\b|\bflashbang\b|\bemergency flash\b|\bflash (at|on) me\b|\bflash (my|at my) (position|feet)\b'
+                  r'|\bdetonate a flash\b|\bflash grenade (at|on) me\b'),
     ('missing', r'\b(you are |you\'re |keep |keeps )?(missing|miss(es)? (him|them|every|mostly))\b|\b(aim|shooting) (is )?(off|wrong|left|right)\b'),
     ('next_area', r'\b(next|another) (area|time bonus|bonus|hourglass|room|objective|checkpoint)\b|\bgo (to )?(the )?next\b|\bmove on\b'),
     ('score', r'\b(score|combo)\b.*\b(up|increas\w*|more|build|higher)\b|\b(increas\w*|raise|build|get) (the |your )?(score|combo)\b'),
