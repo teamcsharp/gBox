@@ -182,3 +182,55 @@ def feedback(bot, action, snap, now):
     forward = bool(player and "lup" in hold and not {"zl", "zr"} & set(hold)
                    and bot.doing not in PRIORITY and bot._wall_rec is None)
     state["previous"] = (now, tuple(player["pos"]), forward) if player else None
+
+
+# Steer before the wall, not after it (operator 2026-10-29: "the bot is just running into a wall or an object and is just
+# unable to navigate anywhere else despite this being an open level"): the left stick's way (its keys and the camera's
+# yaw) probed MESH_PROBE_CM ahead on the stage's nav mesh - the Majini's own; a line that leaves the walkable floor
+# (an edge with no neighbour: a wall, a crate, a drop) is turned to the nearest way within MESH_TURNS that stays on it.
+# stats mesh_steers (turned), mesh_blocked (no clear way: the stuck recovery above takes over).
+MESH_PROBE_CM = 150.0
+MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
+STICK_REL = {("lup",): 0.0, ("lleft", "lup"): math.pi / 4, ("lleft",): math.pi / 2, ("ldown", "lleft"): 3 * math.pi / 4,
+             ("ldown",): math.pi, ("ldown", "lright"): -3 * math.pi / 4, ("lright",): -math.pi / 2,
+             ("lright", "lup"): -math.pi / 4}
+
+
+def stick_heading(hold, yaw):
+    """The world heading the left stick's keys push toward with the camera at yaw (re5_switch.Bot._stick inverted)."""
+    rel = STICK_REL.get(tuple(sorted(k for k in hold if k in ("lup", "ldown", "lleft", "lright"))))
+    return None if rel is None else yaw + rel
+
+
+def mesh_guard(bot, snap, action):
+    from . import re5_switch as R
+    hold, p, mesh = action.get("hold"), snap.get("player") or {}, snap.get("navmesh")
+    if (mesh is None or not hold or {"zl", "zr"} & set(hold) or not p.get("pos") or bot.in_hold or bot.down
+            or snap.get("mercenaries_phase") != R.PHASE_PLAYING):
+        return action
+    yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+    h = stick_heading(hold, yaw)
+    if h is None:
+        return action
+    pos = tuple(p["pos"])
+
+    def clear(way):
+        end = (pos[0] + MESH_PROBE_CM * math.sin(way), pos[1], pos[2] + MESH_PROBE_CM * math.cos(way))
+        try:                                                # off the floor at the end (locate snaps to the nearest)
+            k_end = mesh.find(end)
+            if mesh.find(pos) is None:
+                return None
+            if k_end is None:
+                return False
+            return mesh.floor_segment(pos, end)
+        except Exception:                                   # noqa: BLE001 - the mesh never stops a decision
+            return None
+    if clear(h) is not False:                               # on the floor, or unknown (off the mesh): as it was
+        return action
+    for turn in MESH_TURNS:
+        if clear(h + turn):
+            bot.stats["mesh_steers"] = bot.stats.get("mesh_steers", 0) + 1
+            keys = tuple(k for k in hold if k not in ("lup", "ldown", "lleft", "lright")) + R.Bot._stick(h + turn, yaw)
+            return dict(action, hold=keys)
+    bot.stats["mesh_blocked"] = bot.stats.get("mesh_blocked", 0) + 1
+    return action

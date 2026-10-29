@@ -1095,6 +1095,7 @@ def snapshot(m) -> dict:
                     snap["continue_cursor"] = _i32(m, over + CONTINUE_CURSOR) if over else None
                 except (ValueError, OSError):
                     snap["continue_cursor"] = None
+            snap["navmesh"] = _navmesh(m, base)             # the stage's own walkable floor (re5_switch_native_nav)
     snap["unit_enemies_alive"] = unit_enemies_alive(m, base)
     snap["bonuses"] = time_bonuses(m, base)
     se = u64(m, base + S_ENEMY)
@@ -1192,6 +1193,15 @@ def ui_units(m, base: int | None = None) -> dict:
 
 def _i32(m, a):
     return struct.unpack("<i", m.rd(a, 4))[0]
+
+
+def _navmesh(m, base: int):
+    """The stage's own walkable floor via the native navmesh reader (re5_switch_native_nav)."""
+    from . import re5_switch_native_nav
+    try:
+        return re5_switch_native_nav.get_navmesh(m, base)
+    except Exception:                                # noqa: BLE001 - the mesh never stops a tick
+        return None
 
 
 def screen(m, merc=None) -> dict:
@@ -2937,6 +2947,21 @@ class Bot:
                 return ()
         return ("rleft",) if err > 0 else ("rright",)
 
+    @staticmethod
+    def _stick(h: float, yaw: float) -> tuple:
+        """The left stick toward heading h with the camera at yaw: up along it, left at +90 deg, the diagonals between."""
+        rel = wrap(h - yaw)
+        keys = []
+        if abs(rel) <= 3 * math.pi / 8:
+            keys.append("lup")
+        elif abs(rel) >= 5 * math.pi / 8:
+            keys.append("ldown")
+        if math.pi / 8 < rel < 7 * math.pi / 8:
+            keys.append("lleft")
+        elif -7 * math.pi / 8 < rel < -math.pi / 8:
+            keys.append("lright")
+        return tuple(keys)
+
     def _yaw(self, err: float, window: float | None = None) -> set:
         if abs(err) <= YAW_DEAD:
             return set()
@@ -3233,11 +3258,12 @@ class Bot:
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
         act = self._tick(snap, now)
+        from . import re5_switch_wall
+        act = re5_switch_wall.mesh_guard(self, snap, act)   # the way probed on the nav mesh before the wall
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
-        from . import re5_switch_wall
         re5_switch_wall.feedback(self, act, snap, now)
         self._count_sticks(act, now)
         try:
