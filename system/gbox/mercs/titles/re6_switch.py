@@ -3165,8 +3165,12 @@ class Bot:
 
     def _down_fight(self, p, snap, now) -> dict:
         """Down: the nearest within DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R), no tablet, no
-        stick; nobody near: the stick up to rise."""
+        stick; nobody near: the stick up to rise. Dying at 1 HP: stay down, no fight, no rise - the kick and the
+        rise at 1 health are what the fall/knockdown/dying chain's deaths are made of (#5052)."""
         me = p["pos"]
+        if self.down_dying:
+            self._gun_down()
+            return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
         near = sorted((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                        and math.dist(me, e["pos"]) <= DOWN_FIGHT_R and not self.is_blocked(e, now)),
                       key=lambda e: math.dist(me, e["pos"]))
