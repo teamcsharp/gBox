@@ -363,7 +363,7 @@ class Tracker:
         now = time.time() if now is None else now
         snap = snap or {}
         p = snap.get("player")
-        mesh = snap.get("nav")
+        mesh = (snap.get("nav") or snap.get("navmesh"))
         if mesh is not None and hasattr(mesh, "tris"):
             prev = self.stage_key
             if self.stage_for(mesh) != prev and prev:

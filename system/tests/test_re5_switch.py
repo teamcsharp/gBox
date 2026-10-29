@@ -576,3 +576,55 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
                       "owner": 1, "target": 0}
     b2.tick(snap)
     assert b2.doing == "held"                                         # the game's Break free: the grab
+
+
+# --- the "low health with no tablet or heal" damage cluster (#5074) ----------------------------------------------------
+
+def _snap_no_heals(hp, hp_max=1000, enemy=(0.0, 0.0, 300.0), rot=0.0):
+    """A snapshot at critical HP with an empty heal supply (no HEAL_IDS in the inventory)."""
+    return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": hp_max},
+            "enemies": [{"ptr": 1, "pos": enemy, "hp": 800, "hp_max": 800}],
+            "inventory": [{"id": 0x101, "type": 1, "item": 0x01, "rounds": 30, "grid": 1, "hand": True}]}
+
+
+def test_critical_hp_with_no_heals_retreats_instead_of_fighting():
+    """The #5074 cluster: the bot aimed or fired at <=30% HP with no heal item left and died.  The fix: at or
+    below HEAL_CRITICAL with an empty heal supply the bot turns and runs from the nearest Majini."""
+    b, clock = brain()
+    act = b.tick(_snap_no_heals(hp=240))                                # 24%: under HEAL_CRITICAL (25%)
+    assert "lup" in act["hold"] or "ldown" in act["hold"]               # running (the escape), not aiming
+    assert "zl" not in act["hold"] and "zr" not in act["hold"]          # the gun stays down
+    assert b.escape is not None                                         # the escape state is set
+    assert "no heals" in str(b.stats.get("heal_status", ""))
+    assert b.stats["escapes"] == 1
+
+
+def test_critical_hp_with_no_heals_runs_away_from_the_nearest_enemy():
+    """The retreat heads away from the nearest live Majini, not a fixed direction."""
+    b, clock = brain()
+    # enemy at +x: the retreat runs toward -x (rright = -x in the Switch stick map, see RUN/TURN_TOL)
+    act = b.tick(_snap_no_heals(hp=200, enemy=(500.0, 0.0, 0.0)))
+    assert "rright" in act["hold"]                                      # away from +x
+    b2, _ = brain()
+    act2 = b2.tick(_snap_no_heals(hp=200, enemy=(-500.0, 0.0, 0.0)))
+    assert "rleft" in act2["hold"]                                      # away from -x
+
+
+def test_above_critical_hp_with_no_heals_still_fights():
+    """Only at or below HEAL_CRITICAL does the empty-supply retreat trigger; above it the fight continues."""
+    b, clock = brain()
+    act = b.tick(_snap_no_heals(hp=350))                                # 35%: above HEAL_CRITICAL, below HEAL_AT (40%)
+    assert "zl" in act["hold"] or "zr" in act["hold"] or "rleft" in act["hold"] or "rright" in act["hold"]
+    assert b.escape is None
+    assert "no heals" not in str(b.stats.get("heal_status", ""))
+
+
+def test_critical_hp_with_a_heal_still_heals_instead_of_retreating():
+    """A heal item in the quick slots at critical HP: the normal heal path runs, not the retreat."""
+    b, clock = brain()
+    snap = _snap_no_heals(hp=240)
+    heal_id = next(iter(R.HEAL_IDS))
+    snap["inventory"].append({"id": heal_id, "type": 3, "item": 0x04, "rounds": 1, "grid": 7, "hand": False})
+    act = b.tick(snap)
+    assert b.escape is None
+    assert b.healing is not None or "heal" in str(b.stats.get("heal_status", "")) or act.get("tap") == R.QUICK[7]

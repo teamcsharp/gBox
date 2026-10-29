@@ -616,6 +616,7 @@ class NavMesh:
 
     def __init__(self, verts, tris, links, name=""):
         self.V, self.T, self.N, self.name = verts, tris, links, name
+        self.points, self.tris, self._links = self.V, self.T, None   # the tactical map's stage (gbox/mercs/tactical.py)
         self.C = [tuple(sum(verts[v][i] for v in t) / 3.0 for i in range(3)) for t in tris]
         self.edge_nb: list = []                              # per triangle: {edge (u, v sorted): the neighbour across}
         for k, t in enumerate(tris):
@@ -631,6 +632,20 @@ class NavMesh:
             for gx in range(int(min(xs) // NAV_CELL), int(max(xs) // NAV_CELL) + 1):
                 for gz in range(int(min(zs) // NAV_CELL), int(max(zs) // NAV_CELL) + 1):
                     self.grid.setdefault((gx, gz), []).append(k)
+
+    @property
+    def links(self) -> list:
+        """The tactical map's links: per triangle [(neighbour, its shared edge 0-2, cost)], from N (worked out once)."""
+        if self._links is None:
+            out = []
+            for k, t in enumerate(self.T):
+                row = []
+                for nb in self.N[k]:
+                    shared = set(t) & set(self.T[nb])
+                    row += [(nb, e, 0.0) for e in range(3) if {t[e], t[(e + 1) % 3]} <= shared][:1]
+                out.append(row)
+            self._links = out
+        return self._links
 
     def _inside(self, k, x, z) -> bool:
         (ax, _, az), (bx, _, bz), (cx, _, cz) = (self.V[v] for v in self.T[k])
@@ -1568,7 +1583,10 @@ TABLET_LOWER_S = 0.3                    # R only this long after ZL was last hel
 # confirmed by the health it gave back (infinite_tablets refills the case at once, so the count alone never fell: 30 of
 # 33 presses read as ignored), its gain learned (stats heal_gain); after one he eats the next TABLET_CHAIN_S later while
 # at least HEAL_FILL of a tablet's gain still fits under his maximum (stats tablets_chained), then stops.
-HEAL_FILL, HEAL_GAIN0, HEAL_SEEN_MIN, TABLET_CHAIN_S = 0.5, 0.2, 0.03, 0.6
+# The taps come TABLET_CHAIN_S apart without waiting for the first to show (operator 2026-10-29: "you can just tap it
+# multiple times to spam eating a lot of health caplets and refilling your health ... I need the bot eating enough
+# caplets to refill their health"): a heal is a burst, started at the first press, ended once full enough.
+HEAL_FILL, HEAL_GAIN0, HEAL_SEEN_MIN, TABLET_CHAIN_S = 0.5, 0.2, 0.03, 0.25
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -2933,7 +2951,7 @@ class Bot:
         gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
         if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
-                and self.tablet_wait is None and now - self.tablet_at >= gap
+                and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
@@ -2941,7 +2959,9 @@ class Bot:
             if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
                 return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
-            self.tablet_wait = (p.get("tablets"), now, hp)
+            if self.tablet_wait is None:
+                self.tablet_wait = (p.get("tablets"), now, hp)
+            self.heal_chain = True                               # a burst: tapped on until full enough (topping)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
         taunt = self._taunt(p, live, flat, now)

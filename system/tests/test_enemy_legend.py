@@ -102,3 +102,15 @@ def test_run_maps_keep_each_enemys_type_as_an_index(tmp_path):
     a = {"class": "uEm10"}
     assert cap._kind(a) == [0] and cap._kind({"class": "uEm23"}) == [1] and cap._kind(a) == [0]
     assert cap._kind({"class": None}) == [] and cap.kinds == ["uEm10", "uEm23"]
+
+
+def test_an_re6_nav_mesh_draws_the_live_maps_stage():
+    # operator 2026-10-29: "the tactical map doesn't draw a navigation map of where the bot can go" (RE6: snap["navmesh"])
+    from gbox.mercs.titles import re6_switch as R6
+    m = R6.NavMesh([(0.0, 0.0, 0.0), (400.0, 0.0, 0.0), (400.0, 0.0, 400.0), (0.0, 0.0, 400.0)],
+                   [(0, 1, 2), (0, 2, 3)], [[1], [0]], "stage")
+    tr = T.Tracker(RE6)
+    f = tr.frame({"player": {"pos": (100.0, 0.0, 100.0), "rot": 0.0, "hp": 1, "hp_max": 1}, "navmesh": m}, {}, "playing", now=1.0)
+    assert f["stage"] and f["stage"].startswith(RE6 + ".nav2.")
+    st = T.stage_from_navmesh(m, RE6)
+    assert st["key"] == f["stage"]

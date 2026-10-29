@@ -2289,20 +2289,20 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     assert {"tap": "r"} not in run(bot, snap, clock, 3)                      # being hit: R would be ignored
 
 
-def test_a_tablet_counts_once_the_count_falls_and_an_ignored_press_is_pressed_again():
+def test_a_tablet_counts_once_the_count_falls_and_the_taps_keep_coming_while_he_is_low():
+    # operator 2026-10-29: "you can just tap it multiple times to spam eating a lot of health caplets" - a burst
     g = round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0)
     bot, clock, snap = brain(g)
     assert run(bot, snap, clock, 1)[0] == {"tap": "r"}
     snap["player"]["tablets"] = 7                                            # the press took one
     run(bot, snap, clock, 1)
-    assert bot.stats["tablets"] == 1 and bot.stats["tablet_misses"] == 0
-    clock[0] += R.TABLET_GAP_S
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"} and bot.stats["tablet_presses"] == 2
-    acts = run(bot, snap, clock, int((R.TABLET_CONFIRM_S + R.TABLET_LOWER_S) / 0.05) + 3)   # the count stays: ignored
-    assert bot.stats["tablet_misses"] == 1 and bot.stats["tablets"] == 1
-    assert acts.count({"tap": "r"}) == 1 and acts[0] != {"tap": "r"}        # pressed again once the miss is known
-    assert bot.stats["tablet_presses"] == 3
-
+    assert bot.stats["tablets"] == 1
+    acts = run(bot, snap, clock, int((R.TABLET_CHAIN_S + R.TABLET_LOWER_S) / 0.05) + 4)
+    assert {"tap": "r"} in acts                                              # still low: tapped again at once
+    snap["player"]["hp"] = 900                                               # refilled: no more
+    clock[0] += R.TABLET_CONFIRM_S
+    run(bot, snap, clock, 2)
+    assert {"tap": "r"} not in run(bot, snap, clock, 10)
 
 def test_a_tablet_waits_a_moment_after_the_gun_was_up():
     bot, clock, snap = brain(round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
