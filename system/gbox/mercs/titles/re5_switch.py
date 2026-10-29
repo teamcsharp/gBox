@@ -700,6 +700,10 @@ HURT = 0.6
 ESCAPE_S, ESCAPE_GAP_S, ESCAPES_MAX = 1.2, 4.0, 4
 RUN = ("b", "lup")
 HUNT_R = 1200.0                          # the "hunt" directive: closer than this the fight takes over, farther he walks
+# The "rush" directive (the PiP's flashbang button, operator 2026-10-29): a mine dropped at once, then for its 10 s he closes
+# to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
+# _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
+RUSH_R = 250.0
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
 FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
@@ -1827,7 +1831,7 @@ class Bot:
     def _rampage_gun(self, inv):
         """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
-        for fam in RAMPAGE_FAMILIES:
+        for fam in RAMPAGE_FAMILIES:                     # (the magnum first: the flashbang's rush wants it too)
             candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
@@ -3368,10 +3372,14 @@ class Bot:
             self._pick_door(p, now)
             self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
             self.stats["directive_status"] = "the operator's wall: remembered, backing off along his trail, another way"
+        elif cmd == "rush" and fresh:
+            self.stats["rushes"] = self.stats.get("rushes", 0) + 1
+            self.stats["directive_status"] = "flash and rush: in among them, every prompt, the magnum; " + \
+                self._mine_now("a mine at the next safe moment")
         elif cmd == "missing" and fresh:
             self.stats["directive_status"] = ("the Switch fight closes the laser dot on him before every shot: no learned "
                                               "aim offset to reset")
-        return cmd if cmd in ("fight", "hunt", "score") else None
+        return cmd if cmd in ("fight", "hunt", "score", "rush") else None
 
     def _mine_now(self, ok: str) -> str:
         m = self.mines
@@ -3400,7 +3408,7 @@ class Bot:
             if act is not None:
                 return act
             others = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
-            if self.mode in ("fight", "hunt") and others:     # nobody on his level: go to the nearest one anywhere
+            if self.mode in ("fight", "hunt", "rush") and others:   # nobody on his level: the nearest one anywhere
                 tgt = min(others, key=lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz))
                 err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
                 self.doing, self.why = "walk", f"{self.mode}: the nearest Majini off his level"
@@ -3409,9 +3417,10 @@ class Bot:
             self.doing, self.why = "no_foes", "no Majini alive on his level"
             self._gun_down()
             return {"hold": ()}
-        if self.mode == "hunt" and near > HUNT_R and self.aim_since is None:   # hunt: close in on the nearest
+        reach = RUSH_R if self.mode == "rush" else HUNT_R
+        if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
             err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
-            self.doing, self.why = "walk", f"hunt: the nearest {near / 100:.1f} m"
+            self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
             self._gun_down()
             return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)

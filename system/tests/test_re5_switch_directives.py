@@ -87,3 +87,26 @@ def test_score_shoots_the_nearest_and_next_area_is_the_operators_wall():
     command(b, "next_area", 0)                                     # the PiP's wall button (#1509): another way
     b.tick(snap([(0.0, 0.0, 500.0)]))
     assert b.stats["directive_status"].startswith("the operator's wall")
+
+
+def test_the_flashbangs_rush_drops_a_mine_then_closes_to_arms_length():
+    # operator 2026-10-29: the PiP's flashbang - "run up to the enemies activating as many QTE events as possible ... a
+    # rapid fire magnum ... And placing a landmine"
+    b, clock = bot()
+    s = snap([(0.0, 0.0, 600.0)], [dict(GUN), dict(BOMB)])
+    b.tick(s)
+    clock[0] = 1.0
+    command(b, "rush", 10)
+    b.tick(s)
+    assert b.stats["rushes"] == 1 and b.stats["directive_status"].startswith("flash and rush")
+    assert b.mode == "rush"
+    b2, clock2 = bot()
+    s2 = snap([(0.0, 0.0, 600.0)])                                  # no bomb in the case: straight in
+    b2.tick(s2)
+    clock2[0] = 1.0
+    command(b2, "rush", 10)
+    acts = []
+    for _ in range(3):                                              # (the raised gun comes down first)
+        acts.append(b2.tick(s2))
+        clock2[0] += 0.1
+    assert b2.mode == "rush" and "lup" in acts[-1]["hold"] and b2.why.startswith("rush: the nearest")

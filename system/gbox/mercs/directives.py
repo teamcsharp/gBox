@@ -25,6 +25,9 @@ COMMANDS = {
     # is made due again each time its last mine is planted and left (6 m on), so he plants, moves on, plants ... (re5_ps3._mine_trail)
     'mine_trail': {'label': 'Drop mines while leaving the area (plant, move on, repeat)', 'hold_s': 45},
     'missing': {'label': 'You are missing (adjust the aim for this weapon)', 'hold_s': 0},
+    # operator 2026-10-29: the PiP's flashbang button - "have the bot run up to the enemies activating as many QTE events
+    # as possible on the enemies. And also discharging a rapid fire magnum on them. And placing a landmine."
+    'rush': {'label': 'Flash and rush (in among them: every prompt, the magnum, a mine)', 'hold_s': 10},
 }
 MAX_HOLD_S = 600.0                                              # the longest a caller may make a standing mode last
 # typed words -> command (checked in order; the first match wins). Conservative: a plain note stays a plain note.
