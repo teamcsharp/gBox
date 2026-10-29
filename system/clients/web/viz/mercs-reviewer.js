@@ -5,6 +5,10 @@
   const finite=v=>typeof v==='number'&&Number.isFinite(v), xyz=p=>Array.isArray(p)&&p.length===3&&p.every(finite);
   const clock=t=>{t=Math.max(0,Number(t)||0);return `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;};
   const measuredGeometry=data=>!!data?.geometry&&data.geometry.geometry_available!==false;
+  // Enemy types (gbox/mercs/enemy_kinds.py): the live tactical map's colours, and a legend of portraits (operator
+  // 2026-10-29: "show them in the merc live map and run reviewer with profile pictures as a legend")
+  const KIND_COLORS=['#e34948','#f28e2b','#b07aa1','#59a14f','#edc948','#76b7b2','#ff9da7','#9c755f'];
+  function kindColor(cls){if(!cls)return null;let h=0;for(const ch of String(cls))h=(h*31+ch.charCodeAt(0))>>>0;return KIND_COLORS[h%KIND_COLORS.length];}
   function playersOf(frame){return Array.isArray(frame?.players)?frame.players.filter(p=>p&&typeof p.id==='string').map(p=>({...p,control:['human','bot'].includes(p.control)?p.control:'unknown'})):frame?.player?[{...frame.player,id:'legacy',control:'unknown'}]:[];}
   function playerOf(frame,id){return playersOf(frame).find(p=>p.id===id);}
   function assistanceLabel(value){return value?.verified===true&&value.classification==='unmodified'?'Unmodified':value?.classification==='mod_assisted'?'Mod-assisted':'Modification status unknown';}
@@ -34,7 +38,7 @@
       const [t,x,z,y=0]=r,en=atIndex(map.enemies,i),ck=atIndex(map.clock,i),dg=atIndex(map.doing,i),hp=map.hp?.[i],facing=map.heading?.[i];
       const player={id:'p1',control:dg?.[1]==='operator'?'human':'bot',pos:[x,y,z],...(finite(hp)?{hp}:{}),...(finite(map.hp_max)?{hp_max:map.hp_max}:{}),...(finite(facing)?{facing}:{})};
       return {seq:i,at:t,frame:{players:[player],
-        enemies:(en?.[1]||[]).map((e,k)=>({id:`${en[0]}:${k}`,pos:[e[0],y,e[1]]})),
+        enemies:(en?.[1]||[]).map((e,k)=>({id:`${en[0]}:${k}`,pos:[e[0],y,e[1]],...(Number.isInteger(e[2])&&typeof map.kinds?.[e[2]]==='string'?{cls:map.kinds[e[2]]}:{})})),
         bonuses:bonuses.filter(b=>Array.isArray(b.pos)&&finite(b.seen_t)&&b.seen_t<=t).map(b=>({id:b.id,kind:b.kind,pos:[b.pos[0],b.pos[2]??y,b.pos[1]],taken:finite(b.gone_t)&&t>=b.gone_t})),
         ...(ck?{clock:{left:ck[1],score:ck[2],combo:ck[3],kills:ck[4]}}:{}),
         ...(dg?{plan:{doing:dg[1],phase:dg[2],why:dg[3]}}:{})}};});
@@ -58,7 +62,7 @@
     const sx=flip?-1:1;
     return {point:p=>[width/2+pan[0]+sx*(p[0]-cx)*scale,height/2+pan[1]-(p[2]-cz)*scale],world:(x,y,h)=>[cx+sx*(x-width/2-pan[0])/scale,h,cz-(y-height/2-pan[1])/scale],scale,flip};
   }
-  function mount(host,{api,visible=()=>true}={}){
+  function mount(host,{api,visible=()=>true,portrait=null}={}){
     const doc=host.ownerDocument;let dead=false,revision=0,raf=0,poll=0,feed=0,busy=false,liveBusy=false,pollBusy=false,lastPoll=0,liveFrame=null,liveStats=null,liveSource=null;
     let games=[],runs=[],current=null,data=null,samples=[],events=[],at=0,playing=false,speed=1,live=true,lastRaf=0;
     let colourMode='time',drawn=[],editing=false,drag=null,zoom=1,pan=[0,0],background=null,mapTransform=null,lastSide=0,saveBusy=false,teachBusy=false,fromMark=null,toMark=null,playerChoices='',sessions=[],sessionBusy=false,binding=false;
@@ -83,7 +87,18 @@
     const LEGEND_RUN=[['Path start → end','linear-gradient(90deg,rgb(56,189,248),rgb(167,139,250),rgb(244,114,182),rgb(251,191,36))'],['Start / end','linear-gradient(90deg,#3ddc84 50%,#ffffff 50%)'],['Hit','#ff5c5c'],['Death ✕','#ff2d2d'],['Statue taken ● left ○','#f3cb70'],['Mine','#82d89d'],['Prompt □','#5ee0f0'],['Stuck ✕','#e6e6e6'],['Still ○','#ffd166'],['Known stage','#2b3a4d']];
     let legendMode='';function setLegend(mode){if(mode===legendMode)return;legendMode=mode;legend.replaceChildren();for(const [label,color] of mode==='run'?LEGEND_RUN:LEGEND_ATLAS){const span=el('span'),dot=el('i');dot.style.background=color;if(color.startsWith('linear'))dot.style.width='16px',dot.style.borderRadius='3px';span.append(dot,doc.createTextNode(label));legend.append(span);}}
     setLegend('atlas');
-    mapWrap.append(canvas,mapNote,legend);const ctx=canvas.getContext('2d');
+    const kindsLegend=el('div','mr-kinds');kindsLegend.setAttribute('aria-label','Enemy types on this map');let kindsKey='',portraitNames={},namesFor='';
+    // the types this run's enemies are (a run map's kinds, else the frame's), each with its portrait or initials
+    function paintKinds(f,rm){
+      const title=rm?.title||data?.title||data?.round_map?.title||'',classes=[...new Set([...(rm?.kinds||[]),...(f.enemies||[]).map(e=>e.cls).filter(Boolean)])];
+      if(title&&namesFor!==title&&api){namesFor=title;Promise.resolve(api(`/api/mercs/portraits/${encodeURIComponent(title)}`)).then(r=>{portraitNames=r?.portraits||{};kindsKey='';render();}).catch(()=>{});}
+      const named=cls=>(f.enemies||[]).find(e=>e.cls===cls&&e.kind)?.kind||portraitNames[cls]?.name||cls;
+      const key=title+'|'+classes.map(c=>c+':'+named(c)).join(',');if(key===kindsKey)return;kindsKey=key;kindsLegend.replaceChildren();
+      for(const cls of classes){const span=el('span','mr-kind'),name=named(cls),face=el('b','mr-face',name.slice(0,2).toUpperCase());span.style.setProperty('--kc',kindColor(cls));span.title=cls;
+        if(portrait&&title){const img=el('img');img.alt='';img.src=portrait(title,cls);img.onerror=()=>img.replaceWith(face);span.append(img);}else span.append(face);
+        span.append(el('span','',name));kindsLegend.append(span);}
+    }
+    mapWrap.append(canvas,mapNote,legend,kindsLegend);const ctx=canvas.getContext('2d');
     const controls=el('div','mr-controls'),play=button('Play',()=>{live=false;liveInput.checked=false;playing=!playing;if(playing&&at>=end())at=start();text(play,playing?'Pause':'Play');});
     const seek=el('input');seek.type='range';seek.min='0';seek.max='1000';seek.value='0';seek.setAttribute('aria-label','Playback position');
     const elapsed=el('span','mr-time','0:00 / 0:00'),rate=select();[.25,.5,1,2,4,8].forEach(v=>rate.add(new Option(`${v}×`,v)));rate.value='1';rate.setAttribute('aria-label','Playback speed');
@@ -228,7 +243,8 @@
       setLegend(rm?'run':'atlas');colour.hidden=!rm;if(rm)runPath(ctx,at,3,1);
       for(const b of f.bonuses||[])if(!b.taken)marker(ctx,b.pos,b.kind==='time'?'#f3cb70':rm&&b.kind==='combo'?'#9be37a':'#b19bff',rm?2.5:5);   // a run map: a dot in its final-state symbol, standing now
       for(const mine of f.mines||[])marker(ctx,mine.pos,'#82d89d',4);
-      for(const e of f.enemies||[])marker(ctx,e.pos,'#ff8282',4,rm?null:String(e.id),e.hp,e.hp_max);
+      for(const e of f.enemies||[])marker(ctx,e.pos,kindColor(e.cls)||'#ff8282',4,rm?null:(e.kind||String(e.id)),e.hp,e.hp_max);
+      paintKinds(f,rm);
       const p=f.player;for(const actor of playersOf(f))marker(ctx,actor.pos,playerColor(actor),actor.id===player.value?7:5,`${actor.id.toUpperCase()} ${actor.control} · HP ${actor.hp??'?'}`,actor.hp,actor.hp_max);
       if(p&&xyz(p.pos)&&finite(p.facing)){const [x,y]=mapTransform.point(p.pos);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+(mapTransform.flip?-1:1)*Math.sin(p.facing)*18,y-Math.cos(p.facing)*18);ctx.strokeStyle='#f0fcff';ctx.lineWidth=2;ctx.stroke();}
       if(fromMark!=null||toMark!=null)path(ctx,selectedSamples().map(s=>playerOf(s.frame,player.value)?.pos),'#d8f9ff',4);

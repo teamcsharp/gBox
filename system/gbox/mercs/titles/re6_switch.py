@@ -370,6 +370,23 @@ def ptr_ok(p) -> bool:
     return isinstance(p, int) and 0x1000000 <= p < (1 << 40)
 
 
+_ECLASSES: dict = {}                    # an enemy's vtable -> its class name (uEm5200 ...), named once a boot
+
+
+def enemy_class(m, e) -> str | None:
+    """His RAM class (uEm5200 / uEm5210 zombies, uEm1000 J'avo ...: the live map's legend, gbox/mercs/enemy_kinds.py),
+    one vtable read a tick; each vtable named once (class_name) and remembered."""
+    try:
+        vt = u64(m, e)
+    except (ValueError, OSError, struct.error):
+        return None
+    if vt not in _ECLASSES:
+        if len(_ECLASSES) > 256:
+            _ECLASSES.clear()
+        _ECLASSES[vt] = class_name(m, e)
+    return _ECLASSES[vt]
+
+
 def class_name(m, obj) -> str | None:
     """An MtObject's class from its vtable's getDTI (slot 5: adrp x0 / add x0 / ret)."""
     try:
@@ -891,7 +908,8 @@ def snapshot(m) -> dict:
                     hp, hp_max = struct.unpack("<hh", m.rd(e + E_HP, 4))
                 except (ValueError, OSError):
                     continue
-                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max})
+                snap["enemies"].append({"slot": slot, "ptr": e, "pos": pos, "hp": hp, "hp_max": hp_max,
+                                        "class": enemy_class(m, e)})
         me = (snap.get("player") or {}).get("pos")
         if me is not None:                                  # what the near ones are doing (their wind-ups)
             for en in snap["enemies"]:

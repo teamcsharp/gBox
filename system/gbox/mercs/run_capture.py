@@ -210,7 +210,8 @@ class RunCapture:
         self.heading: list = []
         self.hp_max = None
         self.doing: list = []           # [sample, doing, phase, why]
-        self.enemies: list = []         # [sample, [[x, z], ...]]
+        self.enemies: list = []         # [sample, [[x, z(, kind index)], ...]]
+        self.kinds: list = []           # the enemies' RAM classes, indexed by the rows' third value (enemy_kinds)
         self.clock_rows: list = []      # [sample, timer, score, combo, kills]
         self.bonuses: dict = {}         # id -> record
         self.events: list = []
@@ -291,7 +292,7 @@ class RunCapture:
                 and (_num(e.get("hp")) is None or e["hp"] > 0) and (_num(e.get("hp_max")) is None or e["hp_max"] > 1)]             if hit or i % ENEMY_EVERY == 0 else ()           # the enemies only when this sample keeps them
         if i % ENEMY_EVERY == 0:
             near = sorted(live, key=lambda e: math.hypot(e["pos"][0] - x, e["pos"][2] - z))[:ENEMY_MAX]
-            self.enemies.append([i, [[round(e["pos"][0]), round(e["pos"][2])] for e in near]])
+            self.enemies.append([i, [[round(e["pos"][0]), round(e["pos"][2])] + self._kind(e) for e in near]])
         if i % CLOCK_EVERY == 0:
             self.clock_rows.append([i, _num(snap.get("timer")), _num(snap.get("score")), _num(snap.get("combo")),
                                     _num(snap.get("kills"))])
@@ -331,6 +332,18 @@ class RunCapture:
             self._kills = kills
         self._bonus_tick(now, snap.get("bonuses"), x, z, sum(counts.get(k, 0) for k in TAKE_KEYS))
         return True
+
+    def _kind(self, e) -> list:
+        """[index into self.kinds] for an enemy of a known RAM class (the reviewer's legend), else []."""
+        from . import enemy_kinds
+        cls = e.get("class")
+        if not enemy_kinds.valid_class(cls):
+            return []
+        if cls not in self.kinds:
+            if len(self.kinds) >= 64:
+                return []
+            self.kinds.append(cls)
+        return [self.kinds.index(cls)]
 
     def _bonus_tick(self, now, bonuses, x, z, take_sum) -> None:
         """The statues / capsules: first seen, and gone (taken when he stood near or a take counter rose meanwhile)."""
@@ -427,7 +440,7 @@ class RunCapture:
                 "ended": round(self.ended if self.ended is not None else now, 2), "units": "cm", "cell": self.cell,
                 "sample_s": self.sample_s, "hp_max": self.hp_max, "exploration": ex,
                 "route": [list(r) for r in self.route], "hp": list(self.hp), "heading": list(self.heading),
-                "doing": [list(r) for r in self.doing], "enemies": [list(r) for r in self.enemies],
+                "doing": [list(r) for r in self.doing], "enemies": [list(r) for r in self.enemies], "kinds": list(self.kinds),
                 "clock": [list(r) for r in self.clock_rows], "bonuses": bonuses, "events": list(self.events),
                 "truncated": {k: v for k, v in self.dropped.items() if v},
                 "_mesh": self.mesh}
@@ -440,7 +453,7 @@ class RunCapture:
             folder.mkdir(parents=True, exist_ok=True)
             floor = floor_cells(mesh, self.cell) if mesh is not None else set()
             seen = {(math.floor(x / self.cell), math.floor(z / self.cell))
-                    for _i, rows in rec["enemies"] for x, z in rows}
+                    for _i, rows in rec["enemies"] for x, z, *_kind in rows}
             seen |= {(math.floor(b["pos"][0] / self.cell), math.floor(b["pos"][1] / self.cell)) for b in rec["bonuses"]}
             visited = {tuple(c) for c in rec["cells"]}
             extent = merge_extent(folder / "extent" / "extent.json", self.cell, visited, seen, floor)
