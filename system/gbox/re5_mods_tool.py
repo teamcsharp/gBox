@@ -339,6 +339,10 @@ class RE5:
             st['capabilities']['instant_qte'] = re5_qte.capability(self)
             for op in ("aimbot", "auto_parry", "knife_knockback"):
                 st["capabilities"][op] = {"available": False, "reason": "No verified live control for this hook."}
+            st["capabilities"]["enemy_model_swap"] = {
+                "available": False,
+                "reason": "not yet on PS3: enemy model/character IDs are not mapped yet "
+                          "(the uEm unit vtables are named, but the per-enemy model instance offsets are not)"}
             st["operator_overrides"] = {k: dict(v) for k, v in self.orig.get("operator_overrides", {}).items()}
             st["random_weapon_request"] = re5_controls.request_status(self.orig)
         return st
@@ -1367,7 +1371,9 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
           "time_bonus": "time_bonus_multiplier",
           "merc_time_bonus": "time_bonus_multiplier", "auto_first_aid": "infinite_spray", "first_aid": "infinite_spray",
           "first_aid_spray": "infinite_spray", "infinite_first_aid": "infinite_spray",
-          "auto_qte": "instant_qte", "qte_assist": "instant_qte"}.get(op, op)
+          "auto_qte": "instant_qte", "qte_assist": "instant_qte",
+          "model_swap": "enemy_model_swap", "enemy_swap": "enemy_model_swap",
+          "character_swap": "enemy_model_swap", "swap_enemies": "enemy_model_swap"}.get(op, op)
     operator = bool(extra.get("operator"))
     override = None
     if not operator and op in OPERATOR_SETTINGS:
@@ -1465,6 +1471,10 @@ def _run(ad, op="status", multiplier=None, on=True, g=None, **extra):
         res.update(time_bonus_multiplier(g, multiplier if multiplier is not None else extra.get("x", 1)))
     elif op == "revert_all":
         res.update(revert_all(g))
+    elif op == "enemy_model_swap":
+        res.update(verified=False, supported=False,
+                   reason="not yet on PS3: enemy model/character IDs are not mapped yet (the uEm unit vtables are "
+                          "named, but the per-enemy model instance offsets are not)")
     else:
         raise ValueError("op: status | turn_speed | fire_rate | infinite_ammo | unlimited_health | infinite_spray | bullet_damage | loadout | "
                          "replace_rockets | random_cheats | kill_time | add_time | set_time | time_bonus_multiplier | revert_all | addresses")
@@ -1529,6 +1539,8 @@ class RE5ModsIn(BaseModel):
     # (every one) or [names] back to the shipped values
     values: dict | None = None
     reset: bool | list[str] | None = None
+    # enemy_model_swap (request #6016): the character to replace all enemies with (Ada, Wesker, Jill, ...)
+    enemy_character: str | None = None
 
 
 class RE5ModsOut(BaseModel):
@@ -1564,7 +1576,8 @@ def re5_mods(inp: RE5ModsIn, ctx):
             return {"result": SW.apply_saved(ad, inp.ops)}
         return {"result": SW.tool_run(ad, inp.op, inp.multiplier, inp.on, operator=True, mode=inp.mode,
                                       character=inp.character, stage=inp.stage, weapon=inp.weapon, only=inp.only,
-                                      **({"seconds": inp.seconds} if inp.seconds is not None else {}))}
+                                      **({"seconds": inp.seconds} if inp.seconds is not None else {}),
+                                      **({"enemy_character": inp.enemy_character} if inp.enemy_character is not None else {}))}
     if g.get("platform") != "ps3":
         raise Unsupported(f"re5_mods: Resident Evil 5 on PS3 (RPCS3) or Switch; this session is {g.get('title')} "
                           f"({g.get('platform')})")

@@ -1088,6 +1088,8 @@ NOT_YET = {
     "aimbot": "no verified live control for this hook",
     "auto_parry": "no verified live control for this hook",
     "knife_knockback": "no verified live control for this hook",
+    "enemy_model_swap": "enemy model/character IDs are not mapped on Switch yet (the uEm unit vtables are named, "
+                        "but the per-enemy model instance offsets are not)",
 }
 AVAILABLE = {
     "fire_rate": "the player's time scale while his shot motion plays; read back every snapshot",

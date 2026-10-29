@@ -87,11 +87,24 @@
         + `<option value="">Equip a weapon…</option>`
         + weapons.map(w => `<option value="${ESC(w.id)}"${w.id === current ? " selected" : ""}>${ESC(w.name)}${w.loaded ? " · in hand now" : ""}</option>`).join("")
         + `</select>` : "";
+    // enemy model swap (request #6016): replace all zombies/Majini with another character model (Ada, Wesker, etc.)
+    const ENEMY_SWAP_CHARS = ["Ada", "Wesker", "Jill", "Rebecca", "Barry", "Excella", "Josh", "Sheva"];
+    const swapCap = state.status?.capabilities?.enemy_model_swap;
+    const swapAvailable = swapCap?.available === true;
+    const swapReason = swapCap?.reason || "Enemy model swap is not available on this edition yet.";
+    const enemySwap = `<h4>Enemy model swap</h4>`
+      + `<label class="bl-row"><span>Replace all enemies with</span>`
+      + `<select data-bl-enemy-swap ${scope} aria-label="Replace enemies with character"${locked || !swapAvailable ? " disabled" : ""}>`
+      + `<option value="">(off)</option>`
+      + ENEMY_SWAP_CHARS.map(c => `<option value="${ESC(c)}">${ESC(c)}</option>`).join("")
+      + `</select></label>`
+      + `<p class="bl-note">${ESC(swapAvailable ? "Every enemy in the round becomes the selected character." : swapReason)}</p>`;
     return `<div class="bl-head"><h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>${pick}</div>`
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
       + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
       + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.</p>` : "")
+      + enemySwap
       + `<fieldset${locked || !view ? " disabled" : ""}>${rows}`
       + `<p><button type="button" data-bl-reset ${scope}>Reset behavior to the bot's defaults</button></p></fieldset>`;
   }
@@ -111,6 +124,7 @@
         if (data.bl) set(data.bl, value, data.blScope);
         if (data.blMod) setMod(data.blMod, value, data.blScope);
         if ("blWeapon" in data && value !== "") equip(Number(value), data.blScope);
+        if ("blEnemySwap" in data && value !== "") enemySwap(value, data.blScope);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
       panel.addEventListener("click", e => {
@@ -233,6 +247,15 @@
         const r = s.view.weapon_result || {};
         if (r.verified !== true) throw new Error(r.reason || `${w.name} could not be equipped. Refresh current settings.`);
         s.message = r.note || `${w.name} equipped.`; s.ok = true;
+      }, scope);
+    }
+    function enemySwap(character, scope = target?.scope) {
+      return act(async (bound, s) => {
+        const cap = s.status?.capabilities?.enemy_model_swap;
+        if (!cap?.available) throw new Error(cap?.reason || "Enemy model swap is not available on this edition yet.");
+        const result = await job(bound, s, "enemy_model_swap", { character });
+        if (result.verified !== true) throw new Error(result.reason || "The enemy model swap was not verified.");
+        s.message = `Enemy model swap: ${character}. ${result.note || ""}`; s.ok = true;
       }, scope);
     }
     const reset = (scope = target?.scope) => act(async (bound, s) => {
