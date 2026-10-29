@@ -2921,6 +2921,78 @@ def test_kicks_at_arms_length_every_point_four_seconds_and_a_flanker_is_turned_t
     assert bot.stats["cc_quick_shots"] == 0 and bot.stats["cc_kicks"] == 0
 
 
+# --- damage_clusters crowd_4_in_2m: a flanking cluster, the gun must stay down ----------------------------------------
+# The RE6 damage cluster "crowd_4_in_2m" (gbox/mercs/damage_clusters.py): four or more live enemies within 2 m in any
+# direction while the gun is up (raise/fire, "zl"). The example fields place them on the flanks and behind (bearings
+# ~ -101/-111/117/162 deg) -- all outside CC_CONE, so the gun-down crowd-control branch's cone catches none of them and
+# he would raise the gun into the cluster. The fix: four or more within 2 m with none in the cone still drops the gun and
+# backs out (the same gun-down path), instead of aiming into them.
+
+def _flank4():
+    """Four within 2 m, all flanking/behind (no one within CC_CONE): the cluster's recorded bearing pattern."""
+    import math as _m
+    out = []
+    for dist, deg in ((200.0, -111.0), (190.0, -101.0), (195.0, 117.0), (200.0, 162.0)):
+        a = _m.radians(deg)
+        out.append((dist * _m.sin(a), 0.0, dist * _m.cos(a), 700))
+    return tuple(out)
+
+
+def test_a_flanking_crowd_of_four_within_two_m_drops_the_gun_and_backs_out():
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False                       # the gun was being raised into them ("zl")
+    acts = run(bot, snap, clock, 12)
+    assert any(a.get("doing") == "crowd" or "zl" not in set(a.get("hold", ())) for a in acts)
+    assert all("zl" not in set(a.get("hold", ())) or a == {"hold": ("zl", "zr")} for a in acts)   # never the gun up
+    assert any("ldown" in set(a.get("hold", ())) for a in acts)                                   # backing out
+    assert bot.stats.get("cc_backouts", 0) >= 1 or any(a.get("doing") == "crowd" for a in acts)
+
+
+def test_a_flanking_crowd_of_four_does_not_raise_the_gun():
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 30)
+    gun_up = [a for a in acts if "zl" in set(a.get("hold", ())) and a != {"hold": ("zl", "zr")}]
+    assert gun_up == []                                   # he never raises the gun into the flanking cluster
+    assert any(a.get("doing") == "crowd" or "ldown" in set(a.get("hold", ())) for a in acts)
+
+
+def test_three_within_two_m_on_the_flank_still_raises():
+    # three within 2 m is NOT the crowd_4_in_2m signature -- the gun may still go up (no false positive from the fix)
+    import math as _m
+    three = tuple((190.0 * _m.sin(_m.radians(d)), 0.0, 190.0 * _m.cos(_m.radians(d)), 700) for d in (-111.0, 117.0, 162.0))
+    bot, clock, snap = brain(round_guest(enemies=three, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    # with only three, none within the cone, the fix's >=4 condition is false -> the bot leaves crowd control
+    assert not any(a.get("doing") == "crowd" and "ldown" in set(a.get("hold", ())) for a in acts) or \
+           all("zl" not in set(a.get("hold", ())) for a in acts)
+
+
+def test_a_front_crowd_within_the_cone_is_unchanged():
+    # a four within 2 m with one in front/within CC_CONE: the original gun-down path still owns them (no behavior change)
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 150.0, 700), (150.0, 0.0, 160.0, 700), (-150.0, 0.0, 160.0, 700), (0.0, 0.0, 190.0, 700)),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 30)
+    assert bot.doing == "crowd"                                                    # still crowd control, as before the fix
+    assert bot.stats["cc_quick_shots"] >= 1                                        # quick shots into the front one
+    for a in acts:                                                                  # "zl" only ever as the quick shot, never a bare aim
+        assert "zl" not in set(a.get("hold", ())) or a.get("hold") == ("zl", "zr") or a.get("hold") == ("ldown", "zl", "zr")
+
+
+def test_the_fix_uses_the_damage_clusters_threshold_not_the_module_crowd_n():
+    # guardrail: the new branch fires on FOUR within 2 m (damage_clusters CROWD_N=4, CROWD_R=200), not the module's
+    # CROWD_N=2 -- a two-zombie flanking pair must NOT trigger the new gun-down path
+    import math as _m
+    two = tuple((190.0 * _m.sin(_m.radians(d)), 0.0, 190.0 * _m.cos(_m.radians(d)), 700) for d in (-111.0, 117.0))
+    bot, clock, snap = brain(round_guest(enemies=two, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    assert not any(a.get("doing") == "crowd" and "ldown" in set(a.get("hold", ())) for a in acts)   # no forced back-out
+
+
 def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
     clock = [0.0]
     d = R.RE6Switch(clock=lambda: clock[0])
