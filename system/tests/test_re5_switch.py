@@ -576,3 +576,40 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
                       "owner": 1, "target": 0}
     b2.tick(snap)
     assert b2.doing == "held"                                         # the game's Break free: the grab
+
+
+def test_crowd_fire_shoots_close_enemy_with_aim_off(monkeypatch):
+    """The idle_in_5m_s fix: within RAMPAGE_R the shotgun's spread covers a wide cone, so the trigger stays down
+    even when the aim is off by more than CROWD_CONE (10 deg) but less than CLOSE_FIRE_CONE (45 deg)."""
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    b, clock = brain()
+    # Three enemies within 5m to enter crowd fire mode
+    near = [(0.0, 0.0, 300.0), (200.0, 0.0, 200.0), (-200.0, 0.0, 200.0)]
+    b.tick(bot_snap(enemy=near[0], more=near[1:]))
+    clock[0] = 0.05
+    b.tick(bot_snap(enemy=near[0], more=near[1:]))
+    clock[0] = 0.3
+    # The aim is 30 degrees off the nearest enemy (within CLOSE_FIRE_CONE=45, outside CROWD_CONE=10)
+    off_aim = ray((260.0, 110.0, 150.0))  # ~30 deg off the enemy at (0,0,300)
+    act = b.tick(bot_snap(enemy=near[0], more=near[1:], laser=off_aim))
+    assert "zr" in act["hold"], f"expected firing with aim off at close range, got {act}"
+    assert b.stats["idle_in_5m_s"] == 0, "idle_in_5m_s should not increment when firing"
+
+
+def test_replay_incident_idle_among_foes_shoots_close_range(monkeypatch):
+    """Replay the incident round (cluster aef43e59aa636e02, round:idle_among_foes) from the fixture:
+    three Majini within RAMPAGE_R, aim ~20 deg off the nearest enemy. Before the fix the bot
+    steered but never fired (aim > CROWD_CONE=10 deg). With CLOSE_FIRE_CONE=45 deg the trigger
+    stays down even with the aim off, so the bot shoots the close enemy instead of idling."""
+    import json
+    from pathlib import Path
+    from gbox.mercs import incident_replay
+
+    monkeypatch.setattr(R, "CROWD_FIRE", True)
+    fixture_path = Path(__file__).parent / "fixtures" / "mercs_incidents" / "re5_switch_idle_among_foes.json"
+    fixture = json.loads(fixture_path.read_text())
+    result = incident_replay.replay(fixture, ticks=5)
+    keys = incident_replay.keys(result)
+    assert "zl" in keys, f"expected trigger hold in replay, got {keys}"
+    assert fixture["cluster"]["id"] == "aef43e59aa636e02"
+    assert fixture["cluster"]["signature"] == "round:idle_among_foes"

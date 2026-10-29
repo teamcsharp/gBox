@@ -442,6 +442,9 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
+# Close-range crowd fire: within RAMPAGE_R the shotgun's spread covers a wide cone, so the trigger stays down even
+# when the aim is off by up to this much (the idle_in_5m_s fault: Majini within 5 m left alive while the aim turns).
+CLOSE_FIRE_CONE = math.radians(45)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
                     "offscreen_aim_s", "whips", "rampage_swaps", "crowd_fire_s", "shotgun_swaps")
@@ -1896,11 +1899,17 @@ class Bot:
                 keys |= self._pitch(pitch_err)
             on = bool(where) or abs(yaw_err) <= CROWD_CONE or any(
                 dot_on(dot, e["pos"]) or through(origin, dot, e["pos"]) for e in ring)
+            if crowd and not on and dist <= RAMPAGE_R:
+                # close range: the shotgun's spread covers a wide cone - fire even with the aim off
+                on = abs(yaw_err) <= CLOSE_FIRE_CONE
         else:
             self._aimctx = {"target": key, "dist": dist, "bearing": body_err, "yaw_err": body_err, "where": None,
                             "laserless": True, "weapon": weapon, "gate": "rampage: the gun coming up"}
             keys |= self._yaw(body_err)
             on = abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
+            if crowd and not on and dist <= RAMPAGE_R:
+                # close range: the shotgun's spread covers a wide cone - fire even with the aim off
+                on = abs(body_err) <= CLOSE_FIRE_CONE
         if dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
             on = True                                    # point blank in front: on him
         if crowd:

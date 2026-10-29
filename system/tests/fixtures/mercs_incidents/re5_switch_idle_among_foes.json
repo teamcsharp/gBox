@@ -1,0 +1,163 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "010018100CD46000",
+  "event_id": "fb37d474d96344599dd1f365d49ff41a",
+  "cluster": {
+    "id": "aef43e59aa636e02",
+    "game_id": "52d15709be0fda1a",
+    "signature": "round:idle_among_foes",
+    "label": "enemies within 5 m left alive (idle)"
+  },
+  "observed_at": 1793273459.7368715,
+  "hp_before": 1000,
+  "hp_after": 804,
+  "hp_max": 1000,
+  "loss": 196,
+  "held": [
+    "zl",
+    "zr"
+  ],
+  "counters": {
+    "combo": 0,
+    "kills": 0,
+    "score": 0,
+    "timer": 30.0,
+    "idle_in_5m_s": 40.0
+  },
+  "decision": {
+    "act": "crowd fire",
+    "phase": "rampage"
+  },
+  "snapshot": {
+    "combo": 0,
+    "combo_timer": 0.0,
+    "mercenaries_phase": 1,
+    "module_base": 260512432128,
+    "player": {
+      "hp": 1000,
+      "hp_max": 1000,
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ptr": 400636848720,
+      "rot": 0.0
+    },
+    "enemies": [
+      {
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [
+          400.0,
+          0.0,
+          146.0
+        ],
+        "ptr": 400560996976,
+        "slot": 22
+      },
+      {
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [
+          300.0,
+          0.0,
+          -220.0
+        ],
+        "ptr": 400651627968,
+        "slot": 32
+      },
+      {
+        "hp": 700,
+        "hp_max": 700,
+        "pos": [
+          300.0,
+          0.0,
+          220.0
+        ],
+        "ptr": 400554819744,
+        "slot": 0
+      },
+      {
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [
+          1000.0,
+          0.0,
+          0.0
+        ],
+        "ptr": 400653320352,
+        "slot": 39
+      },
+      {
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [
+          0.0,
+          0.0,
+          -1200.0
+        ],
+        "ptr": 400554137168,
+        "slot": 29
+      }
+    ],
+    "kills": 0,
+    "max_combo": 0,
+    "score": 0,
+    "timer": 30.0,
+    "timer_start": 120.0
+  },
+  "preceding_history": [
+    {
+      "at": 1793273458.7,
+      "held": [
+        "zl",
+        "zr"
+      ],
+      "hp": 1000,
+      "kills": 0,
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rot": 0.0,
+      "score": 0,
+      "combo": 0
+    },
+    {
+      "at": 1793273459.0,
+      "held": [
+        "zl",
+        "zr"
+      ],
+      "hp": 1000,
+      "kills": 0,
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rot": 0.0,
+      "score": 0,
+      "combo": 0
+    },
+    {
+      "at": 1793273459.3,
+      "held": [
+        "zl",
+        "zr"
+      ],
+      "hp": 1000,
+      "kills": 0,
+      "pos": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rot": 0.0,
+      "score": 0,
+      "combo": 0
+    }
+  ]
+}
