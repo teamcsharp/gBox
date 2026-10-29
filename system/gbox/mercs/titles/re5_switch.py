@@ -348,6 +348,9 @@ LEVEL_COST, LEVEL_DY = 1.5, 120.0
 # PITCH_GUARD_R; a grab threat (GRAB_THREAT_R) always first. Up close (THREAT_R) he keeps his target until it dies or
 # leaves THREAT_R unless another gets within GRAB_THREAT_R and nearer (no re-pick every tick among equal threats).
 PITCH_SWING, PITCH_GUARD_R, MUZZLE_H = math.radians(25), 600.0, 140.0
+# A hold he cannot break free from in time: one on his level this near, never out-aimed for a farther one (HOLD_FIRST)
+# - the target he already has is kept and shot at (the "grabbed from the front" cluster, #5133: 2.2-3.2 m holds).
+HOLD_FIRST, HOLD_R = True, 350.0
 LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # Combo time (operator 2026-10-27 13:10: "There should never be him chilling surrounded by enemies ... It is essential to
 # be proactive with combo time"): the Mercenaries combo (cGameSys +0x974 count, +0x97C the window's seconds left). Each
@@ -2587,9 +2590,20 @@ class Bot:
             best = grab
         elif in_pool and td(cur) <= THREAT_KEEP * td(best) + THREAT_KEEP_CM:
             best = cur
+        if self._held_near(p, live, cur, now) and cur is not None and best is not cur:
+            best = cur                                         # hold first: a farther one is not a swing while he is held
         if best is not cur:
             self.stats["threat_switches"] += 1
         return best
+
+    def _held_near(self, p, live, cur, now) -> bool:
+        """One on his level within HOLD_R (a hold he would not break in time): hold first - the current target kept
+        (HOLD_FIRST), never a swing at a farther one while that near one stands (the grab cluster's cause)."""
+        if not HOLD_FIRST or cur is None or not any(e is cur for e in live):
+            return False
+        px, py, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        return any(abs(e["pos"][1] - py) <= LEVEL_DY and flat(e) <= HOLD_R for e in live)
 
     def _choose(self, p, live, now):
         """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
@@ -2634,7 +2648,7 @@ class Bot:
                     self.stats["close_keeps"] += 1           # up close: kept until it dies or leaves THREAT_R
                     self._set_target(cur.get("ptr", cur.get("slot")), now)
                     return cur
-        if self._threat_near(p, live):                       # one on his level within reach of him: threat first
+        if self._threat_near(p, live) or self._held_near(p, live, cur, now):  # a threat or a hold nearby: threat first
             best = self._threat_pick(p, live, cur, now)
             if best is not cur:
                 self.target_at = now
