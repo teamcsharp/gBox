@@ -19,7 +19,13 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     Never run REA/Ghidra here or infer a write from a title string. Existing RE6
     opt-out settings remain authoritative and its writer retains the save backup.
     """
+    from . import pso_gc_unlocks
     profile = profile_for(game)
+    if game.get('game_id') == pso_gc_unlocks.GAME_ID and game.get('platform') == pso_gc_unlocks.PLATFORM:
+        # PSO Episode I & II Plus (GameCube, USA): report the resolved revision and
+        # the guarded writer's (still empty) plan. Never touch a real card here.
+        from . import pso_gc_unlocks
+        return pso_gc_unlocks.pre_launch(game)
     if not profile['verified']:
         return {'state': 'research_pending', 'applied': False, 'reason': profile['reason']}
     if game.get('game_id') == RE6_ID and game.get('platform') == 'xbox360':
@@ -37,6 +43,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    from . import pso_gc_unlocks
+    if game.get('game_id') == pso_gc_unlocks.GAME_ID and game.get('platform') == pso_gc_unlocks.PLATFORM:
+        # PSO Episode I & II Plus (GameCube, USA): the owned build and its main
+        # executable are hashed, but no save flag is runtime-proven yet, so the
+        # profile stays unverified and pre_launch short-circuits before any writer.
+        prof = pso_gc_unlocks.profile()
+        return {'status': prof['status'], 'profile': prof.get('profile'),
+                'verified': prof.get('verified', False), 'scope': prof.get('scope', []),
+                'reason': prof.get('reason'), 'categories': prof.get('categories', {}),
+                'evidence': prof.get('evidence', {}), 'game_id': prof.get('game_id'),
+                'platform': prof.get('platform')}
     if game.get('game_id') != RE6_ID or game.get('platform') != 'xbox360':
         return {'status': 'unsupported', 'profile': None, 'verified': False,
                 'scope': [], 'reason': 'No verified unlock profile for this exact catalog game/build.'}
