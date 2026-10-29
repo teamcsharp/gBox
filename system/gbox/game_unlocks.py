@@ -75,17 +75,26 @@ def profile_for(game: dict) -> dict:
         from . import acv_evidence
         inv = acv_evidence.inventory()
         pending = acv_evidence.unresolved(inv)
+        # The static evidence inventory covers 8/8 categories, but the lock
+        # status of `pending` categories is still unknown and the on-load
+        # unlock routine is not implemented; no runtime acceptance has been
+        # performed. verified stays False until an idle authorized ACV-Xenia
+        # worker confirms the unlock at load.
+        resolved = len(acv_evidence.CATEGORIES) - len(pending)
         return {'status': 'research_pending', 'profile': 'acv-x360-lock-surface-v1', 'verified': False,
                 'game_id': ACV_ID, 'scope': list(acv_evidence.CATEGORIES),
                 'exclusions': list(acv_evidence.OFFLINE_GREYOUT),
-                'reason': ('Armored Core V lock surface and category inventory are recorded for the owned '
-                           'revision, but the on-load unlock routine is not implemented and the scope is not '
-                           'runtime-verified yet.'),
+                'reason': (f'Armored Core V static evidence inventory covers 8/8 categories '
+                           f'({resolved}/8 resolved, {len(pending)} unresolved), but the on-load unlock '
+                           f'routine is not implemented and no runtime acceptance has been performed.'),
                 'evidence': {'executable_sha256': acv_evidence.ACV_XEX_SHA256,
                              'ghidra_artifact_sha256': acv_evidence.ACV_GHIDRA_ARTIFACT_SHA256,
                              'lock_surface': acv_evidence.LOCK_SURFACE,
-                             'inventory': inv},
-                'unresolved_categories': pending}
+                             'inventory': inv,
+                             'inventory_complete': len(pending) == 0,
+                             'unresolved_count': len(pending)},
+                'unresolved_categories': pending,
+                'next': 'Implement the profile_for unlock routine and run runtime acceptance on an idle authorized ACV-Xenia worker.'}
     from . import doax2_unlock
     if game.get('game_id') == doax2_unlock.GAME_ID and game.get('platform') == doax2_unlock.PLATFORM:
         # Honest gate for DOAX2: research pending, no verified write targets exist.
