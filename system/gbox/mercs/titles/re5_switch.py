@@ -1366,28 +1366,6 @@ def dot_on(dot, foot) -> str | None:
     return None
 
 
-def point_blank_on(origin, dot, foot) -> bool:
-    """Point blank (a ray shorter than POINT_BLANK_RAY): whether the aim direction actually intercepts him, not just
-    proximity. A short ray does not reach his chest, so through()'s have >= want - FIRE_SLACK guard always fails here;
-    the laser's *direction* is what matters: does the ray (extended) pass inside his body's angular width of his chest,
-    or through his head/body on the way. The near range-sanity check is dropped: at point blank the ray terminating short
-    means it hit him, not a wall, provided the direction still points into his body."""
-    chest = (foot[0], foot[1] + CHEST_H, foot[2])
-    want, have = math.dist(origin, chest), math.dist(origin, dot)
-    if want < 1.0 or have < 1.0:
-        return False
-    d = tuple((dot[k] - origin[k]) / have for k in range(3))
-    cos = sum((chest[k] - origin[k]) * d[k] for k in range(3)) / want
-    if math.acos(max(-1.0, min(1.0, cos))) <= math.atan2(BODY_R, want):
-        return True
-    for h in (HEAD_H, CHEST_H, KNEE_H + 30):
-        along = sum((foot[k] + (h if k == 1 else 0.0) - origin[k]) * d[k] for k in range(3))
-        if 0.0 < along and dot_on(tuple(origin[k] + along * d[k] for k in range(3)), foot) is not None:
-            return True
-    return False
-
-
-
 def through(origin, dot, foot) -> bool:
     """Whether the ray origin -> dot runs to him: it reaches his chest's distance (less FIRE_SLACK) and passes inside his
     head or body on the way, or ends inside his body's angular width of his chest (close up the body is wide)."""
@@ -2045,10 +2023,8 @@ class Bot:
             on = not crowd and abs(body_err) <= CROWD_CONE and p.get("motion") in MOTION_AIM
         ap = p.get("aim_pitch")
         want_pitch = math.atan2(tgt["pos"][1] + CHEST_H - py - MUZZLE_H, max(dist, 1.0))
-        if (not crowd and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
-                and lz and lz.get("up") and lz.get("from") and lz.get("at")
-                and point_blank_on(tuple(lz["from"]), tuple(lz["at"]), tgt["pos"])):
-            on = True                                    # point blank in front: on him (only if the ray actually has him)
+        if not crowd and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
+            on = True                                    # point blank in front: on him
         if self._cam_down(p, tgt["pos"], dist, now):     # the gun at their feet (CAM_DOWN_GUARD): up to the chest first,
             on = False                                   # no shotgun blast into the floor among them
             keys = (keys - {"rdown"}) | self._pitch(want_pitch + ap)
@@ -3643,7 +3619,8 @@ class Bot:
         have_p = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
         want_p = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
         cam_read = CAM_GUARD and not self._cam["off"] and p.get("aim_pitch") is not None
-        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM and not cam_read:
+        point_blank = dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
+        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM and not cam_read and not point_blank:
             self._first_check = False
             if not self._raise_is_reroll and have_p > want_p + REROLL_ERR:
                 self._reroll_next = True                 # the raise came up high: down and up again, once
@@ -3652,8 +3629,6 @@ class Bot:
                                                    f"{math.degrees(want_p):+.0f} deg: raised again")
                 self._gun_down()
                 return {"hold": ()}
-        point_blank = (ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
-                       and point_blank_on(origin, dot, foot))
         far_off = abs(yaw_err) > UNAIM_ERR and not point_blank
         self.unaim_since = (self.unaim_since or now) if far_off else None
         if far_off:                                          # the aim is far off him
