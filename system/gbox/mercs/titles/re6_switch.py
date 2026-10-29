@@ -2803,7 +2803,10 @@ class Bot:
         if getattr(self, "commands", None) is None:
             self.commands = Reader()
         try:
-            cmd, fresh = self.commands.current(self.stats, time.time())
+            # Reader.current consumes one-shots. Leave other commands for their
+            # controller later in this tick (notably the emergency flash).
+            cmd, fresh = (self.commands.current(self.stats, time.time())
+                          if self.stats.get("directive") in ("explore", "next_area") else (None, False))
         except Exception:                                    # noqa: BLE001 - the command never stops a tick
             return None
         if cmd in ("explore", "next_area") and fresh:
