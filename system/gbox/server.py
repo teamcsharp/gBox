@@ -197,6 +197,9 @@ def create_app(config: Config) -> FastAPI:
     # RE damage incidents by cause -> one batch request per cause per game (GET /api/mercs/damage-clusters)
     from .mercs import damage_clusters
     damage_clusters.install(app, store, config, auth)
+    # The operator's per-title strategy stack (GET/POST /api/mercs/strategy)
+    from .mercs import strategy as mercs_strategy
+    mercs_strategy.install(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
