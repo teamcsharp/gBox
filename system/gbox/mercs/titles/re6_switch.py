@@ -1540,6 +1540,12 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
+# Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
+# they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
+# confirmed by the health it gave back (infinite_tablets refills the case at once, so the count alone never fell: 30 of
+# 33 presses read as ignored), its gain learned (stats heal_gain); after one he eats the next TABLET_CHAIN_S later while
+# at least HEAL_FILL of a tablet's gain still fits under his maximum (stats tablets_chained), then stops.
+HEAL_FILL, HEAL_GAIN0, HEAL_SEEN_MIN, TABLET_CHAIN_S = 0.5, 0.2, 0.03, 0.6
 TABLET_CONFIRM_S, TABLET_RETRY_S = 1.5, 1.0   # a press that took one drops the count within this; one the game ignored
                                         # (live 2026-10-27: 5 of 6 presses in a crowd left the HUD's count at 7) is
                                         # pressed again this soon, and only while he is free (action 0)
@@ -2103,7 +2109,8 @@ class Bot:
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
-        self.tablet_wait, self.tablet_missed = None, False   # (the count, when) after an R press, until it falls
+        self.tablet_wait, self.tablet_missed = None, False   # (the count, when, health) after an R press, until it falls
+        self.heal_gain, self.heal_chain = None, False        # a tablet's learned gain; eating on to the top (HEAL_FILL)
         self._zl_at = -1e9                                   # when ZL was last held
         self.tablet_dying, self.dying_since = False, None    # that press made while dying; dying since when
         self.keeping_off = False
@@ -2308,15 +2315,25 @@ class Bot:
         the game ignored (stats tablet_misses), tried again after TABLET_RETRY_S."""
         if self.tablet_wait is None:
             return
-        before, at = self.tablet_wait
-        n = p.get("tablets")
-        if isinstance(n, int) and isinstance(before, int) and n < before:
+        before, at, *rest = self.tablet_wait
+        hp0 = rest[0] if rest else None
+        n, hp, hp_max = p.get("tablets"), p.get("hp") or 0, p.get("hp_max") or 0
+        gained = hp - hp0 if isinstance(hp0, (int, float)) else 0
+        if (isinstance(n, int) and isinstance(before, int) and n < before)                 or (hp_max and gained >= HEAL_SEEN_MIN * hp_max):
             self.stats["tablets"] += 1
             if self.tablet_dying:
                 self.stats["tablet_dying_taken"] += 1
+            if gained > 0:
+                self.heal_gain = gained if self.heal_gain is None else 0.7 * self.heal_gain + 0.3 * gained
+                self.stats["heal_gain"] = round(self.heal_gain)
+            fits = hp_max - hp >= HEAL_FILL * (self.heal_gain or HEAL_GAIN0 * hp_max) if hp_max else False
+            if fits:
+                self.stats["tablets_chained"] = self.stats.get("tablets_chained", 0) + 1
+            self.heal_chain = fits
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, False, False
         elif now - at >= TABLET_CONFIRM_S:
             self.stats["tablet_misses"] += 1
+            self.heal_chain = False
             self.tablet_wait, self.tablet_missed, self.tablet_dying = None, True, False
 
     def _dying(self, p, now) -> dict | None:
@@ -2332,7 +2349,7 @@ class Bot:
         if (p.get("tablets") or 0) <= 0 or self.tablet_wait is not None or now - self.tablet_at < DYING_GAP_S:
             return None
         self._gun_down()
-        self.tablet_at, self.tablet_wait, self.tablet_dying = now, (p.get("tablets"), now), True
+        self.tablet_at, self.tablet_wait, self.tablet_dying = now, (p.get("tablets"), now, p.get("hp")), True
         self.stats["tablet_presses"] += 1
         self.stats["tablet_dying_presses"] += 1
         return self._go("tablet", "tablet_dying", {"tap": "r"}, "dying at 1 health: a tablet")
@@ -2871,18 +2888,21 @@ class Bot:
         self.stats["target_dist"] = round(dist)
         crowd = sum(1 for e in live if flat(e) < CROWD_R)
         hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
-        gap = TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
+        topping = self.heal_chain and hp_max and hp_max - hp >= HEAL_FILL * (self.heal_gain or HEAL_GAIN0 * hp_max)
+        if self.heal_chain and not topping:
+            self.heal_chain = False                              # full enough: no tablet past his maximum
+        gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
         if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
                 and self.tablet_wait is None and now - self.tablet_at >= gap
-                and (hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
+                and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
                          and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
             if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
                 return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
             self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
-            self.tablet_wait = (p.get("tablets"), now)
+            self.tablet_wait = (p.get("tablets"), now, hp)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
         taunt = self._taunt(p, live, flat, now)
@@ -3521,7 +3541,7 @@ class Bot:
             if heal:
                 self.stats["tablet_prompt_presses"] = self.stats.get("tablet_prompt_presses", 0) + 1
                 self.tablet_at = now
-                self.tablet_wait = (p.get("tablets"), now)
+                self.tablet_wait = (p.get("tablets"), now, hp)
             self._prompt_pressed(key, now)
             self._gun_down()
             if key == "stick":
