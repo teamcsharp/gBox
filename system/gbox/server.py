@@ -4371,11 +4371,13 @@ def create_app(config: Config) -> FastAPI:
         # each pad event says who sent it (player / ui / autoplay / agent), from the authenticated actor - never what the
         # client wrote: the worker gives the pad to the operator only, never to an agent or a bridge pressing buttons in
         # the same session. The operator's own events also say whether they may take the pad from the session's bot for
-        # a moment (gbox/pad_takeover.py): not from automation, and only from a machine that is viewing this session.
+        # a moment (gbox/pad_takeover.py): not from automation. Operator 2026-10-29: from ANY gBox instance — the
+        # viewing check that used to gate this is gone (office: none, living room: partial); the operator picks up a
+        # controller wherever they are and the bot lets go.
         host = request.client.host if request.client else ""
         operator = padstate._source(actor, {}) in pad_takeover.OPERATOR_SOURCES
         keys = any(isinstance(e, dict) and "rpc" not in e and isinstance(e.get("key"), str) and e["key"] for e in ev.events)
-        claim = operator and keys and not _automated(actor, origin) and operator_guard.viewing(store, sid, host)
+        claim = operator and keys and not _automated(actor, origin)
         events = pad_takeover.stamp(ev.events, lambda e: padstate._source(actor, e), lease=claim, actor=actor,
                                     via=f"{origin.get('client') or 'app'}@{host}" if operator else "")
         if (store.get('session',sid) or {}).get('federation'):

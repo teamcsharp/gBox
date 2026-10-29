@@ -279,8 +279,9 @@ def _wait(cond, timeout=10.0):
 
 
 def test_input_forwarded_from_the_operators_app_takes_the_pad_end_to_end(plane, monkeypatch):
-    """Control plane + worker pump over HTTP: the app's pad press for a session it views makes the session's bot let go
-    before the press reaches the emulator; agents, automation and a machine not viewing it never take the pad."""
+    """Control plane + worker pump over HTTP: the operator's pad press from ANY gBox instance makes the session's bot
+    let go before the press reaches the emulator; agents and automation never take the pad (operator 2026-10-29:
+    the viewing check is gone — office had no takeover at all, living room only partial)."""
     monkeypatch.setattr(padstate, "watch_xinput", lambda *a, **kw: None)
     monkeypatch.setattr(pad_takeover, "spawn", lambda fn, name: threading.Thread(target=fn, daemon=True).start())
     sid = "w9-e2e"
@@ -301,16 +302,24 @@ def test_input_forwarded_from_the_operators_app_takes_the_pad_end_to_end(plane, 
         threading.Thread(target=tools._pump, args=(sid, ad, str(plane.base_url), dict(plane.headers)), daemon=True).start()
         keys = lambda: [(e["key"], e["down"]) for rows in applied for e in rows]
 
-        # an agent's press and a machine that is not viewing the session: delivered, never a takeover
+        # an agent's press: delivered, never a takeover
         plane.post(f"/api/sessions/{sid}/input", json={"events": [{"key": "a", "down": True}]},
                    headers={"x-gbox-actor": "agent"}).raise_for_status()
-        plane.post(f"/api/sessions/{sid}/input", json={"events": [{"key": "y", "down": True, "player": 1}]}).raise_for_status()
-        assert _wait(lambda: ("y", True) in keys())
+        assert _wait(lambda: ("a", True) in keys())
         assert not pad_takeover.active(sid) and ("lup", False) not in keys()
         agent_row = next(e for rows in applied for e in rows if e["key"] == "a")
         assert agent_row["src"] == "agent" and "lease" not in agent_row
+
+        # the operator's own press from ANY machine (no viewing report): the bot lets go first, then the press lands
+        plane.post(f"/api/sessions/{sid}/input", json={"events": [{"key": "y", "down": True, "player": 1}]}).raise_for_status()
+        assert _wait(lambda: ("y", True) in keys())
+        assert pad_takeover.active(sid) and ("lup", False) in keys()
         unviewed = next(e for rows in applied for e in rows if e["key"] == "y")
-        assert unviewed["src"] == "player" and unviewed["lease"] is False
+        assert unviewed["src"] == "player" and unviewed["lease"] is True
+
+        # put the pad down before the next check
+        plane.post(f"/api/sessions/{sid}/input", json={"events": [{"key": "y", "down": False, "player": 1}]}).raise_for_status()
+        assert _wait(lambda: not pad_takeover.active(sid), 5)
 
         # automation acting as the operator (a worker tool inside an agent's job) is refused too
         store.put("session_watch", "app:127.0.0.1:test", {"session_id": sid, "until": time.time() + 60, "host": "127.0.0.1"})
@@ -320,7 +329,7 @@ def test_input_forwarded_from_the_operators_app_takes_the_pad_end_to_end(plane, 
                    headers={"x-gbox-parent-job": "agentjob"}).raise_for_status()
         assert _wait(lambda: ("x", True) in keys()) and not pad_takeover.active(sid)
 
-        # the operator's app viewing it: the bot lets go first, then the press lands
+        # a second takeover from the operator: the bot lets go again
         plane.post(f"/api/sessions/{sid}/input", json={"events": [{"key": "b", "down": True, "player": 1}]}).raise_for_status()
         assert _wait(lambda: ("b", True) in keys())
         k = keys()
@@ -339,7 +348,7 @@ def test_input_forwarded_from_the_operators_app_takes_the_pad_end_to_end(plane, 
         assert _wait(lambda: run["live"].get("operator_control") is False, 5)
         gate([{"key": "lright", "down": True}])
         assert applied[-1] == [{"key": "lright", "down": True}]
-        seg = pad_takeover.segment(f"{sid}:1")
+        seg = pad_takeover.segment(f"{sid}:2")
         assert seg["source"] == "remote" and seg["actor"] == "operator" and seg["keys"][0][1] == ["b"]
     finally:
         done.set()
