@@ -2444,7 +2444,7 @@ sessionsView.after = (sid, mode) => {
   scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (streamInputAllowed(sid) && !held.has(k)) { held.add(k); send(k, true); } };
   scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
   scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
-  scr.addEventListener("gbox-stream-state", e => { if (!e.detail.connected) scr.onblur(); });
+  scr.addEventListener("gbox-stream-state", e => { if (!(e.detail.input ?? e.detail.connected)) scr.onblur(); });
   if (pg) {                                             // click / hold a button on the controller glyph = press it in the game
     pg.onpointerdown = e => { if (e.button !== 0 || !streamInputAllowed(sid)) return;  // ignore presses while the picture reconnects
       const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();

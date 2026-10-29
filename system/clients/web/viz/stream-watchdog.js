@@ -68,10 +68,14 @@
       } catch { return null; }
     };
   }
-  // Used by browser input forwarding: releases are always allowed, new presses wait for the viewed stream.
+  // Used by browser input forwarding: releases are always allowed. New presses keep flowing through a picture stall or a
+  // reconnect (operator 2026-10-29: "whenever I take control of the session ... it keeps losing connection and saying
+  // reconnecting in the middle of trying to control it"; every blip released the held buttons and the bot took the pad
+  // back): only an ended session or a picture gone reattachAfterStall or longer (data-stream-input="held") holds them.
+  const inputOk = (el, value) => value !== 'ended' && el.getAttribute('data-stream-input') !== 'held';
   function inputAllowed(el, sid) {
     if (!isStream(el) || sessionOf(el.getAttribute('src')) !== sid) return true;
-    return el.getAttribute('data-stream-state') === 'connected';
+    return inputOk(el, el.getAttribute('data-stream-state'));
   }
   // healthMisses: health reads that must fail in a row before a stream is reconnected for it. One failed read is the
   // control plane or this PC's link being slow (operator 2026-10-27: the PiP over Wi-Fi reconnected - stopped - on
@@ -119,7 +123,8 @@
     }
     function status(el, value) {
       const s = state.get(el); if (!s) return;
-      const changed = s.status !== value; s.status = value;
+      const input = inputOk(el, value);
+      const changed = s.status !== value || s.input !== input; s.status = value; s.input = input;
       if (!s.badge && doc.createElement && doc.body) {
         const b = doc.createElement('div'); b.className = 'gbox-stream-badge'; b.setAttribute?.('role', 'status');
         Object.assign(b.style || {}, { position: 'fixed', zIndex: '40', pointerEvents: 'none', font: '11px system-ui, sans-serif',
@@ -135,7 +140,7 @@
       if (changed) {
         el.setAttribute('data-stream-state', value);
         if (env?.CustomEvent) el.dispatchEvent?.(new env.CustomEvent('gbox-stream-state', {
-          detail: { session: sessionOf(el.getAttribute('src')), state: value, connected: value === 'connected' }
+          detail: { session: sessionOf(el.getAttribute('src')), state: value, connected: value === 'connected', input }
         }));
       }
     }
@@ -149,9 +154,13 @@
       if (s.alt != null) el.setAttribute('alt', '');
       status(el, 'reconnecting');
     }
+    function holdInput(el, on) {
+      if (on || el.getAttribute('data-stream-input') === 'held') el.setAttribute('data-stream-input', on ? 'held' : 'free');
+    }
     function calm(el) {
       const s = info(el);
       if (s.trouble || s.stale) log(`game stream recovered (${s.trouble || 'stale source'})`);
+      holdInput(el, false);
       cancelRetry(s); s.trouble = null; s.stale = false; s.attempt = 0;
       if (s.alt != null) el.setAttribute('alt', s.alt);
       status(el, 'connected');
@@ -160,6 +169,11 @@
       const s = info(el);
       if (s.pending || s.ended || !current(el, s)) return false;
       s.pending = true; trouble(el, reason);
+      // The poster shows while the new connection's first picture loads: the server's newest frame, fetched now (the
+      // retry waits a second or more) - never the periodic backdrop, up to posterEvery old. A cross-origin stream can't be
+      // read for captureFrame, so every reconnect showed that older frame ("it will play and then jump back to a previous
+      // frame while showing reconnecting", operator 2026-10-29).
+      refreshPoster(el);
       const generation = s.retryGeneration;
       const delay = Math.min(maxDelay, 1000 * 2 ** Math.min(s.attempt, 4));
       s.retryTimer = setTimer(() => {
@@ -219,8 +233,10 @@
         }
         const age = h.age_s == null ? null : h.age_s * 1000;
         if (h.worker_online === false || age === null || !Number.isFinite(age) || age >= stallAfter) {
+          const gone = h.worker_online === false || age === null || !Number.isFinite(age) || age >= reattachAfterStall;
+          holdInput(el, gone);                             // a brief stall keeps the pad; a long one holds new presses
           s.stale = true; trouble(el, 'source stalled');
-          if (h.worker_online === false || age === null || !Number.isFinite(age) || age >= reattachAfterStall) reconnect(el, 'source stalled');
+          if (gone) reconnect(el, 'source stalled');
           return;
         }
         s.stale = false;
