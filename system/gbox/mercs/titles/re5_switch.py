@@ -606,6 +606,11 @@ CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted", "cam_down_
 BONUS, BONUS_VT, BONUS_SCAN_S, BONUS_FIGHT_R, BONUS_WALK_R, BONUS_BLOCK_S, BONUS_JUMP_S = \
     True, 0x1BD6D58, 1.0, 300.0, 250.0, 12.0, 20.0       # (a Majini within 3 m: the fight takes over the run - 21:0x)
 KNIFE_R, KNIFE_FACE, KNIFE_SWING_S, KNIFE_TRY_S, KNIFE_RETRIES = 90.0, math.radians(12), 0.35, 3.0, 2
+# A statue in reach that still will not break after a full knife (no snap prompt on the live Switch, off his level, or
+# behind a wall) is given up and the next open one targeted (the damage cluster's 138-missed-per-round fault: the run
+# was locked on one unbreakable statue, the rest of the round's bonuses never reached). ~2 s of knife in reach -
+# several full swings - is enough to break a real one; longer is the dead one (give up, take the next open one).
+KNIFE_CAP_S = 2.0
 # Live 16:59-17:04: 8 statues seen, none taken - he spawned on the roof (y 550) and walked at one 1.6 m below for a
 # minute: stuck BONUS_JUMP_TRY_S with the statue off his level, the context action (Y, the "Jump down" prompt) first.
 BONUS_JUMP_TRY_S = 0.8
@@ -1734,8 +1739,8 @@ class Bot:
         b = next((x for x in open_ if run is not None and x["ptr"] == run["ptr"]), None) or min(open_, key=cost)
         if run is None or run["ptr"] != b["ptr"]:
             self.stats["bonus_runs"] += 1
-            run = self._bonus = {"ptr": b["ptr"], "since": now, "knife_since": None, "retries": 0,
-                                 "best": 1e9, "best_at": now, "side": 1, "detour_until": -1e9, "detours": 0}
+            run = self._bonus = {"ptr": b["ptr"], "since": now, "knife_since": None, "knife_total": 0.0,
+                                 "retries": 0, "best": 1e9, "best_at": now, "side": 1, "detour_until": -1e9, "detours": 0}
         if self.aim_since is not None:
             self._gun_down()
         bx, by, bz = b["pos"]
@@ -1754,12 +1759,20 @@ class Bot:
                 self.doing, self.why = "turn", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: facing it"
                 run["knife_since"] = None
                 return {"hold": self._turn(err)}
-            run["knife_since"] = run["knife_since"] or now
+            run["knife_since"] = run["knife_since"] or now         # his time in reach, accruing toward the dead-one cap
+            run["knife_total"] = (run.get("knife_total") or 0.0) + max(0.0, now - run["knife_since"])
+            if run["knife_total"] > KNIFE_CAP_S:                  # (still in reach after a full knife: off its level,
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S  #  a wall, or the live Switch's snap never shows -
+                self._bonus = None                                #  give it up, the next open one)
+                self.doing, self.why = "walk", "time bonus: it will not break - the next one"
+                return {"hold": ("lup",)}
             if now - run["knife_since"] > KNIFE_TRY_S:   # not broken yet: a step in, again (then another one)
                 run["knife_since"], run["retries"] = None, run["retries"] + 1
-                if run["retries"] > KNIFE_RETRIES:
+                if run["retries"] > KNIFE_RETRIES:       # (a step in is no use here either: off its level, a wall - give up)
                     self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S
                     self._bonus = None
+                    self.doing, self.why = "walk", "time bonus: it will not break - the next one"
+                    return {"hold": ("lup",)}
                 self.doing, self.why = "walk", "time bonus: a step closer for the knife"
                 return {"hold": ("lup",)}
             swing = int((now - run["knife_since"]) / KNIFE_SWING_S) % 2 == 1
