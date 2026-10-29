@@ -145,6 +145,12 @@ def pick(p: dict, enemies, *, held=None, dotted=None, extra_ok=None):
     if front_close:
         return keep(front_close, near(front_close)), "the nearest threat in front (the gun stays up)"
     contact = [e for e in level if flat(p["pos"], e["pos"]) <= CONTACT_R]
+    if (held_e is not None
+            and abs(bearing(p, held_e["pos"])) <= FRONT_CONE
+            and flat(p["pos"], held_e["pos"]) <= FRONT_CLEAR_R):
+        # the held target is in front within FRONT_CLEAR_R (the gun stays up on him): a back-door contact pick must
+        # also be in front, else the swing turns to a side/behind Majini and the held front one is left unaddressed
+        contact = [e for e in contact if abs(bearing(p, e["pos"])) <= FRONT_CONE]
     if contact:
         return near(contact), "a Majini at arm's length: turn to him"
     if dotted is not None:                      # a farther one under the dot: no closer threat stands in front
