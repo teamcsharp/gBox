@@ -2598,17 +2598,6 @@ class Bot:
         if self.qshot_release:                                   # a quick shot: both triggers went down last tick
             self.qshot_release = False
             return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
-        if getattr(self, "hit_qs", 0) > 0:                       # hit: quick shots back at whoever is on him (HIT_QS_N)
-            near = [e for e in alive if math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= HIT_QS_R]
-            if not near:
-                self.hit_qs = 0
-            elif not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S:
-                self.hit_qs -= 1
-                self.qshot_at = now
-                self.qshot_release = True
-                self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
-                return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
-                                f"hit: a quick shot back ({self.hit_qs} more)")
         if self.quick:                                           # the quick turn: the stick back, + B, let go
             step, self.quick = self.quick, (self.quick + 1) % 4
             if step == 2:
@@ -2627,6 +2616,17 @@ class Bot:
         self._census_tick(p, snap, live)
         self._taunt_watch(snap, now)
         self._windup_tick(p, snap, now)
+        if getattr(self, "hit_qs", 0) > 0:                       # hit: quick shots back at whoever is on him (HIT_QS_N)
+            close_by = [e for e in live if flat(e) <= HIT_QS_R]
+            if not close_by:
+                self.hit_qs = 0
+            elif not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S:
+                self.hit_qs -= 1
+                self.qshot_at = now
+                self.qshot_release = True
+                self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
+                return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
+                                f"hit: a quick shot back ({self.hit_qs} more)")
         self._down_tick(p, snap, now)
         self._hazard_tick(p, live, flat, now)
         self._prompt_shown = self._prompt_book(p, snap, now)
