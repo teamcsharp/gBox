@@ -4305,7 +4305,8 @@ setInterval(() => {
 }, 2000);
 document.addEventListener('gbox-stream-state', event => {
   if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
-  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});
+  const input = event.detail.input ?? event.detail.connected;      // the pad keeps working through a brief stall
+  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!input})`).catch(() => {});
 }, true);
 // Pad takeover (gbox/pad_takeover.py): the view forwards your pad to the PiP's game and says when that game's bot let you
 // have it (GBOX:{ev:"padtakeover"}); the view is hidden behind the PiP, so the PiP shows the badge - "You have control -
