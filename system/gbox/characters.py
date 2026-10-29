@@ -2768,6 +2768,10 @@ def characters_tool(inp: CharIn, ctx):
     if gid in clayfighter_swap.GAME_IDS and (inp.slot == "player" or inp.slot.startswith("fighter:")):
         # Clay Fighter SC (N64): one fighter's sprite frames re-drawn from a sprites entry -> cfsc_<slug>_as_<fighter>
         return {"result": out | clayfighter_swap.use(ctx, meta, game, inp)}
+    from . import goldeneye_swap
+    if gid in goldeneye_swap.GAME_IDS and goldeneye_swap.is_slot(inp.slot):
+        # GoldenEye 007 (N64): body:<name> (default CdjbondZ) -> ge_<slug>_as_<body> (ROM copy, native Z-file writer)
+        return {"result": out | goldeneye_swap.use(ctx, meta, game, inp)}
     from . import pe_swap
     if gid in pe_swap.GAME_IDS and inp.slot == "player":         # Parasite Eve (PS1): Aya, all 5 outfits -> pe_<slug>
         return {"result": out | pe_swap.use(ctx, meta, game, inp)}

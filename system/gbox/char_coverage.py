@@ -103,6 +103,10 @@ WRITERS = [
      "Dead Or Alive ++ (arcade, MAME doapp): any of the 11 fighters' costume models (player = all 44) rebuilt on the "
      "fighter's own 15 bones (motions, moves and accessory chains stay) in a new doapp set folder; read back through "
      "the game's fight init + skeleton build; unverified in MAME"),
+    ("goldeneye_swap", ["body:<name>", "player"],
+     "GoldenEye 007 (N64, Europe): any of the 80 roster bodies (default CdjbondZ) rebuilt natively in a ROM copy "
+     "(rarezip Z-file splice/relayout via gbox.goldeneye_writer; skeleton, textures and animations preserved); "
+     "unverified in game"),
 ]
 SPECIAL = [                                               # writers routed by code in characters.py, not a module's use()
     ("re4gc", "build_re4(", ["player"], "Leon (story + Mercenaries, every costume pack)"),
