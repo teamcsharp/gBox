@@ -232,7 +232,9 @@ def chris_block(g: RE5Switch, off: int) -> bool:
 
 def mine_loadout(g: RE5Switch, on: bool) -> dict:
     """Chris (BSAA)'s loadout template, both banks: record 1 the proximity bomb (on) or the hand grenades (off). Only the
-    id word of a block whose records match is written; the round after builds its inventory from it."""
+    id word of a block whose records match is written; the round after builds its inventory from it. Once the template
+    ops own the blocks (MercMode's round loadout composes them every round), every character carries the bomb
+    (compose_templates, _mine_block)."""
     want = MINE_ID if on else GRENADE_ID
     if g.state.get("tpl_orig") is not None:              # the template ops own the blocks now: compose them
         g.state["mine_loadout"] = bool(on)
@@ -241,8 +243,7 @@ def mine_loadout(g: RE5Switch, on: bool) -> dict:
         done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at) if g.u32(a) == want]
         return {"mine_loadout": bool(on), "verified": bool(res["verified"] and done), "blocks": done,
                 "effective": "the next round's start",
-                "note": "Chris (BSAA)'s record 1 the proximity bomb x5 at grid 1" if on else
-                        "Chris (BSAA)'s hand grenades back at grid 1"}
+                "note": "every character's grenades as the proximity bomb" if on else "the game's grenades back"}
     blocks, ok = [], True
     for off in CHRIS_TEMPLATES:
         if not chris_block(g, off):
@@ -308,15 +309,16 @@ def template_blocks(g: RE5Switch) -> list:
 
 
 def _tpl_orig(g: RE5Switch) -> dict:
-    """Every loadout block as the game had it (read once a boot; mine_loadout's bomb in Chris's record 1 counted as
-    the grenades it replaced, so a block read after it is still the original)."""
+    """Every loadout block as the game had it (read once a boot; a bomb mine_loadout wrote counted as the grenades it
+    replaced, so a block read after it is still the original)."""
     orig = g.state.get("tpl_orig")
     if orig is None:
         orig = {}
         for _i, ptr in template_blocks(g):
             t = bytearray(g.rd(ptr, TEMPLATE_REC * TEMPLATE_RECS))
-            if ptr - g.base in CHRIS_TEMPLATES and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == MINE_ID:
-                struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, GRENADE_ID)
+            for k in range(TEMPLATE_RECS):         # a bomb mine_loadout wrote counts as the grenade it replaced
+                if struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] == MINE_ID:
+                    struct.pack_into("<I", t, k * TEMPLATE_REC + REC_ID, GRENADE_ID)
             orig[ptr] = bytes(t)
         g.state["tpl_orig"] = orig
     return orig
@@ -363,9 +365,8 @@ def compose_templates(g: RE5Switch) -> dict:
                 records += 1
         if g.state.get("rampage_loadout"):
             records += int(_rampage_block(t))
-        if g.state.get("mine_loadout") and ptr - g.base in CHRIS_TEMPLATES \
-                and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == GRENADE_ID:
-            struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, MINE_ID)
+        if g.state.get("mine_loadout"):
+            records += int(_mine_block(t))
         if g.rd(ptr, len(t)) != bytes(t):
             ok = g.wr(ptr, bytes(t)) and ok
             ok = ok and g.rd(ptr, len(t)) == bytes(t)
@@ -373,6 +374,20 @@ def compose_templates(g: RE5Switch) -> dict:
     return {"verified": bool(ok), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
             "effective_next_round": True,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def _mine_block(t: bytearray) -> bool:
+    """Every character carries proximity bombs (operator 2026-10-28: "every round of RE5 needs mines"; Chris (BSAA) alone
+    had them, so a Jill or Sheva round placed none): the block's hand grenades become the bomb, else its first other
+    grenade (incendiary, flash). False when it has the bomb already or no grenade to swap."""
+    ids = [struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] for k in range(TEMPLATE_RECS)]
+    if MINE_ID in ids:
+        return False
+    for want in (GRENADE_ID, 0x107, 0x108):
+        if want in ids:
+            struct.pack_into("<I", t, ids.index(want) * TEMPLATE_REC + REC_ID, MINE_ID)
+            return True
+    return False
 
 
 def _rampage_block(t: bytearray) -> bool:

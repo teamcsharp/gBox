@@ -180,7 +180,7 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
                                                ["replace_long_guns", {}],                         # no sniper rifles
                                                ["rampage_loadout", {"on": True}]]
     assert rm.spec["mercs"]["round_ops"] == [
-        ["loadout", {"on": True, "only": True, "weapons": ["0x0B", "0x1A", "0x1B"]}]]
+        ["loadout", {"on": True, "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x17", "0x16", "0x04"]}]]   # magnums, shotguns
 
 
 def test_thirty_times_fire_rate_remains_only_in_the_shot_motion():
@@ -265,3 +265,16 @@ def test_mine_loadout_writes_nothing_where_the_block_is_not_chriss():
     ad = Adapter(g)
     res = SM.run(ad, "mine_loadout", on=True)
     assert not res["verified"] and res["blocks"] == [] and ad.writes == []
+
+
+def test_composed_templates_give_every_character_the_bomb():
+    # operator 2026-10-28: "every round of RE5 needs mines" - Chris (BSAA) alone had them
+    t = bytearray(SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    struct.pack_into("<I", t, 0 * SM.TEMPLATE_REC, 0x11A)                 # a magnum
+    struct.pack_into("<I", t, 2 * SM.TEMPLATE_REC, SM.GRENADE_ID)         # hand grenades at record 2 (not Chris's 1)
+    assert SM._mine_block(t) is True
+    assert struct.unpack_from("<I", t, 2 * SM.TEMPLATE_REC)[0] == SM.MINE_ID
+    assert SM._mine_block(t) is False                                     # already carries it
+    flash = bytearray(SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    struct.pack_into("<I", flash, 3 * SM.TEMPLATE_REC, 0x108)             # only flash grenades: they become the bomb
+    assert SM._mine_block(flash) and struct.unpack_from("<I", flash, 3 * SM.TEMPLATE_REC)[0] == SM.MINE_ID
