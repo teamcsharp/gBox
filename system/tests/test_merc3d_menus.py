@@ -369,3 +369,13 @@ def test_the_autosaves_saved_dialog_is_the_menus_turn_and_takes_a():
     assert M.step(M.screen(saving)) == "a"
     assert d.screen(saving, None) == "results"
     assert d.menu_handoff(saving, {}, "results") is True
+
+
+def test_you_are_dead_is_the_menus_turn_not_a_round_with_no_player():
+    # live 2026-10-29 (the i9): "YOU ARE DEAD - Continue?" read as a round; the bot idled with no player for hours
+    d = M.DRIVER()
+    idx = STAGE.index("cMerceStageYouAreDeadState")
+    g = _guest("aS0000", STAGE, idx)
+    assert M.screen(g)["where"] == "dead"
+    assert d.screen(g, None) == "results" and d.menu_handoff(g, {}, "results") is True
+    assert M.step(M.screen(g)) == "a"

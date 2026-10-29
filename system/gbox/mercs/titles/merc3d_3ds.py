@@ -462,7 +462,12 @@ class Merc3D(Driver):
         return snapshot(m)
 
     def screen(self, m, snap: dict | None) -> str:
-        where = screen(m).get("where")
+        scr = screen(m)
+        where = scr.get("where")
+        if where == "dead" and scr.get("state") == "cMerceStageYouAreDeadState":
+            # YOU ARE DEAD - Continue?: the menus' turn (STEPS "dead": A), never a round with no player (live 2026-10-29,
+            # the i9: the bot idled there for hours - "the i9 is just sitting idle and i never see it playing")
+            return "results"
         if where in ("playing", "dead", "results", "loading"):
             return where
         return "results" if where in MENU_HANDOFF else "loading"

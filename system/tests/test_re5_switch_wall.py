@@ -314,3 +314,21 @@ def test_damage_with_nobody_near_marks_the_spot_as_a_hazard_and_backs_out(tmp_pa
     s["enemies"][0]["pos"] = (500.0, 0.0, 600.0)                            # a Majini at arm's length: his hit, no hazard
     b._k_tick(s, 1.2)
     assert b.stats["hazard_spots"] == 1
+
+
+def test_the_way_ahead_is_checked_on_the_nav_mesh_and_turned_before_a_wall():
+    # operator 2026-10-29: "the bot is just running at this wall" - the stage's own nav mesh (#1535) steers him
+    import math
+    from gbox.mercs.titles import re5_switch as R
+
+    class Mesh:                                       # floor only where z <= 300
+        def member(self, pos): return 0
+        def floor_segment(self, a, b): return b[2] <= 300.0
+    b = R.Bot(stats={}, clock=lambda: 0.0)
+    snap = {"nav": Mesh(), "player": {"pos": (0.0, 0.0, 200.0), "rot": 0.0}}
+    out = b._mesh_guard({"hold": ("lup",)}, snap)       # facing +z: the wall 1 m ahead
+    assert out["hold"] != ("lup",) and b.stats["mesh_steers"] == 1
+    assert {"rleft", "rright"} & set(out["hold"])
+    snap["player"]["rot"] = math.pi                     # facing away: open floor, untouched
+    assert b._mesh_guard({"hold": ("lup",)}, snap) == {"hold": ("lup",)}
+    assert b._mesh_guard({"hold": ("lup", "zl")}, {**snap, "player": {"pos": (0.0, 0.0, 200.0), "rot": 0.0}}) == {"hold": ("lup", "zl")}
