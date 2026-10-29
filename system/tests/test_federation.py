@@ -506,3 +506,16 @@ def test_pending_autoplay_report_recovers_same_observation_after_central_restart
     assert response.status_code==200,response.text
     assert response.json()['saved'] and calls==[(SID,{'score':123})]
     assert store.get('federation_autoplay_report',identifier)['ack']==response.json()
+
+
+def test_a_stream_pickers_preview_watches_that_session_for_a_while(cfg, monkeypatch):
+    # operator 2026-10-28: "select a stream and jump to that other PIP game instance ... swap back and forth": the i9's
+    # card said "Preview unavailable" forever - its desktop relays frames only for watched sessions
+    app,c=plane(cfg);enroll(c)
+    assert c.get('/api/federation/'+AUTH+'/watch').json()['sessions']==[]
+    assert c.get('/api/sessions/'+SID+'/frame.jpg').status_code==404    # no picture yet: the relay starts now
+    assert c.get('/api/federation/'+AUTH+'/watch').json()['sessions']==[SID]
+    import gbox.server as srv
+    later=time.time()+16
+    monkeypatch.setattr(srv.time,'time',lambda:later)
+    assert c.get('/api/federation/'+AUTH+'/watch').json()['sessions']==[]
