@@ -215,3 +215,14 @@ async function forwarding() {
 }
 
 forwarding().then(() => console.log('Controller map checks passed')).catch(e => { console.error(e); process.exitCode = 1; });
+
+// ---- analog consoles: sticks as sticks, the d-pad as the d-pad (operator 2026-10-28, RE5 on Switch: moving the stick
+// registered the d-pad and the stick) ----
+{
+  const sw = P.profile('switch');
+  assert.equal(sw.sticks, true);
+  assert.deepEqual(sorted(P.read(pad([], [0, -1, 0, 0]), null, sw, {}).keys), ['lup'], 'left stick up: the stick only');
+  assert.deepEqual(sorted(P.read(pad([], [0, 0, 1, 0]), null, sw, {}).keys), ['rright'], 'right stick: the camera');
+  assert.deepEqual(sorted(P.read(pad([12]), null, sw, {}).keys), ['up'], 'd-pad up: the d-pad');
+  assert.equal(P.profile('snes').sticks, false, 'a d-pad console keeps the stick as its d-pad');
+}
