@@ -409,6 +409,32 @@ def brain(snap_guest):
     return R.Bot(stats={}, clock=lambda: clock[0]), clock, R.snapshot(snap_guest)
 
 
+def test_operator_flash_reaches_throw_controller_through_full_tick():
+    from gbox.mercs import directives as D
+    bot, clock, snap = brain(round_guest(enemies=()))
+    snap["player"].update(equipped=0, nades={R.NADE_TYPES["flash"]: (11, 20)})
+    D.apply_to_stats(bot.stats, D.post("test-re6-flash-routing", "flashbang"))
+    run(bot, snap, clock, 1)
+    # Controller acceptance only: no synthetic projectile/detonation claim.
+    assert bot.nade is not None and bot.nade["kind"] == "flash"
+    assert bot.stats.get("emergency_flashes") == 1
+    run(bot, snap, clock, 2)
+    assert bot.stats.get("emergency_flashes") == 1
+
+
+@pytest.mark.parametrize("command", ["next_area", "explore"])
+def test_operator_wall_command_reaches_escape_once_through_full_tick(command):
+    from gbox.mercs import directives as D
+    bot, clock, snap = brain(round_guest(enemies=()))
+    D.apply_to_stats(bot.stats, D.post("test-re6-wall-routing", command))
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.stats.get("wall_reports") == 1
+    assert set(act.get("hold", ())) & {"lup", "ldown", "lleft", "lright"}
+    until = bot.wall_escape[0]
+    run(bot, snap, clock, 2)
+    assert bot.stats.get("wall_reports") == 1 and bot.wall_escape[0] == until
+
+
 def test_at_a_stand_it_throws_a_remote_bomb_and_sets_it_off_when_they_are_on_it():
     crowd = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 900.0, 700))   # 4
     bot, clock, snap = brain(round_guest(enemies=crowd))
