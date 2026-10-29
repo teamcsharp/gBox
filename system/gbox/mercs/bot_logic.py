@@ -69,6 +69,8 @@ KNOBS: dict[str, list[tuple]] = {
         ("GRAB_DETONATE", "Set the bomb off from a grab", "Weapons", "bool", 0, 1, 1, ""),
         ("SURVIVAL_HP", "Survival mode under health", "Survival", "float", 0.1, 0.7, 0.05, ""),
         ("TABLET_HP", "Tablet at health fraction", "Survival", "float", 0.2, 0.9, 0.05, ""),
+        ("HEAL_FILL", "Eat on while this much of a tablet fits", "Survival", "float", 0.2, 1.0, 0.1,
+         "after a tablet, more until he is topped up; never past his maximum"),
         ("TAUNTS", "Taunts", "Style", "bool", 0, 1, 1, ""),
     ],
 }

@@ -3090,3 +3090,27 @@ def test_no_loadout_keeps_a_sniper_rifle(mods):
         except Exception:
             continue
         assert not any(t in mods.SNIPER_TYPES for t, _c in w)
+
+
+def test_tablets_are_confirmed_by_health_and_eaten_to_the_top_never_past_it():
+    # operator 2026-10-28: "eat enough health capsules to regain their health when they eat them, but not any more";
+    # infinite_tablets refills the case at once, so the count never falls - the health tells
+    g = round_guest(hp=400, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0)
+    bot, clock, snap = brain(g)
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}
+    snap["player"]["hp"] = 600                                               # +200, the count unchanged
+    run(bot, snap, clock, 1)
+    assert bot.stats["tablets"] == 1 and bot.stats["tablet_misses"] == 0 and bot.stats["heal_gain"] == 200
+    assert bot.heal_chain                                                    # 300 short of 900: another fits
+    clock[0] += R.TABLET_CHAIN_S
+    assert {"tap": "r"} in run(bot, snap, clock, int(R.TABLET_LOWER_S / 0.05) + 2)   # the next at once, not at 60 %
+    snap["player"]["hp"] = 800
+    run(bot, snap, clock, 1)
+    assert bot.stats["tablets"] == 2 and bot.heal_chain                      # 100 short = half a tablet: one more
+    clock[0] += R.TABLET_CHAIN_S
+    assert {"tap": "r"} in run(bot, snap, clock, int(R.TABLET_LOWER_S / 0.05) + 2)
+    snap["player"]["hp"] = 900
+    run(bot, snap, clock, 1)
+    assert not bot.heal_chain                                                # full: no more
+    clock[0] += R.TABLET_GAP_S
+    assert {"tap": "r"} not in run(bot, snap, clock, 10)
