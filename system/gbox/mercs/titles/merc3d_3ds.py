@@ -79,9 +79,11 @@ BOOT_KEY = "a"                          # the gore warning: the first screen RAM
 STEPS = {"gore_warning": "a", "press_start": "start", "demo": "start", "title_menu": "a", "select_player": "a",
          "duo_menu": "b", "records": "b", "options": "b", "special": "b",
          "results": "a",                    # the result screens after a round: A through them, back to the main menu
-         "dead": "a"}                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
+         "dead": "a",                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
                                             # sat for minutes with the clock frozen and nothing pressed)
-MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead")
+         "saving": "a"}                     # the autosave's "Saved." after a round waits for a button (live 2026-10-28,
+                                            # the i9: it sat 30 min; read as loading, the run ended after 20 s of it)
+MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead", "saving")
 MAIN_NOTICE_AFTER, MAIN_NOTICE_MAX = 3, 2
 # An unlock notice overlays cMerceMainMainState without changing its flow state. On the i9 (2026-10-28), 38 R
 # presses made no progress; one A through the same network pad cleared the notice and the bot reached gameplay.
