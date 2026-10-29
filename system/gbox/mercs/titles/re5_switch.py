@@ -704,6 +704,7 @@ HUNT_R = 1200.0                          # the "hunt" directive: closer than thi
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
 RUSH_R = 250.0
+HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
 # A front crowd (FRONT_N within FRONT_R, inside FRONT_CONE of his facing): a burst of BURST_S, then the gun down and
 # BACKOFF_S of backing up (he cannot move while aiming), then the next burst (the rapid fire makes the burst count).
 FRONT_N, FRONT_R, FRONT_CONE, BURST_S = 2, 220.0, math.radians(60), 0.8
@@ -4050,11 +4051,29 @@ class Bot:
                                     flat(near) / 100.0 if near else None, how, last[1] - hp,
                                     enemy_id=near.get("ptr") if near else None, hp_max=p.get("hp_max"),
                                     player_state=motion, round_id=self.stats.get("round_evidence_id"), t=now)
+            if how == "unknown" and (near is None or flat(near) > HAZARD_FREE_R):
+                self._hazard_hit(p, now)
         if self._k_obs_at is None or now - self._k_obs_at >= 1.0 / K_OBSERVE_HZ:
             self._k_obs_at = now
             knowledge.observe(MAP_ID, [{"id": e.get("ptr"), "cls": e.get("class"), "state": None,
                                         "dist_m": round(flat(e) / 100.0, 2)}
                                        for e in live if flat(e) <= K_OBSERVE_M * 100.0], t=now)
+
+    def _hazard_hit(self, p, now) -> None:
+        """Health lost with no Majini within HAZARD_FREE_R: the place hurt him (fire, a furnace, a fall - operator
+        2026-10-29: "rub their face into the wall and then walk into a furnace basically ending the level run"). The spot
+        and its neighbours go into the learned grid as wall (every route after avoids them, kept across rounds) and he
+        backs out of it at once (the wall recovery). stats hazard_spots."""
+        px, _py, pz = p["pos"]
+        nav = getattr(self, "_nav", None)
+        if nav is not None:
+            for dx in (-HAZARD_SPREAD, 0.0, HAZARD_SPREAD):
+                for dz in (-HAZARD_SPREAD, 0.0, HAZARD_SPREAD):
+                    nav.grid.mark_wall(px + dx, pz + dz)
+            nav.save()
+        self.wall_memory(px, pz, p.get("rot") or 0.0)
+        self._wall_start(p, now, True)
+        self.stats["hazard_spots"] = self.stats.get("hazard_spots", 0) + 1
 
     def _front_foe(self, p, snap) -> bool:
         """Another living Majini in front of him (inside BODY_AIM_TOL) within reach: one he could shoot without turning."""

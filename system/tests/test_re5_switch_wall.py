@@ -295,3 +295,22 @@ def test_the_brain_keeps_its_learned_grid_with_the_titles_learning(monkeypatch, 
     b._nav.grid.mark_walked(100.0, 200.0)
     b.release()
     assert (tmp_path / "nav_grids" / "Test_Stage.json").is_file()
+
+
+def test_damage_with_nobody_near_marks_the_spot_as_a_hazard_and_backs_out(tmp_path):
+    # operator 2026-10-29: the bot "walk[ed] into a furnace basically ending the level run"
+    from gbox.mercs.titles import re5_switch as R
+    from gbox.mercs.titles.re5_switch_nav import Navigator
+    b = R.Bot(stats={}, clock=lambda: 0.0)
+    b._nav = Navigator("Furnace Stage", learn_dir=tmp_path)
+    s = {"player": {"ptr": 1, "pos": (500.0, 0.0, 500.0), "rot": 0.0, "hp": 1000, "hp_max": 1000, "motion": 0},
+         "enemies": [{"ptr": 10, "pos": (500.0, 0.0, 2500.0), "hp": 800, "hp_max": 800}]}
+    b._k_tick(s, 1.0)
+    s["player"]["hp"] = 900                                                 # burnt, the nearest Majini 20 m off
+    b._k_tick(s, 1.1)
+    assert b.stats["hazard_spots"] == 1
+    assert b._nav.grid.cost((5, 5)) == 16.0                                  # the spot is wall now
+    s["player"]["hp"] = 800
+    s["enemies"][0]["pos"] = (500.0, 0.0, 600.0)                            # a Majini at arm's length: his hit, no hazard
+    b._k_tick(s, 1.2)
+    assert b.stats["hazard_spots"] == 1
