@@ -583,7 +583,15 @@ RELOC_COUNTERS = ("relocations", "reloc_stuck", "reloc_dead_ends", "unaim_holds"
 # close (raise_rerolls / close_sky_reraises: each a camera zoom out and in). Pressed down CAM_CHECK_S and the pitch went
 # up instead (cam_pitch_inverted): the guard stands down for the round.
 CAM_GUARD, CAM_UP_MAX, CAM_CHECK_S = True, 0.21, 0.35   # 0.21 rad: 12 deg up
-CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted")
+# ... and the other way (operator 2026-10-28: "They're pulling out the gun and they're pointing it at their feet and I
+# hate that"; "stop the bot starting off aiming down ... He is getting decimated by trying to swing around the gun all
+# slow"): the game's own aim pitch more than CAM_DOWN_MAX below the chest of the Majini he aims at (on his level within
+# THREAT_CAP_R): the pitch stick up at any range - the close-range rule (CLOSE_PITCH_R: no pitch stick, the laser
+# misreads there) never keeps the gun at his feet - and no shot until it is up unless the dot is on a Majini (a boosted
+# shot drops the stick, shot_stick_drops). cam_down_ticks / cam_down_fixes; pressed up CAM_CHECK_S and the pitch went
+# further down (cam_pitch_inverted): off for the round.
+CAM_DOWN_GUARD, CAM_DOWN_MAX = True, 0.17                # 0.17 rad: 10 deg under his chest
+CAM_COUNTERS = ("cam_up_ticks", "cam_up_fixes", "cam_pitch_inverted", "cam_down_ticks", "cam_down_fixes")
 # Time bonuses first (operator 16:45: "the most important thing is capturing every time bonus and then maintaining the
 # combo"; 16:52: "running from Checkpoint to Checkpoint, grabbing the time bonuses ... In Resident Evil Five, the only way
 # to grab a time bonus is to walk up to it and melee it ... after grabbing all the time bonuses, that's when the match
@@ -1444,6 +1452,7 @@ class Bot:
         self._trail, self._dead_ends = [], []           # his own trail (open, reachable); runs that stuck
         self._hp_track, self._hit_at = None, -1e9       # (player, health) last tick, the last fall: hits_taken
         self._cam = {"off": False, "down_since": None, "ap0": None, "on": False}   # the aim pitch guard
+        self._camd = {"off": False, "since": None, "ap0": None, "on": False}       # ... and its feet side
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s", "hits_taken"):
             self.stats.setdefault(k, 0)
         self._crowd_until, self._crowd_ready, self._crowd_keys = -1e9, 0.0, ()
@@ -1994,6 +2003,13 @@ class Bot:
         want_pitch = math.atan2(tgt["pos"][1] + CHEST_H - py - MUZZLE_H, max(dist, 1.0))
         if not crowd and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
             on = True                                    # point blank in front: on him
+        if self._cam_down(p, tgt["pos"], dist, now):     # the gun at their feet (CAM_DOWN_GUARD): up to the chest first,
+            on = False                                   # no shotgun blast into the floor among them
+            keys = (keys - {"rdown"}) | self._pitch(want_pitch + ap)
+            if not crowd:
+                self.doing = "aim"
+                self.why = f"rampage: the aim {math.degrees(ap):.0f} deg down - up to his chest"
+                return {"hold": tuple(sorted(keys))}
         if crowd:
             self.stats["crowd_fire_s"] = round(self.stats["crowd_fire_s"] + dt, 2)
             if ready and not on:
@@ -2218,6 +2234,7 @@ class Bot:
         nav = getattr(self, "_nav", None)
         if nav is not None:
             nav.update(self._trail, self._walls)
+            nav.save()                                   # at most every 30 s (OccupancyGrid.save), the map kept
 
     def _reloc_goal(self, p, live, snap, now):
         """Where to relocate: a point he knows is open - his own trail (TRAIL_AGE_S old or more, RELOC_GOAL_MIN away)
@@ -3001,6 +3018,7 @@ class Bot:
         for k in ("avg_dwell_s", "max_dwell_s", "crowd_cleared_s"):
             self.stats[k] = 0
         self._cam["off"] = False
+        self._camd["off"] = False
         self._lock_last, self._lock_score, self._lock_off = None, [0, 0], False
         self._wu, self._windup_e = {}, None
         if self.mines is not None:
@@ -3724,7 +3742,8 @@ class Bot:
             self._pull_end(now)
             self.fire_down = False                           # (ZR stays down: the next pull is on the new one)
         cam_up = self._cam_up(p, foot, dist, now)       # the aim's own pitch up at one on his level: down, no sky shot
-        if cam_up and on and where is None and not confirmed:
+        cam_down = not cam_up and self._cam_down(p, foot, dist, now)   # ... at his feet: up, no shot into the floor
+        if (cam_up or cam_down) and on and where is None and not confirmed:
             on = False
             self.doing = "aim"
         keys = {"zl"} | self._trigger(on, now)
@@ -3737,6 +3756,9 @@ class Bot:
         if cam_up:                                       # ... but the aim's own pitch up: down, at any range
             keys = (keys - {"rup"}) | {"rdown"}
             self.why = f"aim pitch {math.degrees(-p['aim_pitch']):+.0f} deg up: down; {self.why}"
+        elif cam_down:                                   # ... or down at his feet: up, at any range
+            keys = (keys - {"rdown"}) | {"rup"}
+            self.why = f"aim pitch {math.degrees(p['aim_pitch']):.0f} deg down: up to his chest; {self.why}"
         if motion == MOTION_SHOT and keys & {"rleft", "rright", "rup", "rdown"}:
             keys -= {"rleft", "rright", "rup", "rdown"}  # the shot plays at fire_rate's time scale: the stick waits
             self.stats["shot_stick_drops"] += 1
@@ -3753,6 +3775,29 @@ class Bot:
                              f"dot_dy {dot[1] - foot[1]:+.0f} on {where or ('ray' if on else '-')} "
                              f"keys {','.join(sorted(keys))}")
         return {"hold": tuple(sorted(keys))}
+
+    def _cam_down(self, p, foot, dist, now) -> bool:
+        """The aim's own pitch (P_AIM_PITCH, + = down) more than CAM_DOWN_MAX below his chest's elevation while aimed at a
+        Majini on his level within THREAT_CAP_R (CAM_DOWN_GUARD above). Pressed up CAM_CHECK_S and it went further down
+        instead: off for the round."""
+        c, ap = self._camd, p.get("aim_pitch")
+        want_down = -math.atan2(foot[1] + CHEST_H - p["pos"][1] - MUZZLE_H, max(dist, 1.0))   # + = his chest below
+        if not CAM_DOWN_GUARD or c["off"] or ap is None or ap <= want_down + CAM_DOWN_MAX or dist > THREAT_CAP_R                 or abs(foot[1] - p["pos"][1]) > LEVEL_DY:
+            c["since"], c["on"] = None, False
+            return False
+        self.stats["cam_down_ticks"] = self.stats.get("cam_down_ticks", 0) + 1
+        if not c["on"]:
+            self.stats["cam_down_fixes"] = self.stats.get("cam_down_fixes", 0) + 1
+        c["on"] = True
+        if c["since"] is None:
+            c["since"], c["ap0"] = now, ap
+        elif now - c["since"] >= CAM_CHECK_S:
+            if ap > c["ap0"] + 0.05:                     # pressed up and it went further down: not this stick
+                self.stats["cam_pitch_inverted"] = self.stats.get("cam_pitch_inverted", 0) + 1
+                c["off"], c["on"], c["since"] = True, False, None
+                return False
+            c["since"], c["ap0"] = now, ap
+        return True
 
     def _cam_up(self, p, foot, dist, now) -> bool:
         """The aim's own pitch (P_AIM_PITCH) more than CAM_UP_MAX up while aimed at a Majini on his level within
@@ -4179,12 +4224,17 @@ class RE5Switch(Driver):
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         self.stats = stats
 
+        made = []
+
         def release():                                      # the round's end or the bot stopping: the game's pace back
-            nav = getattr(self, "_nav", None)
+            nav = getattr(made[0], "_nav", None) if made else None   # (the bot's learned grid, never the driver's)
             if nav is not None:
                 nav.save()
             self._mods(m, snapshot(m), False)
-        return Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir)
+        # the learned grid lives with this title's other learning (re5_switch_nav: nav_grids/<stage>.json); the playbook
+        # passes no learn_dir, so without this default the grid was never written and every round began blind
+        made.append(Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir or DOOR_FILE.parent))
+        return made[0]
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

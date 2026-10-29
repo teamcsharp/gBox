@@ -279,3 +279,19 @@ def test_a_door_seen_once_is_walked_to_when_he_is_stuck(tmp_path, monkeypatch):
     b._door_goal = (b._door_goal[0], 10.0 + R.DOOR_GO_S)
     assert b._door_walk({"pos": (950.0, 0.0, 0.0), "rot": 0.0}, 9999.0, 11.0) is None   # there: the prompt rule
     assert b.stats["door_reached"] == 1
+
+
+def test_the_brain_keeps_its_learned_grid_with_the_titles_learning(monkeypatch, tmp_path):
+    # the playbook passes no learn_dir: the grid used to have nowhere to go and was never written (every round blind)
+    from gbox.mercs.titles import re5_switch as R
+    monkeypatch.setattr(R, "DOOR_FILE", tmp_path / "door_spots.json")
+    drv = R.RE5Switch()
+    monkeypatch.setattr(drv, "_mods", lambda *a, **k: None)
+    monkeypatch.setattr(R, "snapshot", lambda m: {})
+    b = drv.brain(object(), {}, lambda: 0.0)
+    assert b._learn_dir == tmp_path
+    from gbox.mercs.titles.re5_switch_nav import Navigator
+    b._nav = Navigator("Test Stage", learn_dir=b._learn_dir)
+    b._nav.grid.mark_walked(100.0, 200.0)
+    b.release()
+    assert (tmp_path / "nav_grids" / "Test_Stage.json").is_file()

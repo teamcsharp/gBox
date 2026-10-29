@@ -13,8 +13,10 @@
       && !s.warm && !s.stopping && s.worker_online !== false && typeof s.session_id === "string" && s.session_id.includes("-");
   }
   function definitions(title) {
-    if (title === "re5") return (RE5?.DEFINITIONS || []).filter(d => !d.multiplier || d.op === "fire_rate")
-      .map(d => ({ ...d, kind: d.multiplier ? "float" : "bool", ...(d.op === "fire_rate" ? { min: 1, max: 80, step: 1 } : {}) }));
+    // turning and aiming speed (operator 2026-10-28: "He is getting decimated by trying to swing around the gun all slow")
+    if (title === "re5") return (RE5?.DEFINITIONS || []).filter(d => !d.multiplier || ["fire_rate", "turn_speed"].includes(d.op))
+      .map(d => ({ ...d, kind: d.multiplier ? "float" : "bool", ...(d.op === "fire_rate" ? { min: 1, max: 80, step: 1 } : {}),
+        ...(d.op === "turn_speed" ? { min: 1, max: 10, step: 0.5 } : {}) }));
     if (title === "re6") return [...(RE6?.TOGGLES || []).map(d => ({ ...d, kind: "bool" })),
       ...(RE6?.MULTIPLIERS || []).filter(d => ["fire_rate", "quick_attack", "down_fire"].includes(d.op))
         .map(d => ({ ...d, kind: "float", step: 0.5 }))];
@@ -37,6 +39,11 @@
     font:11px system-ui;overflow:auto;padding:8px 10px;box-sizing:border-box;transform:translateX(105%);transition:transform .2s;
     border-left:1px solid #444;-webkit-app-region:no-drag}
   #bot-logic-panel.open{transform:none}
+  #bot-logic-panel .bl-head{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:4px 0 6px}
+  #bot-logic-panel .bl-head h3{margin:0;white-space:nowrap}
+  #bot-logic-panel select{min-width:0;max-width:170px;flex:1;background:#18181d;color:#fff;border:1px solid #ffd166;
+    border-radius:3px;font:11px system-ui;padding:2px}
+  #bot-logic-panel .bl-ok{color:#b7e4a0;min-height:14px;margin:5px 0}
   #bot-logic-panel h3{margin:4px 0 6px;font-size:12px}#bot-logic-panel h4{margin:10px 0 4px;font-size:11px;color:#9cf}
   #bot-logic-panel .bl-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;align-items:center;margin:3px 0}
   #bot-logic-panel .bl-row small{grid-column:1/-1;color:#999}#bot-logic-panel input[type=range]{grid-column:1/-1;width:100%;box-sizing:border-box;margin:0}
@@ -71,9 +78,18 @@
         + `<input type="range" data-bl="${ESC(k.name)}" min="${k.min}" max="${k.max}" step="${k.step}" value="${ESC(k.value)}" aria-label="${ESC(k.label)}" ${scope}>`
         + (k.help ? `<small>${tip}</small>` : "") + `</div>`;
     }).join("")).join("");
-    return `<h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>`
+    // the weapon he fights with (operator 2026-10-28: "At the top of the live controls ... a drop down ... every weapon in
+    // the game in order of the most powerful to the least powerful ... that weapon is instantly equipped")
+    const weapons = Array.isArray(view?.weapons) ? view.weapons : [];
+    const current = view?.weapon_current;
+    const pick = weapons.length
+      ? `<select data-bl-weapon ${scope} aria-label="Equip a weapon" title="Every weapon, most powerful first: the bot fights with the one you pick"${locked ? " disabled" : ""}>`
+        + `<option value="">Equip a weapon…</option>`
+        + weapons.map(w => `<option value="${ESC(w.id)}"${w.id === current ? " selected" : ""}>${ESC(w.name)}${w.loaded ? " · in hand now" : ""}</option>`).join("")
+        + `</select>` : "";
+    return `<div class="bl-head"><h3>Live controls · ${ESC(String(title || "").toUpperCase())}</h3>${pick}</div>`
       + (state.pc ? `<p class="bl-target">${ESC(state.pc)} · the game shown in this PiP</p>` : "")
-      + `<p class="bl-msg" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
+      + `<p class="${state.ok && message ? "bl-ok" : "bl-msg"}" role="status">${ESC(message || (state.busy ? "Reading or applying settings…" : ""))}</p>`
       + `<button type="button" data-bl-refresh ${scope}${state.busy ? " disabled" : ""}>Refresh current settings</button>`
       + (mods ? `<h4>Live mods</h4>${mods}<p class="bl-note">Fire rate is a multiplier; 1× restores the game's rate. Actual shots per second vary.</p>` : "")
       + `<fieldset${locked || !view ? " disabled" : ""}>${rows}`
@@ -94,6 +110,7 @@
         const el = e.target, data = el?.dataset || {}, value = el?.type === "checkbox" ? el.checked : el?.value;
         if (data.bl) set(data.bl, value, data.blScope);
         if (data.blMod) setMod(data.blMod, value, data.blScope);
+        if ("blWeapon" in data && value !== "") equip(Number(value), data.blScope);
       });
       panel.addEventListener("input", e => { const n = e.target?.dataset?.bl; const o = n && panel.querySelector(`[data-bl-out="${n}"]`); if (o) o.textContent = e.target.value; });
       panel.addEventListener("click", e => {
@@ -161,7 +178,7 @@
       const bound = target, s = state;
       if (!bound || scope !== bound.scope || s.busy) return false;
       if (!reading && (s.stale || s.pending)) { s.message = "Refresh current settings before changing controls."; paint(); return false; }
-      s.busy = true; s.message = ""; paint();
+      s.busy = true; s.message = ""; s.ok = false; paint();
       try { await validate(bound); await work(bound, s); await validate(bound); return true; }
       catch (e) { if (target === bound) { s.message = e.message || String(e); s.stale = true; } return false; }
       finally { if (target === bound) { s.busy = false; paint(); } }
@@ -208,6 +225,16 @@
         confirmValue(d, modValue(s.status, d), v);
       }, scope);
     }
+    function equip(id, scope = target?.scope) {
+      return act(async (bound, s) => {
+        const w = (s.view?.weapons || []).find(x => x.id === id);
+        if (!w) throw new Error("That weapon is not in this game's list.");
+        s.view = logic(await job(bound, s, "bot_logic", { weapon: id }), bound);
+        const r = s.view.weapon_result || {};
+        if (r.verified !== true) throw new Error(r.reason || `${w.name} could not be equipped. Refresh current settings.`);
+        s.message = r.note || `${w.name} equipped.`; s.ok = true;
+      }, scope);
+    }
     const reset = (scope = target?.scope) => act(async (bound, s) => {
       s.view = logic(await job(bound, s, "bot_logic", { reset: true }), bound);
     }, scope);
@@ -249,7 +276,7 @@
       tab?.classList.toggle("ready", !!(target || shown));
       if (!target && !shown && open) toggle(false);
     }
-    return { update, toggle, set, setMod, reset, refresh, state: () => ({ ...state, ...target, open }) };
+    return { update, toggle, set, setMod, equip, reset, refresh, state: () => ({ ...state, ...target, open }) };
   }
   const api = { create, html, eligible, definitions };
   root.GBoxBotLogicSidebar = api;

@@ -36,3 +36,54 @@ def test_reset_puts_the_shipped_values_back(path):
     BL.handle("re6", {"FLASH_GAP_S": 9.0}, path=path)
     BL.handle("re6", reset=["FLASH_GAP_S"], path=path)
     assert R6.FLASH_GAP_S == shipped and BL.apply_saved("re6", path) == {}
+
+
+def test_weapon_menu_lists_re6_most_powerful_first_and_equips_through_live_weapon(monkeypatch):
+    from gbox.mercs import bot_logic
+    from gbox.mercs.titles import re6_switch_mods as R6
+    calls = []
+
+    def run(ad, op, *a, **kw):
+        calls.append((op, kw))
+        if op == "weapons":
+            return {"verified": True, "next_weapon": "0x108",
+                    "weapons": [{"id": i, "name": n, "kind": R6.WEAPON_KIND.get(i, "weapon"), "loaded": i == 4}
+                                for i, n in R6.WEAPON_NAMES.items()]}
+        return {"verified": True, "weapon": R6.WEAPON_NAMES[kw["weapon"]], "loaded": False, "next_round": True}
+    monkeypatch.setattr(R6, "run", run)
+    out = bot_logic.weapon_menu(object(), "re6", 7)
+    assert calls[0] == ("live_weapon", {"weapon": 7})
+    assert out["weapon_result"]["weapon"] == "Lightning Hawk"
+    ids = [w["id"] for w in out["weapons"]]
+    assert ids[:4] == [27, 11, 8, 7] and ids[-1] == 0 and 40 not in ids
+    assert next(w for w in out["weapons"] if w["id"] == 4)["loaded"] is True
+    assert out["weapon_current"] == 8
+
+
+def test_weapon_menu_re5_overrides_for_next_round_and_selects_when_loaded(monkeypatch):
+    from gbox.mercs import bot_logic
+    from gbox.mercs.titles import re5_switch_mods as SW
+    calls = []
+
+    def tool_run(ad, op, *a, **kw):
+        calls.append(op)
+        if op == "weapon_override":
+            return {"weapon_override": {"item": kw["weapon"], "weapon": "S&W M500"}}
+        return {"queued": True}
+    monkeypatch.setattr(SW, "tool_run", tool_run)
+    monkeypatch.setattr(bot_logic, "_weapon_rows", lambda ad, t: {"weapons": [], "weapon_current": 0x1B})
+    out = bot_logic.weapon_menu(object(), "re5", 0x1B)
+    assert calls == ["weapon_override", "select_weapon"]
+    assert out["weapon_result"]["loaded"] is True and "in hand now" in out["weapon_result"]["note"]
+    with pytest.raises(ValueError):
+        bot_logic.weapon_menu(object(), "re5", 0x15)                 # the Gatling gun: not a player weapon here
+
+
+def test_weapon_menu_reading_failure_never_fails_the_settings(monkeypatch):
+    from gbox.mercs import bot_logic
+
+    def boom(ad, t):
+        raise OSError("no RAM")
+    monkeypatch.setattr(bot_logic, "_weapon_rows", boom)
+    out = bot_logic.weapon_menu(object(), "re6")
+    assert out["weapons"] == [] and "no RAM" in out["weapon_error"]
