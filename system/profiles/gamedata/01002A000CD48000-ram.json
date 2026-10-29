@@ -67,6 +67,12 @@
         }
       ],
       [
+        "auto_qte_ram",
+        {
+          "on": true
+        }
+      ],
+      [
         "infinite_stamina",
         {
           "on": true
