@@ -359,3 +359,13 @@ def test_missions_are_played_in_order_level_by_level_and_the_game_again(tmp_path
     locked = M._Pick(path=tmp_path / "locked.json")
     locked.cursor = [3, 0, 0]
     assert locked.level_for(2) == 1                           # LV.4 not open yet: the last open level
+
+
+def test_the_autosaves_saved_dialog_is_the_menus_turn_and_takes_a():
+    # live 2026-10-28 (the i9): "Saved." after a round waited for a button for 30 min; read as loading, the run ended
+    d = M.DRIVER()
+    saving = _guest("aMerceMain", MAIN, 3)
+    assert M.screen(saving)["where"] == "saving"
+    assert M.step(M.screen(saving)) == "a"
+    assert d.screen(saving, None) == "results"
+    assert d.menu_handoff(saving, {}, "results") is True
