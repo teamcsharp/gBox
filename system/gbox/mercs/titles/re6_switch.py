@@ -3847,9 +3847,18 @@ class Bot:
             return self._push_through(push, live, flat, bearing, now)
         close = [e for e in live if flat(e) <= (FEVER_R if fever else CC_R) and abs(bearing(e)) <= CC_CONE]
         if not close:
-            return None
-        e = min(close, key=flat)
-        d, err = flat(e), bearing(e)
+            if (not fever and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 4
+                    and not self._lock_ready(getattr(self, "_snap", {}) or {}, now)):
+                # the crowd_4_in_2m signature: four or more within 2 m but none in front or flanking within CC_R
+                # -- the gun-down branch's cone can't catch them, so he still drops the gun and backs out instead of
+                # raising into a flanking cluster (damage_clusters crowd_4_in_2m, the RE6 cluster's cause)
+                e = min(live, key=flat)
+                d, err = flat(e), bearing(e)
+            else:
+                return None
+        else:
+            e = min(close, key=flat)
+            d, err = flat(e), bearing(e)
         crowd = (not fever and self._lock_ready(getattr(self, "_snap", {}) or {}, now)
                  and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 2)
         if crowd and d >= MELEE_R:                               # a crowd: the lock's aimed fire sweeps them
