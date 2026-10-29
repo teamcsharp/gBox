@@ -61,10 +61,16 @@
     const k = norm(platform);
     return ({ n64: "n64", n64dd: "n64", nintendo64: "n64" })[k] || (k.includes("nintendo64") ? "n64" : k);
   }
+  // Consoles with analog sticks: the left stick is the game's left stick, the right stick its right (the camera), the
+  // d-pad its d-pad - never the left stick doubling as the d-pad (operator 2026-10-28, RE5 on Switch: "the controller
+  // input is registering both the D pad and the stick at the same time whenever I move the stick"; the stick sent d-pad
+  // presses, RE5's weapon quick slots, and the right stick nothing).
+  const ANALOG = new Set(["switch", "ps2", "ps3", "ps4", "ps5", "gamecube", "gc", "wii", "wiiu", "xbox", "xbox360",
+                          "3ds", "psp", "vita", "psvita"]);
   function profile(platform) {
     const fam = family(platform), p = PROFILES[fam];
     if (p) return { fam, ...p };
-    return { fam, name: String(platform || "this console"), short: "", sticks: false, functions: [], groups: [], extra: {}, generic: true };
+    return { fam, name: String(platform || "this console"), short: "", sticks: ANALOG.has(fam), functions: [], groups: [], extra: {}, generic: true };
   }
   // controls this console's map can move (and the inputs they can drive: the same names)
   const ids = prof => (prof && prof.sticks ? SOURCES.map(s => s.id) : SOURCES.map(s => s.id).filter(s => BUTTONS.includes(s)));
