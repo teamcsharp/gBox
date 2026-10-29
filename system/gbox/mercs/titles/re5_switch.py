@@ -3230,7 +3230,12 @@ class Bot:
             # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
             # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
             # with an empty heal supply and died; the retreat gives the gun-down time and the distance).
-            if hp <= HEAL_CRITICAL * hp_max and live:
+            # Finish the existing bounded escape instead of extending its deadline
+            # every tick. Once clear, or during the normal escape cooldown, let
+            # combat resume; low HP alone must not suppress the gun for a round.
+            if (hp <= HEAL_CRITICAL * hp_max and near
+                    and (self.escape is None or now >= self.escape[1])
+                    and now - self.escape_at >= ESCAPE_GAP_S):
                 nearest = min(live, key=lambda e: flat(e))
                 away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
                 self._gun_down()

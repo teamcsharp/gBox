@@ -510,6 +510,64 @@ def test_the_placed_bombs_own_spot_is_used_when_its_unit_is_found():
     assert "ldown" in act["hold"] and bot.doing == "bomb"                    # 0.7 m from it: walking off it
 
 
+def test_terminal_observation_counts_death_before_the_engine_closes_evidence():
+    bot, clock, snap = bomb_out(((0.0, 0.0, 120.0, 700),) * 3)
+    run(bot, snap, clock, 4)
+    bot.observe_round(snap, "playing", clock[0])
+    assert bot.stats["deaths"] == 0
+    snap["player"].update(hp=0, state=0)
+    bot.observe_round(snap, "loading", clock[0])
+    assert bot.stats["deaths"] == 0
+    bot.observe_round(snap, "dead", clock[0])
+    assert bot.stats["deaths"] == 1 and len(bot.stats["death_log"]) == 1
+    bot.observe_round(snap, "dead", clock[0])
+    run(bot, snap, clock, 1)
+    assert bot.stats["deaths"] == 1 and len(bot.stats["death_log"]) == 1
+
+
+def test_engine_persists_the_native_terminal_death_in_its_round(tmp_path, monkeypatch):
+    import copy
+    import json
+    import sqlite3
+    from gbox.mercs import engine, lessons
+
+    monkeypatch.setattr(lessons, "ROOT", tmp_path / "mercs" / "lessons")
+    bot, clock, scene = bomb_out(((0.0, 0.0, 300.0, 700),))
+    dead = copy.deepcopy(scene)
+    dead["player"]["hp"] = 0
+    sequence = [scene, dead, dead]
+    cursor = [0]
+
+    class Driver:
+        frame = None
+        solo_p1 = True
+        round_counters = ("deaths",)
+
+        def snapshot(self, memory):
+            result = sequence[cursor[0]]
+            cursor[0] += 1
+            clock[0] += 0.2
+            return result
+
+        def screen(self, memory, snap):
+            return "dead" if snap["player"]["hp"] == 0 else "playing"
+
+        def progress(self, snap):
+            return {"score": 5180, "kills": 13, "timer": 73.26}
+
+        def prompt_source(self, *args): return lambda: None
+        def prompt_keys(self, buttons): return []
+
+    engine.play_round({"map_id": R.MAP_ID}, object(), lambda rows: None,
+                      lambda: cursor[0] >= len(sequence), bot.stats, lambda row: None,
+                      brain=bot, driver=Driver(), clock=lambda: clock[0], sleep=lambda _: None)
+    with sqlite3.connect(tmp_path / "mercs" / "curriculum" / R.MAP_ID / "rounds.sqlite") as db:
+        rows = db.execute("SELECT outcome,data FROM rounds").fetchall()
+    assert len(rows) == 1 and rows[0][0] == "died"
+    assert json.loads(rows[0][1])["round_deaths"] == 1
+    assert bot.stats["deaths"] == 1
+
+
 def test_a_death_is_logged_with_its_cause_and_forgets_the_bomb():
     bot, clock, snap = bomb_out(((0.0, 0.0, 120.0, 700),) * 3)
     run(bot, snap, clock, 4)
