@@ -4782,6 +4782,15 @@ class Bot:
         if self.bomb_phase in ("aim", "det_aim"):
             if now - self.bomb_phase_at < BOMB_AIM_S:
                 return self._go("bomb", tag, {"hold": ("zl",)}, "the remote readied" if detonate else "the bomb readied")
+            if self.bomb_phase == "det_aim" and detonate and p is not None:
+                # He drifted into the blast's reach since the det_aim check: hold the trigger, not fire it
+                at = self.bomb_at
+                if at is not None:
+                    me = math.hypot(p["pos"][0] - at[0], p["pos"][2] - at[1])
+                    if me < self.book.safe:
+                        self.stats["bomb_det_holds"] += 1
+                        return self._go("bomb", "bomb_det_hold", {"hold": ("zl",)},
+                                        f"drifted to {me:.0f} cm ({self.book.safe:.0f} safe): the gun holds")
             self.bomb_phase, self.bomb_phase_at = ("det" if detonate else "throw"), now
             return self._go("bomb", tag, {"hold": ("zl", "zr")}, "the bomb set off" if detonate else "the bomb thrown")
         if self.bomb_phase in ("throw", "det"):
