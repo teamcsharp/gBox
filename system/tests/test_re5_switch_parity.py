@@ -211,10 +211,11 @@ def test_profile_round_ops_forward_magnums_and_preserve_supplies_before_native_i
     profile = ram_map.find(R.MAP_ID).spec["mercs"] | {"map_id": R.MAP_ID, "platform": "switch"}
     assert mercs_bot.apply_ops(ad, profile["round_ops"], profile) == []
     draw = SM.ORIG[id(ad)]["loadout"]
-    assert set(draw["pool"]) == {0x10B, 0x11A, 0x11B} and draw["only"] is True
+    # operator 2026-10-28: "every round of RE5 needs mines and random weapons especially magnums and shotguns"
+    assert set(draw["pool"]) == {0x11B, 0x11A, 0x10B, 0x119, 0x117, 0x116, 0x104} and not draw["only"]
     for i in SM.MERC_DESC:
         guns = [wid for wid in ids(g, i) if SM._is_gun(wid) and wid & 0xFF not in SM.THROWN_ITEMS]
-        assert guns and len(set(guns)) == 1 and set(guns) <= set(draw["pool"])
+        assert guns and set(guns) <= set(draw["pool"])               # each slot its own draw: shotgun AND magnum
         for k in range(SM.TEMPLATE_RECS):
             original = before[i][k * SM.TEMPLATE_REC:(k + 1) * SM.TEMPLATE_REC]
             old_id = struct.unpack_from("<I", original)[0]
