@@ -340,3 +340,22 @@ def test_the_player_comes_from_the_live_node_layout():
     g.f32(p + M.P_VIT_MAX, 1000.0)
     assert M.player_unit(g) == p
     assert M.snapshot(g)["player"]["class"] == "uPl< Chris >"
+
+
+def test_missions_are_played_in_order_level_by_level_and_the_game_again(tmp_path):
+    """2026-10-28: "level to level to level until it completes the entire game. And then ... again"."""
+    from gbox.mercs.titles import merc3d_3ds as M
+    pick = M._Pick(path=tmp_path / "progress.json")
+    seen = []
+    for _ in range(M.LEVELS * 3 + 1):
+        level = pick.level_for(M.LEVELS)
+        tab = pick.tab_for(3)
+        seen.append((level, tab))
+        pick.reset()                                         # the round started: on to the next mission
+    assert seen[:4] == [(0, 0), (0, 1), (0, 2), (1, 0)]
+    assert seen[M.LEVELS * 3] == (0, 0) and pick.cursor[2] == 1   # the whole game, then round again
+    again = M._Pick(path=tmp_path / "progress.json")          # a relaunch carries on where it was
+    assert again.cursor == pick.cursor
+    locked = M._Pick(path=tmp_path / "locked.json")
+    locked.cursor = [3, 0, 0]
+    assert locked.level_for(2) == 1                           # LV.4 not open yet: the last open level

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import struct
+from pathlib import Path
 import time
 from dataclasses import dataclass
 
@@ -90,29 +91,80 @@ CHARACTERS: tuple = ()                  # the roster's order is read from the ch
 RELOAD_KEEP = ("PICK",)
 
 
-class _Pick:
-    """This menu visit's draws, kept until a round starts: a random open level, then a random mission tab in it (the
-    tab count is known once the level is open), and whether the main menu still has to visit the mission select and
-    the character select before START."""
+# In order (operator 2026-10-28: "I need mercenaries 3D going from level to level to level to level until it completes the
+# entire game. And then it needs to complete the entire game again. And then ... get five stars or S rank and go for the
+# high score on every single level"): each menu visit takes the next mission - LV.1's tabs, then LV.2's ... LV.5's -
+# and wraps round to play the whole game again; the cursor is saved (PROGRESS_FILE), so a relaunch carries on where it
+# was. A level not open yet keeps him on the last open one until it opens. PROGRESSION False: the old random draw.
+PROGRESSION = True
+PROGRESS_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "merc3d-progress.json"
 
-    def __init__(self, rng=None):
+
+class _Pick:
+    """This menu visit's draws, kept until a round starts: the next level and mission tab in order (PROGRESSION; else a
+    random open level and tab), and whether the main menu still has to visit the mission select and the character
+    select before START."""
+
+    def __init__(self, rng=None, path=None):
         import random
         self.rng = rng or random.Random()
+        self.path = path
+        self.cursor = self._load()                           # [level, tab, passes through the whole game]
         self.reset()
 
+    def _file(self):
+        return self.path if self.path is not None else PROGRESS_FILE
+
+    def _load(self) -> list:
+        import json
+        try:
+            c = json.loads(self._file().read_text(encoding="utf-8"))
+            return [int(c[0]), int(c[1]), int(c[2])]
+        except (OSError, ValueError, TypeError, IndexError, KeyError):
+            return [0, 0, 0]
+
+    def _save(self) -> None:
+        import json
+        try:
+            f = self._file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(self.cursor), encoding="utf-8")
+        except OSError:
+            pass
+
     def reset(self) -> None:
+        if PROGRESSION and getattr(self, "level", None) is not None and getattr(self, "tab", None) is not None:
+            self._advance()                                  # a round started from this visit's pick: on to the next
         self.level = self.tab = None
         self.mission_done = self.chara_done = False
         self.main_key, self.main_presses, self.main_confirmations = None, 0, 0
 
+    def _advance(self) -> None:
+        level, tab, passes = self.cursor
+        tabs = getattr(self, "tabs_seen", None) or 1
+        tab += 1
+        if tab >= tabs:
+            level, tab = level + 1, 0
+            if level >= LEVELS:
+                level, passes = 0, passes + 1                # the whole game again
+        self.cursor = [level, tab, passes]
+        self._save()
+
     def level_for(self, open_levels: int) -> int:
         if self.level is None or not 0 <= self.level < max(1, open_levels):
-            self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
+            if PROGRESSION:
+                self.level = min(self.cursor[0], max(1, min(open_levels, LEVELS)) - 1)
+            else:
+                self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
         return self.level
 
     def tab_for(self, tabs: int) -> int:
+        self.tabs_seen = tabs
         if self.tab is None or not 0 <= self.tab < tabs:
-            self.tab = self.rng.randrange(tabs)
+            if PROGRESSION:
+                self.tab = min(self.cursor[1], tabs - 1) if self.level == self.cursor[0] else 0
+            else:
+                self.tab = self.rng.randrange(tabs)
         return self.tab
 
 
