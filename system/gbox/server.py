@@ -4034,6 +4034,13 @@ def create_app(config: Config) -> FastAPI:
     live: dict[str, dict] = {}
     live_lock = threading.Lock()
 
+    # A paired desktop (the i9) relays a session's frames only while someone here watches it (federation_watch); a stream
+    # picker's preview counts as watching for PREVIEW_WATCH_S, so the card's next refresh has a picture and a switch to it
+    # finds the relay already up (operator 2026-10-28: "select a stream and jump to that other PIP game instance ... swap
+    # back and forth dynamically on the fly"; the i9's card only ever said "Preview unavailable").
+    PREVIEW_WATCH_S = 15.0
+    preview_watch: dict[str, float] = {}
+
     def _live(sid: str) -> dict:
         with live_lock:
             return live.setdefault(sid, {"frame": None, "seq": 0, "ts": 0, "input": collections.deque(maxlen=500),
@@ -4287,6 +4294,11 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/frame.jpg")
     def get_frame(sid: str, actor=Depends(auth)):
+        now = time.time()
+        if len(preview_watch) > 256:
+            for k in [k for k, until in preview_watch.items() if until <= now]:
+                preview_watch.pop(k, None)
+        preview_watch[sid] = now + PREVIEW_WATCH_S
         f = _live(sid)["frame"]
         return Response(f, media_type="image/jpeg", headers={"cache-control": "no-store"}) if f else _404()
 
@@ -6604,6 +6616,7 @@ def create_app(config: Config) -> FastAPI:
                            and f.row.get('pc_id')==wid)
         if desktop_watch.get(wid,0)>time.time():
             ids.update(s['session_id'] for s in store.running_sessions() if s['session_id'].startswith(wid+'-'))
+        ids.update(sid for sid,until in list(preview_watch.items()) if until>time.time() and sid.startswith(wid+'-'))
         return sorted(ids)
     federation.routes(app,store,config,auth,
         claim=lambda wid,request,foreground_only=False:_claim(wid,request,actor='federation',foreground_only=foreground_only),
