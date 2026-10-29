@@ -102,6 +102,7 @@ HG_CENTRE, HG_KIND = 0x250, 0x194      # bounding sphere; retained render word, 
 HG_COLLECTED, HG_SECONDS = 0x13EC, 0x14A4  # native FUN_00723e34 adds signed seconds, then sets collected=1
 BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this long at most (cm)
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
+CLOSE_THREAT_R, REAR_WIDE_CONE = 250.0, math.radians(130)  # within CLOSE_THREAT_R use the wide cone (rear hits cluster)
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
 ROUTE_LEN_S = 3.0                      # the bonuses' route lengths are worked out again this often
@@ -3316,17 +3317,22 @@ class Bot:
             return ENGAGE
         return max(ENGAGE, re5_weapons.longshot_reach(eq.get("item")))
 
-    @staticmethod
-    def _threat(p, e) -> bool:
-        """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), or right on top of him."""
+    def _threat(self, p, e) -> bool:
+        """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), or right on top of him.
+
+        Close threats (within CLOSE_THREAT_R) use a wider cone: the examples in the damage cluster show hits
+        from 40-80 deg off his heading at 1.5-2 m — the bot was still gathering a bonus or walking, not turning
+        to face them. Extending the cone to REAR_WIDE_CONE at that range lets the bot dispatch them before
+        they can strike, preventing the most incidents in this cluster."""
         px, py, pz = p["pos"]
         if abs(e["pos"][1] - py) >= LEVEL_DY:               # on another level: not in the way
             return False
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         if d < ON_TOP_R:
             return True
+        cone = REAR_WIDE_CONE if d < CLOSE_THREAT_R else FIGHT_CONE
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-        return d < FIGHT_R and off < FIGHT_CONE
+        return d < FIGHT_R and off < cone
 
     def _heal_safe(self, p, snap, hp, hp_max) -> bool:
         """Start a heal (or a walk to a health item) now? Not with a Majini within HEAL_SAFE_R unless health is under
