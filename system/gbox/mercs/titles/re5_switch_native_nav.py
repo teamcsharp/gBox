@@ -29,7 +29,7 @@ import struct
 
 from . import re5_nav
 
-__all__ = ["NavMesh", "read", "find_sai", "navmesh_available"]
+__all__ = ["NavMesh", "read", "find_sai", "navmesh_available", "get_navmesh"]
 
 # RE5 Switch main-module offsets (relative to the NSO base) that are already mapped.
 # sAI is not yet among them; when it is, drop it here and read() picks it up.
@@ -63,6 +63,31 @@ def _ok(p) -> bool:
 def navmesh_available() -> bool:
     """Whether a native sAI address is known for this build."""
     return S_AI is not None
+
+
+# One-shot sAI discovery state: find_sai() scans main's statics, which is a
+# few hundred thousand reads; do it once per process and cache the result.
+_sai_scanned = False
+_NAV_CACHE: dict = {}
+
+
+def get_navmesh(m, base: int | None = None):
+    """The stage's NavMesh via one-shot sAI discovery, or None.
+
+    First call scans main's statics for the sAI singleton (bounded, cached);
+    subsequent calls read through the discovered address.  Returns None when
+    sAI is not found or the navmesh chain does not decode.
+    """
+    global S_AI, _sai_scanned
+    if S_AI is None and not _sai_scanned:
+        _sai_scanned = True
+        try:
+            S_AI = find_sai(m, base or getattr(m, "base", 0))
+        except Exception:
+            S_AI = None
+    if S_AI is None:
+        return None
+    return read(m, cache=_NAV_CACHE, ptr_base=base)
 
 
 def read(m, cache: dict | None = None, s_ai: int | None = None, ptr_base: int | None = None):

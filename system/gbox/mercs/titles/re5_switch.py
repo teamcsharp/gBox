@@ -1120,6 +1120,10 @@ def snapshot(m) -> dict:
                     score=at(GS_SCORE, "<i"))
         if coop and _i32(m, gs + GS_PLAYERS) == PLAYERS_SPLIT:
             snap["scoring_players"] = 2                     # a team round: the score is both players'
+    # the stage's own navmesh (re5_switch_native_nav): discovered once via find_sai,
+    # cached; None until sAI is found or between rounds
+    from . import re5_switch_native_nav
+    snap["nav"] = re5_switch_native_nav.get_navmesh(m, base)
     return snap
 
 

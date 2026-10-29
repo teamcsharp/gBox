@@ -199,6 +199,19 @@ def test_find_sai_returns_none_when_absent():
     assert found is None
 
 
+def test_find_sai_skips_false_positives():
+    """Pointers that do not decode as a navmesh chain must be skipped."""
+    g, sai = two_triangle_guest()
+    # place a decoy pointer that looks plausible but points at garbage
+    decoy = g.alloc(0x40)
+    g.q(decoy + NAV.AI_PATHFINDING, HEAP + 0xDEAD)  # cAIPathFinding -> unmapped
+    static_off = 0x1D00000
+    g.q(BASE + static_off, decoy)
+    g.q(BASE + static_off + 8, sai)
+    found = NAV.find_sai(g, BASE, statics_lo=static_off, statics_hi=static_off + 16)
+    assert found == sai
+
+
 # --- navmesh_available() --------------------------------------------------------
 
 
