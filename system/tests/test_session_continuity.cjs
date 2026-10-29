@@ -79,3 +79,19 @@ test('a warm MercMode view follows both turns while commands keep their selected
   assert.equal(C.resolve(b.session_id,[a,parkedB]),a);
   assert.equal(C.resolve(a.session_id,[a,parkedB]),a);
 });
+
+test('automatic continuity never selects a fresh parked game as a replacement',()=>{
+  const warm={...fresh,session_id:'worker-warm',started:10,warm:true};
+  for(const origin of [old,{...old,state:'running',last_frame_age:40}]){
+    assert.equal(C.resolve(origin.session_id,[origin,warm]),origin.state==='running'?origin:null);
+    assert.equal(C.resolve(origin.session_id,[origin,fresh,warm]),fresh,'a newer parked game cannot displace the live replacement');
+    assert.equal(C.resolve(origin.session_id,[{...origin,replaced_by:warm.session_id},warm])?.session_id,
+      origin.state==='running'?origin.session_id:undefined,'an explicit link cannot finish on a parked target');
+  }
+  assert.equal(C.resolve(warm.session_id,[warm]),null,'a parked origin without a live successor is not a view target');
+});
+
+test('replacement chains still traverse parked intermediates to the live game',()=>{
+  const middle={...fresh,session_id:'worker-warm',warm:true,replaced_by:fresh.session_id};
+  assert.equal(C.resolve(old.session_id,[{...old,replaced_by:middle.session_id},middle,fresh]),fresh);
+});

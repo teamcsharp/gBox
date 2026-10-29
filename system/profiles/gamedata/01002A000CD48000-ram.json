@@ -67,6 +67,12 @@
         }
       ],
       [
+        "auto_qte_ram",
+        {
+          "on": true
+        }
+      ],
+      [
         "infinite_stamina",
         {
           "on": true
@@ -81,9 +87,9 @@
       [
         "fire_rate",
         {
-          "multiplier": 4,
-          "magnum": 8,
-          "throw": 16
+          "multiplier": 5,
+          "magnum": 5,
+          "throw": 5
         }
       ],
       [
@@ -96,10 +102,10 @@
       [
         "bot_options",
         {
-          "nades": true,
-          "bomb_drop": true,
+          "nades": false,
+          "bomb_drop": false,
           "aim_lock": true,
-          "flash": true
+          "flash": false
         }
       ],
       [

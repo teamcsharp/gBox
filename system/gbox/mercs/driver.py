@@ -46,6 +46,11 @@ class Driver:
         """Live stats that show the round moving (the deployment's black-screen watch reads timer / ram_progress)."""
         return {}
 
+    def learning_stage(self, snap: dict) -> str | None:
+        """The round evidence/recall key. A title may return None until its native identity is readable;
+        gameplay continues and the engine tries again on the next playing sample."""
+        return getattr(snap.get("nav"), "learning_sig", None) or str(getattr(snap.get("stage"), "key", "unknown"))
+
 
 def load(prof) -> Driver:
     """The driver a profile names: its mercs block's "driver" module, whose DRIVER is the class (or the instance)."""

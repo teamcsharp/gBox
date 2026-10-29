@@ -197,6 +197,9 @@ def create_app(config: Config) -> FastAPI:
     # RE damage incidents by cause -> one batch request per cause per game (GET /api/mercs/damage-clusters)
     from .mercs import damage_clusters
     damage_clusters.install(app, store, config, auth)
+    # The operator's per-title strategy stack (GET/POST /api/mercs/strategy)
+    from .mercs import strategy as mercs_strategy
+    mercs_strategy.install(app, store, config, auth)
 
     # --- shell ---
     @app.get("/")
@@ -2775,7 +2778,8 @@ def create_app(config: Config) -> FastAPI:
                     if sprite_wait:
                         store.put('job',j['id'],j | {'admission_wait':{'worker':w['name'],'reason':sprite_wait}})
                         continue
-                    if background_testing.requires_admission(j):
+                    from .desktop_admin import authorized_rebuild
+                    if background_testing.requires_admission(j) and not authorized_rebuild(store,j):
                         from . import mercmode
                         if mercmode.presentation_launch(store,w,j):
                             # The operator's continuous presentation is foreground work.
@@ -4033,6 +4037,13 @@ def create_app(config: Config) -> FastAPI:
     live: dict[str, dict] = {}
     live_lock = threading.Lock()
 
+    # A paired desktop (the i9) relays a session's frames only while someone here watches it (federation_watch); a stream
+    # picker's preview counts as watching for PREVIEW_WATCH_S, so the card's next refresh has a picture and a switch to it
+    # finds the relay already up (operator 2026-10-28: "select a stream and jump to that other PIP game instance ... swap
+    # back and forth dynamically on the fly"; the i9's card only ever said "Preview unavailable").
+    PREVIEW_WATCH_S = 15.0
+    preview_watch: dict[str, float] = {}
+
     def _live(sid: str) -> dict:
         with live_lock:
             return live.setdefault(sid, {"frame": None, "seq": 0, "ts": 0, "input": collections.deque(maxlen=500),
@@ -4286,6 +4297,11 @@ def create_app(config: Config) -> FastAPI:
 
     @app.get("/api/sessions/{sid}/frame.jpg")
     def get_frame(sid: str, actor=Depends(auth)):
+        now = time.time()
+        if len(preview_watch) > 256:
+            for k in [k for k, until in preview_watch.items() if until <= now]:
+                preview_watch.pop(k, None)
+        preview_watch[sid] = now + PREVIEW_WATCH_S
         f = _live(sid)["frame"]
         return Response(f, media_type="image/jpeg", headers={"cache-control": "no-store"}) if f else _404()
 
@@ -4802,7 +4818,8 @@ def create_app(config: Config) -> FastAPI:
                         server_jobs=_server_job_threads, saver=app.state.autoplay_screensaver,
                         prefs=app.state.game_prefs)
     from . import tactical_map                   # the Mercenaries tactical map: each round's frames and stages, live
-    tactical_map.install(app, auth)
+    tactical_map.install(app, auth, frame_of=lambda sid: _live(sid)["frame"],   # enemy portraits from the picture
+                         portraits_root=config.data_dir / "mercs" / "portraits")
     from . import tas_api
     tas_api.install(app, store, config, auth, submit, workers)
 
@@ -6603,6 +6620,7 @@ def create_app(config: Config) -> FastAPI:
                            and f.row.get('pc_id')==wid)
         if desktop_watch.get(wid,0)>time.time():
             ids.update(s['session_id'] for s in store.running_sessions() if s['session_id'].startswith(wid+'-'))
+        ids.update(sid for sid,until in list(preview_watch.items()) if until>time.time() and sid.startswith(wid+'-'))
         return sorted(ids)
     federation.routes(app,store,config,auth,
         claim=lambda wid,request,foreground_only=False:_claim(wid,request,actor='federation',foreground_only=foreground_only),

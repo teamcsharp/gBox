@@ -43,6 +43,11 @@ class Adapter:
         return {"address": a, "written": len(data), "verified": True}
 
 
+@pytest.fixture(autouse=True)
+def _mechanics_at_any_multiplier(monkeypatch):
+    monkeypatch.setattr(SM, "FIRE_MAX", 80.0)       # play caps it at 5x (2026-10-28); the mechanics at any multiplier
+
+
 def weapon_guest(names=NAMES, **kw):
     g = round_guest(**kw)
     for wid, name in names.items():
@@ -168,14 +173,25 @@ def test_mercs_bot_routes_the_switch_profile_to_re5_switch_mods():
 
 def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
     rm = ram_map.find({"game_id": "52d15709be0fda1a", "platform": "switch"})
-    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 80}],
+    assert rm.spec["mercs"]["playing_ops"] == [["infinite_ammo", {"on": True}], ["fire_rate", {"multiplier": 5}],
                                                ["mine_loadout", {"on": True}],
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
-                                               ["loadout", {"on": True, "each_round": True,      # never a pistol
-                                                            "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x16", "0x15",
-                                                                        "0x1D"]}],
+                                               ["replace_long_guns", {}],                         # no sniper rifles
                                                ["rampage_loadout", {"on": True}]]
+    assert rm.spec["mercs"]["round_ops"] == [
+        ["loadout", {"on": True, "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x17", "0x16", "0x04"]}]]   # magnums, shotguns
+
+
+def test_thirty_times_fire_rate_remains_only_in_the_shot_motion():
+    g = weapon_guest()
+    ad = Adapter(g)
+    p = player(g)
+    SM.run(ad, "fire_rate", multiplier=30)
+    SM.maintain(ad, {"player": {"ptr": p, "motion": 29}})
+    assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 30.0
+    SM.maintain(ad, {"player": {"ptr": p, "motion": 26}})
+    assert struct.unpack("<f", g.rd(p + SM.P_TIME_SCALE, 4))[0] == 1.0
 
 
 def put_slot(g, k, idw, rounds, grid, hand=0, obj=0x5D4DDE4740):
@@ -249,3 +265,16 @@ def test_mine_loadout_writes_nothing_where_the_block_is_not_chriss():
     ad = Adapter(g)
     res = SM.run(ad, "mine_loadout", on=True)
     assert not res["verified"] and res["blocks"] == [] and ad.writes == []
+
+
+def test_composed_templates_give_every_character_the_bomb():
+    # operator 2026-10-28: "every round of RE5 needs mines" - Chris (BSAA) alone had them
+    t = bytearray(SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    struct.pack_into("<I", t, 0 * SM.TEMPLATE_REC, 0x11A)                 # a magnum
+    struct.pack_into("<I", t, 2 * SM.TEMPLATE_REC, SM.GRENADE_ID)         # hand grenades at record 2 (not Chris's 1)
+    assert SM._mine_block(t) is True
+    assert struct.unpack_from("<I", t, 2 * SM.TEMPLATE_REC)[0] == SM.MINE_ID
+    assert SM._mine_block(t) is False                                     # already carries it
+    flash = bytearray(SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    struct.pack_into("<I", flash, 3 * SM.TEMPLATE_REC, 0x108)             # only flash grenades: they become the bomb
+    assert SM._mine_block(flash) and struct.unpack_from("<I", flash, 3 * SM.TEMPLATE_REC)[0] == SM.MINE_ID

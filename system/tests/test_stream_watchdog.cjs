@@ -75,7 +75,7 @@ test('a recovered connection or a changed session cancels a delayed reconnect ca
     if(changedSession)el.a.src='/api/sessions/w-new/mjpeg';
     else{el.picture='live again';await h.dog.checkHealth(el);}
     const src=el.a.src;finish('data:image/jpeg;base64,OLD');await h.flush();
-    assert.equal(el.a.src,src);assert.equal(el.style.backgroundImage,undefined);
+    assert.equal(el.a.src,src);assert.ok(!String(el.style.backgroundImage||'').includes('OLD'));   // never the late capture
   }
 });
 
@@ -219,9 +219,13 @@ test('cross-origin mini renews after 60 seconds and recovers on load', async () 
   h.dog.onLoad({ target: el }); assert.equal(el.a['data-stream-state'], 'connected');
 });
 
-test('stream input gate blocks new presses only for the viewed session until connected', () => {
-  const h = harness(), el = h.img('/api/sessions/w-s/mjpeg?token=x'); assert.equal(w.inputAllowed(el, 'w-s'), false);
-  for (const state of ['connecting', 'reconnecting', 'ended']) { el.a['data-stream-state'] = state; assert.equal(w.inputAllowed(el, 'w-s'), false); }
+test('stream input gate holds new presses only for an ended or long-gone viewed session', () => {
+  // operator 2026-10-29: a reconnect blip took the pad away mid-fight; presses now flow until the picture is really gone
+  const h = harness(), el = h.img('/api/sessions/w-s/mjpeg?token=x');
+  for (const state of ['connecting', 'reconnecting', 'connected']) { el.a['data-stream-state'] = state; assert.equal(w.inputAllowed(el, 'w-s'), true); }
+  el.a['data-stream-state'] = 'ended'; assert.equal(w.inputAllowed(el, 'w-s'), false);
+  el.a['data-stream-state'] = 'reconnecting'; el.a['data-stream-input'] = 'held'; assert.equal(w.inputAllowed(el, 'w-s'), false);
+  delete el.a['data-stream-input'];
   el.a['data-stream-state'] = 'connected'; assert.equal(w.inputAllowed(el, 'w-s'), true);
   el.a['data-stream-state'] = 'reconnecting'; assert.equal(w.inputAllowed(el, 'w-other'), true); assert.equal(w.inputAllowed(null, 'w-s'), true);
 });
@@ -284,4 +288,26 @@ test('hard reset needs a second Ctrl+click within 5 s and sends an explicit inte
   assert.match(html, /\/reset`, \{ mode, intent: mode === "hard" \? "hard_reset" : mode \}/);
   assert.match(html, /await resetJob\(sid, "hard", btn\)/);
   for (const m of html.matchAll(/keep_state: false[^}]*\}/g)) assert.match(m[0], /intent: "(hard_reset|reset_model)"/);
+});
+
+
+// operator 2026-10-29: "whenever I take control ... it keeps losing connection and saying reconnecting" - a brief stall
+// keeps the pad; "it will play and then jump back to a previous frame while showing reconnecting" - the reconnect's
+// poster is the server's newest frame when the shown picture can't be read, never the periodic backdrop
+test('a brief stall keeps the pad, a long one holds new presses, and a reconnect never shows an older frame', async () => {
+  const h = harness({ captureFrame: () => null }), el = h.img('/api/sessions/w-s/mjpeg'); h.doc.imgs.push(el);
+  await h.dog.checkHealth(el);
+  h.state.health = async () => ({ state: 'running', age_s: 5 }); await h.dog.checkHealth(el);
+  assert.equal(el.a['data-stream-state'], 'reconnecting');
+  assert.equal(w.inputAllowed(el, 'w-s'), true, 'a 5 s stall: the operator keeps control');
+  assert.equal(h.changes.at(-1).input, true);
+  const before = h.preloaded.length;
+  h.state.health = async () => ({ state: 'running', age_s: 25 }); await h.dog.checkHealth(el); await h.flush();
+  assert.equal(w.inputAllowed(el, 'w-s'), false, 'gone 25 s: new presses wait');
+  assert.equal(h.changes.at(-1).input, false);
+  assert.ok(h.preloaded.length > before, 'the newest frame fetched for the poster as the reconnect is scheduled');
+  assert.match(el.style.backgroundImage, /frame\.jpg\?t=/);
+  h.run(h.now() + 1100); assert.match(el.a.src, /reconnect=1$/);
+  h.state.health = async () => ({ state: 'running', age_s: .1 }); el.picture = 'back'; await h.dog.checkHealth(el);
+  assert.equal(w.inputAllowed(el, 'w-s'), true, 'recovered: the pad again');
 });

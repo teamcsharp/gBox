@@ -18,6 +18,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+MEDIA_READ_S, MEDIA_WRITE_S, MEDIA_GRACE_S = 30.0, 15.0, 10.0
+
 from .store import canon, sha256
 
 _ID = re.compile(r'^[a-f0-9]{16,64}$')
@@ -188,7 +190,8 @@ class DesktopBridge:
         self._boundary_endpoint = endpoint(app, '/api/autoplay-screensaver/round-boundary')
 
     def status(self):
-        with self.lock:return dict(self.state)
+        with self.lock:return dict(self.state,epoch=self.epoch,installation=self.authority,
+                                   worker_id=self.active_worker_id)
 
     def configure(self, remote, token):
         remote = origin(remote)
@@ -208,6 +211,16 @@ class DesktopBridge:
             except FileExistsError:pass
             self.secret = file.read_text(encoding='ascii').strip()
             if not re.fullmatch(r'[a-f0-9]{64}', self.secret):raise ValueError('Invalid local federation identity')
+            # The opt-in recovery supervisor needs the existing paired channel
+            # after this desktop exits. DPAPI keeps it bound to this Windows user.
+            from .registry import HOST_OS
+            if HOST_OS == 'windows':
+                try:
+                    from .desktop_supervisor import save_pairing
+                    saved=save_pairing(self.cfg,self.authority,self.remote,self.secret,self.token)
+                    self.state['admin_pairing']='saved' if saved else 'not_enabled'
+                except (ImportError,OSError,ValueError,RuntimeError):
+                    self.state['admin_pairing']='unavailable'
             self.submissions = Submissions(self.store, self._submit, self.authority, remote,
                                            resolve=self.resolve_input,admit=self.admit_command)
             self.state.update(configured=True, remote=remote, state='connecting')
@@ -434,6 +447,22 @@ class DesktopBridge:
                 job = self.store.get('job', row['local_job_id'])
                 if not job:raise SubmissionHeld('A mapped local job is unavailable')
                 body = {'local_job_id': job['id'], 'state': job['state']}
+                if row.get('tool') == 'rebuild_node' and job.get('progress') is not None:
+                    source = job.get('origin') or {}
+                    if job['id'] != row['local_job_id'] or job.get('tool') != row['tool'] \
+                            or row.get('authority') != self.submissions.authority \
+                            or source.get('desktop_federation_authority') != self.submissions.authority \
+                            or source.get('desktop_federation_key') != self.submissions.key(row['id']) \
+                            or job.get('worker_id') != self.active_worker_id or not self.active_worker_id \
+                            or sha256(canon(job.get('input') or {})) != row.get('execution_input_sha256'):
+                        raise SubmissionHeld('Rebuild progress does not match its original local execution')
+                    from .federated_progress import snapshot
+                    try:
+                        body['rebuild_progress'] = snapshot(job, (self.token, self.secret, self.input_secret, self.cfg.token()))
+                    except ValueError:
+                        # Optional telemetry cannot strand the actual tool result or change its error.
+                        row = row | {'progress_delivery_error': 'invalid_rebuild_progress'}
+                        self.store.put('desktop_bridge_job', self.submissions.key(row['id']), row)
                 terminal = job['state'] in _TERMINAL
                 if terminal:body['result'] = self.result(job, row['id'])
                 if len(canon(body))>120*1024*1024:raise SubmissionHeld('Serialized result exceeds the bounded bridge transfer')
@@ -562,9 +591,15 @@ class DesktopBridge:
         except (OSError,RuntimeError):pass
 
     def _media(self, wid, sid):
+        # A steady relay (operator 2026-10-29: the i9's stream kept "Reconnecting"; the central plane logged its upload
+        # cut every ~10 s): the upload's writes may wait MEDIA_WRITE_S for a busy receiver and the local stream's reads
+        # MEDIA_READ_S for a quiet picture (they were 5 s and 8 s), and a watch that blinks out for under MEDIA_GRACE_S
+        # keeps the relay up instead of tearing it down and starting again.
         headers = {'authorization': 'Bearer ' + self.cfg.token()}
-        with httpx.Client(base_url=self.cfg.public_url, headers=headers, timeout=8) as local, \
-             httpx.Client(base_url=self.remote, headers=self._headers(), timeout=5) as remote:
+        with httpx.Client(base_url=self.cfg.public_url, headers=headers,
+                          timeout=httpx.Timeout(10, read=MEDIA_READ_S)) as local, \
+             httpx.Client(base_url=self.remote, headers=self._headers(),
+                          timeout=httpx.Timeout(10, read=None, write=MEDIA_WRITE_S)) as remote:
             try:
                 # Use the sole worker's existing desktop capture/crop channel.
                 # This never starts another capture process in the bridge.
@@ -572,8 +607,12 @@ class DesktopBridge:
                                   params={'view': 'game', 'session': sid}) as response:
                     response.raise_for_status()
                     def frames():
+                        unwatched = None
                         for jpeg in jpeg_parts(response.iter_bytes()):
-                            if not self._running(sid) or sid not in self.watched:break
+                            if not self._running(sid):break
+                            if sid in self.watched:unwatched = None
+                            elif unwatched is None:unwatched = time.monotonic()
+                            elif time.monotonic() - unwatched > MEDIA_GRACE_S:break
                             yield len(jpeg).to_bytes(4,'big')+jpeg
                     remote.post('/api/sessions/' + sid + '/stream',content=frames(),
                                 headers={'content-type': 'application/octet-stream'}).raise_for_status()

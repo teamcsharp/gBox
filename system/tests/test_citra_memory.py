@@ -204,7 +204,7 @@ def test_boot_retries_are_rate_limited_and_cheap(monkeypatch):
         now[0] += adapters.CITRA_RETRY_S
         with pytest.raises(RuntimeError):
             ad.read_memory(0x100000, 4)
-    assert calls == [False, False, False, True, False]      # the wide scan after three cheap misses, then once a minute
+    assert calls == [False] * 5                             # never the wide scan (2026-10-28: it starved the i9's worker)
 
 
 def test_locate_reads_fcram_sized_rows_first_and_skips_wide_ones_when_told(proc):

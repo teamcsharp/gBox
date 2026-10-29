@@ -103,7 +103,7 @@ AUTO_QTE = (0x46B0, 0x46B0 + 0x5510)                     # cSystemInfo mTempData
 ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for each of 7 characters, then bits 28 and 29
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
-FIRE_MAX = 80.0
+FIRE_MAX = 5.0                                               # operator 2026-10-28: "make the max fire rate multiplier for a weapon 5x"
 FIRE_TABLE, FIRE_STRIDE, FIRE_RECORDS = 0x2962170, 0x1A0, 48   # the weapon parameter table (lookup main+0x10ECE20)
 FIRE_INTERVAL, FIRE_TAG, FIRE_TAG_VALUE = 0x1C, 0x4, 60        # f32 the seconds between two shots; i32 60 in every record
 FIRE_SITE, FIRE_SITE_WORD = 0xB2701C, 0xBD401C08               # main+0xB26F90: ldr s8, [x0, #0x1c] (this build's check)
@@ -180,6 +180,11 @@ ASKED: set = set()                                       # the (type, magazine) 
 # each loadout's handgun is swapped for a gun drawn fresh at every select from the campaign's shotguns, magnums and
 # machine guns (never a pistol, never one the loadout already has).
 HANDGUN_TYPES = frozenset({0x101, 0x102, 0x103, 0x10C, 0x10D, 0x128})
+# No sniper rifles (operator 2026-10-28: "Do not let the bot use sniper rifles. If they pull out a sniper rifle, replace it
+# with a rapid fire randomized magnum"): the Sniper Rifle, Semi-Auto Sniper Rifle and Anti-Materiel Rifle become a random
+# magnum (Lightning Hawk / Elephant Killer, fire_rate's multiplier on it) in every loadout, spread or not.
+SNIPER_TYPES = frozenset({0x109, 0x10A, 0x10B})
+MAGNUM_SWAPS = ((0x107, 7), (0x108, 5))
 PISTOL_SWAPS = ((0x104, 8), (0x105, 7), (0x106, 3), (0x107, 7), (0x108, 5), (0x10E, 30), (0x10F, 30), (0x111, 30),
                 (0x110, 286))
 LOADOUTS = (                                             # this build's entries: id, weapons, start list (live dump)
@@ -493,6 +498,10 @@ def loadout_plan(entry: int, rocket: bool, thrown: int, rng, magnum: bool = Fals
     w = _padded(weapons, N_WEAPONS)
     if rocket:
         w = [rng.choice(SWAPS) if t == ROCKET else (t, c) for t, c in w]
+    for i, (t, _c) in enumerate(w):                          # no sniper rifle: a random magnum in its place
+        if t in SNIPER_TYPES:
+            picks = [q for q in MAGNUM_SWAPS if all(q[0] != u for u, _c2 in w)] or list(MAGNUM_SWAPS)
+            w[i] = rng.choice(picks)
     if magnum and w[0] not in MAGNUMS:
         own = next((i for i, pair in enumerate(w) if pair in MAGNUMS), None)
         if own is not None:
@@ -1110,8 +1119,11 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
         throw = float(throw) if throw is not None else None
     except (TypeError, ValueError):
         raise ValueError("fire_rate multiplier / magnum / throw: numbers 1..80 (1 = the game's)") from None
-    if not 1.0 <= k <= FIRE_MAX or any(x is not None and not 1.0 <= x <= FIRE_MAX for x in (magnum, throw)):
+    if not 1.0 <= k <= 80.0 or any(x is not None and not 1.0 <= x <= 80.0 for x in (magnum, throw)):
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
+    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
+    magnum = min(magnum, FIRE_MAX) if magnum is not None else None
+    throw = min(throw, FIRE_MAX) if throw is not None else None
     recs = fire_records(g)
     if recs is None:
         return {"fire_rate_x": g.state.get("fire_rate", 1.0), "verified": False, "writes": 0,

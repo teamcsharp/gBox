@@ -78,7 +78,8 @@ def test_on_a_majini_the_pan_stops_and_the_trigger_holds():
         assert "zr" in act["hold"] and not {"rleft", "rright"} & set(act["hold"])
 
 
-def test_no_stick_while_the_shot_motion_plays_then_the_pan_goes_on():
+def test_no_stick_while_the_shot_motion_plays_then_the_pan_goes_on(monkeypatch):
+    monkeypatch.setattr(R, "SHOT_TAIL_S", 0.0)                          # (the post-shot pause: its own test)
     b, clock = bot()
     ring = [at(300, 40), at(350, 100), at(250, -60)]
     b.tick(snap(ring))
@@ -99,7 +100,8 @@ def test_one_at_point_blank_in_front_is_fired_on():
     assert "zr" in act["hold"] and "rleft" not in act["hold"]
 
 
-def test_the_regular_aim_holds_no_stick_in_the_shot_motion():
+def test_the_regular_aim_holds_no_stick_in_the_shot_motion(monkeypatch):
+    monkeypatch.setattr(R, "SHOT_TAIL_S", 0.0)                          # (the post-shot pause: its own test)
     b, clock = bot()
     foe = at(600, 0)
     b.tick(snap([foe]))                                            # the gun comes up
@@ -371,3 +373,51 @@ def test_no_quick_turn_with_one_nearer_in_front_and_no_back_and_forth():
         clock2[0] = 0.08 * k
         b2.tick(snap([at(250, 170)]))
     assert b2.stats["quick_turns"] == 1                            # within QUICK_BACK_S: no turning back
+
+
+def test_the_gun_at_his_feet_up_close_pushes_the_aim_up_and_holds_the_shot():
+    # operator 2026-10-28: "They're pulling out the gun and they're pointing it at their feet" - up close (CLOSE_PITCH_R)
+    # the pitch stick was skipped altogether, so a low raise stayed low
+    b, clock = bot()
+    foe = at(180, 0)
+    b.tick(snap([foe]))                                            # the gun comes up
+    clock[0] = 0.3
+    floor = (0.0, 0.0, 120.0)                                      # the laser on the floor at his feet
+    act = b.tick(snap([foe], dot=floor, motion=26, aim_pitch=0.75))   # 43 deg down; his chest 9 deg down
+    assert "rup" in act["hold"] and "rdown" not in act["hold"] and "zr" not in act["hold"]
+    assert b.stats["cam_down_fixes"] == 1 and b.stats["cam_down_ticks"] == 1
+
+
+def test_the_aim_at_his_chest_up_close_is_left_alone():
+    b, clock = bot()
+    foe = at(180, 0)
+    b.tick(snap([foe]))
+    clock[0] = 0.3
+    act = b.tick(snap([foe], dot=chest(foe), motion=26, aim_pitch=0.16))
+    assert "zr" in act["hold"] and b.stats.get("cam_down_ticks", 0) == 0
+
+
+def test_the_feet_guard_off_counts_nothing():
+    R_guard = R.CAM_DOWN_GUARD
+    try:
+        R.CAM_DOWN_GUARD = False
+        b, clock = bot()
+        foe = at(180, 0)
+        b.tick(snap([foe]))
+        clock[0] = 0.3
+        b.tick(snap([foe], dot=(0.0, 0.0, 120.0), motion=26, aim_pitch=0.75))
+        assert b.stats.get("cam_down_ticks", 0) == 0
+    finally:
+        R.CAM_DOWN_GUARD = R_guard
+
+
+def test_the_stick_going_the_wrong_way_stands_the_feet_guard_down():
+    b, clock = bot()
+    foe = at(180, 0)
+    floor = (0.0, 0.0, 120.0)
+    b.tick(snap([foe]))
+    clock[0] = 0.3
+    b.tick(snap([foe], dot=floor, motion=26, aim_pitch=0.6))
+    clock[0] = 0.7
+    b.tick(snap([foe], dot=floor, motion=26, aim_pitch=0.9))       # pressed up, went down
+    assert b.stats["cam_pitch_inverted"] == 1 and b._camd["off"]

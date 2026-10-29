@@ -74,7 +74,7 @@ NO_AMMO_SKIP = ("NONE", "Empty", "KNIFE", "STUNROD")         # no rounds to spen
 UPG_TABLE, UPG_STRIDE = 0x1D13B28, 0x210
 P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
-FIRE_MAX = 80.0                                              # the default (the operator's x80)
+FIRE_MAX = 5.0                                               # the operator's round loadout, 2026-10-28
 FIRE_TOP = 1000.0                                            # the PS3 panel's top; the frame rate caps it long before
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
@@ -91,6 +91,7 @@ MAIN_SPAN = 0x2800000                                        # main's mapping (a
 REC_ID, REC_COUNT, REC_GRID, REC_HAND, REC_UPG = 0x0, 0x4, 0x14, 0x18, 0x1C
 KNIFE_IDS = frozenset({0x100, 0x101, 0x10E, 0x114, 0x123, 0x124})   # the knives and WP00 (never a gun to replace)
 POWERFUL = (0x11B, 0x11A, 0x119, 0x115, 0x10D, 0x11C, 0x11D, 0x116, 0x10C, 0x120, 0x10B)   # the PS3 tool's draw
+LOADOUT_WEAPONS = frozenset(POWERFUL) | {0x104, 0x117}          # explicit pools also accept Ithaca and Jail Breaker
 MAGNUMS = (0x10B, 0x11A, 0x11B)
 # rampage_loadout (the 5 m rampage, operator 16:05: "blasting endless magnums or shotguns"): a block with no shotgun or
 # magnum on a D-pad slot gets RAMPAGE_GUN in its first such gun slot that is not the gun in hand (its own full
@@ -98,7 +99,7 @@ MAGNUMS = (0x10B, 0x11A, 0x11B)
 RAMPAGE_GUN, QUICK_GRIDS = 0x119, frozenset({1, 3, 5, 7})   # WP19 Hydra
 ROCKETS, LONG_GUNS = frozenset({0x10D}), frozenset({0x10D, 0x105, 0x11C, 0x120})   # rocket launcher; and the snipers
 HEALTH_MAX = 30000                                           # unlimited_health's boosted maximum (the PS3's)
-MINE_EVERY_DEFAULT = 9.0                                     # the Switch bot's cadence unless `mines` sets one
+MINE_EVERY_DEFAULT = 120.0                                   # the Switch bot's cadence unless `mines` sets one
 THROWN_ITEMS = frozenset({0x06, 0x07, 0x08, 0x0A})           # grenades and the bomb: a loadout draw keeps them
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
@@ -205,6 +206,7 @@ def fire_rate(g: RE5Switch, mult) -> dict:
         raise ValueError("fire_rate multiplier: not yet on Switch: slower than the game's own rate (1..%g)" % FIRE_TOP)
     if not 1.0 <= k <= FIRE_TOP:
         raise ValueError(f"fire_rate multiplier: 1..{FIRE_TOP:g} (1 = the game's)")
+    k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x)
     g.state["fire_rate"] = k
     restored = 0
     if k == 1.0 and g.state.get("scaled"):                   # off: the player's own pace back now (his round's player)
@@ -230,7 +232,9 @@ def chris_block(g: RE5Switch, off: int) -> bool:
 
 def mine_loadout(g: RE5Switch, on: bool) -> dict:
     """Chris (BSAA)'s loadout template, both banks: record 1 the proximity bomb (on) or the hand grenades (off). Only the
-    id word of a block whose records match is written; the round after builds its inventory from it."""
+    id word of a block whose records match is written; the round after builds its inventory from it. Once the template
+    ops own the blocks (MercMode's round loadout composes them every round), every character carries the bomb
+    (compose_templates, _mine_block)."""
     want = MINE_ID if on else GRENADE_ID
     if g.state.get("tpl_orig") is not None:              # the template ops own the blocks now: compose them
         g.state["mine_loadout"] = bool(on)
@@ -239,8 +243,7 @@ def mine_loadout(g: RE5Switch, on: bool) -> dict:
         done = [hex(off) for off, a in zip(CHRIS_TEMPLATES, at) if g.u32(a) == want]
         return {"mine_loadout": bool(on), "verified": bool(res["verified"] and done), "blocks": done,
                 "effective": "the next round's start",
-                "note": "Chris (BSAA)'s record 1 the proximity bomb x5 at grid 1" if on else
-                        "Chris (BSAA)'s hand grenades back at grid 1"}
+                "note": "every character's grenades as the proximity bomb" if on else "the game's grenades back"}
     blocks, ok = [], True
     for off in CHRIS_TEMPLATES:
         if not chris_block(g, off):
@@ -306,15 +309,16 @@ def template_blocks(g: RE5Switch) -> list:
 
 
 def _tpl_orig(g: RE5Switch) -> dict:
-    """Every loadout block as the game had it (read once a boot; mine_loadout's bomb in Chris's record 1 counted as
-    the grenades it replaced, so a block read after it is still the original)."""
+    """Every loadout block as the game had it (read once a boot; a bomb mine_loadout wrote counted as the grenades it
+    replaced, so a block read after it is still the original)."""
     orig = g.state.get("tpl_orig")
     if orig is None:
         orig = {}
         for _i, ptr in template_blocks(g):
             t = bytearray(g.rd(ptr, TEMPLATE_REC * TEMPLATE_RECS))
-            if ptr - g.base in CHRIS_TEMPLATES and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == MINE_ID:
-                struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, GRENADE_ID)
+            for k in range(TEMPLATE_RECS):         # a bomb mine_loadout wrote counts as the grenade it replaced
+                if struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] == MINE_ID:
+                    struct.pack_into("<I", t, k * TEMPLATE_REC + REC_ID, GRENADE_ID)
             orig[ptr] = bytes(t)
         g.state["tpl_orig"] = orig
     return orig
@@ -337,6 +341,7 @@ def compose_templates(g: RE5Switch) -> dict:
         t = bytearray(raw)
         used: list = []
         rng = random.Random(f"{(draw or {}).get('seed')}:{ptr - g.base:x}")
+        choice = rng.choice(draw["pool"]) if draw and draw.get("only") else None
         for k in range(TEMPLATE_RECS):
             o = k * TEMPLATE_REC
             idw, = struct.unpack_from("<I", t, o + REC_ID)
@@ -346,7 +351,7 @@ def compose_templates(g: RE5Switch) -> dict:
                 new = 0x100 | override["item"]
             elif not override and draw and _is_gun(idw) and (idw & 0xFF) not in THROWN_ITEMS:
                 pool = [w for w in draw["pool"] if w not in used] or draw["pool"]
-                new = rng.choice(pool)
+                new = choice if choice is not None else rng.choice(pool)
                 if new in LONG_GUNS:
                     new = rng.choice([w for w in MAGNUMS if w not in used] or MAGNUMS)
                 used.append(new)
@@ -360,9 +365,8 @@ def compose_templates(g: RE5Switch) -> dict:
                 records += 1
         if g.state.get("rampage_loadout"):
             records += int(_rampage_block(t))
-        if g.state.get("mine_loadout") and ptr - g.base in CHRIS_TEMPLATES \
-                and struct.unpack_from("<I", t, MINE_SLOT * TEMPLATE_REC)[0] == GRENADE_ID:
-            struct.pack_into("<I", t, MINE_SLOT * TEMPLATE_REC, MINE_ID)
+        if g.state.get("mine_loadout"):
+            records += int(_mine_block(t))
         if g.rd(ptr, len(t)) != bytes(t):
             ok = g.wr(ptr, bytes(t)) and ok
             ok = ok and g.rd(ptr, len(t)) == bytes(t)
@@ -370,6 +374,20 @@ def compose_templates(g: RE5Switch) -> dict:
     return {"verified": bool(ok), "blocks": len(orig), "blocks_written": writes, "records_changed": records,
             "effective_next_round": True,
             "note": "takes effect at the next round start (the game copies the template into the inventory then)"}
+
+
+def _mine_block(t: bytearray) -> bool:
+    """Every character carries proximity bombs (operator 2026-10-28: "every round of RE5 needs mines"; Chris (BSAA) alone
+    had them, so a Jill or Sheva round placed none): the block's hand grenades become the bomb, else its first other
+    grenade (incendiary, flash). False when it has the bomb already or no grenade to swap."""
+    ids = [struct.unpack_from("<I", t, k * TEMPLATE_REC + REC_ID)[0] for k in range(TEMPLATE_RECS)]
+    if MINE_ID in ids:
+        return False
+    for want in (GRENADE_ID, 0x107, 0x108):
+        if want in ids:
+            struct.pack_into("<I", t, ids.index(want) * TEMPLATE_REC + REC_ID, MINE_ID)
+            return True
+    return False
 
 
 def _rampage_block(t: bytearray) -> bool:
@@ -427,10 +445,11 @@ def weapon_override(g: RE5Switch, weapon=None, only: bool = False) -> dict:
             "template_banks": res["blocks"]}
 
 
-def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: bool = False) -> dict:
+def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: bool = False, only: bool = False) -> dict:
     """Every gun in every Mercenaries loadout drawn from the powerful campaign weapons (weapons: a pool of them),
     without repeats inside a block, the long guns as magnums (the PS3 tool's); on=False: the game's guns back. An
-    active weapon_override wins over the draw. each_round: maintain() draws again whenever a new round's player shows
+    active weapon_override wins over the draw. only: one draw per character loadout, shared by all its gun slots.
+    The profile's round_ops draws before native inventory construction. each_round: maintain() draws again whenever a new round's player shows
     up, so every round brings other guns (operator 2026-10-27: "i want the characters using random weapons from the
     game and campaign in mercenaries"; the game copies the blocks at a round's start, so a draw lands a round later)."""
     import random
@@ -438,9 +457,11 @@ def loadout(g: RE5Switch, weapons=None, seed=None, on: bool = True, each_round: 
         g.state.pop("loadout", None)
         return {"loadout": "the game's", **compose_templates(g)}
     pool = [(int(w, 0) if isinstance(w, str) else int(w)) | 0x100 for w in (weapons or [])]
-    pool = [w for w in pool if w in POWERFUL] or list(POWERFUL)
+    if any(w not in LOADOUT_WEAPONS for w in pool):
+        raise ValueError("loadout: unsupported weapon in the requested pool")
+    pool = pool or list(POWERFUL)
     g.state["loadout"] = {"seed": seed if seed is not None else random.random(), "pool": pool,
-                          "each_round": bool(each_round)}
+                          "each_round": bool(each_round), "only": bool(only)}
     res = compose_templates(g)
     if g.state.get("weapon_override"):
         return {"loadout": "the weapon override", "weapon_override": g.state["weapon_override"], **res}
@@ -1208,7 +1229,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
         elif op == "weapon_override":
             res.update(weapon_override(g, extra.get("weapon") if on else None, bool(extra.get("only"))))
         elif op == "loadout":
-            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on), bool(extra.get("each_round"))))
+            res.update(loadout(g, extra.get("weapons"), extra.get("seed"), bool(on), bool(extra.get("each_round")),
+                               bool(extra.get("only"))))
         elif op == "replace_rockets":
             res.update(replace_rockets(g, extra.get("seed")))
         elif op == "replace_long_guns":

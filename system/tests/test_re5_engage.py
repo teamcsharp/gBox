@@ -275,3 +275,28 @@ def test_with_nobody_chosen_the_body_turns_and_the_gun_comes_up_once_he_is_in_fr
     in_front = [at(20, 300, 1)]
     keys = bot.seek_target({"enemies": in_front}, p, in_front, 1.1)["hold"]
     assert "l1" in keys and "rleft" in keys                              # the laser confirms or blocks the line
+
+
+# --- held target kept when the back-door contact candidate is behind/side (5128) ----------------------------------------
+def test_held_target_in_front_is_kept_when_a_contact_candidate_is_behind():
+    """5128: held target at 0° / 300 cm; contact candidate at 180° / 60 cm.
+    Old code picked the contact (behind) via the back-door; new code keeps the held front target."""
+    front, behind = at(0, 300, 1), at(180, 60, 2)
+    target, why = E.pick(P, [front, behind], held=1)
+    assert target is front, f"expected held front target, got {why}"
+
+
+def test_held_target_in_front_is_kept_when_a_contact_candidate_is_to_the_side():
+    """5128: held target at 0° / 300 cm; contact candidate at 90° / 80 cm (side, not in front cone).
+    Old code picked the side contact via the back-door; new code keeps the held front target."""
+    front, side = at(0, 300, 1), at(90, 80, 2)
+    target, why = E.pick(P, [front, side], held=1)
+    assert target is front, f"expected held front target, got {why}"
+
+
+def test_contact_candidate_in_front_still_overrides_a_held_target():
+    """5128: held target at 0° / 300 cm; contact candidate at 10° / 80 cm (in front cone).
+    A contact candidate that IS in front should still be picked (the back-door is allowed)."""
+    front, contact_front = at(0, 300, 1), at(10, 80, 2)
+    target, why = E.pick(P, [front, contact_front], held=1)
+    assert target is contact_front, f"expected front contact target, got {why}"

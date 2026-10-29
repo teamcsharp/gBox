@@ -33,6 +33,14 @@
   const stages = new Map();                     // stage key -> stage (the page's life: a stage never changes)
 
   // ---- words (pure) ----
+  // Each enemy type its own colour (gbox/mercs/enemy_kinds.py: the RAM class), the same on every map and in the reviewer
+  const KIND_COLORS = ["#e34948", "#f28e2b", "#b07aa1", "#59a14f", "#edc948", "#76b7b2", "#ff9da7", "#9c755f"];
+  function kindColor(cls) {
+    if (!cls) return null;
+    let h = 0; for (const ch of String(cls)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return KIND_COLORS[h % KIND_COLORS.length];
+  }
+  const enemyName = e => (e && e.kind) || "Majini";
   function phaseLabel(p) {
     if (!p) return "";
     const k = String(p).toLowerCase().replace(/[\s-]+/g, "_");
@@ -75,7 +83,7 @@
     }
     const t = plan.target;
     if (t && p && t.pos) {
-      const what = t.kind === "enemy" ? `Majini ${t.id ?? ""}`.trim() : t.kind === "bonus"
+      const what = t.kind === "enemy" ? `${enemyName((f.enemies || []).find(e => e.id === t.id))} ${t.id ?? ""}`.trim() : t.kind === "bonus"
         ? bonusName((f.bonuses || []).find(b => b.id === t.id)?.kind) : t.kind === "stand" ? "Stand spot" : t.kind || "target";
       out.target = `${what} · ${metres(flat(p.pos, t.pos), units)}`;
     }
@@ -189,7 +197,9 @@
       const words = fl.map(k => ({ no_los: "out of sight", attacking: "attacking", blocking: "in the way", target: "the bot's target" }[k] || k));
       if (e.visibility) words.push(({ clear: "clear shot measured", blocked: "cover measured", unknown: "shot path untested" })[e.visibility] || "shot path untested");
       out.push({ kind: "enemy", id: e.id, x, y, flags: fl, level: lv(e.pos), r: Math.max(4.5, 35 * v.scale * perM(units) / 100),
-                 tip: [`Majini ${e.id ?? ""}`.trim(), e.hp != null ? `${e.hp}${e.hp_max ? "/" + e.hp_max : ""} health` : "", away(e.pos),
+                 cls: e.cls, name: e.kind, threat: e.threat, color: kindColor(e.cls),
+                 tip: [`${enemyName(e)} ${e.id ?? ""}`.trim(), e.threat ? `${e.threat} threat` : "",
+                       e.hp != null ? `${e.hp}${e.hp_max ? "/" + e.hp_max : ""} health` : "", away(e.pos),
                        lv(e.pos) !== "same" ? lv(e.pos) : "", ...words].filter(Boolean).join(" · ") });
     }
     for (const item of f.items || []) {
@@ -355,9 +365,10 @@
       ctx.globalAlpha = m.level === "same" ? 1 : 0.5;
       ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, 2 * Math.PI);
       ctx.lineWidth = 3; ctx.strokeStyle = t.halo; ctx.stroke();
-      if (fl.has("no_los")) { ctx.lineWidth = 2; ctx.strokeStyle = t.enemy; ctx.stroke(); }
-      else { ctx.fillStyle = t.enemy; ctx.fill(); }
-      if (fl.has("attacking")) { ctx.lineWidth = 2; ctx.strokeStyle = t.enemy; ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 4, 0, 2 * Math.PI); ctx.stroke(); }
+      const ink = m.color || t.enemy;
+      if (fl.has("no_los")) { ctx.lineWidth = 2; ctx.strokeStyle = ink; ctx.stroke(); }
+      else { ctx.fillStyle = ink; ctx.fill(); }
+      if (fl.has("attacking")) { ctx.lineWidth = 2; ctx.strokeStyle = ink; ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 4, 0, 2 * Math.PI); ctx.stroke(); }
       if (fl.has("blocking")) { ctx.lineWidth = 2; ctx.strokeStyle = t.plan; ctx.setLineDash([3, 2]); ctx.beginPath(); ctx.arc(m.x, m.y, m.r + 4, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]); }
       if (fl.has("target")) {
         const r = m.r + 7; ctx.lineWidth = 1.5; ctx.strokeStyle = t.ink; ctx.beginPath();
@@ -474,7 +485,12 @@
     .tmap .tm-bar button[aria-pressed=true]{border-color:var(--acc);color:var(--acc)}
     .tmap .tm-legend{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--mut)}
     .tmap .tm-legend span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
-    .tmap .tm-legend svg{flex:none}`;
+    .tmap .tm-legend svg{flex:none}
+    .tmap .tm-kinds{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:4px}
+    .tmap .tm-kind{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+    .tmap .tm-kind img,.tmap .tm-kind .tm-face{width:30px;height:30px;border-radius:50%;object-fit:cover;flex:none;border:2px solid var(--kc)}
+    .tmap .tm-kind .tm-face{display:inline-grid;place-items:center;background:var(--kc);color:#fff;font:700 11px system-ui}
+    .tmap .tm-kind small{color:var(--mut)}`;
 
   const ICON = {
     player: `<svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 1l4.5 9.5L6 8 1.5 10.5z" fill="var(--tm-player)"/></svg>`,
@@ -510,6 +526,7 @@
       `<span>${ICON.hidden}out of sight</span><span>${ICON.attack}attacking</span><span>${ICON.time}time bonus</span>` +
       `<span>${ICON.combo}combo bonus</span><span>${ICON.route}route</span><span>${ICON.stand}stand spot</span>` +
       `<span>${ICON.climb}ladder / drop</span></div>` +
+      `<div class="tm-kinds" data-tm="kinds" aria-label="Enemies on the map"></div>` +
       `</div></details>`;
   }
 
@@ -526,6 +543,18 @@
   function savePrefs(o) { try { root.localStorage.setItem(KEY, JSON.stringify(o)); } catch {} }
 
   let current = null;
+  // The legend of the enemy types on the map (frame.kinds): each with its portrait (gbox/tactical_map.py: captured from
+  // the game while the bot's laser sat on one) or its initials until one is captured, its colour, count and threat.
+  function kindsHtml(f, portrait) {
+    const kinds = Object.entries((f && f.kinds) || {}).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
+    return kinds.map(([cls, k]) => {
+      const c = kindColor(cls), name = k.name || cls, src = portrait ? portrait(f.title, cls) : "";
+      const face = `<span class="tm-face" aria-hidden="true">${ESC(name.slice(0, 2).toUpperCase())}</span>`;
+      const pic = src ? `<img alt="" src="${ESC(src)}" data-face="${ESC(name.slice(0, 2).toUpperCase())}">` : face;
+      return `<span class="tm-kind" style="--kc:${c}" title="${ESC(cls)}">${pic}<span>${ESC(name)} ×${k.count || 0}` +
+        (k.threat ? ` <small>${ESC(k.threat)} threat</small>` : "") + `</span></span>`;
+    }).join("");
+  }
   function mount(doc, { sid, api, ...opts }) {
     detach();
     style(doc);
@@ -564,6 +593,12 @@
       const h = hud(frame);
       $("clock").textContent = h.clock; $("phase").textContent = h.phase; $("combo").textContent = h.combo;
       $("score").textContent = h.score; $("status").textContent = h.status;
+      const kinds = kindsHtml(frame, opts.portrait), kindsBox = $("kinds");
+      if (kindsBox && kindsBox.dataset.html !== kinds) {          // only when the types or counts change: no image flicker
+        kindsBox.dataset.html = kinds; kindsBox.innerHTML = kinds;
+        kindsBox.querySelectorAll("img[data-face]").forEach(img => { img.onerror = () => {
+          const f = doc.createElement("span"); f.className = "tm-face"; f.textContent = img.dataset.face; img.replaceWith(f); }; });
+      }
       $("nearest").textContent = h.nearest ? `Nearest: ${h.nearest}` : "";
       $("target").textContent = [h.target && `Target: ${h.target}`, h.note].filter(Boolean).join(" · ");
       const goal = frame?.operator_goal;
@@ -763,6 +798,7 @@
   }
 
   const api = { html, mount, detach, create, hud, want, viewOf, project, unproject, panView, zoomView, screenDir, marks, draw, phaseLabel, clockText,
+    kindColor, kindsHtml,
                 metres, themeOf, renderSVG, VIEW, _stages: stages };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxTacticalMap = api;

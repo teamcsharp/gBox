@@ -154,7 +154,7 @@ def test_a_finisher_naming_a_majini_is_taken():
     assert act["hold"] == ("y",) and b.stats["prompts_seen_enemy"] == 1
 
 
-def test_a_pickup_waits_while_a_majini_is_close_or_a_bomb_of_his_lies_near():
+def test_item_pickups_are_skipped_even_when_the_area_is_clear():
     b, clock = bot()
     pick = prompt(label=1, kind=2, owner=0x5D00001000)
     act = b.tick(snap([at(150, 0)], pr=pick))
@@ -163,7 +163,21 @@ def test_a_pickup_waits_while_a_majini_is_close_or_a_bomb_of_his_lies_near():
     act = b2.tick(snap([at(900, 0)], pr=pick, mines=[(50.0, 0.0, 60.0)]))
     assert act["hold"] != ("y",)
     b3, _ = bot()
-    assert b3.tick(snap([at(900, 0)], pr=pick))["hold"] == ("y",)
+    assert b3.tick(snap([at(900, 0)], pr=pick))["hold"] != ("y",)
+    b4, _ = bot()
+    assert b4.tick(snap([], pr=pick))["hold"] != ("y",)
+
+
+def test_an_item_pickup_does_not_interrupt_firing_on_a_crowd():
+    b, clock = bot()
+    ring = [at(300, 0), at(350, 70), at(300, -100)]
+    b.tick(snap(ring))
+    clock[0] = 0.3
+    sample = snap(ring, pr=prompt(label=1, kind=2, owner=0x5D00001000), motion=26)
+    sample["laser"] = {"from": (0.0, 140.0, 30.0), "at": (0.0, R.CHEST_H, 300.0), "up": True}
+    act = b.tick(sample)
+    assert {"zl", "zr"} <= set(act["hold"]) and "y" not in act["hold"]
+    assert b.doing == "fire" and b.stats["prompts_seen_pickup"] == 1
 
 
 def test_the_bombs_place_and_area_pickups_are_never_pressed():
@@ -175,11 +189,14 @@ def test_the_bombs_place_and_area_pickups_are_never_pressed():
     assert b2.doing != "prompt"
 
 
-def test_a_ledge_prompt_only_on_the_way_to_a_statue_off_his_level_and_its_spot_logged():
+def test_a_ledge_prompt_is_taken_whenever_no_majini_is_on_him_and_its_spot_logged():
     b, clock = bot()
     ledge = prompt(label=9, kind=2, owner=0x5D00001000)
-    act = b.tick(snap([], pr=ledge, bonuses=[at(1200, 0)]))               # a statue on his level: not now
-    assert b.doing != "prompt" and b.stats["traverse_spots"].startswith("9@")
+    act = b.tick(snap([], pr=ledge, bonuses=[at(1200, 0)]))               # 2026-10-28: taken wherever it shows (doors too)
+    assert b.doing == "prompt" and act["hold"] == ("y",) and b.stats["traverse_spots"].startswith("9@")
+    b3, _ = bot()
+    act3 = b3.tick(snap([at(150, 0)], pr=ledge, bonuses=[at(1200, 0)]))   # one at arm's length: his melee - taken too
+    assert b3.doing == "prompt" and act3["hold"] == ("y",)
     b2, clock2 = bot()
     b2.tick(snap([], bonuses=[at(1200, 0, y=-300.0)]))                    # a statue 3 m below
     clock2[0] = 0.05

@@ -22,6 +22,7 @@ as well through here as through the title's own playbook).
 from __future__ import annotations
 
 import time
+import traceback
 import uuid
 
 from . import driver as D
@@ -35,6 +36,24 @@ FRAME_WAIT_S, FRAME_POLL_S = 0.05, 0.002      # frame sync: wait for the game's 
 MASH_DOWN_S, MASH_UP_S = 0.045, 0.035         # a mash (a grab's SHAKE OFF): each press down / up this long - two game
                                               # frames down, one up, so every press is a new one to the game
 RECOVERY_DOWN_S = RECOVERY_UP_S = 1. / 60.    # verified RE5 self-recovery: one game frame down, one released
+# A bot's tick that raises costs that tick, never the round (operator 2026-10-28: a TypeError in the RE6 bot ended its
+# run 30 s into a round and Sherry stood still among the zombies until the clock ran out, 0 kills). Keys are let go, the
+# error and where it was are kept in stats (tick_errors, tick_error) and the lessons; this many in a row ends the run.
+TICK_ERRORS_MAX = 200
+
+
+def tick_error_where(exc) -> str:
+    """The innermost frame of a tick's exception in our own code (not the standard library, not site-packages):
+    file:line function."""
+    import sysconfig
+    lib = sysconfig.get_paths()["stdlib"].replace("\\", "/").lower()
+    frames = traceback.extract_tb(exc.__traceback__)
+    own = [f for f in frames if "site-packages" not in f.filename
+           and not f.filename.replace("\\", "/").lower().startswith(lib)] or frames
+    if not own:
+        return "?"
+    f = own[-1]
+    return f"{f.filename.replace(chr(92), '/').rsplit('/', 1)[-1]}:{f.lineno} {f.name}"
 
 
 class Latency:
@@ -115,6 +134,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     held: set = set()
     gone_since = lost_since = None
     hits_seen = stats.get("hits_taken", 0)
+    tick_errors = 0                                  # TICK_ERRORS_MAX: ticks in a row that raised
     progress = 0
     frame_fn = getattr(drv, "frame", None)
     clock_frame = [None]                              # the game's frame (driver.frame) at the last decision
@@ -155,6 +175,21 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 lessons({"kind": kind, **fields})
             except Exception:                        # noqa: BLE001 - a lesson lost never stops the round
                 stats["local_log_errors"] = stats.get("local_log_errors", 0) + 1
+
+    def tick_failed(exc, in_a_row):
+        """A tick that raised (TICK_ERRORS_MAX): its keys let go, the error and where kept, the next tick after a frame.
+        -> the count in a row; past TICK_ERRORS_MAX the exception ends the run as before."""
+        in_a_row += 1
+        if in_a_row > TICK_ERRORS_MAX:
+            raise exc
+        error = f"{type(exc).__name__}: {str(exc)[:160]} at {tick_error_where(exc)}"
+        stats["tick_errors"] = stats.get("tick_errors", 0) + 1
+        if stats.get("tick_error") != error:
+            log("tick_error", error=error, trace="".join(traceback.format_exception(exc))[-2000:])
+        stats["tick_error"] = error
+        hold(set())
+        next_frame()
+        return in_a_row
 
     trace = None
     notebook = None
@@ -203,13 +238,36 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         from . import lessons as lesson_store
         trace = Recorder(log, atlas_root=lesson_store.ROOT.parent / "navigation", title=prof["map_id"], round_id=round_id,
                          provenance=provenance)
+    capture = None
+
+    def start_capture():
+        """Every round's run map (gbox.mercs.run_capture), keyed by its curriculum row id; a brain that keeps its own
+        round map (trace_finish: RE5 PS3, RE4) keeps it alone."""
+        nonlocal capture
+        capture = None
+        if callable(getattr(bot, "trace_finish", None)) or not isinstance(prof.get("map_id"), str):
+            return
+        try:
+            from . import run_capture
+            from . import lessons as lesson_store
+            capture = run_capture.RunCapture(lesson_store.ROOT.parent / "round_maps", prof["map_id"], round_id,
+                                             provenance=provenance)
+        except Exception as exc:                      # noqa: BLE001 - no map never costs the round
+            stats["run_map_error"] = str(exc)[:200]
+    start_capture()
 
     def finish_evidence(at, reason, final_stats):
-        nonlocal trace, round_closed
+        nonlocal trace, round_closed, capture
         if round_closed:
             return
         round_closed = True
         row = dict(final_stats)
+        if capture is not None:                       # the run map: its exploration numbers into the row, files after
+            mapped = capture.finish(at, reason, stage=remembered[0] if remembered else None)
+            row.update(mapped)
+            if mapped.get("round_map_file"):
+                stats["last_run_map"] = mapped["round_map_file"]
+            capture = None
         row['assistance'] = round_fields(stats, assistance)
         row['assistance_classification'] = row['assistance']['classification']
         row['assistance_verified'] = row['assistance']['verified']
@@ -281,6 +339,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             stats.pop(key,None)
         stats.update(round_evidence_id=round_id,round_evidence_closed=False)
         _enemy_round(prof.get("map_id") if isinstance(prof, dict) else None)
+        start_capture()
         if prof.get("map_id") == "BLUS30491":
             from .route_trace import Recorder
             from . import lessons as lesson_store
@@ -311,6 +370,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 if delay is None:
                     raise
                 sleep(delay)
+                continue
+            except Exception as exc:                 # noqa: BLE001 - a reader's bug costs the tick (TICK_ERRORS_MAX)
+                tick_errors = tick_failed(exc, tick_errors)
                 continue
             read_retry.recovered(now)
             if snap.get('scoring_players') == 2:
@@ -354,6 +416,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                     tactical(snap, bot, where)
                 except Exception:                     # noqa: BLE001 - the map never costs the round a tick
                     pass
+            if where in D.IN_ROUND:
+                # Capture must see this sample's identity, including an unreadable one, before
+                # it can latch a preceding round's stage from the reused autoplay stats.
+                stats.update(drv.progress(snap))
+            if capture is not None:                   # the run map: a sample 5 times a second (appends; never raises)
+                capture.observe(now, where, snap, bot, stats)
             if where not in D.IN_ROUND:
                 if where == "results":
                     last_stats = dict(stats)
@@ -404,7 +472,6 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 continue
             gone_since = lost_since = None
             progress += 1
-            stats.update(drv.progress(snap))
             if where == "dead":
                 outcome = "died"
             last_stats = dict(stats)
@@ -418,19 +485,20 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 if stats.get('mercmode_rotate_requested'):
                     return 'mercmode_boundary'
             if notebook is not None and remembered is None and where == "playing":
-                mesh = snap.get("nav")
-                stage = getattr(mesh, "learning_sig", None) or str(getattr(snap.get("stage"), "key", "unknown"))
-                mode = stats.get("mercenaries_mode", "mercenaries")
-                remembered = (stage, mode, stats.get("character", "unknown"))
-                try:
-                    recalled = notebook.recall(stage, mode, stats)
-                    stats.update(round_memory_recalled=len(recalled), round_memory_db=str(notebook.path),
-                                 round_guide=str(notebook.root / "guide.json"))
-                    log("round_recall", stage=stage, mode=mode, lessons=recalled)
-                    if callable(getattr(bot, "recall", None)):
-                        bot.recall(recalled)
-                except Exception as exc:
-                    stats["round_notebook_error"] = str(exc)[:200]
+                stage_fn = getattr(drv, "learning_stage", None)
+                stage = stage_fn(snap) if callable(stage_fn) else D.Driver.learning_stage(drv, snap)
+                if stage is not None:                # an unreadable native ID must not latch an unrelated bucket
+                    mode = stats.get("mercenaries_mode", "mercenaries")
+                    remembered = (stage, mode, stats.get("character", "unknown"))
+                    try:
+                        recalled = notebook.recall(stage, mode, stats)
+                        stats.update(round_memory_recalled=len(recalled), round_memory_db=str(notebook.path),
+                                     round_guide=str(notebook.root / "guide.json"))
+                        log("round_recall", stage=stage, mode=mode, lessons=recalled)
+                        if callable(getattr(bot, "recall", None)):
+                            bot.recall(recalled)
+                    except Exception as exc:
+                        stats["round_notebook_error"] = str(exc)[:200]
             stats["ram_progress"] = progress
             if trace is not None:
                 trace.observe(snap, bot, stats, now, held, "before_decision")
@@ -440,6 +508,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())
+                if capture is not None:
+                    capture.prompt(now, chords)
                 mash = getattr(pp, "mashing", False)  # a grab: as fast as the game takes new presses (30 a second)
                 for chord in chords:
                     recovery = False
@@ -463,7 +533,12 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
                 if not mash:
                     sleep(0.15)
                 continue
-            act = bot.tick(snap)
+            try:
+                act = bot.tick(snap)
+                tick_errors = 0
+            except Exception as exc:                 # noqa: BLE001 - TICK_ERRORS_MAX: a bad tick never ends the round
+                tick_errors = tick_failed(exc, tick_errors)
+                continue
             if trace is not None:
                 trace.observe(snap, bot, stats, now, act.get("hold", ()), "decision", act.get("tap"))
             vi = frame_fn.vi(m) if frame_fn is not None and hasattr(frame_fn, "vi") else None

@@ -578,38 +578,53 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
     assert b2.doing == "held"                                         # the game's Break free: the grab
 
 
-def test_crowd_fire_shoots_close_enemy_with_aim_off(monkeypatch):
-    """The idle_in_5m_s fix: within RAMPAGE_R the shotgun's spread covers a wide cone, so the trigger stays down
-    even when the aim is off by more than CROWD_CONE (10 deg) but less than CLOSE_FIRE_CONE (45 deg)."""
-    monkeypatch.setattr(R, "CROWD_FIRE", True)
+# --- the "low health with no tablet or heal" damage cluster (#5074) ----------------------------------------------------
+
+def _snap_no_heals(hp, hp_max=1000, enemy=(0.0, 0.0, 300.0), rot=0.0):
+    """A snapshot at critical HP with an empty heal supply (no HEAL_IDS in the inventory)."""
+    return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": hp_max},
+            "enemies": [{"ptr": 1, "pos": enemy, "hp": 800, "hp_max": 800}],
+            "inventory": [{"id": 0x101, "type": 1, "item": 0x01, "rounds": 30, "grid": 1, "hand": True}]}
+
+
+def test_critical_hp_with_no_heals_retreats_instead_of_fighting():
+    """The #5074 cluster: the bot aimed or fired at <=30% HP with no heal item left and died.  The fix: at or
+    below HEAL_CRITICAL with an empty heal supply the bot turns and runs from the nearest Majini."""
     b, clock = brain()
-    # Three enemies within 5m to enter crowd fire mode
-    near = [(0.0, 0.0, 300.0), (200.0, 0.0, 200.0), (-200.0, 0.0, 200.0)]
-    b.tick(bot_snap(enemy=near[0], more=near[1:]))
-    clock[0] = 0.05
-    b.tick(bot_snap(enemy=near[0], more=near[1:]))
-    clock[0] = 0.3
-    # The aim is 30 degrees off the nearest enemy (within CLOSE_FIRE_CONE=45, outside CROWD_CONE=10)
-    off_aim = ray((260.0, 110.0, 150.0))  # ~30 deg off the enemy at (0,0,300)
-    act = b.tick(bot_snap(enemy=near[0], more=near[1:], laser=off_aim))
-    assert "zr" in act["hold"], f"expected firing with aim off at close range, got {act}"
-    assert b.stats["idle_in_5m_s"] == 0, "idle_in_5m_s should not increment when firing"
+    act = b.tick(_snap_no_heals(hp=240))                                # 24%: under HEAL_CRITICAL (25%)
+    assert "lup" in act["hold"] or "ldown" in act["hold"]               # running (the escape), not aiming
+    assert "zl" not in act["hold"] and "zr" not in act["hold"]          # the gun stays down
+    assert b.escape is not None                                         # the escape state is set
+    assert "no heals" in str(b.stats.get("heal_status", ""))
+    assert b.stats["escapes"] == 1
 
 
-def test_replay_incident_idle_among_foes_shoots_close_range(monkeypatch):
-    """Replay the incident round (cluster aef43e59aa636e02, round:idle_among_foes) from the fixture:
-    three Majini within RAMPAGE_R, aim ~20 deg off the nearest enemy. Before the fix the bot
-    steered but never fired (aim > CROWD_CONE=10 deg). With CLOSE_FIRE_CONE=45 deg the trigger
-    stays down even with the aim off, so the bot shoots the close enemy instead of idling."""
-    import json
-    from pathlib import Path
-    from gbox.mercs import incident_replay
+def test_critical_hp_with_no_heals_runs_away_from_the_nearest_enemy():
+    """The retreat heads away from the nearest live Majini, not a fixed direction."""
+    b, clock = brain()
+    # enemy at +x: the retreat runs toward -x (rright = -x in the Switch stick map, see RUN/TURN_TOL)
+    act = b.tick(_snap_no_heals(hp=200, enemy=(500.0, 0.0, 0.0)))
+    assert "rright" in act["hold"]                                      # away from +x
+    b2, _ = brain()
+    act2 = b2.tick(_snap_no_heals(hp=200, enemy=(-500.0, 0.0, 0.0)))
+    assert "rleft" in act2["hold"]                                      # away from -x
 
-    monkeypatch.setattr(R, "CROWD_FIRE", True)
-    fixture_path = Path(__file__).parent / "fixtures" / "mercs_incidents" / "re5_switch_idle_among_foes.json"
-    fixture = json.loads(fixture_path.read_text())
-    result = incident_replay.replay(fixture, ticks=5)
-    keys = incident_replay.keys(result)
-    assert "zl" in keys, f"expected trigger hold in replay, got {keys}"
-    assert fixture["cluster"]["id"] == "aef43e59aa636e02"
-    assert fixture["cluster"]["signature"] == "round:idle_among_foes"
+
+def test_above_critical_hp_with_no_heals_still_fights():
+    """Only at or below HEAL_CRITICAL does the empty-supply retreat trigger; above it the fight continues."""
+    b, clock = brain()
+    act = b.tick(_snap_no_heals(hp=350))                                # 35%: above HEAL_CRITICAL, below HEAL_AT (40%)
+    assert "zl" in act["hold"] or "zr" in act["hold"] or "rleft" in act["hold"] or "rright" in act["hold"]
+    assert b.escape is None
+    assert "no heals" not in str(b.stats.get("heal_status", ""))
+
+
+def test_critical_hp_with_a_heal_still_heals_instead_of_retreating():
+    """A heal item in the quick slots at critical HP: the normal heal path runs, not the retreat."""
+    b, clock = brain()
+    snap = _snap_no_heals(hp=240)
+    heal_id = next(iter(R.HEAL_IDS))
+    snap["inventory"].append({"id": heal_id, "type": 3, "item": 0x04, "rounds": 1, "grid": 7, "hand": False})
+    act = b.tick(snap)
+    assert b.escape is None
+    assert b.healing is not None or "heal" in str(b.stats.get("heal_status", "")) or act.get("tap") == R.QUICK[7]

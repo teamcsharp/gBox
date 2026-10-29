@@ -183,6 +183,7 @@ test('cold renderer reopen waits for guest readiness and restores both roles bef
     assert.match(script, /main-A/); assert.match(script, /pip-B/); calls.push('guest'); return { missing: [], view: state.guest };
   } };
   const ctx = vm.createContext({ clientViewNavigation: 0, clientViewRestoring: true, EMB: {},
+    pipSelection:{preference:null},
     clientRefresh: { pending: () => pending, adopt: s => { pending = s; }, done: () => { pending = null; }, retain() {},
       remember: guest => { assert.equal(guest.playing, 'main-A'); assert.equal(guest.pip, 'pip-B'); calls.push('remember'); } },
     gbox: { clientView: async () => state }, document: { querySelector: q => q === '#wv' ? guest : { click() {} } },
@@ -195,6 +196,7 @@ test('operator shell navigation while saved view loads cancels cold restoration'
   const html = fs.readFileSync(require.resolve('../clients/desktop/index.html'), 'utf8');
   const code = html.slice(html.indexOf('async function restoreClientView()'), html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
   let pending = null, finish; const ctx = vm.createContext({ clientViewNavigation: 0, clientViewRestoring: true,
+    pipSelection:{preference:null},
     clientRefresh: { pending: () => pending, adopt: s => { pending = s; }, done: () => { pending = null; }, retain() {} },
     gbox: { clientView: () => new Promise(resolve => { finish = resolve; }) },
     loadPlay: () => { throw Error('must not select a view'); } });

@@ -59,10 +59,11 @@ test('the desktop compact PiP reads the shared running list, the history only fo
   let running = [live];
   const context = vm.createContext({
     GBoxSessionContinuity: C, COMPACT: { on: true, local: false, sid: live.session_id }, compactSession: live,
+    pipSelection:{preference:null},
     liveSessions: async () => { calls.push('running'); return { ok: true, data: running }; },
     gbox: { api: async path => { calls.push(path); return { ok: true, data: [{ ...live, state: 'ended' }] }; } },
     Error });
-  vm.runInContext(html.slice(start, html.indexOf('setInterval(() => compactContinuity', start)), context);
+  vm.runInContext(html.slice(start, html.indexOf('async function pipFollowSelected()', start)), context);
   await vm.runInContext('compactContinuity.poll()', context);
   assert.deepEqual(calls, ['running'], 'a running game never reads the 660 KB history');
   running = [];

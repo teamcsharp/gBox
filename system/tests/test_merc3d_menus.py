@@ -148,6 +148,54 @@ def test_main_menu_visits_the_selects_then_starts():
     M.PICK.reset()
 
 
+def test_repeated_main_menu_step_gets_one_confirm_then_resumes_navigation():
+    M.PICK.reset()
+    main = M.screen(_guest("aMerceMain", MAIN, 1))
+    for _ in range(3):
+        assert M.step(main) == "r"
+        M.pressed(main, "r")
+    assert M.step(main) == "a"                            # dismiss the observed mission-unlock notice
+    M.pressed(main, "a")
+    assert M.step(main) == "r"                            # still visit the mission selector; no false completion
+    assert not M.PICK.mission_done and not M.PICK.chara_done
+    M.PICK.reset()
+
+
+def test_main_notice_recovery_is_bounded_and_resets_after_native_progress():
+    M.PICK.reset()
+    main = M.screen(_guest("aMerceMain", MAIN, 1))
+    confirms = 0
+    for _ in range(20):
+        key = M.step(main)
+        confirms += key == "a"
+        M.pressed(main, key)
+    assert confirms == 2                                 # no endless A spam when this is not a notice
+    assert M.step(main) == "r"
+    stage = M.screen(_select_guest())
+    M.step(stage)                                       # native menu progress starts a fresh visit
+    for _ in range(3):
+        assert M.step(main) == "r"
+        M.pressed(main, "r")
+    assert M.step(main) == "a"
+    M.PICK.reset()
+
+
+def test_old_live_pick_without_notice_fields_can_recover_after_hot_reload():
+    M.PICK.reset()
+    for name in ("main_key", "main_presses", "main_confirmations"):
+        if hasattr(M.PICK, name):
+            delattr(M.PICK, name)
+    main = {"where": "mercs_main"}
+    M.PICK.mission_done = True
+    for _ in range(3):
+        assert M.step(main) == "l"
+        M.pressed(main, "l")
+    assert M.step(main) == "a"
+    M.pressed(main, "a")
+    assert M.step(main) == "l" and not M.PICK.chara_done
+    M.PICK.reset()
+
+
 def test_mission_select_walks_to_a_random_open_level_then_a_tab():
     M.PICK.reset()
     M.PICK.level = 0
@@ -292,3 +340,42 @@ def test_the_player_comes_from_the_live_node_layout():
     g.f32(p + M.P_VIT_MAX, 1000.0)
     assert M.player_unit(g) == p
     assert M.snapshot(g)["player"]["class"] == "uPl< Chris >"
+
+
+def test_missions_are_played_in_order_level_by_level_and_the_game_again(tmp_path):
+    """2026-10-28: "level to level to level until it completes the entire game. And then ... again"."""
+    from gbox.mercs.titles import merc3d_3ds as M
+    pick = M._Pick(path=tmp_path / "progress.json")
+    seen = []
+    for _ in range(M.LEVELS * 3 + 1):
+        level = pick.level_for(M.LEVELS)
+        tab = pick.tab_for(3)
+        seen.append((level, tab))
+        pick.reset()                                         # the round started: on to the next mission
+    assert seen[:4] == [(0, 0), (0, 1), (0, 2), (1, 0)]
+    assert seen[M.LEVELS * 3] == (0, 0) and pick.cursor[2] == 1   # the whole game, then round again
+    again = M._Pick(path=tmp_path / "progress.json")          # a relaunch carries on where it was
+    assert again.cursor == pick.cursor
+    locked = M._Pick(path=tmp_path / "locked.json")
+    locked.cursor = [3, 0, 0]
+    assert locked.level_for(2) == 1                           # LV.4 not open yet: the last open level
+
+
+def test_the_autosaves_saved_dialog_is_the_menus_turn_and_takes_a():
+    # live 2026-10-28 (the i9): "Saved." after a round waited for a button for 30 min; read as loading, the run ended
+    d = M.DRIVER()
+    saving = _guest("aMerceMain", MAIN, 3)
+    assert M.screen(saving)["where"] == "saving"
+    assert M.step(M.screen(saving)) == "a"
+    assert d.screen(saving, None) == "results"
+    assert d.menu_handoff(saving, {}, "results") is True
+
+
+def test_you_are_dead_is_the_menus_turn_not_a_round_with_no_player():
+    # live 2026-10-29 (the i9): "YOU ARE DEAD - Continue?" read as a round; the bot idled with no player for hours
+    d = M.DRIVER()
+    idx = STAGE.index("cMerceStageYouAreDeadState")
+    g = _guest("aS0000", STAGE, idx)
+    assert M.screen(g)["where"] == "dead"
+    assert d.screen(g, None) == "results" and d.menu_handoff(g, {}, "results") is True
+    assert M.step(M.screen(g)) == "a"

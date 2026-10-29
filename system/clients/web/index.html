@@ -771,7 +771,8 @@ const MERCS_REVIEWER = {ctl:null};
 // The Mercenaries tab: MercMode per PC (on/off, which titles rotate, rounds per title) above the run reviewer
 function mercsReviewerView(){ return '<details id="mercmode-web" class="pane" open><summary>MercMode: which PCs rotate through which Resident Evil Mercenaries titles</summary><div id="mercmode-web-panel"></div></details><div id="mercs-reviewer"></div>'; }
 mercsReviewerView.after = () => {
-  MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries'});
+  MERCS_REVIEWER.ctl = GBoxMercsReviewer.mount(document.getElementById('mercs-reviewer'), {api,visible:()=>cur==='Mercenaries',
+    portrait:(title,cls)=>`/api/mercs/portraits/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.jpg?${tq()}`});
   const root = document.getElementById('mercmode-web-panel');
   // Watch: in the desktop app that PC's run goes into its PiP (GBOX: bridge), in a browser it opens in Sessions
   if (root && window.GBoxMercMode) GBoxMercMode.mount({ root, api: (path, body) => api(path, body),
@@ -2387,7 +2388,8 @@ sessionsView.after = (sid, mode) => {
     head.querySelector("[data-coach] input")?.blur();
     console.log("GBOX:" + JSON.stringify({ ev: "gamefocus", sid }));
   } }) || null;
-  TMAP.ctl = window.GBoxTacticalMap?.mount(document, { sid, api }) || null;  // a Mercenaries round from above (shows with frames)
+  TMAP.ctl = window.GBoxTacticalMap?.mount(document, { sid, api,
+    portrait: (title, cls) => `/api/mercs/portraits/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.jpg?${tq()}` }) || null;  // a Mercenaries round from above (shows with frames)
   RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
     url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
   BCAST.ctl = window.GBoxBroadcast?.mount(head, { sid, api }) || null;        // On air: this game on the broadcast program
@@ -2444,7 +2446,7 @@ sessionsView.after = (sid, mode) => {
   scr.onkeydown = e => { if (e.code === "NumpadSubtract") return; const k = keysym(e); if (!k || e.key === "Escape") return; e.preventDefault(); if (streamInputAllowed(sid) && !held.has(k)) { held.add(k); send(k, true); } };
   scr.onkeyup = e => { const k = keysym(e); if (!k) return; e.preventDefault(); held.delete(k); send(k, false); };
   scr.onblur = () => { held.forEach(k => send(k, false)); held.clear(); };
-  scr.addEventListener("gbox-stream-state", e => { if (!e.detail.connected) scr.onblur(); });
+  scr.addEventListener("gbox-stream-state", e => { if (!(e.detail.input ?? e.detail.connected)) scr.onblur(); });
   if (pg) {                                             // click / hold a button on the controller glyph = press it in the game
     pg.onpointerdown = e => { if (e.button !== 0 || !streamInputAllowed(sid)) return;  // ignore presses while the picture reconnects
       const g = e.target.closest("[data-k]"); if (!g || !g.dataset.k) return; e.preventDefault();

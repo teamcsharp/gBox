@@ -398,6 +398,13 @@ BLANK = _blank()
 
 # --- which session is on air ---------------------------------------------------------------------------------------
 
+def _pc_session(rows: list[dict]) -> dict | None:
+    """The machine's current game, excluding paused/prelaunched MercMode captures even when they are fresh."""
+    return max((r for r in rows if r.get("mercmode") != "warm"),
+               key=lambda r: (r.get("mercmode") == "run", bool(r.get("fresh")), r.get("started") or 0),
+               default=None)
+
+
 def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | None, now: float, watch_ttl_s: float,
            auto_agents: bool = True, pc_match: Callable[[dict, str], bool] = lambda r, s: False,
            successor: Callable[[str], str | None] = lambda sid: None) -> tuple[str | None, str]:
@@ -417,16 +424,18 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
             return nxt, "pinned (its relaunch)"
         why = "the pinned session ended; following what you watch"
     elif mode == "pc" and target:
-        mine = [r for r in rows if pc_match(r, target)]
-        if not mine:
+        best = _pc_session([r for r in rows if pc_match(r, target)])
+        if best is None:
             return None, f"{target} is not running a game"
         # that PC's MercMode turn first, never a game its warm pool holds paused for the next title (2026-10-26: the
         # program pinned to lilspark showed the paused, prelaunched RE5 - "the pine agent has been showing the game
         # loading for more than an hour" - while RE4 played: it was the newest session with a picture)
-        best = max(mine, key=lambda r: (r.get("mercmode") == "run", r.get("mercmode") != "warm",
-                                        bool(r.get("fresh")), r.get("started") or 0))
         return best["session_id"], f"pinned to {best.get('pc') or target}" + (
             " (its MercMode turn)" if best.get("mercmode") == "run" else "")
+    # A session pin is deliberate; an automatic choice or an old viewing heartbeat must never put a parked turn
+    # back on air. A warm capture stays fresh even though its emulator is paused, including through a handover.
+    rows = [r for r in rows if r.get("mercmode") != "warm"]
+    running = {r["session_id"]: r for r in rows}
     watched = (watch or {}).get("session_id")
     if watched and now - ((watch or {}).get("at") or 0) <= watch_ttl_s:
         if watched not in running:
@@ -438,7 +447,7 @@ def choose(pin: dict, watch: dict | None, rows: list[dict], *, current: str | No
         return current, why or "still on air"          # stays while it has a picture, or while nothing else does
     if not pool:
         return None, why or "no game is running"
-    best = max(pool, key=lambda r: (r.get("mercmode") != "warm", bool(r.get("fresh")), not r.get("agent_owned"),
+    best = max(pool, key=lambda r: (bool(r.get("fresh")), not r.get("agent_owned"),
                                     r.get("mercmode") == "run", r.get("started") or 0))
     return best["session_id"], why or ("newest game with a picture" if best.get("fresh") else "newest game")
 
@@ -467,6 +476,7 @@ class Feed:
         self.seen = clock()
         self.switched_at = clock()
         self.ended_at: float | None = None
+        self.warm_wait_at: float | None = None
         self.since: float | None = None      # wall clock: when the current session went on this feed
         self.frames_out = 0
 
@@ -1296,10 +1306,9 @@ class Hub:
             return sid, why
         if f.key.startswith("pc:"):
             want = f.key[3:]
-            mine = [r for r in rows if self.pc_match(r, want)]
-            if not mine:
+            best = _pc_session([r for r in rows if self.pc_match(r, want)])
+            if best is None:
                 return None, f"{want} is not running a game"
-            best = max(mine, key=lambda r: (bool(r.get("fresh")), r.get("started") or 0))
             return best["session_id"], f"what {best['pc']} runs now"
         sid = f.key.split(":", 1)[1]
         if any(r["session_id"] == sid for r in rows):
@@ -1318,12 +1327,23 @@ class Hub:
                 f.mode, f.reader, f.resolved = "hold", None, True
                 return
         target, why = self.resolve(f, rows)
+        # MercMode briefly parks both games between turns. Detach the old capture and hold its last gameplay
+        # picture for the normal switch window, without delaying a ready successor or holding forever.
+        if target is None and f.last and (f.warm_wait_at is not None or
+                                         (by_id.get(f.sid) or {}).get("mercmode") == "warm"):
+            if f.warm_wait_at is None:
+                f.warm_wait_at = now
+        else:
+            f.warm_wait_at = None
         if target != f.sid:
             f.sid, f.switched_at, f.since, f.ended_at = target, now, wall, None
         f.row, f.why = by_id.get(target) if target else None, why
         row = f.row
         if row is None:
             f.kind, f.reader = "none", None
+            if f.warm_wait_at is not None and now - f.warm_wait_at < SWITCH_WAIT_S:
+                f.mode, f.resolved = "hold", True
+                return
             if f.key == "program":
                 self._slate(f, "gBox", why or "no game is running")
             elif f.key.startswith("pc:"):
@@ -1545,8 +1565,7 @@ def register(app, store, config, *, live: dict, desktop_frames: dict, desktop_wa
         pcs = []
         for w in hub.workers().values():
             name = str(w.get("name") or w.get("id"))
-            mine = [r for r in rows if r["pc_id"] == w["id"]]
-            best = max(mine, key=lambda r: (bool(r.get("fresh")), r.get("started") or 0)) if mine else None
+            best = _pc_session([r for r in rows if r["pc_id"] == w["id"]])
             key = "pc:" + slug(name)
             pcs.append({"pc": name, "id": "pc/" + slug(name), "pc_id": w["id"], "os": w.get("os"),
                         "online": hub.wall() - (w.get("last_seen") or 0) < WORKER_TTL_S,

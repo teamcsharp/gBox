@@ -3,8 +3,9 @@
   'use strict';
   const pc = s => String(s?.detail?.worker_name || s?.pc || '').toLowerCase();
   const build = s => String(s?.collection_mod || s?.mod_build || s?.mod || '').split('~')[0];
-  // a game on a PC that is offline (#2870, worker_online) is not running for a viewer: never selected, followed or restored
-  const running = s => s?.state === 'running' && !s.stopping && s.worker_online !== false;
+  // Parked MercMode games can keep sending fresh frames. Only an active game is a destination for a viewer;
+  // replacement links still traverse parked predecessors below.
+  const running = s => s?.state === 'running' && !s.stopping && !s.warm && s.worker_online !== false;
   function hasPicture(pixels) {
     let lit = 0;
     for (let i=0;i<pixels.length;i+=4) if (Math.max(pixels[i],pixels[i+1],pixels[i+2]) > 12) lit++;

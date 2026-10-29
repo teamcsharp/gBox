@@ -67,7 +67,7 @@ def test_the_bot_raises_fires_through_a_dropout_and_steers_by_the_ps3_core(tmp_p
     clock[0] = 0.4
     assert b.tick(snap(dot=(0.0, 111.0, 500.0), motion=29, up=False))["hold"] == ("zl", "zr")   # dropout: still
     assert b.stats["trigger_s"] == pytest.approx(0.1) and b.stats["flicker_s"] == pytest.approx(0.05)
-    clock[0] = 0.45
+    clock[0] = 0.4 + R.SHOT_TAIL_S + 0.01
     act = b.tick(snap(dot=(60.0, 111.0, 500.0), motion=26))                    # 7 deg right of him: slew left
     assert act["hold"] == ("rright", "zl") and b.doing == "aim" and "slewing" in b.why
     assert b.stats["fire_gate"].startswith("slewing")

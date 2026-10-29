@@ -1119,11 +1119,8 @@ def main(argv=None) -> int:
         print(json.dumps({"entries": [e.model_dump() for e in entries], "problems": problems}, indent=1))
         return 0
     if args.command == "status":
-        lay = Layout(root(config))
-        print(json.dumps({"root": str(lay.root), "ownership": ownership(config, args.package),
-                          "release": (lay.release / RELEASE_RECEIPT).is_file(), "aapt2": lay.aapt2.is_file(),
-                          "system_img": lay.system_img.is_file(), "sysroot": sysroot_ok(lay.sysroot),
-                          "app": (lay.apps / args.package / INSTALL_RECEIPT).is_file()}, indent=1))
+        from .refract_status import status
+        print(json.dumps(status(config, args.package), indent=1))
         return 0
     launch = {"package": args.package}
     result = setup(config, launch, args.source, lambda pct, msg: print(f"[{pct:5.1f}%] {msg}", flush=True))

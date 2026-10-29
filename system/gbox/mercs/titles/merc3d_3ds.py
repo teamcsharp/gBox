@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import math
 import struct
+from pathlib import Path
 import time
+from dataclasses import dataclass
 
 from ..driver import Driver
 
@@ -77,36 +79,94 @@ BOOT_KEY = "a"                          # the gore warning: the first screen RAM
 STEPS = {"gore_warning": "a", "press_start": "start", "demo": "start", "title_menu": "a", "select_player": "a",
          "duo_menu": "b", "records": "b", "options": "b", "special": "b",
          "results": "a",                    # the result screens after a round: A through them, back to the main menu
-         "dead": "a"}                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
+         "dead": "a",                       # YOU ARE DEAD: A on its default (live 2026-10-27, the i9: the death screen
                                             # sat for minutes with the clock frozen and nothing pressed)
-MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead")
+         "saving": "a"}                     # the autosave's "Saved." after a round waits for a button (live 2026-10-28,
+                                            # the i9: it sat 30 min; read as loading, the run ended after 20 s of it)
+MENU_HANDOFF = ("results", "mercs_main", "select_stage", "select_player", "dead", "saving")
+MAIN_NOTICE_AFTER, MAIN_NOTICE_MAX = 3, 2
+# An unlock notice overlays cMerceMainMainState without changing its flow state. On the i9 (2026-10-28), 38 R
+# presses made no progress; one A through the same network pad cleared the notice and the bot reached gameplay.
+# Confirm only after repeated unchanged main-menu steps, at most twice per visit, then resume normal navigation.
 LEVELS = 5                              # LV.1-LV.5 in the select (the sixth, EX, is not in this list)
 CHARACTERS: tuple = ()                  # the roster's order is read from the character select next
 RELOAD_KEEP = ("PICK",)
 
 
-class _Pick:
-    """This menu visit's draws, kept until a round starts: a random open level, then a random mission tab in it (the
-    tab count is known once the level is open), and whether the main menu still has to visit the mission select and
-    the character select before START."""
+# In order (operator 2026-10-28: "I need mercenaries 3D going from level to level to level to level until it completes the
+# entire game. And then it needs to complete the entire game again. And then ... get five stars or S rank and go for the
+# high score on every single level"): each menu visit takes the next mission - LV.1's tabs, then LV.2's ... LV.5's -
+# and wraps round to play the whole game again; the cursor is saved (PROGRESS_FILE), so a relaunch carries on where it
+# was. A level not open yet keeps him on the last open one until it opens. PROGRESSION False: the old random draw.
+PROGRESSION = True
+PROGRESS_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "merc3d-progress.json"
 
-    def __init__(self, rng=None):
+
+class _Pick:
+    """This menu visit's draws, kept until a round starts: the next level and mission tab in order (PROGRESSION; else a
+    random open level and tab), and whether the main menu still has to visit the mission select and the character
+    select before START."""
+
+    def __init__(self, rng=None, path=None):
         import random
         self.rng = rng or random.Random()
+        self.path = path
+        self.cursor = self._load()                           # [level, tab, passes through the whole game]
         self.reset()
 
+    def _file(self):
+        return self.path if self.path is not None else PROGRESS_FILE
+
+    def _load(self) -> list:
+        import json
+        try:
+            c = json.loads(self._file().read_text(encoding="utf-8"))
+            return [int(c[0]), int(c[1]), int(c[2])]
+        except (OSError, ValueError, TypeError, IndexError, KeyError):
+            return [0, 0, 0]
+
+    def _save(self) -> None:
+        import json
+        try:
+            f = self._file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(self.cursor), encoding="utf-8")
+        except OSError:
+            pass
+
     def reset(self) -> None:
+        if PROGRESSION and getattr(self, "level", None) is not None and getattr(self, "tab", None) is not None:
+            self._advance()                                  # a round started from this visit's pick: on to the next
         self.level = self.tab = None
         self.mission_done = self.chara_done = False
+        self.main_key, self.main_presses, self.main_confirmations = None, 0, 0
+
+    def _advance(self) -> None:
+        level, tab, passes = self.cursor
+        tabs = getattr(self, "tabs_seen", None) or 1
+        tab += 1
+        if tab >= tabs:
+            level, tab = level + 1, 0
+            if level >= LEVELS:
+                level, passes = 0, passes + 1                # the whole game again
+        self.cursor = [level, tab, passes]
+        self._save()
 
     def level_for(self, open_levels: int) -> int:
         if self.level is None or not 0 <= self.level < max(1, open_levels):
-            self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
+            if PROGRESSION:
+                self.level = min(self.cursor[0], max(1, min(open_levels, LEVELS)) - 1)
+            else:
+                self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
         return self.level
 
     def tab_for(self, tabs: int) -> int:
+        self.tabs_seen = tabs
         if self.tab is None or not 0 <= self.tab < tabs:
-            self.tab = self.rng.randrange(tabs)
+            if PROGRESSION:
+                self.tab = min(self.cursor[1], tabs - 1) if self.level == self.cursor[0] else 0
+            else:
+                self.tab = self.rng.randrange(tabs)
         return self.tab
 
 
@@ -184,6 +244,22 @@ def heading_of(q) -> float:
     return 2.0 * math.atan2(q[1], q[3])
 
 
+@dataclass(frozen=True)
+class MissionIdentity:
+    """The native mission ID, not a guessed human level name or a shared arena name."""
+    mission_id: int
+
+    @property
+    def key(self) -> str:
+        return f"mission-0x{self.mission_id:04x}"
+
+
+def mission_identity(value) -> MissionIdentity | None:
+    # The native selector packs (level << 8) | tab (docs/research/merc3d-ram.md).
+    # Reject unset/corrupt values without guessing the mission roster or unlocks.
+    return MissionIdentity(value) if type(value) is int and 0 <= value <= 0xFFFF else None
+
+
 def mission(m) -> dict | None:
     sm = _u32(m, S_MISSION)
     if not ptr_ok(sm):
@@ -225,7 +301,7 @@ def enemies(m) -> list[dict]:
 def snapshot(m) -> dict:
     """The round from RAM: the player and the mission counters (None where a pointer is not)."""
     snap: dict = {"player": None, "enemies": [], "timer": None, "score": None, "kills": None, "combo": None,
-                  "combo_timer": None, "elapsed": None}
+                  "combo_timer": None, "elapsed": None, "stage": None}
     try:
         p = player_unit(m)
         if p:
@@ -239,7 +315,8 @@ def snapshot(m) -> dict:
         mi = mission(m)
         if mi:
             snap.update({k: mi[k] for k in ("timer", "score", "combo", "combo_timer", "elapsed")},
-                        mission_id=mi["mission_id"], chara_id=mi["chara_id"], combo_score=mi["combo_score"])
+                        mission_id=mi["mission_id"], chara_id=mi["chara_id"], combo_score=mi["combo_score"],
+                        stage=mission_identity(mi["mission_id"]))
     except (ValueError, OSError, RuntimeError, struct.error):
         pass
     return snap
@@ -320,11 +397,12 @@ def step(scr: dict) -> str | None:
     cursor walks (right / left) to a random mission, A picks it (back on the main menu)."""
     where = scr.get("where")
     if where == "mercs_main":
-        if not PICK.mission_done:
-            return "r"
-        if not PICK.chara_done:
-            return "l"
-        return "start"
+        key = "r" if not PICK.mission_done else "l" if not PICK.chara_done else "start"
+        if (getattr(PICK, "main_key", None) == key and getattr(PICK, "main_presses", 0) >= MAIN_NOTICE_AFTER
+                and getattr(PICK, "main_confirmations", 0) < MAIN_NOTICE_MAX):
+            return "a"
+        return key
+    PICK.main_key, PICK.main_presses, PICK.main_confirmations = None, 0, 0
     if where == "select_stage":
         cursor, target = scr.get("cursor"), scr.get("target")
         if not isinstance(cursor, int) or not isinstance(target, int):
@@ -345,7 +423,14 @@ def pressed(scr: dict, key: str) -> None:
     """The menus' memory of this visit: A on a mission tab picked the mission, A on the character select the
     character; a round's start (screen "playing") clears it for the next visit."""
     where = scr.get("where")
-    if key == "a" and where == "select_stage" and scr.get("inside") and scr.get("cursor") == scr.get("target"):
+    if where == "mercs_main":
+        if key == "a":
+            PICK.main_confirmations = getattr(PICK, "main_confirmations", 0) + 1
+            PICK.main_presses = 0
+        elif key in ("r", "l", "start"):
+            PICK.main_presses = (getattr(PICK, "main_presses", 0) if getattr(PICK, "main_key", None) == key else 0) + 1
+            PICK.main_key = key
+    elif key == "a" and where == "select_stage" and scr.get("inside") and scr.get("cursor") == scr.get("target"):
         PICK.mission_done = True
     elif key == "a" and where == "select_player":
         PICK.chara_done = True
@@ -377,7 +462,12 @@ class Merc3D(Driver):
         return snapshot(m)
 
     def screen(self, m, snap: dict | None) -> str:
-        where = screen(m).get("where")
+        scr = screen(m)
+        where = scr.get("where")
+        if where == "dead" and scr.get("state") == "cMerceStageYouAreDeadState":
+            # YOU ARE DEAD - Continue?: the menus' turn (STEPS "dead": A), never a round with no player (live 2026-10-29,
+            # the i9: the bot idled there for hours - "the i9 is just sitting idle and i never see it playing")
+            return "results"
         if where in ("playing", "dead", "results", "loading"):
             return where
         return "results" if where in MENU_HANDOFF else "loading"
@@ -411,7 +501,12 @@ class Merc3D(Driver):
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
-                "kills": snap.get("kills"), "elapsed": snap.get("elapsed")}
+                "kills": snap.get("kills"), "elapsed": snap.get("elapsed"),
+                "mission_id": snap.get("mission_id"), "chara_id": snap.get("chara_id"),
+                "stage": self.learning_stage(snap)}
+
+    def learning_stage(self, snap: dict) -> str | None:
+        return getattr(snap.get("stage"), "key", None)
 
 
 DRIVER = Merc3D

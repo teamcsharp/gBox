@@ -1260,6 +1260,8 @@ window.taskVizCreate = canvas => {
 <script src="embed-geometry.js"></script>
 <script src="game-surface.js"></script>
 <script src="compact-game.js"></script>
+<link rel="stylesheet" href="pip-stream-picker.css">
+<script src="pip-stream-picker.js"></script>
 <script src="reconnect-flow.js"></script>
 <script src="pip-media.js"></script>
 <script src="../web/viz/mercs-clock.js"></script>
@@ -1274,6 +1276,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
+<script src="bot-logic-sidebar.js"></script>
 <script src="client-refresh.js"></script>
 <script>
 // file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
@@ -1292,7 +1295,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(#pad-takeover):not(#reconnect.f5):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu: the bot command dropdown (operator 2026-10-26: it never showed in PiP mode) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   /* #reconnect.f5: an F5 pressed over the PiP shows its steps there too, packed into the small window */
   body.gbox-compact #reconnect .rc-head { top:8px; left:12px; right:12px; font-size:13px; }
   body.gbox-compact #reconnect .rc-flow { top:36px; left:12px; right:12px; bottom:92px; gap:6px 8px; overflow:auto; }
@@ -2613,7 +2616,7 @@ $('#mercmode-open').onclick=async()=>{
   host.hidden=false;
   mercModePanel=GBoxMercMode.mount({root:host,api:async(path,body)=>{
     const result=await gbox.api(path,body);if(!result.ok)throw Error(result.error||'Local service unavailable');return result.data;},
-    watch:sid=>pipShow(sid)});                  // "Watch": another PC's MercMode run in this PC's PiP
+    watch:sid=>pipChoose(sid)});                // "Watch": remember the explicitly selected instance
   await mercModePanel.ready;
 };
 
@@ -3839,6 +3842,8 @@ const VIEW = { mode: "auto", pip: null };                    // mode: auto (game
 // Compact PiP uses this same window, game and input path. It never launches another emulator.
 let compactStreamUrl = '', compactTitle = '', compactHoverTimer = null, compactSession = null;
 let clientUpdateState = { pending: false, restart: false };
+const botLogicSidebar = GBoxBotLogicSidebar.create({ current: () => compactCurrentSid(),
+  api: async (path, body, method) => { const r = await gbox.api(path, body, method); if (!r.ok) throw new Error(r.error || 'request failed'); return r.data; } });
 const compactCoach = GBoxCompactCoach.create({ coach:GBoxAutoplayCoach,
   api:async(path,body) => { const r=await gbox.api(path,body); if(!r.ok) throw new Error(r.error || 'Coaching request failed'); return r.data; },
   show:visible => compactHover(visible), focusApp:() => gbox.appFocus?.(),
@@ -3897,31 +3902,53 @@ function updateCompactMedia(on) {
 }
 addEventListener('resize', () => compactFit?.refit());
 addEventListener('pagehide', () => compactMedia?.stop());
+let pipStreamRead = null;
+async function pipStreamData() {
+  const source = S?.apiUrl;
+  if (!pipStreamRead || pipStreamRead.origin !== source) {
+    const read = {origin:source};
+    read.promise = Promise.all([liveSessions(0), gbox.api('/api/mercmode')]).then(([sessions, merc]) => {
+      if (S?.apiUrl !== source) throw Error('The stream connection changed. Open the picker again.');
+      if (!sessions.ok) throw Error(sessions.error || 'Stream connection unavailable');
+      return {rows:Array.isArray(sessions.data) ? sessions.data : [], hosts:merc.ok ? merc.data?.hosts || [] : []};
+    }).finally(() => { if (pipStreamRead === read) pipStreamRead = null; });
+    pipStreamRead = read;
+  }
+  return pipStreamRead.promise;
+}
+const pipSelection = GBoxPipStreamPicker.create({storage:localStorage, origin:() => S?.apiUrl, read:pipStreamData,
+  show:async (row, current) => {
+    clientViewNavigation++; compactContinuity.cancel();
+    await pipShow(row.session_id, {current});
+    return current() && COMPACT.on && COMPACT.sid === row.session_id;
+  }});
+const pipChoose = sid => pipSelection.select(sid);
 const compactController = GBoxCompactGame.create({
   mode: () => VIEW.mode,
   resolve: async requested => {
     const st = requested?.sid ? {} : await gboxState();
     const sid = requested?.sid || st.playing || st.session || EMB.sid;
     let session = sid ? await sessionById(sid) : null;
-    if (requested?.sid && (!session || session.state !== 'running')) {
+    if ((requested?.sid && (!session || session.state !== 'running')) || session?.warm) {
       const history = await gbox.api('/api/sessions?limit=200');
-      if (history.ok) session = GBoxSessionContinuity.resolve(requested.sid, history.data, session) || session;
+      if (history.ok) session = GBoxSessionContinuity.resolve(sid, history.data, session) || session;
     }
     // a "running" game whose PC is offline (#2870, gbox/server.py worker_online) is never put on screen: nothing would
     // come of it (operator 2026-10-26: i9-NUC's dead Mercenaries 3D session kept replacing the Spark's MercMode PiP)
     if (session && session.state === 'running' && session.worker_online === false)
       throw Object.assign(Error(`${sessionTitle(session) || 'This game'} runs on a PC that is offline; it was not opened. Your view was not changed.`), { offline: true });
-    if ((!session || session.state !== 'running') && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
-    if (!session || session.state !== 'running') {
+    if ((!session || session.state !== 'running' || session.warm) && requested?.sid) throw Error('The selected session is unavailable. Your game was not changed.');
+    if (!session || session.state !== 'running' || session.warm) {
       const r = await liveSessions(0);
-      session = r.ok && r.data.filter(s => s.state === 'running' && s.worker_online !== false).sort((a,b) => (b.started || 0) - (a.started || 0))[0];
+      session = r.ok && r.data.filter(s => s.state === 'running' && !s.warm && s.worker_online !== false).sort((a,b) => (b.started || 0) - (a.started || 0))[0];
     }
     if (!session) return null;
     const local = !!session.detail?.local_window && session.detail.worker_name === S.workerName;
     // fps=30 (gbox/live_stream.py): half of a 57 fps source's bitrate, the newest frame each time, so a Wi-Fi link carries
     // the PiP steadily (operator 2026-10-27: "it plays for three seconds and then it stops")
     const streamUrl = local ? '' : `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(await gbox.token())}&fps=30`;
-    const restoreCurrent = () => requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation;
+    const restoreCurrent = () => (!requested?.current || requested.current()) &&
+      (requested?.restoreNavigation === undefined || requested.restoreNavigation === clientViewNavigation);
     if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
     if (document.fullscreenElement) await document.exitFullscreen();
     if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
@@ -3933,6 +3960,7 @@ const compactController = GBoxCompactGame.create({
     const wv = document.querySelector('#wv');
     if (wv && !requested?.preserveGuest) {
       await wv.gboxReady;
+      if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
       await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`);
     }
     const frame = local && EMB.sid === session.session_id ? window.GBoxGPUVideo?.stats() : null;
@@ -3946,8 +3974,29 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" title="Restore GBox (or double-click the game)">Full app</button>';
-      controls.querySelector('button').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.querySelector('[data-full]').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
+      // the flawed-moment button (operator 2026-10-28: "when i click the icon, i basically want to tell it that the way it's
+      // handling the situation is flawed and to place a report for it. Sometimes they are running in a corner. Sometimes
+      // they are failing to deal with a threat"): a coaching report with the moment captured, and the bot told to change
+      // course at once (the explore command: off the wall / corner by another way, the goal dropped)
+      controls.querySelector('[data-flawed]').onclick = async () => {
+        const sid = COMPACT.sid;
+        if (!sid) { toast('No game in the PiP to report.'); return; }
+        const at = encodeURIComponent(sid);
+        const [note, cmd] = await Promise.all([
+          gbox.api(`/api/sessions/${at}/coach`, { text: 'Flawed handling (PiP button): the way the bot is handling this moment is wrong - running into a wall or corner, or failing to deal with a threat. Investigate this moment and fix it ASAP or the run will never win.' }),
+          gbox.api(`/api/sessions/${at}/directive`, { command: 'explore' })]);
+        toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.` : `Report not filed: ${note?.error || 'unknown error'}`);
+      };
+      // the flashbang (operator 2026-10-29 #5972: "Emergency flashbang: detonate a flash at the player's position NOW" -
+      // rapid-clickable, no cooldown, every click detonates another flash at once): the flashbang command (gbox.mercs.directives)
+      controls.querySelector('[data-flash]').onclick = async () => {
+        const sid = COMPACT.sid;
+        if (!sid) { toast('No game in the PiP.'); return; }
+        const cmd = await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/directive`, { command: 'flashbang' });
+        toast(cmd?.ok ? 'EMERGENCY FLASHBANG: detonating a flash at your position NOW.' : `Not sent: ${cmd?.error || 'unknown error'}`);
+      };
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
@@ -3958,6 +4007,8 @@ const compactController = GBoxCompactGame.create({
       stream.classList.add('on');
       if (gboxStreamWatchdog.healthUrl(stream.getAttribute('src') || '') !== gboxStreamWatchdog.healthUrl(compactStreamUrl)) stream.src = compactStreamUrl;
     } else if (stream) { stream.classList.remove('on'); stream.removeAttribute('src'); stream.style.backgroundImage = ''; }
+    botLogicSidebar.update({ ...state, session: compactSession }); // bind after the displayed stream changes
+    if (state.on && compactSession?.session_id === state.sid) pipSelection.remember(compactSession);
     if (!state.on) compactHover(false);
     updateCompactMedia(state.on);
     renderClientUpdate();
@@ -3970,15 +4021,17 @@ const compactRows = async read => { const r = await read(); if (!r.ok) throw Err
 // MercMode's run plays on a session the PiP is not showing (GBoxMercMode.transition says follow): go to it the way the
 // continuity follower goes to a replacement - its first real frame, then the stream (a dead or paused session never stays)
 async function compactFollowRun(sid, onlyIfEnded = false) {
-  if (!COMPACT.on || COMPACT.local || COMPACT.sid === sid) return;
+  if (!COMPACT.on || COMPACT.local || COMPACT.sid === sid || pipSelection.preference?.pinned) return;
+  const revision = pipSelection.revision;
   const rows = await compactRows(() => liveSessions());
+  if (revision !== pipSelection.revision || pipSelection.preference?.pinned) return;
   const list = Array.isArray(rows) ? rows : [];
   if (onlyIfEnded && list.some(s => s.session_id === COMPACT.sid && s.state === 'running')) return;   // the operator's own game
   const session = list.find(s => s.session_id === sid);
   if (session && session.state === 'running' && session.worker_online !== false) await compactFollow(session, COMPACT.sid);
 }
 const compactContinuity = GBoxSessionContinuity.create({
-  current: () => COMPACT.on && !COMPACT.local ? { ...compactSession, session_id: COMPACT.sid } : null,
+  current: () => COMPACT.on && !COMPACT.local && !pipSelection.preference?.pinned ? { ...compactSession, session_id: COMPACT.sid } : null,
   // every 2 s: the shared running list while the game runs, the history only to find what replaced it
   read: id => GBoxSessionContinuity.rowsFor(id, () => compactRows(() => liveSessions()),
     () => compactRows(() => gbox.api('/api/sessions?limit=200'))),
@@ -3987,7 +4040,10 @@ const compactContinuity = GBoxSessionContinuity.create({
 // force (F5): the PiP moves at once, its first frame only a poster when there is one (the operator asked for this game).
 // Otherwise the main window's view checks the first frame; a view not ready or silent for 5 s never holds the PiP on an
 // ended game (operator 2026-10-27, "stuck reconnecting" after a Spark restart): the stream's health decides then.
-async function compactFollow(session, from, { force = false } = {}) {
+async function compactFollow(session, from, { force = false, current = () => true } = {}) {
+  const revision = pipSelection.revision;
+  const stillCurrent = () => current() && revision === pipSelection.revision && pipSelection.allows(session);
+  if (session?.warm || !stillCurrent()) return; // a fresh paused frame is never the next MercMode turn
   const token = await gbox.token();
   const webview = document.querySelector('#wv'), sid = encodeURIComponent(session.session_id);
   const url = `${S.apiUrl}/api/sessions/${sid}/frame.jpg?token=${encodeURIComponent(token)}`;
@@ -4001,34 +4057,53 @@ async function compactFollow(session, from, { force = false } = {}) {
     frame = { visible: true };
   }
   if (!frame?.visible && !force) return; // black boot frames do not replace the held gameplay
-  if (!COMPACT.on || COMPACT.sid !== from) return;
-  const image = $('#compact-stream');
-  if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
-  else if (image) image.style.backgroundImage = '';            // never the old game's last frame under the new one
-  compactSession = session; compactTitle = sessionTitle(session);
-  closePipMenu();
-  compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}&fps=30`;
-  await compactController.follow(from, {sid:session.session_id, local:false});
-  document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
+  if (!COMPACT.on || COMPACT.sid !== from || !stillCurrent()) return;
+  const followed = await compactController.follow(from, {sid:session.session_id, local:false}, {current:stillCurrent, prepare:() => {
+    const image = $('#compact-stream');
+    if (image && frame?.poster) Object.assign(image.style,{backgroundImage:`url("${frame.poster}")`,backgroundSize:'contain',backgroundPosition:'center',backgroundRepeat:'no-repeat'});
+    else if (image) image.style.backgroundImage = '';
+    compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
+    compactStreamUrl = `${S.apiUrl}/api/sessions/${encodeURIComponent(session.session_id)}/mjpeg?token=${encodeURIComponent(token)}&fps=30`;
+  }});
+  if (followed) document.querySelector('#wv')?.executeJavaScript(`followSession(${JSON.stringify(from)}, ${JSON.stringify(session.session_id)})`).catch(() => {});
 }
-setInterval(() => compactContinuity.poll(), 2000); // keep polling while hidden/minimized
+async function pipFollowSelected() {
+  if (pipFollowSelected.busy || !COMPACT.on || !pipSelection.preference?.pinned) return;
+  pipFollowSelected.busy = true;
+  const from = COMPACT.sid, revision = pipSelection.revision;
+  try {
+    const row = await pipSelection.target();
+    const current = () => COMPACT.on && COMPACT.sid === from && revision === pipSelection.revision;
+    if (row && row.session_id !== from && current()) await pipShow(row.session_id, {current, force:false});
+  } catch {} finally { pipFollowSelected.busy = false; }
+}
+setInterval(() => { compactContinuity.poll(); pipFollowSelected(); }, 2000); // keep polling while hidden/minimized
 addEventListener('pagehide', () => compactContinuity.cancel(), {once:true});
-const compactEnter = () => compactController.enter();
+const compactEnter = async () => {
+  const revision = pipSelection.revision, current = () => revision === pipSelection.revision;
+  const row = await pipSelection.target(), saved = pipSelection.preference;
+  if (!current()) return false;
+  return compactController.enter({current, ...(row || saved ? {sid:row?.session_id || saved.sid} : {})});
+};
 const compactRestore = () => compactController.restore();
 // This PiP shows a running game, wherever it plays: opened if it is closed, moved in place if it shows another game - this
 // PC's own game as its window (natively, no stream), another PC's as its stream.
-async function pipShow(sid) {
+async function pipShow(sid, {current = () => true, force = true} = {}) {
+  const revision = pipSelection.revision;
   const session = await sessionById(sid);
-  if (!session || session.state !== 'running' || session.worker_online === false)
+  const stillCurrent = () => current() && revision === pipSelection.revision && pipSelection.allows(session);
+  if (!stillCurrent()) return false;
+  if (!session || session.state !== 'running' || session.worker_online === false || session.warm)
     throw Error('That game is not running now (or its PC is offline). Your view was not changed.');
-  if (!COMPACT.on) return compactController.enter({ sid });
+  if (!COMPACT.on) return compactController.enter({ sid, current:stillCurrent });
   if (COMPACT.sid === sid) return COMPACT;
   if (session.detail?.local_window && session.detail.worker_name === S.workerName) {
-    compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
-    await compactController.follow(COMPACT.sid, { sid, local: true });
+    await compactController.follow(COMPACT.sid, { sid, local: true }, {current:stillCurrent, prepare:() => {
+      compactSession = session; compactTitle = sessionTitle(session); closePipMenu();
+    }});
     return COMPACT;
   }
-  await compactFollow(session, COMPACT.sid, { force: true });
+  await compactFollow(session, COMPACT.sid, { force, current:stillCurrent });
   return COMPACT;
 }
 // "pip mode" (operator 2026-10-27, i9-NUC: "on the i9 nuc replace the stream in the pip with the mercenaries 3d playing as
@@ -4044,7 +4119,7 @@ const mercPipSave = () => { try { localStorage.setItem(MERC_PIP_KEY, JSON.string
 // embedTick: the game window of this PC's run, shown by this follower, closed - a title switch: hold the PiP for the next one
 function mercPipHold(sid) {
   try {
-    if (!sid || MERC_PIP.last !== sid) return false;
+    if (!sid || (MERC_PIP.last !== sid && !(pipSelection.preference?.pinned && COMPACT.sid === sid))) return false;
     MERC_PIP.lostAt ||= Date.now();
     return Date.now() - MERC_PIP.lostAt < MERC_PIP_HOLD_MS;
   } catch { return false; }                                      // (before this script line ran: nothing to hold)
@@ -4069,37 +4144,44 @@ async function mercReturnTarget(back) {
   const row = await sessionById(sid).catch(() => null);
   return row?.state === 'running' && row.worker_online !== false ? sid : null;
 }
-async function mercPipLeave(back) {
+async function mercPipLeave(back, current = () => true) {
+  if (!current()) return;
   Object.assign(MERC_PIP, { last: '', lostAt: 0, returnTo: null });
   const sid = back ? await mercReturnTarget(back) : null;
-  if (sid) { await pipShow(sid); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
+  if (!current()) return;
+  if (sid) { await pipShow(sid, {current}); toast('This PC\'s MercMode stopped: the PiP is back on ' + (sessionTitle(await sessionById(sid).catch(() => null)) || 'the stream')); }
   else if (COMPACT.on && COMPACT.local) await compactRestore();
 }
 async function mercPipPoll() {
   if (MERC_PIP.busy || !window.GBoxMercMode?.pipOwnRun || !S?.workerName || !gbox.api) return;
+  const revision = pipSelection.revision;
+  const current = () => revision === pipSelection.revision && !pipSelection.preference?.pinned;
   MERC_PIP.busy = true;
   try {
     const host = await mercOwnHost();
     if (!host) return;
+    if (!current()) return; // explicit instance selection survives local dispatches and title rotation
     const d = host.dispatch;
     if (d?.id && d.id !== MERC_PIP.dispatch) { MERC_PIP.dispatch = d.id; MERC_PIP.away = false; }   // a new dispatch: asked again
     if (!host.current_run) MERC_PIP.away = false;                // the operator's choice lasts while this PC's MercMode runs
     const shown = COMPACT.on ? COMPACT.sid : null;
     const row = shown ? await sessionById(shown).catch(() => null) : null;
+    if (!current()) return;
     const plan = GBoxMercMode.pipOwnRun(host, { shown, running: row?.state === 'running', last: MERC_PIP.last, away: MERC_PIP.away,
       handled: MERC_PIP.handled, closed: MERC_PIP.closed, returnTo: MERC_PIP.returnTo });
     if (plan.action === 'enter' || plan.action === 'follow') {
       if (plan.action === 'follow' && (!COMPACT.on || COMPACT.sid !== plan.from)) return;     // the view moved meanwhile
       const returnTo = plan.remember ? { sid: plan.from, worker: row?.detail?.worker_name || null } : MERC_PIP.returnTo;
-      await pipShow(plan.sid);
+      await pipShow(plan.sid, {current});
+      if (!current()) return;
       Object.assign(MERC_PIP, { last: plan.sid, lostAt: 0, returnTo }, plan.id ? { handled: plan.id } : {}); mercPipSave();
       if (plan.action === 'enter' || plan.remember)
         toast(`${sessionTitle(await sessionById(plan.sid).catch(() => null)) || 'This PC\'s game'} plays here: the PiP shows it on this PC`);
     } else if (plan.action === 'away') Object.assign(MERC_PIP, { away: true, last: '', returnTo: null });
     else if (plan.action === 'closed') { Object.assign(MERC_PIP, { away: true, last: '', returnTo: null }, plan.id ? { closed: plan.id } : {}); mercPipSave(); }
-    else if (plan.action === 'return' || plan.action === 'restore') await mercPipLeave(plan.action === 'return' ? MERC_PIP.returnTo : null);
+    else if (plan.action === 'return' || plan.action === 'restore') await mercPipLeave(plan.action === 'return' ? MERC_PIP.returnTo : null, current);
     else if (MERC_PIP.last && MERC_PIP.lostAt && Date.now() - MERC_PIP.lostAt >= MERC_PIP_HOLD_MS && COMPACT.on && COMPACT.sid === MERC_PIP.last)
-      await mercPipLeave(MERC_PIP.returnTo);                    // no next title came in time
+      await mercPipLeave(MERC_PIP.returnTo, current);           // no next title came in time
   } catch (error) { console.warn('MercMode PiP:', error.message); }
   finally { MERC_PIP.busy = false; }
 }
@@ -4141,6 +4223,15 @@ async function restoreClientView() {
     catch (error) { if (!/No handler registered/.test(String(error))) throw error; }
   }
   value = clientRefresh.pending(); if (!value) return;
+  if (value.compact && pipSelection.preference) {
+    const next = await pipSelection.target();
+    const selected = next?.session_id || pipSelection.preference.sid;
+    if (selected !== value.sid) {
+      const old = value.sid, sid = selected, guest = {...value.guest};
+      for (const key of ['playing','active','pip']) if (guest[key] === old) guest[key] = sid;
+      value = {...value, sid, guest}; clientRefresh.retain(value);
+    }
+  }
   if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
   if (value.guest?.playing || value.sid) EMB.sid = value.guest?.playing || value.sid;
   document.querySelector(`aside button[data-s="${value.section}"]`)?.click();
@@ -4222,7 +4313,8 @@ setInterval(() => {
 }, 2000);
 document.addEventListener('gbox-stream-state', event => {
   if (event.target.id !== 'compact-stream' || !COMPACT.on) return;
-  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!event.detail.connected})`).catch(() => {});
+  const input = event.detail.input ?? event.detail.connected;      // the pad keeps working through a brief stall
+  document.querySelector('#wv')?.executeJavaScript(`window.gboxPadStreamState?.(${JSON.stringify(COMPACT.sid)}, ${!!input})`).catch(() => {});
 }, true);
 // Pad takeover (gbox/pad_takeover.py): the view forwards your pad to the PiP's game and says when that game's bot let you
 // have it (GBOX:{ev:"padtakeover"}); the view is hidden behind the PiP, so the PiP shows the badge - "You have control -
@@ -4250,7 +4342,12 @@ function compactHover(show) {
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
 }
 gbox.onCompactView?.(value => compactController.changed(value));
-addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.('#pipmenu, #compact-media') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
+// only the picture itself (the stream, the embedded game, the page behind them) leaves the PiP on a double click - never a
+// panel, a menu or a pop-up inside it (operator 2026-10-28: "If I double click or triple click inside of a panel or a pop up
+// or a menu inside of the picture in picture mode, do not exit picture in picture mode")
+const COMPACT_PANELS = '#pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
+  + '#rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
+addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
 addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
@@ -4330,7 +4427,7 @@ function capMissing(op) {
 }
 function closePipMenu() {
   const m = $("#pipmenu");
-  if (m) { m.modifiers?.stop(); m.modifiers = null; m.style.display = "none"; m.opening = null; }
+  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.style.display = "none"; m.opening = null; }
   GM.menu = false; EMB.last = "";
 }
 async function pipModifiers(m, opening) {
@@ -4374,7 +4471,8 @@ function pipMenu(x, y) {
     addEventListener("mousedown", e => { if (!e.target.closest("#pipmenu") && m.style.display === "block") closePipMenu(); }, true);
     addEventListener("keydown", e => { if (e.key === "Escape" && m.style.display === "block") { e.preventDefault(); closePipMenu(); } }); }
   m.modifiers?.stop(); m.modifiers = null;
-  const opening = m.opening = {};
+  m.streamPicker?.stop(); m.streamPicker = null;
+  const opening = m.opening = {origin:S?.apiUrl};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
   const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
@@ -4399,13 +4497,19 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
   m.onclick = e => { const a = e.target.closest("button")?.dataset.a; if (a) { closePipMenu(); gameAction(a); } };
   GM.menu = true; EMB.last = ""; embedTick();
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
+  m.streamPicker = GBoxPipStreamPicker.mount(m.querySelector('[data-pip-stream-picker]'), {
+    read:pipStreamData, current:() => COMPACT.on ? COMPACT.sid : EMB.sid, title:sessionTitle,
+    select:(sid, valid) => pipSelection.select(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
+    preview:async sid => `${opening.origin}/api/sessions/${encodeURIComponent(sid)}/frame.jpg?token=${encodeURIComponent(await gbox.token())}&t=${Date.now()}`,
+    resized:() => { if (m.opening === opening) fitMenu(m, x, y, 8, 40); }
+  });
   pipModifiers(m, opening);
   pipMercMode(m, opening);
   savedSlot().then(slot => {                                   // this game's kept save slot, once known
@@ -4860,7 +4964,7 @@ setInterval(() => { const wv = document.querySelector("#wv"); if (wv && !wv._gbo
     const m = JSON.parse(e.message.slice(5));
     if (m.ev === "padscan") syncNativePads();
     else if (m.ev === "padtakeover") padTakeoverPip(m);   // your pad has the PiP's game for a moment (its badge)
-    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipShow(m.sid).catch(error => toast(error.message));   // MercMode panel: Watch
+    else if (m.ev === "mercwatch" && typeof m.sid === "string") pipChoose(m.sid).catch(error => toast(error.message)); // MercMode panel: Watch
     else if (m.ev === 'emulationissue') reportEmulationIncident(m.sid, m.action);
     else if (m.ev === 'emulationreport') evRequest(m.requestId);
     else if (m.ev === "gameclick") closePops(null);

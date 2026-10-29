@@ -61,9 +61,9 @@ def describe(config: Config, name: str, wid: str | None = None) -> WorkerInfo:
 
 
 def _quiet_agent_job(job: dict) -> bool:
-    # This fixed, read-only collector neither creates audio nor launches a game.
+    # These fixed, read-only collectors neither create audio nor launch a game.
     # Keep truthful agent attribution without mutating volume merely to read files.
-    return bool(job.get("agent_use")) and job.get("tool") != "cxbx_diagnostics"
+    return bool(job.get("agent_use")) and job.get("tool") not in {"cxbx_diagnostics", "refract_status"}
 
 
 def _run_job(job: dict, config: Config, wid: str, server: str, h: dict, client: httpx.Client,

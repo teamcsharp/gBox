@@ -19,9 +19,13 @@ import hashlib
 LIMITS = (1, 5, 10, 20, 100)
 MAX_SAMPLES = 2000
 TITLE = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
-NAMES = {"BLUS30491": "Resident Evil 5", "G4BE08": "Resident Evil 4", "BH6": "Resident Evil 6"}
+NAMES = {"BLUS30491": "Resident Evil 5", "G4BE08": "Resident Evil 4", "BH6": "Resident Evil 6",
+         "010018100CD46000": "Resident Evil 5 (Switch)", "01002A000CD48000": "Resident Evil 6 (Switch)"}
 CONTROLS = {"human", "bot", "unknown"}
 ASSISTANCE = {"unmodified", "mod_assisted", "unknown"}
+RUN_MAP = re.compile(r"round_maps/([A-Za-z0-9_-]{1,64})/[A-Za-z0-9_-]{1,60}/\d{8}-\d{6}-[a-f0-9]{8}\.json\Z")
+RUN_MAP_MAX = 16 * 1024 * 1024      # a run map is ~100-200 KB (gbox.mercs.run_capture bounds it); larger is refused
+EXPLORE = ("seconds", "distance_m", "cells", "start_area_s", "start_area_share", "max_from_spawn_m")
 
 
 def recorded_players(frame):
@@ -190,15 +194,21 @@ class Reviewer:
                            "source_id": f"atlas:{title}:{row['id']}",
                            "notebook_source_id": f"gbox:mercs:{title}:{rid}" if notebook else None, "spatial": True})
         # Titles without an atlas still expose genuine saved reviews, with spatial playback explicitly absent.
+        # A round the engine captured (gbox.mercs.run_capture) carries its run map: a 2D path, no collision geometry.
+        maps = self.run_maps(title, [row["id"] for row in recent_notes if row["id"] not in joined])
         for row in recent_notes:
             if row["id"] in joined or any(r["round_id"] == row["id"] for r in result):
                 continue
+            mapped = maps.get(row["id"]) or {}
+            stage = row["stage"] if row["stage"] not in (None, "", "unknown") else mapped.get("stage") or row["stage"]
             result.append({"id": "notebook:"+row["id"], "round_id": row["id"], "title": title,
-                           "geometry": row["stage"], "stage": row["stage"], "mode": row["mode"],
+                           "geometry": row["stage"], "stage": stage, "mode": row["mode"],
                            "character": row["character"], "started": row["ts"], "ended": row["ts"],
                            "timestamp_meaning": "review saved at", "outcome": row["outcome"], "active": False,
                            "participants": [], "assistance": assistance_context(None),
-                           "spatial": False, "source_id": f"gbox:mercs:{title}:{row['id']}"})
+                           "spatial": False, "source_id": f"gbox:mercs:{title}:{row['id']}",
+                           "round_map": mapped.get("round_map") or {"available": False},
+                           "exploration": mapped.get("exploration")})
         return sorted(result, key=lambda r: (r["started"], r["id"]), reverse=True)[:100]
 
     def catalog(self):
@@ -217,6 +227,7 @@ class Reviewer:
                     if key not in stages or stages[key]==key and label!=key:
                         stages[key] = label
                 games.append({"id": title, "name": NAMES.get(title, title), "visible_runs": len(rows),
+                              "mapped_runs": sum(bool((r.get("round_map") or {}).get("available")) for r in rows),
                               "stages": [{"id": key, "name": label} for key,label in sorted(stages.items())],
                               "characters": sorted({r["character"] for r in rows}),
                               "active": sum(r["active"] for r in rows)})
@@ -283,6 +294,12 @@ class Reviewer:
             events = self.read("navigation", title, "atlas.sqlite",
                                "SELECT seq,at,kind,payload FROM events WHERE round_id=? ORDER BY seq LIMIT 20000", (rid,))
             out["events"] = [{"seq": e["seq"], "at": e["at"], "kind": e["kind"], "data": decode(e["payload"], {})} for e in events]
+        out["round_map"] = None
+        if (summary.get("round_map") or {}).get("available"):
+            try:
+                out["round_map"] = self.run_map(title, summary)
+            except (FileNotFoundError, ValueError, OSError) as exc:     # pruned meanwhile: the round without it
+                out["round_map_error"] = str(exc)[:200]
         out["next_after"] = out["samples"][-1]["seq"] if out["samples"] else after
         out["more"] = len(out["samples"]) == MAX_SAMPLES
         out["suggestions"] = self.suggestions(title, summary["geometry"])
@@ -307,6 +324,62 @@ class Reviewer:
             except sqlite3.OperationalError:
                 pass
         return out
+
+    def run_maps(self, title, ids):
+        """{round id: {"round_map": {"available", "file", "stage"}, "exploration", "stage"}} from the curriculum rows'
+        run map fields (gbox.mercs.run_capture: round_map_file, explore_*). Rows without them are left out."""
+        ids = [i for i in ids if isinstance(i, str)][:200]
+        if not ids:
+            return {}
+        fields = ",".join(f"json_extract(data,'$.explore_{k}') AS explore_{k}" for k in EXPLORE)
+        try:
+            rows = self.read("curriculum", title, "rounds.sqlite",
+                             "SELECT id,json_extract(data,'$.round_map_file') AS round_map_file,"
+                             "json_extract(data,'$.round_map_stage') AS round_map_stage,json_extract(data,'$.stage') "
+                             f"AS observed_stage,{fields} FROM rounds WHERE id IN ({','.join('?' for _ in ids)})",
+                             tuple(ids))
+        except sqlite3.OperationalError:           # an SQLite without JSON1: the runs list without maps
+            return {}
+        out = {}
+        for row in rows:
+            rel = row.get("round_map_file")
+            stage = row.get("round_map_stage") if row.get("round_map_stage") not in (None, "", "unknown") else \
+                row.get("observed_stage") if isinstance(row.get("observed_stage"), str) else None
+            entry = {"stage": stage}
+            if isinstance(rel, str) and (m := RUN_MAP.fullmatch(rel)) and m.group(1) == title:
+                path = self._run_map_path(rel)
+                entry["round_map"] = {"available": path is not None and path.is_file(), "file": rel, "stage": stage}
+                entry["exploration"] = {k: row.get("explore_" + k) for k in EXPLORE}
+            out[row["id"]] = entry
+        return out
+
+    def _run_map_path(self, rel):
+        base = (self.root / "round_maps").resolve()
+        path = (self.root / rel).resolve()
+        return path if path.is_relative_to(base) else None
+
+    def run_map(self, title, summary):
+        """One run's map (gbox.mercs.run_capture's JSON) with its stage's known extent and the coverage against it
+        today (the extent grows as runs add to it; the capture's own coverage is kept as captured)."""
+        from . import run_capture
+        rel = (summary.get("round_map") or {}).get("file")
+        m = RUN_MAP.fullmatch(rel or "")
+        path = self._run_map_path(rel) if m and m.group(1) == title else None
+        if path is None or not path.is_file() or path.stat().st_size > RUN_MAP_MAX:
+            raise FileNotFoundError("run map not available")
+        data = decode(path.read_text(encoding="utf-8"), None)
+        if not isinstance(data, dict) or data.get("round_id") != summary["round_id"]:
+            raise ValueError("run map does not belong to this round")
+        cell = float(data.get("cell") or run_capture.CELL)
+        extent = run_capture.load_extent(path.parent / "extent" / "extent.json", cell)
+        known, source = run_capture.known_cells(extent)
+        visited = {tuple(c) for c in data.get("cells") or () if isinstance(c, list) and len(c) == 2}
+        data["extent"] = {"cell": cell, "runs": extent["runs"], "source": source, "known": sorted(map(list, known)),
+                          "updated": extent.get("updated")}
+        data["coverage_now"] = run_capture.coverage(visited, extent)
+        data["file"] = rel
+        data["view"] = {"x": -1, "z": 1}          # drawn as the live tactical map draws (+x to the left, +z up)
+        return data
 
     def _annotations(self):
         self.root.mkdir(parents=True, exist_ok=True)
@@ -559,6 +632,18 @@ def routes(app, config, auth):
     @app.get("/api/mercs/reviewer/round")
     def round(title: str, id: str, after: int=-1, actor=Depends(auth)):
         return call(service.round,title,id,min(2**63-1,max(-1,after)))
+
+    @app.get("/api/mercs/reviewer/round-map")
+    def round_map(title: str, id: str, actor=Depends(auth)):
+        # One run's 2D map (gbox.mercs.run_capture) by its reviewer id ("notebook:<round id>") or curriculum row id.
+        def one():
+            rid = id.split(":", 1)[1] if id.startswith("notebook:") else id
+            run = next((r for r in service.summaries(title) if r["round_id"] == rid
+                        and (r.get("round_map") or {}).get("available")), None)
+            if run is None:
+                raise FileNotFoundError("no run map for this round in the title's latest 100")
+            return {"run": run, "round_map": service.run_map(title, run)}
+        return call(one)
 
     @app.get("/api/mercs/reviewer/live")
     def live(title: str, id: str, actor=Depends(auth)):

@@ -46,6 +46,22 @@ class _Sessions(dict):
 SESSIONS: dict[str, tuple[adapters.Adapter, dict]] = _Sessions()   # per-worker live runtime sessions
 
 
+def _native_process_created(ad, pid):
+    """Record a birth-time witness while the adapter's original process handle is live."""
+    import psutil
+    proc = getattr(ad, 'proc', None)
+    try:
+        if type(pid) is not int or pid <= 0 or getattr(proc, 'pid', None) != pid or proc.poll() is not None:
+            return None
+        created = psutil.Process(pid).create_time()
+        if getattr(ad, 'proc', None) is proc and proc.pid == pid and proc.poll() is None \
+                and type(created) in (int, float) and math.isfinite(created) and created > 0:
+            return created
+    except (OSError, AttributeError, psutil.Error):
+        pass
+    return None
+
+
 # --- Phase 0 contract tool ------------------------------------------------------------------
 
 class EchoIn(BaseModel):
@@ -1035,6 +1051,7 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
                              capture_source='native-back-buffer')
                 detail['boot_frame_sha256'] = sha256(frame[1])
     lap("emulator_start_s")                                   # the adapter returns once the content runs (first frames)
+    detail['process_created'] = _native_process_created(ad, detail.get('pid'))
     timings["total_s"] = round(time.monotonic() - t_start, 3)
     detail["timings"] = timings                               # #1506: where a launch's time went, per stage
     detail['unlocks'] = unlock_result
@@ -1534,7 +1551,7 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
             try:
                 now = getattr(getattr(ad, "proc", None), "pid", None)
                 if now and now != pid:                     # emulator relaunched in place (RPCS3 load state): re-dock it
-                    c.post(f"/api/sessions/{sid}/detail", json={"pid": now})
+                    c.post(f"/api/sessions/{sid}/detail", json={"pid": now, "process_created": _native_process_created(ad, now)})
                     pid = now
                 from .mercs import warm_boot
                 warm = warm_boot.status(ad)
@@ -1837,7 +1854,7 @@ def session_op(inp: SessionIn, ctx: Ctx):
         after = getattr(getattr(ad, "proc", None), "pid", None)
         if after and after != before:                  # restarted in place (Eden): a new emulator process, same session
             track_emulator(ctx.config, inp.session_id, after)
-            res = res | {"session_detail": {"pid": after}}
+            res = res | {"session_detail": {"pid": after, "process_created": _native_process_created(ad, after)}}
         return {"result": res, "session_id": inp.session_id, "ended": False}
     if inp.op not in adapters.OPS or inp.op in ("write_memory", "read_memory", "launch_game"):
         raise ValueError(f"op {inp.op} not allowed via session_op")
@@ -6020,6 +6037,7 @@ def _load_tool_modules(names=("cxbx_diagnostics_tool", "native_face_editor", "au
                               "evidence_capture",   # evidence_capture: PR evidence frames (runs in the control plane)
                               "ram_dump",      # ram_dump: a session's main RAM as one gzip artifact + JSON header (coaching)
                               "native_ports",  # native_port: build/prepare decomp PC ports (GoldenEye 007 + gBox bots)
+                              "refract_status",  # bounded local RE4 VR installation evidence; no setup or launch
                               "switch_mods",   # switch_mods: Switch builds as LayeredFS overlays (in place, no NSP copies)
                               "pick_tool")):     # pick_identify / pick_replace (+ pick_prepare, pick_ghidra): the pick whip backend
     import importlib

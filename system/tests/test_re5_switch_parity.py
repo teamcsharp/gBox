@@ -19,6 +19,11 @@ SAFARI = {0: (0x201, 30, 0), 1: (0x10D, -1, 0), 2: (0x203, 10, 0), 3: (0x111, -1
 
 
 @pytest.fixture(autouse=True)
+def _mechanics_at_any_multiplier(monkeypatch):
+    monkeypatch.setattr(SM, "FIRE_MAX", 80.0)       # play caps it at 5x (2026-10-28); the mechanics at any multiplier
+
+
+@pytest.fixture(autouse=True)
 def _fresh_state():
     for cache in (SM.ORIG, R._LASER, R._LASER_MISS, R._NOT_LASER):
         cache.clear()
@@ -166,6 +171,69 @@ def test_the_loadout_is_drawn_again_for_every_round_when_each_round_is_on():
     assert "loadout_redrawn" not in SM.maintain(ad, {"player": {"ptr": 0x9000}})    # off: never drawn again
 
 
+def test_single_shotgun_draw_removes_miniguns_and_preserves_every_non_gun_record():
+    g = parity_guest()
+    put_block(g, block_at(16), {**GENERIC, 3: (0x115, -1, 1)})  # an actual original Gatling template
+    ad = Adapter(g)
+    allowed = {0x104, 0x116, 0x117, 0x119}
+    raw = {i: g.rd(block_at(i), SM.TEMPLATE_REC * SM.TEMPLATE_RECS) for i in SM.MERC_DESC}
+    draws = set()
+    for seed in range(6):
+        out = SM.tool_run(ad, "loadout", None, True, weapons=["0x04", "0x16", "0x17", "0x19"],
+                          seed=seed, only=True)
+        assert out["verified"]
+        guns = []
+        for i in SM.MERC_DESC:
+            for k in range(SM.TEMPLATE_RECS):
+                at = k * SM.TEMPLATE_REC
+                original = raw[i][at:at + SM.TEMPLATE_REC]
+                old_id = struct.unpack_from("<I", original)[0]
+                current = g.rd(block_at(i) + at, SM.TEMPLATE_REC)
+                if SM._is_gun(old_id) and old_id & 0xFF not in SM.THROWN_ITEMS:
+                    wid = struct.unpack_from("<I", current)[0]
+                    assert wid in allowed
+                    if i == 15:
+                        guns.append(wid)
+                else:
+                    assert current == original           # first aid, knives, ammo, grenades, placement unchanged
+        assert len(set(guns)) == 1                       # one shotgun choice for this round's character
+        draws.add(guns[0])
+    assert len(draws) > 1
+
+
+def test_profile_round_ops_forward_magnums_and_preserve_supplies_before_native_inventory_construction():
+    from gbox import mercs_bot, ram_map
+
+    g = parity_guest()
+    put_block(g, block_at(16), {**GENERIC, 3: (0x115, -1, 1)})
+    ad = Adapter(g)
+    before = {i: g.rd(block_at(i), SM.TEMPLATE_REC * SM.TEMPLATE_RECS) for i in SM.MERC_DESC}
+    profile = ram_map.find(R.MAP_ID).spec["mercs"] | {"map_id": R.MAP_ID, "platform": "switch"}
+    assert mercs_bot.apply_ops(ad, profile["round_ops"], profile) == []
+    draw = SM.ORIG[id(ad)]["loadout"]
+    # operator 2026-10-28: "every round of RE5 needs mines and random weapons especially magnums and shotguns"
+    assert set(draw["pool"]) == {0x11B, 0x11A, 0x10B, 0x119, 0x117, 0x116, 0x104} and not draw["only"]
+    for i in SM.MERC_DESC:
+        guns = [wid for wid in ids(g, i) if SM._is_gun(wid) and wid & 0xFF not in SM.THROWN_ITEMS]
+        assert guns and set(guns) <= set(draw["pool"])               # each slot its own draw: shotgun AND magnum
+        for k in range(SM.TEMPLATE_RECS):
+            original = before[i][k * SM.TEMPLATE_REC:(k + 1) * SM.TEMPLATE_REC]
+            old_id = struct.unpack_from("<I", original)[0]
+            if not SM._is_gun(old_id) or old_id & 0xFF in SM.THROWN_ITEMS:
+                assert g.rd(block_at(i) + k * SM.TEMPLATE_REC, SM.TEMPLATE_REC) == original
+    assert 0x115 not in ids(g, 16)
+    assert all(BASE <= address < BASE + SM.MAIN_SPAN for address, _ in ad.writes)
+
+
+def test_an_unsupported_explicit_pool_never_falls_back_to_miniguns():
+    g = parity_guest()
+    ad = Adapter(g)
+    before = g.rd(block_at(15), SM.TEMPLATE_REC * SM.TEMPLATE_RECS)
+    with pytest.raises(ValueError, match="unsupported"):
+        SM.loadout(SM.RE5Switch(ad), weapons=["0x19", "0x0F"], only=True)
+    assert g.rd(block_at(15), len(before)) == before and not ad.writes
+
+
 def test_template_ops_and_the_bombs_compose_and_revert_all_puts_every_block_back():
     g = parity_guest()
     ad = Adapter(g)
@@ -210,7 +278,7 @@ def test_the_mines_op_sets_the_bots_cadence_through_the_driver_and_can_switch_pl
     assert "not yet on Switch" in SM.tool_run(ad, "mines", "only", True)["note"]
     snap = R.snapshot(g)
     R.RE5Switch()._mods(SimpleNamespace(adapter=ad), snap, True)
-    assert snap["mine_settings"] == {"enabled": True, "interval_s": 9.0, "only": False}   # ("only": the default S)
+    assert snap["mine_settings"] == {"enabled": True, "interval_s": 120.0, "only": False}   # ("only": the default S)
     from gbox.mercs.titles import re5_switch_mines as MN
     m = MN.Mines({})
     m.configure({"enabled": False, "interval_s": 30})

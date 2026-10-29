@@ -45,6 +45,33 @@
     ["mine_trail", "Drop mines while leaving the area", "Plant, move on, repeat for 45 s (RE5, mines setting on)"],
     ["missing", "You are missing", "Adjust the aim for this weapon"],
   ];
+
+  // Which live bot-logic knobs each command drives (request #5300): the sub-panel shows these with toggles / sliders.
+  // Names match gbox/mercs/bot_logic.py KNOBS; the panel reads the current values from the running bot and writes back through it.
+  const COMMAND_KNOBS = {
+    re5: {
+      fight:     ["CROWD_FIRE", "CROWD_FIRE_N", "RAMPAGE_R", "WINDUP"],
+      next_area: ["RELOCATE", "PROMPTS", "WALL_GOV"],
+      explore:   ["RELOCATE", "WALL_GOV", "QUICK_TURN"],
+      hunt:      ["WINDUP", "WINDUP_R", "CROWD_FIRE", "BEHIND_R"],
+      score:     ["CROWD_FIRE", "MINES", "MINE_EVERY_S", "RAMPAGE_R"],
+      repetitive:["RELOCATE", "WALL_GOV", "QUICK_TURN"],
+      mine:      ["MINES", "MINE_EVERY_S"],
+      mine_trail:["MINES", "MINE_EVERY_S"],
+      missing:   ["AIM_LOCK", "HEADING_GOV_DEG_S", "WINDUP"],
+    },
+    re6: {
+      fight:     ["NADES", "FLASH", "FLASH_GAP_S", "CROWD_R", "FIRE_ZONE_R"],
+      next_area: ["BONUS_RUN", "NAV_WALK", "PROMPTS"],
+      explore:   ["NAV_WALK", "BONUS_RUN", "KITE_R"],
+      hunt:      ["NADES", "FLASH", "CLOSE_R", "FIRE_ZONE_R"],
+      score:     ["BONUS_RUN", "BONUS_SHOOT_R", "FIRE_ZONE_R", "AUTO_SWITCH"],
+      repetitive:["NAV_WALK", "KITE_R", "KEEP_R"],
+      mine:      ["BOMB_DROP"],
+      mine_trail:["BOMB_DROP"],
+      missing:   ["AIM_LOCK", "SPIN_DEG_S", "CLOSE_R"],
+    },
+  };
   const HOLD_MS = 4000;                         // the settled full status stays this long before it folds
   // the status gives way before the box: it shrinks first (ellipsis, full text in its tooltip)
   const CSS = `#session-head .coach{display:inline-flex;align-items:center;gap:6px;flex:1 1 240px;min-width:min(100%,200px);max-width:640px}
@@ -55,7 +82,21 @@
     .coach .coach-cmds{flex:0 0 auto;width:24px;height:23px;padding:0;border:1px solid #666;border-radius:3px;background:#18181d;color:#fff;cursor:pointer;-webkit-app-region:no-drag}
     .coach-menu{position:fixed;z-index:200;min-width:260px;background:#1d1d22;border:1px solid #555;border-radius:8px;padding:4px;box-shadow:0 8px 24px #0009;-webkit-app-region:no-drag}
     .coach-menu button{display:block;width:100%;text-align:left;background:none;border:0;color:#e8e8ee;padding:6px 10px;border-radius:5px;cursor:pointer;font-size:13px}
-    .coach-menu button:hover,.coach-menu button:focus-visible{background:#ffffff1a}.coach-menu small{display:block;color:#aaa;font-size:11px}`;
+    .coach-menu button:hover,.coach-menu button:focus-visible{background:#ffffff1a}.coach-menu small{display:block;color:#aaa;font-size:11px}
+    .coach-menu .coach-row{display:flex;align-items:center;gap:2px}
+    .coach-menu .coach-row>button{flex:1;min-width:0}
+    .coach-menu .coach-cog{flex:0 0 auto;width:28px;padding:6px 4px;text-align:center;color:#888}
+    .coach-menu .coach-cog:hover{color:#fff;background:#ffffff22}
+    .coach-sub{position:fixed;z-index:201;min-width:280px;max-width:360px;max-height:70vh;overflow:auto;background:#16161af2;border:1px solid #555;border-radius:8px;padding:10px 12px;box-shadow:0 10px 30px #000c;-webkit-app-region:no-drag;font-size:12px;color:#ddd}
+    .coach-sub h4{margin:0 0 6px;font-size:12px;color:#9cf}
+    .coach-sub .cs-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;align-items:center;margin:4px 0}
+    .coach-sub .cs-row small{grid-column:1/-1;color:#999;font-size:10px}
+    .coach-sub .cs-row output{color:#ffd166;font-variant-numeric:tabular-nums}
+    .coach-sub input[type=range]{grid-column:1/-1;width:100%;box-sizing:border-box;margin:0;accent-color:#7c96ff}
+    .coach-sub .cs-msg{color:#ffadad;min-height:14px;margin:4px 0;font-size:11px}
+    .coach-sub .cs-empty{color:#888;margin:6px 0;font-size:11px}
+    .coach-sub fieldset{border:0;padding:0;margin:0}
+    .coach-sub input:disabled,.coach-sub button:disabled{opacity:.5;cursor:default}`;
 
   function statusText(note, captures) {
     return [`Note #${note ?? "?"} sent`, ...KINDS.map(k => `${LABEL[k]} ${MARK[(captures && captures[k] || {}).state] || MARK.pending}`)]
@@ -266,11 +307,98 @@
     };
     const ctl = create({ sid, api, render, ...opts });
     const cmdButton = box.querySelector("[data-coach-cmds]");
-    let menu = null, unlisten = null;
+    let menu = null, subPanel = null, unlisten = null;
     const closeMenu = () => {
       if (unlisten) { unlisten(); unlisten = null; }
       if (menu) { menu.remove(); menu = null; cmdButton?.setAttribute("aria-expanded", "false"); }
+      closeSub();
     };
+    const closeSub = () => { if (subPanel) { subPanel.remove(); subPanel = null; } };
+
+    // read the live bot-logic state for the session's title; null when the game has none
+    async function readBotLogic() {
+      try {
+        const j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
+          input: { session_id: sid, op: "bot_logic" } }, "POST");
+        for (let i = 0; i < 120 && j && ["queued", "running"].includes(j.state); i++) {
+          await new Promise(r => setTimeout(r, 500));
+          j = await api(`/api/jobs/${encodeURIComponent(j.id)}`, undefined, "GET");
+        }
+        if (j?.state !== "succeeded") return null;
+        const out = j.output?.result;
+        return out && out.verified === true && Array.isArray(out.knobs) ? out : null;
+      } catch { return null; }
+    }
+
+    // write one knob back through bot_logic and return the refreshed view
+    async function writeBotLogic(name, value) {
+      const j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
+        input: { session_id: sid, op: "bot_logic", values: { [name]: value } } }, "POST");
+      for (let i = 0; i < 120 && j && ["queued", "running"].includes(j.state); i++) {
+        await new Promise(r => setTimeout(r, 500));
+        j = await api(`/api/jobs/${encodeURIComponent(j.id)}`, undefined, "GET");
+      }
+      if (j?.state !== "succeeded") throw new Error(j?.error?.message || j?.error || "The control job did not succeed.");
+      const out = j.output?.result;
+      if (!out || out.verified !== true || !Array.isArray(out.knobs)) throw new Error("The server returned no settings.");
+      return out;
+    }
+
+    function subHtml(view, cmdId, message = "") {
+      const title = view?.title;
+      const wanted = COMMAND_KNOBS[title]?.[cmdId] || [];
+      const knobs = view?.knobs || [];
+      const mapped = knobs.filter(k => wanted.includes(k.name));
+      if (!title || !mapped.length)
+        return `<h4>${ESC(cmdId)}</h4><p class="cs-empty">No live bot-logic mapping for this command${title ? ` on ${ESC(title.toUpperCase())}` : ""} yet.</p>`;
+      const rows = mapped.map(k => {
+        const tip = ESC(k.help || "");
+        if (k.kind === "bool")
+          return `<label class="cs-row" title="${tip}"><span>${ESC(k.label)}</span><input type="checkbox" data-cs="${ESC(k.name)}"${k.value ? " checked" : ""}></label>`;
+        return `<div class="cs-row" title="${tip}"><span>${ESC(k.label)}</span><output data-cs-out="${ESC(k.name)}">${ESC(k.value)}</output>`
+          + `<input type="range" data-cs="${ESC(k.name)}" min="${k.min}" max="${k.max}" step="${k.step}" value="${ESC(k.value)}" aria-label="${ESC(k.label)}">`
+          + (k.help ? `<small>${tip}</small>` : "") + `</div>`;
+      }).join("");
+      return `<h4>${ESC((COMMANDS.find(c => c[0] === cmdId) || [])[1] || cmdId)} · ${ESC(title.toUpperCase())}</h4>`
+        + `<p class="cs-msg" role="status">${ESC(message)}</p><fieldset>${rows}</fieldset>`;
+    }
+
+    async function openSub(cmdId, anchorRect) {
+      closeSub();
+      const doc = box.ownerDocument;
+      subPanel = doc.createElement("div"); subPanel.className = "coach-sub";
+      subPanel.innerHTML = `<h4>Loading…</h4>`;
+      Object.assign(subPanel.style, { left: Math.max(4, anchorRect.right + 4) + "px", top: Math.max(4, anchorRect.top) + "px" });
+      doc.body.append(subPanel);
+      const view = await readBotLogic();
+      if (!subPanel) return;                                     // closed while reading
+      if (!view) { subPanel.innerHTML = `<h4>Live controls</h4><p class="cs-empty">This game has no live bot-logic on its PC (RE5 / RE6 Switch only for now).</p>`; return; }
+      subPanel.innerHTML = subHtml(view, cmdId);
+      subPanel.addEventListener("change", async e => {
+        const el = e.target, name = el?.dataset?.cs;
+        if (!name || !subPanel) return;
+        const value = el.type === "checkbox" ? el.checked : Number(el.value);
+        const row = subPanel.querySelector(`[data-cs-out="${name}"]`);
+        if (row) row.textContent = value;
+        const msg = subPanel.querySelector(".cs-msg");
+        if (msg) msg.textContent = "Applying…";
+        try {
+          const next = await writeBotLogic(name, value);
+          if (!subPanel) return;
+          const actual = next.knobs.find(k => k.name === name)?.value;
+          if (typeof actual !== typeof value || (typeof value === "number" ? !Number.isFinite(actual) || Math.abs(actual - value) > 0.0001 : actual !== value))
+            throw new Error("The bot did not confirm the new value.");
+          if (msg) msg.textContent = "";
+        } catch (err) {
+          if (msg) msg.textContent = err.message || String(err);
+        }
+      });
+      subPanel.addEventListener("input", e => {
+        const n = e.target?.dataset?.cs, o = n && subPanel?.querySelector(`[data-cs-out="${n}"]`);
+        if (o) o.textContent = e.target.value;
+      });
+    }
+
     async function command(id) {
       closeMenu();
       const label = (COMMANDS.find(c => c[0] === id) || [])[1] || id;
@@ -289,9 +417,15 @@
         if (doc.querySelectorAll) doc.querySelectorAll(".coach-menu").forEach(old => old.remove());
         menu = doc.createElement("div"); menu.className = "coach-menu"; menu.setAttribute("role", "menu");
         menu.innerHTML = COMMANDS.map(([id, label, hint]) =>
-          `<button type="button" role="menuitem" data-cmd="${ESC(id)}">${ESC(label)}<small>${ESC(hint)}</small></button>`).join("");
+          `<div class="coach-row"><button type="button" role="menuitem" data-cmd="${ESC(id)}">${ESC(label)}<small>${ESC(hint)}</small></button>`
+          + `<button type="button" class="coach-cog" data-cog="${ESC(id)}" title="Tune what this command drives" aria-label="Tune ${ESC(label)}">⚙</button></div>`).join("");
         Object.assign(menu.style, { left: Math.max(4, r.left) + "px", top: r.bottom + 4 + "px" });
-        menu.addEventListener("click", ev => { const b = ev.target.closest("[data-cmd]"); if (b) { ev.stopPropagation(); command(b.dataset.cmd); } });
+        menu.addEventListener("click", ev => {
+          const b = ev.target.closest("[data-cmd]");
+          if (b) { ev.stopPropagation(); command(b.dataset.cmd); return; }
+          const g = ev.target.closest("[data-cog]");
+          if (g) { ev.stopPropagation(); openSub(g.dataset.cog, g.getBoundingClientRect()); }
+        });
         menu.addEventListener("keydown", ev => { ev.stopPropagation(); if (ev.key === "Escape") { closeMenu(); cmdButton.focus(); } });
         doc.body.append(menu); cmdButton.setAttribute("aria-expanded", "true"); menu.querySelector("button")?.focus();
         // closes on a click anywhere else, on the pointer going to the native game surface (the document loses focus:
@@ -324,10 +458,10 @@
     });
     for (const ev of ["keyup", "keypress"]) input.addEventListener(ev, e => e.stopPropagation());
     ctl.resume();
-    return { send: ctl.send, dispose() { closeMenu(); ctl.dispose(); }, input, status, command };
+    return { send: ctl.send, dispose() { closeMenu(); closeSub(); ctl.dispose(); }, input, status, command };
   }
 
-  const api = { html, mount, create, COMMANDS, statusText, compactText, detailText, settled, PLACEHOLDER, HOLD_MS,
+  const api = { html, mount, create, COMMANDS, COMMAND_KNOBS, statusText, compactText, detailText, settled, PLACEHOLDER, HOLD_MS,
                 _drafts: drafts, _recent: recent };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxAutoplayCoach = api;

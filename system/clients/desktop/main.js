@@ -967,6 +967,8 @@ async function inspectClientIdle() {
 function assertClientSender(event) {
   if (!win || event.sender !== win.webContents || (event.senderFrame && event.senderFrame !== win.webContents.mainFrame)) throw Error('Only the gBox app can reload its client.');
 }
+let clientForceUntil = 0;                       // a blocked F5 restart: a second F5 before this forces it
+const CLIENT_FORCE_MS = 10000;
 ipcMain.handle('client:reload', async (event, state) => {
   assertClientSender(event);
   if (clientReloading) return false;
@@ -976,19 +978,24 @@ ipcMain.handle('client:reload', async (event, state) => {
     // an F5 pull of code the worker or this process loads (client:update) relaunches too, whatever the identity says
     if (version?.restart || (typeof runtimeUpdatePending !== 'undefined' && runtimeUpdatePending)) {
       const hadWorker = !!worker||(typeof localControlProcess!=='undefined'&&!!localControlProcess);
+      // a second F5 within CLIENT_FORCE_MS of a blocked restart (operator 2026-10-28: "I need the F5 button to do it
+      // all"): the idle checks are skipped and a stuck worker stop is not waited for - games on this PC stop with it
+      const forced = clientForceUntil > Date.now();
+      clientForceUntil = 0;
       if (!state || state.v !== 1) clientActivation = { state: 'pending', reason: 'The saved stream view is unavailable; refreshed views only.' };
       else clientActivation = await clientHandoff.perform({
         lock: value => { clientHandoffBusy = value; workerStopRequested = value; },
-        inspect: inspectClientIdle,
+        inspect: forced ? async () => null : inspectClientIdle,
         stopWorker: async () => {
           let localStopped=false;
           if(typeof localControlProcess!=='undefined'&&localControlProcess){
-            if(!localControlChannel)throw Error('The local service has no verified idle shutdown channel.');
+            if(!localControlChannel){if(forced)return false;throw Error('The local service has no verified idle shutdown channel.');}
             await localControlChannel.stop();localStopped=true;
           }
           if (!worker) return localStopped;
-          if (!workerControl) throw Error('The running local worker does not support safe desktop refresh yet.');
-          await workerControl.stop(); return true;
+          if (!workerControl) { if (forced) return false; throw Error('The running local worker does not support safe desktop refresh yet.'); }
+          try { await workerControl.stop(); } catch (error) { if (!forced) throw error; }
+          return true;
         },
         save: value => clientHandoff.save(CLIENT_HANDOFF_FILE, { state: value, ...compactWindow.handoff(),
           mini: clientViews.mini(mini && !mini.isDestroyed() ? { ...miniSession, bounds: mini.getBounds() } : pendingMini, settings().apiUrl),
@@ -1002,6 +1009,11 @@ ipcMain.handle('client:reload', async (event, state) => {
       }, state);
       clientActivation.pid = process.pid;
       if (clientActivation.state === 'relaunching') return clientActivation;
+      if (state && state.v === 1) {                     // blocked: one more F5 forces it (the reason says so)
+        clientForceUntil = Date.now() + CLIENT_FORCE_MS;
+        clientActivation.force = 'Press F5 again within 10 s to restart gBox anyway (games on this PC stop; remote sessions keep running).';
+        clientActivation.reason = `${clientActivation.reason || 'gBox could not restart now.'} ${clientActivation.force}`;
+      }
     }
   } catch (error) { clientActivation = { state: 'pending', pid: process.pid, reason: String(error.message || error) }; }
   try { if (mini && !mini.isDestroyed()) mini.webContents.reloadIgnoringCache(); } catch {} // keep its session URL and bounds
