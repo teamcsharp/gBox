@@ -2555,6 +2555,28 @@ class Bot:
             out = dict(out, hold=tuple(k for k in hold if k not in STICK_KEYS))
         return out
 
+    def observe_round(self, snap, where, now) -> None:
+        """Record a native death before the engine finalizes this round's evidence.
+
+        The engine may hand over immediately at that boundary, without another
+        bot tick. This observer emits no input; the normal death tick shares its
+        idempotent accounting so the same death cannot be counted twice.
+        """
+        p = snap.get("player")
+        if where == "dead" and isinstance(p, dict) and isinstance(p.get("hp"), (int, float)) and p["hp"] <= 0:
+            self._record_death(p, snap, now)
+
+    def _record_death(self, p, snap, now) -> None:
+        self.died = True
+        if self.dead_since is not None:
+            return
+        self.dead_since = now
+        self.stats["deaths"] += 1
+        if self.down_dying or self.since_dying:
+            self.stats["dying_deaths"] += 1
+        self.down = self.down_dying = self.since_dying = False
+        self._death(p, snap, now)
+
     def _tick(self, snap: dict, now: float) -> dict:
         self._walk_target = None
         p = snap.get("player")
@@ -2566,14 +2588,7 @@ class Bot:
             return self._go("none", "no_player", {"hold": ()}, "no player (between rounds)")
         if (p.get("hp") or 0) <= 0:
             self._gun_down()
-            self.died = True
-            if self.dead_since is None:
-                self.dead_since = now
-                self.stats["deaths"] += 1
-                if self.down_dying or self.since_dying:
-                    self.stats["dying_deaths"] += 1
-                self.down = self.down_dying = self.since_dying = False
-                self._death(p, snap, now)
+            self._record_death(p, snap, now)
             if now - self.dead_since < DEAD_WAIT_S:
                 return self._go("dead", "dead_wait", {"hold": ()}, "dead: the Continue? screen comes up")
             cursor = snap.get("continue_cursor")

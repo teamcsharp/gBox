@@ -603,10 +603,10 @@ def test_critical_hp_with_no_heals_runs_away_from_the_nearest_enemy():
     """The retreat heads away from the nearest live Majini, not a fixed direction."""
     b, clock = brain()
     # enemy at +x: the retreat runs toward -x (rright = -x in the Switch stick map, see RUN/TURN_TOL)
-    act = b.tick(_snap_no_heals(hp=200, enemy=(500.0, 0.0, 0.0)))
+    act = b.tick(_snap_no_heals(hp=200, enemy=(300.0, 0.0, 0.0)))
     assert "rright" in act["hold"]                                      # away from +x
     b2, _ = brain()
-    act2 = b2.tick(_snap_no_heals(hp=200, enemy=(-500.0, 0.0, 0.0)))
+    act2 = b2.tick(_snap_no_heals(hp=200, enemy=(-300.0, 0.0, 0.0)))
     assert "rleft" in act2["hold"]                                      # away from -x
 
 
@@ -617,6 +617,30 @@ def test_above_critical_hp_with_no_heals_still_fights():
     assert "zl" in act["hold"] or "zr" in act["hold"] or "rleft" in act["hold"] or "rright" in act["hold"]
     assert b.escape is None
     assert "no heals" not in str(b.stats.get("heal_status", ""))
+
+
+def test_critical_retreat_has_a_fixed_end_and_allows_the_gun_back_up():
+    b, clock = brain()
+    scene = _snap_no_heals(hp=240)
+    b.tick(scene)
+    deadline = b.escape[1]
+    for when in (0.1, 0.2, 0.3):
+        clock[0] = when
+        b.tick(scene)
+        assert b.escape[1] == deadline
+        assert b.stats["escapes"] == 1
+    clock[0] = deadline + 0.1
+    scene["enemies"][0]["pos"] = (0.0, 0.0, 800.0)
+    act = b.tick(scene)
+    assert b.escape is None and b.stats["escapes"] == 1
+    assert "zl" in act.get("hold", ())
+
+
+def test_critical_hp_does_not_run_forever_from_a_distant_enemy():
+    b, _ = brain()
+    act = b.tick(_snap_no_heals(hp=240, enemy=(0.0, 0.0, 900.0)))
+    assert b.escape is None and b.stats["escapes"] == 0
+    assert "zl" in act.get("hold", ())
 
 
 def test_critical_hp_with_a_heal_still_heals_instead_of_retreating():
