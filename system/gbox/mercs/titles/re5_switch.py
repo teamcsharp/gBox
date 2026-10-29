@@ -38,6 +38,7 @@ import struct
 import time
 
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
+from pathlib import Path
 from ..bot_look import BotLook, make_target
 from ..driver import Driver
 from . import re5_switch_aim, re5_switch_prompt
@@ -472,6 +473,12 @@ CALM_COUNTERS = ("calm_coasts", "calm_caps")
 # the shot motion (shot_stick_drops); the quick turn (180 deg in 0.3 s) is not used (QUICK_TURN off: the body turns by
 # the stick, the way out behind him backed toward). Target: spin_deg_s under 90, spin_max_deg_s under 200, whips ~0.
 HEADING_GOV, HEADING_GOV_DEG_S, QUICK_TURN = True, 150.0, True
+# Doors, exits, ledges and ladders remembered (operator 2026-10-28: "I need them to be able to locate doors and exits and
+# windows and be able to navigate the level"; a room's door he never walked to): every traverse prompt's spot is kept per
+# stage in DOOR_FILE across rounds; when he is stuck (the wall governor's recovery, the PiP's Flawed button) and no Majini
+# is within DOOR_FIGHT_R he walks to the nearest one not tried in DOOR_RETRY_S, where its prompt shows and is taken.
+DOOR_GO_S, DOOR_REACH_R, DOOR_FIGHT_R, DOOR_RETRY_S, DOOR_SPOTS_KEPT = 12.0, 120.0, 500.0, 30.0, 64
+DOOR_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "learned" / "010018100CD46000" / "door_spots.json"
 SHOT_TAIL_S = 0.15                     # Bot._shot_tail: no stick in the boosted shot motion nor this long after it
 SHOT_TAIL_KEYS = frozenset({"lup", "ldown", "lleft", "lright", "rleft", "rright", "rup", "rdown"})
 # The quick turn back (operator 20:25: "you can do a quick turn by holding down and pressing B. Thats how you turn around
@@ -2572,6 +2579,7 @@ class Bot:
                 spots = [s_ for s_ in (self.stats.get("traverse_spots") or "").split(" | ") if s_]
                 spots = (spots + [f"{pr.get('label')}@{x:.0f},{y:.0f},{z:.0f}"])[-8:]
                 self.stats["traverse_spots"] = " | ".join(spots)
+                self._remember_door(x, y, z, pr.get("label"))
         if not self._prompt_wanted(st["type"], p, snap):
             return None
         if st["first"] is None:
@@ -2660,6 +2668,72 @@ class Bot:
     def _wall_start(self, p, now, preempt: bool) -> None:
         from . import re5_switch_wall
         re5_switch_wall.start(self, p, now, preempt)
+        self._pick_door(p, now)                          # a remembered door / ledge to head for once he is off the wall
+
+    # --- doors, exits, ledges remembered per stage (DOOR_* above) ------------------------------------------------------
+    def _door_spots(self) -> list:
+        import json
+        stage = tuning.stage_name(STAGE_NAMES, stage_target()) or "unknown"
+        if getattr(self, "_doors_stage", None) != stage:
+            self._doors_stage = stage
+            try:
+                self._doors = list((json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}).get(stage) or [])
+            except (OSError, ValueError, AttributeError):
+                self._doors = []
+        return self._doors
+
+    def _remember_door(self, x, y, z, label) -> None:
+        import json
+        try:
+            spots = self._door_spots()
+            if any(math.hypot(x - s_[0], z - s_[2]) < 100.0 and abs(y - s_[1]) < 150.0 for s_ in spots):
+                return
+            spots.append([round(x), round(y), round(z), label])
+            del spots[:-DOOR_SPOTS_KEPT]
+            try:
+                data = json.loads(DOOR_FILE.read_text(encoding="utf-8")) or {}
+            except (OSError, ValueError):
+                data = {}
+            data[self._doors_stage] = spots
+            DOOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+            DOOR_FILE.write_text(json.dumps(data), encoding="utf-8")
+            self.stats["doors_known"] = len(spots)
+        except Exception:                                # noqa: BLE001 - the memory never stops a tick
+            pass
+
+    def _pick_door(self, p, now) -> None:
+        px, py, pz = p["pos"]
+        tried = self.__dict__.setdefault("_door_tried", {})
+        cands = [s_ for s_ in self._door_spots() if math.hypot(s_[0] - px, s_[2] - pz) > DOOR_REACH_R
+                 and abs(s_[1] - py) < 300.0 and tried.get(tuple(s_[:3]), -1e9) < now - DOOR_RETRY_S]
+        if not cands:
+            return
+        s_ = min(cands, key=lambda q: math.hypot(q[0] - px, q[2] - pz))
+        tried[tuple(s_[:3])] = now
+        self._door_goal = (s_, now + DOOR_GO_S)
+        self.stats["door_goals"] = self.stats.get("door_goals", 0) + 1
+
+    def _door_walk(self, p, near, now) -> dict | None:
+        g = getattr(self, "_door_goal", None)
+        if g is None:
+            return None
+        if now > g[1]:
+            self._door_goal = None
+            return None
+        if near <= DOOR_FIGHT_R:                         # a Majini close: the fight first
+            return None
+        px, _py, pz = p["pos"]
+        s_ = g[0]
+        d = math.hypot(s_[0] - px, s_[2] - pz)
+        if d <= DOOR_REACH_R:                            # there: its prompt shows and the prompt rule takes it
+            self._door_goal = None
+            self.stats["door_reached"] = self.stats.get("door_reached", 0) + 1
+            return None
+        err = wrap(heading(s_[0] - px, s_[2] - pz) - (p.get("rot") or 0.0))
+        self.doing, self.why = "walk", f"to the door / ledge seen here before ({d / 100:.1f} m)"
+        if abs(err) > 0.6:
+            return {"hold": self._turn(err, 0.2)}
+        return {"hold": ("lup",) + self._turn(err, 0.2)}
 
     def _wall_gov(self, act, snap, now) -> dict:
         from . import re5_switch_wall
@@ -3180,6 +3254,9 @@ class Bot:
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         near_e = min(live, key=flat, default=None)
         near = flat(near_e) if near_e is not None else math.inf
+        door = self._door_walk(p, near, now)             # stuck: to a door / ledge seen on this stage before
+        if door is not None:
+            return door
         motion = p.get("motion")                         # None: no motion byte (the health / stick heuristics)
         # Held means the game's own grab (his motion, or its Break free prompt), never a Majini merely close: the
         # learning loop's replay (#1403) found him shaking the stick with one within HELD_R that held nothing while
@@ -3270,6 +3347,7 @@ class Bot:
             self.wall_memory(px, pz, p.get("rot") or 0.0)
             self._wall_start(p, now, True)
             self._bonus = None
+            self._pick_door(p, now)
             self.stats["wall_reports"] = self.stats.get("wall_reports", 0) + 1
             self.stats["directive_status"] = "the operator's wall: remembered, backing off along his trail, another way"
         elif cmd == "missing" and fresh:
