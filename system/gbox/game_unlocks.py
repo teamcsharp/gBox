@@ -28,6 +28,10 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
     Never run REA/Ghidra here or infer a write from a title string. Existing RE6
     opt-out settings remain authoritative and its writer retains the save backup.
     """
+    from . import pso_gc_unlocks
+    if game.get('game_id') == pso_gc_unlocks.GAME_ID and game.get('platform') == pso_gc_unlocks.PLATFORM:
+        # PSO Episode I & II Plus (GameCube, USA): report resolved revision and guarded plan; never touch a real card here.
+        return pso_gc_unlocks.pre_launch(game)
     # Unlock-on-load: SC2 codes applied before boot (RAM-based unlock flags)
     sc2_codes = code_profile(game)
     if sc2_codes and sc2_codes.get('verified'):
@@ -127,6 +131,17 @@ def pre_launch(game: dict, ctx, mod: str = '') -> dict:
 
 
 def profile_for(game: dict) -> dict:
+    from . import pso_gc_unlocks
+    if game.get('game_id') == pso_gc_unlocks.GAME_ID and game.get('platform') == pso_gc_unlocks.PLATFORM:
+        # PSO Episode I & II Plus (GameCube, USA): the owned build and its main
+        # executable are hashed, but no save flag is runtime-proven yet, so the
+        # profile stays unverified and pre_launch short-circuits before any writer.
+        prof = pso_gc_unlocks.profile()
+        return {'status': prof['status'], 'profile': prof.get('profile'),
+                'verified': prof.get('verified', False), 'scope': prof.get('scope', []),
+                'reason': prof.get('reason'), 'categories': prof.get('categories', {}),
+                'evidence': prof.get('evidence', {}), 'game_id': prof.get('game_id'),
+                'platform': prof.get('platform')}
     if str(game.get('platform') or '').casefold() == 'switch':
         from . import re_switch
         profile = re_switch.unlock_profile(game)
