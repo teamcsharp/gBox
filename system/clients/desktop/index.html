@@ -3956,9 +3956,11 @@ const compactController = GBoxCompactGame.create({
     compactSession = session;
     compactStreamUrl = streamUrl;
     closePops(null); if (EYE.on) eyeStop();
-    document.querySelector('aside button[data-s="play"]')?.click();
+    // Remote PiP owns its image element. A busy/reloading guest webview must
+    // neither delay it nor replace the tab the operator will return to.
+    if (local) document.querySelector('aside button[data-s="play"]')?.click();
     const wv = document.querySelector('#wv');
-    if (wv && !requested?.preserveGuest) {
+    if (local && wv && !requested?.preserveGuest) {
       await wv.gboxReady;
       if (!restoreCurrent()) throw Error('Saved view restoration was superseded by your navigation.');
       await wv.executeJavaScript(`show("Sessions", ${JSON.stringify(session.session_id)})`);

@@ -86,13 +86,27 @@ test('older 4:3 windows become widescreen once, retaining height and the right e
   for(const aspect of [16/9,4/3,2]){await ctl.update({on:true,aspect});assert.deepEqual(win.getBounds(),wide);}
 });
 
-test('a failed native caption change rolls back bounds, fullscreen and controls without entering compact mode', async () => {
+test('a refused native caption change rolls the visible PiP back to its prior bounds and controls', async () => {
   const {win,ctl,events,chrome} = fixture({chrome: on => on ? {ok:false,error:'style rejected'} : {ok:true}});
   win.maximized = true; win.fullscreen = true; const before = win.getBounds();
   await assert.rejects(ctl.update({on:true}),/style rejected/);
   assert.deepEqual(ctl.state(),{on:false,aspect:4/3}); assert.deepEqual(win.bounds,before);
   assert.equal(win.maximized,true); assert.equal(win.fullscreen,true); assert.equal(win.overlay.height,36);
-  assert.deepEqual(events,[]); assert.deepEqual(chrome,[true,false]);
+  assert.deepEqual(events.map(event=>event.on),[true,false]); assert.deepEqual(chrome,[true,false]);
+});
+
+test('PiP becomes visible while a cold caption helper is still unanswered', async () => {
+  let answer;
+  const {win,ctl,events} = fixture({chrome: () => new Promise(resolve => { answer=resolve; })});
+  const entering=ctl.update({on:true,aspect:16/9,width:640});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(win.bounds.width,640);
+  assert.equal(win.bounds.height,360);
+  assert.equal(ctl.state().on,true);
+  assert.equal(events[0].on,true);
+  assert.equal(win.overlay,36,'caption controls remain visible until native confirmation');
+  answer({ok:true}); await entering;
+  assert.equal(win.overlay.height,0);
 });
 
 test('a failed restoration stays recoverable and rapid requests serialize around the native helper', async () => {
