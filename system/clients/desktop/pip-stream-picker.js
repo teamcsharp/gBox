@@ -60,6 +60,8 @@
   }
   function create(io) {
     let loadedOrigin = null, saved = null, pending = null, generation = 0;
+    const now = io.now || Date.now;
+    let lastChoiceAt = now(); // a reload must restore its saved choice, not replay an old dispatch
     const load = () => {
       const source = origin(io.origin());
       if (source !== loadedOrigin) {
@@ -75,9 +77,15 @@
       return pending || saved;
     };
     const persist = value => { saved = value; try { if (loadedOrigin) io.storage?.setItem(KEY + loadedOrigin, JSON.stringify(saved)); } catch {} };
+    const canDispatch = d => {
+      load();
+      return !pending && !!d?.pip && !d.lapsed && ['start','switch'].includes(d.command)
+        && /^[a-f0-9]{32}$/.test(d.id || '') && Number.isFinite(d.at) && d.at * 1000 > lastChoiceAt;
+    };
     return {
       get preference() { return load(); },
       get revision() { load(); return generation; },
+      canDispatch,
       allows(row) { const p = load(); return !p?.pinned || sameInstance(p, row); },
       remember(row) {
         const p = load();
@@ -86,8 +94,11 @@
       },
       async target() { const p = load(), rev = generation, source = loadedOrigin; if (!p) return null;
         const data = await io.read(); return rev === generation && source === origin(io.origin()) ? resolve(p, data.rows, data.hosts) : null; },
-      async select(sid, valid = () => true) {
-        load(); const rev = ++generation, source = loadedOrigin; pending = null;
+      async select(sid, valid = () => true, {dispatch} = {}) {
+        load();
+        if (dispatch && !canDispatch(dispatch)) return false;
+        if (!dispatch) lastChoiceAt = now();
+        const rev = ++generation, source = loadedOrigin; pending = null;
         const data = await io.read();
         if (rev !== generation || !valid() || source !== origin(io.origin())) return false;
         const row = data.rows.find(r => r.session_id === sid && status(r, data.hosts) === 'ready');
@@ -98,6 +109,7 @@
         try {
           const shown = await io.show(row, current);
           if (!current() || shown === false) return false;
+          if (dispatch) lastChoiceAt = now();
           persist(pending); return true;
         } finally { if (current()) pending = null; }
       }

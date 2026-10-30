@@ -24,6 +24,49 @@ test('unselected connected stream is remembered without creating an explicit ins
   const x=rig();x.ctl.remember(a);assert.equal(P.create(x.io).preference.sid,a.session_id);assert.equal(x.ctl.allows(b),true);
   await x.ctl.select(a.session_id);x.ctl.remember(b);assert.equal(x.ctl.preference.sid,a.session_id);
 });
+
+test('a fresh local PiP dispatch supersedes an older pin, but reloads and newer choices do not replay it',async()=>{
+  const x=rig();let now=1000;x.io.now=()=>now;
+  const ctl=P.create(x.io);await ctl.select(a.session_id);
+  const d={id:'d'.repeat(32),command:'start',pip:true,at:2};
+  now=2100;assert.equal(ctl.canDispatch(d),true);
+  await ctl.select(b.session_id);assert.equal(ctl.canDispatch(d),false);
+  assert.equal(ctl.preference.sid,b.session_id);
+  const reloaded=P.create(x.io);assert.equal(reloaded.canDispatch(d),false);
+  assert.equal(reloaded.preference.sid,b.session_id);
+  assert.equal(reloaded.canDispatch({...d,at:3,pip:false}),false);
+  assert.equal(reloaded.canDispatch({...d,at:3,lapsed:'operator took control'}),false);
+  assert.equal(reloaded.canDispatch({...d,at:3}),true);
+});
+
+test('a dispatch retries a transient lookup failure without overriding a newer manual selection',async()=>{
+  const x=rig();let now=1000;x.io.now=()=>now;const ctl=P.create(x.io);
+  await ctl.select(a.session_id);
+  const d={id:'d'.repeat(32),command:'start',pip:true,at:2};now=2100;
+  const read=x.io.read;x.io.read=async()=>{throw Error('offline');};
+  await assert.rejects(ctl.select(b.session_id,()=>true,{dispatch:d}),/offline/);
+  assert.equal(ctl.preference.sid,a.session_id);assert.equal(ctl.canDispatch(d),true);
+  x.io.read=read;assert.equal(await ctl.select(b.session_id,()=>true,{dispatch:d}),true);
+  assert.equal(ctl.canDispatch(d),false);
+  now=4000;await ctl.select(a.session_id);
+  assert.equal(await ctl.select(b.session_id,()=>true,{dispatch:{...d,at:3}}),false);
+  assert.equal(ctl.preference.sid,a.session_id);
+});
+
+test('the desktop routes a new local PiP dispatch through the explicit stream selector once',async()=>{
+  const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
+  const start=html.indexOf('async function mercPipPoll()');
+  const code=html.slice(start,html.indexOf('setInterval(() => { if (document.visibilityState',start));
+  const d={id:'d'.repeat(32),command:'start',pip:true,at:2},selected=[];
+  const host={dispatch:d,current_run:{session_id:b.session_id,phase:'playing'}};
+  const M=require('../clients/web/viz/mercmode'),state={busy:false,handled:'',closed:''};
+  const ctx=vm.createContext({MERC_PIP:state,window:{GBoxMercMode:M},S:{workerName:'i9'},gbox:{api(){}},
+    pipSelection:{revision:0,preference:{pinned:true},canDispatch:()=>true,
+      select:async(sid,valid,opts)=>{assert.equal(opts.dispatch,d);selected.push(sid);return true;}},
+    mercOwnHost:async()=>host,mercPipSave(){},console});
+  vm.runInContext(code,ctx);await ctx.mercPipPoll();await ctx.mercPipPoll();
+  assert.deepEqual(selected,[b.session_id]);assert.equal(state.handled,d.id);
+});
 test('reload keeps an exact live session even with another current run on that PC',()=>{
   const saved={sid:a.session_id,worker:'Spark'};
   const hosts=[{name:'Spark',current_run:{session_id:c.session_id,phase:'playing'}}];

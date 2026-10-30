@@ -4178,8 +4178,22 @@ async function mercPipPoll() {
   try {
     const host = await mercOwnHost();
     if (!host) return;
-    if (!current()) return; // explicit instance selection survives local dispatches and title rotation
+    if (revision !== pipSelection.revision) return;
     const d = host.dispatch;
+    if (pipSelection.preference?.pinned) {
+      // A new explicit "play here in PiP" command can replace an older stream
+      // choice. Old dispatches on reload and later manual choices still win.
+      const run = host.current_run;
+      if (d?.id !== MERC_PIP.handled && d?.id !== MERC_PIP.closed && pipSelection.canDispatch(d)
+          && run?.phase === 'playing' && run.session_id && !run.handover) {
+        if (await pipSelection.select(run.session_id, () => true, {dispatch:d})) {
+          Object.assign(MERC_PIP, { handled:d.id, dispatch:d.id, last:run.session_id, away:false, lostAt:0 });
+          mercPipSave();
+        }
+      }
+      return;
+    }
+    if (!current()) return;
     if (d?.id && d.id !== MERC_PIP.dispatch) { MERC_PIP.dispatch = d.id; MERC_PIP.away = false; }   // a new dispatch: asked again
     if (!host.current_run) MERC_PIP.away = false;                // the operator's choice lasts while this PC's MercMode runs
     const shown = COMPACT.on ? COMPACT.sid : null;
