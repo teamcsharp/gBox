@@ -2945,6 +2945,25 @@ class Bot:
             return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         if item is None:
+            # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
+            # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
+            # with an empty heal supply and died; the retreat gives the gun-down time and the distance).
+            # Finish the existing bounded escape instead of extending its deadline
+            # every tick. Once clear, or during the normal escape cooldown, let
+            # combat resume; low HP alone must not suppress the gun for a round.
+            if (hp <= HEAL_CRITICAL * hp_max and near
+                    and (self.escape is None or now >= self.escape[1])
+                    and now - self.escape_at >= ESCAPE_GAP_S):
+                nearest = min(live, key=lambda e: flat(e))
+                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                self._gun_down()
+                self.escape = (away, now + ESCAPE_S)
+                self.escape_at = now
+                self.round_escapes += 1
+                self.stats["escapes"] += 1
+                self.stats["heal_status"] = f"critical retreat at {hp / hp_max:.0%} (no heals)"
+                err = wrap(away - p["rot"])
+                return {"hold": RUN + self._turn(err, TURN_TOL)}
             return None
         gun = next((s for s in inv if s["hand"] and s["type"] == 1 and s["item"] not in THROWN), None)
         self._gun_down()
