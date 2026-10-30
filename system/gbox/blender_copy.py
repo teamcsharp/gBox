@@ -187,7 +187,7 @@ def find_blender() -> str:
 def probe_tempdir(exe: str, timeout: int = 90) -> dict:
     """Ask a headless instance of this Blender (with the user's preferences) for its temp base and version. {} on failure."""
     try:
-        r = subprocess.run([exe, "-b", "--python-expr", PROBE], capture_output=True, text=True, timeout=timeout,
+        r = subprocess.run([exe, "-b", "--python-expr", PROBE], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
                            creationflags=_NOWINDOW)
     except Exception:
         return {}
@@ -238,7 +238,12 @@ def candidate_dirs(running: list[dict] | None = None, probe: dict | None = None,
             continue
         p = Path(d)
         key = os.path.normcase(os.path.normpath(str(p)))
-        if key in seen or not p.is_dir():
+        if key in seen:
+            continue
+        try:
+            if not p.is_dir():
+                continue
+        except OSError:  # another Blender user's temp can be inaccessible
             continue
         seen.add(key)
         out.append(p)
@@ -292,7 +297,7 @@ def to_blender(src: Path, nodes: list[str] | None = None, paste_as: str = "model
         script, staged = Path(td) / "gbox_copybuffer.py", Path(td) / COPYBUFFER
         script.write_text(SCRIPT)
         r = subprocess.run([exe, "-b", "--factory-startup", "--python", str(script), "--", str(src), str(staged),
-                            json.dumps(nodes or []), json.dumps(tags), paste_as], capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
+                            json.dumps(nodes or []), json.dumps(tags), paste_as], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300, creationflags=_NOWINDOW)
         line = next((l for l in r.stdout.splitlines() if l.startswith("GBOX_RESULT ")), None)
         if not line:
             raise RuntimeError("Blender couldn't import the asset: " + (r.stdout + r.stderr)[-600:])

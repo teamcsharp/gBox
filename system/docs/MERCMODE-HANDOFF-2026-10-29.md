@@ -2,9 +2,11 @@
 
 Read `MERCMODE-HANDOFF-2026-10-28.md` for standing authorization, machines, API and the complete operator requirements. Do not reuse historical worker/process identities for writes. The current checkpoint below supersedes the historical sections farther down.
 
-## Latest checkpoint: 2026-10-30, 00:49 UTC (October 29 on the operator's PC)
+## Latest checkpoint: 2026-10-30, 01:00 UTC (October 29 on the operator's PC)
 
-This section supersedes the historical checkpoint below. The full request is **not complete**.
+This section supersedes the historical checkpoint below. The full request is **not complete**. PR [1584](https://github.com/teamcsharp/gBox/pull/1584) has now merged the guest-state responsiveness fix and this handoff; main is `85940a897bcb3b45dffda9fa9b0cfecb884197d4`. The earlier rate-limit and pending statements below describe prior checkpoints.
+
+**Blender normal-route acceptance now passed:** after changing both headless subprocess calls to `stdin=subprocess.DEVNULL` and restarting only the idle local service, central job **ce45796b5f8e4694** succeeded on worker **3325378af4304698**, epoch **050275ea3ea446876e8704d13ff45688**. Bayman fetched from Spark and produced 2 objects, 7013 triangles and 40 packed textures in the local clipboard. The earlier second job `ea9c706d18ee4ec2` timed out after 300 seconds. Do not replay those failed job IDs. The exact Windows-level wait mechanism is not established, but the normal worker path succeeded after isolating headless Blender from the desktop control-input pipe. The follow-up also skips inaccessible users' temporary directories rather than aborting before checking writable fallbacks; 32 tests passed, three optional tests skipped. Branch `fix/blender-child-stdin-20261030` holds these changes. The desktop UI is still PID75180; the service alone restarted through its existing watchdog without closing games. Read current state before any further restart.
 
 - Main is `c807ea992ea9ff00ff0b41017f42657246a97a91`. PR [1581](https://github.com/teamcsharp/gBox/pull/1581) merged the RE5/RE6 native equipment and rebuild timeout branches listed below. Spark deployed it at 00:07:48 UTC and reported both bot modules reloaded, one active bot resumed in 1.4 seconds. Native attachment trials remain the evidence; normal-round firing/hit acceptance is still outstanding.
 - PR [1582](https://github.com/teamcsharp/gBox/pull/1582), merge `bacd16b04a817fb4cad40b2c380ec7124a1079d8`, moves visible PiP geometry ahead of the slow native caption helper and avoids waiting for/navigating a hidden guest for remote PiP. 38 JS tests passed. Desktop activation is confirmed by the new process below; actual interactive transition timing is unmeasured.
