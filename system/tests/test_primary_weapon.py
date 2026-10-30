@@ -50,6 +50,22 @@ def test_quiescence_expires_and_never_releases_inputs_for_another_player():
     assert not P.quiescing(stats, snap, clock=lambda:19)
 
 
+def test_handover_acknowledges_only_after_successful_input_release(monkeypatch):
+    _, snap = setup()
+    pending = {'player':100, 'generation':9, 'until':float('inf')}
+    stats = {'native_weapon_pending': pending}
+    def failed(_):
+        raise OSError('input transport failed')
+    with pytest.raises(OSError):
+        P.release_for_handover(stats, snap, failed)
+    assert not pending.get('released')
+    released = []
+    assert P.release_for_handover(stats, snap, lambda keys: released.append(keys))
+    assert released == [set()] and pending['released']
+    stats['operator_control'] = True
+    assert not P.release_for_handover(stats, snap, lambda _: pytest.fail('operator owns input'))
+
+
 def test_primary_grid_zero_returns_via_native_equip_without_a_dpad_or_inventory_key():
     _, snap = setup()
     snap['primary_weapon'] = {'item':25}

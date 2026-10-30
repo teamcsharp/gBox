@@ -505,6 +505,10 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if observe_only:
                 next_frame()
                 continue
+            from .primary_weapon import release_for_handover
+            if release_for_handover(stats, snap, hold):
+                next_frame()
+                continue
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))
             if chords:                                # the game asks for a button: let go, press it
                 hold(set())

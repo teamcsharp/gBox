@@ -196,6 +196,36 @@ def test_stop_cleanup_runs_even_if_releasing_input_fails(tmp_path):
     assert saved == [True]
 
 
+def test_weapon_handover_releases_held_input_before_ack_and_skips_decisions(tmp_path):
+    from gbox.mercs.titles import re4_gc
+    m, clk, stats, sent = re4([]), Clock(), {}, []
+    driver = re4_gc.DRIVER()
+    original_snapshot = driver.snapshot
+    def snapshot(memory):
+        snap = original_snapshot(memory)
+        snap['player'].update(ptr=123, generation=4)
+        return snap
+    driver.snapshot = snapshot
+    pending = {'player':123, 'generation':4, 'until':float('inf')}
+    class Brain:
+        def tick(self, snap):
+            assert not stats.get('native_weapon_pending')
+            return {'hold': {'r'}}
+        def prompt_ok(self, *args): return True
+        def save(self): pass
+    def send(rows):
+        sent.extend(rows)
+        if any(row['down'] for row in rows):
+            stats['native_weapon_pending'] = pending
+        else:
+            assert not pending.get('released')
+    engine.play_round({'driver':'gbox.mercs.titles.re4_gc'}, m, send,
+        lambda: bool(pending.get('released')), stats, driver=driver, brain=Brain(),
+        sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
+    assert sent == [{'key':'r','down':True}, {'key':'r','down':False}]
+    assert pending['released']
+
+
 def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):
     m = re4([])
     m.put(B.P_PLAYER, ">I", 0)                                         # no Leon: a black screen

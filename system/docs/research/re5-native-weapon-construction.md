@@ -60,6 +60,16 @@ pass. Browser tests exercise the shared viewer/PiP dropdown without changing
 the stream source. Live production queue and120-second lock acceptance remain
 to be measured after deployment.
 
+PR1604's first production queue trial exposed a handover defect:
+`re5-primary-production-1793349217717907952.json`, player generation1,
+PID2515980/birth1793349110.51. Flash confirmed in113.1ms end to end
+(32.3ms native), but the weapon commit refused a busy player after the fixed
+150ms delay. Staging was discarded; no replacement or lock was claimed.
+The follow-up waits for engine key-release acknowledgement, then a bounded
+read-only native idle check. Manual takeover, round change, request expiry or
+stopping the bot cancels before commit. Engine and native regressions cover
+acknowledgement ordering, timeout without construction and staged-item cleanup.
+
 Four native test programs pass, including all20 constructor arguments, refusal
 without live-inventory mutation, grid/storage distinction, capacity, generation,
 owner, resource and idle guards, native cleanup and duplicate rejection.

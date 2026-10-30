@@ -272,16 +272,30 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                                     from . import primary_weapon
                                     player, generation = ctl.ready()
                                     pending = {'id': row['id'], 'player': player, 'generation': generation,
-                                               'until': time.monotonic() + 2.0}
+                                               'until': time.monotonic() + 3.0}
                                     if stats is None:
                                         raise N.Unavailable('autoplay state is unavailable')
                                     stats['native_weapon_pending'] = pending
+                                    round_id = stats.get('round_evidence_id')
+                                    def allowed():
+                                        return (alive() and not stats.get('operator_control') and
+                                                stats.get('round_evidence_id') == round_id and
+                                                row['expires'] > time.time() and
+                                                time.monotonic() < pending['until'])
                                     try:
-                                        time.sleep(.15)  # The bot releases aim and drains its old equip request.
+                                        # The engine acknowledges after sending its key releases. A fixed
+                                        # delay can expire during an existing tap/prompt or a slow snapshot.
+                                        release_deadline = time.monotonic() + .9
+                                        while not pending.get('released') and time.monotonic() < release_deadline:
+                                            if not alive() or stats.get('operator_control'):
+                                                break
+                                            time.sleep(.01)
+                                        if not pending.get('released'):
+                                            raise N.Unavailable('bot did not release its inputs for the weapon change')
                                         if not alive() or row['epoch'] != context()['epoch'] or \
                                                 stats.get('operator_control') or row['expires'] <= time.time():
                                             raise N.Unavailable('player changed, operator took control, or request expired')
-                                        result = ctl.equip_primary(row['args']['item'], expected=(player, generation))
+                                        result = ctl.equip_primary(row['args']['item'], expected=(player, generation), allowed=allowed)
                                         primary_weapon.install(ad, result, ctl.pid)
                                     finally:
                                         if stats.get('native_weapon_pending') is pending:

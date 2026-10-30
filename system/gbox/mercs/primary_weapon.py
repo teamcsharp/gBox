@@ -54,3 +54,14 @@ def quiescing(stats, snap, *, clock=time.monotonic):
     return bool(clock() < pending.get('until', 0) and
                 (player.get('ptr'), player.get('generation')) ==
                 (pending.get('player'), pending.get('generation')))
+
+
+def release_for_handover(stats, snap, hold):
+    """Acknowledge only after the engine has sent releases for its held keys."""
+    if stats.get('operator_control') or not quiescing(stats, snap):
+        return False
+    pending = stats['native_weapon_pending']
+    hold(set())
+    if stats.get('native_weapon_pending') is pending:
+        pending['released'] = True
+    return True
