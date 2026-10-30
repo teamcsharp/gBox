@@ -104,6 +104,9 @@ BONUS_RANGE = 12000.0                  # go for a time bonus whose route is this
 FIGHT_R, FIGHT_CONE = 350.0, math.radians(40)   # a Majini this near and this far off the heading blocks the way:
 ON_TOP_R = 160.0                       # fought from where the player stands, as is one this close from any side;
                                        # the rest chase him and are ignored (grabs are wiggled off): the tour goes on
+GRAB_FRONT_R, GRAB_FRONT_CONE = 250.0, math.radians(90)  # a Majini at arm's length in front (grabbed_front cluster,
+                                                         # batch b95d37e4f6baa130): the bot walks into the grab while
+                                                         # in gather_time / clear_nearby; fight or sidestep instead
 ROUTE_LEN_S = 3.0                      # the bonuses' route lengths are worked out again this often
 BONUS_GIVE_UP_S, BONUS_SKIP_S = 4.0, 30.0   # fired at one this long and it is still there: leave it this long
 BONUS_WALK = True                      # walk to the far ones along the game's navmesh (re5_nav)
@@ -3217,6 +3220,13 @@ class Bot:
         if not at_bonus and not clearance_lease and any(self._threat(p, e) for e in live):
             self.stats["phase"] = "fight"
             return None
+        if not at_bonus and not clearance_lease and any(self._in_view(p, e) for e in live):
+            # An exposed Majini in view (any range) blocks the gather too: the 40 deg threat cone left an aimed
+            # bot walking past one he could see and was already tracking while it grabbed him from the side
+            # (batch b95d37e4f6baa130, 25 hits "aimed away or threat behind while hit", all phase=gather_time,
+            # the threat behind or beside the aim). The fight goes first; the tour resumes behind him.
+            self.stats["phase"] = "fight"
+            return None
         if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S
                                  or set(self.route_len) != now_ptrs):
             self.route_len, self.route_len_at = {}, now
@@ -3318,7 +3328,9 @@ class Bot:
 
     @staticmethod
     def _threat(p, e) -> bool:
-        """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), or right on top of him."""
+        """A Majini worth stopping for: within FIGHT_R and in front (he blocks the way), right on top of him, or at
+        arm's length in front (grabbed_front cluster, batch b95d37e4f6baa130): he is close enough to grab him while he
+        walks (gather_time / clear_nearby), so the bot stops walking and fights instead."""
         px, py, pz = p["pos"]
         if abs(e["pos"][1] - py) >= LEVEL_DY:               # on another level: not in the way
             return False
@@ -3326,7 +3338,26 @@ class Bot:
         if d < ON_TOP_R:
             return True
         off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-        return d < FIGHT_R and off < FIGHT_CONE
+        if d < FIGHT_R and off < FIGHT_CONE:
+            return True
+        # grab-front: at arm's length in front, close enough to reach out and grab (batch b95d37e4f6baa130)
+        if d < GRAB_FRONT_R and off <= GRAB_FRONT_CONE:
+            return True
+        return False
+
+    @staticmethod
+    def _grab_front_threat(p, e) -> bool:
+        """A Majini at arm's length in front of him (batch b95d37e4f6baa130, grabbed_front cluster): he is within
+        GRAB_FRONT_R and inside GRAB_FRONT_CONE of his heading - close enough to reach out and grab him while he
+        walks (gather_time / clear_nearby). The bot must stop walking and fight or sidestep before the grab lands."""
+        px, py, pz = p["pos"]
+        if abs(e["pos"][1] - py) >= LEVEL_DY:
+            return False
+        d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        if d >= GRAB_FRONT_R:
+            return False
+        off = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        return off <= GRAB_FRONT_CONE
 
     def _heal_safe(self, p, snap, hp, hp_max) -> bool:
         """Start a heal (or a walk to a health item) now? Not with a Majini within HEAL_SAFE_R unless health is under
