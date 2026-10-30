@@ -140,6 +140,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     clock_frame = [None]                              # the game's frame (driver.frame) at the last decision
     lat = Latency(stats)
     read_retry = NativeReadRetry(stats, 'round')
+    decision_interval = getattr(drv, 'decision_interval_s', None)
+    cycle_started = time.perf_counter()
+    timing_since, timing_count, work_samples = cycle_started, 0, []
 
     def hold(keys):
         nonlocal held
@@ -155,8 +158,26 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
     def next_frame():
         """Frame-synced: wait (polling the title's frame counter, a 4-byte read) until the game has stepped since the
         last decision, at most FRAME_WAIT_S; without a counter, tick_s."""
+        nonlocal timing_since, timing_count
         if frame_fn is None:
-            sleep(tick_s)
+            if decision_interval is None:
+                sleep(tick_s)
+                return None
+            # Subtract decision work instead of adding a full sleep after it.
+            # An overrun starts a fresh budget; never run a catch-up burst.
+            current = time.perf_counter()
+            work = max(0.0, current - cycle_started)
+            work_samples.append(work * 1000)
+            del work_samples[:-120]
+            timing_count += 1
+            if current - timing_since >= 1.0:
+                ordered = sorted(work_samples)
+                stats.update(decision_hz=round(timing_count / (current - timing_since), 1),
+                             decision_work_ms=round(work * 1000, 2),
+                             decision_work_p95_ms=round(ordered[int((len(ordered)-1)*.95)], 2),
+                             decision_budget_ms=round(decision_interval * 1000, 2))
+                timing_since, timing_count = current, 0
+            sleep(max(0.001, decision_interval - work))
             return None
         t_end = clock() + FRAME_WAIT_S
         while True:
@@ -351,6 +372,7 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
 
     try:
         while not stopped():
+            cycle_started = time.perf_counter()
             if session_runtime is not None:
                 status = session_runtime.poll(m, drv)
                 if session_runtime.signature() != role_signature:
