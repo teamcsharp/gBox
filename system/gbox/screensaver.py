@@ -1135,6 +1135,11 @@ class Screensaver:
         """The operator is back at this PC (mouse / pad): the game is handed to them and keeps playing - never closed."""
         with self.lock:
             run = self._by_session(sid)
+            if reason == 'mouse' and run and run.get('mercmode'):
+                # Older workers report desktop mouse movement as a permanent
+                # handover. MercMode must keep counting/rotating its rounds;
+                # actual gameplay input uses the temporary pad takeover lease.
+                return False
             session=self.store.get('session',sid) or {}
             if not run and session.get('state')!='running':
                 return False

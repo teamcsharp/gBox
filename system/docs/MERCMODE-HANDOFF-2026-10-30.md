@@ -36,11 +36,13 @@ not delivered production hooks.
 the wrong account. Do not ask the operator for a password or another walkthrough.
 The installed interpreter is `C:\Users\maste\AppData\Local\gbox\venv\Scripts\python.exe`.
 
-The i9 now runs the tested branch `fix/desktop-authority-reconnect-20261030`,
-head `837263e9ccad40b3f29d503013c1ea8ed14069f6`. It is pushed but **NOT merged**:
+The connection/PiP repair was published to main at
+`3e50964ab65918d706f1d7ef40e920c6c0cf1b87` by a normal Git fast-forward.
 GitHub PR creation returned a secondary content-creation rate limit at09:08
-and09:15 UTC. Root main and Spark remain at993fb7fc; never push root main.
-The repair branch contains:
+and09:15 UTC; no PR was created for those commits. Root main assimilated them,
+Spark deployed them and restarted at about09:47 UTC, and the i9 returned to
+main at the same revision. Never push root main's unrelated scratch history.
+The repair contains:
 
 - `3d3b6484`: replace an expired paired worker transport after30seconds while
   preserving old native-session evidence. The former1800-second fence caused
@@ -63,7 +65,7 @@ closure witness and new worker `3f1fe9e383e84ed3`, epoch
 `68690c7c095985ddb3685653216f91bd`. Request1793352516.29, returned1793352560.77.
 Controller `537bb37dd9e6aeb7d4fd0921f09dfb0f` lives independently of Electron.
 
-Current Merc3D session at observation:
+Merc3D session at the09:34 observation:
 `3f1fe9e383e84ed3-112a70229ad0428e`, native PID60544. Its local scheduler is
 autoplaying and has recorded a completed round. Five-match setting is retained.
 The app's saved view records that SID with compact=true. A frame from the i9's
@@ -77,7 +79,7 @@ Its pip subprocess PID12300/birth1793350706.516010 was identity-checked and
 terminated after cancellation to unblock the old Console implementation.
 Local job `0a5f50f309ef415c` required explicit local cancellation: central
 cancellation did not propagate. Direct SSH git pull succeeded in seconds.
-The new branch is loaded, but a full subsequent production rebuild is untested.
+The repair is loaded, but a full subsequent production rebuild is untested.
 
 A central PiP dispatch `ad1f447d8dbd41bc` stayed queued behind ongoing work.
 It was canceled before directly applying the same authorized request through
@@ -85,6 +87,31 @@ the i9 loopback API. Local dispatch `cadbcda349e54193a500deab55900419` is applie
 Central desktop-stream capture timed out; local desktop-stream capture works.
 Follow up both bridge gaps rather than treating SSH as their permanent fix.
 RE4 VR/Refract remains unready; the requested two-title rotation is unfinished.
+
+## Continuous autoplay follow-up, 2026-10-30 10:09 UTC
+
+The operator clarified that desktop work and temporary game control must never
+permanently abandon MercMode. The existing pad lease already resumes after the
+operator releases the controls; explicit Stop remains authoritative.
+
+The i9's local log proved that session `3f1fe9e383e84ed3-112a70229ad0428e`
+was removed from the scheduler at1793353445.834 with handover=`mouse`, after
+four recorded rounds. Its bot kept playing. This was desktop cursor movement,
+not a service crash or a stuck game. The follow-up prevents this worker report
+for MercMode launches and ignores legacy mouse reports for an active MercMode
+run. Ordinary idle-PC screensaver handover remains unchanged. Rotation still
+waits while the operator holds the pad.
+
+Merc3D also advanced its persisted progression cursor at round START. The
+follow-up records the selected native mission when play begins, retries after
+death/failure/interruption, and advances once on the same mission's native
+`cMerceStageEndState`. Repeated result reads cannot skip missions. This is
+objective-completion evidence, not proof of S rank or full-game completion.
+The existing verified LV.1-LV.5 roster remains; EX coverage is not established.
+
+Validation:212 takeover/scheduler tests passed. Deployment of this continuous
+autoplay follow-up is pending at this checkpoint. Earlier connection/PiP fixes
+above are already published and deployed.
 
 ## Earlier merged work
 

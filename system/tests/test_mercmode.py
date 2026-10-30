@@ -749,6 +749,22 @@ def test_native_handover_cancels_only_queued_owned_stops_after_rotation_state_wa
     assert saver.yield_to_operator(run['session_id'],'duplicate native pad') is True
 
 
+def test_mouse_movement_keeps_mercmode_rounds_and_rotation_but_pad_still_defers_it():
+    store,w,saver,calls,now,tick,run,job=playing()
+    assert saver.yield_to_operator(run['session_id'],'mouse') is False
+    assert saver.current_run(run['session_id'])==run
+    assert store.get('slabel',run['session_id'])['owner']=='agent'
+    assert saver.round_boundary(boundary(run,now[0]),job,now[0])['rotate_requested'] is True
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{'operator_control':True}},now=now[0])
+    count=len(calls)
+    tick(1)
+    assert len(calls)==count and store.get(S.STATE,w['name'])
+    assert saver.yield_to_operator(run['session_id'],'mouse') is False
+    S.telemetry_put(run['session_id'],{'running':True,'stats':{'operator_control':False}},now=now[0])
+    tick(1)
+    assert calls[-1]['tool']=='session_op' and calls[-1]['input']['op']=='stop_game'
+
+
 def test_dj_queue_validates_rounds_against_each_titles_roster():
     store,w,saver,calls,now,tick=rig()
     cfg=M.configure(store,w['name'],{'queue':[{'title':'re5','mode':'mercenaries','character':'Wesker (STARS)','stage':7},

@@ -2914,7 +2914,12 @@ def _takeover(run, d, sid, since, pad_stops=True):
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
     cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
-    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+    game = (SESSIONS.get(sid) or (None, {}))[1] or {}
+    mercmode = isinstance((game.get("launch") or {}).get("mercmode"), dict)
+    if run["screensaver"] and not mercmode and not run.get("handed_over"):
+        # MercMode is an ongoing session, even while the operator uses this PC.
+        # Its pad lease handles temporary gameplay intervention. Desktop mouse
+        # movement must not discard the scheduler's run or its round count.
         if "rest_cursor" not in run:
             run["rest_cursor"] = _cursor()
         cursor = run["rest_cursor"]
@@ -2947,8 +2952,8 @@ def _bot_lease(run, d, sid, since):
     moment ... then just put down a controller and give the gameplay back to the bot"): the operator's controller, on
     this PC or forwarded by their app from any PC, makes it let go at once and it takes the pad back takeover_idle_s
     (gbox.toml, 3 s) after their last input - never a stop, so F5 and MercMode carry on and Stop / F3 still stop it. A
-    human / co-op Mercenaries session's P1 belongs to the human (no takeover there). The screensaver's mouse hand-over
-    is watched as before."""
+    human / co-op Mercenaries session's P1 belongs to the human (no takeover there). Only ordinary idle-PC screensavers
+    watch for mouse hand-over; MercMode keeps its run while the operator works around it."""
     from . import pad_takeover
     cfg = getattr(run.get("ctx"), "config", None)
     pad_takeover.bind(sid, run, idle_s=getattr(cfg, "takeover_idle_s", None), data_dir=getattr(cfg, "data_dir", None),
