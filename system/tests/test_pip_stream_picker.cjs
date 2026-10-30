@@ -53,7 +53,7 @@ test('a dispatch retries a transient lookup failure without overriding a newer m
   assert.equal(ctl.preference.sid,a.session_id);
 });
 
-test('the desktop routes a new local PiP dispatch through the explicit stream selector once',async()=>{
+for (const pinned of [false,true]) test(`a new local PiP dispatch persists the instance once (previous pin: ${pinned})`,async()=>{
   const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
   const start=html.indexOf('async function mercPipPoll()');
   const code=html.slice(start,html.indexOf('setInterval(() => { if (document.visibilityState',start));
@@ -61,8 +61,8 @@ test('the desktop routes a new local PiP dispatch through the explicit stream se
   const host={dispatch:d,current_run:{session_id:b.session_id,phase:'playing'}};
   const M=require('../clients/web/viz/mercmode'),state={busy:false,handled:'',closed:''};
   const ctx=vm.createContext({MERC_PIP:state,window:{GBoxMercMode:M},S:{workerName:'i9'},gbox:{api(){}},
-    pipSelection:{revision:0,preference:{pinned:true},canDispatch:()=>true,
-      select:async(sid,valid,opts)=>{assert.equal(opts.dispatch,d);selected.push(sid);return true;}},
+    pipSelection:{revision:0,preference:{pinned},canDispatch:()=>true,
+      select:async(sid,valid,opts)=>{assert.equal(opts.dispatch,d);selected.push(sid);ctx.pipSelection.preference.pinned=true;return true;}},
     mercOwnHost:async()=>host,mercPipSave(){},console});
   vm.runInContext(code,ctx);await ctx.mercPipPoll();await ctx.mercPipPoll();
   assert.deepEqual(selected,[b.session_id]);assert.equal(state.handled,d.id);
@@ -195,7 +195,7 @@ test('old local MercMode lookup cannot override a pending explicit choice on the
   const held=deferred(),looked=deferred(),shows=[];
   const M=require('../clients/web/viz/mercmode');
   const host={name:'Spark',id:'w',settings:{enabled:true},current_run:{session_id:'w-auto',phase:'playing',mercmode:{title:'re6'},mercmode_predecessor:{session_id:'w-old'}}};
-  const selection={revision:0,preference:null};
+  const selection={revision:0,preference:null,canDispatch:()=>false};
   const ctx=vm.createContext({MERC_PIP:{busy:false,last:'w-old'},window:{GBoxMercMode:M},GBoxMercMode:M,
     S:{workerName:'Spark'},gbox:{api(){}},COMPACT:{on:true,sid:'w-old'},pipSelection:selection,
     mercOwnHost:async()=>host,sessionById:async()=>{looked.resolve();return held.promise;},
