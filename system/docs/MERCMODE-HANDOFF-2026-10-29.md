@@ -1,3 +1,5 @@
+> Current state: see [October 30 checkpoint](MERCMODE-HANDOFF-2026-10-30.md). The sections below are historical.
+
 # MercMode continuation — 2026-10-29
 
 Read `MERCMODE-HANDOFF-2026-10-28.md` for standing authorization, machines, API and the complete operator requirements. Do not reuse historical worker/process identities for writes. The current checkpoint below supersedes the historical sections farther down.

@@ -16,6 +16,28 @@ including the Majini that had been holding the player. Equipped selection
 and inventory were preserved; the original player vtable was restored.
 This is live research evidence; production API acceptance is recorded separately.
 
+### Deployed production API acceptance
+
+PR1597 merged as `49db6aebcb53f876ab66b5c7205236f0e65a1381` and deployed to
+Spark. Sheva Cos1, generation1, session `5cb6330c56514413-079bf401635a4f94`:
+20 distinct requests produced20 confirmed native explosions in2325ms, native
+calls25.6-195.3ms. Seven enemies were observed in DmgFlash. Inventory selection
+was unchanged and original vtable restored. Receipt on Spark:
+`re5-production-flash-1793342443371018469.json`.
+
+The cold first click took1848.8ms overall/1139.9ms native. PR1598 (merge
+`424dfc4aa742601414ba04c1ad94aac5aade6e57`) therefore installs and allocates
+native dispatch before advertising capability, with no projectile or effect.
+After deployment/restart, Jill Cos2 with no inventory flash confirmed the first
+click in442.5ms overall/120.4ms native. The next20 requests all confirmed in
+2505.1ms; inventory and original vtable remained intact. Receipts:
+`re5-production-flash-1793342949121516917.json` and
+`re5-production-flash-1793342975883739932.json`.
+
+These are measured runs, not a universal latency guarantee. The broader request
+for20 grenades in two seconds remains unfinished. Ticket6102's repeatable native
+RE5 flash hook is completed, audit220617; umbrella5972 remains open.
+
 An earlier prototype requested held-weapon action 15 (`wp_act_bomb`). That
 animation alone did NOT cause the required flash. It is not the shipped path.
 
@@ -61,8 +83,8 @@ The existing durable intervention queue, PiP/web button and MCP
 the same adapter/controller lock. Readiness is tied to the current player/round;
 stale requests expire. `queued` is not successful detonation.
 
-Python regression validation: 47 tests across native RE5, interventions and
-RE5 mod routing. All three ARM64 ABI tests pass, including non-Chris bootstrap,
+Python regression validation: 49 tests across native RE5, interventions and
+RE5 mod routing, including preparation without effects. All three ARM64 ABI tests pass, including non-Chris bootstrap,
 generation mismatch, refusal/replay and preserved player state.
 
 This does not deliver Merc3D/RE4 VR flashes, arbitrary weapon construction,
