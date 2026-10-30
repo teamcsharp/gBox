@@ -138,6 +138,9 @@ CAL_P90_FLOOR = math.radians(1.0)      # the p90 gate never asks for an aim clos
 AIM_STALE_S = 0.5                      # a shot this long after the last aim decision: its record says "stale"
 SHOTS_PER_ROUND = 3000                 # shot records kept per round (the round map's "shots")
 SWING_TURN = math.radians(45)          # a Majini further off the body's heading than this: turn with the gun down
+FRONT_CLEAR_CONE = math.radians(120)   # #5126: the front_clear gate's sector - a Majini inside FRONT_CLEAR_R but off to
+                                       # the side (115 deg in the cluster) is still the one to face while turning; the
+                                       # gun comes down only when nothing stands in this wider sector
 # A Majini behind: the quick turn (left stick down + cross, the run button; docs/mercenaries_re5_meta.md item 21, marked
 # "verify live") instead of ~1 s of body turning with the gun down. Self-verifying: the heading must swing at least
 # QUICK_TURN_SEEN within QUICK_TURN_CHECK_S, else after QUICK_TURN_TRIES presses without one it is off for the session
@@ -1338,7 +1341,7 @@ class Combat:
         aimed = ready and (where is not None or other is not None or (on_window and jump is None))
         swinging = self.swing_key == key and abs(facing) > E.SWING_DONE
         if (abs(facing) > E.SWING_TURN or swinging) and not aimed:
-            threat = E.front_threat(p, enemies, exclude=key) if depth == 0 else None
+            threat = E.front_threat(p, enemies, exclude=key, cone=FRONT_CLEAR_CONE) if depth == 0 else None
             if threat is not None:
                 self.target_key = E.key(threat)
                 self.swing_key = None
