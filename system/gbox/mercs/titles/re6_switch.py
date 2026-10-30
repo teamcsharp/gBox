@@ -3059,7 +3059,12 @@ class Bot:
         # A body-relative quick turn then spins that already-correct view away.
         behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(bearing(e)) > QT_BEHIND_ERR]
         has_front = any(flat(e) <= QT_BEHIND_R and abs(bearing(e)) < math.radians(60) for e in live)
-        qgap = QUICK_GAP_S if has_front else QT_TURN_GAP_S   # one behind alone: the turn waits QT_TURN_GAP_S, not the settle
+        # one behind him alone (none in front): the quick turn waits QT_TURN_GAP_S, not the full QUICK_GAP_S settle
+        # (damage cluster fc45a6229fe006d0: 4 hits per turn while the 1.5 s settle let the one behind reach him);
+        # a crowd of four flanking (crowd_4_in_2m) keeps the QUICK_GAP_S: the quick turn must not outrun the
+        # crowd-control backout that is its own remedy there
+        qgap = QT_TURN_GAP_S if (behind and not has_front and sum(1 for e in live if flat(e) <= CC_CROWD_R) < 4) \
+              else QUICK_GAP_S
         if (behind and not has_front and now - self.quick_at > qgap
                 and not self.down and p.get("equipped") != BOMB_INDEX
                 and not (self.push is not None and now < self.fever_until)):   # (the push-through faces its way)
