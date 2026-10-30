@@ -318,7 +318,7 @@
     // read the live bot-logic state for the session's title; null when the game has none
     async function readBotLogic() {
       try {
-        const j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
+        let j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
           input: { session_id: sid, op: "bot_logic" } }, "POST");
         for (let i = 0; i < 120 && j && ["queued", "running"].includes(j.state); i++) {
           await new Promise(r => setTimeout(r, 500));
@@ -332,7 +332,7 @@
 
     // write one knob back through bot_logic and return the refreshed view
     async function writeBotLogic(name, value) {
-      const j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
+      let j = await api("/api/jobs", { tool: "re5_mods", agent_use: false,
         input: { session_id: sid, op: "bot_logic", values: { [name]: value } } }, "POST");
       for (let i = 0; i < 120 && j && ["queued", "running"].includes(j.state); i++) {
         await new Promise(r => setTimeout(r, 500));

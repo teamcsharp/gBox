@@ -19,7 +19,8 @@ test('viewer opens live controls, applies verified mods and clicks flashes witho
       if(req.url==='/api/jobs'){
         const input=data.input;assert.equal(data.require_worker,'worker');assert.equal(input.session_id,session.session_id);
         if(input.op==='fire_rate')status.fire_rate_x=input.multiplier;
-        const result=input.op==='bot_logic'?{verified:true,title:'re6',knobs:[]}:
+        const result=input.op==='live_controls'?{verified:true,view:{verified:true,title:'re6',knobs:[]},status}:
+          input.op==='bot_logic'?{verified:true,title:'re6',knobs:[]}:
           input.op==='status'?status:{verified:true};
         res.end(JSON.stringify({id:'job',state:'succeeded',output:{result}}));return;
       }
@@ -48,7 +49,8 @@ test('viewer opens live controls, applies verified mods and clicks flashes witho
     assert.equal(status.fire_rate_x,30);
     await evaluate(`Promise.all(Array.from({length:20},()=>mount.client.flash('worker-re6'))).then(()=>mount.client.poll())`);
     assert.equal(flashes.length,20);assert.equal(new Set(flashes.map(x=>x.id)).size,20);
-    assert.equal(await evaluate(`document.querySelector('#actions [role=status]').textContent`),'Flashbang detonated.');
+    assert.equal(await evaluate(`document.querySelector('#actions [role=status]').textContent`),'');
+    assert.equal(await evaluate(`document.querySelector('#actions [data-flash-state]').dataset.flashState`),'confirmed');
     await evaluate(`document.querySelector('[aria-label="Choose the primary weapon for this match"]').click();
       new Promise(r=>{const wait=()=>!document.querySelector('[aria-label="Primary weapon"]').hidden?r():setTimeout(wait,10);wait();})`);
     await evaluate(`const choice=document.querySelector('[aria-label="Primary weapon"]');choice.value='25';choice.dispatchEvent(new Event('change'));

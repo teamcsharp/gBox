@@ -69,7 +69,7 @@ class Controller:
         self.ad = ad
         self.pid, _ = ad._guest()
         self.identity = process_identity(self.pid)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.base = R.module_base(self)
         if not self.base:
             raise Unavailable("unsupported RE6 executable")
@@ -89,11 +89,14 @@ class Controller:
     def w(self, at):
         return struct.unpack("<I", self.rd(at, 4))[0]
 
-    def check(self):
+    def check_build(self):
         if process_identity(self.pid) != self.identity or self.ad._guest()[0] != self.pid:
             raise Unavailable("emulator process changed")
         if self.rd(self.base + R.SIG_OFF, len(R.SIGNATURE)) != R.SIGNATURE:
             raise Unavailable("RE6 executable changed")
+
+    def check(self):
+        self.check_build()
         if hasattr(self, "player"):
             if self.q(self.sp + R.P_FIRST) != self.player or self.w(self.player + 0x1308) != self.generation:
                 raise Unavailable("player allocation changed")
@@ -101,6 +104,20 @@ class Controller:
     def write(self, at, data):
         self.check()
         self.ad.write_memory(at, data)
+
+    def publish_call(self, state_at):
+        try:
+            self.write(state_at, struct.pack("<I", 1))
+        except RuntimeError as exc:
+            # The game can consume 1 -> 2 -> 3 before the adapter's immediate
+            # equality readback. Those are valid acknowledgments, not a failed
+            # write. Never publish again, and never relax ordinary RAM writes.
+            if str(exc) != "memory write not confirmed by read-back":
+                raise
+            self.check()
+            self.validate_heap()
+            if self.w(state_at) not in (2, 3):
+                raise
 
     def install(self, at, data):
         """Install only into zero padding, through its exact verified backing FD.
@@ -208,7 +225,7 @@ class Controller:
         if self.w(self.heap + 0xA8) not in (0, 3):
             raise Unavailable("native call already pending")
         self.write(self.heap + 0xC0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
-        self.write(self.heap + 0xA8, struct.pack("<I", 1))
+        self.publish_call(self.heap + 0xA8)
         self.wait(lambda: self.w(self.heap + 0xA8) == 3)
         return self.q(self.heap + 0xB8)
 
@@ -222,17 +239,40 @@ class Controller:
         with self.lock:
             if not self.failed or not getattr(self, "recoverable", False):
                 return not self.failed
-            self.check()
+            self.check_build()
+            if self.heap is None:
+                return False
             self.validate_heap()
-            if self.w(self.heap + 0xA8) != 3 or self.q(self.manager) != self.base + VT:
+            if self.w(self.heap + 0xA8) != 3:
+                return False
+            # The completed mailbox still belongs to the original operation.
+            # A new round may have a different player; do not bind it until the
+            # old dispatcher has returned and its table has been restored.
+            if self.q(self.heap + 0x90) != self.player or self.w(self.heap + 0x98) != self.generation:
+                return False
+            self.detach_completed()
+            if self.q(self.manager) != self.base + VT:
                 return False
             self.failed = self.recoverable = False
             return True
 
+    def detach_completed(self):
+        # Do not strand a published call by removing its game-thread callback
+        # when the Python wait expires. It may still complete on the next frame.
+        # No subsequent call can publish while this mailbox is pending/running.
+        if self.heap is not None:
+            self.validate_heap()
+            if self.w(self.heap + 0xA8) in (1, 2):
+                return
+        current = self.q(self.manager)
+        if current in (self.heap, self.base + TEMP):
+            self.write(self.manager, struct.pack("<Q", self.base + VT))
+
     def ready(self):
         """Current intervention epoch without changing the bound call owner."""
-        if process_identity(self.pid) != self.identity or getattr(self.ad, "paused", False):
-            raise Unavailable("emulator process changed or session is paused")
+        self.check_build()
+        if getattr(self.ad, "paused", False):
+            raise Unavailable("session is paused")
         if self.failed and not self.recover_completed_call():
             raise Unavailable("native controller awaits recovery after an uncertain operation")
         sp = self.q(self.base + R.S_PLAYER)
@@ -250,10 +290,7 @@ class Controller:
 
     def flash(self):
         with self.lock:
-            if getattr(self.ad, "paused", False):
-                raise Unavailable("session is paused")
-            if self.failed:
-                raise Unavailable("native controller awaits recovery after an uncertain operation")
+            self.ready()
             # Establish the current player afresh. Check process/build before
             # discarding the previous allocation identity between rounds.
             if process_identity(self.pid) != self.identity:
@@ -295,17 +332,17 @@ class Controller:
                 return {"state": "confirmed", "verified": True, "op": "flash_now",
                         "effect": "native_flash_explosion", "player_generation": self.generation,
                         "projectile_generation": born, "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
-            except Exception as exc:
+            except Exception:
                 self.failed = True
-                self.recoverable = isinstance(exc, AllocationLost)
+                # A failed effect receipt is not an unfinished native call.
+                # Initialization/resource timeouts and negative native returns
+                # can also leave a completed mailbox. Accept a *new* click only
+                # after verifying completion; never repeat this request.
+                self.recoverable = True
                 raise
             finally:
                 if attached:
-                    def detach():
-                        current = self.q(self.manager)
-                        if current in (self.heap, self.base + TEMP):
-                            self.write(self.manager, struct.pack("<Q", self.base + VT))
-                    detach()
+                    self.detach_completed()
 
 
 def flash_now(ad):

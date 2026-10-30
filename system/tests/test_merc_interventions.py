@@ -152,26 +152,28 @@ def test_pinned_native_assets_and_mapping_guards():
     (3, True, True, True), (1, True, True, False), (2, True, True, False),
     (3, False, True, False), (3, True, False, False),
 ])
-def test_only_completed_allocation_loss_can_recover_for_a_new_click(state, restored, recoverable, allowed):
+def test_only_completed_detached_calls_can_recover_for_a_new_click(state, restored, recoverable, allowed):
     import threading
     ctl=N.Controller.__new__(N.Controller)
     ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=recoverable
     ctl.heap=0x1000;ctl.manager=0x2000;ctl.base=0x100000000
-    ctl.check=lambda:None
+    ctl.player=0x3000;ctl.generation=99
+    ctl.check_build=lambda:None
     ctl.validate_heap=lambda:None
-    ctl.w=lambda at:state
-    ctl.q=lambda at:ctl.base+N.VT if restored else ctl.heap
+    ctl.w=lambda at:99 if at==ctl.heap+0x98 else state
+    ctl.q=lambda at:ctl.player if at==ctl.heap+0x90 else ctl.base+N.VT if restored else 0xBAD
+    ctl.write=lambda *a:pytest.fail('No recovery write to a foreign table')
     ctl.call=lambda *a:pytest.fail('Recovery must never replay the native operation')
     assert ctl.recover_completed_call() is allowed
     assert ctl.failed is (not allowed)
 
 
-def test_changed_player_cannot_clear_native_failure():
+def test_changed_build_cannot_clear_native_failure():
     import threading
     ctl=N.Controller.__new__(N.Controller)
     ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=True
-    def changed():raise N.Unavailable('player allocation changed')
-    ctl.check=changed
-    with pytest.raises(N.Unavailable,match='player allocation'):
+    def changed():raise N.Unavailable('executable changed')
+    ctl.check_build=changed
+    with pytest.raises(N.Unavailable,match='executable'):
         ctl.recover_completed_call()
     assert ctl.failed

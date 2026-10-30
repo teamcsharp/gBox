@@ -4013,17 +4013,13 @@ const compactController = GBoxCompactGame.create({
           gbox.api(`/api/sessions/${at}/directive`, { command: 'explore' })]);
         toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.` : `Report not filed: ${note?.error || 'unknown error'}`);
       };
-      // the flashbang (operator 2026-10-29 #5972: "Emergency flashbang: detonate a flash at the player's position NOW" -
-      // rapid-clickable, no cooldown, every click detonates another flash at once): the flashbang command (gbox.mercs.directives)
-      controls.querySelector('[data-flash]').onclick = async () => {
-        const sid = COMPACT.sid;
-        if (!sid) { toast('No game in the PiP.'); return; }
-        controls.interventions ||= GBoxStreamInterventions.create({api:async (path,body) => {
-          const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
-        }, notify:message=>toast(message)});
-        try { await controls.interventions.flash(sid); }
-        catch(error) { toast(`Flashbang unavailable: ${error.message}`); }
-      };
+      // Direct per-tap native actions; the game is the feedback, never a toast.
+      controls.interventions = GBoxStreamInterventions.create({api:async (path,body) => {
+        const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
+      }, notify:(text,row)=>controls.flashControl.receipt(text,row)});
+      controls.flashControl=GBoxStreamInterventions.bindFlash(controls.querySelector('[data-flash]'),{
+        flash:controls.interventions.flash,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on
+      });
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
@@ -4607,7 +4603,7 @@ async function pipMercMode(m, opening, open = false) {
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
-  if (!COMPACT.on || event.target.closest?.('#pipmenu')) return;
+  if (!COMPACT.on || event.target.closest?.('#pipmenu, [data-flash], .flash-shortcut-menu')) return;
   event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
 }, true);
 addEventListener('pagehide', closePipMenu);

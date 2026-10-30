@@ -142,7 +142,8 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
     else:
         with pytest.raises(N.Uncertain, match='explosion flag'):
             ctl.flash()
-        assert ctl.failed and not ctl.recoverable
+        assert ctl.failed and ctl.recoverable
+        assert ctl.recover_completed_call()  # a new click is allowed; this one is never retried
     assert calls == [(0x118E820, (ctl.player, ctl.generation)),
                      (0x118E9D0, (unit, born, ctl.player, ctl.generation))]
     assert ctl.q(ctl.player) == ctl.original
