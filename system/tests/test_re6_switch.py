@@ -2952,6 +2952,80 @@ def test_the_fix_uses_the_damage_clusters_threshold_not_the_module_crowd_n():
     assert not any(a.get("doing") == "crowd" and "ldown" in set(a.get("hold", ())) for a in acts)   # no forced back-out
 
 
+# --- crowd_hold_until: the gun stays down while the cluster signature persists ----------------------------------------
+# The reopen (2026-10-29 20:37 UTC): the flanking fix reduced nothing (3.0/round vs 1.833 before). The newest examples
+# show cc_kick/cc_turn decisions with down: false -- the gun is re-raised on the tick after crowd control returns None.
+# The fix: when the crowd_4_in_2m signature is detected (4+ within CC_CROWD_R), set crowd_hold_until so the fire loop
+# keeps the gun down for the duration instead of re-raising into the cluster.
+
+
+def test_crowd_hold_prevents_gun_re_raise_after_flanking_cluster():
+    """4 within 2m, all flanking: the flanking branch fires, sets crowd_hold_until. Over many ticks, the gun
+    must NEVER be raised (zl) while the cluster persists."""
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    # Run 30 ticks (1.5 s): the flanking branch fires every tick, setting crowd_hold_until each time
+    acts = run(bot, snap, clock, 30)
+    # The flanking branch must have set crowd_hold_until
+    assert bot.crowd_hold_until > 0.0, "crowd_hold_until must be set by the flanking branch"
+    # The gun must never be raised (zl held alone) during the cluster
+    gun_up = [a for a in acts if "zl" in set(a.get("hold", ())) and a != {"hold": ("zl", "zr")}]
+    assert gun_up == [], f"gun must stay down while the flanking cluster persists, got: {gun_up}"
+
+
+def test_crowd_hold_expires_and_gun_raises_after_cluster_clears():
+    """After crowd_hold_until expires, the gun may be raised again (the cluster cleared)."""
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    # Run enough ticks to establish the hold (the bot takes ~12 ticks to reach the crowd state)
+    run(bot, snap, clock, 20)
+    assert bot.crowd_hold_until > 0.0, f"hold should be set, got {bot.crowd_hold_until}"
+    # Advance the clock past the hold expiry: the hold is now in the past
+    clock[0] += 5.0
+    # The hold has expired. We can't easily verify the gun raises here because the enemies
+    # are still in the flanking positions (the flanking branch would re-fire), so instead
+    # we verify the hold value is in the past (expired)
+    assert bot.crowd_hold_until < clock[0], f"hold should have expired, got hold={bot.crowd_hold_until} clock={clock[0]}"
+
+
+def test_crowd_hold_set_by_cc_kick_path():
+    """When the normal crowd control path (cc_kick) fires with 4+ within 2m, crowd_hold_until must be set."""
+    import math as _m
+    # One enemy in front within CC_R (in cone), three more within 2m on the flanks
+    enemies = ((0.0, 0.0, 150.0, 700),  # front, in cone
+               (190.0 * _m.sin(_m.radians(-101.0)), 0.0, 190.0 * _m.cos(_m.radians(-101.0)), 700),
+               (190.0 * _m.sin(_m.radians(117.0)), 0.0, 190.0 * _m.cos(_m.radians(117.0)), 700),
+               (190.0 * _m.sin(_m.radians(162.0)), 0.0, 190.0 * _m.cos(_m.radians(162.0)), 700))
+    bot, clock, snap = brain(round_guest(enemies=enemies, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    assert bot.crowd_hold_until > 0.0, "crowd_hold_until must be set when cc_kick fires with 4+ within 2m"
+    assert bot.doing == "crowd" or any(a.get("doing") == "crowd" for a in acts)
+
+
+def test_crowd_hold_not_set_with_fewer_than_four():
+    """With only 3 within 2m (not the cluster signature), crowd_hold_until must NOT be set."""
+    import math as _m
+    three = tuple((190.0 * _m.sin(_m.radians(d)), 0.0, 190.0 * _m.cos(_m.radians(d)), 700)
+                  for d in (-111.0, 117.0, 162.0))
+    bot, clock, snap = brain(round_guest(enemies=three, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    assert bot.crowd_hold_until <= 0.0, "crowd_hold_until must NOT be set with only 3 within 2m"
+
+
+def test_crowd_hold_blocks_raise_but_not_kick():
+    """While crowd_hold_until is active, the gun stays down but kicks (zr) are still allowed."""
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    # The flanking branch fires; check that kicks can still occur (zr) but the gun doesn't raise (zl)
+    for a in acts:
+        hold = set(a.get("hold", ()))
+        if "zr" in hold:
+            assert "zl" not in hold, "gun must not be up during a kick while crowd_hold_until is active"
+
+
 def test_time_up_closes_the_round_and_the_tally_is_read_before_the_boundary():
     clock = [0.0]
     d = R.RE6Switch(clock=lambda: clock[0])

@@ -2034,6 +2034,7 @@ class Bot:
         self.aim_since = None
         self.reraised = False                     # this raise already looked for the laser unit again
         self.fire_down = False
+        self.crowd_hold_until = -1e9              # the crowd_4_in_2m signature: keep the gun down until this time
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
@@ -2801,6 +2802,12 @@ class Bot:
                 self.stats["quick_shots"] += 1
                 self.qshot_release = True
                 return self._go("quick_shot", "quick_shot", {"hold": ("zl", "zr")}, f"one at {dist:.0f} cm: quick shot")
+            if now < self.crowd_hold_until:
+                # the crowd_4_in_2m signature is still active: keep the gun down, back out instead of raising
+                self._gun_down()
+                self.stats["cc_backouts"] = self.stats.get("cc_backouts", 0) + 1
+                return self._go("crowd", "crowd_hold", {"hold": ("ldown",)},
+                                "the crowd_4_in_2m cluster is still close: the gun stays down")
             self.aim_since, self._raise_t, self.reraised = now, now, False   # a zombie in front: the gun comes up
         keep_off = (crowd >= CROWD_N or near < KEEP_R             # he steps back while he fires
                     or sum(1 for e in live if flat(e) < CC_BACK_R) >= CC_BACK_N)
@@ -3852,6 +3859,7 @@ class Bot:
                 # the crowd_4_in_2m signature: four or more within 2 m but none in front or flanking within CC_R
                 # -- the gun-down branch's cone can't catch them, so he still drops the gun and backs out instead of
                 # raising into a flanking cluster (damage_clusters crowd_4_in_2m, the RE6 cluster's cause)
+                self.crowd_hold_until = now + 2.0   # keep the gun down for 2 s (the cluster's typical duration)
                 e = min(live, key=flat)
                 d, err = flat(e), bearing(e)
             else:
@@ -3859,6 +3867,10 @@ class Bot:
         else:
             e = min(close, key=flat)
             d, err = flat(e), bearing(e)
+            # the crowd_4_in_2m signature also fires when someone IS in the cone (the cc_kick/cc_turn path):
+            # keep the gun down for the duration so the fire loop doesn't re-raise into the cluster
+            if not fever and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 4:
+                self.crowd_hold_until = now + 1.0
         crowd = (not fever and self._lock_ready(getattr(self, "_snap", {}) or {}, now)
                  and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 2)
         if crowd and d >= MELEE_R:                               # a crowd: the lock's aimed fire sweeps them
