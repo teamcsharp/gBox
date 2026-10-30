@@ -209,6 +209,33 @@ def test_successful_rebuild_requires_and_records_fresh_worker_return(admin):
     assert record(admin)['state'] == 'recovered'
 
 
+@pytest.mark.parametrize('missing', ['', 'epoch', 'fresh_owner', 'fresh_worker', 'old_offline', 'authority', 'timeout'])
+def test_replaced_worker_cannot_reserve_rebuild_forever(admin, missing):
+    jid, replacement = '1'*32, '2'*16
+    row={'id': RID, 'authority': AUTH, 'worker_id': WID, 'op': 'rebuild', 'state': 'rebuilding',
+         'job_id': jid, 'created': 1000., 'epoch': EPOCH, 'actor': 'agent'}
+    job={'id': jid, 'tool': 'rebuild_node', 'require_worker': WID, 'state': 'running'}
+    admin.store.put('desktop_admin', AUTH+':'+RID, row)
+    admin.store.put('job', jid, job)
+    admin.now[0]=5000.
+    current={'id':replacement,'os':'windows','last_seen':5000.,'federation':{'authority':AUTH}}
+    owner=admin.store.get('federation',AUTH)|{'worker_id':replacement,'epoch':'3'*32,'last_seen':5000.}
+    if missing=='epoch':owner['epoch']=EPOCH
+    if missing=='fresh_owner':owner['last_seen']=4000.
+    if missing=='fresh_worker':current['last_seen']=4000.
+    if missing=='authority':current['federation']['authority']='4'*64
+    if missing=='old_offline':admin.store.put('worker',WID,admin.store.get('worker',WID)|{'last_seen':5000.})
+    if missing=='timeout':admin.now[0]=4700.;owner['last_seen']=4700.;current['last_seen']=4700.
+    admin.store.put('federation',AUTH,owner)
+    admin.store.put('worker',replacement,current)
+    result=record(admin)
+    assert result['state']==('rebuilding' if missing else 'unknown')
+    assert admin.store.get('job',jid)==job  # no invented terminal receipt or replay
+    if not missing:
+        assert result['detail']=='rebuild_worker_replaced_without_result'
+        assert record(admin)==result
+
+
 def test_real_bridge_submission_keeps_exact_rebuild_admission(admin):
     from gbox.desktop_bridge import Submissions
     stamp = {'key': AUTH+':'+RID, 'authority': AUTH, 'worker_id': WID, 'job_id': '1'*32}

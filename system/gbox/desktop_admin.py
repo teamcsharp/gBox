@@ -200,6 +200,26 @@ class AdminQueue:
                 output = job.get('output') or {}
                 row = row | {'state': 'requested' if output.get('restart') == 'scheduled' else 'failed',
                              'detail': 'rebuild_' + str(output.get('restart', 'unknown')), 'reported_at': now}
+            elif job.get('tool') == 'rebuild_node' and job.get('require_worker') == wid:
+                owner = self.store.get('federation', authority) or {}
+                old_worker = self.store.get('worker', wid) or {}
+                replacement = self.store.get('worker', owner.get('worker_id')) or {}
+                # A lost result from an earlier installation epoch must not
+                # reserve administration forever. This records uncertainty;
+                # it neither claims success nor resubmits the old operation.
+                if (now - row['created'] > 3600 + RETURN_S
+                        and owner.get('worker_id') not in (None, wid)
+                        and owner.get('epoch') not in (None, row.get('epoch'))
+                        and 0 <= now - owner.get('last_seen', 0) <= LEASE_S
+                        and now - old_worker.get('last_seen', now) > RETURN_S
+                        and replacement.get('os') == 'windows'
+                        and (replacement.get('federation') or {}).get('authority') == authority
+                        and 0 <= now - replacement.get('last_seen', 0) <= LEASE_S):
+                    row = row | {'state': 'unknown', 'detail': 'rebuild_worker_replaced_without_result',
+                                 'returned_worker_id': owner['worker_id'], 'reported_at': now}
+                    self.store.audit('desktop-admin', 'desktop.admin.rebuild_result_missing', row['job_id'],
+                        {'request_id': rid, 'installation': authority, 'old_worker': wid,
+                         'current_worker': owner['worker_id'], 'completion_verified': False})
         if row['state'] in ('requested', 'service_returned') and now - row.get('reported_at', now) > RETURN_S:
             row = row | {'state': 'unknown', 'detail': 'worker_return_not_confirmed'}
         self.store.put('desktop_admin', key, row)
