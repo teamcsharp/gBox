@@ -196,8 +196,26 @@ PiP intent, and automatic native presentation could cancel its retry as if the
 operator had navigated. The follow-up keeps explicit pinned PiP intent through
 that gap and defers automatic full-app presentation while restoring it. Normal
 unselected offline views still stop retrying; explicit navigation still wins.
-96 client refresh/compact/stream picker/MercMode UI tests pass. Activation and
-a final local PiP frame remain to be recorded for this renderer-only follow-up.
+96 client refresh/compact/stream picker/MercMode UI tests pass. `37eebf22` is
+merged, assimilated locally and deployed to both hosts. One owned-window F5
+at1793358336.721 loaded the renderer without restarting PID44952. Dispatch
+`6d4c5a17bf6c448c9418532c7a4b12fa` selected the same local session; saved view
+at1793358359.141 confirms compact=true. The final frame
+`.scratch-merc-20261028/i9-pinned-autoplay-final-20261030.jpg` visibly shows
+Merc3D gameplay, score300 and54.5seconds left, inside the1031x580 PiP. No further
+emulator restart was induced just to test the offline gap; its regression is
+covered by the UI tests. The temporary user-interactive refresh tasks removed
+themselves; the paired recovery controller remains installed.
+
+The100-sample native receipt
+`.scratch-merc-20261028/i9-merc3d-trigger-retry-20261030.receipt.json` includes
+five `cMerceStageFailedState` observations, then mission/character selection,
+`cMerceStageStartState`, and fresh gameplay on the same0x0101. The persisted
+cursor remained[1,1,21]. Autoplay continuity/retry is verified, successful
+mission1-2 clearance is not. The final visible HUD shows a pistol with19/20;
+do not assume the requested unlimited-supply/rapid-fire native mods for RE5/6
+are implemented for Merc3D. Its aim-ray reader is still absent, so the current
+close-facing firing fallback does not prove wall occlusion or vertical aim.
 
 ## Earlier merged work
 
