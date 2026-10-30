@@ -429,17 +429,16 @@ def brain(snap_guest):
     return R.Bot(stats={}, clock=lambda: clock[0]), clock, R.snapshot(snap_guest)
 
 
-def test_operator_flash_reaches_throw_controller_through_full_tick():
+def test_legacy_flash_directive_cannot_substitute_an_inventory_throw():
     from gbox.mercs import directives as D
     bot, clock, snap = brain(round_guest(enemies=()))
     snap["player"].update(equipped=0, nades={R.NADE_TYPES["flash"]: (11, 20)})
     D.apply_to_stats(bot.stats, D.post("test-re6-flash-routing", "flashbang"))
     run(bot, snap, clock, 1)
-    # Controller acceptance only: no synthetic projectile/detonation claim.
-    assert bot.nade is not None and bot.nade["kind"] == "flash"
-    assert bot.stats.get("emergency_flashes") == 1
+    assert bot.nade is None
+    assert not bot.stats.get("emergency_flashes")
     run(bot, snap, clock, 2)
-    assert bot.stats.get("emergency_flashes") == 1
+    assert not bot.stats.get("emergency_flashes")
 
 
 @pytest.mark.parametrize("command", ["next_area", "explore"])

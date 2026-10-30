@@ -15,6 +15,7 @@
     { op: "infinite_stamina", label: "Infinite stamina (combat gauge)", field: "infinite_stamina" },
     { op: "infinite_grenades", label: "Infinite grenades and remote bombs", field: "infinite_grenades" },
     { op: "auto_qte", label: "The game's QTE assist", field: "auto_qte" },
+    { op: "auto_qte_ram", label: "Native grab escape", field: "auto_qte_ram" },
     { op: "kill_time", label: "Time added per kill", field: "kill_time_on" },
   ];
   const MULTIPLIERS = [

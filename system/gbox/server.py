@@ -2269,6 +2269,10 @@ def create_app(config: Config) -> FastAPI:
               "image/webp" if head[8:12] == b"WEBP" else "image/svg+xml" if head.lstrip().startswith(b"<") else "image/jpeg")
         return FileResponse(f, media_type=mt, headers={"cache-control": "max-age=604800"})
 
+    @app.get("/mercs-live.html")
+    def mercs_live_page():
+        return FileResponse(WEB.parent / "mercs-live.html", media_type="text/html", headers={"cache-control":"no-cache"})
+
     @app.get("/viz/{path:path}")
     def viz(path: str):
         """Visualizer modules (clients/web/viz): static, no secrets, served like the shell."""

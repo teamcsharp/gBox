@@ -1268,6 +1268,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/re5-modifiers.js"></script>
 <script src="../web/viz/re4-modifiers.js"></script>
 <script src="../web/viz/re6-modifiers.js"></script>
+<script src="../web/viz/stream-interventions.js"></script>
 <script src="../web/viz/mercmode.js"></script>
 <script src="../web/viz/mercmode-transition.js"></script>
 <script src="../web/viz/rebuild-panel.js"></script>
@@ -1276,7 +1277,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/session-continuity.js"></script>
 <script src="../web/viz/autoplay-coach.js"></script>
 <script src="compact-coach.js"></script>
-<script src="bot-logic-sidebar.js"></script>
+<script src="../web/viz/bot-logic-sidebar.js"></script>
 <script src="client-refresh.js"></script>
 <script src="guest-state.js"></script>
 <script>
@@ -1296,7 +1297,10 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact #taskpanel { top:36px; right:8px; width:calc(100vw - 16px); height:calc(100vh - 44px); max-height:none; }
+  body.gbox-compact #taskpanel .th { flex-wrap:wrap; padding:6px; }
+  body.gbox-compact #reqform { position:fixed; inset:36px 8px 8px; z-index:80; overflow:auto; background:var(--bg); }
   /* #reconnect.f5: an F5 pressed over the PiP shows its steps there too, packed into the small window */
   body.gbox-compact #reconnect .rc-head { top:8px; left:12px; right:12px; font-size:13px; }
   body.gbox-compact #reconnect .rc-flow { top:36px; left:12px; right:12px; bottom:92px; gap:6px 8px; overflow:auto; }
@@ -1569,7 +1573,7 @@ document.body.insertAdjacentHTML("beforeend", `<div id="taskpanel"><div class="t
   <div class="tk-tabs" role="tablist" aria-label="Task view"><button type="button" id="tk-devices-tab" role="tab" aria-selected="true" aria-controls="tk-devices">Device work</button>
   <button type="button" id="tk-visual-tab" role="tab" aria-selected="false" aria-controls="tk-visual">Network</button>
   <button type="button" id="tk-technical-tab" role="tab" aria-selected="false" aria-controls="tk-technical">Technical</button></div>
-  <span class="mut" id="tk-at"></span><button class="act" id="tk-close">Close</button></div>
+  <span class="mut" id="tk-at"></span><button class="act" id="tk-new">New task</button><button class="act" id="tk-close">Close</button></div>
   <div id="tk-devices" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-devices-tab"></div>
   <div id="tk-visual" class="tk-tab-page" role="tabpanel" aria-labelledby="tk-visual-tab" hidden>
     <div class="tkv-head"><div><div class="tkv-kicker">Live task network</div><h2>Work in motion</h2><p>Follow each run from active work to its result.</p></div>
@@ -2477,6 +2481,7 @@ $("#taskpanel").addEventListener("pointerdown", () => { TK.pointerDown = Date.no
 for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { TK.pointerDown = 0; }, true);
 $("#taskpanel").addEventListener("scroll", () => { TK.scrolledAt = Date.now(); }, true);
 $("#tk-close").onclick = () => { $("#taskpanel").classList.remove("on"); clearInterval(TK.t); TK.deviceView?.setActive(false); TK.graph?.stop(); TK.graph = null; };
+$("#tk-new").onclick = () => $("#reqnew").click();
 $("#tk-body").onclick = async e => {
   const resolution = e.target.closest("[data-resolution-evidence]");
   if (resolution) {
@@ -3262,7 +3267,7 @@ const NEWREQ = { att: [] };
 $("#reqnew").onclick = () => {
   let f = $("#reqform");
   if (f) { f.remove(); return; }
-  $("#reqnew").closest(".bar").insertAdjacentHTML("afterend", `<div id="reqform" class="req open-thread" style="padding:12px;margin:10px 0">
+  (COMPACT.on ? document.body : $("#requests")).insertAdjacentHTML("afterbegin", `<div id="reqform" class="req open-thread" role="dialog" aria-label="New task" style="padding:12px;margin:10px 0">
     <input id="rq-title" placeholder="What should be fixed or built? (title)" style="width:100%;margin-bottom:6px">
     <textarea id="rq-body" rows="5" placeholder="Details: the game, what you did, what happened, what you expected. Ctrl+V or drop images here." style="width:100%"></textarea>
     <div class="att" id="rq-att"></div>
@@ -3780,7 +3785,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown, #pad-takeover:not([hidden])" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -4004,8 +4009,11 @@ const compactController = GBoxCompactGame.create({
       controls.querySelector('[data-flash]').onclick = async () => {
         const sid = COMPACT.sid;
         if (!sid) { toast('No game in the PiP.'); return; }
-        const cmd = await gbox.api(`/api/sessions/${encodeURIComponent(sid)}/directive`, { command: 'flashbang' });
-        toast(cmd?.ok ? 'EMERGENCY FLASHBANG: detonating a flash at your position NOW.' : `Not sent: ${cmd?.error || 'unknown error'}`);
+        controls.interventions ||= GBoxStreamInterventions.create({api:async (path,body) => {
+          const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
+        }, notify:message=>toast(message)});
+        try { await controls.interventions.flash(sid); }
+        catch(error) { toast(`Flashbang unavailable: ${error.message}`); }
       };
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
@@ -4356,11 +4364,11 @@ gbox.onCompactView?.(value => compactController.changed(value));
 // panel, a menu or a pop-up inside it (operator 2026-10-28: "If I double click or triple click inside of a panel or a pop up
 // or a menu inside of the picture in picture mode, do not exit picture in picture mode")
 const COMPACT_PANELS = '#pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
-  + '#rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
+  + '#taskpanel, #reqform, #task-evidence, #taskviz, #tkv-media, #rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
 addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
 addEventListener('resize', () => { if (COMPACT.on) requestAnimationFrame(() => embedTick()); });
-addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
+addEventListener('keydown', event => { if (COMPACT.on && event.key === 'Escape' && $('#pipmenu')?.style.display !== 'block' && !event.target?.closest?.(COMPACT_PANELS) && !$('#taskpanel.on, #reqform') && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); compactRestore().catch(error => toast(error.message)); } });
 setInterval(() => {
   if (!COMPACT.on || COMPACT.local) return;
   const image = $('#compact-stream');
@@ -4492,6 +4500,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
+                 ["tasks", "Tasks: active work and new requests"],
                  ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
                  ["fixgame", "⟳ Report & fix (relaunch this game)"],
                  // "⟳ Rebuild & relaunch <PC>": update that PC's code + packages, self-check, restart its worker and app (gbox/node_rebuild.py)
@@ -4696,6 +4705,7 @@ async function gameAction(a) {
     }catch(error){toast(error.message);}return;
   }
   try {
+    if(a==='tasks'){if(!$('#taskpanel').classList.contains('on'))$('#tb-tasks').click();return;}
     if(a==='mercs-map'||a==='mercs-review')return await openMercsWindow(a==='mercs-map'?'map':'reviewer');
     if (a.startsWith("bot:")) return botDemoInView(EMB.game, a.slice(4));   // "🤖 Bot demo on <PC>" for this game
     if (a.startsWith("rebuild:")) return rebuildNode(a.slice(8));           // "⟳ Rebuild & relaunch <PC>"

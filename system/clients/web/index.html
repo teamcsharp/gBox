@@ -320,6 +320,8 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/re5-modifiers.js"></script>
 <script src="/viz/re4-modifiers.js"></script>
 <script src="/viz/re6-modifiers.js"></script>
+<script src="/viz/bot-logic-sidebar.js"></script>
+<script src="/viz/stream-interventions.js"></script>
 <script src="/viz/re4-spawn.js"></script>
 <script src="/viz/ram-inspector.js"></script>
 <script src="/viz/game-assets.js"></script>
@@ -2379,6 +2381,8 @@ sessionsView.after = (sid, mode) => {
   }
   if (!head || head.dataset.state !== "running") { playing = null; pip(); followWatch(sid); return; }
   sid = head.dataset.sid; playing = sid;
+  head.interventions?.dispose();
+  head.interventions = window.GBoxStreamInterventions?.mount(head, {sid, api});
   followNote(sid, head);
   // notes for the autoplay; a game on this PC (a bot demo here) gets the keyboard back once a note is sent: the bot
   // never presses keys while the coach box (or any text field) has them (gbox.adapters.polite_verdict)

@@ -165,7 +165,7 @@ test('viewer map follows replacement lineage while preserving server and live se
   try{await f.control.ready;await settle();
     assert.deepEqual(f.maps,[sid,next]);assert.equal(f.node('sessions').value,next);
     assert.equal(f.node('authority').textContent,'http://spark:8765');
-    assert.deepEqual(f.requests,['/api/sessions?include_ended=false','/api/sessions?include_ended=true&limit=60']);
+    assert.deepEqual(f.requests,['/api/sessions?include_ended=false','/api/mercmode','/api/sessions?include_ended=true&limit=60']);
   }finally{f.control.dispose();}
 });
 
@@ -174,9 +174,9 @@ test('manual session selection wins a pending lineage request without another ma
   const live=id=>({session_id:id,game_id:'RE5',state:'running',title:'RE5'});
   f.setRead(async()=>[live(sid),live(manual)]);
   try{await f.control.ready;await settle();let resolve;
-    assert.deepEqual(f.requests,['/api/sessions?include_ended=false'],'live selection never reads history');
+    assert.deepEqual(f.requests,['/api/sessions?include_ended=false','/api/mercmode'],'live selection checks rotation without reading history');
     const history=new Promise(yes=>resolve=yes);
-    f.setRead(async p=>p==='/api/sessions?include_ended=false'?[live(next),live(manual)]:history);
+    f.setRead(async p=>p==='/api/sessions?include_ended=false'?[live(next),live(manual)]:p==='/api/mercmode'?{hosts:[]}:history);
     const poll=f.control.sessions();await settle();
     f.node('sessions').value=manual;f.node('sessions').onchange();
     resolve([{session_id:sid,game_id:'RE5',state:'ended',replaced_by:next}]);await poll;

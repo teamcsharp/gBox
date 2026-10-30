@@ -1213,6 +1213,10 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
 
 
 def run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE6Switch | None = None, **_extra) -> dict:
+    if op in ("flash_now", "instant_flashbang"):
+        # Do not hold the continuous-mod lock while waiting for a game frame.
+        from .re6_switch_native import flash_now
+        return flash_now(ad)
     with _LOCK:
         g = g or RE6Switch(ad)
         op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")

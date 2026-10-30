@@ -32,6 +32,8 @@ def mod_tool_for(session: dict, override: str | None = None) -> str:
             raise ValueError(f"tool must be one of {', '.join(MOD_TOOLS)}; for Resident Evil 6 use job_re6")
         return override
     gid, title = session.get("game_id") or "", (session.get("title") or "").lower()
+    if gid == "115f9cdbba115432" or (session.get("detail") or {}).get("title_id") == "01002A000CD48000":
+        return "re5_mods"  # the shared live-mod job routes this exact title to RE6 Switch
     for name, spec in MOD_TOOLS.items():
         if gid in spec["game_ids"] or re.search(spec["title_re"], title):
             return name
@@ -159,7 +161,35 @@ RE4_OPS = {
 CATALOG = {"re5_mods": {"fields": RE5_FIELDS, "ops": RE5_OPS}, "re_mods": {"fields": RE4_FIELDS, "ops": RE4_OPS}}
 
 
-def describe_ops(tool: str) -> dict:
+RE6_FIELDS = RE5_FIELDS | {"seconds":"number", "nades":"bool", "flash":"bool", "aim_lock":"bool",
+                          "bomb_drop":"bool", "values":"object: bot behavior settings", "reset":"bool or list of keys"}
+RE6_OPS = {
+    "status": ({}, "Read current applied modifiers and inventory"),
+    "weapon_list": ({}, "List this game's weapons and which are loaded"),
+    "live_weapon": ({"weapon":"integer weapon ID"}, "Select a loaded weapon now; unavailable resources are reported"),
+    "bot_logic": ({"values":"object", "reset":"bool or list", "weapon":"integer ID"}, "Read or adjust active bot behavior settings"),
+    "bot_options": ({k:"bool" for k in ("nades","flash","aim_lock","bomb_drop")}, "Adjust combat behavior switches"),
+    **{op:({"multiplier":"number", "on":"bool"}, "Adjust " + op.replace('_',' ')) for op in
+       ("fire_rate","quick_attack","magnum_speed","throw_speed","down_fire")},
+    **{op:({"on":"bool"}, "Toggle " + op.replace('_',' ')) for op in
+       ("infinite_ammo","infinite_tablets","infinite_stamina","infinite_grenades","auto_qte","auto_qte_ram")},
+    "kill_time": ({"seconds":"number", "on":"bool"}, "Adjust time awarded per kill"),
+    "add_time": ({"seconds":"number"}, "Add time to the active round"),
+    "set_time": ({"seconds":"number"}, "Set the active round clock"),
+}
+
+
+def is_re6_switch(session):
+    return bool(session and (session.get("game_id")=="115f9cdbba115432" or
+                (session.get("detail") or {}).get("title_id")=="01002A000CD48000"))
+
+
+def describe_ops(tool: str, session=None) -> dict:
+    if is_re6_switch(session):
+        return {"tool":"re5_mods", "game":"Resident Evil 6 (Switch)", "fields":RE6_FIELDS,
+                "ops":{name:{"params":params,"effect":effect,"when":NOW,"retained":False}
+                       for name,(params,effect) in RE6_OPS.items()},
+                "note":"Read status for applied values. Use game_intervention flash_now for durable per-click native flashes."}
     spec, cat = MOD_TOOLS[tool], CATALOG[tool]
     return {"tool": tool, "game": spec["game"], "fields": cat["fields"],
             "ops": {name: {"params": op["params"], "effect": op["effect"], "when": op["when"], "retained": bool(op.get("retained"))}
@@ -168,9 +198,11 @@ def describe_ops(tool: str) -> dict:
                     "instead of their defaults (bot_strategy). Every write is read back; the job's output.result carries verified."}
 
 
-def mod_input(tool: str, session_id: str, op: str, params: dict | None) -> dict:
+def mod_input(tool: str, session_id: str, op: str, params: dict | None, session=None) -> dict:
     """The re5_mods / re_mods job input, with unknown fields rejected (the tool's input model drops them silently)."""
     cat = CATALOG[tool]
+    if is_re6_switch(session):
+        cat = {"fields":RE6_FIELDS, "ops":{name:{"params":value[0]} for name,value in RE6_OPS.items()}}
     op = str(op or "").strip().lower().replace(" ", "_").replace("-", "_")
     if not op:
         raise ValueError("op is required; game_mod_ops lists them")
