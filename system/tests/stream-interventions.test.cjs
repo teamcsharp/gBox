@@ -34,3 +34,11 @@ test('unavailable request rejects without claiming an effect',async()=>{
   const notes=[];const c=create({api:async()=>{throw Error('unsupported title');},notify:s=>notes.push(s),uuid:()=> 'id'});
   await assert.rejects(c.flash('session'),/unsupported/);assert.deepEqual(notes,[]);c.dispose();
 });
+
+test('weapon choice uses the same durable receipts and never substitutes a flash',async()=>{
+  const posts=[],notes=[];const c=create({uuid:()=> 'weapon-id',schedule:()=>1,cancel:()=>{},notify:s=>notes.push(s),
+    api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
+      return {requests:[{id:'weapon-id',op:'equip_primary',state:'confirmed',result:{weapon:'Hydra'}}]};}});
+  await c.equipPrimary('selected-session',25);assert.deepEqual(posts,[{op:'equip_primary',request_id:'weapon-id',args:{item:25}}]);
+  assert.deepEqual(notes,[]);await c.poll();assert.match(notes[0],/Hydra equipped.*two minutes/);c.dispose();
+});

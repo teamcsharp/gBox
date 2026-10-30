@@ -26,7 +26,7 @@ not delivered production hooks.
 - PR1579 corrected critical-health escape/death accounting; 1580 corrected
   command consumption. Request6121's death-accounting finding is assimilated.
 - PR1581 added native attachment of already-created RE5/RE6 inventory weapons.
-  Live attachment was measured; arbitrary weapon creation remains unfinished.
+  Live attachment was measured; full arbitrary-weapon acceptance remains unfinished.
 - PR1582 moved visible PiP geometry ahead of slow caption/guest work. PR1584
   reduced guest-state polling contention. Actual desktop transition latency is
   unmeasured because the computer-use runtime failed twice with missing kernel.js.
@@ -45,6 +45,14 @@ not delivered production hooks.
   advertising the button. Both are merged, assimilated locally and deployed.
   See [RE5 native evidence](research/re5-native-flash.md) and
   [RE6 native evidence](research/re6-native-flash.md).
+- PR1602 (`7954c1eb4fdaa3dee27cc88b6627bcf50788cf5f`) added native RE5
+  weapon construction/commit helpers and the24-record inventory reader. It is
+  merged and deployed with a fresh emulator. A live Hydra was constructed,
+  equipped at grid0 in51.7ms and observed in firing motion; no enemy health
+  reduction was observed in that short trial. See
+  [weapon evidence](research/re5-native-weapon-construction.md). The follow-on
+  viewer/MCP selector and120-second primary-lock policy have automated tests;
+  live queue/lock and other weapon families still need acceptance.
 
 RE5 deployed API acceptance before1598: session
 `5cb6330c56514413-079bf401635a4f94`, PID1584702, birth1793342305.54,
@@ -80,11 +88,13 @@ and `lan-stream-intervention-20261030.json`.
 
 ## Interfaces already available
 
-`POST /api/sessions/{sid}/interventions` takes `op: flash_now` and a fresh
+`POST /api/sessions/{sid}/interventions` takes `op: flash_now` or
+`op: equip_primary, args: {item: <catalogue low-byte ID>}` and a fresh
 UUID `request_id` for each click. GET returns capabilities and receipts.
 Only a verified native result is confirmed; queued is not success. Lost/expired
 requests never replay into a later player life. MCP `game_intervention` shares
-this queue; `game_mod_ops`/`game_mod` expose supported active mods.
+this queue (weapon item is a top-level MCP argument); status.options.weapons
+lists offered choices. `game_mod_ops`/`game_mod` expose supported active mods.
 
 PiP/web viewer and map share `clients/web/viz/stream-interventions.js` and the
 live controls sidebar. Browser tests verified distinct clicks and setting
@@ -117,8 +127,11 @@ a one-hour git-pull timeout; requestaa3ab08d3f494037b19d2d6b509ca4cb did not ins
 the supervisor. `local_window:true,viewers:0` does NOT prove PiP containment.
 RE4 VR/Refract runtime `D:\gBox\refract` is not ready, so the requested two-title
 five-match loop is unfinished. SSH keys, SMB and DCOM credentials were rejected;
-WinRM/RDP/local API unreachable. An async question asks for an existing
-authenticated i9 admin connection. No answer yet; authorization already exists.
+WinRM/RDP/local API unreachable. The operator answered that they relaunched
+the app and there was no special login. At1793348658 the i9 had not returned:
+last heartbeat1793348290, current_run null. Recheck the existing GBox connection
+before requesting access again; authorization already exists. A port probe
+after that reply still found22/135/445 reachable and5985/5986/3389/18765 unavailable.
 
 ## Ticket acceptance and next work
 

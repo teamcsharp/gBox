@@ -13,6 +13,7 @@ import uuid
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
+OPERATIONS = {"flash_now", "equip_primary"}
 
 
 class Queue:
@@ -55,12 +56,17 @@ class Queue:
         def view(d, now):
             return {"session_id": sid, "available": now - d.get("seen", 0) <= FRESH,
                     "capabilities": d["capabilities"], "reason": d.get("reason", "worker not connected"),
+                    "options": d.get("options", {}),
                     "requests": [{k:v for k,v in r.items() if k != "claim"} for r in d["rows"]]}
         return self._change(sid, view)
 
-    def post(self, sid, op, request_id, source):
-        if op != "flash_now":
+    def post(self, sid, op, request_id, source, args=None):
+        if op not in OPERATIONS:
             raise ValueError("unsupported intervention")
+        args = {} if args is None else args
+        if not isinstance(args, dict) or (op == 'flash_now' and args) or (op == 'equip_primary' and
+                (set(args) != {'item'} or type(args['item']) is not int or not 1 <= args['item'] <= 255)):
+            raise ValueError('invalid intervention arguments')
         try:
             request_id = str(uuid.UUID(request_id))
         except (ValueError, AttributeError):
@@ -71,14 +77,17 @@ class Queue:
                 (KIND + "_id", sid + ":" + request_id)).fetchone()
             old = json.loads(saved[0]) if saved else None
             if old:
-                if old["op"] != op:
+                if old["op"] != op or old.get('args', {}) != args:
                     raise ValueError("request_id already names another operation")
                 return {k:v for k,v in old.items() if k != "claim"}
             if now - d.get("seen", 0) > FRESH or op not in d["capabilities"]:
                 raise ValueError(d.get("reason") or "native intervention is unavailable")
+            if op == 'equip_primary' and args['item'] not in {
+                    w['item'] for w in d.get('options', {}).get('weapons', [])}:
+                raise ValueError('weapon is not offered by this session')
             if sum(r["state"] in ("queued", "claimed") for r in d["rows"]) >= MAX_PENDING:
                 raise ValueError("intervention queue is full")
-            row = {"id": request_id, "op": op, "source": source, "at": now, "expires": now + TTL,
+            row = {"id": request_id, "op": op, "args": dict(args), "source": source, "at": now, "expires": now + TTL,
                    "epoch": d["epoch"], "state": "queued"}
             d["rows"].append(row)
             self.store.db.execute("INSERT INTO docs VALUES(?,?,?)",
@@ -89,10 +98,11 @@ class Queue:
             return dict(row)
         return self._change(sid, add)
 
-    def claim(self, sid, epoch, capabilities, reason=""):
+    def claim(self, sid, epoch, capabilities, reason="", options=None):
+        options = options or {}
         def take(d, now):
-            if epoch != d["epoch"] or capabilities != d["capabilities"] or now - d.get("seen", 0) >= 1:
-                d.update(epoch=epoch, capabilities=capabilities, seen=now, reason=reason)
+            if epoch != d["epoch"] or capabilities != d["capabilities"] or options != d.get('options', {}) or now - d.get("seen", 0) >= 1:
+                d.update(epoch=epoch, capabilities=capabilities, seen=now, reason=reason, options=options)
             out = []
             for r in d["rows"]:
                 if r["state"] != "queued":
@@ -154,7 +164,7 @@ def install(app, store, auth):
     def post(sid: str, body: dict, actor=Depends(auth)):
         live(sid)
         try:
-            row = queue.post(sid, body.get("op"), body.get("request_id"), str(actor))
+            row = queue.post(sid, body.get("op"), body.get("request_id"), str(actor), body.get('args'))
         except ValueError as e:
             raise HTTPException(409, str(e)) from None
         return {"request": row}
@@ -163,10 +173,17 @@ def install(app, store, auth):
     def claim(sid: str, body: dict, actor=Depends(auth)):
         live(sid)
         epoch, caps = body.get("epoch"), body.get("capabilities")
-        if not isinstance(epoch, str) or len(epoch) > 256 or not isinstance(caps, list) or any(c != "flash_now" for c in caps):
+        if not isinstance(epoch, str) or len(epoch) > 256 or not isinstance(caps, list) or any(c not in OPERATIONS for c in caps):
             raise HTTPException(422, "invalid worker capability report")
+        options = body.get('options') or {}
+        weapons = options.get('weapons', []) if isinstance(options, dict) else None
+        if not isinstance(weapons, list) or len(weapons) > 64 or any(not isinstance(w, dict) or
+                type(w.get('item')) is not int or not 1 <= w['item'] <= 255 or
+                not isinstance(w.get('weapon'), str) or len(w['weapon']) > 80 for w in weapons):
+            raise HTTPException(422, 'invalid weapon choices')
+        options = {'weapons': weapons} if weapons else {}
         reason = str(body.get("reason") or "")[:300]
-        return {"requests": queue.claim(sid, epoch, caps, reason)}
+        return {"requests": queue.claim(sid, epoch, caps, reason, options)}
 
     @app.post("/api/sessions/{sid}/interventions/{rid}/result")
     def finish(sid: str, rid: str, body: dict, actor=Depends(auth)):
@@ -221,7 +238,9 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
             p, generation = ctl.ready()
             stats = stats_of() or {}
             epoch = f"{ctl.pid}:{ctl.identity[1]}:{p}:{generation}:{stats.get('round_evidence_id', '')}"
-            return {"epoch": epoch, "capabilities": ["flash_now"], "reason": ""}
+            choices = getattr(ctl, 'weapon_choices', None)
+            return {"epoch": epoch, "capabilities": ["flash_now"] + (["equip_primary"] if choices else []),
+                    "options": {"weapons": choices()} if choices else {}, "reason": ""}
         except (OSError, ValueError, RuntimeError) as exc:
             return {"epoch": "unavailable", "capabilities": [], "reason": str(exc)[:300]}
 
@@ -248,11 +267,30 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                             result = {"state": "unavailable", "reason": "player changed or request expired"}
                         else:
                             try:
-                                result = ctl.flash()
                                 stats = stats_of()
-                                if stats is not None:
-                                    stats["emergency_flashes"] = stats.get("emergency_flashes", 0) + 1
-                                    stats["native_flash_confirmed_at"] = time.time()
+                                if row['op'] == 'equip_primary':
+                                    from . import primary_weapon
+                                    player, generation = ctl.ready()
+                                    pending = {'id': row['id'], 'player': player, 'generation': generation,
+                                               'until': time.monotonic() + 2.0}
+                                    if stats is None:
+                                        raise N.Unavailable('autoplay state is unavailable')
+                                    stats['native_weapon_pending'] = pending
+                                    try:
+                                        time.sleep(.15)  # The bot releases aim and drains its old equip request.
+                                        if not alive() or row['epoch'] != context()['epoch'] or \
+                                                stats.get('operator_control') or row['expires'] <= time.time():
+                                            raise N.Unavailable('player changed, operator took control, or request expired')
+                                        result = ctl.equip_primary(row['args']['item'], expected=(player, generation))
+                                        primary_weapon.install(ad, result, ctl.pid)
+                                    finally:
+                                        if stats.get('native_weapon_pending') is pending:
+                                            stats.pop('native_weapon_pending', None)
+                                else:
+                                    result = ctl.flash()
+                                    if stats is not None:
+                                        stats["emergency_flashes"] = stats.get("emergency_flashes", 0) + 1
+                                        stats["native_flash_confirmed_at"] = time.time()
                             except Exception as exc:  # a failure does not end worker health or retry the game effect
                                 result = {"state": "uncertain" if isinstance(exc, N.Uncertain) else "failed", "reason": str(exc)[:300]}
                         receipts.append((row["id"], {"claim": row["claim"], "result": result}))
