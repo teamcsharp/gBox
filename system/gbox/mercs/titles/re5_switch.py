@@ -2433,7 +2433,8 @@ class Bot:
         return False
 
     def _aim_away(self, p, live, flat, origin, dot, confirmed, now):
-        """The aim over AWAY_ERR off the nearest threat within THREAT_NEAR_R for AWAY_S: that one, at once."""
+        """The aim over AWAY_ERR off the nearest threat within THREAT_NEAR_R for AWAY_S: that one, at once.
+        A threat within GRAB_THREAT_R is at arm's length: no patience (one tick), he grabs first."""
         px, py, pz = p["pos"]
         near = [e for e in live if flat(e) <= THREAT_NEAR_R and abs(e["pos"][1] - py) <= LEVEL_DY]
         if not near or math.hypot(dot[0] - origin[0], dot[2] - origin[2]) < 1.0:
@@ -2448,7 +2449,7 @@ class Bot:
         dt = min(now - self._away_since, LOOK_STEP_MAX_S) if self._away_since is not None else 0.0
         self.stats["aim_away_s"] = round(self.stats["aim_away_s"] + dt, 2)
         self._away_since = self._away_since or now
-        if now - self._away_since < AWAY_S:
+        if now - self._away_since < AWAY_S and flat(e) >= GRAB_THREAT_R:
             self._away_t = now
             return None
         self.stats["aim_away_fixes"] += 1
