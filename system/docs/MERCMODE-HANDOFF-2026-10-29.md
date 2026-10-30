@@ -2,7 +2,32 @@
 
 Read `MERCMODE-HANDOFF-2026-10-28.md` for standing authorization, machines, API and the complete operator requirements. Do not reuse historical worker/process identities for writes. The current checkpoint below supersedes the historical sections farther down.
 
-## Current checkpoint: 2026-10-30, 00:01 UTC
+## Latest checkpoint: 2026-10-30, 00:49 UTC (October 29 on the operator's PC)
+
+This section supersedes the historical checkpoint below. The full request is **not complete**.
+
+- Main is `c807ea992ea9ff00ff0b41017f42657246a97a91`. PR [1581](https://github.com/teamcsharp/gBox/pull/1581) merged the RE5/RE6 native equipment and rebuild timeout branches listed below. Spark deployed it at 00:07:48 UTC and reported both bot modules reloaded, one active bot resumed in 1.4 seconds. Native attachment trials remain the evidence; normal-round firing/hit acceptance is still outstanding.
+- PR [1582](https://github.com/teamcsharp/gBox/pull/1582), merge `bacd16b04a817fb4cad40b2c380ec7124a1079d8`, moves visible PiP geometry ahead of the slow native caption helper and avoids waiting for/navigating a hidden guest for remote PiP. 38 JS tests passed. Desktop activation is confirmed by the new process below; actual interactive transition timing is unmeasured.
+- PR [1583](https://github.com/teamcsharp/gBox/pull/1583), merge `c807ea992ea9ff00ff0b41017f42657246a97a91`, fixes federated Blender assets: the local clipboard worker fetches from the verified originating server, not its own absent character library. Missing character models return 404 instead of uncaught 500. 50 tests passed, three optional Blender tests skipped. Spark deployed files at 00:30:11 UTC. Distinguish deployed files from already-imported core modules.
+- `fix/desktop-local-startup-20261030`, commit `72844080`, is pushed but **not merged**. It bounds guest-state IPC to 250 ms, coalesces repeated polls, and discards old-frame replies after navigation. 42 guest/PiP tests passed. PR creation was rate-limited at **00:41:45 UTC** (HTTP403 secondary content-creation limit). Back off; do not bypass or repeatedly retry. This is not proof that every streaming UI bottleneck is fixed.
+
+### Local desktop recovered; Blender outcome
+
+The exact idle desktop PID76548 was replaced through the existing scoped recovery function, with no session witnesses and **no game sessions closed**. New desktop PID **75180**, launched about 00:33 UTC, uses the original app path. Its app-owned local service and worker are online: worker **6715c199a4ca459b**, epoch **b69edbadf5d3d08f4bcdf24f7e573381**, same installation authority as below. Supervisor health was connected/running at 00:39 UTC. Recheck identities before mutations. The cause of the prior desktop's missing worker was not established; do not assert it was elevation or a restricted process token (both were checked and ruled out).
+
+Bayman's original local failed job was `7242f1529d0444db`, central `9f5b177c6b314a00`. Source Spark had the model; local `D:\gBox\cache\characters` did not. After PR1583, validation job **dfe446a6330e4d8d**, local **31050080de244769**, reached headless Blender but ended `TimeoutError`. Its headless processes exited; the operator's open Blender was untouched. A separate direct invocation of the SAME `blender_copy.to_blender` then succeeded on the same PC/build: **2 objects, 1 mesh, 7013 triangles, 80 materials, 40 packed textures**, Bayman armature with 15 role mappings. It wrote the actual local `copybuffer.blend`; Ctrl+V is now available. Receipt: `.scratch-merc-20261028/blender-direct-result-20261030.json`. A fresh normal-route validation **ea9c706d18ee4ec2** is pending at this checkpoint. Do not claim the desktop copy flow is consistently fixed until that result is checked.
+
+Blender startup experiments: the exact 4.5.15 LTS build starts headlessly in roughly one second with the worker environment, both with stdin closed and an open pipe. Thus neither inherited PYTHONPATH nor stdin alone reproduced the worker timeout. Do not invent a root cause. Native UI tooling failed to initialize (`kernel.js` missing in Node REPL); no visual UI/paste verification occurred. Direct clipboard creation is verified separately.
+
+### Latest operator requirements still to implement
+
+The flash button must create and immediately detonate a flash **at the player's current position through verified RAM/native hooks**, across all Mercenary titles. Every rapid click must be distinct. No equip/drop/throw-animation substitute. After a confirmed flash, choose a defensive response among quick attacks, mines plus retreat, and grenades. Current code still uses a throw directive, overstates success in its toast, overwrites rapid clicks in `_LATEST`, and can replay a one-shot when a new Reader sees old stats. None of these satisfy the requested native intervention.
+
+Add a weapon icon/dropdown beside flash. User chooses any weapon as the first equipped/main slot for this match, with at least a two-minute no-swap lock and a retained match-long primary preference. Existing native equip only attaches already-created inventory objects; RE6 `live_weapon` schedules unloaded weapons for the NEXT round. Neither is an implementation of arbitrary current-match replacement. Verify resource loading, native object creation, attachment, subsequent usable firing, and match/player identity before publishing success. Preserve emergency item use without losing the chosen primary.
+
+Other open requirements: no wall-facing or wall-running while threatened, responsive tabs/models during streaming, instant PiP entry, reliable local Blender copies, 15-minute live LAN input/stream acceptance, i9 Merc3D/RE4-VR five-match rotation, and survival with native S-or-better rank. Latest read-only sample: RE5 session `8b14a71472484560-86a2f2cb358047af` was playing with hits increasing and 1.92 seconds accumulated wall-push; RE6 `8b14a71472484560-2161a51e76eb4110` was prepared/parked. These are diagnostics, not acceptance. No native all-title flash or arbitrary weapon spawning hook was delivered.
+
+## Historical checkpoint: 2026-10-30, 00:01 UTC
 
 The operator confirmed repeated connection interruptions are in the **GBox desktop app or PiP**. Stability and completed tickets 5972 and 6102 through 6107 remain the current request. Full GBox remote administration, merges and deployment are authorized. Never launch games on JAYBUILTFINALE. Do not claim this entire request is complete.
 
