@@ -3732,6 +3732,11 @@ async function embedTick() {
     // Restoring here also overwrites the saved compact intent before relaunch.
     if (COMPACT.on && COMPACT.local && !mine && r.ok && !pipSelection.preference?.pinned
         && !(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
+    // Saved PiP restoration owns the next selection during a worker gap. An
+    // automatic full-app show here would look like operator navigation to the
+    // checkpoint observer and cancel that intent as soon as the new game starts.
+    if (!COMPACT.on && pipSelection.preference?.pinned && typeof clientRefresh !== 'undefined'
+        && clientRefresh.pending()?.compact) return;
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -4284,12 +4289,15 @@ async function restoreClientView() {
   // a saved game whose PC is offline (#2870; the guest knows from the rows, viz/session-refresh.js) is never reopened or
   // retried every 2 s (operator 2026-10-26: after every reload the app went back into i9-NUC's dead Mercenaries 3D
   // session); the view starts fresh and the reconnect flow shows the MercMode game instead
-  if (restored?.offline?.length) { clientRefresh.done(); toast(`The saved game runs on a PC that is offline (${restored.offline.join(', ')}): its view was not reopened.`, 8000); return; }
+  // An explicitly selected instance may be between worker generations during
+  // recovery. Keep its saved PiP intent until the replacement session appears.
+  const pinnedPip = value.compact && pipSelection.preference?.pinned;
+  if (restored?.offline?.length && !pinnedPip) { clientRefresh.done(); toast(`The saved game runs on a PC that is offline (${restored.offline.join(', ')}): its view was not reopened.`, 8000); return; }
   if (value.compact) {
     try { await compactController.enter({ ...value, preserveGuest: true, restoreNavigation: navigation }); }
     catch (error) {
       if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
-      if (error.offline) { clientRefresh.done(); toast(error.message, 8000); return; }   // an offline PC: no retry loop
+      if (error.offline && !pinnedPip) { clientRefresh.done(); toast(error.message, 8000); return; }   // an unselected offline PC: no retry loop
       // Keep the current window and any held picture during the replacement gap.
       // The retry retains the exact saved selection; it never chooses a newer game.
       if (!restoreClientView.retryAt) toast(error.message + ' Reconnecting your saved view automatically.', 10000);

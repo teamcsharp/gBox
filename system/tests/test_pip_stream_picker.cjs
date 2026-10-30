@@ -95,6 +95,17 @@ for (const pinned of [false,true]) test(`native session replacement preserves pi
   await ctx.embedTick();
   assert.equal(shown.on,pinned); // only an explicit full-app action should close a pinned PiP
 });
+
+test('automatic native presentation waits while an explicit saved PiP is restoring',async()=>{
+  const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
+  const start=html.indexOf('async function embedTick()');
+  const prefix=html.slice(start,html.indexOf('    if (COMPACT.on && !COMPACT.local)',start));
+  const ctx=vm.createContext({EMB:{closed:new Set()},LIVE_SESSIONS:{peek:()=>({ok:true,data:[]})},
+    $:()=>({}),S:{workerName:'i9'},nativeSessionLease:null,COMPACT:{on:false},
+    pipSelection:{preference:{pinned:true}},clientRefresh:{pending:()=>({compact:true})}});
+  vm.runInContext(prefix+'throw Error("Automatic full-app presentation stole saved PiP"); } finally { EMB.busy=false; }}',ctx);
+  await ctx.embedTick();
+});
 test('warm predecessors and handovers never become selectable; offline and starting cards explain their state',()=>{
   const warm={...a,session_id:'parked',warm:true}, predecessor={...a,session_id:'previous'};
   const data=[warm,predecessor,c,{...b,worker_online:false}];
@@ -201,6 +212,22 @@ test('actual saved-view restoration replaces only the expired PiP SID with its s
   vm.runInContext(src,ctx);await ctx.restoreClientView();
   assert.equal(entered.sid,c.session_id);assert.equal(entered.guest.playing,c.session_id);assert.equal(entered.guest.active,'other-view');
   assert.match(guestScript,/spark-two/);assert.equal(value,null);
+});
+
+for (const pinned of [false,true]) test(`saved PiP survives a worker-offline gap only for an explicit instance choice (pin: ${pinned})`,async()=>{
+  const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
+  const src=html.slice(html.indexOf('async function restoreClientView()'),html.indexOf('// Native desktop PiP has no browser gesture restriction.'));
+  let value={sid:'old',compact:true,section:'play',guest:{tab:'Sessions',playing:'old'}},ready=false,entered;
+  const ctx=vm.createContext({clientViewNavigation:0,clientViewRestoring:true,EMB:{},
+    pipSelection:{preference:{sid:'old',worker:'Spark',pinned},target:async()=>ready?c:null},
+    clientRefresh:{pending:()=>value,retain:v=>value=v,remember(){},done:()=>value=null},loadPlay:async()=>{},
+    document:{querySelector:s=>s==='#wv'?{gboxReady:Promise.resolve(),executeJavaScript:async()=>ready?{missing:[]}:{offline:['old']}}:{click(){}}},
+    compactController:{enter:async v=>{if(!ready)throw Object.assign(Error('Worker is replacing its session'),{offline:true});entered=v;}},gbox:{},toast(){}});
+  vm.runInContext(src,ctx);await ctx.restoreClientView();
+  if (!pinned) { assert.equal(value,null);assert.equal(entered,undefined);return; }
+  assert.equal(value.compact,true);assert.equal(value.sid,'old');assert.equal(entered,undefined);
+  ready=true;await ctx.restoreClientView();
+  assert.equal(entered.sid,c.session_id);assert.equal(entered.compact,true);assert.equal(value,null);
 });
 test('old local MercMode lookup cannot override a pending explicit choice on the same instance',async()=>{
   const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');

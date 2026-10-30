@@ -177,7 +177,27 @@ follow-up adds100ms pressed/80ms released phases while preserving aim and
 existing line-of-fire gating. Delayed ticks cannot skip the release phase;
 losing a target releases everything.95 bot/menu/learning/hot-reload tests pass,
 including an edge-triggered gun simulation. Native acceptance is still pending
-for this trigger follow-up; do not equate trigger counters with actual shots.
+for this trigger follow-up at that checkpoint; do not equate trigger counters
+with actual shots. Update: `738218d8` is merged and activated on the i9 via
+request `52124deee22d43a496ab781a4a222213` (recovered in18.4seconds). Current
+worker `cdfec12544294797`, epoch `abaa0150c8f1c1e06517af7eb8491396`, session
+`cdfec12544294797-2dc9eac0cce341fe`, PID44952/birth1793357897.5660648.
+Native observation saw score900, HP1000 and repeated enemy vitality decreases.
+The next attempt nevertheless timed out with score600 and retained mission
+0x0101, then automatically started it again. Repeated firing is improved;
+complete mission clearance is NOT verified. Read-only receipts:
+`.scratch-merc-20261028/i9-merc3d-trigger-first-20261030.receipt.json` and
+i9 `.scratch-i9-merc3d-trigger-acceptance-20261030.receipt.json`.
+
+The recovery retained compact=true initially, but its new-session checkpoint
+at1793357915.147 was compact=false. The previous renderer fix did not cover
+startup restoration: the old worker's temporary offline state discarded saved
+PiP intent, and automatic native presentation could cancel its retry as if the
+operator had navigated. The follow-up keeps explicit pinned PiP intent through
+that gap and defers automatic full-app presentation while restoring it. Normal
+unselected offline views still stop retrying; explicit navigation still wins.
+96 client refresh/compact/stream picker/MercMode UI tests pass. Activation and
+a final local PiP frame remain to be recorded for this renderer-only follow-up.
 
 ## Earlier merged work
 
