@@ -416,7 +416,13 @@ def relaunch(manifest, command, *, processes=None, popen=subprocess.Popen):
         raise RuntimeError('The prior GBox process did not exit')
     unique = {(s['session_id'], identity[0], identity[1]) for s, identity in native}
     closed.extend({'session_id': sid, 'pid': pid, 'created': created} for sid, pid, created in sorted(unique))
-    env = {k: v for k, v in os.environ.items() if k not in ('GBOX_TOKEN', 'GBOX_CLIENT_CONTROL', 'ELECTRON_RUN_AS_NODE')}
+    # The supervisor may use a different Python distribution from the desktop's
+    # installed venv. Inheriting its PYTHONHOME mixes the latter's native modules
+    # with the former's standard library and crashes local control on import.
+    # Electron assigns the checkout's PYTHONPATH to its own Python helpers.
+    excluded = {'GBOX_TOKEN', 'GBOX_CLIENT_CONTROL', 'ELECTRON_RUN_AS_NODE',
+                'PYTHONHOME', 'PYTHONPATH', '__PYVENV_LAUNCHER__'}
+    env = {k: v for k, v in os.environ.items() if k.upper() not in excluded}
     try:
         popen([str(executable), str(app)], cwd=str(app), env=env, stdin=subprocess.DEVNULL,
               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

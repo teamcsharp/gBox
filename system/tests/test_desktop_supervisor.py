@@ -152,14 +152,17 @@ def test_relaunch_closes_only_owned_children_and_uses_fixed_launch_without_contr
     owned = Process(101, manifest['executable'], [manifest['executable'], '--type=renderer'])
     unrelated = Process(102, 'browser.exe', ['browser.exe', 'https://example.test'])
     p = parent(manifest, owned, unrelated)
-    for name in ('GBOX_TOKEN', 'GBOX_CLIENT_CONTROL', 'ELECTRON_RUN_AS_NODE'):
+    excluded = {'GBOX_TOKEN', 'GBOX_CLIENT_CONTROL', 'ELECTRON_RUN_AS_NODE',
+                'PYTHONHOME', 'PYTHONPATH', '__PYVENV_LAUNCHER__'}
+    for name in excluded:
         monkeypatch.setenv(name, 'must-not-inherit')
     result = S.relaunch(manifest, command(executable='attacker.exe', args=['--evil']), processes=[p],
                         popen=lambda args, **kw: launches.append((args, kw)))
     assert p.effects == owned.effects == ['terminate'] and not unrelated.effects and result == []
     args, kwargs = launches[0]
     assert args == [manifest['executable'], manifest['app']] and kwargs['cwd'] == manifest['app']
-    assert not {'GBOX_TOKEN', 'GBOX_CLIENT_CONTROL', 'ELECTRON_RUN_AS_NODE'} & kwargs['env'].keys()
+    assert not excluded & kwargs['env'].keys()
+    assert kwargs['env'].get('PATH') == os.environ.get('PATH')
     assert not kwargs.get('shell') and kwargs['stdin'] == subprocess.DEVNULL
 
 
