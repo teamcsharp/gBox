@@ -70,6 +70,15 @@ read-only native idle check. Manual takeover, round change, request expiry or
 stopping the bot cancels before commit. Engine and native regressions cover
 acknowledgement ordering, timeout without construction and staged-item cleanup.
 
+PR1605 production receipt `re5-primary-production-1793350061006858623.json`
+confirmed a Hydra replacement in961.9ms end to end/59.6ms native on
+PID2621638/birth1793349954.54, player generation1. The bot retained that weapon
+until death, but **never recorded a shot or kill**. Player health fell from1000
+to0 within about60seconds. Round `3e7d3ee26b2f4944beb3816df6eaf53a` is a failure;
+the two-minute lock and usable combat acceptance remain unverified. Main motion
+samples included26 (155),40 (135),0 (129),8 (126),22 (46); no motion29 sample.
+Investigate the combat gate/aim path using the round's decision evidence.
+
 Four native test programs pass, including all20 constructor arguments, refusal
 without live-inventory mutation, grid/storage distinction, capacity, generation,
 owner, resource and idle guards, native cleanup and duplicate rejection.

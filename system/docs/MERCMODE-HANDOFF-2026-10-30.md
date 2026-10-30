@@ -21,6 +21,73 @@ not delivered production hooks.
 
 ## Merged work and evidence
 
+- PR1605 (`993fb7fc`) waits for engine input release before native RE5 weapon
+  commit. Production Hydra replacement confirmed in961.9ms end to end/59.6ms
+  native, without inventory UI. The subsequent round failed: zero shots and
+  kills, then death within about a minute. It does NOT verify a120-second lock
+  or useful combat. Receipt `re5-primary-production-1793350061006858623.json`,
+  round `3e7d3ee26b2f4944beb3816df6eaf53a`. The `primary_weapon` stats dictionary
+  is currently filtered out by tools.TELEMETRY_BLOCKS; a null API field alone
+  does not prove the policy was absent.
+
+## i9 recovery and PiP checkpoint, 2026-10-30 09:34 UTC
+
+**SSH works as `maste@10.89.1.43` with the existing key.** Earlier attempts used
+the wrong account. Do not ask the operator for a password or another walkthrough.
+The installed interpreter is `C:\Users\maste\AppData\Local\gbox\venv\Scripts\python.exe`.
+
+The i9 now runs the tested branch `fix/desktop-authority-reconnect-20261030`,
+head `837263e9ccad40b3f29d503013c1ea8ed14069f6`. It is pushed but **NOT merged**:
+GitHub PR creation returned a secondary content-creation rate limit at09:08
+and09:15 UTC. Root main and Spark remain at993fb7fc; never push root main.
+The repair branch contains:
+
+- `3d3b6484`: replace an expired paired worker transport after30seconds while
+  preserving old native-session evidence. The former1800-second fence caused
+  the i9's observed half-hour blackout. Superseded workers cannot retake control;
+  verified administrative closure still permits immediate replacement.
+- `fa9d53ce`: rebuild children use DEVNULL input. On the i9, a disposable
+  process inheriting a pipe with a pending read hung at startup; the same
+  command with DEVNULL finished in375ms. Seventeen rebuild tests pass,
+  including the real Windows pipe regression.
+- `837263e9`: a fresh local PiP dispatch can supersede an older pinned stream;
+  old dispatches on reload and newer manual selections remain protected.
+  Forty-seven stream-picker/MercMode tests pass. Federation/admin coverage:
+  75passed plus the corrected source/RPC test; its previous expectation also
+  failed unchanged on main.
+
+Independent per-user recovery task `GBox Recovery 2141adfbccd2e0d6` is installed,
+paired with DPAPI, and connected. Actual admin relaunch request
+`d434f8cc21f14419ae47bb64a931aec6` reached **recovered**, with an exact native
+closure witness and new worker `3f1fe9e383e84ed3`, epoch
+`68690c7c095985ddb3685653216f91bd`. Request1793352516.29, returned1793352560.77.
+Controller `537bb37dd9e6aeb7d4fd0921f09dfb0f` lives independently of Electron.
+
+Current Merc3D session at observation:
+`3f1fe9e383e84ed3-112a70229ad0428e`, native PID60544. Its local scheduler is
+autoplaying and has recorded a completed round. Five-match setting is retained.
+The app's saved view records that SID with compact=true. A frame from the i9's
+own `/api/workers/{wid}/desktop/stream?view=app` visually confirms Merc3D inside
+the1031x580 PiP. Local evidence `.scratch-merc-20261028/i9-app-pip-20261030.jpg`.
+The game uses Chromium capture: its native source is at(-16000,-16000), not a
+child HWND. That is expected capture behavior; do not reparent it manually.
+
+Old rebuild `a9ca2b83b9284b5e` was canceled and is failed, not successful.
+Its pip subprocess PID12300/birth1793350706.516010 was identity-checked and
+terminated after cancellation to unblock the old Console implementation.
+Local job `0a5f50f309ef415c` required explicit local cancellation: central
+cancellation did not propagate. Direct SSH git pull succeeded in seconds.
+The new branch is loaded, but a full subsequent production rebuild is untested.
+
+A central PiP dispatch `ad1f447d8dbd41bc` stayed queued behind ongoing work.
+It was canceled before directly applying the same authorized request through
+the i9 loopback API. Local dispatch `cadbcda349e54193a500deab55900419` is applied.
+Central desktop-stream capture timed out; local desktop-stream capture works.
+Follow up both bridge gaps rather than treating SSH as their permanent fix.
+RE4 VR/Refract remains unready; the requested two-title rotation is unfinished.
+
+## Earlier merged work
+
 - PR1576 preserved target-confirmed RE5 crowd fire; 1578 stopped transient
   health-probe errors from revoking advancing streams. Neither proves S rank.
 - PR1579 corrected critical-health escape/death accounting; 1580 corrected
@@ -120,18 +187,19 @@ worker65566a22f858493d,installation772ec831bb3881c8fe5cadbf2ca43f0458ee18131c435
 Zero local game sessions. Do not rerun the recovery script against a healthy app.
 The test venv injects PYTHONHOME; do not use it to launch the desktop.
 
-i9 worker4a3cd49611f447ea resumed Merc3D session
+i9 historical worker4a3cd49611f447ea resumed Merc3D session
 `4a3cd49611f447ea-5a2f6bffab094a45`; two completed native rounds and advancing
 nonblack video were observed. Its old rebuild jobb687b9946e9e4b1d failed after
 a one-hour git-pull timeout; requestaa3ab08d3f494037b19d2d6b509ca4cb did not install
 the supervisor. `local_window:true,viewers:0` does NOT prove PiP containment.
 RE4 VR/Refract runtime `D:\gBox\refract` is not ready, so the requested two-title
-five-match loop is unfinished. SSH keys, SMB and DCOM credentials were rejected;
+five-match loop is unfinished. Earlier SSH attempts, SMB and DCOM credentials were rejected;
 WinRM/RDP/local API unreachable. The operator answered that they relaunched
 the app and there was no special login. At1793348658 the i9 had not returned:
 last heartbeat1793348290, current_run null. Recheck the existing GBox connection
 before requesting access again; authorization already exists. A port probe
 after that reply still found22/135/445 reachable and5985/5986/3389/18765 unavailable.
+This access paragraph is historical; the recovery checkpoint above supersedes it.
 
 ## Ticket acceptance and next work
 
