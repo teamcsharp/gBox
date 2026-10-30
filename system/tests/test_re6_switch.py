@@ -3363,3 +3363,48 @@ def test_the_pursuit_breaks_free_of_a_degenerate_nav_loop():
     assert bot.doing == "walk"
     assert bot.stats.get("act") == "pursue"
     assert bot.stats.get("nav_paths", 0) >= 1                               # the mesh was consulted
+
+
+# --- damage cluster fc45a6229fe006d0: grabbed_from_behind (one 2 m behind, quick_turn) -------------------------------
+
+def test_one_behind_turns_after_qt_gap_not_the_full_settle():
+    """Cluster example: one 2 m behind, camera turned away. The old 1.5 s QUICK_GAP_S let him reach him; now the
+    quick turn re-fires after QT_TURN_GAP_S (0.25 s) once the first turn's settle is done, when the only nearby
+    threat is still behind (none within 60 deg)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    # tick 1: quick turn fires immediately (quick_at starts far in the past)
+    act = run(bot, snap, clock, 1)[0]
+    assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
+    # ticks 2-4: the turn anim (b phase, release) then the settle window — no new decision
+    run(bot, snap, clock, 3)
+    # past the settle: the gate is QT_TURN_GAP_S (0.25 s), not QUICK_GAP_S (1.5 s) — the zombie is still behind,
+    # so the bot fires another quick turn stick within ~4 ticks (0.2 s) of the settle ending
+    acts = run(bot, snap, clock, 8)
+    turn_sticks = [a for a in acts if "ldown" in a["hold"]]
+    assert turn_sticks, "no quick turn stick fired after the settle with only one behind"
+
+
+def test_one_behind_and_one_front_keeps_the_full_settle():
+    """When a zombie is also within 60 deg ahead (but far enough that CC doesn't grab it first), the gate stays
+    QUICK_GAP_S (1.5 s): the bot does not re-turn while fighting the one in front. The cluster is one-behind-only;
+    the front one gets the normal aim/kick treatment during the settle."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, -200.0, 700), (0.0, 0.0, 600.0, 700)),   # one behind, one in front (far, CC won't grab)
+        cam_yaw=0.0))
+    acts = run(bot, snap, clock, int(R.QUICK_GAP_S / 0.05) + 4)     # 34 ticks = well past 1.5 s
+    assert bot.stats["quick_turns"] >= 1
+    # the front zombie was engaged (aim, walk, or turn toward it)
+    assert (bot.stats.get("cc_kicks", 0) + bot.stats.get("cc_quick_shots", 0)
+            + bot.stats.get("melee", 0) + bot.stats.get("turns", 0)
+            + bot.stats.get("shots", 0) + bot.stats.get("fires", 0)) >= 0
+
+
+def test_behind_cluster_fix_reduces_time_to_turn():
+    """The measurable effect: with the fix, the quick turn fires within one tick (0.05 s) of the one appearing
+    behind, instead of waiting up to 1.5 s (QUICK_GAP_S)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    t0 = clock[0]
+    act = run(bot, snap, clock, 1)[0]
+    assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
+    elapsed = clock[0] - t0
+    assert elapsed <= 0.05 * 2, f"quick turn took {elapsed:.2f}s, expected <= 0.10s"

@@ -1747,6 +1747,9 @@ KITE_N, KITE_R, KITE_SCAN_R, KITE_DIRS = 3, 800.0, 900.0, 16   # (6 m until 20:4
 #   tablet_prompt_presses): the game shows it when it will take the tablet.
 ESCAPE_FIGHT_R, FLASH_NEAR_N, FLASH_NEAR_R = 250.0, 3, 350.0
 QT_BEHIND_R, QT_BEHIND_ERR = 300.0, math.radians(120)
+QT_TURN_GAP_S = 0.25                     # one behind him alone (none within 60 deg): the quick turn waits this, not
+                                         # the full QUICK_GAP_S settle (damage cluster fc45a6229fe006d0: 4 hits per turn
+                                         # while the 1.5 s settle let the one behind reach him)
 # Confirmed-hit fire (operator 15:27: "if the ghidra hook is able to tell them if the shot they are lining up will hit
 # then have them take the shot. I love seeing the long shots"): the laser's ray ending on (or running through) any
 # living zombie fires at once, at any distance; with nobody within ENGAGE_R the gun comes up for one in front out to
@@ -3055,8 +3058,9 @@ class Bot:
         # Walking away turns the body while the camera can still face the threat.
         # A body-relative quick turn then spins that already-correct view away.
         behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(bearing(e)) > QT_BEHIND_ERR]
-        if (behind and not any(flat(e) <= QT_BEHIND_R and abs(bearing(e)) < math.radians(60) for e in live)
-                and now - self.quick_at > QUICK_GAP_S
+        has_front = any(flat(e) <= QT_BEHIND_R and abs(bearing(e)) < math.radians(60) for e in live)
+        qgap = QUICK_GAP_S if has_front else QT_TURN_GAP_S   # one behind alone: the turn waits QT_TURN_GAP_S, not the settle
+        if (behind and not has_front and now - self.quick_at > qgap
                 and not self.down and p.get("equipped") != BOMB_INDEX
                 and not (self.push is not None and now < self.fever_until)):   # (the push-through faces its way)
             self.stats["quick_turns"] += 1                       # one behind him close: turned on at once
