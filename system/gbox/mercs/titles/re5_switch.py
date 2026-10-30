@@ -70,7 +70,10 @@ DYING_HP = 1                             # the solo dying state keeps exactly 1 
 # The inventory, in the player (live 2026-10-26): slots of 0x38 from +0x30F0; a slot's +0x08 u32 id word 0x0TII (T 1 a
 # weapon uWpII, 2 ammo, 3 a recovery item), +0x0C rounds (an item's count), +0x10 capacity, +0x1C the grid position,
 # +0x20 1 = in hand. Chris (BSAA) starts No Mercy with a First Aid Spray at grid 7 (the D-pad's down).
-P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 9
+# cItemManager has 24 physical records (native constructor 91FAF0 and
+# inventory-add 1C2EF0). The nine visible grid positions are stored separately
+# in INV_GRID; a visible weapon can occupy a later physical record.
+P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 24
 INV_ID, INV_ROUNDS, INV_CAP, INV_GRID, INV_HAND = 0x08, 0x0C, 0x10, 0x1C, 0x20
 INV_OBJ = 0x30                           # -> the item's own object (heap); the game zeroes it when the slot empties (live
                                          # 2026-10-27, the spray's slot two seconds after its last use)

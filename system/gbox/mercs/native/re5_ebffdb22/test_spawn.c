@@ -17,10 +17,10 @@ static void rotate(U ptr,float *v) {
 static void bridge(U off,U fn) {uint32_t jump[]={0x58000050,0xd61f0200};memcpy((void*)(base+off),jump,8);*(U*)(base+off+8)=fn;}
 int main(int argc,char **argv) {
     assert(argc==2);assert(mmap((void*)base,0x3000000,7,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)==(void*)base);
-    FILE*f=fopen(argv[1],"rb");assert(f);size_t n=fread((void*)(base+0x118e840),1,0x1c0,f);assert(n>0 && n<0x1c0);fclose(f);
+    FILE*f=fopen(argv[1],"rb");assert(f);size_t n=fread((void*)(base+0x118e820),1,0x1c0,f);assert(n>0 && n<0x1c0);fclose(f);
     bridge(0x1c21c0,(U)create);bridge(0xd22880,(U)rotate);*(U*)(base+0x1cf1408)=1234;
     __builtin___clear_cache((char*)base,(char*)base+0x3000000);
-    U(*run)(void*,U)=(void*)(base+0x118e840);
+    U(*run)(void*,U)=(void*)(base+0x118e820);
     memset(player,0xab,sizeof player);*(U*)(player+0x1a00)=34;*(short*)(player+0x1eb8)=1000;
     memcpy(saved,player,sizeof player);
     assert(run(player,34)==(U)unit && calls==1 && rotations==1);

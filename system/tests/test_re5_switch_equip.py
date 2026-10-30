@@ -157,11 +157,12 @@ def test_prompt_and_dead_menu_directions_are_not_equipment_requests():
     assert bridge.targets == []
 
 
-def test_flash_in_center_slot_can_be_requested_natively():
+def test_legacy_flash_directive_does_not_select_an_inventory_grenade():
     bridge = Bridge()
     bot = R.Bot(stats={}, equip=bridge)
     p = {'ptr': 123, 'hp': 1000}
     snap = {'inventory': [{'id': 0x108, 'item': 8, 'grid': 4, 'rounds': 99, 'hand': False}]}
     bot._emergency_flashbang_arm(p, snap, 1)
-    assert bot._flashbang_throw(p, snap, 1) == {'hold': ()}
-    assert bridge.targets == [(4, 0x108)]
+    assert bot._flashbang_throw(p, snap, 1) is None
+    assert bridge.targets == []
+    assert 'Native flash intervention required' in bot.stats['directive_status']

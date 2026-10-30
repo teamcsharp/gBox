@@ -19,9 +19,9 @@ static void reset(void) {
 static void bridge(U off,U fn) {uint32_t jump[]={0x58000050,0xd61f0200};memcpy((void*)(base+off),jump,8);*(U*)(base+off+8)=fn;}
 int main(int argc,char **argv) {
  assert(argc==2);assert(mmap((void*)base,0x3000000,7,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0)==(void*)base);
- FILE*f=fopen(argv[1],"rb");assert(f);size_t n=fread((void*)(base+0x118eb00),1,0x400,f);assert(n>0 && n<0x400);fclose(f);
+ FILE*f=fopen(argv[1],"rb");assert(f);size_t n=fread((void*)(base+0x118e9d0),1,0x400,f);assert(n>0 && n<0x400);fclose(f);
  bridge(0x60d6d0,(U)configure);bridge(0x820e50,(U)update);
- __builtin___clear_cache((char*)base,(char*)base+0x3000000);U(*run)(void*,U,void*,U)=(void*)(base+0x118eb00);
+ __builtin___clear_cache((char*)base,(char*)base+0x3000000);U(*run)(void*,U,void*,U)=(void*)(base+0x118e9d0);
  #define RUN() run(unit,81,player,1)
  reset();assert(RUN()==1 && configured==1 && updated==1 && unit[0x28a0]==1 && !memcmp(saved,player,sizeof player));
  assert(RUN()==0 && configured==1 && updated==1); /* no replay */

@@ -21,8 +21,9 @@ process_identity = N.process_identity
 TEMP, UPDATE, DISPATCH = 0x1A91900, 0x799210, 0x118E740
 CODE = (
     (0x118E600, "call", 540, "a29a07b303da4b53b108e63626e7eda4e95b549dbd2d817b4693e2f036d62443"),
-    (0x118E840, "spawn", 432, "9c0a82e8629f2a865fd1f980cdd8b9f273648b5cc0e372a46e3d587cc78b07d9"),
-    (0x118EB00, "explode", 248, "ca10d26893ce5759481c65d7aa1dd6130381571ede8e4bf969f41b2a3f8b0441"),
+    (0x118E820, "spawn", 432, "3829ed6d9998c556747b70d773ab7ac56c4b28c23a486d37d77da4e5931a0a21"),
+    (0x118E9D0, "explode", 248, "f034000c3b1f9b97571f4d850854463b49c2132fd46a566a5a5ad2ac31a9b890"),
+    (0x118EAC8, "weapons", 1316, "a432bf2ef38b0091cc6431cff91be8300fc501383c72b330cb65b8ce6e639d9f"),
 )
 _CREATE_LOCK = threading.Lock()
 
@@ -184,7 +185,7 @@ class Controller(N.Controller):
             try:
                 self.attach()
                 attached_at = time.monotonic()
-                unit = self.call(0x118E840, self.player, self.generation)
+                unit = self.call(0x118E820, self.player, self.generation)
                 spawned_at = time.monotonic()
                 if not R.ptr_ok(unit):
                     raise Unavailable("native flash allocation refused")
@@ -194,7 +195,7 @@ class Controller(N.Controller):
                     return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
                 self.wait(initialized)
                 initialized_at = time.monotonic()
-                if self.call(0x118EB00, unit, born, self.player, self.generation) != 1:
+                if self.call(0x118E9D0, unit, born, self.player, self.generation) != 1:
                     raise Unavailable("native flash resources or owner are unavailable")
                 self.projectile(unit, born)
                 if self.rd(unit + 0x28A0, 1) != b"\x01":
