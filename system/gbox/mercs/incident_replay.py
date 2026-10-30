@@ -25,7 +25,7 @@ import importlib
 import math
 
 SCHEMA = 'gbox.mercs.incident-replay/1'
-BOTS = {'010018100CD46000': 'gbox.mercs.titles.re5_switch', '01002A000CD48000': 'gbox.mercs.titles.re6_switch'}
+BOTS = {'010018100CD46000': 'gbox.mercs.titles.re5_switch', '01002A000CD48000': 'gbox.mercs.titles.re6_switch', 'BLUS30491': 'gbox.mercs.titles.re5_ps3'}
 HISTORY = 15
 
 
@@ -77,19 +77,130 @@ def bot(title, stats=None, clock=None):
     return module.Bot(stats=stats if stats is not None else {}, clock=clock or (lambda: 0.0))
 
 
+class _MockNavMesh:
+    """Minimal nav mesh for replaying mine-retreat incidents.
+
+    The real nav mesh comes from RAM and cannot be serialised into a fixture.
+    This mock provides just enough surface for Bot._mine_retreat to run:
+    the player is on floor, floor segments are clear, but no safe 600cm
+    retreat route exists (retreat returns None).  That lets the blast-radius
+    guard (the fix under test) trigger instead of the earlier 'no escape mesh'
+    or 'returning to observed floor' branches.
+    """
+
+    learning_sig = 'mock'
+    links = {}  # no mesh links; nav_learning.observe() will not find crossings
+
+    def find(self, pos, floor_only=True, height_slack=60.):
+        return 0  # player is on floor
+
+    def member(self, pos):
+        return 0  # a single mock node
+
+    def floor_segment(self, a, b, blocked_links=None):
+        return True
+
+    def hazard_segment_clear(self, a, b, margins, departing=True):
+        return True
+
+    def retreat(self, start, hazard, min_distance, blocked_links=None, link_penalties=None):
+        return None  # no safe route at this distance
+
+    def route_avoiding_hazards(self, start, goal, hazards, avoid=None, blocked_links=None,
+                               link_penalties=None):
+        return None
+
+    def route(self, start, goal, avoid=None, blocked_links=None, link_penalties=None):
+        return None
+
+    def route_length(self, start, goal, avoid=None, blocked_links=None, link_penalties=None):
+        return None
+
+
 def replay(fx, ticks=10, dt=0.05, stats=None, start=1000.0):
     """The bot's decisions on the recorded snapshot, `ticks` ticks `dt` apart on a fake clock. Each tick gets a fresh
-    copy of the snapshot (the drivers may annotate it). -> {'ticks': [{'t', 'act', 'doing', 'why'}], 'bot', 'stats'}."""
+    copy of the snapshot (the drivers may annotate it). -> {'ticks': [{'t', 'act', 'doing', 'why'}], 'bot', 'stats'}.
+
+    The snapshot's ground_mines (recorded by the Observer) are fed to the bot by
+    patching the title's ground_mines reader so the decision logic sees the same
+    mines that were on the floor at the hit — the replay bot has no RAM reader."""
     if fx.get('schema') != SCHEMA:
         raise ValueError('not an incident replay fixture')
     clock = [float(start)]
     b = bot(fx['title'], stats=dict(stats or {}), clock=lambda: clock[0])
+    # Feed the recorded ground mines to the bot's mine reader.
+    recorded_mines = copy.deepcopy(fx['snapshot'].get('ground_mines') or {})
+    if recorded_mines:
+        from gbox.mercs.titles import re5_mines as mines_mod
+        original_gm = mines_mod.ground_mines
+        mines_mod.ground_mines = lambda memory, _recorded=recorded_mines: dict(_recorded)
+    # Seed the mine-retreat escape state so _mine_retreat runs on the recorded
+    # snapshot rather than falling through to combat.  The fixture's decision
+    # phase tells us the bot was actively leaving its own bomb; replay that
+    # state by initializing the controller's escape record from the recorded
+    # ground mine.  Without this the controller never enters the placement
+    # cycle (action=5 makes it busy) and the blast-radius hold is unreachable.
+    decision_phase = (fx.get('decision') or {}).get('phase')
+    if decision_phase in ('leave_proximity_bomb', 'clear_nearby') and recorded_mines:
+        # Pre-create the mine controller on the bot so we can seed its escape
+        # state before the first tick.  _tick_main would create it lazily, but
+        # we need it now to set escape before the tick flow reaches the
+        # mandatory-escape check.
+        from gbox.mercs.titles import re5_mines as mines_mod
+        if getattr(b, 'mines', None) is None:
+            b.mines = mines_mod.Controller(None, b.stats, getattr(b, '_switch_weapon', lambda *a: None))
+        mines = b.mines
+        ptr, row = next(iter(recorded_mines.items()))
+        mines.escape = {
+            'pos': tuple(row.get('pos', (0, 0, 0))),
+            'actor': ptr,
+            'at': 0.0,
+            'hazards': {ptr: tuple(row.get('pos', (0, 0, 0)))},
+            'route': None,
+            'geometry': None,
+            'detonation_observed': bool(row.get('detonating')),
+            'armed': not row.get('detonating', False),
+        }
+        b.nav_dynamic_mines = dict(recorded_mines)
+        # Mark the round active so observe_round does not fire the round-start
+        # reset, which would clear the seeded mines.escape before the first
+        # tick reaches the mandatory-escape check.
+        b.round_active = True
+    # The fixture records the player state at the moment of damage, when
+    # action=5 (hit callback) is set.  That state makes the mandatory-escape
+    # check true and the bot skip _mine_retreat entirely (the hit callback
+    # retains control until it finishes).  The decision the incident is about
+    # was made in the tick BEFORE the hit, when the player was walking (action
+    # 0 or 1).  Override the action so the replay exercises the retreat logic
+    # rather than the hit-callback hold.
+    if decision_phase in ('leave_proximity_bomb', 'clear_nearby'):
+        player = fx['snapshot'].get('player')
+        if player and player.get('action') in (4, 5):
+            player['action'] = 0
+    # _mine_retreat requires a nav mesh (snap['nav']).  The replay snapshot has
+    # none (the Observer cannot serialise the RAM nav mesh), so inject a minimal
+    # mock that lets the retreat logic run: the player is on floor, no safe
+    # 600cm route exists (retreat returns None), and the blast-radius guard at
+    # the heart of the fix is reached.
+    if decision_phase in ('leave_proximity_bomb', 'clear_nearby'):
+        fx['snapshot']['nav'] = _MockNavMesh()
+    # _tick_main overwrites snap['ground_mines'] with the bot's RAM read
+    # (ground_mines(self.m)), which returns an empty result when memory is
+    # None.  Restore the fixture's ground_mines each tick so the controller
+    # sees the same mines that were on the floor at the hit.
     out = []
-    for _ in range(max(1, int(ticks))):
-        act = b.tick(copy.deepcopy(fx['snapshot']))
-        out.append({'t': round(clock[0] - start, 3), 'act': act, 'doing': getattr(b, 'doing', None),
-                    'why': getattr(b, 'why', None)})
-        clock[0] += dt
+    try:
+        for _ in range(max(1, int(ticks))):
+            snap = copy.deepcopy(fx['snapshot'])
+            if recorded_mines:
+                snap['ground_mines'] = copy.deepcopy(recorded_mines)
+            act = b.tick(snap)
+            out.append({'t': round(clock[0] - start, 3), 'act': act, 'doing': getattr(b, 'doing', None),
+                        'why': getattr(b, 'why', None)})
+            clock[0] += dt
+    finally:
+        if recorded_mines:
+            mines_mod.ground_mines = original_gm
     return {'ticks': out, 'bot': b, 'stats': b.stats}
 
 
