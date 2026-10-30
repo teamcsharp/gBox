@@ -229,6 +229,25 @@ class Controller:
             self.failed = self.recoverable = False
             return True
 
+    def ready(self):
+        """Current intervention epoch without changing the bound call owner."""
+        if process_identity(self.pid) != self.identity or getattr(self.ad, "paused", False):
+            raise Unavailable("emulator process changed or session is paused")
+        if self.failed and not self.recover_completed_call():
+            raise Unavailable("native controller awaits recovery after an uncertain operation")
+        sp = self.q(self.base + R.S_PLAYER)
+        if not R.ptr_ok(sp):
+            raise Unavailable("player manager unavailable")
+        player = self.q(sp + R.P_FIRST)
+        gm = R.game_man(self, self.base)
+        if not R.ptr_ok(player) or not gm or self.w(gm + R.GM_PHASE) != R.PHASE_PLAYING:
+            raise Unavailable("no living player in an active Mercenaries round")
+        if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= 0:
+            raise Unavailable("player is not alive")
+        if 0x115 not in R.inventory_items(self, player):
+            raise Unavailable("flash resources are not loaded for this character")
+        return player, self.w(player + 0x1308)
+
     def flash(self):
         with self.lock:
             if getattr(self.ad, "paused", False):

@@ -183,40 +183,41 @@ def install(app, store, auth):
             raise HTTPException(409, str(e)) from None
 
 
+def native_controller(ad):
+    """One serialized native controller per adapter, shared by UI and MCP."""
+    from .titles import re5_switch_native, re6_switch_native
+    reasons = []
+    for module, attribute in ((re6_switch_native, "_re6_native_flash"),
+                              (re5_switch_native, "_re5_native_flash")):
+        try:
+            with module._CREATE_LOCK:
+                ctl = getattr(ad, attribute, None)
+                if ctl is None:
+                    ctl = module.Controller(ad)
+                    setattr(ad, attribute, ctl)
+                return ctl
+        except (OSError, ValueError, RuntimeError, AttributeError) as exc:
+            reasons.append(str(exc))
+    raise re6_switch_native.Unavailable("; ".join(dict.fromkeys(reasons)))
+
+
 def worker_loop(sid, server, headers, ad, stats_of, alive):
     """Independent of video/input/UI requests; serialized native mailbox owner."""
     import httpx
     from .titles import re6_switch_native as N
     ctl, unsupported = None, ""
     try:
-        ctl = N.Controller(ad)
-        # Reuse the same serialized controller from mods/MCP jobs and reloads.
-        with N._CREATE_LOCK:
-            ctl = getattr(ad, "_re6_native_flash", None) or ctl
-            ad._re6_native_flash = ctl
+        ctl = native_controller(ad)
     except (OSError, ValueError, RuntimeError, AttributeError) as exc:
         unsupported = str(exc)
 
     def context():
         if ctl is None:
             return {"epoch": "unsupported", "capabilities": [], "reason": unsupported}
-        R = N.R
         try:
-            if N.process_identity(ctl.pid) != ctl.identity or getattr(ad, "paused", False):
-                raise N.Unavailable("emulator process changed")
-            if ctl.failed:
-                ctl.recover_completed_call()
-            sp = ctl.q(ctl.base + R.S_PLAYER)
-            p = ctl.q(sp + R.P_FIRST)
-            gm = R.game_man(ctl, ctl.base)
-            import struct
-            hp = struct.unpack("<h", ctl.rd(p + R.P_HP, 2))[0]
-            if not gm or ctl.w(gm + R.GM_PHASE) != R.PHASE_PLAYING or hp <= 0 or ctl.failed:
-                raise N.Unavailable("native flash is unavailable in the current game state")
-            if 0x115 not in R.inventory_items(ctl, p):
-                raise N.Unavailable("flash resources are not loaded for this character")
+            p, generation = ctl.ready()
             stats = stats_of() or {}
-            epoch = f"{ctl.pid}:{ctl.identity[1]}:{p}:{ctl.w(p + 0x1308)}:{stats.get('round_evidence_id', '')}"
+            epoch = f"{ctl.pid}:{ctl.identity[1]}:{p}:{generation}:{stats.get('round_evidence_id', '')}"
             return {"epoch": epoch, "capabilities": ["flash_now"], "reason": ""}
         except (OSError, ValueError, RuntimeError) as exc:
             return {"epoch": "unavailable", "capabilities": [], "reason": str(exc)[:300]}
