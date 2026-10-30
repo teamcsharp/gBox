@@ -251,6 +251,29 @@ def test_crowd_gun_down_fixture_fights_instead_of_escaping():
     assert 'escape' not in doings, f'escaped instead of fighting: {doings}'
 
 
+def test_crowd_held_wiggle_fixture_fights_instead_of_wiggling():
+    """#5078 second gun-down path: HELD in a crowd (motion byte 100, 5 within 2 m) the bot wiggled the gun down.
+
+    The batch's most frequent decision was 'wiggle (break free)' (284 hits) with the gun down while 4+ stood within
+    2 m. The fix: when CROWD_HELD_N+ are on his level within CROWD_HELD_R and he is not dying, the held/stuck branch
+    no longer lowers the gun (no _gun_down, no wiggle) — it falls through to fight/decide (CROWD_FIRE keeps the gun up
+    and firing). Pre-patch this fixture held 'held' every tick and wiggled lleft/lright; post-patch it fires.
+    """
+    fx = json.loads((FIXTURES / 're5_switch_crowd_held_wiggle.json').read_text())
+    result = incident_replay.replay(fx, ticks=15)
+    keys = incident_replay.keys(result)
+    doings = [t['doing'] for t in result['ticks']]
+    # The gun must be raised and firing (crowd fire), never lowered into the held/wiggle branch
+    assert 'zl' in keys, f'gun never raised: {doings}'
+    assert 'zr' in keys, f'never fired: {doings}'
+    assert 'fire' in doings, f'never reached crowd fire: {doings}'
+    # The held/wiggle branch is gone: no wiggle keys, no 'held' doing, no hold counters incremented
+    assert 'held' not in doings, f'still wiggle/held instead of firing: {doings}'
+    assert not (keys & {'lleft', 'lright'}), f'wiggled the stick in a crowd: {keys}'
+    assert result['stats'].get('wiggles', 0) == 0, f'wiggle counter moved: {result["stats"]}'
+    assert result['stats'].get('holds', 0) == 0, f'hold counter moved: {result["stats"]}'
+
+
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
