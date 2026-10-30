@@ -498,6 +498,40 @@ def test_pending_saves_do_not_hide_later_terminal_or_missing_job_receipts(ledger
     assert missing["state"] == "uncertain" and "no automatic resubmission" in missing["detail"]
 
 
+def test_damage_poll_ignores_completed_archive_and_does_not_wait_for_writer(ledger):
+    import threading
+    store, _, _ = ledger
+    for i in range(40):
+        store.put(P.KIND, str(i), {"state": "done", "save_state": {"state": "done"}})
+    store.put(P.KIND, "due", {"state": "pending"})
+    store.put(P.KIND, "later", {"state": "retrying", "next_attempt_at": 200})
+    store.put(P.KIND, "retry", {"state": "retrying", "next_attempt_at": 90})
+    done = threading.Event()
+    observed = []
+    def read():
+        observed.extend(P.pending_events(store, 100))
+        P.settle_states(store)
+        done.set()
+    # A concurrent live command may hold the writer. Background polling must
+    # read the committed snapshot without joining that queue.
+    with store.lock:
+        thread = threading.Thread(target=read)
+        thread.start()
+        completed = done.wait(2)
+    thread.join(2)
+    assert completed and observed == ["due", "retry"]
+    plans = []
+    with store.reading() as db:
+        plans.append(db.execute("EXPLAIN QUERY PLAN SELECT id FROM docs WHERE kind=? "
+            "AND json_extract(body,'$.state') != 'done' "
+            "AND COALESCE(json_extract(body,'$.next_attempt_at'),0)<=? ORDER BY rowid LIMIT 32",
+            (P.KIND, 100)).fetchall())
+        plans.append(db.execute("EXPLAIN QUERY PLAN SELECT body FROM docs WHERE kind=? "
+            "AND json_extract(body,'$.save_state.state')='pending'", (P.KIND,)).fetchall())
+    assert "docs_damage_unmaterialized" in str(plans[0])
+    assert "docs_damage_save_state" in str(plans[1])
+
+
 def test_failed_durable_write_is_not_acknowledged(ledger, monkeypatch):
     store, _, _ = ledger
     monkeypatch.setattr(store, "put_artifact", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))

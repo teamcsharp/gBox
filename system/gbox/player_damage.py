@@ -234,8 +234,8 @@ def materialize(store, create_request, submit, eid):
                           "path can reload the game; no verified non-disruptive gBox-owned automatic damage capture"}
                          if str(session.get("adapter") or "").lower() == "rpcs3"
                          else coaching.plan(store, session)["state"])
-                with store.lock:
-                    busy = store.db.execute("SELECT 1 FROM docs WHERE kind=? AND json_extract(body,'$.session_id')=? "
+                with store.reading() as db:
+                    busy = db.execute("SELECT 1 FROM docs WHERE kind=? AND json_extract(body,'$.session_id')=? "
                         "AND json_extract(body,'$.save_state.state') IN ('pending','uncertain') LIMIT 1",
                         (KIND, row["session_id"])).fetchone() is not None
                 if state.get("tool") and busy:
@@ -264,8 +264,8 @@ def materialize(store, create_request, submit, eid):
 
 
 def settle_states(store):
-    with store.lock:
-        pending = store.db.execute("SELECT d.body FROM docs d LEFT JOIN docs j ON j.kind='job' "
+    with store.reading() as db:
+        pending = db.execute("SELECT d.body FROM docs d LEFT JOIN docs j ON j.kind='job' "
             "AND j.id=json_extract(d.body,'$.save_state.job') WHERE d.kind=? "
             "AND json_extract(d.body,'$.save_state.state')='pending' "
             "AND (j.id IS NULL OR COALESCE(json_extract(j.body,'$.state'),'') NOT IN ('queued','running')) "
@@ -289,17 +289,23 @@ def settle_states(store):
         update_summary(store, row, row["request_id"])
 
 
+def pending_events(store, now):
+    # The completed ledger grows forever. Poll only the partial index of work
+    # still due, without taking the writer lock used by live viewer controls.
+    with store.reading() as db:
+        return [row[0] for row in db.execute(
+            "SELECT id FROM docs WHERE kind=? AND json_extract(body,'$.state') != 'done' "
+            "AND COALESCE(json_extract(body,'$.next_attempt_at'),0)<=? ORDER BY rowid LIMIT 32",
+            (KIND, now)).fetchall()]
+
+
 def routes(app, store, auth, create_request, submit, moment_provider=None):
     wake, stopped = threading.Event(), threading.Event()
 
     def flush():
         while not stopped.is_set():
             try:
-                with store.lock:
-                        pending = store.db.execute("SELECT id FROM docs WHERE kind=? AND json_extract(body,'$.state') != 'done' "
-                            "AND COALESCE(json_extract(body,'$.next_attempt_at'),0)<=? ORDER BY rowid LIMIT 32",
-                            (KIND, time.time())).fetchall()
-                for (eid,) in pending:
+                for eid in pending_events(store, time.time()):
                     if stopped.is_set():
                         return
                     materialize(store, create_request, submit, eid)
