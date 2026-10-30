@@ -47,7 +47,10 @@ MODE_MERCENARIES, MODE_NO_MERCY = 1, 2
 PHASE_PLAYING, PHASE_OVER = 1, 3
 P_FIRST, P_POS, P_ROT, P_HP = 0x30, 0x60, 0x70, 0x1368
 E_COUNT, E_ARRAY, E_POS, E_HP = 0x40, 0x50, 0x60, 0x1368
-MAX_ENEMIES = 64
+# This is a read budget, not a gameplay limit. No Mercy's native sEnemy list
+# exceeded 64 in the owned live round on 2026-10-30 (72 entries, 172/300 kills).
+# Rejecting that whole list made every threat disappear from the bot's view.
+MAX_ENEMIES = 512
 GET_DTI_SLOT, DTI_NAME = 5, 0x8
 
 UNIT_LINES, LINE_STRIDE, UNIT_NEXT, N_LINES = 0x268, 0x30, 0x20, 32
@@ -909,11 +912,18 @@ def snapshot(m) -> dict:
             if (snap["player"].get("bomb") or {}).get("out"):
                 snap["bomb_pos"] = placed_bomb(m, base)
     se = u64(m, base + S_ENEMY)
+    snap["enemy_scan"] = {"complete": False, "reason": "no_manager", "limit": MAX_ENEMIES}
     if ptr_ok(se):
+        scan_error = None
         try:
             n, arr = struct.unpack("<I", m.rd(se + E_COUNT, 4))[0], u64(m, se + E_ARRAY)
         except (ValueError, OSError):
             n, arr = 0, 0
+            scan_error = "unreadable_manager"
+        snap["enemy_scan"] = {"complete": not scan_error and (n == 0 or (ptr_ok(arr) and n <= MAX_ENEMIES)),
+                              "count": n, "limit": MAX_ENEMIES,
+                              "reason": scan_error or ("count_limit" if n > MAX_ENEMIES else
+                                        "invalid_array" if n and not ptr_ok(arr) else None)}
         if ptr_ok(arr) and 0 < n <= MAX_ENEMIES:
             for slot, e in enumerate(struct.unpack(f"<{n}Q", m.rd(arr, 8 * n))):
                 if not ptr_ok(e):

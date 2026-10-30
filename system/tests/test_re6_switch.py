@@ -214,6 +214,26 @@ def test_snapshot_reads_the_measured_fields():
     assert down["up"] is False                                           # the gun down: the dot is not the aim
 
 
+@pytest.mark.parametrize("count", [64, 72, 128, 300])
+def test_no_mercy_crowds_do_not_disappear_above_64(count):
+    enemies = tuple((float(i), 0.0, 250.0, 700) for i in range(count))
+    snap = R.snapshot(round_guest(enemies=enemies))
+    assert len(snap["enemies"]) == count
+    assert snap["enemies"][-1]["pos"][0] == count - 1
+    assert snap["enemy_scan"]["complete"] is True
+    assert snap["enemy_scan"]["count"] == count
+
+
+def test_corrupt_enemy_count_is_bounded_and_reported():
+    g = round_guest()
+    se = R.u64(g, BASE + R.S_ENEMY)
+    g.i32(se + R.E_COUNT, 0x7fffffff)
+    snap = R.snapshot(g)
+    assert snap["enemies"] == []
+    assert snap["enemy_scan"]["complete"] is False
+    assert snap["enemy_scan"]["reason"] == "count_limit"
+
+
 def test_the_camera_is_the_live_one_near_him_and_yaw_follows_its_target():
     g = round_guest(cam_yaw=math.radians(-124.6))
     cam = R.snapshot(g)["camera"]
