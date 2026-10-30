@@ -1,0 +1,192 @@
+"""RE5 EBFFDB22 flash detonation on the player's native game thread.
+
+Uses the game's constructor, resource loader and flash hit-volume/effect callback.
+No inventory, controller input, weapon animation or borrowed heap allocation.
+Memory installation primitives are shared with the verified RE6 controller.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import struct
+import threading
+import time
+
+from . import re5_switch as R, re6_switch_native as N
+from ..native.re5_ebffdb22.code import IMAGES
+from ..native.re5_ebffdb22.vtables import BASE_ENTRIES, PLAYER_TABLES
+
+Unavailable, Uncertain, AllocationLost = N.Unavailable, N.Uncertain, N.AllocationLost
+process_identity = N.process_identity
+TEMP, UPDATE, DISPATCH = 0x1A91900, 0x799210, 0x118E740
+CODE = (
+    (0x118E600, "call", 540, "a29a07b303da4b53b108e63626e7eda4e95b549dbd2d817b4693e2f036d62443"),
+    (0x118E840, "spawn", 432, "9c0a82e8629f2a865fd1f980cdd8b9f273648b5cc0e372a46e3d587cc78b07d9"),
+    (0x118EB00, "explode", 248, "ca10d26893ce5759481c65d7aa1dd6130381571ede8e4bf969f41b2a3f8b0441"),
+)
+_CREATE_LOCK = threading.Lock()
+
+
+def table_bytes(base, vt):
+    row = PLAYER_TABLES.get(vt - base)
+    if row is None:
+        raise Unavailable("unsupported RE5 player class")
+    changes = row[1]
+    return struct.pack("<149Q", *(base + changes.get(i, x) for i, x in enumerate(BASE_ENTRIES)))
+
+
+class Controller(N.Controller):
+    def __init__(self, ad):
+        if os.name != "posix" or os.uname().machine.lower() not in ("aarch64", "arm64") or getattr(ad, "address_mode", None) != "direct":
+            raise Unavailable("native flash currently requires Linux Switch NCE")
+        self.ad = ad
+        self.pid, _ = ad._guest()
+        self.identity = process_identity(self.pid)
+        self.lock = threading.RLock()
+        self.base = R.module_base(self)
+        if not self.base:
+            raise Unavailable("unsupported RE5 executable")
+        self.heap = None
+        self.failed = False
+
+    def check_build(self):
+        if process_identity(self.pid) != self.identity or self.ad._guest()[0] != self.pid:
+            raise Unavailable("emulator process changed")
+        if self.rd(self.base + R.SIG_OFF, len(R.SIGNATURE)) != R.SIGNATURE:
+            raise Unavailable("RE5 executable changed")
+
+    def check(self):
+        self.check_build()
+        if hasattr(self, "player"):
+            if self.q(self.sp + R.P_FIRST) != self.player or self.q(self.player + 0x1A00) != self.generation:
+                raise Unavailable("player allocation changed")
+
+    def ready(self):
+        self.check_build()
+        if getattr(self.ad, "paused", False):
+            raise Unavailable("session is paused")
+        if self.failed and not self.recover_completed_call():
+            raise Unavailable("native controller awaits recovery after an uncertain operation")
+        sp = self.q(self.base + R.S_PLAYER)
+        if not R.ptr_ok(sp):
+            raise Unavailable("player manager unavailable")
+        player = self.q(sp + R.P_FIRST)
+        gs = R.game_sys(self, self.base)
+        if not R.ptr_ok(player) or not gs or self.w(gs + R.GS_PHASE) != R.PHASE_PLAYING:
+            raise Unavailable("no living player in an active Mercenaries round")
+        if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= R.DYING_HP:
+            raise Unavailable("player is dying or dead")
+        vt = self.q(player)
+        if vt != self.heap:
+            table_bytes(self.base, vt)
+        return player, self.q(player + 0x1A00)
+
+    def validate_heap(self):
+        if (self.heap is None or self.rd(self.heap + 0x6A0, 8) != b"GBXNC502" or
+                self.q(self.heap + 0x60) != self.base + DISPATCH or
+                self.q(self.heap + 0x688) != self.base + UPDATE or
+                self.q(self.heap + 0x680) - self.base not in PLAYER_TABLES):
+            raise Unavailable("private native mailbox identity changed")
+
+    def attach(self):
+        entries = table_bytes(self.base, self.original)
+        if self.rd(self.original, len(entries)) != entries or self.q(self.player) != self.original:
+            raise Unavailable("player vtable is modified or unsupported")
+        assets = []
+        for off, name, size, digest in CODE:
+            data = IMAGES[name]
+            if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+                raise Unavailable("native hook asset checksum mismatch")
+            assets.append((self.base + off, data))
+        if self.heap is None:
+            clone = bytearray(entries)
+            struct.pack_into("<Q", clone, 0x60, self.base + CODE[0][0])
+            clone.extend(struct.pack("<Q", self.original))
+            assets.append((self.base + TEMP, clone))
+        if any(self.rd(at, len(data)) != data for at, data in assets):
+            self.stopped(lambda: [self.install(at, data) for at, data in assets])
+        if self.heap is None:
+            self.write(self.player, struct.pack("<Q", self.base + TEMP))
+            self.heap = self.wait(lambda: (v if R.ptr_ok(v := self.q(self.player)) and v not in
+                                          (self.original, self.base + TEMP) else None))
+        else:
+            self.validate_heap()
+            if self.w(self.heap + 0x6A8) not in (0, 3):
+                raise Unavailable("previous native call is incomplete")
+            clone = bytearray(entries)
+            struct.pack_into("<Q", clone, 0x60, self.base + DISPATCH)
+            self.write(self.heap, clone)
+            self.write(self.heap + 0x680, struct.pack("<4Q", self.original, self.base + UPDATE,
+                                                    self.player, self.generation))
+            self.write(self.player, struct.pack("<Q", self.heap))
+        self.validate_heap()
+
+    def call(self, off, *args):
+        self.validate_heap()
+        if self.w(self.heap + 0x6A8) not in (0, 3):
+            raise Unavailable("native call already pending")
+        self.write(self.heap + 0x6C0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
+        self.write(self.heap + 0x6A8, struct.pack("<I", 1))
+        self.wait(lambda: self.w(self.heap + 0x6A8) == 3)
+        return self.q(self.heap + 0x6B8)
+
+    def recover_completed_call(self):
+        with self.lock:
+            if not self.failed or not getattr(self, "recoverable", False):
+                return not self.failed
+            self.check()
+            self.validate_heap()
+            if self.w(self.heap + 0x6A8) != 3 or self.q(self.player) != self.original:
+                return False
+            self.failed = self.recoverable = False
+            return True
+
+    def projectile(self, unit, born):
+        if (self.q(unit) != self.base + 0x1C5EF58 or self.q(unit + 0x1A00) != born or
+                self.q(unit + 0x1A10) != self.player):
+            raise AllocationLost("flash allocation changed; this click will not be replayed")
+
+    def flash(self):
+        # Recovery acquires the same lock; do it before entering the operation.
+        self.ready()
+        with self.lock:
+            player, generation = self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            self.player, self.generation = player, generation
+            self.original = self.q(player)
+            self.check()
+            started = time.monotonic()
+            try:
+                self.attach()
+                unit = self.call(0x118E840, self.player, self.generation)
+                if not R.ptr_ok(unit):
+                    raise Unavailable("native flash allocation refused")
+                born = self.q(unit + 0x1A00)
+                def initialized():
+                    self.projectile(unit, born)
+                    return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
+                self.wait(initialized)
+                if self.call(0x118EB00, unit, born, self.player, self.generation) != 1:
+                    raise Unavailable("native flash resources or owner are unavailable")
+                self.projectile(unit, born)
+                if self.rd(unit + 0x28A0, 1) != b"\x01":
+                    raise Uncertain("native flash effect did not publish its explosion flag")
+                return {"state": "confirmed", "verified": True, "op": "flash_now",
+                        "effect": "native_flash_explosion", "player_generation": self.generation,
+                        "projectile_generation": born, "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+            except Exception as exc:
+                self.failed = True
+                self.recoverable = isinstance(exc, AllocationLost)
+                raise
+            finally:
+                self.check()
+                if self.q(self.player) in (self.heap, self.base + TEMP):
+                    self.write(self.player, struct.pack("<Q", self.original))
+
+
+def flash_now(ad):
+    with _CREATE_LOCK:
+        ctl = getattr(ad, "_re5_native_flash", None)
+        if ctl is None:
+            ctl = ad._re5_native_flash = Controller(ad)
+    return ctl.flash()

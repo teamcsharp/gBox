@@ -1191,6 +1191,9 @@ ALIASES = {"fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_
 def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch | None = None, **extra) -> dict:
     """The PS3 tool's ops on a Switch session (gbox.re5_mods_tool routes them here): the same names, parameters and
     result shape, {"op", ..., "status"}; an op not on Switch yet answers verified False with the reason."""
+    if op in ("flash_now", "instant_flashbang"):
+        from .re5_switch_native import flash_now
+        return flash_now(ad)
     with _LOCK:
         g = g or RE5Switch(ad)
         op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")
