@@ -21,11 +21,9 @@ from .store import canon, sha256
 from .worker_results import normalized_result
 
 LEASE_S = 30.
-# An older worker of the same local authority (the same PC install) unseen this long owns no live game any more: its
-# local authority restarted (a new epoch, a new worker id) and would report a game it still ran. 2026-10-24 16:51 the
-# i9-NUC's local scheduler started Mercenaries 3D, its app restarted, and that "running" row refused every later
-# snapshot ("An existing worker still owns a native game") for 49 hours.
-STALE_OWNER_S = 30 * 60.
+# A newly authenticated worker of the same installation may replace an expired
+# transport lease. Last-known native sessions are preserved, never declared dead
+# merely because their old worker stopped reporting.
 TERMINAL = {'succeeded', 'failed', 'invalid', 'rejected'}
 AUTHORITY = re.compile(r'[a-f0-9]{64}\Z')
 IDENTITY = re.compile(r'[a-f0-9]{16,64}\Z')
@@ -106,23 +104,15 @@ class Federation:
             raise HTTPException(409, 'Session has ended')
         return row
 
-    def _end_stale_owned(self, authority, others, wid):
-        """Running rows of this same authority's older workers, unseen for STALE_OWNER_S, end as stale (call under the
-        store lock). A worker of another authority, or one seen recently, keeps its game: the guard below refuses."""
-        now=self.clock()
-        for row in self.store.running_sessions():
-            owner_id=row['session_id'].split('-',1)[0]
-            if owner_id not in others:
-                continue
-            owner=self.store.get('worker',owner_id) or {}
-            mine=((owner.get('federation') or {}).get('authority')==authority
-                  and (row.get('federation') or {}).get('authority') in (None,authority))
-            if not mine or now-float(owner.get('last_seen') or 0)<STALE_OWNER_S:
-                continue
-            self.store.put('session',row['session_id'],row|{'state':'ended','ended':now,
-                'exit':{'via':'stale_owner','worker':owner_id,'superseded_by':wid}})
-            self.store.audit('desktop-federation','session.ended',row['session_id'],
-                             {'via':'stale_owner','worker':owner_id,'superseded_by':wid})
+    def _expired_predecessor(self, authority, owner, session):
+        """The paired installation keeps its old session evidence, without control transfer."""
+        wid=session['session_id'].split('-',1)[0]
+        worker=self.store.get('worker',wid) or {}
+        fed=worker.get('federation') or {}
+        return bool(owner and fed.get('authority')==authority
+                    and (session.get('federation') or {}).get('authority') in (None,authority)
+                    and self.clock()-float(worker.get('last_seen') or 0)>=LEASE_S
+                    and (wid==owner['worker_id'] or fed.get('superseded_by')))
 
     def mappings(self, authority):
         return [{'central_job_id':r['id'],'local_job_id':r.get('local_job_id')}
@@ -179,16 +169,20 @@ class Federation:
             registered=self.store.get('worker',wid)
             if registered and (registered.get('federation') or {}).get('authority')!=authority:
                 raise HTTPException(409,'This worker identity already has another owner')
-            # Do not retire/adopt an older remote worker's still-owned emulator.
+            if registered and (registered.get('federation') or {}).get('superseded_by'):
+                raise HTTPException(409,'This worker transport was superseded; reconnect with the current local worker')
+            replacing=bool(old and old['worker_id']!=wid)
+            # Running native sessions require an expired authenticated transport.
+            # A verified administrative close may release them before the lease
+            # expires. Neither path adopts or ends an emulator from a heartbeat.
+            # Unknown/foreign same-name owners still block.
             # id and name only: the worker kind is 32 rows / 3 MB on the Spark (source hashes, tool lists) and every
             # PC's snapshot decoded all of it while holding the store lock (2026-10-27).
             others={w['id'] for w in _worker_names(self.store) if w['name']==worker['name'] and w['id']!=wid}
-            self._end_stale_owned(authority,others,wid)
-            if any(s['session_id'].split('-',1)[0] in others for s in self.store.running_sessions()):
+            if replacing:others.add(old['worker_id'])
+            if any(s['session_id'].split('-',1)[0] in others and
+                   not self._expired_predecessor(authority,old,s) for s in self.store.running_sessions()):
                 raise HTTPException(409,'An existing worker still owns a native game; it was preserved')
-            if old and old['worker_id']!=wid and any(s['session_id'].startswith(old['worker_id']+'-')
-                                                     for s in self.store.running_sessions()):
-                raise HTTPException(409,'The previous local worker still owns a session')
             validated=[]
             for item in sessions:
                 if not isinstance(item,dict):raise HTTPException(422,'Invalid session row')
@@ -209,6 +203,14 @@ class Federation:
                     raise HTTPException(409,'An ended native session cannot be resurrected')
                 validated.append((sid,item,previous))
             now=self.clock()
+            if replacing:
+                previous_worker=self.store.get('worker',old['worker_id'])
+                if previous_worker:
+                    previous_fed=previous_worker.get('federation') or {}
+                    self.store.put('worker',old['worker_id'],previous_worker|{'federation':previous_fed|
+                        {'superseded_by':wid,'superseded_at':now}})
+                self.store.audit('desktop-federation','worker.transport_replaced',old['worker_id'],
+                                 {'authority':authority,'superseded_by':wid,'native_sessions_preserved':True})
             owner={'authority':authority,'key_hash':digest,'epoch':epoch,'worker_id':wid,'last_seen':now}
             self.store.put('federation',authority,owner)
             provenance={'authority':authority,'epoch':epoch,'last_seen':now,'single_owner':True,'media':'session_stream'}

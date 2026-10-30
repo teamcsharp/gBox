@@ -107,24 +107,50 @@ def test_existing_remote_native_owner_is_preserved_without_worker_retirement(cfg
     assert not store.get('worker',WID)
 
 
-@pytest.mark.parametrize('seen_s,authority,admitted', [(7200, AUTH, True), (60, AUTH, False), (7200, 'f'*64, False)])
+@pytest.mark.parametrize('seen_s,authority,admitted', [(7200, AUTH, True), (60, AUTH, True), (5, AUTH, False), (7200, 'f'*64, False)])
 def test_a_long_gone_worker_of_the_same_authority_no_longer_blocks_its_successor(cfg, seen_s, authority, admitted):
-    """2026-10-24: the i9-NUC's app restarted while its local scheduler ran Mercenaries 3D; that 'running' row refused
-    every later snapshot of the same PC for 49 hours. A same-authority worker unseen for 30 minutes owns nothing."""
+    """A relaunch waits for the transport lease, not thirty minutes or a fake game exit."""
     app,c=plane(cfg);store=app.state.store
     old='1'*16;sid=old+'-'+LOCAL
     fed={'authority':authority,'epoch':'0'*32,'last_seen':time.time()-seen_s}
     store.put('worker',old,WorkerInfo(id=old,name='Owned local fixture',os='windows',tools=[]).model_dump()
               |{'last_seen':time.time()-seen_s,'federation':fed})
     store.put('session',sid,{'session_id':sid,'state':'running','game_id':'owned','federation':fed})
+    store.put('federation',AUTH,{'authority':AUTH,'key_hash':sha256(KEY.encode()),'epoch':'0'*32,
+                               'worker_id':old,'last_seen':time.time()-seen_s})
     response=c.post('/api/federation/'+AUTH+'/snapshot',json=snapshot())
     assert (response.status_code==200)==admitted,response.text
     row=store.get('session',sid)
     if admitted:
-        assert row['state']=='ended' and row['exit']=={'via':'stale_owner','worker':old,'superseded_by':WID}
+        assert row['state']=='running' and 'exit' not in row and 'ended' not in row
+        assert store.get('worker',old)['federation']['superseded_by']==WID
         assert store.get('worker',WID)['federation']['authority']==AUTH
     else:
         assert response.status_code==409 and row['state']=='running'      # recently seen, or another PC: preserved
+
+
+def test_expired_transport_handover_cannot_oscillate_or_transfer_native_control(cfg):
+    app,c=plane(cfg);store=app.state.store
+    old='1'*16;enroll(c,wid=old)
+    old_sid=old+'-'+LOCAL;before=store.get('session',old_sid)
+    app.state.federation.clock=lambda:time.time()+60
+    enroll(c)
+    assert store.get('session',old_sid)==before
+    assert c.get('/api/federation/'+AUTH+'/sessions/'+old_sid+'/input').status_code==403
+    enroll(c)  # preserved predecessor rows cannot block the new worker's next heartbeat
+    app.state.federation.clock=lambda:time.time()+120
+    assert c.post('/api/federation/'+AUTH+'/snapshot',json=snapshot(wid=old)).status_code==409
+    assert store.get('federation',AUTH)['worker_id']==WID
+    assert store.get('session',old_sid)==before
+
+
+def test_invalid_successor_snapshot_does_not_retire_the_current_transport(cfg):
+    app,c=plane(cfg);store=app.state.store;enroll(c)
+    app.state.federation.clock=lambda:time.time()+60
+    body=snapshot(wid='1'*16);body['sessions'][0]['session_id']=SID
+    assert c.post('/api/federation/'+AUTH+'/snapshot',json=body).status_code==422
+    assert not store.get('worker',WID)['federation'].get('superseded_by')
+    assert store.get('federation',AUTH)['worker_id']==WID
 
 
 def test_positive_end_cannot_be_resurrected_and_blocks_inputs(cfg):
@@ -300,13 +326,15 @@ def test_job_cannot_forge_a_different_native_sid(cfg):
     assert not app.state.store.get('federation_command',jid).get('local_job_id')
 
 
-def test_input_and_rpc_response_keep_source_and_exact_owned_request(cfg):
+def test_input_and_rpc_response_keep_authenticated_source_and_exact_owned_request(cfg):
     app,c=plane(cfg);enroll(c)
     rid='1'*32
     c.post('/api/sessions/'+SID+'/input',json={'events':[{'key':'a','down':True,'src':'player'},
                                                         {'rpc':rid,'op':'info','args':{},'expires_at':time.time()+10}]})
     events=c.get('/api/federation/'+AUTH+'/sessions/'+SID+'/input').json()
-    assert events[0]['src']=='player' and events[1]['rpc']==rid
+    # The API stamps this authenticated UI actor; a client cannot forge player
+    # provenance. Federation must preserve the stamped source and exact RPC.
+    assert events[0]['src']=='ui' and events[1]['rpc']==rid
     path='/api/federation/'+AUTH+'/sessions/'+SID+'/rpc/'+rid
     body={'ok':True,'data':{'native':'fixture'}}
     assert c.post(path,json=body).status_code==200
