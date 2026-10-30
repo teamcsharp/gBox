@@ -14,6 +14,24 @@ STAGE, DISCARD, COMMIT = 0x118EB70, 0x118EC38, 0x118EECC
 MANAGER, SLOT_VT, SLOT_ACTIVE = 0x30E8, 0x1C782C0, 0x2D
 
 
+def wait_idle(ctl, player, generation, *, timeout=.75, allowed=None):
+    """Read-only preflight; a timeout here has published no inventory change."""
+    until = time.monotonic() + timeout
+    while True:
+        if allowed is not None and not allowed():
+            raise N.Unavailable('weapon handover cancelled')
+        if ctl.ready() != (player, generation):
+            raise N.Unavailable('requested player life changed')
+        if (ctl.rd(player + R.P_MOTION, 1)[0] in (0, 1, 7, 9, 10)
+                and ctl.rd(player + 0x1B4C, 1) == b'\0'
+                and ctl.w(player + 0x1B48) == 0xFFFFFFFF
+                and ctl.rd(player + 0x3F2C, 1) == b'\0'):
+            return
+        if time.monotonic() >= until:
+            raise N.Unavailable('player animation is still busy; no weapon replacement published')
+        time.sleep(.01)
+
+
 def records(ctl):
     raw = ctl.rd(ctl.player + R.P_INV, 24 * R.INV_SLOT)
     out = []
@@ -30,7 +48,7 @@ def records(ctl):
     return out
 
 
-def replace(ctl, item, *, expected=None):
+def replace(ctl, item, *, expected=None, allowed=None):
     """Construct, initialize, replace grid0 and read back native equipment.
 
     item is the catalogue's low-byte weapon ID. The caller must relinquish bot
@@ -44,6 +62,7 @@ def replace(ctl, item, *, expected=None):
         player, generation = ctl.ready()
         if expected is not None and (player, generation) != expected:
             raise N.Unavailable('requested player life changed')
+        wait_idle(ctl, player, generation, allowed=allowed)
         ctl.sp = ctl.q(ctl.base + R.S_PLAYER)
         ctl.player, ctl.generation = player, generation
         ctl.original = ctl.q(player)
@@ -85,6 +104,8 @@ def replace(ctl, item, *, expected=None):
             ctl.wait(initialized)
             if (R.class_name(ctl, unit) or '').lower() != f'uwp{item:02x}':
                 raise N.Unavailable('native weapon class differs from the selected catalogue item')
+            if allowed is not None and not allowed():
+                raise N.Unavailable('weapon handover cancelled')
             commit_published = True  # A missing receipt after this point must never retry or discard.
             result = ctl.call(COMMIT, player, generation, scratch, unit, born,
                               old_slot, old_unit, old_born)

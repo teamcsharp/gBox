@@ -9,6 +9,7 @@ from test_re5_switch_native import controller
 def fixture(monkeypatch, outcome=1):
     ctl = controller()
     ctl.ready = lambda: (ctl.player, ctl.generation)
+    ctl.put(ctl.player + 0x1B48, struct.pack('<I', 0xFFFFFFFF))
     ctl.put(ctl.player + W.MANAGER, struct.pack('<Q', ctl.base + 0x1C78280))
     for i in range(24):
         ctl.put(ctl.player + W.R.P_INV + 56 * i, struct.pack('<Q', ctl.base + W.SLOT_VT))
@@ -65,6 +66,35 @@ def test_requested_player_life_is_checked_before_native_publication(monkeypatch)
     with pytest.raises(W.N.Unavailable, match='player life changed'):
         W.replace(ctl, 0x19, expected=(ctl.player, ctl.generation - 1))
     assert not calls and not ctl.writes
+
+
+def test_busy_animation_is_read_only_until_it_settles(monkeypatch):
+    ctl, calls = fixture(monkeypatch)
+    ctl.put(ctl.player + W.R.P_MOTION, b'\x1d')
+    sleeps = []
+    def settle(seconds):
+        sleeps.append(seconds)
+        assert not calls and not ctl.writes
+        ctl.put(ctl.player + W.R.P_MOTION, b'\0')
+    monkeypatch.setattr(W.time, 'sleep', settle)
+    assert W.replace(ctl, 0x19)['verified']
+    assert sleeps == [.01]
+
+
+def test_busy_preflight_times_out_without_constructing_or_modifying_inventory(monkeypatch):
+    ctl, calls = fixture(monkeypatch)
+    ctl.put(ctl.player + 0x1B4C, b'\1')
+    with pytest.raises(W.N.Unavailable, match='still busy'):
+        W.wait_idle(ctl, ctl.player, ctl.generation, timeout=0)
+    assert not calls and not ctl.writes
+
+
+def test_takeover_after_staging_discards_private_weapon_without_committing(monkeypatch):
+    ctl, calls = fixture(monkeypatch)
+    with pytest.raises(W.N.Unavailable, match='handover cancelled'):
+        W.replace(ctl, 0x19, allowed=lambda: not calls)
+    assert [c[0] for c in calls] == [W.STAGE, W.DISCARD]
+    assert ctl.q(ctl.player) == ctl.original and not ctl.failed
 
 
 def test_busy_native_refusal_discards_staging_and_keeps_controller_available(monkeypatch):

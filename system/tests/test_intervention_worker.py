@@ -7,16 +7,17 @@ import pytest
 from gbox.mercs import interventions as I
 
 
-@pytest.mark.parametrize('change', ['none', 'player', 'round', 'operator', 'expired', 'stopped'])
+@pytest.mark.parametrize('change', ['none', 'player', 'round', 'operator', 'expired', 'stopped', 'no_ack'])
 def test_weapon_handover_rechecks_context_and_always_releases_bot(monkeypatch, change):
     ad, stats, results, calls = SimpleNamespace(), {'round_evidence_id': 'round-a'}, [], []
     clock, life, running = [100.0], [2], [True]
     ctl = SimpleNamespace(pid=123, identity=(123, 99), ready=lambda: (456, life[0]),
                           weapon_choices=lambda: [{'item': 25, 'weapon': 'Hydra'}])
 
-    def equip(item, *, expected):
+    def equip(item, *, expected, allowed):
         assert stats['native_weapon_pending']['generation'] == 2
         assert expected == (456, 2)
+        assert allowed()
         calls.append(item)
         return dict(state='confirmed', verified=True, item=item, weapon='Hydra',
                     player=456, player_generation=2, weapon_generation=7)
@@ -27,9 +28,13 @@ def test_weapon_handover_rechecks_context_and_always_releases_bot(monkeypatch, c
     monkeypatch.setattr(I.time, 'monotonic', lambda: clock[0])
 
     def sleep(seconds):
-        if seconds != .15:
+        if seconds != .01:
             return
-        assert stats['native_weapon_pending']['until'] == 102
+        assert stats['native_weapon_pending']['until'] == 103
+        if change == 'no_ack':
+            clock[0] += 1
+            return
+        stats['native_weapon_pending']['released'] = True
         if change == 'player': life[0] += 1
         if change == 'round': stats['round_evidence_id'] = 'round-b'
         if change == 'operator': stats['operator_control'] = True

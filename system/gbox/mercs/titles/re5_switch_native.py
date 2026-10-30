@@ -221,9 +221,9 @@ class Controller(N.Controller):
         return [{"item": item, "weapon": spec.name, "family": spec.family}
                 for item, spec in sorted(WEAPONS.items())]
 
-    def equip_primary(self, item, *, expected=None):
+    def equip_primary(self, item, *, expected=None, allowed=None):
         from .re5_switch_weapon_native import replace
-        return replace(self, item, expected=expected)
+        return replace(self, item, expected=expected, allowed=allowed)
 
 
 def flash_now(ad):
