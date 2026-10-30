@@ -146,6 +146,31 @@ class Controller(N.Controller):
                 self.q(unit + 0x1A10) != self.player):
             raise AllocationLost("flash allocation changed; this click will not be replayed")
 
+    def prepare(self):
+        """Install/allocate dispatch before advertising the viewer capability.
+
+        No projectile is created and no effect is invoked. This moves the
+        one-time stopped-process/code-install cost out of the first click.
+        """
+        with self.lock:
+            if self.heap is not None:
+                self.validate_heap()
+                return
+            player, generation = self.ready()
+            self.sp = self.q(self.base + R.S_PLAYER)
+            self.player, self.generation = player, generation
+            self.original = self.q(player)
+            try:
+                self.attach()
+            except Exception:
+                self.failed = True
+                self.recoverable = False
+                raise
+            finally:
+                self.check()
+                if self.q(self.player) in (self.heap, self.base + TEMP):
+                    self.write(self.player, struct.pack("<Q", self.original))
+
     def flash(self):
         # Recovery acquires the same lock; do it before entering the operation.
         self.ready()
@@ -158,7 +183,9 @@ class Controller(N.Controller):
             started = time.monotonic()
             try:
                 self.attach()
+                attached_at = time.monotonic()
                 unit = self.call(0x118E840, self.player, self.generation)
+                spawned_at = time.monotonic()
                 if not R.ptr_ok(unit):
                     raise Unavailable("native flash allocation refused")
                 born = self.q(unit + 0x1A00)
@@ -166,6 +193,7 @@ class Controller(N.Controller):
                     self.projectile(unit, born)
                     return self.w(unit + 0x1B28) == 29 and self.rd(unit + 0x1B88, 1) == b"\x01"
                 self.wait(initialized)
+                initialized_at = time.monotonic()
                 if self.call(0x118EB00, unit, born, self.player, self.generation) != 1:
                     raise Unavailable("native flash resources or owner are unavailable")
                 self.projectile(unit, born)
@@ -173,7 +201,11 @@ class Controller(N.Controller):
                     raise Uncertain("native flash effect did not publish its explosion flag")
                 return {"state": "confirmed", "verified": True, "op": "flash_now",
                         "effect": "native_flash_explosion", "player_generation": self.generation,
-                        "projectile_generation": born, "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
+                        "projectile_generation": born, "elapsed_ms": round(1000 * (time.monotonic() - started), 1),
+                        "timings_ms": {"attach": round(1000 * (attached_at - started), 1),
+                            "spawn": round(1000 * (spawned_at - attached_at), 1),
+                            "initialize": round(1000 * (initialized_at - spawned_at), 1),
+                            "explode": round(1000 * (time.monotonic() - initialized_at), 1)}}
             except Exception as exc:
                 self.failed = True
                 self.recoverable = isinstance(exc, AllocationLost)

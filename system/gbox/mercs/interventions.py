@@ -215,6 +215,9 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
         if ctl is None:
             return {"epoch": "unsupported", "capabilities": [], "reason": unsupported}
         try:
+            prepare = getattr(ctl, "prepare", None)
+            if prepare is not None:
+                prepare()
             p, generation = ctl.ready()
             stats = stats_of() or {}
             epoch = f"{ctl.pid}:{ctl.identity[1]}:{p}:{generation}:{stats.get('round_evidence_id', '')}"
