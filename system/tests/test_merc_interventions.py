@@ -46,6 +46,7 @@ def test_crash_after_claim_never_reexecutes(queue):
     now[0] += 11
     assert restarted.claim('sid', 'life-1', ['flash_now']) == []
     assert restarted.status('sid')['requests'][0]['state'] == 'uncertain'
+    assert post(restarted, row['id'])['state'] == 'uncertain'
     # A recovered receipt can settle uncertainty without repeating the effect.
     restarted.finish('sid', row['id'], claim['claim'], {'state':'confirmed', 'verified':True})
     assert restarted.status('sid')['requests'][0]['state'] == 'confirmed'
@@ -54,10 +55,11 @@ def test_crash_after_claim_never_reexecutes(queue):
 @pytest.mark.parametrize('change', ['life', 'resources', 'deadline'])
 def test_stale_request_cannot_affect_another_life(queue, change):
     q, now = queue
-    post(q)
+    row = post(q)
     if change == 'deadline': now[0] += I.TTL + .1
     assert q.claim('sid', 'life-2' if change=='life' else 'life-1', [] if change=='resources' else ['flash_now']) == []
     assert q.status('sid')['requests'][0]['state'] == 'expired'
+    assert post(q, row['id'])['state'] == 'expired'
 
 
 def test_retry_id_is_durable_after_recent_history_is_trimmed(queue):

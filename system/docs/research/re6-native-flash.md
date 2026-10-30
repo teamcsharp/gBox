@@ -80,6 +80,15 @@ implemented by this controller. Do not close their tickets from this evidence.
 - `clients/web/viz/stream-interventions.js` is the shared viewer/desktop adapter.
   Pine can mount it with its authenticated GBox API wrapper and current session;
   no Pine message or deployment has been performed.
+- The viewer toolbar's **Live controls** button opens the same bounded,
+  session-checked mod/behavior sidebar as desktop PiP. The map page offers it
+  too. Changing a setting waits for worker readback. Disposing the viewer
+  invalidates in-flight preflight checks before they can submit another change.
+  The real-browser regression exercised fire-rate readback and twenty distinct
+  flash clicks without changing the displayed image's attributes.
+- Actual desktop transition/interaction acceptance is still outstanding: the
+  Windows computer-use runtime failed to start twice with a missing `kernel.js`.
+  Browser regression results do not substitute for that desktop acceptance.
 
 ## User requirements still being implemented
 

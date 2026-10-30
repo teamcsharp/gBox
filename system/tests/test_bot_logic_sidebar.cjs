@@ -229,6 +229,18 @@ test('closing PiP invalidates outstanding jobs and clears controls', async () =>
   assert.equal(r.sb.state().view, null);
 });
 
+test('disposing viewer controls cancels an in-flight preflight before it can submit a mod', async () => {
+  const r = rig(); await r.sb.refresh();
+  const gate = defer();
+  r.hook = url => url === '/api/sessions?include_ended=false' ? gate.promise : undefined;
+  const old = r.sb.setMod('fire_rate', 30);
+  r.sb.dispose(); gate.resolve(r.rows);
+  assert.equal(await old, false);
+  assert.equal(r.changes().length, 0);
+  r.sb.update({on:true, sid:SESSION.session_id, session:SESSION});
+  assert.equal(r.sb.state().sid, undefined);
+});
+
 test('desktop supplies session identity after updating the displayed stream; labels and errors are escaped', () => {
   const desktop = fs.readFileSync(path.join(__dirname, '../clients/desktop/index.html'), 'utf8');
   assert.match(desktop, /GBoxBotLogicSidebar.create\(\{ current: \(\) => compactCurrentSid\(\)/);

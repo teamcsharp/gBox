@@ -19,6 +19,10 @@ class Queue:
     def __init__(self, store, clock=time.time):
         self.store, self.clock = store, clock
 
+    def _remember(self, sid, row):
+        self.store.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)",
+            (KIND + "_id", sid + ":" + row["id"], json.dumps(row)))
+
     def _change(self, sid, fn):
         # Cross-process atomic as well as thread-safe. Never call Store.put
         # inside this transaction (it commits independently).
@@ -33,8 +37,10 @@ class Queue:
                 for r in doc["rows"]:
                     if r["state"] == "queued" and r["expires"] <= now:
                         r.update(state="expired", reason="request expired before execution")
+                        self._remember(sid, r)
                     if r["state"] == "claimed" and r["claimed_at"] + TTL <= now:
                         r.update(state="uncertain", reason="worker receipt missing; not replayed")
+                        self._remember(sid, r)
                 result = fn(doc, now)
                 after = json.dumps(doc, separators=(",", ":"))
                 if before != after:
@@ -93,9 +99,11 @@ class Queue:
                     continue
                 if r["epoch"] != epoch or r["op"] not in capabilities:
                     r.update(state="expired", reason="active player or capability changed")
+                    self._remember(sid, r)
                     continue
                 if len(out) < 20:
                     r.update(state="claimed", claim=uuid.uuid4().hex, claimed_at=now)
+                    self._remember(sid, r)
                     out.append(dict(r))
             return out
         return self._change(sid, take)

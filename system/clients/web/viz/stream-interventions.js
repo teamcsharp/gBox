@@ -3,6 +3,7 @@
 (function(root) {
   'use strict';
   const terminal = new Set(['confirmed', 'failed', 'unavailable', 'expired', 'uncertain']);
+  let activeSidebar = null;
   function create({api, notify = () => {}, uuid = () => root.crypto.randomUUID(), now = Date.now,
                    schedule = root.setTimeout.bind(root), cancel = root.clearTimeout.bind(root)}) {
     const pending = new Map(); let timer = null, dead = false, polling = false;
@@ -46,10 +47,31 @@
     const button = doc.createElement('button'); button.type='button'; button.textContent='⚡ Instant flashbang';
     const status = doc.createElement('span'); status.setAttribute('role','status');
     bar.append(button, status); host.append(bar);
+    let sidebar = null, disposed = false, opening = false;
+    const selected = () => typeof options.sid==='function' ? options.sid() : options.sid;
+    if (root.GBoxBotLogicSidebar) {
+      const controls = doc.createElement('button'); controls.type='button'; controls.textContent='Live controls';
+      controls.setAttribute('aria-label','Open active game mods and bot behavior'); bar.insertBefore(controls,status);
+      controls.onclick = async () => {
+        if (opening || disposed) return; opening=true;
+        const sid=selected();
+        try {
+          const rows=await options.api('/api/sessions?include_ended=false');
+          if (disposed || sid!==selected()) return;
+          const session=rows.find(row=>row.session_id===sid);
+          if (!session || session.state!=='running') throw Error('The selected session is no longer running.');
+          activeSidebar?.dispose();
+          sidebar=root.GBoxBotLogicSidebar.create({api:options.api,current:selected,doc,compactOnly:false});
+          activeSidebar=sidebar;
+          sidebar.update({on:true,sid,session}); await sidebar.toggle(true);
+        } catch(error) { if(!disposed)status.textContent=error.message; }
+        finally { opening=false; }
+      };
+    }
     const client = create({...options, notify(text,row) {status.textContent=text; options.notify?.(text,row);}});
     button.onclick = () => client.flash(typeof options.sid==='function'?options.sid():options.sid)
       .catch(error => {status.textContent=error.message;});
-    return {dispose() {client.dispose(); bar.remove();}, client};
+    return {dispose() {disposed=true;client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
   }
   const out = {create,mount}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
