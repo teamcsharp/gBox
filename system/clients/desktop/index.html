@@ -3728,7 +3728,10 @@ async function embedTick() {
     // Remote PiP keeps its picture while the game restarts. Its continuity poll
     // reconnects only this game's replacement, without changing window bounds.
     // ...the PiP of this PC's own MercMode run waits for its next title instead (mercPipHold: a cold title switch)
-    if (COMPACT.on && COMPACT.local && !mine&&r.ok&&!(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
+    // A selected instance stays in PiP during its worker/session replacement.
+    // Restoring here also overwrites the saved compact intent before relaunch.
+    if (COMPACT.on && COMPACT.local && !mine && r.ok && !pipSelection.preference?.pinned
+        && !(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;

@@ -109,9 +109,60 @@ death/failure/interruption, and advances once on the same mission's native
 objective-completion evidence, not proof of S rank or full-game completion.
 The existing verified LV.1-LV.5 roster remains; EX coverage is not established.
 
-Validation:212 takeover/scheduler tests passed. Deployment of this continuous
-autoplay follow-up is pending at this checkpoint. Earlier connection/PiP fixes
-above are already published and deployed.
+Validation:212 takeover/scheduler tests and46 Merc3D tests passed. Follow-up
+commit `38629420` is published on main, assimilated locally and activated on
+both hosts. The i9 retained its scheduler run, completed mission0x0100 and
+entered0x0101. Repeated unsuccessful0x0101 attempts correctly retained the
+same mission cursor. The old cursor's third value (21) predates the correction
+and is NOT evidence of21 completed game passes.
+
+## PiP persistence and enemy census, 2026-10-30 10:38 UTC
+
+`067d5b6e` makes every fresh explicit local PiP dispatch persist an instance
+pin, including when there was no previous pin. Without it, a local worker
+restart could restore the Spark stream that preceded the local game.
+44 stream-picker/MercMode UI tests passed. Local dispatch
+`087dd1dd6f27491cbe6895dd6c32d02b` selected the i9's own Merc3D PiP. Its saved
+view and gameplay frame confirmed the local SID, compact=true.
+
+A synthetic legacy mouse report returned yielded=false while the same local
+scheduler run remained active. Local evidence:
+`.scratch-merc-20261028/.scratch-i9-perpetual-acceptance-20261030.receipt.json`.
+Frame `i9-perpetual-gameplay-20261030.jpg` shows gameplay inside PiP.
+The controller-takeover/resume behavior is covered by automated tests; that
+specific native-input sequence was not replayed live in this acceptance check.
+
+Combat observation then found a separate concrete defect: the Merc3D enemy
+reader started at the linked list's tail. It saw one distant enemy rather than
+all ten, including nearby attackers. `79824627` starts the existing bounded
+node+0x8 traversal at manager+0x28 instead of+0x24. The live read-only census and
+literal two-ended-list regression fixture support this correction;46 Merc3D
+tests passed. See [RAM evidence](research/merc3d-ram.md).
+
+All three commits are published on main and assimilated locally; Spark's
+canonical files are deployed. PR creation remains rate-limited (403 at10:12);
+publication used normal non-force Git fast-forwards, not protection overrides.
+
+The agent bot-reload API refused the hot reload with403. It was not represented
+as successful and the actor was not changed to impersonate an operator. The
+already-authorized paired recovery path activated the correction instead:
+request `8f76b51a24ad4c699bec39dc7eff6f76` reached recovered, new worker
+`33d2d777d7444576`, epoch `920377000519d9417f4c02f1581d716b`. At this checkpoint
+Merc3D session `33d2d777d7444576-c99d1bcc1e904d62`, PID25400,
+birth1793356694.3601713, was starting on revision
+`79824627ff602ca13d81bcf77cdd9f73f5c805fa`. Combat effectiveness after the census
+correction then produced native damage: score0->300, playerHP1000, and enemy
+0x8658c20 vitality600->300 while the corrected census included nearby units.
+The bot learned trigger key `y` from the observed damage. Full mission success
+and S rank are still unverified; do not claim complete level coverage or
+RE4 VR rotation from these fixes.
+
+The next reload retained the i9 instance but expanded out of PiP: embedTick's
+missing-native-session branch called compactRestore before the app exited and
+saved compact=false. The follow-up suppresses that automatic restore for an
+explicit instance pin; explicit Full app still works.46 UI regression tests
+pass, including the actual embedTick replacement branch. This final renderer
+follow-up still needs activation at this checkpoint.
 
 ## Earlier merged work
 

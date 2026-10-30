@@ -81,6 +81,20 @@ test('ended SID follows the same instance through worker restart and title rotat
   assert.equal(P.resolve(saved,[b]),null);
   assert.equal(P.sameInstance({...saved,installation:'install-A'},{...next,federation:{authority:'install-B'}}),false);
 });
+
+for (const pinned of [false,true]) test(`native session replacement preserves pinned PiP geometry (pin: ${pinned})`,async()=>{
+  const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
+  const start=html.indexOf('async function embedTick()');
+  const prefix=html.slice(start,html.indexOf('    if (COMPACT.on && !COMPACT.local)',start));
+  const shown={on:true,local:true,sid:'old-local'};
+  const ctx=vm.createContext({EMB:{closed:new Set()},LIVE_SESSIONS:{peek:()=>({ok:true,data:[]})},
+    $:()=>({}),S:{workerName:'i9'},nativeSessionLease:null,COMPACT:shown,
+    pipSelection:{preference:{pinned}},mercPipHold:()=>false,
+    compactRestore:async()=>{shown.on=false;}});
+  vm.runInContext(prefix+'} finally { EMB.busy=false; }}',ctx);
+  await ctx.embedTick();
+  assert.equal(shown.on,pinned); // only an explicit full-app action should close a pinned PiP
+});
 test('warm predecessors and handovers never become selectable; offline and starting cards explain their state',()=>{
   const warm={...a,session_id:'parked',warm:true}, predecessor={...a,session_id:'previous'};
   const data=[warm,predecessor,c,{...b,worker_online:false}];
