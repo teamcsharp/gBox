@@ -3408,3 +3408,35 @@ def test_behind_cluster_fix_reduces_time_to_turn():
     assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
     elapsed = clock[0] - t0
     assert elapsed <= 0.05 * 2, f"quick turn took {elapsed:.2f}s, expected <= 0.10s"
+
+
+def test_grabbed_from_behind_fixture_replays_deterministically():
+    """The synthetic fixture replays deterministically through incident_replay.replay."""
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
+                     're6_switch_grabbed_from_behind.json').read_text())
+    first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
+    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
+    assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+
+def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
+    """#5047 (fc45a6229fe006d0): one 2 m behind, camera turned away. The bot should fire a quick turn
+    (ldown stick) within a few ticks of the settle, not sit idle or escalate to escape. With the fix
+    (QT_TURN_GAP_S = 0.25 s instead of QUICK_GAP_S = 1.5 s), the second quick turn fires within ~8
+    ticks of the first, keeping the bot facing the behind-threat quickly."""
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
+                     're6_switch_grabbed_from_behind.json').read_text())
+    result = incident_replay.replay(fx, ticks=20)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = incident_replay.keys(result)
+    # The bot must take a quick turn (ldown stick), not sit idle
+    assert 'ldown' in keys, f"no quick turn stick fired: doings={doings}"
+    # The bot should reach the quick_turn doing, not remain in a passive state
+    assert 'quick_turn' in doings, f"never reached quick_turn: doings={doings}"
+    # With QT_TURN_GAP_S=0.25s, the bot should fire more than one quick turn within 20 ticks (1.0 s),
+    # because the settle (0.45s) + gate (0.25s) = 0.70s leaves room for a second turn
+    quick_turn_ticks = [i for i, t in enumerate(result['ticks']) if t['doing'] == 'quick_turn']
+    assert len(quick_turn_ticks) >= 2, \
+        f"expected >=2 quick_turn ticks within 20 ticks (1.0s), got {len(quick_turn_ticks)}: {doings}"
