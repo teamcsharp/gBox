@@ -3560,29 +3560,9 @@ class Bot:
         return ok
 
     def _emergency_flashbang_arm(self, p, snap, now) -> None:
-        """The operator's emergency flashbang (#5972): detonate a flash at the player's position NOW.  Armed by the
-        single fresh `flashbang` directive read in _operator_command (this is the ONLY place it is consumed).  Every
-        click re-arms, so rapid clicks throw again once the last is done.  Clears the arm if there is no flash
-        grenade (WP08) in the inventory or on a D-pad slot."""
-        self.stats["emergency_flashes"] = self.stats.get("emergency_flashes", 0) + 1
-        inv = snap.get("inventory") or ()
-        flash = next((s for s in inv if s.get("item") == 0x08 and (s.get("rounds") or 0) > 0), None)
-        if flash is None:
-            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
-            self.flashbang = None
-            self.stats["directive_status"] = "EMERGENCY FLASHBANG: no flash grenade in the inventory"
-            return
-        if QUICK.get(flash.get("grid")) is None and getattr(self, 'native_equip', None) is None:
-            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
-            self.flashbang = None
-            self.stats["directive_status"] = "EMERGENCY FLASHBANG: the flash grenade is not on a D-pad slot"
-            return
-        self._gun_down()
-        self.flashbang = {"ptr": p.get("ptr"), "id": flash.get("id"), "equip_at": now, "last_equip": -1e9,
-                          "equips": 1, "in_hand": bool(flash.get("hand"))}
-        self.stats["directive_status"] = ("EMERGENCY FLASHBANG: throwing the flash grenade at my feet"
-                                          if self.flashbang["in_hand"] else
-                                          "EMERGENCY FLASHBANG: equipping the flash grenade then throwing at my feet")
+        """Legacy directives must not equip or throw a grenade as an instant flash."""
+        self.flashbang = None
+        self.stats["directive_status"] = "Native flash intervention required; no inventory fallback"
 
     def _flashbang_throw(self, p, snap, now) -> dict | None:
         """The emergency flashbang's actual throw, ticked every frame once armed: equip the flash grenade via its

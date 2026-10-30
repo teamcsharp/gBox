@@ -218,6 +218,17 @@ CONVENIENCE = {
                       "mode lasts. Returns the stored directive row; bot_sessions shows directive_status as the bot acts.",
                       obj({"session_id": S, "command": {"type": "string", "enum": list(bot_directives.COMMANDS)}, "text": S,
                            "hold_s": {"type": "number", "minimum": 0, "maximum": 600}}, ["session_id"])),
+    "live_run_map": ("Read the current Mercenaries map and stream session on a computer. Follows title changes and ignores warmed/preparing sessions. "
+                     "Pass worker name/id, or a session_id on that computer. Returns current tactical data and a relative live-map page for viewer/PiP embedding. "
+                     "Call again to refresh; the page follows the active run automatically.",
+                     obj({"worker":S,"session_id":S})),
+    "game_intervention": ("Viewer/operator native intervention for the active stream. op=status returns available capabilities and recent receipts. "
+                          "op=flash_now creates and detonates a native flash at the player's position without inventory, input or weapon changes. "
+                          "Provide a new UUID request_id for each click; reuse that UUID only when retrying that same request. "
+                          "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
+                          "Unsupported title/build/resources are reported without substituting a grenade throw.",
+                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now"]},
+                               "request_id": S}, ["session_id", "op"])),
     "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
                  "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
                  "its params, allowed values and when it takes effect. params holds that tool's own fields only (RE5: multiplier, on, "
@@ -553,16 +564,44 @@ def build(base_url: str, token: str) -> Server:
             out = await post(f"/api/sessions/{a['session_id']}/directive", body)
             return out | {"matched_from_text": not a.get("command"),
                           "note": "the bot reads it within a second; bot_sessions shows directive_status while it acts"}
+        if name == "live_run_map":
+            from urllib.parse import urlencode
+            worker, seed = a.get("worker"), a.get("session_id")
+            if not worker and not seed:
+                raise ValueError("Choose worker or session_id so the map follows the intended computer")
+            rotation = await get("/api/mercmode")
+            host = next((h for h in rotation.get("hosts", []) if h.get("online") and
+                         (worker in (h.get("id"), h.get("name")) if worker else str(seed).startswith(str(h.get("id"))+"-"))), None)
+            run = (host or {}).get("current_run") or {}
+            if run.get("phase") != "playing":
+                return {"state":"waiting", "worker":worker, "reason":"No active Mercenaries round on the selected computer"}
+            sid = run["session_id"]
+            session = await live_session(sid)
+            if not sid.startswith(host["id"]+"-") or session.get("game_id") != run.get("game_id"):
+                raise ValueError("Active session identity changed; refresh the map")
+            frame = await get(f"/api/autoplay/tactical/{sid}")
+            return {"state":"playing", "worker":host["name"], "session_id":sid, "map":frame,
+                    "viewer_path":"/mercs-live.html?"+urlencode({"worker":host["id"]}),
+                    "stream_path":f"/api/sessions/{sid}/mjpeg", "interventions_path":f"/api/sessions/{sid}/interventions"}
+        if name == "game_intervention":
+            sid = a["session_id"]
+            if a["op"] == "status":
+                return await get(f"/api/sessions/{sid}/interventions")
+            if not a.get("request_id"):
+                raise ValueError("request_id must be a new UUID for each intended effect")
+            return await post(f"/api/sessions/{sid}/interventions", {"op": a["op"], "request_id": a["request_id"]})
         if name == "game_mod":
             session = await live_session(a["session_id"])
             tool = BC.mod_tool_for(session, a.get("tool"))
-            inp = BC.mod_input(tool, a["session_id"], a["op"], a.get("params"))
+            inp = BC.mod_input(tool, a["session_id"], a["op"], a.get("params"), session=session)
             return await session_job(a["session_id"], tool, inp) | {"mod_tool": tool, "op": inp["op"]}
         if name == "game_mod_ops":
             tool = a.get("tool")
+            session = None
             if a.get("session_id"):
-                tool = BC.mod_tool_for(await live_session(a["session_id"]), tool)
-            return BC.describe_ops(tool) if tool else {t: BC.describe_ops(t) for t in BC.MOD_TOOLS}
+                session = await live_session(a["session_id"])
+                tool = BC.mod_tool_for(session, tool)
+            return BC.describe_ops(tool, session=session) if tool else {t: BC.describe_ops(t) for t in BC.MOD_TOOLS}
         if name == "bot_strategy":
             session = await live_session(a["session_id"])
             try:

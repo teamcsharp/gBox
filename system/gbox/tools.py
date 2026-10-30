@@ -3022,6 +3022,13 @@ def _telemetry(run, ctx, title: str = "") -> None:
     threading.Thread(target=directives.poll_loop, daemon=True, name=f"autoplay-directives-{run['sid']}",
                      args=(run["sid"], ctx.server, _ap_headers(ctx), lambda: run.get("live"),
                            lambda: run.get("thread") is not None and run["thread"].is_alive())).start()
+    ad = (SESSIONS.get(run["sid"]) or (None,))[0]
+    if ad is not None and run.get("mode") != "prepare":
+        from .mercs import interventions
+        threading.Thread(target=interventions.worker_loop, daemon=True, name=f"interventions-{run['sid']}",
+                         args=(run["sid"], ctx.server, _ap_headers(ctx), ad, lambda: run.get("live"),
+                               lambda: not run.get("reaped") and not run.get("reloading") and
+                               run.get("thread") is not None and run["thread"].is_alive())).start()
 
 
 def _ended(run):

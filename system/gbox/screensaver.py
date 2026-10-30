@@ -1609,6 +1609,8 @@ def telemetry_last(sid: str, now: float | None = None) -> dict:
 
 def install(app, store, config, auth, submit, workers, archive):
     from fastapi import Depends, HTTPException, Header
+    from .mercs import interventions
+    interventions.install(app, store, auth)
 
     def builds_for(gid: str) -> list[dict]:
         cur = getattr(app.state, "built_mods_current", None)
@@ -1815,6 +1817,13 @@ def install(app, store, config, auth, submit, workers, archive):
     def directive_post(sid: str, body: DirectiveIn, actor=Depends(auth)):
         """An instant command for the session's autobot (the chat's dropdown): the bot reads it within a second."""
         from .mercs import directives
+        if body.command == "flashbang":
+            import uuid
+            try:
+                row = interventions.Queue(store).post(sid, "flash_now", str(uuid.uuid4()), str(actor))
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+            return {"request": row, "note": "Native effect queued; inspect interventions for its completion receipt."}
         try:
             row = directives.post(sid, body.command, source=str(actor), hold_s=body.hold_s)
         except ValueError as exc:

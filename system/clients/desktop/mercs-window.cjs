@@ -23,7 +23,7 @@ function request(value,ownedJobs){
   if(u.origin!=='http://viewer.invalid'||u.hash||u.pathname!==value.path.split('?')[0]||/[\u0000-\u001f]/.test(value.path)
       ||[...u.searchParams.keys()].some(k=>/token|authorization/i.test(k)))throw Error('Unsupported viewer request.');
   const method=String(value.method||(value.body===undefined?'GET':'POST')).toUpperCase(),p=u.pathname;
-  const read=/^\/api\/mercs\/reviewer\/(catalog|runs|round|live)$/.test(p)||p==='/api/sessions'
+  const read=/^\/api\/mercs\/reviewer\/(catalog|runs|round|live)$/.test(p)||p==='/api/sessions'||p==='/api/mercmode'
     ||/^\/api\/autoplay\/tactical\/(?:stage\/)?[A-Za-z0-9_:%.-]{1,180}$/.test(p);
   const job=/^\/api\/jobs\/((?:[0-9a-f]{16}|[0-9a-f]{32}))$/.exec(p);
   if(method==='GET'&&value.body===undefined&&(read||p==='/api/jobs'||job&&ownedJobs.has(job[1])))return {path:u.pathname+u.search,method};

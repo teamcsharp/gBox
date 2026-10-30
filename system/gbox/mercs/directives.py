@@ -29,7 +29,7 @@ COMMANDS = {
     # as possible on the enemies. And also discharging a rapid fire magnum on them. And placing a landmine."
     'rush': {'label': 'Flash and rush (in among them: every prompt, the magnum, a mine)', 'hold_s': 10},
     # operator 2026-10-29 (#5972): "Emergency flashbang: detonate a flash at the player's position NOW" - rapid-clickable,
-    # no cooldown, every click detonates another flash at once.  The bot throws a flash grenade at its own feet.
+    # Routed by the HTTP API to durable native interventions; never a throw-input substitute.
     'flashbang': {'label': 'Emergency flashbang (detonate a flash at my position NOW)', 'hold_s': 0},
 }
 MAX_HOLD_S = 600.0                                              # the longest a caller may make a standing mode last

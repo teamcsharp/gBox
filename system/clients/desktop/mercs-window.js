@@ -1,6 +1,7 @@
 (function(root){
   'use strict';
   const SID=/^[A-Za-z0-9_-]{1,96}$/;
+  const current=root.GBoxMercsCurrent?.current || (typeof require==='function' ? require('../web/viz/mercs-current.js').current : ()=>null);
   function rotation(from,to){
     const r=from?.mercmode_rotation;
     return r?.v===1&&r.source==='native_terminal_reader'&&/^[a-f0-9]{32}$/.test(r.round_id||'')
@@ -49,6 +50,10 @@
     async function sessions(){if(dead||busy||!state)return;busy=true;const token=revision;
       try{const rows=await api('/api/sessions?include_ended=false');if(dead||token!==revision)return;
         let selected=state.sid;const choices=(Array.isArray(rows)?rows:[]).filter(s=>s&&s.state==='running');
+        const rotationState=await api('/api/mercmode').catch(()=>null);
+        if(dead||token!==revision)return;
+        const playing=current(selected,choices,rotationState?.hosts);
+        if(playing&&playing.session_id!==selected){state.sid=selected=playing.session_id;anchor={sid:selected,game:playing.game_id};mapFor(selected);}
         const selectedRow=choices.find(s=>s.session_id===selected);
         if(selectedRow)anchor={sid:selected,game:selectedRow.game_id};
         else if(selected){

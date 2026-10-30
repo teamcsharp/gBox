@@ -15,6 +15,19 @@ OTHER = {"session_id": "w4-ghi", "state": "running", "game_id": "zzz", "title": 
 ENDED = {"session_id": "w5-old", "state": "ended", "ended": 5, "game_id": "e7ca89bbeb67360d", "title": "Resident Evil 5 Gold Edition"}
 
 
+def test_re6_switch_mods_are_discoverable_with_their_actual_fields():
+    from gbox.re5_mods_tool import RE5ModsIn
+    session = {"session_id":"w6-live", "game_id":"115f9cdbba115432", "title":"Resident Evil 6"}
+    tool = BC.mod_tool_for(session)
+    assert tool == "re5_mods"
+    catalog = BC.describe_ops(tool, session)
+    assert "auto_qte_ram" in catalog["ops"] and "bot_logic" in catalog["ops"]
+    assert set(catalog["fields"]) <= RE5ModsIn.model_fields.keys()
+    inp = BC.mod_input(tool, session["session_id"], "bot_logic", {"values":{"NADES":False}}, session)
+    assert RE5ModsIn(**inp).values == {"NADES":False}
+    assert "unlimited_health" not in catalog["ops"]
+
+
 def test_the_mod_tool_follows_the_session_game_never_the_emulator_alone():
     assert BC.mod_tool_for(RE5) == "re5_mods"
     assert BC.mod_tool_for(RE4) == "re_mods"

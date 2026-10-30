@@ -2789,40 +2789,21 @@ class Bot:
                         f"held: the prompt's {'+'.join(buttons).upper()} mashed, the stick round")
 
     def _emergency_flashbang(self, p, snap, now) -> dict | None:
-        """The operator's emergency flashbang (#5972): every PiP click detonates another flash at the player's position
-        NOW - rapid-clickable, no cooldown.  The flash grenade is thrown straight at his own feet: no target selection,
-        no facing, no gap.  stats emergency_flashes."""
-        from ..directives import Reader
-        if getattr(self, "commands", None) is None:
-            self.commands = Reader()
-        try:
-            cmd, fresh = self.commands.current(self.stats, time.time())
-        except Exception:                                    # noqa: BLE001 - the command never stops a tick
-            return None
-        if cmd != "flashbang" or not fresh:
-            return None
-        nades = p.get("nades") or {}
-        flash = nades.get(NADE_TYPES["flash"])
-        if not flash or flash[1] <= 0:
-            self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
-            return None
-        # Already throwing? Let it finish.
-        if self.nade is not None:
-            return None
-        self.stats["emergency_flashes"] = self.stats.get("emergency_flashes", 0) + 1
-        self.stats["flashes"] = self.stats.get("flashes", 0) + 1
-        # Throw at own feet: target = own position, no facing needed.
-        px, _, pz = p["pos"]
-        self.nade = {"kind": "flash", "index": flash[0], "phase": "face", "at": now, "steps": 0,
-                     "to": (px, pz), "since": now, "seen": [p.get("equipped")], "back_key": "dright",
-                     "gun": p.get("equipped") if isinstance(p.get("equipped"), int)
-                            and p.get("equipped") < WEAPON_INDEXES else None}
-        self.flash_last = now
-        self.nade_last = now
-        if getattr(self, 'native_equip', None) is not None:
-            self.nade['phase'] = 'equip'
-            return self._go('nade', 'nade_flash', self._equip_keys(p, flash[0]), 'requesting the native flash grenade attachment')
-        return self._go("nade", "nade_flash", {"hold": ("zl", "zr")}, "EMERGENCY FLASHBANG at my feet")
+        """Legacy directives cannot substitute inventory/throw input for a native effect."""
+        receipt = self.stats.get("native_flash_confirmed_at")
+        if receipt and receipt != getattr(self, "_native_flash_seen", None):
+            self._native_flash_seen = receipt
+            if 0 <= time.time() - receipt <= 2:
+                self.flash_last = now
+                self.fever_until, self.fever_k = now + FEVER_S, snap.get("kills")
+                # Use observed stun reactions; new/unaffected threats still break
+                # melee fever and receive the normal aimed-fire response.
+                self.flashed = {e.get("ptr", e.get("slot")) for e in snap.get("enemies") or ()
+                    if any(tag in str(e.get("action") or "") for tag in ("DmgFlash", "Piyori"))}
+                self.stats["native_flash_responses"] = self.stats.get("native_flash_responses", 0) + 1
+        if self.stats.get("directive") == "flashbang":
+            self.stats["directive_status"] = "Use the native flash intervention endpoint"
+        return None
 
     def _wall_command(self, p, live, snap, now) -> dict | None:
         """The operator's wall (the PiP's wall button sends the explore / next_area command; operator 2026-10-28: "it
