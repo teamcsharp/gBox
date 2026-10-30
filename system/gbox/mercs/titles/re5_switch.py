@@ -1426,8 +1426,9 @@ class Bot:
     aim stands in."""
 
     def __init__(self, stats: dict | None = None, clock=time.monotonic, release=None, m=None, learn_dir=None,
-                 lessons=None):
+                 lessons=None, equip=None):
         self.stats = stats if stats is not None else {}
+        self.native_equip = equip
         self.clock = clock
         self.release = release                  # the driver's: the live mods' state put back when the bot stops
         for k in ("shots", "hits", "turns", "quick_turns", "backoffs", "wiggles", "holds", "laserless", "reraise",
@@ -3338,6 +3339,8 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        if self.native_equip is not None:
+            self.native_equip.tick()
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
@@ -3347,6 +3350,7 @@ class Bot:
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
+        act = self._native_equipment(act, snap)
         from . import re5_switch_wall
         re5_switch_wall.feedback(self, act, snap, now)
         self._count_sticks(act, now)
@@ -3355,6 +3359,23 @@ class Bot:
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
         return act
+
+    def _native_equipment(self, act, snap):
+        """Translate a quick-slot weapon intent into a native attachment request."""
+        if self.native_equip is None or snap.get('mercenaries_phase') != PHASE_PLAYING \
+                or ((snap.get('player') or {}).get('hp') or 0) <= 0 \
+                or self.doing not in ('rearm', 'raise', 'heal', 'mine', 'flashbang'):
+            return act
+        from .re5_switch_equip import SUPPORTED_IDS
+        keys = set(act.get('hold') or ()) | ({act['tap']} if act.get('tap') else set())
+        grids = [grid for grid, key in QUICK.items() if key in keys]
+        if len(grids) != 1:
+            return act
+        rows = [row for row in snap.get('inventory') or () if row.get('grid') == grids[0]]
+        if len(rows) != 1 or rows[0].get('id') not in SUPPORTED_IDS:
+            return act  # healing items have a separate, unverified lifecycle
+        self.native_equip.select(grids[0], rows[0]['id'])
+        return {'hold': ()}
 
     def _tick(self, snap: dict, now: float) -> dict:
         p = snap.get("player")
@@ -3551,7 +3572,7 @@ class Bot:
             self.flashbang = None
             self.stats["directive_status"] = "EMERGENCY FLASHBANG: no flash grenade in the inventory"
             return
-        if QUICK.get(flash.get("grid")) is None:
+        if QUICK.get(flash.get("grid")) is None and getattr(self, 'native_equip', None) is None:
             self.stats["emergency_flash_no_grenade"] = self.stats.get("emergency_flash_no_grenade", 0) + 1
             self.flashbang = None
             self.stats["directive_status"] = "EMERGENCY FLASHBANG: the flash grenade is not on a D-pad slot"
@@ -3582,6 +3603,9 @@ class Bot:
             self._gun_down()
             fb["in_hand"] = True
             return {"hold": ("zl",)}
+        if getattr(self, 'native_equip', None) is not None:
+            self.native_equip.select(flash.get('grid'), flash.get('id'))
+            return {'hold': ()}
         key = QUICK.get(flash.get("grid"))
         if key is None:
             self.flashbang = None
@@ -4469,7 +4493,9 @@ class RE5Switch(Driver):
             self._mods(m, snapshot(m), False)
         # the learned grid lives with this title's other learning (re5_switch_nav: nav_grids/<stage>.json); the playbook
         # passes no learn_dir, so without this default the grid was never written and every round began blind
-        made.append(Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir or DOOR_FILE.parent))
+        from .re5_switch_equip import Controller
+        made.append(Bot(stats=stats, clock=clock, release=release, m=m, learn_dir=learn_dir or DOOR_FILE.parent,
+                        equip=Controller(m, stats)))
         return made[0]
 
     def prompt_keys(self, button) -> list:

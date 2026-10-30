@@ -2065,7 +2065,7 @@ class Bot:
     tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
     again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None, equip=None):
         from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
@@ -2131,6 +2131,7 @@ class Bot:
             self.stats.setdefault(k, 0)
         self.nav_path, self.nav_goal, self.nav_at = None, None, -1e9   # the walk's waypoints; toward what; planned when
         self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
+        self.native_equip = equip
         self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
         self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
         self.lock_shots: list = []                           # aimed shots waiting for their target's health to fall
@@ -2477,6 +2478,8 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        if self.native_equip is not None:
+            self.native_equip.tick()
         out = self._tick(snap, now)
         from . import re6_switch_wall
         out = re6_switch_wall.mesh_guard(self, snap, out)          # the way probed on the nav mesh before the wall
@@ -2488,13 +2491,13 @@ class Bot:
         eq = (snap.get("player") or {}).get("equipped")
         if self._remote_unsafe(snap) and {"zl", "zr"} <= hold:   # ZL + ZR would set it off with him inside its reach
             self.stats["bomb_zr_blocks"] = self.stats.get("bomb_zr_blocks", 0) + 1
-            out = self._go("bomb", "bomb_det_block", {"tap": "dright"}, "the remote in hand inside its reach: the gun")
+            out = self._go("bomb", "bomb_det_block", self._equip_keys(snap['player'], self._gun_index(snap['player'])), "the remote in hand inside its reach: the gun")
             hold = set()
         if ({"zl", "zr"} <= hold and isinstance(eq, int) and eq >= WEAPON_INDEXES
                 and self.stats.get("act") not in THROW_ACTS):     # an item in hand: ZL + ZR would throw it or set it off
             self.stats["unsafe_trigger_blocks"] += 1
             self.qshot_release, self.fire_down = False, False
-            out = self._go("nade", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back first")
+            out = self._go("nade", "gun_back", self._equip_keys(snap['player'], self._gun_index(snap['player'])), f"an item in hand (slot {eq}): the gun back first")
         re6_switch_wall.feedback(self, snap, out, now)
         try:
             self._look_tick(snap, now)
@@ -2513,6 +2516,20 @@ class Bot:
         if self.bomb_at is not None:
             return math.hypot(self.bomb_at[0] - p["pos"][0], self.bomb_at[1] - p["pos"][2]) < self.book.safe
         return True                                          # where it lies unknown: never
+
+    def _gun_index(self, p, preferred=None):
+        guns = p.get('guns') or {}
+        if preferred in guns.values():
+            return preferred
+        return next((guns[k] for k in (0x107, 0x108, 0x105, 0x104, 0x106) if k in guns),
+                    next((v for k, v in guns.items() if k != 0x11B), None))
+
+    def _equip_keys(self, p, index, legacy='dright'):
+        if self.native_equip is None:
+            return {'tap': legacy}
+        p = p or (self._snap or {}).get('player') or {}
+        self.native_equip.select(p, index)
+        return {'hold': ()}
 
     def _govern(self, snap, out, now) -> dict:
         """The turn governor: his heading turning faster than SPIN_DEG_S, or a sped-up action running, releases the
@@ -2792,6 +2809,9 @@ class Bot:
                             and p.get("equipped") < WEAPON_INDEXES else None}
         self.flash_last = now
         self.nade_last = now
+        if getattr(self, 'native_equip', None) is not None:
+            self.nade['phase'] = 'equip'
+            return self._go('nade', 'nade_flash', self._equip_keys(p, flash[0]), 'requesting the native flash grenade attachment')
         return self._go("nade", "nade_flash", {"hold": ("zl", "zr")}, "EMERGENCY FLASHBANG at my feet")
 
     def _wall_command(self, p, live, snap, now) -> dict | None:
@@ -2885,7 +2905,7 @@ class Bot:
         self.weapon_taps += 1
         self.stats["weapon_switches"] += 1
         self._gun_down()
-        return self._go("reload", "weapon_switch", {"tap": "dright"}, f"to the weapon at wheel {want} (now {eq})")
+        return self._go("reload", "weapon_switch", self._equip_keys(p, want), f"equipping weapon slot {want} (now {eq})")
 
     def _hold_ended(self, now, snap) -> None:
         """A RAM hold's end: stats holds_freed_no_press (it ended before he pressed anything: the game's auto QTE) or
@@ -3895,7 +3915,7 @@ class Bot:
                 n["steps"] += 1
                 n["at"] = now
                 key = self._wheel_key(eq, n["index"])
-                return self._go("nade", "nade_" + n["kind"], {"tap": key}, f"the item wheel to the {n['kind']} grenade")
+                return self._go("nade", "nade_" + n["kind"], self._equip_keys(p, n['index'], key), f"equipping the {n['kind']} grenade")
             else:
                 return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
         if n["phase"] == "face":
@@ -3965,7 +3985,7 @@ class Bot:
             if now - n["at"] >= NADE_STEP_S:
                 n["steps"] += 1
                 n["at"] = now
-                return self._go("nade", "nade_back", {"tap": n["back_key"]}, "the gun back in hand")
+                return self._go("nade", "nade_back", self._equip_keys(p, self._gun_index(p, n.get('gun')), n['back_key']), "equipping the gun")
             return self._go("nade", "nade_back", {"hold": ()}, "the gun coming back")
         return None
 
@@ -3980,7 +4000,7 @@ class Bot:
         kind = next((k for k, t in NADE_TYPES.items() if ((p.get("nades") or {}).get(t) or (None,))[0] == eq), None)
         if kind is None:                                         # not a grenade: the gun back before ZL lifts it
             self.stats["item_gun_backs"] = self.stats.get("item_gun_backs", 0) + 1
-            return self._go("nade", "gun_back", {"tap": "dright"}, f"an item in hand (wheel {eq}): the gun back")
+            return self._go("nade", "gun_back", self._equip_keys(p, self._gun_index(p)), f"an item in hand (slot {eq}): equipping the gun")
         px, _, pz = p["pos"]
         far = [e for e in live if flat(e) >= HELD_MIN_R]
         if kind == "flash" and live:
@@ -4832,7 +4852,7 @@ class Bot:
             if now - self.bomb_phase_at >= BOMB_STEP_S:
                 self.bomb_steps += 1
                 self.bomb_phase_at = now
-                return self._go("bomb", tag, {"tap": self._wheel_key(eq, BOMB_INDEX)}, "the item wheel to the remote bomb")
+                return self._go("bomb", tag, self._equip_keys(p, BOMB_INDEX, self._wheel_key(eq, BOMB_INDEX)), "equipping the remote bomb")
             return self._go("bomb", tag, {"hold": ()}, "the item wheel steps")
         if self.bomb_phase == "equip":
             self.bomb_phase, self.bomb_phase_at = "face", now
@@ -5089,7 +5109,8 @@ class RE6Switch(Driver):
         if learn_dir is None:                                    # the deployment: gbox-data/mercs/learned/<title>
             from .. import lessons as L
             learn_dir = L.ROOT.parent / "learned" / MAP_ID
-        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m))
+        from .re6_switch_equip import Controller
+        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), equip=Controller(m, stats))
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

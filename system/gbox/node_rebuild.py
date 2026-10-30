@@ -38,6 +38,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -66,6 +67,53 @@ _REDACT = (
 _popen = subprocess.Popen
 _sleep = time.sleep
 _exit = os._exit
+
+
+def _terminate_command(proc):
+    """Close the command's own process tree, including inherited output pipes."""
+    try:
+        if HOST_OS == 'windows':
+            from .adapters import _win_terminate_tree
+            # Use our retained Popen handle even if the wrapper already exited;
+            # its descendants may still own stdout and keep the reader blocked.
+            _win_terminate_tree(proc)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)  # Console.run gives it a new session
+    except (OSError, AttributeError):
+        proc.kill()
+
+
+def _spawn_command(cmd, **kwargs):
+    if HOST_OS != 'windows':
+        proc = _popen(cmd, **kwargs)
+        return proc, lambda: _terminate_command(proc)
+    # Assign before the wrapper can spawn children. Walking current parent PIDs
+    # cannot recover grandchildren after an intermediate wrapper has exited.
+    import ctypes
+    from ctypes import wintypes
+    from .refract import _JobObject
+    job, proc = _JobObject(), None
+    try:
+        if not job.ok:
+            raise OSError('Cannot create the rebuild command job')
+        kwargs['creationflags'] = kwargs.get('creationflags', 0) | 0x4  # CREATE_SUSPENDED
+        proc = _popen(cmd, **kwargs)
+        if not job.add(proc):
+            raise OSError('Cannot bind the rebuild command to its job')
+        resume = ctypes.WinDLL('ntdll').NtResumeProcess
+        resume.argtypes, resume.restype = [wintypes.HANDLE], ctypes.c_long
+        if resume(wintypes.HANDLE(int(proc._handle))) != 0:
+            raise OSError('Cannot resume the rebuild command')
+    except BaseException:
+        if proc is not None:
+            proc.kill()
+        job.close()
+        raise
+    lock = threading.Lock()
+    def stop():
+        with lock:
+            job.close()
+    return proc, stop
 
 
 class RebuildIn(BaseModel):
@@ -140,15 +188,17 @@ class Console:
             timeout: float = 1800, expect_s: float = 120) -> int:
         """Run a command: each output line to the console, pct creeping from lo towards hi while it runs."""
         self.line("$ " + " ".join(_quote(a) for a in cmd), lo)
+        self.flush()
         try:
-            proc = _popen(cmd, cwd=str(cwd) if cwd else None, env=scrubbed_env(env), stdout=subprocess.PIPE,
+            proc, stop = _spawn_command(cmd, cwd=str(cwd) if cwd else None, env=scrubbed_env(env), stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                          start_new_session=HOST_OS != 'windows')
         except OSError as exc:
             self.line(f"! could not start {cmd[0]}: {exc}", lo)
             return 127
         started, timed_out = self.now(), threading.Event()
-        timer = threading.Timer(timeout, lambda: (timed_out.set(), proc.kill()))
+        timer = threading.Timer(timeout, lambda: (timed_out.set(), stop()))
         timer.daemon = True
         timer.start()
         try:
@@ -157,10 +207,11 @@ class Console:
                 self.line(raw, lo + (hi - lo) * frac)
             rc = proc.wait()
         except BaseException:
-            proc.kill()
+            stop()
             raise
         finally:
             timer.cancel()
+            stop()
         if timed_out.is_set():
             self.line(f"! {cmd[0]} did not finish within {timeout:.0f} s and was stopped", hi)
             return -1
