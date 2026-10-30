@@ -1,4 +1,5 @@
 """Aimed fire requires the measured laser segment; camera writes are not hit evidence."""
+import math
 import pytest
 
 from gbox.mercs.titles import re6_switch as R
@@ -119,3 +120,66 @@ def test_an_off_floor_threat_stays_targetable_during_stick_correction(monkeypatc
     assert snap["enemies"][0] in bot._off_floor(snap["player"], snap, clock[0])
     assert any("rup" in act.get("hold", ()) for act in acts)
     assert all("zr" not in act.get("hold", ()) for act in acts)
+
+
+def test_retargeting_behind_turns_with_a_bounded_step_even_after_a_long_pause():
+    bot, clock, snap, writes = lock_brain(((100.0, 0.0, -900.0, 700),))
+    p, target = snap['player'], snap['enemies'][0]
+    assert bot._lock(p, target, snap, 1.0)
+    assert abs(writes[-1][2]) <= math.radians(R.LOCK_YAW_DEG_S * R.TICK_S) + 1e-8
+    first = writes[-1][2]
+    assert bot._lock(p, target, snap, 20.0)
+    assert abs(R.wrap(writes[-1][2] - first)) <= math.radians(R.LOCK_YAW_DEG_S * R.LOCK_STEP_MAX_S) + 1e-8
+    # A second decision in the same snapshot cannot spend another angular step.
+    second = writes[-1][2]
+    assert bot._lock(p, target, snap, 20.0)
+    assert writes[-1][2] == pytest.approx(second)
+
+
+def test_pitch_correction_is_bounded_and_yaw_uses_the_short_path_across_pi():
+    bot, clock, snap, writes = lock_brain(((-100.0, 600.0, -900.0, 700),))
+    snap['aim_cam'].update(pitch=-1.0, yaw=math.pi - 0.03)
+    bot._lock(snap['player'], snap['enemies'][0], snap, 1.0)
+    _, pitch, yaw = writes[-1]
+    assert 0 < R.wrap(yaw - (math.pi - 0.03)) <= math.radians(R.LOCK_YAW_DEG_S * R.TICK_S) + 1e-8
+    assert 0 < (pitch + 1.0) * R.PITCH_DEG_PER_UNIT <= R.LOCK_PITCH_DEG_S * R.TICK_S + 1e-8
+
+
+def test_camera_movement_during_melee_does_not_poison_the_next_aim_lock():
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    target = snap['enemies'][0]
+    bot._lock(snap['player'], target, snap, 1.0)
+    bot.lock_fails = [0.8, 0.9]
+    bot._gun_down()
+    snap['aim_cam'].update(yaw=2.0, pitch=0.8)  # a completed kick / turn moved the camera
+    bot._lock(snap['player'], target, snap, 1.1)
+    assert bot.stats['lock_overwritten'] == 0
+    assert bot.stats['lock_fallbacks'] == 0
+    assert bot.lock_fails == []
+
+
+def test_retreating_body_cannot_quick_turn_the_camera_away_from_a_visible_threat():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap['player']['rot'] = math.pi  # running away, but still looking at the enemy
+    acts = run(bot, snap, clock, 6)
+    assert bot.stats['quick_turns'] == 0
+    assert bot.stats['cc_kicks'] + bot.stats['cc_quick_shots'] > 0
+    assert any('zr' in act.get('hold', ()) or act.get('tap') == 'zr' for act in acts)
+
+
+@pytest.mark.parametrize('state', ['deferred', 'disabled', 'unconfirmed'])
+def test_native_grenade_refusal_keeps_the_gun_up_and_returns_to_combat(state):
+    class Refused:
+        def select(self, player, index):
+            return {'state': state, 'reason': 'native_action_busy'}
+
+    bot = R.Bot(stats={}, equip=Refused())
+    bot.aim_since = 0.5
+    bot.nade = {'kind': 'flash', 'index': 11, 'phase': 'equip', 'at': 0.0,
+                'steps': 0, 'to': (0, 300), 'since': 0.0, 'seen': [0], 'gun': 0}
+    player = {'ptr': 123, 'pos': (0, 0, 0), 'equipped': 0, 'guns': {0x107: 0}}
+    assert bot._nade(player, [], [], lambda e: 0, 0, {}, 1.0) is None
+    assert bot.nade is None and bot.nade_last == 1.0
+    assert bot.aim_since == 0.5
+    assert bot.stats['nade_aborts'] == 1

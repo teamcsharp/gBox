@@ -1741,7 +1741,7 @@ KITE_N, KITE_R, KITE_SCAN_R, KITE_DIRS = 3, 800.0, 900.0, 16   # (6 m until 20:4
 #   is fought first (stats escape_fights) - the bomb is set off only from clear of it, so its reach is no danger by
 #   itself; and never ZL + ZR (the set-off) with the remote in hand inside the reach + margin (stats bomb_zr_blocks);
 # - the flash at FLASH_NEAR_N within FLASH_NEAR_R too (the push-through above: it is never called off);
-# - one within QT_BEHIND_R more than QT_BEHIND_ERR behind his body: the quick turn (the stick back + B; operator:
+# - one within QT_BEHIND_R more than QT_BEHIND_ERR behind the camera: the quick turn (the stick back + B; operator:
 #   "That's how you turn around and deal with people behind you"; stats quick_turns_behind);
 # - the heal hint (R) taken when the game shows it with him at TABLET_LOW_HP or under, up and free (stats
 #   tablet_prompt_presses): the game shows it when it will take the tablet.
@@ -1843,6 +1843,7 @@ LOCK_BIAS_DOWN = 0.04
 LOCK_UP_SLACK = math.radians(5)
 LOCK_FAIL_N, LOCK_FAIL_S, LOCK_OFF_S, LOCK_HIT_S, LOCK_TOL = 5, 2.0, 3.0, 0.6, 0.02
 LOCK_RAY_SETTLE_S = 0.3                 # a stable lock must also converge on the actual laser, not just read back
+LOCK_YAW_DEG_S, LOCK_PITCH_DEG_S, LOCK_STEP_MAX_S = 180.0, 90.0, 0.1
 # Aimed fire (the same message: "any enemy on screen or within ~15 m in line of sight, including ceiling or hanging
 # enemies and bosses ... gets locked and shot at the magnum's rapid rate until dead; crowd-control quick shots only at
 # point blank; bosses and large enemies get priority focus fire"): with the lock, every one alive within AIM_LOCK_R
@@ -2143,6 +2144,7 @@ class Bot:
         self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
         self.native_equip = equip
         self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
+        self.lock_write_at = None
         self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
         self.lock_shots: list = []                           # aimed shots waiting for their target's health to fall
         self.down, self.down_dying, self.down_kills_k = False, False, None   # down now; a dying one; kills when it began
@@ -2472,6 +2474,10 @@ class Bot:
 
     def _gun_down(self) -> None:
         self.aim_since, self.fire_down, self.ray_key, self.reraised = None, False, None, False
+        # Melee, movement and quick turns legitimately move the camera. A new raise
+        # must not treat that movement as the game overwriting an old aim command.
+        self.lock_w, self.lock_view, self.lock_write_at = None, None, None
+        self.lock_fails = []
 
     def _act(self, name: str) -> None:
         """What this tick decided, for the watch panel and the round's audit: stats act and acts (counts)."""
@@ -2535,10 +2541,11 @@ class Bot:
                     next((v for k, v in guns.items() if k != 0x11B), None))
 
     def _equip_keys(self, p, index, legacy='dright'):
+        self._equip_result = None
         if self.native_equip is None:
             return {'tap': legacy}
         p = p or (self._snap or {}).get('player') or {}
-        self.native_equip.select(p, index)
+        self._equip_result = self.native_equip.select(p, index)
         return {'hold': ()}
 
     def _govern(self, snap, out, now) -> dict:
@@ -3043,10 +3050,11 @@ class Bot:
             tgt = min(vis, key=flat)
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
-        behind = [e for e in live if flat(e) <= QT_BEHIND_R
-                  and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > QT_BEHIND_ERR]
-        if (behind and not any(flat(e) <= QT_BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-                               < math.radians(60) for e in live) and now - self.quick_at > QUICK_GAP_S
+        # Walking away turns the body while the camera can still face the threat.
+        # A body-relative quick turn then spins that already-correct view away.
+        behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(bearing(e)) > QT_BEHIND_ERR]
+        if (behind and not any(flat(e) <= QT_BEHIND_R and abs(bearing(e)) < math.radians(60) for e in live)
+                and now - self.quick_at > QUICK_GAP_S
                 and not self.down and p.get("equipped") != BOMB_INDEX
                 and not (self.push is not None and now < self.fever_until)):   # (the push-through faces its way)
             self.stats["quick_turns"] += 1                       # one behind him close: turned on at once
@@ -3308,7 +3316,8 @@ class Bot:
         if w is None:
             self.lock_at = now                                  # a fresh convergence grace after a cooldown
         lz = snap.get("laser")
-        if point is None and w is not None and now - self.lock_at >= LOCK_RAY_SETTLE_S \
+        if point is None and w is not None and not getattr(self, 'lock_slewing', False) \
+                and now - self.lock_at >= LOCK_RAY_SETTLE_S \
                 and lz is not None and lz.get("up") and math.dist(lz["from"], lz["at"]) >= 1.0 \
                 and not segment_hits(lz["from"], lz["at"], tgt["pos"]):
             yaw_err, pitch_err = ray_error(lz["from"], lz["at"], pt)
@@ -3326,7 +3335,7 @@ class Bot:
                     return False
             settled = abs(wrap(view[0] - ac["yaw"])) <= LOCK_SETTLE and self.lock_view is not None \
                 and abs(view[1] - self.lock_view[1]) <= LOCK_STILL
-            if settled:                                          # the view at rest: learn the pitch's correction
+            if settled and not getattr(self, 'lock_slewing', False):  # learn only after acquisition has finished
                 err_units = math.degrees(w[2] - view[1]) / PITCH_DEG_PER_UNIT
                 self.pitch_bias = max(-LOCK_BIAS_DOWN, min(LOCK_BIAS_MAX, self.pitch_bias + LOCK_BIAS_GAIN * err_units))
         self.lock_view = view
@@ -3335,6 +3344,19 @@ class Bot:
             cap_deg = math.degrees(max(want_pitch, CLOSE_PITCH) + LOCK_UP_SLACK)
             pitch = min(pitch, (cap_deg - PITCH_DEG_AT_0) / PITCH_DEG_PER_UNIT + max(0.0, self.pitch_bias))
         pitch = max(-1.0, min(1.0, pitch))
+        # RAM writes bypass the stick governor and sensitivity settings. Bound the
+        # actual angular command, including the first tick and recovery after a stall.
+        dt = TICK_S if self.lock_write_at is None else max(0.0, min(now - self.lock_write_at, LOCK_STEP_MAX_S))
+        yaw_delta = wrap(want_yaw - ac['yaw'])
+        pitch_delta = pitch - ac['pitch']
+        yaw_step = math.radians(LOCK_YAW_DEG_S) * dt
+        pitch_step = LOCK_PITCH_DEG_S / PITCH_DEG_PER_UNIT * dt
+        self.lock_slewing = abs(yaw_delta) > yaw_step + 1e-8 or abs(pitch_delta) > pitch_step + 1e-8
+        if self.lock_slewing:
+            self.lock_at = now                                # allow the actual ray to settle after acquisition
+            self.stats['lock_limited'] = self.stats.get('lock_limited', 0) + 1
+        want_yaw = wrap(ac['yaw'] + max(-yaw_step, min(yaw_step, yaw_delta)))
+        pitch = ac['pitch'] + max(-pitch_step, min(pitch_step, pitch_delta))
         redirected = abs(wrap(ac["yaw"] - want_yaw)) > LOCK_SETTLE \
             or math.radians(abs(ac["pitch"] - pitch) * PITCH_DEG_PER_UNIT) > LOCK_SETTLE
         if not self.ram(ac["addr"], pitch, want_yaw):
@@ -3342,6 +3364,7 @@ class Bot:
             self.lock_w = None
             return False
         self.stats["lock_write_ok"] += 1
+        self.lock_write_at = now
         if redirected:
             self.lock_redirect_at = now
         self.lock_w = (pitch, want_yaw, want_pitch)
@@ -3889,7 +3912,6 @@ class Bot:
             self.nade = n = {"kind": kind, "index": nades[NADE_TYPES[kind]][0], "phase": "equip", "at": now - NADE_STEP_S,
                              "steps": 0, "to": (cx, cz), "since": now, "seen": [eq], "back_key": "dright",
                              "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None}
-        self._gun_down()
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
         if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"]
@@ -3906,9 +3928,20 @@ class Bot:
                 n["steps"] += 1
                 n["at"] = now
                 key = self._wheel_key(eq, n["index"])
-                return self._go("nade", "nade_" + n["kind"], self._equip_keys(p, n['index'], key), f"equipping the {n['kind']} grenade")
+                out = self._equip_keys(p, n['index'], key)
+                result = self._equip_result
+                if self.native_equip is not None and (not isinstance(result, dict)
+                        or result.get('state') not in ('requested', 'pending', 'equipped')):
+                    self.stats['nade_aborts'] += 1
+                    self.stats['nade_equip_refused'] = result
+                    self._nade_done(n, now)
+                    return None                              # keep fighting; no wheel retries or gun-down idle loop
+                self._gun_down()
+                return self._go("nade", "nade_" + n["kind"], out, f"equipping the {n['kind']} grenade")
             else:
+                self._gun_down()
                 return self._go("nade", "nade_" + n["kind"], {"hold": ()}, "the item wheel steps")
+        self._gun_down()
         if n["phase"] == "face":
             err = wrap(heading(n["to"][0] - px, n["to"][1] - pz) - yaw)
             locked = self._nade_ground(p, live, snap, now, n)
