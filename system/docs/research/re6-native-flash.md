@@ -31,6 +31,29 @@ process birth 1793304228.05; module base `0x3ca7c04000`.
   (generations 389–408), with the same unchanged hand/HP. Game-thread scheduling
   still affects latency; a strict two-second burst guarantee is not established.
 
+### Deployed production API acceptance
+
+PRs #1590 and #1592 are merged and active on Spark. The first production
+20-click test confirmed only three effects before a projectile allocation was
+lost. That loss now carries allocation evidence, and the controller can accept
+a **new** click after confirming the previous native call completed and the
+original manager vtable was restored. It never retries the lost click or clears
+an unfinished/uncertain native call.
+
+After deployment, session `30af953d95d24274-6070fe126cad45d2`, PID 538105,
+confirmed **20 distinct HTTP requests in 1039.6 ms** through the production
+queue, worker and native explosion path. Individual effects took 30.8–98.0 ms.
+Receipt: Spark `gBox_alt/scratch/agent/production-flash-burst-1793334856314086402.json`.
+This is one measured burst, not a universal latency or success guarantee; the
+underlying allocation-loss cause still needs diagnosis if it recurs.
+
+The ten-minute LAN sample after PR #1591's damage-event indexes/read-lock fix
+received 29,713 frames (23,966 changed), used one connection, and reported no
+stream-read errors. The largest frame gap was 719 ms. Of 751 control requests,
+one `/api/mercmode` request timed out; successful requests had p95 297 ms.
+The remaining timeout means full interaction/stability acceptance is outstanding.
+Local receipt: `.scratch-merc-20261028/lan-stream-controls-after-1592-20261030.json`.
+
 ## Native path and guards
 
 Player inline action manager `+0x13A8`, original vtable `main+0x2858318`;

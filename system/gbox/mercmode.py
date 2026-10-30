@@ -431,25 +431,38 @@ def warm_adoption_owned(store, worker, row, session):
             and (current.get('input') or {}).get('session_id')==sid)
 
 
-def _same_host_worker(store, source, worker):
+def _same_host_worker(store, source, worker, aliases=None):
     if not isinstance(source,str) or not source or not worker.get('id') or not worker.get('name'):return False
     seen=set()
     for _ in range(8):
         if source==worker.get('id'):return True
         if not source or source in seen:return False
-        seen.add(source);alias=store.get('worker_alias',source) or {}
+        seen.add(source)
+        alias=(aliases.get(source) if aliases is not None else store.get('worker_alias',source)) or {}
         if alias.get('name')!=worker.get('name'):return False
         source=alias.get('to')
     return False
 
 
-def _host_matcher(store, worker):
+def alias_snapshot(store):
+    """One small read for a status/inventory computation, keyed by document id.
+
+    Historical launches otherwise perform hundreds of independent SQLite reads
+    while the shared status lock is held. Keep the existing host/depth checks;
+    this snapshot lasts only for this computation, never across registrations.
+    """
+    rows=getattr(store,'rows',None)
+    return {key:json.loads(body) for key,body in rows('worker_alias')} if rows else None
+
+
+def _host_matcher(store, worker, aliases=None):
     """_same_host_worker for one worker, each source worker id walked once (2026-10-26: /api/mercmode took 20-40 s on the
     loaded Spark - inventory() walked the alias chain, up to 8 store reads, for every session of every MercMode title)."""
+    aliases=alias_snapshot(store) if aliases is None else aliases
     seen={}
     def match(source):
         if source not in seen:
-            seen[source]=_same_host_worker(store,source,worker)
+            seen[source]=_same_host_worker(store,source,worker,aliases)
         return seen[source]
     return match
 
@@ -837,12 +850,15 @@ def session_rows(store):
     return store.all('session')
 
 
-def inventory(store, worker, cfg=None, sessions=None):
+def inventory(store, worker, cfg=None, sessions=None, aliases=None):
     """sessions: session_rows(store) (or whole session documents) when the caller already read them (one read for every
     host, not one per game)."""
     cfg = cfg or settings(store, worker['name'])
     from .re_switch import preferred_spec
     rows = []
+    same = _host_matcher(store,worker,aliases)
+    prepared = None
+    known = sessions
     for key in TITLES:
         spec = preferred_spec(key, TITLES[key], cfg)
         games = [g for gid in spec['game_ids'] if (g := store.catalog_get(gid))
@@ -859,9 +875,8 @@ def inventory(store, worker, cfg=None, sessions=None):
         access={'verified':False,'reason':'ROM access has not been verified on this PC'}
         selected_game=games[0] if games else None
         if backend_ready:
-            prepared=host_preparation(store,worker)
-            known=sessions if sessions is not None else session_rows(store)
-            same=_host_matcher(store,worker)
+            if prepared is None:prepared=host_preparation(store,worker)
+            if known is None:known=session_rows(store)
             authority=(worker.get('federation') or {}).get('authority')
             for game in games:
                 gid=game['game_id']
