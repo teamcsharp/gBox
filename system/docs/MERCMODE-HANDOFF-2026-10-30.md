@@ -4,6 +4,105 @@ This checkpoint supersedes the older October 28/29 status sections. The full
 operator request is **not complete**. Preserve the requirements below instead
 of treating a merged hook or synthetic test as gameplay acceptance.
 
+## Latest checkpoint: interaction and aiming repair, 2026-10-30 12:09 UTC
+
+Main contains `2960838b8be81adcd321bf9df61a869410d64473` and follow-up
+`a695397eb` (use git for the full hash). Both were pushed by normal fast-forward
+from the clean feature worktree `.wt-merc-interaction-20261030`; root main
+assimilated them without publishing its unrelated scratch history. GitHub PR
+creation returned a secondary content-creation rate limit at11:36:56 UTC;
+no PR was created. Spark's established autodeploy ran for both revisions, with
+one core service restart for2960838b. The i9 pulled both and recovered through
+its paired supervisor. No local game was launched on JAYBUILTFINALE.
+
+Delivered changes:
+
+- Desktop stream health uses the image's paired authority and credential,
+  verifies the returned SID, and never borrows a URL token or the selected
+  library's authority. This fixes a structural false-reconnect risk; real
+  desktop click acceptance is still outstanding.
+- The sidebar reads behavior, weapons and live mod status in one worker job;
+  early polling is100ms and mutations reuse their verified status response.
+  Foreground session controls have a reserved federation delivery opportunity.
+  RE6 status now includes its throw-speed multiplier.
+- RE5 turn-speed writes scale angular rates, preserving stick_min0.2 and
+  stick_max1.2. The old7x multiplication made the minimum1.4, beyond full input.
+  Old boosted thresholds are repaired on the next apply. Synthetic readback
+  passes; live7x precision across a full round is NOT verified.
+- RE6's first quick-attack recovery no longer subtracts a None timestamp. The
+  old active bot had stopped after200 identical TypeErrors at re6_switch.py:2950.
+- Merc3D uses the documented Type A Y trigger, never probes herb/emote buttons,
+  and runs without B (B walks in Type A). Unchanged HP during attempted fire
+  or commanded forward motion without displacement triggers bounded backoff.
+  The follow-up closes into600cm when no laser reader exists, instead of
+  spending seconds aiming outside the range where its firing rule permits shots.
+- Maps clear stale geometry on missing/new stages and reject delayed predecessor
+  responses. Cache identity includes triangle connectivity. Source research and
+  remaining coordinate-calibration requirements are in `tactical_map.md`.
+- Desktop startup can follow an explicitly selected, bounded recovery-profile
+  directory. No automatic lock bypass or duplicate-app fallback is introduced.
+  The selector was NOT used on this machine; its original profile recovered.
+
+Evidence in root `.scratch-merc-20261028` (remote copies under Spark's
+`gBox_alt/scratch/agent`; do not commit credentials or raw process dumps):
+
+- `interaction_reports_20261030.json`: latest12 rounds before deployment were
+  eight deaths and four interrupted runs, no verified S result. The24-hour
+  aggregates showed RE5:3815 hits/212 deaths/236 rounds; RE6:4892 hits/100 deaths/
+  140 rounds. RE5 swarm-with-gun-lowered and aimed-away/behind episodes were
+  prominent. These are failures, not successful autonomous play.
+- `spark_tunnel_compare_20261030.json`:40 probes each to direct LAN and a
+  temporary SSH forward using the existing trusted host key; both median31ms
+  and zero errors, maxima891/875ms. The forward closed afterward; no persistent
+  tunnel was installed. No evidence it would fix the observed UI interruptions.
+- `lan-stream-2960838b-20261030.json`:90.1 seconds,5095 frames on one connection,
+  129 concurrent status requests, zero stream/control errors, maximum frame gap
+  266ms, control p95 110ms/max1218ms. This is API/MJPEG acceptance, not desktop
+  click-to-game latency.
+- `live_controls_acceptance_20261030.receipt.json`: diagnostic job
+  b73b049004554853 stayed queued over25seconds because actor=agent is background
+  work and CPU was92.6% against a70% budget. agent_use=false cannot override
+  actor classification. It does NOT measure foreground operator latency.
+  The later observer cancels this diagnostic only if still queued.
+- `i9-app-pip-2960838b-20261030.jpg`: own-app capture visually confirms Merc3D
+  inside PiP. Final revision also retained compact=true and captured an app
+  frame on the i9. Native samples showed enemy HP falling and score1500 after
+  the trigger fix; the follow-up observed1800. Both missions still failed.
+- `post_deploy_observe_20261030.receipt.json`: fresh RE6 active at32 kills,
+  49 trigger-counted shots/27 observed hits, accuracy0.551, no tick error field.
+  Peak spin3065.5deg/s remains a warning about snap/turn behavior, not a success.
+  This observation ran during RE6, so no new RE5 native7x readback was obtained.
+
+Validation: targeted Python batch127passed; broader RE6/Merc3D batch257passed
+with one fixture failure (the test assumed nondefault CEILING_R400). Correcting
+that explicit fixture, the final affected batch95passed. JS final35passed,
+including browser map handover. Follow-up Merc3D17passed and recovery-profile
+test passed. Do not sum overlapping suites into a unique-test total.
+
+Latest identities, historical once another title/worker starts:
+
+- i9 supervisor request `e0e68fe8eb954750a2d67e637053a589` recovered, worker
+  `d724196ebe754679`, epoch`5a4598ff080162e69f9385bdc1aed670`, Merc3D session
+  `d724196ebe754679-eea185a7998445a8`, fresh running telemetry, compact=true.
+  Local scheduler still has only Merc3D; RE4 VR/Refract readiness remains open.
+- Spark worker`1aaa998f38a040fe`, active RE6 session
+  `1aaa998f38a040fe-c5ff44d500d7433e` at the last observation.
+- JAYBUILTFINALE viewer PID12124/birth1793361527.2960165, worker
+  `e646702200ba4939`, epoch`850212c4b556eb4df8359db247372ef5`, bridge connected,
+  zero local sessions. Recovery request9268c69fcc8a4063a8d15f092450154c had reported
+  unknown: Windows retained the exited PID52568 and its Chromium profile lock.
+  Restart Manager confirmed that exact owner; the replacement initially failed
+  with sharing violation32. The old PID eventually disappeared and a guarded
+  clean-environment launch restored the original profile. Receipt
+  `restore_viewer_a695397e_20261030.receipt.json`. Do not repeat against a live app.
+
+Remaining: actual desktop interaction/instant settings acceptance; sustained
+accurate7x aim and S-rank survival; Merc3D native laser, ammunition, bonus-route
+and instant-flash hooks; per-level native map calibration; all-title flash/QTE/
+mine/any-weapon requirements listed below. RTX2070 and Intel UHD630 are present,
+with Citra hardware shaders/JIT/cache enabled, but GPU vision/decision inference
+has NOT been implemented or validated. Do not close the outstanding tickets.
+
 ## Authorization and operating rules
 
 The operator authorizes GBox implementation, merges, deployment, remote
