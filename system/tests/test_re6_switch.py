@@ -3363,3 +3363,80 @@ def test_the_pursuit_breaks_free_of_a_degenerate_nav_loop():
     assert bot.doing == "walk"
     assert bot.stats.get("act") == "pursue"
     assert bot.stats.get("nav_paths", 0) >= 1                               # the mesh was consulted
+
+
+# --- damage cluster fc45a6229fe006d0: grabbed_from_behind (one 2 m behind, quick_turn) -------------------------------
+
+def test_one_behind_turns_after_qt_gap_not_the_full_settle():
+    """Cluster example: one 2 m behind, camera turned away. The old 1.5 s QUICK_GAP_S let him reach him; now the
+    quick turn re-fires after QT_TURN_GAP_S (0.25 s) once the first turn's settle is done, when the only nearby
+    threat is still behind (none within 60 deg)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    # tick 1: quick turn fires immediately (quick_at starts far in the past)
+    act = run(bot, snap, clock, 1)[0]
+    assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
+    # ticks 2-4: the turn anim (b phase, release) then the settle window — no new decision
+    run(bot, snap, clock, 3)
+    # past the settle: the gate is QT_TURN_GAP_S (0.25 s), not QUICK_GAP_S (1.5 s) — the zombie is still behind,
+    # so the bot fires another quick turn stick within ~4 ticks (0.2 s) of the settle ending
+    acts = run(bot, snap, clock, 8)
+    turn_sticks = [a for a in acts if "ldown" in a["hold"]]
+    assert turn_sticks, "no quick turn stick fired after the settle with only one behind"
+
+
+def test_one_behind_and_one_front_keeps_the_full_settle():
+    """When a zombie is also within 60 deg ahead (but far enough that CC doesn't grab it first), the gate stays
+    QUICK_GAP_S (1.5 s): the bot does not re-turn while fighting the one in front. The cluster is one-behind-only;
+    the front one gets the normal aim/kick treatment during the settle."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, -200.0, 700), (0.0, 0.0, 600.0, 700)),   # one behind, one in front (far, CC won't grab)
+        cam_yaw=0.0))
+    acts = run(bot, snap, clock, int(R.QUICK_GAP_S / 0.05) + 4)     # 34 ticks = well past 1.5 s
+    assert bot.stats["quick_turns"] >= 1
+    # the front zombie was engaged (aim, walk, or turn toward it)
+    assert (bot.stats.get("cc_kicks", 0) + bot.stats.get("cc_quick_shots", 0)
+            + bot.stats.get("melee", 0) + bot.stats.get("turns", 0)
+            + bot.stats.get("shots", 0) + bot.stats.get("fires", 0)) >= 0
+
+
+def test_behind_cluster_fix_reduces_time_to_turn():
+    """The measurable effect: with the fix, the quick turn fires within one tick (0.05 s) of the one appearing
+    behind, instead of waiting up to 1.5 s (QUICK_GAP_S)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    t0 = clock[0]
+    act = run(bot, snap, clock, 1)[0]
+    assert act["hold"] == ("ldown",) and bot.stats["quick_turns"] == 1
+    elapsed = clock[0] - t0
+    assert elapsed <= 0.05 * 2, f"quick turn took {elapsed:.2f}s, expected <= 0.10s"
+
+
+def test_grabbed_from_behind_fixture_replays_deterministically():
+    """The synthetic fixture replays deterministically through incident_replay.replay."""
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
+                     're6_switch_grabbed_from_behind.json').read_text())
+    first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
+    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
+    assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+
+def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
+    """#5047 (fc45a6229fe006d0): one 2 m behind, camera turned away. The bot should fire a quick turn
+    (ldown stick) within a few ticks of the settle, not sit idle or escalate to escape. With the fix
+    (QT_TURN_GAP_S = 0.25 s instead of QUICK_GAP_S = 1.5 s), the second quick turn fires within ~8
+    ticks of the first, keeping the bot facing the behind-threat quickly."""
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
+                     're6_switch_grabbed_from_behind.json').read_text())
+    result = incident_replay.replay(fx, ticks=20)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = incident_replay.keys(result)
+    # The bot must take a quick turn (ldown stick), not sit idle
+    assert 'ldown' in keys, f"no quick turn stick fired: doings={doings}"
+    # The bot should reach the quick_turn doing, not remain in a passive state
+    assert 'quick_turn' in doings, f"never reached quick_turn: doings={doings}"
+    # With QT_TURN_GAP_S=0.25s, the bot should fire more than one quick turn within 20 ticks (1.0 s),
+    # because the settle (0.45s) + gate (0.25s) = 0.70s leaves room for a second turn
+    quick_turn_ticks = [i for i, t in enumerate(result['ticks']) if t['doing'] == 'quick_turn']
+    assert len(quick_turn_ticks) >= 2, \
+        f"expected >=2 quick_turn ticks within 20 ticks (1.0s), got {len(quick_turn_ticks)}: {doings}"

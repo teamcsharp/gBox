@@ -1,0 +1,108 @@
+{
+    "schema": "gbox.mercs.incident-replay/1",
+    "title": "01002A000CD48000",
+    "event_id": "fc45a6229fe006d0-example-1",
+    "observed_at": 1793145800.0,
+    "hp_before": 900,
+    "hp_after": 780,
+    "hp_max": 900,
+    "loss": 120,
+    "held": ["ldown"],
+    "snapshot": {
+        "mercenaries_phase": 1,
+        "mercenaries_mode": "no_mercy",
+        "timer": 90.0,
+        "score": 0,
+        "kills": 0,
+        "combo": 0,
+        "combo_bonus": 0,
+        "combo_timer": 0.0,
+        "bonus_s": 0,
+        "module_base": 260512432128,
+        "camera": {
+            "yaw": 0.0,
+            "pitch": 0.0,
+            "unit": 0,
+            "pos": [0.0, 140.0, -200.0],
+            "target": [0.0, 140.0, 100.0]
+        },
+        "player": {
+            "ptr": 401072455840,
+            "pos": [0.0, 0.0, 0.0],
+            "rot": 0.0,
+            "hp": 780,
+            "hp_max": 900,
+            "ammo": 18,
+            "state": 0,
+            "motion": 342,
+            "tablets": 8,
+            "bomb": {"count": 1, "out": false},
+            "equipped": 5
+        },
+        "enemies": [
+            {
+                "ptr": 401075830944,
+                "slot": 24,
+                "pos": [0.0, 0.0, -200.0],
+                "hp": 700,
+                "hp_max": 700
+            }
+        ],
+        "laser": {
+            "up": false,
+            "alpha": 0,
+            "from": [0.0, 140.0, 0.0],
+            "at": [0.0, 140.0, 400.0]
+        }
+    },
+    "counters": {
+        "kills": 0,
+        "score": 0,
+        "combo": 0,
+        "deaths": 0,
+        "holds": 0,
+        "tablet_presses": 0,
+        "tablet_misses": 0,
+        "tablets": 0,
+        "timer": 90.0
+    },
+    "decision": {
+        "act": "quick_turn",
+        "phase": "quick_turn",
+        "aim": "one behind: quick turn"
+    },
+    "preceding_history": [
+        {
+            "at": 1793145799.0,
+            "pos": [0.0, 0.0, 0.0],
+            "rot": 0.0,
+            "hp": 900,
+            "kills": 0,
+            "score": 0,
+            "combo": 0,
+            "held": [],
+            "plan": {"target": {"id": 401075830944, "kind": "enemy"}},
+            "navigation": {},
+            "mine_events": []
+        },
+        {
+            "at": 1793145799.5,
+            "pos": [0.0, 0.0, 0.0],
+            "rot": 0.0,
+            "hp": 900,
+            "kills": 0,
+            "score": 0,
+            "combo": 0,
+            "held": ["ldown"],
+            "plan": {"target": {"id": 401075830944, "kind": "enemy"}},
+            "navigation": {},
+            "mine_events": []
+        }
+    ],
+    "cluster": {
+        "id": "fc45a6229fe006d0",
+        "game_id": "115f9cdbba115432",
+        "signature": "grabbed_from_behind",
+        "label": "grabbed from behind: one close, camera turned away"
+    }
+}
