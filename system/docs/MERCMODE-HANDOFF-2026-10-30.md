@@ -161,8 +161,23 @@ The next reload retained the i9 instance but expanded out of PiP: embedTick's
 missing-native-session branch called compactRestore before the app exited and
 saved compact=false. The follow-up suppresses that automatic restore for an
 explicit instance pin; explicit Full app still works.46 UI regression tests
-pass, including the actual embedTick replacement branch. This final renderer
-follow-up still needs activation at this checkpoint.
+pass, including the actual embedTick replacement branch. Commit `13debc2a`
+is now merged, assimilated locally and deployed to both hosts. A single F5 was
+sent only to the verified i9 gBox window at1793357406.58; no global input or
+second force-restart key was used. The same native PID25400 and birth survived.
+Fresh local dispatch `5d235514db524c8ab8a90cc6d4a49957` restored compact=true
+with the same local session at1793357441.025. Screenshot
+`.scratch-merc-20261028/i9-final-local-pip-20261030.jpg` shows its Continue menu
+inside the1031x580 PiP; the next telemetry progressed to character selection.
+
+Further observation of mission0x0101 saw score300->600 but then stopped doing
+damage while trigger decisions continued. The bot returned a continuously held
+trigger; engine.hold diffs keys and therefore sent no repeated presses. The
+follow-up adds100ms pressed/80ms released phases while preserving aim and
+existing line-of-fire gating. Delayed ticks cannot skip the release phase;
+losing a target releases everything.95 bot/menu/learning/hot-reload tests pass,
+including an edge-triggered gun simulation. Native acceptance is still pending
+for this trigger follow-up; do not equate trigger counters with actual shots.
 
 ## Earlier merged work
 

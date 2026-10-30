@@ -529,7 +529,7 @@ class Merc3D(Driver):
             return False
 
     round_counters = ("confirmed_shots", "point_blank_shots", "close_shots", "long_shots", "sky_corrections", "kites",
-                      "los_blocks", "retargets")
+                      "los_blocks", "retargets", "trigger_presses", "trigger_releases")
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         from .merc3d_bot import Bot

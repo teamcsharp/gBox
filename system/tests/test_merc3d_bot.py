@@ -130,3 +130,42 @@ def test_the_fire_key_is_learned_from_his_vitality():
         act = b.tick(snap([((0.0, 0.0, 120.0), 540)]))
     assert B.FIRE["key"] == "y"
     B.FIRE.update(key=B.CONTROLS["fire"], confirmed=False)
+
+
+def test_semi_automatic_target_receives_repeated_trigger_edges_without_lowering_aim(monkeypatch):
+    monkeypatch.setitem(B.FIRE, "key", "y")
+    monkeypatch.setitem(B.FIRE, "confirmed", True)
+    clock = Clock()
+    bot = B.Bot(clock=clock)
+    held = False
+    released_at = None
+    hits = 0
+    for _ in range(120):
+        act = bot.tick(snap([((0, 0, 300), 600)]))
+        assert C["raise"] in act["hold"]
+        down = "y" in act["hold"]
+        # An edge-triggered gun accepts another shot only after a visible
+        # released frame. Test the resulting action stream, not private phase state.
+        if down and not held:
+            assert released_at is None or clock.t - released_at >= 1 / 30
+            hits += 1
+        elif held and not down:
+            released_at = clock.t
+        held = down
+        clock.t += 1 / 60
+    assert hits >= 8
+
+
+def test_slow_ticks_cannot_skip_trigger_release_and_target_loss_releases_everything(monkeypatch):
+    monkeypatch.setitem(B.FIRE, "key", "y")
+    monkeypatch.setitem(B.FIRE, "confirmed", True)
+    clock = Clock()
+    bot = B.Bot(clock=clock)
+    target = snap([((0, 0, 300), 600)])
+    assert "y" in bot.tick(target)["hold"]
+    clock.t += 5
+    assert bot.tick(target)["hold"] == (C["raise"],)
+    clock.t += 5
+    assert "y" in bot.tick(target)["hold"]
+    assert bot.tick(snap([]))["hold"] == ()
+    assert "y" in bot.tick(target)["hold"]

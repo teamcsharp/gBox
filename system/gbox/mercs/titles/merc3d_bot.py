@@ -30,6 +30,9 @@ FIRE_CANDIDATES = ("a", "y", "x", "r2", "l", "b")
 FIRE_PROBE_S, FIRE_PROBE_R = 1.5, 350.0
 FIRE = {"key": CONTROLS["fire"], "confirmed": False}
 RELOAD_KEEP = ("FIRE",)
+# The engine diffs held keys; holding a semi-automatic trigger forever produces
+# only one press. Keep the aim raised but give the game observable release frames.
+FIRE_DOWN_S, FIRE_UP_S = 0.10, 0.08
 
 CC_R, CC_N = 260.0, 3                   # crowd control: this many foes inside this radius (cm)
 GRAB_R = 130.0                          # a foe this close behind / beside him: get out first
@@ -88,6 +91,8 @@ class Bot:
         self.long_look = (None, 0.0, -1e9)  # (target, until, last started)
         self.doing, self.why = "idle", ""
         self.probe = None                   # (target ptr, his vitality, trigger seconds so far, last tick)
+        self.trigger_down = False
+        self.trigger_at = None
 
     # --- the engine's interface ------------------------------------------------------------------------------------------
     def prompt_ok(self, button, snap, now) -> bool:
@@ -101,6 +106,8 @@ class Bot:
         self.stats[key] = self.stats.get(key, 0) + n
 
     def _go(self, doing: str, keys, why: str = "") -> dict:
+        if doing != "fire":
+            self.trigger_down, self.trigger_at = False, None
         self.doing, self.why = doing, why
         self.stats["doing"], self.stats["why"] = doing, why[:160]
         self._count("t_" + doing)
@@ -146,6 +153,19 @@ class Bot:
             return FIRE["key"]
         self.probe = (ptr, pr[1], spent, now)
         return FIRE["key"]
+
+    def _trigger(self, tgt, dist, err, now) -> str | None:
+        key = self._fire_key(tgt, dist, err, now)
+        if self.trigger_at is None:
+            self.trigger_down, self.trigger_at = True, now
+            self._count("trigger_presses")
+        elif now - self.trigger_at >= (FIRE_DOWN_S if self.trigger_down else FIRE_UP_S):
+            self.trigger_down = not self.trigger_down
+            self.trigger_at = now
+            self._count("trigger_presses" if self.trigger_down else "trigger_releases")
+        # Advance only one phase per observed tick. A slow/stalled reader must
+        # still send a release, rather than skip it with a wall-clock modulo.
+        return key if self.trigger_down else None
 
     @staticmethod
     def _points(e) -> tuple:
@@ -260,7 +280,7 @@ class Bot:
         point_blank = dist < POINT_BLANK and abs(err) < math.radians(15)
         blind_ok = not long and ray is None and dist < FALLBACK_FIRE_R and abs(err) < math.radians(AIM_TOL_DEG)
         if confirmed or point_blank or blind_ok:
-            keys.add(self._fire_key(tgt, dist, err, now))
+            keys.add(self._trigger(tgt, dist, err, now))
             self._count("confirmed_shots" if confirmed else ("point_blank_shots" if point_blank else "close_shots"))
             if confirmed and dist > 800:
                 self._count("long_shots")
