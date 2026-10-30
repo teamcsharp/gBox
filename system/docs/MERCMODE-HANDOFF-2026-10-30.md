@@ -4,7 +4,91 @@ This checkpoint supersedes the older October 28/29 status sections. The full
 operator request is **not complete**. Preserve the requirements below instead
 of treating a merged hook or synthetic test as gameplay acceptance.
 
-## Latest checkpoint: interaction and aiming repair, 2026-10-30 12:09 UTC
+## Latest checkpoint: quiet flash controls and live aim repair, 2026-10-30 13:36 UTC
+
+Main now contains PR1610 (`095b2f33b23cdb0b64bf3d7fc786e16b9584d561`),
+`ae52cb6e67aac02d2654ce48b26af1bba2c666ea` and
+`962c7b497854a39ba9a7f12280e27b0b55b3e949`. The two aim commits were pushed
+by normal fast-forward from the isolated feature checkout after GitHub returned
+a secondary PR-creation rate limit at13:12 UTC. No aim PR was created. Root main
+assimilated both without publishing its unrelated scratch history.
+
+The operator clarified that a second task is integrating the exposed controls
+into Pine. Its uncommitted primary-weapon/service/MCP work is preserved. In
+particular, root and Spark's live `re6_switch.py` had identical Pine edits;
+the updater correctly preserved that file instead of overwriting it. The aim
+changes were merged into it, tested again, then installed with exact before/after
+SHA256 guards and a backup. Current integrated file hash:
+`ed22de33b7de5570b501588e8963d48503e689f0cab6a93611a5a6979290376c`.
+Do not replace it with clean-main's file and discard the Pine changes.
+
+Delivered:
+
+- Every flash tap submits its own request. PiP/shared viewer show no flash toast
+  or dialog; failure/receipt state remains on the icon tooltip and API/MCP.
+  F is the default shortcut; right-click the icon to change/unmap/reset it.
+  Shortcuts persist and ignore text entry, key repeat and composition. PiP's
+  capture context-menu handler now lets the icon's menu open. Quick choices
+  already dispatch directly. Sidebar queued-status polling no longer reassigns
+  a const.
+- Native flash recovery accepts only a completed mailbox owned by the original
+  player/build/allocation. Pending/executing callbacks stay attached after a
+  host timeout; they cannot be republished. A completed failed flash can recover
+  for later clicks. Weapon uncertainty remains separate and quarantined.
+- Live RE6 evidence caught a quick turn with an enemy97cm away,147deg behind
+  the retreating body but only4deg off the camera. The rule now uses camera
+  bearing. RAM aim yaw/pitch steps are bounded, including duplicate/delayed ticks.
+  Gun-down actions discard obsolete aim feedback rather than counting legitimate
+  melee/movement as overwritten writes. Refused native grenade selection returns
+  to combat immediately instead of idling through wheel-era retries. A locked
+  operator primary also prevents starting an automatic grenade selection.
+- Raised RE6 pitch was calibrated using the lowered-camera23deg/unit scale.
+  Live weapon_ready_loop pairs(input, view degrees) were(-.268,-12.9),
+  (-.310,-15.3),(-.187,-8.6). The raised-weapon conversion is now60deg/unit with
+  +3deg offset, with correction limits kept in physical degrees. Measured laser
+  intersection is still required for aimed fire.
+- RE5's live7.5x setting was825deg/s turn and434.25deg/s aim. Job
+  `a67457e45cb149f6` completed and read back1x:110deg/s turn,57.9deg/s aim,
+  stick thresholds0.2/1.2. This is a mitigation; accurate high-speed RE5 aiming
+  remains unfinished, and RE5 still lost rounds afterwards.
+
+Validation: PR1610 had118 Python passes/one skip and66 JS/browser passes.
+The final aim change passed260 RE6 tests (aim, wall navigation, down/dying),
+plus30 aim tests against the root's integrated Pine version. After explicit
+Spark restart for1610, RE5 production controls confirmed20/20 native flashes
+in1154.3ms;11 enemy DmgFlash reactions, unchanged inventory, original dispatch
+restored. Receipt `re5-production-flash-1793364592303504481.json`.
+RE6 later confirmed19/20 in1784.3ms. One allocation changed before detonation;
+three subsequent clicks succeeded without permanent lockout. Receipt
+`production-flash-burst-1793367003163283517.json`. **Every-click RE6 flash
+reliability is not proven and still needs the allocation race resolved.**
+
+Spark worker75b4653ca8e04817 is still running. Aim reload job
+`0c5a5a44adab49a1` succeeded with2.38s bot gap, no service/game restart.
+RE6 SID `75b4653ca8e04817-6e30a14170254500`, RE5 warm SID
+`75b4653ca8e04817-59fa77e99a6a4e3a` (reobserve before mutations).
+Post-calibration30s trace `re6-aim-trace-1793367225955533818.json` showed
+native weapon fire, body-aligned laser shots (one at yaw-1.2/pitch-1.2deg),
+HP900 throughout, and zero tick errors. Later same-round telemetry showed
+Leon/High Seas Fortress48kills,20 trigger counts,10 attributed hits,0 deaths
+since reload,14 lock fallbacks. These counters and the short sample do NOT
+establish round survival, consistent accuracy or S rank. Prior failed rounds
+remain failures. Most owned-only laser samples had a zero origin; do not simply
+replace the guarded global reader with own_laser and accept those as real rays.
+
+All receipts above are under `/home/ehm_eckx/gBox_alt/scratch/agent` on Spark.
+The local desktop paired relaunch request57c5f64c8bd94076aaeef1c9074d12a5
+recovered as worker4dd6180f87d64dcb, epochca9db3fa24134ed4a61cfa8f045fb10b,
+PID5344/birth1793364881.230265. Bridge connected, zero local games. Its saved
+view and app-frame capture show compact PiP following the active Spark RE6 run.
+No game was launched on JAYBUILTFINALE. i9 workerd724196ebe754679 continued
+Merc3D; no new i9 deployment or RE4VR acceptance in this checkpoint.
+
+Remaining full-ticket requirements below still apply. Native all-title flashes,
+RE6 allocation-race elimination, mines/grenade bursts, all-QTE acceptance,
+accurate high-speed aim and reliable native S-rank survival are unfinished.
+
+## Previous checkpoint: interaction and aiming repair, 2026-10-30 12:09 UTC
 
 Main contains `2960838b8be81adcd321bf9df61a869410d64473` and follow-up
 `a695397eb` (use git for the full hash). Both were pushed by normal fast-forward
