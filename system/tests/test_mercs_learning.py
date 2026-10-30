@@ -329,3 +329,36 @@ def test_re6_switch_bomb_act_damage_fixture_replays_deterministically():
     first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
     assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
     assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+
+def test_wall_los_aim_cluster_fixture_drives_the_bot_and_the_wall_gate_fires():
+    """#5540 batch: laser locked on a wall while the bot aims out of sight (cluster wall_los_aim, game 115f9cdbba115432).
+
+    The representative example: the player is at the origin, the camera is 2 m behind (0,140,-200) facing +z, and the
+    one live enemy is 9 m out at (0,0,900). The laser is up but its ray ends at (0,115,700) - a wall 7 m from the
+    muzzle - so the bot's lock is on the wall, not the zombie. The fix (the wall gate in _los_tick) sees the laser's
+    ray end short of the targeted zombie, marks him out of sight for WALL_BLOCK_S (wall_blocks), and drops the target
+    so the bot breaks free and walks around instead of holding the aim on the wall and eating the wall's recoil kick.
+    """
+    fx = json.loads((FIXTURES / "re6_switch_wall_los_aim.json").read_text())
+    assert fx["cluster"]["signature"] == "wall_los_aim" and fx["cluster"]["game_id"] == "115f9cdbba115432"
+    first, second = incident_replay.replay(fx, ticks=40), incident_replay.replay(fx, ticks=40)
+    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]   # deterministic
+    assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+    # The wall gate banks aim-on-wall time, then (once it crosses WALL_DROP_S) drops the target and marks the
+    # zombie out of sight, so the bot breaks free and walks around instead of holding the aim on the wall.
+    res = incident_replay.replay(fx, ticks=40)
+    bot, stats = res["bot"], res["stats"]
+    e = fx["snapshot"]["enemies"][0]
+    assert bot._ray_short((0.0, 0.0, 0.0), (0.0, 115.0, 700.0), e)      # the ray ends short of his chest: a wall between
+    assert stats.get("wall_aim_s", 0.0) > 0.0                            # the aim-on-wall time is banked
+    assert bot.target is None, f"target not dropped by the wall gate: {bot.target}"
+    assert bot.is_blocked(e, bot.clock()), "the wall-gated target is not out of sight"
+
+    # Guardrail: the same scene with a clear ray (the laser reaches him) is NOT wall-gated - no false positive.
+    clear = json.loads(json.dumps(fx))
+    clear["snapshot"]["laser"]["at"] = [0.0, 115.0, 895.0]              # 5 cm short of his chest: through, not a wall
+    r2 = incident_replay.replay(clear, ticks=4)
+    assert r2["stats"].get("wall_aim_s", 0.0) == 0.0, \
+        f"clear ray must not trip the wall gate: {r2['stats'].get('wall_aim_s')}"

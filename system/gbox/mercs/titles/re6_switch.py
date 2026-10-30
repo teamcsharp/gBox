@@ -1614,6 +1614,8 @@ AUTO_IDS = frozenset({0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x28})   # ZR held, no
 # out of sight: he walks at the nearest with a side step swapped every DETOUR_S (a way round). A still laser is stale
 # only once the camera turned RAY_STALE_TURN under it (standing still behind a wall freezes it too).
 BLOCK_S, NOHIT_S, SEEN_S, NOHIT_GAP_S = 2.5, 1.0, 3.0, 0.5
+WALL_DROP_S, WALL_BLOCK_S = 0.3, 3.0       # the laser on a wall WALL_DROP_S: the target left for WALL_BLOCK_S (wall_blocks)
+WALL_MIN_R = 600.0                         # the ray must end at least this far from the muzzle to count as a wall
 BLOCK_MIN_R = 200.0                     # never out of sight this near: crowd control always works on him (live 11:37:
                                         # quick shots that took no health marked ones at 87-92 cm, and he died twice)
 LASER_SEEN_S = 1.0                      # retention for recent measured laser-hit telemetry
@@ -2086,7 +2088,7 @@ class Bot:
                   "reraise", "restale", "deaths", "tablets", "tablet_presses", "tablet_misses", "backoffs",
                   "pulls_hit", "pulls_miss", "first_pull_n", "bombs_placed", "bombs_detonated", "bomb_kills",
                   "bomb_misses", "holds_freed_no_press", "holds_shaken", "cc_quick_shots", "cc_kicks",
-                  "los_blocks", "nohit_blocks", "cc_blocks", "camera_far_holds", "detours", "bomb_walks",
+                  "los_blocks", "nohit_blocks", "cc_blocks", "wall_blocks", "camera_far_holds", "detours", "bomb_walks",
                   "bomb_self_hits", "bomb_aborts", "bomb_escapes", "bomb_det_holds", "bomb_kicks",
                   "bomb_hits_taken", "flashes", "frags", "fires", "nade_aborts", "nade_back_fails", "fever_kicks",
                   "grenade_kills", "combo_breaks", "combo_best", "combo_pushes", "unsafe_trigger_blocks", "held_item_throws", "item_gun_backs", "dyings",
@@ -2241,6 +2243,8 @@ class Bot:
         self.ray_yaw = None                                  # the camera's yaw when the laser's ray last moved
         self.cc_shot = None                                  # (zombie, when, {zombie: health} within CC_R)
         self.cc_miss: dict = {}
+        self._wall_since = None                              # when the laser's ray last ended short of the target (wall)
+        self._wall_t = None                                  # the last tick's time for the wall_aim_s delta
         self.detour, self.detour_at = "lleft", -1e9
         self._ppos, self._pos_of = None, {}                  # his position this tick, the zombies' by id
         # time bonuses: the one being shot (since when), those left for a while, this round's book
@@ -4205,6 +4209,30 @@ class Bot:
             self.seen = {k: t for k, t in self.seen.items() if now - t <= SEEN_S}
         if len(self.laser_seen) > 256:
             self.laser_seen = {k: t for k, t in self.laser_seen.items() if now - t <= LASER_SEEN_S}
+        # the wall gate: the laser's ray ends short of the targeted zombie (a wall between) - aim on it WALL_DROP_S:
+        # out of sight for WALL_BLOCK_S (wall_blocks); clears when the ray reaches him or the laser goes down
+        laser = snap.get("laser") or {}
+        origin, dot = laser.get("from"), laser.get("at")
+        if self._wall_t is not None:
+            wall_dt = min(max(now - self._wall_t, 0.0), TICK_S)
+        else:
+            wall_dt = 0.0
+        self._wall_t = now
+        if (origin and dot and laser.get("up") and self.target is not None):
+            tgt = next((e for e in snap.get("enemies") or ()
+                        if e.get("ptr", e.get("slot")) == self.target and (e.get("hp") or 0) > 0), None)
+            if (tgt is not None and self._ray_short(origin, dot, tgt)
+                    and math.dist(origin, dot) >= WALL_MIN_R):
+                self.stats["wall_aim_s"] = round(self.stats.get("wall_aim_s", 0.0) + wall_dt, 2)
+                self._wall_since = self._wall_since or now
+                if now - self._wall_since >= WALL_DROP_S:
+                    self._block(self.target, now, "wall_blocks")
+                    self._wall_since = None
+                    self.target = None
+            else:
+                self._wall_since = None
+        else:
+            self._wall_since = None
 
     # --- crowd control ---------------------------------------------------------------------------------------------
     def _push_through(self, push, live, flat, bearing, now) -> dict:
@@ -4295,7 +4323,8 @@ class Bot:
         if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and d > MELEE_R:
             self.stats["quick_turns"] += 1                       # one behind: the quick turn
             self.quick = 2
-            return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
+            out = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ()
+            return self._go("quick_turn", "quick_turn", {"hold": out + ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
         backing = sum(1 for z in live if flat(z) < CC_BACK_R) >= CC_BACK_N   # a crowd: every attack backs out too
         out = self._stick(self._open_heading(self._p, live), self._cam_yaw) if backing else ()   # toward open space
         if backing:
