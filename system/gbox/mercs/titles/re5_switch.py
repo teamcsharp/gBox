@@ -3834,7 +3834,8 @@ class Bot:
         have_p = math.atan2(dot[1] - origin[1], max(math.hypot(dot[0] - origin[0], dot[2] - origin[2]), 1.0))
         want_p = math.atan2(chest[1] - origin[1], max(math.hypot(chest[0] - origin[0], chest[2] - origin[2]), 1.0))
         cam_read = CAM_GUARD and not self._cam["off"] and p.get("aim_pitch") is not None
-        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM and not cam_read:
+        point_blank = dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
+        if fresh_ray and self._first_check and ray_len >= STEER_RAY_CM and not cam_read and not point_blank:
             self._first_check = False
             if not self._raise_is_reroll and have_p > want_p + REROLL_ERR:
                 self._reroll_next = True                 # the raise came up high: down and up again, once
@@ -3843,7 +3844,6 @@ class Bot:
                                                    f"{math.degrees(want_p):+.0f} deg: raised again")
                 self._gun_down()
                 return {"hold": ()}
-        point_blank = ray_len < POINT_BLANK_RAY and dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist)
         far_off = abs(yaw_err) > UNAIM_ERR and not point_blank
         self.unaim_since = (self.unaim_since or now) if far_off else None
         if far_off:                                          # the aim is far off him
