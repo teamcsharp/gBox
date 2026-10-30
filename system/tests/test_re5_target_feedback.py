@@ -45,6 +45,14 @@ def test_close_collision_ray_cannot_reverse_camera_correction():
     assert writes[-1][0] < .5  # toward the chest, not upward following the bad ray
 
 
+def test_close_target_uses_actual_low_offset_muzzle_not_nominal_camera_height():
+    bot, writes = controller(); s = scene(distance=150)
+    s['laser'] = {'up': True, 'from': (30, 80, 50), 'at': (30, 80, 5000)}
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .05)
+    assert writes[-1][0] > 0 and writes[-1][1] < 0
+    assert 'zr' not in act['hold']
+
+
 @pytest.mark.parametrize('dt', [0., -.1, .001, .01, .05, 1.])
 def test_no_minimum_step_or_stall_catchup(dt):
     bot, writes = controller()
@@ -66,6 +74,15 @@ def test_live_body_and_camera_agreement_resume_firing():
     s['laser']['at'] = (0, R.CHEST_H, 300)
     act = F.apply(bot, s, {'hold': ('zl',)}, .3)
     assert set(act['hold']) == {'zl', 'zr'}
+
+
+def test_reachable_front_enemy_wins_over_prior_rear_target():
+    bot, _ = controller(); s = scene()
+    s['enemies'].append({'ptr': 3, 'pos': (0, 0, -100), 'hp': 800})
+    s['laser']['at'] = (0, R.CHEST_H, 300); bot.target = 3
+    assert F.visible_target(s)['ptr'] == 2
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold'] and bot.target == 2 and bot._aimctx['target'] == 2
 
 
 def test_old_life_cannot_write_or_fire():

@@ -1950,7 +1950,11 @@ class Bot:
                 nearest = near_front
         tgt = cur
         wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in candidates) else None
-        if wu is not None and wu is not cur:             # winding up: him first, at once
+        faced = next((e for e in candidates if e.get('ptr', e.get('slot')) ==
+                      getattr(self, '_feedback_visible', None)), None)
+        if faced is not None:                           # finish the reachable body before turning away
+            tgt = faced
+        elif wu is not None and wu is not cur:          # winding up: him first, at once
             tgt, r["retarget_at"] = wu, now
             self.stats["windup_picks"] += 1
         elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
@@ -2174,7 +2178,8 @@ class Bot:
 
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
-        if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+        if getattr(self, '_feedback_visible', None) is not None \
+                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
             return None
         px, py, pz = p["pos"]
         bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
@@ -3090,6 +3095,8 @@ class Bot:
     def _trigger(self, on: bool, now) -> set:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
+        if on and getattr(self, '_defer_trigger', False):
+            return {'zr'}                               # intent; final feedback records only an accepted pull
         if not on:
             if self.fire_down:                               # the aim slid off him: the pull ends
                 self._pull_end(now, slipped=True)
@@ -3359,13 +3366,19 @@ class Bot:
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
+        from . import re5_target_feedback, re5_weapons
+        visible = re5_target_feedback.visible_target(snap)
+        self._feedback_visible = visible.get('ptr', visible.get('slot')) if visible else None
+        spec = re5_weapons.WEAPONS.get(self._item)
+        self._defer_trigger = bool(snap.get('aim_cam') and spec
+                                   and spec.family in re5_target_feedback.GUN_FAMILIES)
         act = self._tick(snap, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
-        from . import re5_target_feedback
+        self._defer_trigger = False
         act = re5_target_feedback.apply(self, snap, act, now)
         act = self._native_equipment(act, snap)
         from . import re5_switch_wall
