@@ -32,7 +32,7 @@ test('PiP weapon menu stays visible, labels inventory, sends an immediate single
         {item:2,weapon:'M92F',damage:1500,in_inventory:true},
         {item:25,weapon:'Hydra',damage:5500,in_inventory:true,equipped:true},
         {item:27,weapon:'S&W M500',damage:50000,in_inventory:false},
-        {item:54,weapon:'rotten egg',damage:null,in_inventory:false}
+        {item:54,weapon:'rotten egg',damage:null}
       ]}};
       window.api=async(p,b)=>{if(b){posts.push({p,b});return {request:{id:b.request_id,state:'queued'}};}
         reads.push(p);if(delayed)await new Promise(r=>release=r);return state;};
@@ -46,6 +46,7 @@ test('PiP weapon menu stays visible, labels inventory, sends an immediate single
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('[data-weapon-item]')].map(e=>Number(e.dataset.weaponItem))`),[27,25,2,54]);
     assert.match(await evaluate(`document.querySelector('[data-weapon-item="27"]').textContent`),/Not in inventory/);
     assert.match(await evaluate(`document.querySelector('[data-weapon-item="2"]').textContent`),/In inventory/);
+    assert.match(await evaluate(`document.querySelector('[data-weapon-item="54"]').textContent`),/Inventory not reported/);
     assert.equal(await evaluate(`document.querySelector('[data-weapon-item="25"]').getAttribute('aria-pressed')`),'true');
     await evaluate(`window.option=document.querySelector('[data-weapon-item="27"]');option.click();option.click();new Promise(r=>setTimeout(r,10))`);
     assert.equal(await evaluate('posts.length'),1,'even a detached button cannot submit twice');

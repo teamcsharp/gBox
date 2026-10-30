@@ -76,3 +76,24 @@ def test_primary_grid_zero_returns_via_native_equip_without_a_dpad_or_inventory_
     bot.native_equip = SimpleNamespace(select=lambda grid, item: calls.append((grid,item)))
     assert bot._gun_back(snap, 0) == {'hold': ()}
     assert calls == [(0,0x119)]
+
+
+def test_live_driver_publishes_three_minute_lock_through_scalar_telemetry(monkeypatch):
+    from gbox.mercs.titles import re5_switch_mods as M
+    ad, snap = setup()
+    P.install(ad, dict(state='confirmed', verified=True, item=25, weapon='Hydra', player=100,
+                      player_generation=9, weapon_generation=15), 10)
+    monkeypatch.setattr(M, 'maintain', lambda *a, **kw: {})
+    monkeypatch.setattr(M, 'mine_settings', lambda *a: {})
+    monkeypatch.setattr(M, 'preferred_weapon', lambda *a: None)
+    stats = {}
+    driver = R.RE5Switch()
+    driver._mods(SimpleNamespace(adapter=ad), snap, True, stats)
+    # This is the general telemetry publisher's scalar filter.
+    sent = {k: v for k, v in stats.items() if isinstance(v, (int, float, str, bool))}
+    assert sent['primary_weapon_item'] == 25 and sent['primary_weapon_name'] == 'Hydra'
+    assert sent['primary_weapon_locked'] and 179 <= sent['primary_weapon_lock_remaining_s'] <= 180
+    snap['mercenaries_phase'] = 3
+    driver._mods(SimpleNamespace(adapter=ad), snap, False, stats)
+    assert stats['primary_weapon_item'] == 0 and not stats['primary_weapon_locked']
+    assert stats['primary_weapon_lock_remaining_s'] == 0

@@ -9,9 +9,23 @@ LOCK_SECONDS = 180.0
 def install(ad, result, pid, *, clock=time.monotonic):
     if result.get('verified') is not True or result.get('state') != 'confirmed':
         raise ValueError('primary weapon needs verified native equipment')
-    ad._merc_primary_weapon = {k: result[k] for k in
+    chosen = {k: result[k] for k in
         ('item', 'weapon', 'player', 'player_generation', 'weapon_generation')}
-    ad._merc_primary_weapon.update(pid=pid, lock_until=clock() + LOCK_SECONDS)
+    chosen.update(pid=pid, lock_until=clock() + LOCK_SECONDS)
+    ad._merc_primary_weapon = chosen  # publish a complete record to the bot thread
+
+
+def record(stats, primary):
+    """The general telemetry publisher sends scalar stats; keep the lock visible.
+
+    Retain the structured local state too, for the bot and in-process tools.
+    A title/life ending must clear the previous weapon's reported countdown.
+    """
+    stats['primary_weapon'] = primary
+    stats.update(primary_weapon_item=(primary or {}).get('item', 0),
+                 primary_weapon_name=(primary or {}).get('weapon', ''),
+                 primary_weapon_locked=bool((primary or {}).get('locked')),
+                 primary_weapon_lock_remaining_s=(primary or {}).get('lock_remaining_s', 0))
 
 
 def snapshot(ad, snap, *, clock=time.monotonic):
