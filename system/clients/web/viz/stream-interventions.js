@@ -103,7 +103,7 @@
     function message(row) {
       const weapon = row.op === 'equip_primary';
       if (row.state === 'confirmed') return weapon ?
-        `${row.result?.weapon || 'Primary weapon'} equipped. Locked for two minutes; preferred for this match.` : 'Flashbang detonated.';
+        `${row.result?.weapon || 'Primary weapon'} equipped. Locked for three minutes; preferred for this match.` : 'Flashbang detonated.';
       return `${weapon ? 'Weapon selection' : 'Flashbang'} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
     }
     function wake() { if (!dead && !timer && pending.size) timer = schedule(poll, 100); }
@@ -143,6 +143,95 @@
     return {flash:sid=>send(sid,'flash_now'), equipPrimary:(sid,item)=>send(sid,'equip_primary',{item}),
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
   }
+  const gunIcon='<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 5h19v5h-7l-1 3H9l-2 7H3l3-10H2V5zm8 5-.5 1.5h2L12 10h-2z"/><path d="M4 3h2v2H4zm13 0h2v2h-2z"/></svg>';
+  const damageValue=row=>typeof row.damage==='number' && Number.isFinite(row.damage) && row.damage>=0 ? row.damage : null;
+  function sortedWeapons(rows) {
+    return (rows||[]).filter(r=>Number.isInteger(r.item) && typeof r.weapon==='string').slice().sort((a,b)=>{
+      const x=damageValue(a), y=damageValue(b);
+      return (x===null)-(y===null) || (y||0)-(x||0) || a.weapon.localeCompare(b.weapon);
+    });
+  }
+  // The picker belongs to the displayed session, never the stream transport.
+  // Opening is synchronous; selection posts once and closes without a dialog.
+  function bindWeapon(button,{api,equipPrimary,sid,enabled=()=>true,onOpen=()=>{}}) {
+    const doc=button.ownerDocument,win=doc.defaultView;
+    let menu=null,menuSid=null,dead=false,revision=0,last='',selectedSid=null,refreshTimer=null;
+    const selected=()=>typeof sid==='function'?sid():sid;
+    const active=()=>!dead && enabled() && selected() && button.isConnected;
+    button.innerHTML=gunIcon;button.setAttribute('aria-haspopup','dialog');
+    function paint(){button.title='Choose any weapon. Equip now and keep it for three minutes.'+(last?'\n'+last:'');button.setAttribute('aria-label','Choose primary weapon');}
+    function close(){++revision;if(refreshTimer)win.clearTimeout(refreshTimer);refreshTimer=null;menu?.remove();menu=null;menuSid=null;button.setAttribute('aria-expanded','false');onOpen(false);}
+    function update(){if(selectedSid!==selected() || !active()){last='';selectedSid=selected();close();delete button.dataset.weaponState;paint();}}
+    function receipt(text,row){if(dead || (row?.sid && row.sid!==selected()))return;selectedSid=selected();last=text;button.dataset.weaponState=row?.state||'unavailable';paint();}
+    function position(){if(!menu)return;const r=button.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(r.right-menu.offsetWidth,win.innerWidth-menu.offsetWidth-4))+'px';menu.style.top=Math.max(4,Math.min(r.bottom+4,win.innerHeight-menu.offsetHeight-4))+'px';}
+    async function open(event){
+      event?.preventDefault();event?.stopPropagation();update();
+      if(menu){close();return;}if(!active())return;
+      const session=selected(),version=++revision;menuSid=session;
+      menu=doc.createElement('div');menu.className='merc-weapon-menu';menu.setAttribute('role','dialog');menu.setAttribute('aria-label','Choose primary weapon');
+      Object.assign(menu.style,{position:'fixed',zIndex:'10000',width:'350px',maxWidth:'calc(100vw - 8px)',maxHeight:'calc(100vh - 40px)',boxSizing:'border-box',display:'flex',flexDirection:'column',gap:'8px',background:'#1d1d22',color:'#eee',border:'1px solid #666',borderRadius:'7px',padding:'10px',font:'13px sans-serif',webkitAppRegion:'no-drag',boxShadow:'0 6px 24px #0008'});
+      const title=doc.createElement('strong');title.textContent='Choose weapon · hold for 3:00';
+      const info=doc.createElement('div');info.textContent='Highest damage first';info.style.color='#bbb';
+      const search=doc.createElement('input');search.type='search';search.placeholder='Find a weapon';search.setAttribute('aria-label','Find a weapon');
+      Object.assign(search.style,{boxSizing:'border-box',width:'100%',padding:'7px',background:'#111',color:'#fff',border:'1px solid #666',borderRadius:'4px'});
+      const status=doc.createElement('div');status.setAttribute('role','status');status.textContent='Loading weapons…';
+      const list=doc.createElement('div');list.setAttribute('role','group');list.setAttribute('aria-label','Weapons, highest damage first');Object.assign(list.style,{overflowY:'auto',minHeight:'0',overscrollBehavior:'contain'});
+      menu.append(title,info,search,status,list);doc.body.append(menu);button.setAttribute('aria-expanded','true');onOpen(true);position();search.focus();
+      let state=null,signature=null;
+      const current=()=>!dead && menu && menuSid===session && session===selected() && version===revision && active();
+      function render(){
+        const focus=doc.activeElement?.dataset?.weaponItem,scroll=list.scrollTop;
+        list.replaceChildren();
+        const available=state.available && (state.capabilities||[]).includes('equip_primary');
+        const rows=sortedWeapons(state.options?.weapons),query=search.value.trim().toLocaleLowerCase();
+        info.textContent=rows.some(r=>r.damage_basis==='live_level0_firepower')?'Highest damage first · gun firepower at level 0':'Highest damage first';
+        info.title='Gun values include live damage mods. Reference values are unmodified base damage. Actual hits depend on distance, target and ammunition.';
+        status.textContent=available ? (rows.length?'':'No weapons reported for this session.') : state.reason||'Live weapon replacement is unavailable for this session.';
+        for(const row of rows.filter(r=>!query || r.weapon.toLocaleLowerCase().includes(query))){
+          const item=doc.createElement('button');item.type='button';item.dataset.weaponItem=String(row.item);item.disabled=!available || row.available===false;
+          const equipped=row.equipped===true || state.options?.current_weapon===row.item;
+          item.setAttribute('aria-pressed',String(equipped));
+          Object.assign(item.style,{display:'block',width:'100%',textAlign:'left',padding:'9px 8px',margin:'0 0 3px',border:'1px solid '+(equipped?'#75baff':'transparent'),borderRadius:'4px',background:equipped?'#263647':'#292a30',color:item.disabled?'#aaa':'#fff',cursor:item.disabled?'default':'pointer'});
+          const name=doc.createElement('div');name.textContent=row.weapon;name.style.fontWeight='600';
+          const detail=doc.createElement('div');detail.style.cssText='font-size:11px;color:#bbb;margin-top:3px';
+          const damage=damageValue(row);
+          detail.textContent=[damage===null?'Damage varies / unmeasured':`Damage ${damage.toLocaleString()}${row.damage_basis==='reference_base_damage'?' (reference)':''}`,equipped?'Equipped · In inventory':row.in_inventory?'In inventory':'Not in inventory',row.available===false?row.reason||'Unavailable now':''].filter(Boolean).join(' · ');
+          item.append(name,detail);list.append(item);
+          item.onclick=e=>{
+            e.preventDefault();e.stopPropagation();if(!current() || item.disabled){update();return;}
+            close();receipt(`Equipping ${row.weapon}…`,{state:'sending',sid:session});
+            Promise.resolve().then(()=>equipPrimary(session,row.item)).catch(error=>receipt(error.message,{state:'unavailable',sid:session}));
+          };
+        }
+        if(query && !list.childElementCount && rows.length)status.textContent='No matching weapons.';
+        list.scrollTop=scroll;
+        if(focus)list.querySelector(`[data-weapon-item="${Number(focus)}"]`)?.focus({preventScroll:true});
+        position();
+      }
+      search.oninput=()=>{if(state && current())render();};
+      async function refresh(){
+        try{const next=await api(`/api/sessions/${encodeURIComponent(session)}/interventions`);if(!current()){update();return;}
+          const changed=JSON.stringify([next.available,next.capabilities,next.options,next.reason]);state=next;
+          if(changed!==signature){signature=changed;render();}}
+        catch(error){if(current())status.textContent=error.message;}
+        if(current())refreshTimer=win.setTimeout(refresh,1500);
+      }
+      await refresh();
+    }
+    function outside(e){if(menu && !menu.contains(e.target) && !button.contains(e.target))close();}
+    function key(e){if(!menu)return;if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();close();button.focus();return;}
+      if(!menu.contains(e.target))return;
+      // Menu typing/navigation must not become remote controller presses.
+      e.stopPropagation();
+      if(e.type==='keydown' && ['ArrowDown','ArrowUp','Home','End'].includes(e.key) && e.target.tagName!=='INPUT'){
+        e.preventDefault();const rows=[...menu.querySelectorAll('[data-weapon-item]:not(:disabled)')],at=rows.indexOf(doc.activeElement);
+        rows[e.key==='Home'?0:e.key==='End'?rows.length-1:(at+(e.key==='ArrowDown'?1:-1)+rows.length)%rows.length]?.focus();
+      }
+    }
+    button.addEventListener('click',open);doc.addEventListener('pointerdown',outside,true);
+    doc.addEventListener('keydown',key);doc.addEventListener('keyup',key);win.addEventListener('resize',position);paint();
+    return {receipt,update,close,dispose(){dead=true;close();button.removeEventListener('click',open);doc.removeEventListener('pointerdown',outside,true);doc.removeEventListener('keydown',key);doc.removeEventListener('keyup',key);win.removeEventListener('resize',position);}};
+  }
   function mount(host, options) {
     const doc = host.ownerDocument, bar = doc.createElement('div'); bar.className = 'stream-interventions';
     const button = doc.createElement('button'); button.type='button'; button.textContent='⚡ Instant flashbang';
@@ -169,42 +258,18 @@
         finally { opening=false; }
       };
     }
-    let flashControl;
+    let flashControl,weaponControl;
     const client = create({...options, notify(text,row) {
       if(row.op==='flash_now')flashControl?.receipt(text,row);
+      else if(row.op==='equip_primary')weaponControl?.receipt(text,row);
       else {status.textContent=text; options.notify?.(text,row);}
       options.onReceipt?.(row);
     }});
-    const weapon = doc.createElement('button'); weapon.type='button'; weapon.textContent='\u{1F52B} Weapon';
-    weapon.setAttribute('aria-label','Choose the primary weapon for this match');
-    const choices = doc.createElement('select'); choices.hidden=true; choices.setAttribute('aria-label','Primary weapon');
-    bar.insertBefore(weapon,status); bar.insertBefore(choices,status);
-    let choicesSid=null, loadingWeapons=false;
-    weapon.onclick=async()=>{
-      if(disposed || loadingWeapons)return;
-      if(!choices.hidden){choices.hidden=true;return;}
-      const sid=selected(); if(!sid){status.textContent='No active game selected.';return;}
-      loadingWeapons=true;
-      try {
-        const state=await options.api(`/api/sessions/${encodeURIComponent(sid)}/interventions`);
-        if(disposed || sid!==selected())return;
-        if(!state.available || !(state.capabilities||[]).includes('equip_primary'))
-          throw Error(state.reason || 'Live weapon replacement is not available for this session.');
-        choices.replaceChildren();
-        const prompt=doc.createElement('option');prompt.textContent='Choose a weapon';prompt.value='';prompt.disabled=true;prompt.selected=true;choices.append(prompt);
-        for(const row of state.options?.weapons||[]){const option=doc.createElement('option');option.value=String(row.item);option.textContent=row.weapon;choices.append(option);}
-        choicesSid=sid;choices.hidden=false;choices.focus();
-      } catch(error){if(!disposed)status.textContent=error.message;}
-      finally {loadingWeapons=false;}
-    };
-    choices.onchange=()=>{
-      choices.hidden=true;
-      if(disposed || choicesSid!==selected() || !choices.value)return;
-      client.equipPrimary(choicesSid,Number(choices.value)).catch(error=>{if(!disposed)status.textContent=error.message;});
-    };
+    const weapon = doc.createElement('button'); weapon.type='button';bar.insertBefore(weapon,status);
+    weaponControl=bindWeapon(weapon,{api:options.api,equipPrimary:client.equipPrimary,sid:selected,enabled:()=>!disposed});
     flashControl=bindFlash(button,{flash:client.flash,sid:selected,enabled:()=>!disposed});
-    return {dispose() {disposed=true;flashControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
+    return {dispose() {disposed=true;flashControl.dispose();weaponControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
   }
-  const out = {create,mount,bindFlash}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindWeapon,sortedWeapons}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);

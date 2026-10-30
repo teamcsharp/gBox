@@ -19,13 +19,14 @@ def setup():
     return ad, snap
 
 
-def test_two_minute_lock_then_match_preference_without_changing_telemetry_inventory():
+def test_three_minute_lock_then_match_preference_without_changing_telemetry_inventory():
     ad, snap = setup()
-    snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1119.9)
+    snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1179.9)
     locked = P.decision_snapshot(snap)
     assert locked['inventory'] == [snap['inventory'][0]]
     assert len(snap['inventory']) == 4 and locked['primary_weapon']['locked']
-    snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1120)
+    assert P.snapshot(ad, snap, clock=lambda: 1120)['locked']
+    snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1180)
     later = P.decision_snapshot(snap)
     assert later['inventory'] == [snap['inventory'][0], snap['inventory'][3]]
     assert later['preferred_weapon']['item'] == 25 and not later['primary_weapon']['locked']

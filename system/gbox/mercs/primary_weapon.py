@@ -1,9 +1,9 @@
-"""Operator primary weapon: minimum two-minute bot lock, match-long preference."""
+"""Operator primary weapon: minimum three-minute bot lock, match-long preference."""
 from __future__ import annotations
 
 import time
 
-LOCK_SECONDS = 120.0
+LOCK_SECONDS = 180.0
 
 
 def install(ad, result, pid, *, clock=time.monotonic):

@@ -40,5 +40,5 @@ test('weapon choice uses the same durable receipts and never substitutes a flash
     api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
       return {requests:[{id:'weapon-id',op:'equip_primary',state:'confirmed',result:{weapon:'Hydra'}}]};}});
   await c.equipPrimary('selected-session',25);assert.deepEqual(posts,[{op:'equip_primary',request_id:'weapon-id',args:{item:25}}]);
-  assert.deepEqual(notes,[]);await c.poll();assert.match(notes[0],/Hydra equipped.*two minutes/);c.dispose();
+  assert.deepEqual(notes,[]);await c.poll();assert.match(notes[0],/Hydra equipped.*three minutes/);c.dispose();
 });
