@@ -368,6 +368,9 @@ COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
 # of the best (+ THREAT_KEEP_CM); one within GRAB_THREAT_R wins unless the current one is that near too.
 THREAT_FIRST, THREAT_NEAR_R, THREAT_CAP_R = True, 400.0, 800.0
 APPROACH_LEAD_S, APPROACH_EMA, TURN_W, THREAT_KEEP, THREAT_KEEP_CM = 0.6, 0.5, 0.5, 1.25, 25.0
+RANGED_CLASSES = frozenset({"uEm10", "uEm12", "uEm14"})   # throwers, crossbow and fire (the ranged cluster's classes)
+RANGED_BAND_IN, RANGED_BAND_OUT = 250.0, 1000.0           # cm: the band where their shots carry but a grab does not yet
+RANGED_PENALTY = 0.35                                     # _threat_d's multiplier in the band: ranged before closing-in
 # Pitch up (the same watch: "I will randomly see them point just up in the air"): every aimed tick with the laser more
 # than PITCH_UP_LOG above level is counted with its cause - the target itself that high (pitch_up_target_high), the gun
 # just raised (pitch_up_raise: the camera's old pitch), the target just changed (pitch_up_retarget), else
@@ -2558,12 +2561,17 @@ class Bot:
         self._appr = seen
 
     def _threat_d(self, p, e) -> float:
-        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him."""
+        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him.
+        A ranged class (RANGED_CLASSES) in the band where its shots carry but a grab does not yet (RANGED_BAND) counts
+        RANGED_PENALTY x as soon: it threatens him now, not by closing - threat order (the ranged cluster's cause)."""
         px, _, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         v = (self._appr.get(e.get("ptr", e.get("slot"))) or (0.0, 0.0, 0.0))[2]
         turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) if d > BEHIND_R else 0.0
-        return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+        td = max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+        if e.get("class") in RANGED_CLASSES and RANGED_BAND_IN <= d <= RANGED_BAND_OUT:
+            return td * RANGED_PENALTY
+        return td
 
     @staticmethod
     def _threat_near(p, live) -> bool:
@@ -3684,6 +3692,15 @@ class Bot:
                     act = self._fight(live, snap, now)
                 else:
                     act = self._decide(p, live, flat, near_e, near, snap, now)
+                if self._windup_e is not None:
+                    # a Majini winding up within reach (its lunge lands WINDUP_HIT_S later): the shot keeps flying at the air.
+                    # The trigger releases, the wind-up is the target, and the next tick's fight re-fires on it.
+                    if self.fire_down:
+                        self._trigger(False, now)
+                        self.stats["windup_interrupts"] += 1
+                    if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
+                        self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
+                        self.target_at = now
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
@@ -4524,6 +4541,10 @@ class Bot:
     def _fight(self, live, snap, now) -> dict:
         """The PS3 combat core's decision on the Switch pad (re5_switch_brain.Fighter), with the Switch's trigger time
         and the dropouts fired through counted here."""
+        p = snap["player"]
+        px, _, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        self._windup_tick(p, live, flat, now)    # its wind-up accounting: the fighter path never runs _decide's
         try:
             act, self.doing, self.why = self.fighter.fight(snap, live, now)
         except Exception as exc:                             # noqa: BLE001 - a brain error falls back to the Switch's
@@ -4543,6 +4564,15 @@ class Bot:
         else:
             self._fire_t = None
         self.aim_since = (self.aim_since or now) if "zl" in held else None   # (the reload wait keeps the gun up)
+        if self._windup_e is not None:
+            # A Majini is winding up right in front of him (PS3 brain firing into the air). Release the trigger
+            # and set the wind-up as target so the next tick re-aims at it instead of continuing to fire.
+            if self.fire_down:
+                self._trigger(False, now)
+                self.stats["windup_interrupts"] = self.stats.get("windup_interrupts", 0) + 1
+            if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
+                self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
+                self.target_at = now
         return act
 
     def prompt_ok(self, button, snap, now) -> bool:
