@@ -74,9 +74,25 @@ def test_running_blenders_reads_exe_user_and_environment(monkeypatch):
     assert got[1]["temp"] == "" and got[1]["user"] == "PC\\other"           # unreadable environment: still a candidate exe
 
 
+def test_inaccessible_preferred_temp_does_not_hide_a_writable_fallback(tmp_path, monkeypatch):
+    inaccessible = tmp_path / 'other-user'
+    original = Path.is_dir
+    def is_dir(path):
+        if path == inaccessible:
+            raise PermissionError('other user')
+        try:
+            return original(path)
+        except PermissionError:
+            return False
+    monkeypatch.setattr(Path, 'is_dir', is_dir)
+    dirs = bc.candidate_dirs([], {'pref': str(inaccessible)}, {'TEMP': str(tmp_path)})
+    assert tmp_path in dirs and inaccessible not in dirs
+
+
 def test_probe_tempdir_parses_blenders_answer(monkeypatch):
     calls = []
     def run(args, **kw):
+        assert kw.get('stdin') == bc.subprocess.DEVNULL, 'Blender must not inherit the desktop control pipe'
         calls.append(args)
         return types.SimpleNamespace(stdout='Blender 4.2.3\nGBOX_TEMP {"base": "C:/jay/Temp", "pref": "", "version": "4.2.3"}\n', stderr="")
     monkeypatch.setattr(bc.subprocess, "run", run)
@@ -91,6 +107,7 @@ def fake_blender(monkeypatch, tmp_path):
     """A pretend headless Blender: the import script 'writes' the staged copybuffer and reports GBOX_RESULT."""
     runs = []
     def run(args, **kw):
+        assert kw.get('stdin') == bc.subprocess.DEVNULL, 'Blender must not inherit the desktop control pipe'
         runs.append(args)
         if "--python-expr" in args:
             return types.SimpleNamespace(stdout='GBOX_TEMP {"base": "' + str(tmp_path / "base").replace("\\", "/") + '", "pref": "", "version": "4.2.3"}', stderr="")
