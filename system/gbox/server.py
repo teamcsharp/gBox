@@ -521,7 +521,11 @@ def create_app(config: Config) -> FastAPI:
     @app.get("/api/characters/{slug}/model")
     def chars_model(slug: str, actor=Depends(auth)):
         K, root = _chars()
-        f = _char_file(slug, K.get(root, slug)["model"])
+        try:
+            model = K.get(root, slug)["model"]
+        except KeyError:
+            _404()
+        f = _char_file(slug, model)
         return FileResponse(f, filename=f.name, media_type="model/gltf-binary" if f.suffix == ".glb" else "model/gltf+json")
 
     @app.get("/api/characters/{slug}/file/{rel:path}")

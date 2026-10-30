@@ -387,6 +387,8 @@ def blender_copy(inp: CopyIn, ctx):
     slug>, environment=<slug>, artifact=<scene_capture glb sha> or path=<.glb>; nodes=[...] keeps only those draw calls
     (an Examine 3D selection). The result lists the files written (copybuffers) and the source (an API path the client can
     show as a preview)."""
+    from .desktop_bridge import asset_source_context
+    asset_ctx = (asset_source_context(ctx) or ctx) if not (inp.path or inp.image_b64) else ctx
     if inp.image_b64:
         if inp.paste_as not in ("image_plane", "image_empty"):
             raise ValueError("image_b64 requires image_plane or image_empty")
@@ -400,14 +402,14 @@ def blender_copy(inp: CopyIn, ctx):
         if inp.paste_as == "model" and source.startswith("/api/assets/"):
             # The library bundles a .gltf's companion buffers/images into the artifact.
             import httpx
-            reply = httpx.post(f"{ctx.server}{source[:-5]}/copy", headers=ctx.headers, json={}, timeout=300)
+            reply = httpx.post(f"{asset_ctx.server}{source[:-5]}/copy", headers=asset_ctx.headers, json={}, timeout=300)
             reply.raise_for_status()
             digest = reply.json().get("sha256", "")
             source = asset_source("/api/artifacts/" + digest)
-        src = _fetch(ctx, source, ".mp4" if inp.paste_as == "movie_plane" else ".image" if inp.paste_as != "model" else ".glb")
+        src = _fetch(asset_ctx, source, ".mp4" if inp.paste_as == "movie_plane" else ".image" if inp.paste_as != "model" else ".glb")
     elif inp.mod:                                        # which collection character this mod was built from
         import httpx
-        chars = httpx.get(f"{ctx.server}/api/characters", headers=ctx.headers, timeout=60).json()
+        chars = httpx.get(f"{asset_ctx.server}/api/characters", headers=asset_ctx.headers, timeout=60).json()
         hit = next((c for c in chars for gid, ts in (c.get("targets") or {}).items()
                     for t in ts if t.get("mod") == inp.mod and (not inp.game_id or gid == inp.game_id)), None)
         if not hit:
@@ -415,25 +417,25 @@ def blender_copy(inp: CopyIn, ctx):
         key = "sm64" if inp.mod.startswith("sm64_") else "re4gc" if inp.mod.startswith("re4_") else inp.mod.split("_")[0]
         fitted = next((f for f in (hit.get("target_files") or []) if f.startswith(f"targets/{key}") and f.endswith((".glb", ".gltf"))), None)
         source = f"/api/characters/{hit['slug']}/file/{fitted}" if fitted else f"/api/characters/{hit['slug']}/model"
-        src = _fetch(ctx, source, ".glb")
+        src = _fetch(asset_ctx, source, ".glb")
     elif inp.path:
         source = inp.path
         src = Path(inp.path)
     elif inp.character:                                # the round-trip GLB: rig role names + props ride along
         source = f"/api/characters/{inp.character}/blender"
         try:
-            src = _fetch(ctx, source, ".glb")
+            src = _fetch(asset_ctx, source, ".glb")
         except Exception:                              # noqa: BLE001 - an older control plane: the plain model
             source = f"/api/characters/{inp.character}/model"
-            src = _fetch(ctx, source, ".glb")
+            src = _fetch(asset_ctx, source, ".glb")
     elif inp.environment:
         import httpx
-        meta = httpx.get(f"{ctx.server}/api/environments/{inp.environment}", headers=ctx.headers, timeout=60).json()
+        meta = httpx.get(f"{asset_ctx.server}/api/environments/{inp.environment}", headers=asset_ctx.headers, timeout=60).json()
         source = f"/api/environments/{inp.environment}/file/{meta['model']}"
-        src = _fetch(ctx, source, ".glb")
+        src = _fetch(asset_ctx, source, ".glb")
     elif inp.artifact:
         source = f"/api/artifacts/{inp.artifact}"
-        src = _fetch(ctx, source, ".glb")
+        src = _fetch(asset_ctx, source, ".glb")
     else:
         raise ValueError("give character, environment, artifact or path")
     if inp.paste_as != "model":

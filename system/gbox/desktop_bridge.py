@@ -28,6 +28,41 @@ _MAX_FRAME = 8_000_000
 _LOCAL_AUTHORITIES={}
 
 
+def asset_source_context(ctx):
+    """The verified originating server for a federated Blender copy's assets.
+
+    Execution and clipboard writes stay local. Never trust an input URL or an
+    origin header alone to select a server or send its pairing credential.
+    """
+    config = getattr(ctx, 'config', None)
+    if config is None:
+        return None
+    bridge = _LOCAL_AUTHORITIES.get(str(Path(config.data_dir).resolve()))
+    if bridge is None:
+        return None
+    with bridge.store.lock:
+        job = bridge.store.get('job', getattr(ctx, 'job_id', '')) or {}
+        provenance = job.get('origin') or {}
+        key = provenance.get('desktop_federation_key')
+        if not key:
+            return None
+        mapping = bridge.store.get('desktop_bridge_job', key) if isinstance(key, str) else None
+        if not mapping or mapping.get('local_job_id') != job.get('id') \
+                or mapping.get('authority') != bridge.authority \
+                or provenance.get('desktop_federation_authority') != bridge.authority \
+                or mapping.get('remote') != bridge.remote \
+                or job.get('tool') != 'blender_copy' or mapping.get('tool') != job.get('tool') \
+                or mapping.get('execution_input_sha256') != sha256(canon(job.get('input'))):
+            raise ValueError('The Blender asset source does not match its paired job')
+        if not bridge.remote or not bridge.token:
+            raise ValueError('The originating asset server is not paired')
+        from types import SimpleNamespace
+        headers = {'authorization': 'Bearer ' + bridge.token, 'x-gbox-parent-job': mapping['id']}
+        if job.get('actor'):
+            headers['x-gbox-actor'] = job['actor']
+        return SimpleNamespace(server=origin(bridge.remote), headers=headers)
+
+
 def check_stop(ctx,sid):
     """Final mutation fence, registered only by this PC's loopback authority."""
     config=getattr(ctx,'config',None)
