@@ -195,7 +195,7 @@
           const name=doc.createElement('div');name.textContent=row.weapon;name.style.fontWeight='600';
           const detail=doc.createElement('div');detail.style.cssText='font-size:11px;color:#bbb;margin-top:3px';
           const damage=damageValue(row);
-          detail.textContent=[damage===null?'Damage varies / unmeasured':`Damage ${damage.toLocaleString()}${row.damage_basis==='reference_base_damage'?' (reference)':''}`,equipped?'Equipped · In inventory':row.in_inventory?'In inventory':'Not in inventory',row.available===false?row.reason||'Unavailable now':''].filter(Boolean).join(' · ');
+          detail.textContent=[damage===null?'Damage varies / unmeasured':`Damage ${damage.toLocaleString()}${row.damage_basis==='reference_base_damage'?' (reference)':''}`,equipped?'Equipped · In inventory':row.in_inventory===true?'In inventory':row.in_inventory===false?'Not in inventory':'Inventory not reported',row.available===false?row.reason||'Unavailable now':''].filter(Boolean).join(' · ');
           item.append(name,detail);list.append(item);
           item.onclick=e=>{
             e.preventDefault();e.stopPropagation();if(!current() || item.disabled){update();return;}

@@ -4446,7 +4446,7 @@ class RE5Switch(Driver):
             snap['primary_weapon'] = primary_weapon.snapshot(ad, snap)
             target_stats = stats if stats is not None else self.stats
             if target_stats is not None:
-                target_stats['primary_weapon'] = snap['primary_weapon']
+                primary_weapon.record(target_stats, snap['primary_weapon'])
         if self.stats is not None:
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
