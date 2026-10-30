@@ -2497,7 +2497,8 @@ class Bot:
 
     def _threat_pick(self, p, live, cur, now):
         """Threat first: within THREAT_CAP_R, his level first, the lowest threat distance; the current one kept within
-        THREAT_KEEP; one within GRAB_THREAT_R wins (unless the current one is that near)."""
+        THREAT_KEEP; one within GRAB_THREAT_R wins (unless the current one is that near); one behind within BEHIND_R
+        wins over one ahead (the aim turns at once — he cannot see behind while aiming)."""
         px, py, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         pool = [e for e in live if flat(e) <= THREAT_CAP_R]
@@ -2509,8 +2510,16 @@ class Bot:
         best = min(pool, key=td)
         grab = min((e for e in pool if flat(e) < GRAB_THREAT_R), key=flat, default=None)
         in_pool = cur is not None and any(e is cur for e in pool)
+        behind = min((e for e in pool if flat(e) <= BEHIND_R
+                      and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2),
+                     key=flat, default=None)
+        cur_behind = False
+        if cur is not None and in_pool and flat(cur) <= BEHIND_R:
+            cur_behind = abs(wrap(heading(cur["pos"][0] - px, cur["pos"][2] - pz) - p["rot"])) > math.pi / 2
         if grab is not None and not (in_pool and flat(cur) < GRAB_THREAT_R):
             best = grab
+        elif behind is not None and not cur_behind:
+            best = behind
         elif in_pool and td(cur) <= THREAT_KEEP * td(best) + THREAT_KEEP_CM:
             best = cur
         if best is not cur:
