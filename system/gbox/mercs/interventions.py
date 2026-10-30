@@ -204,6 +204,8 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
         try:
             if N.process_identity(ctl.pid) != ctl.identity or getattr(ad, "paused", False):
                 raise N.Unavailable("emulator process changed")
+            if ctl.failed:
+                ctl.recover_completed_call()
             sp = ctl.q(ctl.base + R.S_PLAYER)
             p = ctl.q(sp + R.P_FIRST)
             gm = R.game_man(ctl, ctl.base)

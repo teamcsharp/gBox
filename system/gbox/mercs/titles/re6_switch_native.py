@@ -37,6 +37,10 @@ class Uncertain(Unavailable):
     pass
 
 
+class AllocationLost(Unavailable):
+    """The game reclaimed a spawned projectile before we could detonate it."""
+
+
 def process_identity(pid):
     # comm may contain spaces/parentheses. starttime (field 22) is immutable for
     # the life of this PID and available without optional psutil on Linux.
@@ -208,6 +212,23 @@ class Controller:
         self.wait(lambda: self.w(self.heap + 0xA8) == 3)
         return self.q(self.heap + 0xB8)
 
+    def recover_completed_call(self):
+        """Permit a new click only after the old native call is fully quiescent.
+
+        Never replay the failed click or clear a pending/executing mailbox.
+        The native allocation can disappear during combat; that alone must not
+        disable every later viewer intervention for the emulator's lifetime.
+        """
+        with self.lock:
+            if not self.failed or not getattr(self, "recoverable", False):
+                return not self.failed
+            self.check()
+            self.validate_heap()
+            if self.w(self.heap + 0xA8) != 3 or self.q(self.manager) != self.base + VT:
+                return False
+            self.failed = self.recoverable = False
+            return True
+
     def flash(self):
         with self.lock:
             if getattr(self.ad, "paused", False):
@@ -244,8 +265,10 @@ class Controller:
                     raise Unavailable("native flash allocation refused")
                 born = self.w(unit + 0x1308)
                 def initialized():
-                    if self.w(unit + 0x1308) != born or self.q(unit + 0x1300) != self.player:
-                        raise Unavailable("flash allocation changed before detonation")
+                    current_born, owner = self.w(unit + 0x1308), self.q(unit + 0x1300)
+                    if current_born != born or owner != self.player:
+                        raise AllocationLost(f"flash allocation changed before detonation: unit={unit:#x}, "
+                            f"generation={born}->{current_born}, owner={owner:#x}, player={self.player:#x}")
                     return R.unit_action(self, unit) == "cWpAction_wp_act_throw"
                 self.wait(initialized)
                 if self.call(0x18F29C0, unit, self.player, born, self.generation) != 1:
@@ -253,8 +276,9 @@ class Controller:
                 return {"state": "confirmed", "verified": True, "op": "flash_now",
                         "effect": "native_flash_explosion", "player_generation": self.generation,
                         "projectile_generation": born, "elapsed_ms": round(1000 * (time.monotonic() - started), 1)}
-            except Exception:
+            except Exception as exc:
                 self.failed = True
+                self.recoverable = isinstance(exc, AllocationLost)
                 raise
             finally:
                 if attached:

@@ -130,3 +130,32 @@ def test_pinned_native_assets_and_mapping_guards():
     assert N.backing_region([row],0x1100,32)==(0x3100,12)
     for rows,at,n in [([row],0x1ff0,32),([row,row],0x1100,32),([row.replace('HostMemory','Other')],0x1100,32),([row],0x1100,0)]:
         with pytest.raises(N.Unavailable): N.backing_region(rows,at,n)
+
+
+@pytest.mark.parametrize('state,restored,recoverable,allowed', [
+    (3, True, True, True), (1, True, True, False), (2, True, True, False),
+    (3, False, True, False), (3, True, False, False),
+])
+def test_only_completed_allocation_loss_can_recover_for_a_new_click(state, restored, recoverable, allowed):
+    import threading
+    ctl=N.Controller.__new__(N.Controller)
+    ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=recoverable
+    ctl.heap=0x1000;ctl.manager=0x2000;ctl.base=0x100000000
+    ctl.check=lambda:None
+    ctl.validate_heap=lambda:None
+    ctl.w=lambda at:state
+    ctl.q=lambda at:ctl.base+N.VT if restored else ctl.heap
+    ctl.call=lambda *a:pytest.fail('Recovery must never replay the native operation')
+    assert ctl.recover_completed_call() is allowed
+    assert ctl.failed is (not allowed)
+
+
+def test_changed_player_cannot_clear_native_failure():
+    import threading
+    ctl=N.Controller.__new__(N.Controller)
+    ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=True
+    def changed():raise N.Unavailable('player allocation changed')
+    ctl.check=changed
+    with pytest.raises(N.Unavailable,match='player allocation'):
+        ctl.recover_completed_call()
+    assert ctl.failed
