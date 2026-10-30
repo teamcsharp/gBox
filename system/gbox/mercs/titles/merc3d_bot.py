@@ -206,6 +206,12 @@ class Bot:
             return self._chase(me, yaw, live[0], "every target blocked")
         dist = flat(me, tgt["pos"])
         err = wrap(bearing(me, tgt["pos"]) - yaw)
+        # The current native reader has no laser. Body facing alone cannot
+        # authorize a distant shot, so close into the range we can actually
+        # use instead of spending three seconds raising a gun that cannot fire.
+        # An aim-capable reader may still briefly acquire a missing ray.
+        if "aim" not in snap and dist >= FALLBACK_FIRE_R:
+            return self._chase(me, yaw, tgt, "no laser reader: close to firing range")
         if abs(err) > math.radians(TURN_DEG):
             self.aim_since = None
             if dist > CHASE_R:
@@ -286,6 +292,8 @@ class Bot:
                            - math.atan2(dot[0] - origin[0], dot[2] - origin[2]))
         else:
             yaw_err = err
+            if not long and dist >= FALLBACK_FIRE_R:
+                return self._chase(me, yaw, tgt, "no measured ray: close to firing range")
         keys |= self._aim_keys(yaw_err, pitch_err)
         point_blank = dist < POINT_BLANK and abs(err) < math.radians(15)
         blind_ok = not long and ray is None and dist < FALLBACK_FIRE_R and abs(err) < math.radians(AIM_TOL_DEG)

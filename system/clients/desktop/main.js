@@ -33,8 +33,7 @@ let localControlError = '', remoteManagement = { ssh:false }, remoteManagementPe
 let catalogSyncPending=null,catalogSyncAt=0,catalogSyncOffset=0;
 let bridgePairPending=null,bridgePairKey=null;
 
-app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
-                                  : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
+app.setPath("userData", require('./desktop-profile.cjs').resolve(app.getPath("appData"), STANDALONE));
 const GAME_FRAME_DIR = path.join(app.getPath("userData"), "game-frames");
 process.env.GBOX_GAME_FRAME_DIR = GAME_FRAME_DIR;                  // worker/tracker also use a standalone profile's capture cache
 const SETTINGS = path.join(app.getPath("userData"), "settings.json");

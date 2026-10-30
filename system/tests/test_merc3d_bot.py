@@ -93,6 +93,26 @@ def test_chases_a_far_target_behind_him():
     assert b.doing == "chase"
 
 
+def test_native_reader_without_laser_closes_distance_without_aiming_idle():
+    clock = Clock(); bot = B.Bot(clock=clock)
+    for distance in (3000, 900, 800, B.FALLBACK_FIRE_R):
+        frame = snap([((0, 0, distance), 600)])
+        frame.pop("aim")  # actual merc3d_3ds.snapshot contract
+        act = bot.tick(frame)
+        assert bot.doing == "chase"
+        assert C["forward"] in act["hold"] and C["raise"] not in act["hold"]
+        clock.t += .05
+    frame = snap([((0, 0, 500), 600)]); frame.pop("aim")
+    act = bot.tick(frame)
+    assert bot.doing == "fire" and C["fire"] in act["hold"]
+
+
+def test_missing_ray_does_not_leave_a_dead_zone_between_chase_and_fire():
+    bot = B.Bot(clock=Clock())
+    act = bot.tick(snap([((0, 0, 800), 600)]))
+    assert bot.doing == "chase" and C["forward"] in act["hold"]
+
+
 def test_a_target_without_a_line_is_dropped_for_another():
     clock = Clock()
     b = B.Bot(clock=clock)
