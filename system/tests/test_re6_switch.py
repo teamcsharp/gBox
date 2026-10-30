@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from gbox.mercs import incident_replay
 from gbox.mercs.titles import re6_switch as R
 
 BASE = 0x3CA7C04000                      # the live runs' main base
@@ -810,6 +811,18 @@ def test_the_quick_turn_still_goes_with_no_one_close_enough_to_bite():
     bot.held = lambda p, now: False
     act = run(bot, snap, clock, 1)[0]
     assert act == {"hold": ("ldown",)} and bot.stats["quick_turns"] == 1
+
+
+def test_the_recorded_crowd_gun_down_incident_is_fought_in_place():
+    # The 2026-10-29 cluster's recorded hit: six within 230 cm, gun lowered, 600 -> 488 HP,
+    # the bot decided 'melee'. Driven through the replay harness, he fights the crowd in place
+    # (kick, quick shot, back out) and never commits to a quick turn while the bite is inside it.
+    fx = json.loads((Path(__file__).parent / "fixtures/mercs_incidents/re6_switch_crowd_gun_down.json").read_text())
+    assert fx["cluster"]["signature"] == "crowd_gun_down" and fx["loss"] == 112
+    result = incident_replay.replay(fx, ticks=12)
+    assert incident_replay.keys(result)                                   # he acts on the recorded situation
+    assert result["stats"].get("quick_turns", 0) == 0                     # no turn committed while the bite is inside it
+    assert result["stats"]["cc_kicks"] > 0 and result["stats"]["cc_quick_shots"] > 0   # the in-place fight
 
 
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
