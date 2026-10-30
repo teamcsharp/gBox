@@ -289,7 +289,10 @@ def test_enemies_walk_sEnemys_unit_list():
         g.u32(n + M.EN_NODE_UNIT, u)
         g.u32(n + M.NODE_NEXT, nodes[k + 1] if k + 1 < len(nodes) else se + M.SE_SENTINEL)
         units.append(u)
-    g.u32(se + M.SE_FIRST, nodes[0])
+    # Native two-ended list, observed on i9 mission 0x0101. Starting at +0x24
+    # returns only the distant tail enemy and misses the nearby attackers.
+    g.u32(se + 0x24, nodes[-1])
+    g.u32(se + 0x28, nodes[0])
     es = M.enemies(g)
     assert [e["ptr"] for e in es] == units
     assert es[2]["hp"] == 100.0 and es[1]["pos"] == (100.0, 0.0, 50.0) and es[0]["class"] == "uEm00Majini"

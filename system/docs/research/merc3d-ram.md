@@ -117,8 +117,13 @@ AutoSave, Final.
 - **Mission 1-1** is the tutorial: Chris only, no enemies, 150 s. Time up without the objective ends in
   cMerceStageFailedState.
 - **Mission 1-3** ("Take down all hostiles") has Majini from the start.
-- **sEnemy's unit lists.** +0x1C is a list object: +0x24 the first node, +0x28 the last, +0x20 the sentinel the last
-  node's link points back to. A node is `{vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit}`. A unit
+- **sEnemy's unit lists (corrected live 2026-10-30).** +0x1C is a list object: traversal by node+0x8 starts at
+  manager+0x28; manager+0x24 is the tail, whose +0x8 already points to the +0x20 sentinel.
+  The former reader started at the tail and saw only one of ten enemies in mission0x0101 on the i9,
+  ignoring the attackers near the player. Read-only receipt `i9-merc3d-enemy-lists-20261030.receipt.json`,
+  session `8a376d3177ae42a1-304e5dd1cec441b3`, PID36916, manager0x8337490.
+  +0x24 yielded only0x8634420; +0x28 yielded ten units including nearby0x85c9020 and0x860fc20.
+  A node is `{vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit}`. A unit
   sits in several lists (a second node 0x28 further on links it into the list at +0x5C).
 - **The player's list** (sPlayer +0x18) uses a node with the unit at +0x14.
 

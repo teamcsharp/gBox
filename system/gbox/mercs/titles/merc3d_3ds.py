@@ -45,9 +45,11 @@ FLOW_STATES, FLOW_COUNT, FLOW_CUR, FLOW_PREV = 0x18, 0x1C, 0x20, 0x24
 # a unit-list node: {vtable 0x899630, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27 on the i9: the
 # player's node 0x8567154 held uPl< Chris > at +0x10; +0x14 is 0, so 0x14 left the bot with "no player")
 SP_FIRST, NODE_NEXT, NODE_OWNER = 0x20, 0x8, 0x10
-# sEnemy +0x1C: a unit list (first node +0x24, the sentinel +0x20 that the last node's link points back to); a node is
-# {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27, mission 1-3)
-SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x24, 0x8995B8, 0x10, 64
+# sEnemy +0x1C: a unit list. Traversal by node+0x8 starts at manager+0x28;
+# +0x24 is its tail, whose +0x8 already points to the +0x20 sentinel. Starting
+# there hid nine of ten enemies in the i9's mission 0x0101 (live 2026-10-30).
+# A node is {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 unit}.
+SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x28, 0x8995B8, 0x10, 64
 P_POS, P_ROT, P_VIT, P_VIT_MAX = 0x40, 0x50, 0xCC4, 0xCCC
 M_MISSION, M_CHARA, M_ELAPSED, M_LEFT = 0x18, 0x1C, 0x64, 0x68
 M_SCORE, M_COMBO_SCORE, M_COMBO, M_COMBO_T = 0x7C, 0x80, 0x88, 0x94
