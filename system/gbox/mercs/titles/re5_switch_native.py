@@ -228,9 +228,8 @@ class Controller(N.Controller):
                 self.detach_completed()
 
     def weapon_choices(self):
-        from .re5_weapons import WEAPONS
-        return [{"item": item, "weapon": spec.name, "family": spec.family}
-                for item, spec in sorted(WEAPONS.items())]
+        from .re5_weapon_catalogue import choices
+        return choices(self)
 
     def equip_primary(self, item, *, expected=None, allowed=None):
         from .re5_switch_weapon_native import replace

@@ -388,6 +388,8 @@ def test_starts_wait_for_a_reload_and_the_reloads_own_restarts_go_through():
     (["gbox/mercs/titles/re5_combat.py", "gbox/screensaver.py"], "restart"),
     (["gbox/server.py"], "restart"), (["gbox/hot_reload.py"], "restart"), (["gbox/tools.py"], "restart"),
     (["gbox/mercs/warm_boot.py"], "restart"), (["gbox/re5_mods_tool.py"], "restart"),
+    (["gbox/mercs/titles/re5_switch_native.py"], "restart"),
+    (["gbox/mercs/titles/re6_switch_native.py"], "restart"),
     (["profiles/gamedata/BLUS30491-ram.json"], "restart"), (["adapters/x.py"], "restart"), (["gbox.toml"], "restart"),
     (["gbox/mercs/notes.json"], "restart"), (["hermes/gbox/SKILL.md"], "restart"),
     (["docs/hot-update.md", "clients/desktop/app.js", "tests/test_hot_reload.py"], "none"),
