@@ -257,9 +257,59 @@ def flush_receipts(state_dir, authority, send, *, on_error=None):
 
 def same_process(process, witness):
     try:
-        return process.is_running() and process.pid == witness[0] and process.create_time() == witness[1]
+        return (process.is_running() and process.pid == witness[0] and process.create_time() == witness[1]
+                and not windows_exited(process.pid))
     except Exception:
         return False
+
+
+def windows_exited(pid):
+    """Windows may retain an exited PID while another process holds its handle.
+
+    psutil.wait() waits for that PID to disappear even after Windows reports an
+    exit code. Recovery must wait for execution to end, not handle owners.
+    This read-only check never treats access denial or an unknown wait as exit.
+    """
+    if sys.platform != 'win32':
+        return False
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x00101000, False, pid)  # SYNCHRONIZE | QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: absent PID
+    try:
+        if kernel.WaitForSingleObject(handle, 0) == 0:  # WAIT_OBJECT_0, including exit code 259
+            return True
+        code = wintypes.DWORD()
+        return bool(kernel.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259)
+    finally:
+        kernel.CloseHandle(handle)
+
+
+def wait_processes(processes, timeout):
+    import psutil
+    if sys.platform != 'win32':
+        return psutil.wait_procs(processes, timeout=timeout)
+    until = time.monotonic() + timeout
+    alive, gone = list(processes), []
+    while alive:
+        for process in list(alive):
+            if windows_exited(process.pid):
+                alive.remove(process)
+                gone.append(process)
+        remaining = until - time.monotonic()
+        if not alive or remaining <= 0:
+            break
+        time.sleep(min(.05, remaining))
+    return gone, alive
 
 
 def app_matches(info, executable, app):
@@ -301,7 +351,7 @@ def relaunch(manifest, command, *, processes=None, popen=subprocess.Popen):
     for process in (processes if processes is not None else psutil.process_iter(['exe', 'cmdline'])):
         try:
             inspected.append(process)
-            if app_matches(process.info, executable, app):
+            if app_matches(process.info, executable, app) and not windows_exited(process.pid):
                 candidates.append((process, (process.pid, process.create_time())))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -330,7 +380,7 @@ def relaunch(manifest, command, *, processes=None, popen=subprocess.Popen):
             identity = (child.pid, child.create_time())
             matches = select_native(child, identity)
             info = child.as_dict(attrs=['exe', 'cmdline'])
-            if owned_helper(info, manifest, sys.executable) or matches:
+            if (owned_helper(info, manifest, sys.executable) or matches) and not windows_exited(child.pid):
                 targets[child.pid] = (child, identity)
     # After an Electron crash its exact config-bound worker or recorded native
     # session can remain orphaned. Never infer ownership from a process name.
@@ -341,7 +391,8 @@ def relaunch(manifest, command, *, processes=None, popen=subprocess.Popen):
             info = process.info
             is_python = os.path.normcase(str(info.get('exe') or '')) != os.path.normcase(str(executable))
             if matches or (is_python and owned_helper(info, manifest, sys.executable)):
-                targets[process.pid] = (process, identity)
+                if not windows_exited(process.pid):
+                    targets[process.pid] = (process, identity)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     if os.getpid() in targets:
@@ -356,11 +407,11 @@ def relaunch(manifest, command, *, processes=None, popen=subprocess.Popen):
     for process, identity in targets.values():
         if not any(process.pid == p.pid for p, _ in candidates) and same_process(process, identity):
             process.terminate()
-    _, alive = psutil.wait_procs([p for p, _ in targets.values()], timeout=5)
+    _, alive = wait_processes([p for p, _ in targets.values()], timeout=5)
     for process in alive:
         if same_process(process, targets[process.pid][1]):
             process.kill()
-    _, alive = psutil.wait_procs(alive, timeout=3)
+    _, alive = wait_processes(alive, timeout=3)
     if alive:
         raise RuntimeError('The prior GBox process did not exit')
     unique = {(s['session_id'], identity[0], identity[1]) for s, identity in native}

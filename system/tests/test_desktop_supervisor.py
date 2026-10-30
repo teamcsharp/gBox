@@ -138,7 +138,8 @@ def installation(tmp_path, monkeypatch):
     cfg = SimpleNamespace(data_dir=tmp_path / 'data')
     manifest = {'authority': AUTH, 'root': str(root), 'app': str(app), 'executable': str(executable), 'config': str(root / 'gbox.toml')}
     launches = []
-    monkeypatch.setattr(psutil, 'wait_procs', lambda processes, timeout: (list(processes), []))
+    monkeypatch.setattr(S, 'windows_exited', lambda pid: False)
+    monkeypatch.setattr(S, 'wait_processes', lambda processes, timeout: (list(processes), []))
     return cfg, manifest, launches
 
 
@@ -214,7 +215,7 @@ def test_reused_child_pid_is_not_terminated_or_killed_during_shutdown(installati
     _, manifest, launches = installation
     child = Process(201, manifest['executable'], [manifest['executable'], '--type=renderer'], running=False)
     waits = iter([( [], [child]), ([], [])])
-    monkeypatch.setattr(psutil, 'wait_procs', lambda processes, timeout: next(waits))
+    monkeypatch.setattr(S, 'wait_processes', lambda processes, timeout: next(waits))
     p = parent(manifest, child)
     with pytest.raises(ValueError):
         S.relaunch(manifest, command(), processes=[p], popen=lambda *a, **kw: launches.append(a))
