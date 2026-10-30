@@ -168,3 +168,28 @@ def test_mod_flash_routes_to_native_without_inventory_or_mod_lock(monkeypatch):
     monkeypatch.setattr(N, 'flash_now', lambda a: {'verified': a is ad})
     monkeypatch.setattr(M, 'RE5Switch', lambda _: pytest.fail('Flash must not open an inventory editor'))
     assert M.tool_run(ad, 'flash_now') == {'verified': True}
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_prepare_installs_once_without_a_projectile_and_restores_player(failure):
+    ctl = controller()
+    heap = ctl.heap
+    ctl.heap = None
+    ctl.ready = lambda: (ctl.player, ctl.generation)
+    ctl.call = lambda *_: pytest.fail('Preparation must not create or detonate any item')
+    def attach():
+        ctl.write(ctl.player, struct.pack('<Q', ctl.base + N.TEMP))
+        if failure:
+            raise N.Uncertain('bootstrap timeout')
+        ctl.heap = heap
+        ctl.write(ctl.player, struct.pack('<Q', heap))
+    ctl.attach = attach
+    if failure:
+        with pytest.raises(N.Uncertain, match='bootstrap timeout'):
+            ctl.prepare()
+        assert ctl.failed and not ctl.recoverable
+    else:
+        ctl.prepare()
+        ctl.attach = lambda: pytest.fail('Preparation must not repeat an installed bootstrap')
+        ctl.prepare()
+    assert ctl.q(ctl.player) == ctl.original
