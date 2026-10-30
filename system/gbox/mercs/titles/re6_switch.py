@@ -2750,8 +2750,14 @@ class Bot:
             foot, dist, err = tgt["pos"], flat(tgt), bearing(tgt)
         behind = [e for e in live if flat(e) <= QT_BEHIND_R
                   and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > QT_BEHIND_ERR]
-        if (behind and not any(flat(e) <= QT_BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
-                               < math.radians(60) for e in live) and now - self.quick_at > QUICK_GAP_S
+        if (behind
+                # and nobody close enough to reach him first: a quick turn is a commitment - one more than an arm's
+                # length away (QT_BEHIND_R) gets a bite or a hold mid-turn (the 2026-10-29 crowd: 32 of 53 hits were
+                # bites at ~216 cm, while the turn was still settling). The close ones are handled in place (the crowd
+                # control below: kick or quick shot, the camera turning to a flanker).
+                and not any(flat(e) <= MELEE_R for e in live)
+                and not any(flat(e) <= QT_BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+                            < math.radians(60) for e in live) and now - self.quick_at > QUICK_GAP_S
                 and not self.down and p.get("equipped") != BOMB_INDEX
                 and not (self.push is not None and now < self.fever_until)):   # (the push-through faces its way)
             self.stats["quick_turns"] += 1                       # one behind him close: turned on at once

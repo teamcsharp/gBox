@@ -793,6 +793,25 @@ def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
     assert act == {"hold": ("ldown",)} and bot.quick == 2 and bot.stats["quick_turns"] == 1
 
 
+def test_a_quick_turn_held_out_while_someone_is_close_enough_to_bite_mid_turn():
+    # The 2026-10-29 crowd cluster: bites at ~216 cm while the quick turn was still settling. The turn is a commitment;
+    # someone more than an arm's length away (MELEE_R) reaches him first. He fights in place instead.
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, -300.0, 700), (40.0, 0.0, 120.0, 700)), cam_yaw=0.0))   # 3 m behind, one 1.2 m in front
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 12)
+    assert all(set(a.get("hold", ())) != {"ldown"} for a in acts)                 # no quick turn at all
+    assert bot.stats.get("quick_turns_behind", 0) == 0
+    assert bot.stats["cc_kicks"] > 0                                             # the close one: kicked in place
+
+
+def test_the_quick_turn_still_goes_with_no_one_close_enough_to_bite():
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -300.0, 700),), cam_yaw=0.0))   # 3 m behind, nobody near
+    bot.held = lambda p, now: False
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"hold": ("ldown",)} and bot.stats["quick_turns"] == 1
+
+
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False
