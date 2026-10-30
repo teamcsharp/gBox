@@ -248,7 +248,17 @@ def apply(bot, snap, act, now):
         return act
     held = next((s for s in snap.get('inventory') or () if s.get('hand')), None)
     spec = re5_weapons.WEAPONS.get(held.get('item')) if held else None
-    if not spec or spec.family not in GUN_FAMILIES or not p.get('pos') or not cam:
+    if not spec or spec.family not in GUN_FAMILIES or not p.get('pos'):
+        return act
+    if not cam:
+        # Production snapshots include this key even during camera transitions.
+        # A temporarily inactive QFPS must not hand aim back to amplified digital
+        # sticks; wait for ownership or let keep_active make space. Older readers
+        # without camera support retain their existing controller.
+        if 'aim_cam' in snap:
+            bot._feedback_at = None
+            bot._trigger(False, now)
+            return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
         return act
     if cam.get('player') != p.get('ptr') or cam.get('generation') != p.get('generation'):
         return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
@@ -290,13 +300,14 @@ def apply(bot, snap, act, now):
     dt = 0.0 if previous is None else now - previous
     writer = bot._writer()
     written = False
+    if writer:
+        keys -= STICKS  # also while lowering/raising between writable motions
     if writer and p.get('motion') in R.MOTION_AIM and (p.get('hp') or 0) > 0:
         pitch = max(-1.0, min(1.0, cam['pitch'] + step(pitch_error, PITCH_RATE, dt)))
         heading = R.wrap(cam['heading'] + step(yaw_error, YAW_RATE, dt))
         written = writer(cam, pitch, heading)
         key = 'target_feedback_writes' if written else 'target_feedback_write_failures'
         bot.stats[key] = bot.stats.get(key, 0) + 1
-        keys -= STICKS
         if not written:
             bot._trigger(False, now)
             return dict(act, hold=tuple(sorted(keys - {'zr'})))

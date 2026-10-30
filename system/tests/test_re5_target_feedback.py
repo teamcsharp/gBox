@@ -178,6 +178,19 @@ def test_failed_owner_or_write_check_releases_aim_and_fire_until_fresh_snapshot(
     assert set(act['hold']) == {'zl'}
 
 
+def test_camera_transition_does_not_restore_amplified_sticks_or_blind_fire():
+    bot, writes = controller(); s = scene(); s['aim_cam'] = None
+    act = F.apply(bot, s, {'hold': ('zl', 'zr', 'rdown', 'rright')}, .05)
+    assert set(act['hold']) == {'zl'} and not writes
+    assert bot._feedback_at is None
+
+
+def test_lowered_motion_cannot_push_camera_with_legacy_sticks():
+    bot, writes = controller(); s = scene(); s['player']['motion'] = 11
+    act = F.apply(bot, s, {'hold': ('zl', 'zr', 'rdown')}, .05)
+    assert set(act['hold']) == {'zl'} and not writes
+
+
 def test_operator_control_never_moves_camera_ram():
     bot, writes = controller(); bot.stats['operator_control'] = True
     act = {'hold': ('zl',)}
