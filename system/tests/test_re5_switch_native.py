@@ -134,7 +134,7 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
     calls = []
     def call(off, *args):
         calls.append((off, args))
-        return unit if off == 0x118E840 else 1
+        return unit if off == 0x118E820 else 1
     ctl.call = call
     if exploded:
         result = ctl.flash()
@@ -143,8 +143,8 @@ def test_flash_requires_native_effect_flag_and_always_restores_class_table(explo
         with pytest.raises(N.Uncertain, match='explosion flag'):
             ctl.flash()
         assert ctl.failed and not ctl.recoverable
-    assert calls == [(0x118E840, (ctl.player, ctl.generation)),
-                     (0x118EB00, (unit, born, ctl.player, ctl.generation))]
+    assert calls == [(0x118E820, (ctl.player, ctl.generation)),
+                     (0x118E9D0, (unit, born, ctl.player, ctl.generation))]
     assert ctl.q(ctl.player) == ctl.original
     # The only player write is the temporary virtual dispatch pointer.
     assert all(not ctl.player < at < ctl.player + 0x5000 for at, _ in ctl.writes)
