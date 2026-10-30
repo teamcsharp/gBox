@@ -29,8 +29,11 @@ SAVE_AFTER, QUIET_FOR, CHECK_FOR = 45.0, 30.0, 45.0
 
 
 def strategy(ad) -> str | None:
-    """'boot' (boots into a jump state, saves one through a demo slot of its own: jump_boot / jump_save), 'slot'
-    (RetroArch's numbered slots, borrowed and given back) or None (no jump states)."""
+    """'boot' (boots into a jump state, saves one through a demo slot of its own: jump_boot / jump_save), 'entryslot'
+    (RetroArch with -e/--entryslot: boots straight into the jump state's entry slot), 'slot' (RetroArch's numbered
+    slots, borrowed and given back) or None (no jump states)."""
+    if callable(getattr(type(ad), "_jump_entryslot", None)) and hasattr(ad, "config"):
+        return "entryslot"
     if all(callable(getattr(type(ad), a, None)) for a in ("jump_boot", "jump_save")) and hasattr(ad, "config"):
         return "boot"
     if all(hasattr(ad, a) for a in ("_slot", "save_state", "load_state", "config")):
@@ -50,7 +53,8 @@ def path_for(ad, g: dict) -> Path:
 def arm_boot(ad, g: dict) -> dict:
     """A launch that asks for a jump: boot straight into this game and build's jump state when the emulator can and
     this PC has one. Called before the emulator starts; the result goes into the launch detail (session.detail.jump)."""
-    if strategy(ad) != "boot":
+    kind = strategy(ad)
+    if kind not in ("boot", "entryslot"):
         return {"booted": False, "why": "this emulator loads its jump state when autoplay starts"}
     p = path_for(ad, g)
     try:
@@ -60,6 +64,8 @@ def arm_boot(ad, g: dict) -> dict:
     if not have:
         return {"booted": False, "why": "no jump state for this game and build on this PC yet"}
     ad.jump_boot(p)
+    if kind == "entryslot":
+        ad._jump_entryslot(p)
     return {"booted": True, "file": p.name}
 
 
@@ -85,7 +91,7 @@ def _keeping_slot(ad, fn):
 
 
 def save(ad, dest: Path) -> int:
-    if strategy(ad) == "boot":
+    if strategy(ad) in ("boot", "entryslot"):
         return int(ad.jump_save(dest))                  # its demo slot, copied to dest
 
     def go():
@@ -108,7 +114,7 @@ def load(ad, src: Path) -> None:
 
 def _ready(ad, kind) -> bool:
     # Dolphin's gBox hotkeys share their keys with the speed-limit key: no save while fast-forward holds it
-    return kind != "boot" or not getattr(ad, "ff_on", False)
+    return kind not in ("boot", "entryslot") or not getattr(ad, "ff_on", False)
 
 
 def watch(ad, g: dict, stuck, stats: dict, stopped, clock=time.time, sleep=time.sleep) -> None:
@@ -118,7 +124,7 @@ def watch(ad, g: dict, stuck, stats: dict, stopped, clock=time.time, sleep=time.
     p = path_for(ad, g)
     kind = strategy(ad)
     start, loaded_at, saved = clock(), None, False
-    if kind == "boot":
+    if kind in ("boot", "entryslot"):
         if booted(ad, g):
             loaded_at, stats["jump"] = start, "booted into it"
         elif p.is_file():                                # Dolphin loads one only at boot: kept for the next demo

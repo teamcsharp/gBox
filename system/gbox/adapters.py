@@ -1355,7 +1355,8 @@ class RetroArchAdapter(CommandAdapter):
             # A full recording disk must never prevent the operator's game from loading.
             self.gameplay_replay = {'state':'failed','reason':type(exc).__name__}
             movie = []
-        return [exe, *(["--config", str(cfg)] if cfg else []), "-L", core, "--verbose", *self.cfg.args, *movie, rom]
+        return [exe, *(["--config", str(cfg)] if cfg else []), "-L", core, "--verbose", *self.cfg.args, *movie,
+                *self._jump_args(rom), rom]
 
     def install_cheats(self, core: str, rom: str) -> list[dict]:
         """Copy the libretro-database code list for this game where RetroArch auto-loads it (all codes off)."""
@@ -1956,6 +1957,61 @@ class RetroArchAdapter(CommandAdapter):
         slot = self._slot(slot)
         self.cmd("LOAD_STATE")
         return {"slot": slot}
+
+    # ---- demo jump states (gbox/jumpstate.py): boot straight into gameplay with RetroArch's -e/--entryslot ----
+    # RetroArch names a slot-1 state <content>.state1, where <content> is the content basename without its last
+    # extension (the resolved ROM passed to _argv after archive extraction). An entry slot is the same path plus
+    # ".entry" (<content>.state1.entry, binary string "%d.entry"): requesting -e 1 makes RetroArch load it on boot.
+    _entry_slot = 1
+
+    @staticmethod
+    def _content_base(rom: str) -> str:
+        return Path(rom).stem
+
+    def _entry_path(self, rom: str) -> Path:
+        """The entry-slot file RetroArch will read for -e 1 on this content: <content>.state1.entry in state_dir()."""
+        return self.state_dir() / f"{self._content_base(rom)}.state{self._entry_slot}.entry"
+
+    def jump_boot(self, src: Path) -> None:
+        """Only gbox/jumpstate.arm_boot calls this, for a launch that asks for a jump (autoplay, never a plain Play).
+        It records the jump state; _jump_args stages it as this content's entry slot and requests -e 1."""
+        self.jump_from = src
+
+    def _jump_entryslot(self, src: Path) -> None:
+        """Capability marker for gbox/jumpstate.strategy(): RetroArch boots into an entry state with -e/--entryslot,
+        unlike Dolphin's --save_state boot. The jump state is recorded in jump_from (jump_boot already set it)."""
+        self.jump_from = src
+
+    def _jump_args(self, rom: str) -> list[str]:
+        """Before launch: copy the jump state to <content>.state1.entry so RetroArch's -e 1 loads it. Returns the
+        argv fragment (['-e', '1'] or []). The operator's own slots (including this content's plain .state1) are
+        untouched: the .entry file is a distinct path, and the jump state lives under runtime/jumpstates."""
+        src = getattr(self, "jump_from", None)
+        if not src or not Path(src).is_file():
+            return []
+        dst = self._entry_path(rom)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            self._entry_staged = dst
+            self._p(80, f"Jump state staged as entry slot: {dst.name}")
+            return ["-e", str(self._entry_slot)]
+        except OSError as exc:
+            self._p(80, f"Jump entry staging failed ({type(exc).__name__}): booting the usual way")
+            return []
+
+    def jump_save(self, dest: Path) -> int:
+        """Save the current gameplay as a jump state for this content. Writes RetroArch slot 9 (the reserved demo
+        slot, same borrow-given-back convention as gbox/jumpstate.SLOT), then copies the just-verified state file to
+        dest. The operator's active slot is never switched and their own slot files are left alone; the entry-slot
+        `.entry` file is only materialized on the next jump boot by _jump_args. Returns dest's size in bytes."""
+        saved = self.save_state(9)          # reserved demo slot; learns the exact <content>.state9 path RetroArch uses
+        base = Path(saved["path"])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        shutil.copyfile(base, tmp)          # copy the just-verified state, not a guess
+        tmp.replace(dest)
+        return dest.stat().st_size
 
     def debugger(self):
         from .debug import CPUS, MemoryDebugger
