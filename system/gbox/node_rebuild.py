@@ -190,7 +190,11 @@ class Console:
         self.line("$ " + " ".join(_quote(a) for a in cmd), lo)
         self.flush()
         try:
-            proc, stop = _spawn_command(cmd, cwd=str(cwd) if cwd else None, env=scrubbed_env(env), stdout=subprocess.PIPE,
+            # The desktop control reader holds a synchronous read on stdin.
+            # Windows children inheriting that pipe can block during CRT startup,
+            # before git or Python executes. Rebuild commands are noninteractive.
+            proc, stop = _spawn_command(cmd, cwd=str(cwd) if cwd else None, env=scrubbed_env(env),
+                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                           start_new_session=HOST_OS != 'windows')

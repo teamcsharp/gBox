@@ -21,6 +21,38 @@ from gbox.config import Config
 from gbox.registry import Cancelled, Ctx
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows synchronous control pipe')
+def test_rebuild_child_starts_while_desktop_control_pipe_has_a_pending_read(tmp_path):
+    """Reproduce the actual i9 startup deadlock in an isolated parent process."""
+    script = tmp_path / 'control_pipe_parent.py'
+    script.write_text('''
+import os,sys,threading,ctypes,msvcrt,subprocess,time
+from ctypes import wintypes
+from types import SimpleNamespace
+sys.path.insert(0, ROOT)
+from gbox.node_rebuild import Console
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.GetStdHandle.argtypes=[wintypes.DWORD];k.GetStdHandle.restype=wintypes.HANDLE
+k.SetStdHandle.argtypes=[wintypes.DWORD,wintypes.HANDLE];k.SetStdHandle.restype=wintypes.BOOL
+old=k.GetStdHandle(0xfffffff6)
+r,w=os.pipe();assert k.SetStdHandle(0xfffffff6,msvcrt.get_osfhandle(r))
+entered=threading.Event()
+def read():
+    entered.set();os.read(r,1)
+reader=threading.Thread(target=read,daemon=True);reader.start();entered.wait();time.sleep(.1)
+try:
+    con=Console(SimpleNamespace(progress=lambda pct,msg: None))
+    result=con.run([sys.executable,'-I','-c','import sys; print("child ready",sys.stdin.read())'],lo=0,hi=100,timeout=2)
+    assert result==0,con.lines
+    assert any('child ready' in line for line in con.lines),con.lines
+finally:
+    k.SetStdHandle(0xfffffff6,old);os.write(w,b'x');reader.join(2);os.close(r);os.close(w)
+'''.replace('ROOT', repr(str(Path(NR.__file__).resolve().parent.parent))), encoding='utf8')
+    result = subprocess.run([sys.executable, '-I', str(script)], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=12)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize('wrapper_waits', [False, True])
 def test_timeout_releases_stdout_inherited_by_a_descendant(tmp_path, monkeypatch, wrapper_waits):
     """A real wrapper/child pair reproduces the Git timeout's inherited pipe."""
