@@ -1428,6 +1428,7 @@ class Screensaver:
         session table for all of them (the desktop's 8 s request limit was exceeded: 4-11 s on lilspark)."""
         from . import mercmode
         sessions = mercmode.session_rows(self.store)    # the 3 fields inventory() needs, not the 4.9 MB archive
+        aliases = mercmode.alias_snapshot(self.store)
         running = self.store.running_sessions()
         hosts=[]
         for w in _current_workers(self.workers()):
@@ -1463,7 +1464,7 @@ class Screensaver:
                 'observed_at':observed.get('at'),'desired_settings':mercmode.settings(self.store,w['name']),
                 'command':command | ({'state':job.get('state'),'error':str(job.get('error') or '')[:240]} if job else {}),
                 'scheduler_owner':'local' if _local_scheduler(w) else 'this_control_plane',
-                'titles':mercmode.inventory(self.store,w,sessions=sessions),'preparation':mercmode.host_preparation(self.store,w),
+                'titles':mercmode.inventory(self.store,w,sessions=sessions,aliases=aliases),'preparation':mercmode.host_preparation(self.store,w),
                 'history':observed.get('history',self.store.get(mercmode.HISTORY,w['name']) or {}),
                 # the warm pool: titles waiting paused for their turn, and the title picked to play next
                 'warm':[{'title':t,'state':r.get('state'),'session_id':r.get('session_id'),'at':r.get('at'),
