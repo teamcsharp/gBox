@@ -127,7 +127,7 @@ class Controller(N.Controller):
         if self.w(self.heap + 0x6A8) not in (0, 3):
             raise Unavailable("native call already pending")
         self.write(self.heap + 0x6C0, struct.pack("<9Q", self.base + off, *args, *([0] * (8 - len(args)))))
-        self.write(self.heap + 0x6A8, struct.pack("<I", 1))
+        self.publish_call(self.heap + 0x6A8)
         self.wait(lambda: self.w(self.heap + 0x6A8) == 3)
         return self.q(self.heap + 0x6B8)
 
@@ -135,12 +135,27 @@ class Controller(N.Controller):
         with self.lock:
             if not self.failed or not getattr(self, "recoverable", False):
                 return not self.failed
-            self.check()
+            self.check_build()
+            if self.heap is None:
+                return False
             self.validate_heap()
-            if self.w(self.heap + 0x6A8) != 3 or self.q(self.player) != self.original:
+            if self.w(self.heap + 0x6A8) != 3:
+                return False
+            if self.q(self.heap + 0x690) != self.player or self.q(self.heap + 0x698) != self.generation:
+                return False
+            self.detach_completed()
+            if self.q(self.player) != self.original:
                 return False
             self.failed = self.recoverable = False
             return True
+
+    def detach_completed(self):
+        if self.heap is not None:
+            self.validate_heap()
+            if self.w(self.heap + 0x6A8) in (1, 2):
+                return
+        if self.q(self.player) in (self.heap, self.base + TEMP):
+            self.write(self.player, struct.pack("<Q", self.original))
 
     def projectile(self, unit, born):
         if (self.q(unit) != self.base + 0x1C5EF58 or self.q(unit + 0x1A00) != born or
@@ -168,9 +183,7 @@ class Controller(N.Controller):
                 self.recoverable = False
                 raise
             finally:
-                self.check()
-                if self.q(self.player) in (self.heap, self.base + TEMP):
-                    self.write(self.player, struct.pack("<Q", self.original))
+                self.detach_completed()
 
     def flash(self):
         # Recovery acquires the same lock; do it before entering the operation.
@@ -207,14 +220,12 @@ class Controller(N.Controller):
                             "spawn": round(1000 * (spawned_at - attached_at), 1),
                             "initialize": round(1000 * (initialized_at - spawned_at), 1),
                             "explode": round(1000 * (time.monotonic() - initialized_at), 1)}}
-            except Exception as exc:
+            except Exception:
                 self.failed = True
-                self.recoverable = isinstance(exc, AllocationLost)
+                self.recoverable = True
                 raise
             finally:
-                self.check()
-                if self.q(self.player) in (self.heap, self.base + TEMP):
-                    self.write(self.player, struct.pack("<Q", self.original))
+                self.detach_completed()
 
     def weapon_choices(self):
         from .re5_weapons import WEAPONS

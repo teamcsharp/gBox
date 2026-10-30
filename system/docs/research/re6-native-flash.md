@@ -88,6 +88,32 @@ see [RE5 native flash](re5-native-flash.md). Do not close their tickets from thi
 
 ## Interface contract
 
+### Flash button recovery and shortcut (2026-10-30)
+
+The PiP and shared viewer button dispatch every tap independently, without
+confirmation or result toasts. Native receipts remain available through the
+interventions API/MCP; a failure is retained on the button's status/tooltip.
+F is the default shortcut while the stream control is active. Right-click the
+flash icon to change it, unmap it, or restore F. The mapping persists locally;
+typing in a text field and key autorepeat do not trigger flashes. The shortcut
+consumes its key down/up so it does not also become game input.
+
+Historical receipts showed negative explosion returns and a publication
+readback race permanently disabling later clicks. Both RE5/RE6 now allow a
+new request after validating a completed mailbox, its original owner/generation
+and restored dispatch table. Pending/executing calls are not cleared or replayed;
+their dispatcher remains attached until the original call finishes. A native
+1-to-2/3 transition is accepted as publication acknowledgment when the adapter
+reports its equality-readback mismatch. Ordinary memory-write guards remain.
+An uncertain weapon transaction still requires separate recovery.
+
+Quick-menu actions already dispatch directly to the directive endpoint on
+selection. The settings cog is separate; its mutable job polling variable is
+fixed so queued setting jobs can finish. No direct action opens the cog panel.
+
+This does not remove the RE6 loaded-resource requirement, add Merc3D/RE4 VR
+native flash support, or prove an effect during menus, death or paused games.
+
 - `POST /api/sessions/{sid}/interventions` with
   `{"op":"flash_now","request_id":"a fresh UUID per click"}`.
 - `GET /api/sessions/{sid}/interventions` returns capability availability and
