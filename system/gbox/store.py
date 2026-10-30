@@ -107,6 +107,10 @@ class Store:
                 WHERE kind='slabel' AND json_extract(body,'$.session_id') IS NOT id;
             CREATE INDEX IF NOT EXISTS docs_queued_jobs ON docs(json_extract(body,'$.state')) WHERE kind='job';
             CREATE INDEX IF NOT EXISTS docs_session_state ON docs(json_extract(body,'$.state')) WHERE kind='session';
+            CREATE INDEX IF NOT EXISTS docs_damage_unmaterialized ON docs(kind)
+                WHERE kind='player_damage' AND json_extract(body,'$.state') != 'done';
+            CREATE INDEX IF NOT EXISTS docs_damage_save_state ON docs(json_extract(body,'$.save_state.state'))
+                WHERE kind='player_damage';
             CREATE INDEX IF NOT EXISTS docs_resolution_requests_created
                 ON docs(COALESCE(json_extract(body,'$.created'),0) DESC)
                 WHERE kind='request' AND {_RESOLUTION_ID_TRUTHY};
