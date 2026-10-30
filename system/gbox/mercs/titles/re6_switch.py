@@ -3430,12 +3430,21 @@ class Bot:
 
     def _down_fight(self, p, snap, now) -> dict:
         """Down: the nearest within DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R), no tablet, no
-        stick; nobody near: the stick up to rise. Dying at 1 HP: stay down, no fight, no rise - the kick and the
-        rise at 1 health are what the fall/knockdown/dying chain's deaths are made of (#5052)."""
+        stick; nobody near: the stick up to rise. Dying at 1 HP: stay down, no fight, no rise. Down at low health
+        with a melee wind-up near: stay down until it swings (the felling that the getting-up deaths are made of,
+        #5052) - the kick and the rise at 1 health are what the fall/knockdown/dying chain's deaths are made of."""
         me = p["pos"]
         if self.down_dying:
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
+        # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
+        # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
+        hp_max = p.get("hp_max")
+        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max and any(
+                windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0):
+            self._gun_down()
+            return self._go("down", "down_windup_hold", {"hold": ()},
+                            "down at low health: a melee wind-up near, staying down until it swings")
         near = sorted((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                        and math.dist(me, e["pos"]) <= DOWN_FIGHT_R and not self.is_blocked(e, now)),
                       key=lambda e: math.dist(me, e["pos"]))
