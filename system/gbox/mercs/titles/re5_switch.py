@@ -532,6 +532,8 @@ DYNAMITE_COUNTERS = ("dynamite_seen", "dynamite_picks", "dynamite_backoffs", "dy
 AIM_LOCK, AIM_LOCK_YAW_DEG_S, AIM_LOCK_PITCH_DEG_S, AIM_LOCK_SNAP_DEG = False, 140.0, 90.0, 1.5
 AIM_LOCK_HELD = 0.03                     # rad: the next frame's state this near the write: it held (else, 6 times and
                                          # more often than held, the lock stands down for the round: aim_lock_unheld)
+AIM_LOCK_PITCH_ONLY_CM = 350.0           # close-range: pitch-only writes (the heading write snaps the view)
+AIM_LOCK_PITCH_ONLY_YAW = 0.2            # rad: only when already this near the target's bearing
 AIM_LOCK_COUNTERS = ("aim_lock_ticks", "aim_lock_fails", "aim_lock_prepitch", "aim_lock_unheld")
 GOV_COUNTERS = ("gov_drops",)
 # The game's own prompts (operator 17:39: "seeing them miss QTE events"; 17:36: the ledge's "Jump down" by Y; the
@@ -2084,7 +2086,7 @@ class Bot:
             if AIM_LOCK and snap.get("aim_cam"):         # the RAM aim lock (the stick only as a fallback)
                 lzo = (tuple(lz["from"]), tuple(lz["at"])) if lz.get("up") and lz.get("from") and lz.get("at") \
                     else (None, None)
-                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], aim_h, dist, *lzo), now)
+                keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, tgt["pos"], aim_h, dist, *lzo), now, dist=dist)
             if not on:                                   # the aim off them: turn, the trigger let go (the turn's pace)
                 if self.fire_down:
                     self._trigger(False, now)
@@ -2739,16 +2741,21 @@ class Bot:
             self._ram = re5_switch_aim.aim_writer(self._m) or False
         return self._ram or None
 
-    def _lock_aim(self, snap, keys, yaw_err, pitch_err, now):
+    def _lock_aim(self, snap, keys, yaw_err, pitch_err, now, dist=None):
         """AIM_LOCK: the aim moved by RAM - the heading by yaw_err, the camera pitch by pitch_err (radians: + = a larger
         heading / up), each at most its rate this tick (all of it within AIM_LOCK_SNAP_DEG), read back: the right-stick
-        keys dropped. Off, no camera, no writer or a failed read-back: the keys as they were."""
+        keys dropped. Off, no camera, no writer or a failed read-back: the keys as they were.
+        Close-range (dist < AIM_LOCK_PITCH_ONLY_CM and abs(yaw_err) < AIM_LOCK_PITCH_ONLY_YAW): pitch-only - the
+        heading write is skipped (the player-quaternion write snaps the view)."""
         st = snap.get("aim_cam")
         if not AIM_LOCK or not st or (yaw_err is None and pitch_err is None) or self._lock_off:
             return keys
         w = self._writer()
         if w is None:
             return keys
+        if dist is not None and dist < AIM_LOCK_PITCH_ONLY_CM and yaw_err is not None \
+                and abs(yaw_err) < AIM_LOCK_PITCH_ONLY_YAW:
+            yaw_err = None                            # close and nearly on target: pitch only, never the heading
         last = self._lock_last                           # did the game keep the last write? (the next frame's state)
         if last is not None and now - last[2] <= 0.25:
             held = (last[0] is None or abs(st["pitch"] - last[0]) <= AIM_LOCK_HELD) and                 (last[1] is None or abs(wrap(st["heading"] - last[1])) <= AIM_LOCK_HELD)
@@ -4019,7 +4026,7 @@ class Bot:
             keys -= {"rleft", "rright", "rup", "rdown"}  # the shot plays at fire_rate's time scale: the stick waits
             self.stats["shot_stick_drops"] += 1
         if AIM_LOCK and snap.get("aim_cam"):             # the RAM aim lock: the aim by RAM, the stick only as a fallback
-            keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, foot, aim_h, dist, origin, dot), now)
+            keys = self._lock_aim(snap, keys, *self._lock_errors(p, snap, foot, aim_h, dist, origin, dot), now, dist=dist)
         keys = self._sky_guard(origin, dot, chest, on, point_blank, keys)
         if self._pu_detail is not None:
             self.stats["pitch_up_last"] = (f"{self._pu_detail}; {self.doing}: {self.why}; "
