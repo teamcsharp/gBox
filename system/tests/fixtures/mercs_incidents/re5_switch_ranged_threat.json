@@ -1,0 +1,37 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "010018100CD46000",
+  "event_id": "5472fde5e2ce4d318f230e66f20a9ff8",
+  "observed_at": 1793337332.2034748,
+  "hp_before": 1000,
+  "hp_after": 608,
+  "hp_max": 1000,
+  "loss": 392,
+  "held": ["zl"],
+  "cluster": {
+    "id": "2cfcd011394c3b1a",
+    "game_id": "52d15709be0fda1a",
+    "signature": "ranged"
+  },
+  "snapshot": {
+    "player": {
+      "pos": [0, 0, 0],
+      "rot": 0.0,
+      "hp": 1000,
+      "hp_max": 1000,
+      "motion": 17,
+      "state": 0,
+      "action": 0
+    },
+    "enemies": [
+      {"pos": [-0.505, 0, 2.652], "hp": 800, "class": "uEm10"},
+      {"pos": [1.813, 0, 1.843], "hp": 800, "class": "uEm10"},
+      {"pos": [2.536, 0, 5.322], "hp": 800, "class": "uEm10"},
+      {"pos": [3.0, 0, 7.5], "hp": 800, "class": "uEm11"}
+    ],
+    "inventory": [],
+    "laser": {"from": [0.0, 140.0, 30.0], "at": [0.0, 0.0, 800.0], "up": true}
+  },
+  "counters": {},
+  "preceding_history": []
+}

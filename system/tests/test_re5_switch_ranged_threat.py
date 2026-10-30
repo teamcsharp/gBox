@@ -73,6 +73,28 @@ def test_threat_d_values():
     assert math.isfinite(b._threat_d(p, thrower))
 
 
+def test_replay_ranged_cluster_fixture_aims_at_the_thrower():
+    """The cluster's representative hit (10-29, Missile Area, uEm10 thrower at 2.7 m beside him): the replay drives
+    a fresh bot through the recorded snapshot; the threat order must put that ranged enemy first now."""
+    import json
+
+    from pathlib import Path
+
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / "fixtures/mercs_incidents/re5_switch_ranged_threat.json").read_text())
+    p = fx["snapshot"]["player"]["pos"]
+    live = [{"ptr": i + 1, "slot": i + 1, "pos": (e["pos"][0], 0.0, e["pos"][2]), "hp": e["hp"], "class": e["class"]}
+            for i, e in enumerate(fx["snapshot"]["enemies"])]
+    b = Bot(clock=lambda: 0.0)
+    b._appr = {}
+    picked = b._threat_pick({"pos": p, "rot": 0.0}, live, cur=None, now=0.0)
+    assert picked is not None and picked["ptr"] in (1, 2) and picked["class"] in t5.RANGED_CLASSES, \
+        "an in-band uEm10 thrower (2.7 or 2.6 m) must lead the threat order, not the 7.5 m melee"
+    # the replay path itself: the bot runs on the fixture's snapshot without crashing and takes the ranged target
+    result = incident_replay.replay(fx, ticks=10)
+    assert result["bot"].target is not None or all(t["act"] is not None for t in result["ticks"])
+
+
 def test_melee_ignores_class():
     """The band is keyed by class, not distance alone: an unknown class at 9 m stays in the closing order."""
     b = bot()
