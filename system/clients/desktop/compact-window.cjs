@@ -91,13 +91,10 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
     try {
       if (before.fullscreen) w.setFullScreen(false);
       if (before.maximized) w.unmaximize();
-      const result = await nativeChrome(true);
-      // A helper that did not answer (a cold start while gBox boots, or one stuck on another window) never keeps the
-      // game out of the PiP (operator 2026-10-27: F5 ended inert on "Game-window helper timed out"): the window becomes
-      // the PiP with its caption controls in view, hidden once the helper answers. A refusal still rolls back.
-      if (!result?.ok && !result?.unavailable) throw Error(result?.error || 'Could not hide the gBox window controls.');
-      chrome = !!result?.ok;
-      aspect = validAspect(request.aspect) ? +request.aspect : validAspect(result?.aspect) ? +result.aspect : DEFAULT_ASPECT;
+      // Geometry and the existing game surface do not depend on Python starting
+      // or Windows answering the caption helper. Show PiP before that wait.
+      chrome = false;
+      aspect = validAspect(request.aspect) ? +request.aspect : DEFAULT_ASPECT;
       w.setMinimumSize(160, 90); w.setMaximumSize(0, 0);
       const windowAspect = WINDOW_ASPECT;
       w.setAlwaysOnTop(true); w.setAspectRatio(windowAspect);
@@ -105,13 +102,18 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       // The native helper removes caption controls; transparent overlay styling
       // also avoids a flash while Chromium processes that style change.
       // Controls the helper could not remove stay visible (never invisible but clickable).
-      if (chrome) w.setTitleBarOverlay?.(OVERLAY_HIDDEN);
       const work = workArea(w), width = Number.isFinite(+request.width) ? +request.width : compactBounds?.width || 480;
       const candidate = compactBounds || { x: work.x + work.width - width - 24, y: work.y + work.height - width / windowAspect - 24, width };
       w.setBounds(fitBounds(candidate, windowAspect, work, width));
       saved = before; restoreSeed = null; retryMs = CHROME_RETRY_MS;
+      publish();
+      const result = await nativeChrome(true);
+      if (!result?.ok && !result?.unavailable) throw Error(result?.error || 'Could not hide the gBox window controls.');
+      chrome = !!result?.ok;
+      if (chrome) w.setTitleBarOverlay?.(OVERLAY_HIDDEN);
+      if (!validAspect(request.aspect) && validAspect(result?.aspect)) aspect = +result.aspect;
       if (!chrome) later();
-      return publish();
+      return state();
     } catch (error) {
       // Roll back the same live window; this never touches the emulator process.
       await nativeChrome(false).catch(() => {});
@@ -120,6 +122,8 @@ function create({ getWin, screen, nativeChrome = async () => ({ ok: true }), emi
       w.setBounds(before.bounds);
       if (before.maximized) w.maximize();
       if (before.fullscreen) w.setFullScreen(true);
+      saved = null; chrome = false;
+      publish();
       throw error;
     }
   }

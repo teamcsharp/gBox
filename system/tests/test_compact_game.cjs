@@ -290,9 +290,9 @@ test('picture-in-picture never opens a game whose PC is offline, and never moves
   assert.match(html,/throw Object\.assign\(Error\(`\$\{sessionTitle\(session\) \|\| 'This game'\} runs on a PC that is offline/);
 });
 
-function resolveCompact(rows, selected=null){
+function resolveCompact(rows, selected=null, ready=Promise.resolve()){
   const shown=[];
-  const wv={gboxReady:Promise.resolve(),executeJavaScript:async code=>shown.push(code)};
+  const wv={gboxReady:ready,executeJavaScript:async code=>shown.push(code)};
   const ctx=vm.createContext({GBoxCompactGame:{create:io=>io},GBoxSessionContinuity:require('../clients/web/viz/session-continuity.js'),
     VIEW:{mode:'auto'},S:{apiUrl:'http://spark',workerName:'viewer'},EMB:{sid:null},EYE:{on:false},clientViewNavigation:0,
     gboxState:async()=>({playing:selected}),sessionById:async sid=>rows.find(s=>s.session_id===sid)||null,
@@ -310,7 +310,7 @@ test('compact opening skips newer parked games and follows a selected parked gam
   for(const selected of [null,warm.session_id]){
     const x=resolveCompact([live,warm,offline],selected);
     assert.equal((await x.resolve()).sid,live.session_id);
-    assert.deepEqual(x.shown,['show("Sessions", "spark-live")']);
+    assert.deepEqual(x.shown,[],'remote PiP preserves the guest tab instead of navigating it');
   }
   const requested=resolveCompact([live,warm]);
   assert.equal((await requested.resolve({sid:warm.session_id})).sid,live.session_id);
@@ -318,6 +318,17 @@ test('compact opening skips newer parked games and follows a selected parked gam
   assert.equal(await onlyWarm.resolve(),null,'a pool with no active game does not open a parked picture');
   await assert.rejects(onlyWarm.resolve({sid:warm.session_id}),/unavailable/);
   assert.deepEqual(onlyWarm.shown,[]);
+});
+
+test('a remote PiP resolves while the hidden guest webview is still loading',async()=>{
+  const live={session_id:'spark-live',state:'running',title:'RE6',detail:{worker_name:'lilspark'}};
+  const x=resolveCompact([live],null,new Promise(()=>{}));
+  let resolved=false;
+  const result=x.resolve({sid:live.session_id}).then(value=>{resolved=true;return value;});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(resolved,true,'the remote picture must not wait for the hidden guest');
+  assert.equal((await result).sid,live.session_id);
+  assert.deepEqual(x.shown,[]);
 });
 
 test('a double click inside a PiP panel, menu or pop-up never leaves the PiP (operator 2026-10-28)', () => {
