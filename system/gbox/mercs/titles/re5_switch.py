@@ -2945,25 +2945,6 @@ class Bot:
             return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         if item is None:
-            # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
-            # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
-            # with an empty heal supply and died; the retreat gives the gun-down time and the distance).
-            # Finish the existing bounded escape instead of extending its deadline
-            # every tick. Once clear, or during the normal escape cooldown, let
-            # combat resume; low HP alone must not suppress the gun for a round.
-            if (hp <= HEAL_CRITICAL * hp_max and near
-                    and (self.escape is None or now >= self.escape[1])
-                    and now - self.escape_at >= ESCAPE_GAP_S):
-                nearest = min(live, key=lambda e: flat(e))
-                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
-                self._gun_down()
-                self.escape = (away, now + ESCAPE_S)
-                self.escape_at = now
-                self.round_escapes += 1
-                self.stats["escapes"] += 1
-                self.stats["heal_status"] = f"critical retreat at {hp / hp_max:.0%} (no heals)"
-                err = wrap(away - p["rot"])
-                return {"hold": RUN + self._turn(err, TURN_TOL)}
             return None
         gun = next((s for s in inv if s["hand"] and s["type"] == 1 and s["item"] not in THROWN), None)
         self._gun_down()
@@ -3021,6 +3002,14 @@ class Bot:
         if now - self.escape_at < ESCAPE_GAP_S or self.round_escapes >= ESCAPES_MAX:
             return None
         px, _, pz = p["pos"]
+        # Crowd fire takes priority over escape: when 4+ are within 2 m or 3+ within 5 m
+        # on his level, the gun stays up and fires instead of running (the idle_among_foes
+        # cluster: the bot escaped with the gun down while Majini were within 5 m).
+        if CROWD_FIRE:
+            py = p["pos"][1]
+            crowd_ring = [e for e in live if flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY]
+            if len(crowd_ring) >= CROWD_FIRE_N or any(flat(e) <= CROWD_FIRE_CLOSE_R for e in crowd_ring):
+                return None
         hurt = (p.get("hp") or 0) < HURT * (p.get("hp_max") or 0)
         limits = (TIGHT if hurt or HEALTHY_ESCAPES else ()) + (((RING_N, RING_R),) if hurt else ())
         ring = None
