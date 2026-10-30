@@ -3220,13 +3220,6 @@ class Bot:
         if not at_bonus and not clearance_lease and any(self._threat(p, e) for e in live):
             self.stats["phase"] = "fight"
             return None
-        if not at_bonus and not clearance_lease and any(self._in_view(p, e) for e in live):
-            # An exposed Majini in view (any range) blocks the gather too: the 40 deg threat cone left an aimed
-            # bot walking past one he could see and was already tracking while it grabbed him from the side
-            # (batch b95d37e4f6baa130, 25 hits "aimed away or threat behind while hit", all phase=gather_time,
-            # the threat behind or beside the aim). The fight goes first; the tour resumes behind him.
-            self.stats["phase"] = "fight"
-            return None
         if mesh is not None and (self.route_len is None or now - self.route_len_at > ROUTE_LEN_S
                                  or set(self.route_len) != now_ptrs):
             self.route_len, self.route_len_at = {}, now
