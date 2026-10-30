@@ -4,6 +4,79 @@ This checkpoint supersedes the older October 28/29 status sections. The full
 operator request is **not complete**. Preserve the requirements below instead
 of treating a merged hook or synthetic test as gameplay acceptance.
 
+## Latest checkpoint: PiP weapon picker, 2026-10-30 14:22 UTC
+
+The operator now requires **three minutes**, superseding the earlier two-minute
+primary-weapon minimum. PR[1612](https://github.com/teamcsharp/gBox/pull/1612)
+merged as `f0ebccdb4c7abf4586c853fe31dcf828aaca6a5f`; follow-up
+PR[1613](https://github.com/teamcsharp/gBox/pull/1613) merged as
+`6be6f0a82505ac2f9b31134bc98e0e694d4bf6ac`. Both are assimilated into root
+main without publishing its private scratch history or discarding Pine edits.
+
+- PiP has a gun icon immediately left of flashbang. The shared desktop/viewer
+  picker opens synchronously, searches the catalogue, sorts numeric damage
+  descending, labels equipped/inventory weapons and closes on selection. It
+  sends one native equip request and does not replace the video source or open
+  a game inventory. Changing sessions invalidates old menus and pending reads.
+- RE5 advertises all35 catalogued weapons, including weapons absent from the
+  inventory. Gun firepower comes from live level-zero upgrade data. Explosive
+  and melee table entries normally contain1, not actual damage: reference
+  damage is separately labelled with provenance in `re5_weapon_catalogue.py`.
+  Variable/unmeasured damage is shown honestly and sorted last. This ranking
+  is not measured DPS, upgraded inventory damage, or a universal hit result.
+- A verified native equip publishes its complete preference atomically. The
+  bot's mandatory lock is180 seconds, followed by match-long preference. It
+  ends when the player life/process/match ends. The general telemetry uploader
+  drops arbitrary dicts; the follow-up therefore adds scalar
+  `primary_weapon_item`, `primary_weapon_name`, `primary_weapon_locked`, and
+  `primary_weapon_lock_remaining_s` for RE5. A missing old `primary_weapon`
+  dict in HTTP telemetry did not itself establish that the lock was lost.
+- Native mailbox owners outlive bot threads. RE5 native-controller source is
+  now excluded from bot hot reload, like RE6. Other pure policy changes reload
+  without restarting games.
+
+Validation:117 targeted Python tests and8 JS/browser tests passed for1612.
+The follow-up passed34 targeted Python tests and2 browser tests. An optional
+MCP client test was skipped because the local dependency is unavailable.
+Root integration with preserved Pine changes passed17 targeted tests.
+
+Live production receipt
+`re5-picker-primary-1793369030809353243.json` on Spark proves an absent
+S&W M500 was constructed, placed in grid0 and held:392.2ms end to end,
+47.6ms native, request`8eb9c1c4-5c8f-463c-a6d5-91f61aac0c58`.
+Session`30e9b63ca2ee4375-3b50bd73d65b4a35`, PID974528,
+birth1793368900.43, Jill Battle Suit, player generation1. The held weapon
+remained M500 through death around80seconds. The round recorded6 kills
+but only1 counted shot in the sampled interval. It is a FAILURE, not proof
+of sustained effective shooting or a surviving full180-second lock.
+Player-life change stopped the read-only observer; no effect was retried.
+Native flash immediately before equip also confirmed (118.1ms native).
+
+Spark service restarted once at14:00:23UTC (PID965875, worker30e9b63ca2ee4375)
+to activate the catalogue controller. Preserve the integrated RE5 native file:
+SHA256`d92c3acd30136f87f82b19984b53ea0a69b351eaafeae49652f298b61a9e53f2`.
+It retains Pine's current_weapon helper. Exact prior hash was checked and
+backup`re5-native-before-f0ebccdb-1793368786106068218.py` is in agent scratch.
+The telemetry follow-up deployed14:19:46UTC and hot-reloaded
+`primary_weapon,re5_switch` with a1.1-second bot gap; no second service restart.
+
+Desktop administrative relaunch request`f81cdce6bd624ac5b3075d6c6ce0736b`
+returned successfully. Current PID34836/birth1793368917.6307373,
+worker6ca6d324d5594192, epoch3d9561d7df36cf21ea7000ec0b79cbf4.
+Local API18765 and Spark bridge healthy; zero local game sessions.
+Its saved PiP followed the new RE5 session after recovery. The captured app
+frame still showed a reconnecting badge: do not claim the broader stream
+stability problem is resolved. The initial gun-picker UI is loaded; the small
+older-worker unknown-inventory label follow-up is on disk for the next reload.
+
+At14:21UTC Spark is autoplaying RE6 session
+`30e9b63ca2ee4375-b5d69d969abc4acf`; the i9 is still autoplaying Merc3D
+session`d724196ebe754679-eea185a7998445a8`. Do not launch games locally on
+JAYBUILTFINALE. RE6 arbitrary weapon construction remains unfinished: its
+Pine/native path currently selects loaded weapons. Do not close6107 or claim
+all-title arbitrary equipment, every special-weapon firing controller, accurate
+aiming, S survival, or the broader5972/610x requests are complete.
+
 ## Latest checkpoint: quiet flash controls and live aim repair, 2026-10-30 13:36 UTC
 
 Main now contains PR1610 (`095b2f33b23cdb0b64bf3d7fc786e16b9584d561`),
@@ -544,7 +617,7 @@ This access paragraph is historical; the recovery checkpoint above supersedes it
 |6107|2a755e634b9c4acf|Any RE6 weapon constructed now, usable firing, primary lock|
 
 User-selected weapon must replace the first/main slot now, forbid bot swaps for
-at least two minutes and remain preferred for the match. Existing next-round
+at least three minutes and remain preferred for the match. Existing next-round
 templates and attachment of existing objects do not satisfy this.
 
 All-QTE native success, five-second enemy diversion/return, native mines and
