@@ -110,6 +110,15 @@ mine/any-weapon requirements listed below. RTX2070 and Intel UHD630 are present,
 with Citra hardware shaders/JIT/cache enabled, but GPU vision/decision inference
 has NOT been implemented or validated. Do not close the outstanding tickets.
 
+Concurrent root edits discovered at final verification: `system/gbox/merc_live_controls.py`,
+`system/deploy/gbox-live-controls.service`, `system/tests/test_merc_live_controls.py`,
+and changes in mcp_server.py, server.py, re5_mods_tool.py and test_bot_logic.py.
+The new module/tests were modified at07:08:45 local while this branch was being
+delivered. They are preserved and NOT included in this deployment; ownership
+was asked asynchronously. Do not discard them or stage root wholesale. Coordinate
+with their author before further integration. The clean delivery worktree has
+none of those concurrent changes.
+
 ## Authorization and operating rules
 
 The operator authorizes GBox implementation, merges, deployment, remote
