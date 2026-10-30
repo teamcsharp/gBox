@@ -67,7 +67,7 @@ def test_crowd_control_kites_away_from_the_centroid():
     act = b.tick(snap(crowd))                                    # all in front: run away means turning round
     assert b.doing == "kite" and b.stats["kites"] == 1
     act = b.tick(snap(crowd, rot=math.pi))                       # facing away now: run
-    assert C["forward"] in act["hold"] and C["run"] in act["hold"]
+    assert C["forward"] in act["hold"] and C["walk"] not in act["hold"]
 
 
 def test_one_behind_at_arms_length_is_a_reason_to_move():
@@ -84,7 +84,7 @@ def test_a_far_target_gets_a_look_for_a_long_shot_then_the_chase():
     assert b.doing == "aim" and C["raise"] in act["hold"] and C["fire"] not in act["hold"]   # never a blind long shot
     clock.t += B.LONG_LOOK_S + 0.1
     act = b.tick(snap(far))
-    assert b.doing == "chase" and C["forward"] in act["hold"] and C["run"] in act["hold"]
+    assert b.doing == "chase" and C["forward"] in act["hold"] and C["walk"] not in act["hold"]
 
 
 def test_chases_a_far_target_behind_him():
@@ -110,26 +110,30 @@ def test_nearest_threat_in_front_is_chosen():
     assert b.target == 0x08501000
 
 
-def test_the_fire_key_is_learned_from_his_vitality():
-    """No damage point blank: the trigger moves to the next candidate; damage: it stays (kept for the process)."""
-    B.FIRE.update(key="a", confirmed=False)
+def test_a_blocked_shot_never_guesses_herbs_reload_or_emotes_as_the_trigger(monkeypatch):
+    monkeypatch.setitem(B.FIRE, "key", "a")  # an old hot-reloaded guess
+    monkeypatch.setitem(B.FIRE, "confirmed", False)
     clock = Clock()
-    b = B.Bot(clock=clock)
-    e = [((0.0, 0.0, 120.0), 600)]
-    act = b.tick(snap(e))
-    assert "a" in act["hold"]
-    for _ in range(10):                                          # 2 s of trigger time, his vitality unchanged
-        clock.t += 0.2
-        act = b.tick(snap(e))
-    assert B.FIRE["key"] == "y" and "y" in act["hold"] and b.stats["fire_key_switches"] == 1
-    clock.t += 0.2
-    b.tick(snap([((0.0, 0.0, 120.0), 540)]))                     # he took damage: y is the trigger
-    assert B.FIRE["confirmed"] is True and b.stats["fire_key"] == "y"
-    for _ in range(12):
-        clock.t += 0.2
-        act = b.tick(snap([((0.0, 0.0, 120.0), 540)]))
-    assert B.FIRE["key"] == "y"
-    B.FIRE.update(key=B.CONTROLS["fire"], confirmed=False)
+    bot = B.Bot(clock=clock)
+    holds = []
+    for _ in range(50):
+        holds.append(bot.tick(snap([((0, 0, 300), 600)]))["hold"])
+        clock.t += 0.05
+    assert any("y" in keys for keys in holds)
+    assert all(not (set(keys) & {"a", "b", "x", "l", "r2"}) for keys in holds)
+    assert bot.stats["ineffective_bursts"] == 1
+    assert any(C["back"] in keys for keys in holds)
+
+
+def test_stationary_forward_chase_backs_off_but_moving_chase_keeps_running():
+    for moving in (False, True):
+        clock = Clock(); bot = B.Bot(clock=clock)
+        acts = []
+        for i in range(80):
+            acts.append(bot.tick(snap([((0, 0, 10000), 600)], me=(0, 0, i * 25 if moving else 0))))
+            clock.t += 0.05
+        assert bool(bot.stats.get("wall_escapes")) is not moving
+        assert all("b" not in act["hold"] for act in acts)
 
 
 def test_semi_automatic_target_receives_repeated_trigger_edges_without_lowering_aim(monkeypatch):
@@ -164,8 +168,10 @@ def test_slow_ticks_cannot_skip_trigger_release_and_target_loss_releases_everyth
     target = snap([((0, 0, 300), 600)])
     assert "y" in bot.tick(target)["hold"]
     clock.t += 5
+    target["enemies"][0]["hp"] -= 10
     assert bot.tick(target)["hold"] == (C["raise"],)
     clock.t += 5
+    target["enemies"][0]["hp"] -= 10
     assert "y" in bot.tick(target)["hold"]
     assert bot.tick(snap([]))["hold"] == ()
     assert "y" in bot.tick(target)["hold"]

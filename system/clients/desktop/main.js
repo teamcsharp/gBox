@@ -1049,6 +1049,14 @@ ipcMain.handle('client:version', async event => {
 });
 ipcMain.handle('client:handoff', event => { assertClientSender(event); return handoffView; });
 ipcMain.handle('stream:poster', (event, rect) => streamPoster.capture(win, event, rect, compactWindow.state().on));
+ipcMain.handle('stream:health', async (event, src) => {
+  assertClientSender(event);
+  const state = connection?.snapshot();
+  if (!state) throw Error('The gBox connection is starting.');
+  return require('./stream-health.cjs').read(src, {
+    origins: [state.localUrl, state.remoteUrl], token: origin => connection.token(origin), fetch
+  });
+});
 ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); handoffView = null; return true; });
 function saveClientView(state = savedClientState, server = savedClientOrigin) {
   if (!state || state.v !== 1 || !win || win.isDestroyed()) return false;

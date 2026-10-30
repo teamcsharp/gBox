@@ -87,13 +87,17 @@ def test_status_reads_the_game_as_it_is():
     assert [x["weapon"] for x in st["inventory"]] == ["Barry's handgun", "S&W M29", None]
 
 
-def test_turn_speed_scales_the_five_rates_and_restores_them():
+def test_turn_speed_scales_angular_rates_and_preserves_stick_range():
     m = FakeRE5()
     r = T.run(m, "turn_speed", multiplier=2)
     assert r["verified"] and r["turn_speed_x"] == 2 and r["values"]["aim_yaw_deg_s"] == pytest.approx(115.8)
-    assert m.rf(PARAM + 0x2C) == pytest.approx(220.0) and m.rf(PARAM + 0x68) == pytest.approx(0.4)
+    assert m.rf(PARAM + 0x2C) == pytest.approx(220.0) and m.rf(PARAM + 0x68) == pytest.approx(0.2)
     assert r["status"]["turn_speed_x"] == 2.0
     assert T.run(m, "turn_speed", multiplier="max")["values"]["aim_yaw_deg_s"] == pytest.approx(579.0)
+    boosted = T.run(m, "turn_speed", multiplier=7)["values"]
+    assert boosted["stick_min"] == pytest.approx(0.2)
+    assert boosted["stick_max"] == pytest.approx(1.2)
+    assert boosted["aim_yaw_deg_s"] == pytest.approx(405.3)
     r = T.run(m, "turn_speed", multiplier=1)
     assert all(m.rf(PARAM + o) == pytest.approx(v) for o, (_, v) in T.TURN.items()) and r["status"]["turn_speed_x"] == 1.0
     with pytest.raises(ValueError):

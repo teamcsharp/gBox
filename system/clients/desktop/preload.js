@@ -69,6 +69,7 @@ contextBridge.exposeInMainWorld("gbox", {
   clientVersion: () => ipcRenderer.invoke('client:version'),
   clientUpdate: () => ipcRenderer.invoke('client:update'),          // F5: pull this PC's gBox (main.js, app-update.cjs)
   streamPoster: rect => ipcRenderer.invoke('stream:poster', rect),
+  streamHealth: src => ipcRenderer.invoke('stream:health', src),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),
   embedKill: () => ipcRenderer.invoke("embed:kill"),

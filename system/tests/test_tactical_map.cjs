@@ -158,7 +158,7 @@ test('the feed: frames after the newest seen, "same" when nothing moved, the sta
   const f2 = { ...FRAME, seq: 8 };
   const { api, calls } = fakeApi([FRAME, FRAME, f2, {}]);
   const got = [], stagesGot = [], timers = [];
-  const feed = T.create({ sid: 'w1-j9', api, onFrame: f => got.push(f && f.seq), onStage: s => stagesGot.push(s.key),
+  const feed = T.create({ sid: 'w1-j9', api, onFrame: f => got.push(f && f.seq), onStage: s => stagesGot.push(s?.key || null),
                           onStatus: f => got.push(f ? `same ${f.age_s}` : 'error'), setTimer: (fn, ms) => { timers.push(ms); return setImmediate(fn); },
                           clearTimer: clearImmediate });
   await until(() => got.includes(null));
@@ -167,13 +167,13 @@ test('the feed: frames after the newest seen, "same" when nothing moved, the sta
   assert.deepEqual(calls.filter(p => !p.includes('/stage/')),
     ['/api/autoplay/tactical/w1-j9', '/api/autoplay/tactical/w1-j9?after=7', '/api/autoplay/tactical/w1-j9?after=7',
      '/api/autoplay/tactical/w1-j9?after=8']);
-  assert.deepEqual(stagesGot, [STAGE.key]);
+  assert.deepEqual(stagesGot, [null, STAGE.key, null]);
   assert.equal(calls.filter(p => p.includes('/stage/')).length, 1, 'a stage is read once');
   assert.equal(timers[1], 125, 'fast while it shows a round');
   assert.equal(timers.at(-1), 3000, 'slow once the frames are gone');
   // another mount of the same stage: from the page's cache
   const again = fakeApi([FRAME]), seen = [];
-  const feed2 = T.create({ sid: 'w1-j9', api: again.api, onStage: s => seen.push(s.key), setTimer: (fn) => setImmediate(fn), clearTimer: clearImmediate });
+  const feed2 = T.create({ sid: 'w1-j9', api: again.api, onStage: s => { if(s) seen.push(s.key); }, setTimer: (fn) => setImmediate(fn), clearTimer: clearImmediate });
   await until(() => seen.length === 1);
   feed2.stop();
   assert.equal(again.calls.filter(p => p.includes('/stage/')).length, 0);
@@ -192,6 +192,27 @@ test('the feed backs off while the server is away and polls slowly while the map
   assert.equal(errors.length, 3);
   assert.deepEqual(timers.slice(1, 4), [250, 500, 1000], 'doubling while away');
   assert.equal(timers[4], 3000, 'back, but not on screen: slow');
+});
+
+test('a room change clears its old floor immediately and ignores a delayed predecessor mesh', async()=>{
+  T._stages.clear();
+  let frame={...FRAME,stage:'old-room'},finishOld;
+  const shown=[];
+  const feed=T.create({sid:'handover',setTimer:()=>1,clearTimer:()=>{},
+    onStage:stage=>shown.push(stage?.key||null),
+    api:async path=>{
+      if(path.endsWith('/stage/old-room'))return new Promise(resolve=>{finishOld=resolve;});
+      if(path.endsWith('/stage/new-room'))return {...STAGE,key:'new-room'};
+      return frame;
+    }});
+  feed.poke();await tick();
+  frame={...FRAME,seq:8,stage:'new-room'};feed.poke();await tick();
+  assert.equal(shown.at(-1),'new-room');
+  finishOld({...STAGE,key:'old-room'});await tick();
+  assert.equal(shown.at(-1),'new-room');
+  frame={...FRAME,seq:9,stage:''};feed.poke();await tick();
+  assert.equal(shown.at(-1),null);
+  feed.stop();
 });
 
 test('the section: hidden until frames come, the dock handle, the legend', () => {

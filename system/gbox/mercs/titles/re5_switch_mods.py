@@ -727,10 +727,12 @@ def turn_speed(g: RE5Switch, mult) -> dict:
         raise RuntimeError(f"sParameter does not hold this build's turn rates ({bad}); not writing")
     out, ok = {}, True
     for o, (name, base) in TURN.items():
-        want = struct.pack("<f", base * k)
+        # These two values describe the stick's input range, not angular rates.
+        # Scaling the dead zone to 1.4 at 7x rejects even full-scale input.
+        want = struct.pack("<f", base if name.startswith("stick_") else base * k)
         ok = g.wr(p + o, want) and ok
         got = struct.unpack("<f", g.rd(p + o, 4))[0]
-        ok = ok and abs(got - base * k) < 1e-3
+        ok = ok and abs(got - (base if name.startswith("stick_") else base * k)) < 1e-3
         out[name] = round(got, 4)
     g.state["turn_speed"] = k
     return {"turn_speed_x": k, "values": out, "verified": bool(ok), "sParameter": hex(p),

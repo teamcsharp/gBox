@@ -110,7 +110,8 @@ def test_a_material_camera_redirect_cannot_fire_using_the_pre_write_ray():
     assert bot._on_line(origin, dot, "laser", [target], 1.05) is target
 
 
-def test_an_off_floor_threat_stays_targetable_during_stick_correction():
+def test_an_off_floor_threat_stays_targetable_during_stick_correction(monkeypatch):
+    monkeypatch.setattr(R, "CEILING_R", 400.0)  # exercise the supported vertical-target policy (disabled by default)
     wrong = ((0.0, 100.0, 900.0), (20.0, 145.0, 30.0), 0.86)
     bot, clock, snap, writes = lock_brain(((0.0, 600.0, 300.0, 700),), laser=wrong)
     acts = run(bot, snap, clock, 16)

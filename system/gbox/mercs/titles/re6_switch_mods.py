@@ -333,6 +333,7 @@ class RE6Switch:
               "qte_rolled": list(self.state.get("qte_rolled") or ()),
               "infinite_grenades": bool(self.state.get("infinite_grenades")), "auto_qte": bool(self.state.get("auto_qte")),
               "quick_attack_x": self.state.get("quick_attack", 1.0),
+              "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X) if self.state.get("fire_rate") else self.state.get("throw_speed", 1.0),
               "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X) if self.state.get("fire_rate") else 1.0,
               "down_fire_x": self.state.get("down_fire", DOWN_FIRE_X) if self.state.get("fire_rate") else 1.0,
               "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,

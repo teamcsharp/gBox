@@ -203,12 +203,12 @@ def test_queued_stop_is_not_starved_by_reoffered_running_commands(cfg):
 
 
 @pytest.mark.parametrize('tool,op',[('session_op','query_runtime'),('session_op','log_tail'),
-                                  ('get_frame',None),('autoplay','start')])
+                                  ('get_frame',None),('autoplay','start'),('re5_mods','live_controls'),('re5_mods','fire_rate')])
 def test_live_foreground_controls_pass_locally_queued_background_delivery(cfg,tool,op):
     app,c=plane(cfg);enroll(c)
     store=app.state.store
     worker=store.get('worker',WID)
-    store.put('worker',WID,worker|{'tools':worker['tools']+['get_frame','autoplay']})
+    store.put('worker',WID,worker|{'tools':worker['tools']+['get_frame','autoplay','re5_mods']})
     path='/api/federation/'+AUTH+'/commands'
     first=queued(app)
     c.post(path,json={'maximum':1})

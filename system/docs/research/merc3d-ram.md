@@ -141,6 +141,25 @@ AutoSave, Final.
 
 The left stick moves: up ran +398 cm in 1 s along +x while facing +x. R raises the gun.
 
+### Control correction, 2026-10-30
+
+[Capcom's manual](https://static.capcom.com/manuals/retm/RETM_3DS_DMNL_EN.pdf),
+printed pages 10-13 and 25, specifies Type A: R aims, Y fires/throws, A uses
+a herb, B with movement walks, and R+B reloads. Type D changes B to dash;
+do not assume that layout when controlling a default Type A game.
+The bot now starts with Y, never tries herbs/emotes as candidate triggers,
+and runs without B. Unchanged enemy health over two seconds of attempted
+fire requests a new position. A forward command without 30 cm displacement
+for one second requests a bounded back/turn escape. These are observations
+of failed progress, not verified line-of-sight or navigation geometry.
+
+The i9's native mission 0x0101 still failed repeatedly before this correction.
+Hardware inspection found RTX 2070 and Intel UHD 630; the active session cfg
+uses OpenGL, hardware shaders, shader JIT and shader cache. No GPU vision
+inference is in the current RAM-driven bot. Native laser reading, time-bonus
+routing, infinite ammunition and instant native flashes still need verified
+implementations for this title; a general GPU setting does not supply them.
+
 ## The player's body and the aim (statics, to confirm live)
 
 - **Upper-body states.** The upper body runs its own states, named by DTI: Upper::WaitState, AimState, FireState,

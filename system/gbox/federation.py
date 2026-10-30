@@ -40,7 +40,7 @@ def foreground_session_job(store, job, worker_id, *, require_live=True):
         game = (job.get('input') or {}).get('game')
         return (job.get('require_worker') == worker_id and isinstance(game,dict)
                 and isinstance(game.get('game_id'),str) and bool(game['game_id']))
-    if job.get('tool') not in ('session_op','get_frame','autoplay'):
+    if job.get('tool') not in ('session_op','get_frame','autoplay','re5_mods'):
         return False
     sid = (job.get('input') or {}).get('session_id')
     if not isinstance(sid,str) or not sid.startswith(worker_id+'-'):

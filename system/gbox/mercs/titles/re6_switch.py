@@ -2947,7 +2947,7 @@ class Bot:
                           key=flat, default=None)
             if close_e is None:
                 self.qa_burst = 0
-            elif now - getattr(self, "qa_at", -1e9) >= MELEE_GAP_S:
+            elif self.qa_at is None or now - self.qa_at >= MELEE_GAP_S:
                 self.qa_burst -= 1
                 self.qa_at = now
                 self.stats["miss_quick_attacks"] = self.stats.get("miss_quick_attacks", 0) + 1

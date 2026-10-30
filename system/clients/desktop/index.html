@@ -1287,6 +1287,7 @@ window.GBOX_STREAM_CAPTURE_FRAME = el => {
   return gbox.streamPoster({x:r.left,y:r.top,width:r.width,height:r.height});
 };
 window.GBOX_STREAM_FETCH_HEALTH = async src => {
+  if (gbox.streamHealth) return gbox.streamHealth(src);
   const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
   if (!sid) throw Error('Unknown stream session');
   const r = await gbox.api('/api/sessions/' + encodeURIComponent(decodeURIComponent(sid)) + '/stream/health');

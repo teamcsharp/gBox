@@ -143,7 +143,7 @@
       for (let i = 0; i < 200 && ["queued", "running"].includes(j?.state); i++) {
         if (!j.id) throw new Error("The server returned no job ID.");
         s.pending = j.id;
-        await delay(600); alive(bound);
+        await delay(i < 10 ? 100 : 600); alive(bound);
         j = await api("/api/jobs/" + encodeURIComponent(j.id), undefined, "GET"); alive(bound);
       }
       if (["queued", "running"].includes(j?.state)) throw new Error("The change is still running. Refresh to check its result before changing more settings.");
@@ -185,8 +185,9 @@
     function refresh() {
       return act(async (bound, s) => {
         if (s.pending) await finish(await api("/api/jobs/" + encodeURIComponent(s.pending), undefined, "GET"), bound, s);
-        s.view = logic(await job(bound, s, "bot_logic"), bound);
-        s.status = mods(await job(bound, s, "status"));
+        const out = await job(bound, s, "live_controls");
+        s.view = logic(out.view, bound);
+        s.status = mods(out.status);
         s.stale = false;
       }, target?.scope, true);
     }
@@ -218,9 +219,10 @@
         const d = definitions(bound.title).find(row => row.op === op);
         if (!d || !available(bound.title, s.status, d)) throw new Error("That mod is unavailable for the current game.");
         const v = valueFor(d, value), extra = d.kind === "bool" ? { on: v } : { multiplier: v, on: v !== 1 };
-        verified(await job(bound, s, op, extra));
+        const out = await job(bound, s, op, extra);
+        verified(out);
         await validate(bound);
-        s.status = mods(await job(bound, s, "status"));
+        s.status = mods(out.status || await job(bound, s, "status"));
         confirmValue(d, modValue(s.status, d), v);
       }, scope);
     }
