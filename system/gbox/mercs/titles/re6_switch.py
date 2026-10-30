@@ -1822,8 +1822,10 @@ EMOTION_ACTION = "cPlAction_pl_act_emotion"
 # wrapped, the heading convention atan2(x, z)) and +0x2C0 pitch (-1..1) are the state the right stick turns:
 # main+0x48A3F0 eases them toward a look request, clamps the pitch and wraps the yaw every frame (+0x2C8 / +0x2CC keep
 # the last frame's). Read-only in MercMode's RE6 (16:15-16:40, 495 + 288 samples): the view's yaw equals +0x2C4 at rest
-# (36.2 deg / 0.631 rad, -2.1 / -0.036, 168.2 / 2.936); the view's pitch runs about PITCH_DEG_PER_UNIT a unit of +0x2C0
-# (PITCH_DEG_AT_0 at 0). Each tick the bot has a target it writes both - the yaw onto the camera's line through the
+# (36.2 deg / 0.631 rad, -2.1 / -0.036, 168.2 / 2.936). The lowered camera's ~23 deg/unit is NOT the aiming scale.
+# Live 2026-10-30 weapon_ready_loop pairs (input, view degrees): (-.268,-12.9), (-.310,-15.3), (-.187,-8.6).
+# Raised, the view is about 60 deg/unit with a +3 deg offset; using the lowered scale drove the gun into the floor.
+# Each tick the bot has a target it writes both - the yaw onto the camera's line through the
 # target's aim point, the pitch from that line's slope plus a correction learned once the view settles - and reads them
 # back: no camera keys for the aim. A write that fails or does not stick (LOCK_FAIL_N within LOCK_FAIL_S) puts the keys
 # back for LOCK_OFF_S; a settled lock whose measured ray still misses also yields to the sticks for that cooldown.
@@ -1832,11 +1834,11 @@ EMOTION_ACTION = "cPlAction_pl_act_emotion"
 # boss_damage (health the big ones lost while locked), cc_vs_aimed (crowd-control quick shots per aimed shot).
 AIM_LOCK = True
 CAM_OWNED, QFPS_OFF, QFPS_VT, QFPS_PITCH = P_CAMERA, 0x16A0, 0x25C4080, 0x2C0   # (P_CAMERA / CAM_OWNER: the co-op readers')
-PITCH_DEG_PER_UNIT, PITCH_DEG_AT_0 = 23.0, -1.5
-LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 0.25, math.radians(1.5), math.radians(0.4)
+PITCH_DEG_PER_UNIT, PITCH_DEG_AT_0 = 60.0, 3.0
+LOCK_BIAS_GAIN, LOCK_BIAS_MAX, LOCK_SETTLE, LOCK_STILL = 0.35, 6.0 / PITCH_DEG_PER_UNIT, math.radians(1.5), math.radians(0.4)
 # Never learned far downward (operator 2026-10-28 #5458: "always pointing the gun down ... shooting at the ground in front of
-# enemies"): the learned correction goes at most LOCK_BIAS_DOWN (about 1 degree) below the target's own slope.
-LOCK_BIAS_DOWN = 0.04
+# enemies"): the learned correction goes at most one degree below the target's own slope.
+LOCK_BIAS_DOWN = 1.0 / PITCH_DEG_PER_UNIT
 # The pitch guard (live 20:00-20:22: up_aim_s 28.6 s over five rounds, most on High Seas Fortress / Requiem for War):
 # the written pitch never runs more than LOCK_UP_SLACK above the target's own slope, nor above CLOSE_PITCH for one that
 # is not up there itself; the learned correction is held to LOCK_BIAS_MAX (about 6 deg).
@@ -3876,6 +3878,8 @@ class Bot:
         eq = p.get("equipped")
         px, _, pz = p["pos"]
         if n is None:
+            if (getattr(self, '_operator_primary', None) or {}).get('locked'):
+                return None                            # an automatic item request cannot displace a locked gun
             if not (NADES or FLASH) or now - self.nade_last < FLASH_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
                 return None
             nades = p.get("nades") or {}

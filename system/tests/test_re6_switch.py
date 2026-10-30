@@ -1192,7 +1192,7 @@ def test_one_hanging_from_the_ceiling_right_above_is_locked_and_shot_and_one_far
     hang = (0.0, 600.0, 300.0, 700)                                           # 6 m up, 3 m off: right above him
     pt = (0.0, 600.0 + R.OFF_FLOOR_AIM_H, 300.0)
     bot, clock, snap, writes = lock_brain((hang,), laser=(pt, (20.0, 145.0, 30.0), 0.86))
-    acts = run(bot, snap, clock, 10)
+    acts = run(bot, snap, clock, 20)  # acquire the high target at the bounded physical pitch rate
     assert writes and any("zr" in a.get("hold", ()) for a in acts) and bot.stats["aimed_shots"] >= 1
     c = snap["camera"]["pos"]
     assert writes[-1][2] == pytest.approx(R.heading(-c[0], 300.0 - c[2]), abs=1e-4)

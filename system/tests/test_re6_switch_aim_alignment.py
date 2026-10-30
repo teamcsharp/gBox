@@ -115,7 +115,7 @@ def test_an_off_floor_threat_stays_targetable_during_stick_correction(monkeypatc
     monkeypatch.setattr(R, "CEILING_R", 400.0)  # exercise the supported vertical-target policy (disabled by default)
     wrong = ((0.0, 100.0, 900.0), (20.0, 145.0, 30.0), 0.86)
     bot, clock, snap, writes = lock_brain(((0.0, 600.0, 300.0, 700),), laser=wrong)
-    acts = run(bot, snap, clock, 16)
+    acts = run(bot, snap, clock, 24)  # bounded climb to the ceiling, then the actual-ray settling window
     assert bot.stats["lock_fallbacks"] == 1
     assert snap["enemies"][0] in bot._off_floor(snap["player"], snap, clock[0])
     assert any("rup" in act.get("hold", ()) for act in acts)
@@ -183,3 +183,25 @@ def test_native_grenade_refusal_keeps_the_gun_up_and_returns_to_combat(state):
     assert bot.nade is None and bot.nade_last == 1.0
     assert bot.aim_since == 0.5
     assert bot.stats['nade_aborts'] == 1
+
+
+@pytest.mark.parametrize('native_pitch, measured_degrees', [(-.268, -12.9), (-.310, -15.3), (-.187, -8.6)])
+def test_raised_gun_pitch_matches_the_measured_live_scale(native_pitch, measured_degrees):
+    # Independent live measurements in cPlAction_pl_act_weapon_ready_loop. The old
+    # lowered-camera conversion asked for ~2x the needed deflection at these angles.
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),))
+    snap['aim_cam']['pitch'] = native_pitch
+    c = snap['camera']['pos']
+    point = (c[0], c[1] + 900.0 * math.tan(math.radians(measured_degrees)), c[2] + 900.0)
+    bot._lock(snap['player'], snap['enemies'][0], snap, 1.0, point=point)
+    assert writes[-1][1] == pytest.approx(native_pitch, abs=.015)
+
+
+def test_locked_primary_does_not_start_an_automatic_grenade_selection():
+    bot = R.Bot(stats={})
+    bot._operator_primary = {'item': 7, 'locked': True}
+    bot.aim_since = .5
+    p = {'ptr': 123, 'pos': (0, 0, 0), 'equipped': 0, 'nades': {0x115: (11, 20)}}
+    enemies = [{'pos': (0, 0, 300), 'hp': 700} for _ in range(5)]
+    assert bot._nade(p, enemies, enemies, lambda e: 300, 0, {}, 1.0) is None
+    assert bot.nade is None and bot.aim_since == .5
