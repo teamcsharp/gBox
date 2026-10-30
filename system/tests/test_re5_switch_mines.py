@@ -254,3 +254,29 @@ def test_the_bot_watches_its_bombs_every_tick_even_while_held(switch_bot):
     assert b.doing == "held" and b.stats["mines_gone"] == 1 and b.stats["mine_blasts"] == 1
     for key in ("mine_blasts", "mine_kills", "mine_blast_hp_loss"):
         assert key in R.RE5Switch.round_counters
+
+
+def test_the_2026_10_30_cluster_a_majini_in_the_blast_is_blocked_even_when_foeclear_is_clear():
+    # The live cluster: the closest Majini 1000-1500 cm away on the flat metric (past FOE_CLEAR_CM=500) but the bomb's
+    # blast (BLAST_CM=800, radial on the ground) still reached him. The placement gate now blocks at BLAST_CM, so the
+    # bomb is never down while anyone is in it. Built from the example fields: hp_before 1520 -> 1020/1420/1390,
+    # motion 20/96 (no placing motion 29), held () (no ZL), plan walk.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # The Majini is at flat distance 700 cm (inside BLAST_CM=800) but on a roof 50 m above: the bot's live filter
+    # (MAX_DY vertical tolerance) would have dropped it, yet the flat (x,z) distance in due() catches it.
+    live = [{"ptr": 10, "pos": (700.0, 5000.0, 0.0), "hp": 800}]
+    pos = (0.0, 0.0, 0.0)
+    snap = {"inventory": [dict(GUN), dict(BOMB)]}
+    assert m.due({"pos": pos}, snap, live, MN.EVERY_S + 1) is None
+    assert m.stats["mine_status"] == "a Majini in the bomb's blast radius: not placing"
+
+
+def test_the_blast_gate_does_not_block_when_the_closest_majini_is_far_enough():
+    # A Majini at 1500 cm flat (the cluster's upper bound, outside BLAST_CM=800) does not block placement.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    live = [{"ptr": 10, "pos": (1500.0, 0.0, 0.0), "hp": 800}]
+    pos = (0.0, 0.0, 0.0)
+    snap = {"inventory": [dict(GUN), dict(BOMB)]}
+    assert m.due({"pos": pos}, snap, live, MN.EVERY_S + 1) == "due"

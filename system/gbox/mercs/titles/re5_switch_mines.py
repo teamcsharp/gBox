@@ -171,6 +171,13 @@ class Mines:
         if any(flat(pos, e["pos"]) < FOE_CLEAR_CM for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
             return None
+        # The blast is radial on the ground; a Majini within it (even one the live filter let past on the Y axis, a
+        # roof or a ledge above or below) triggers the bomb and reaches him (live: the 2026-10-30 RE5 cluster: he was
+        # 1000-1500 cm from the closest Majini on the flat metric, the blast still hit him). The placement gate uses
+        # the blast radius itself, not FOE_CLEAR_CM, so a bomb down while anyone is in it is never placed.
+        if any(flat(pos, e["pos"]) <= BLAST_CM for e in live):
+            self.stats["mine_status"] = "a Majini in the bomb's blast radius: not placing"
+            return None
         return "due"
 
     def _clear(self, p: dict, live: list) -> dict | None:
