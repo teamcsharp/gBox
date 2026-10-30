@@ -1278,6 +1278,7 @@ window.taskVizCreate = canvas => {
 <script src="compact-coach.js"></script>
 <script src="bot-logic-sidebar.js"></script>
 <script src="client-refresh.js"></script>
+<script src="guest-state.js"></script>
 <script>
 // file:// cannot fetch the server directly; the authenticated desktop IPC is already bounded by the watchdog.
 window.GBOX_STREAM_CAPTURE_FRAME = el => {
@@ -2884,17 +2885,24 @@ const PICKER_SRC = `(() => new Promise(resolve => {
   window.__gboxPick = { cancel: () => finish(null) };
 }))()`;
 
-async function gboxState() {                             // what the embedded gBox UI is showing
-  const wv = document.querySelector("#wv");
-  if (!wv) return {};
-  try { const value = await wv.executeJavaScript(`(() => {
+const guestStateReader = GBoxGuestState.create({read: wv => wv.executeJavaScript(`(() => {
     if (globalThis.gboxClientViewState) return { ...globalThis.gboxClientViewState(), hash: location.hash, origin: location.origin };
     const tab = typeof cur !== "undefined" ? cur : null;
     const selected = tab === "Sessions" ? document.getElementById("session-head")?.dataset.sid : null;
     return { tab, session: selected || (typeof active !== "undefined" && active ? active.sid : null),
       playing: typeof playing !== "undefined" ? playing : null, hash: location.hash, origin: location.origin };
-  })()`); if (typeof clientRefresh !== 'undefined') clientRefresh.remember(value); return value; }
-  catch { return {}; }
+  })()`)});
+const guestStateBound = new WeakSet();
+async function gboxState() {                             // what the embedded gBox UI is showing
+  const wv = document.querySelector("#wv");
+  if (wv && !guestStateBound.has(wv)) {
+    guestStateBound.add(wv);
+    for (const event of ['did-start-navigation', 'render-process-gone', 'destroyed'])
+      wv.addEventListener(event, () => guestStateReader.reset(wv));
+  }
+  const value = await guestStateReader.get(wv);
+  if (value.origin && typeof clientRefresh !== 'undefined') clientRefresh.remember(value);
+  return value;
 }
 function appContext(extra = {}) {
   return { shell_section: document.querySelector("aside button.on")?.dataset.s, window: { w: innerWidth, h: innerHeight },
