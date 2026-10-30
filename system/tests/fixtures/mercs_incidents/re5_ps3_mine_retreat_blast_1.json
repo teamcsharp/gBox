@@ -1,0 +1,1317 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "BLUS30491",
+  "event_id": "d16e0009b44b44cfa998c42c8d4649a3",
+  "observed_at": 1792870630.542472,
+  "hp_before": 580,
+  "hp_after": 328,
+  "hp_max": 1000,
+  "loss": 252,
+  "held": [],
+  "snapshot": {
+    "player": {
+      "ptr": 808831088,
+      "pos": [
+        -60.656890869140625,
+        -3261.039306640625,
+        306.8756103515625
+      ],
+      "rot": -1.0960116026098756,
+      "pitch": 0.17980217933654785,
+      "action": 5,
+      "state": "hit",
+      "hp": 328,
+      "hp_max": 1000
+    },
+    "enemies": [
+      {
+        "slot": 0,
+        "ptr": 811893440,
+        "pos": [
+          -1328.607666015625,
+          -2993.089111328125,
+          -83.86268615722656
+        ],
+        "hp": 1000,
+        "hp_max": 1000
+      },
+      {
+        "slot": 1,
+        "ptr": 813987856,
+        "pos": [
+          -136.95127868652344,
+          -3254.353515625,
+          337.99908447265625
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 2,
+        "ptr": 812158096,
+        "pos": [
+          -1649.3671875,
+          -2492.980224609375,
+          -1082.6285400390625
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 3,
+        "ptr": 812051792,
+        "pos": [
+          127.85868072509766,
+          -3261.039306640625,
+          389.8895263671875
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 4,
+        "ptr": 811810048,
+        "pos": [
+          -490.6940612792969,
+          -3159.8173828125,
+          280.61480712890625
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 5,
+        "ptr": 811661152,
+        "pos": [
+          -1653.6993408203125,
+          -2892.271728515625,
+          -973.4876098632812
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 6,
+        "ptr": 811620160,
+        "pos": [
+          -1162.1015625,
+          -2993.089111328125,
+          277.1185302734375
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 7,
+        "ptr": 811408112,
+        "pos": [
+          -284.17181396484375,
+          -2472.58935546875,
+          -1060.5455322265625
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 8,
+        "ptr": 812542848,
+        "pos": [
+          -312.865234375,
+          -2338.935791015625,
+          -568.4443969726562
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 9,
+        "ptr": 812337472,
+        "pos": [
+          -1958.274658203125,
+          -2993.08935546875,
+          107.29212951660156
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 10,
+        "ptr": 811374288,
+        "pos": [
+          -1885.948974609375,
+          -2993.08935546875,
+          -251.38595581054688
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 11,
+        "ptr": 811428768,
+        "pos": [
+          955.3843383789062,
+          -2186.4306640625,
+          1214.638427734375
+        ],
+        "hp": 800,
+        "hp_max": 800
+      }
+    ],
+    "timer": 431.56,
+    "timer_start": 120.0,
+    "score": 41520,
+    "kills": 51,
+    "combo": 0,
+    "combo_timer": 0.0,
+    "control_player": 1,
+    "recovery_active": false,
+    "inventory": [
+      {
+        "slot": 0,
+        "id": 278,
+        "type": 1,
+        "item": 22,
+        "rounds": 5,
+        "cap": 5,
+        "grid": 3,
+        "grid_raw": 3,
+        "hand": true
+      },
+      {
+        "slot": 1,
+        "id": 268,
+        "type": 1,
+        "item": 12,
+        "rounds": 12,
+        "cap": 12,
+        "grid": 5,
+        "grid_raw": 5,
+        "hand": false
+      },
+      {
+        "slot": 2,
+        "id": 514,
+        "type": 2,
+        "item": 2,
+        "rounds": 150,
+        "cap": 150,
+        "grid": 0,
+        "grid_raw": 0,
+        "hand": false
+      },
+      {
+        "slot": 3,
+        "id": 514,
+        "type": 2,
+        "item": 2,
+        "rounds": 150,
+        "cap": 150,
+        "grid": 6,
+        "grid_raw": 6,
+        "hand": false
+      },
+      {
+        "slot": 4,
+        "id": 515,
+        "type": 2,
+        "item": 3,
+        "rounds": 30,
+        "cap": 30,
+        "grid": 2,
+        "grid_raw": 2,
+        "hand": false
+      },
+      {
+        "slot": 5,
+        "id": 515,
+        "type": 2,
+        "item": 3,
+        "rounds": 30,
+        "cap": 30,
+        "grid": 8,
+        "grid_raw": 8,
+        "hand": false
+      },
+      {
+        "slot": 7,
+        "id": 266,
+        "type": 1,
+        "item": 10,
+        "rounds": 5,
+        "cap": 5,
+        "grid": 7,
+        "grid_raw": 7,
+        "hand": false
+      },
+      {
+        "slot": 8,
+        "id": 772,
+        "type": 3,
+        "item": 4,
+        "rounds": 1,
+        "cap": 1,
+        "grid": 4,
+        "grid_raw": 4,
+        "hand": false
+      },
+      {
+        "slot": 9,
+        "id": 276,
+        "type": 1,
+        "item": 20,
+        "rounds": 1,
+        "cap": 1,
+        "grid_raw": 9,
+        "hand": false
+      },
+      {
+        "slot": 10,
+        "id": 256,
+        "type": 1,
+        "item": 0,
+        "rounds": 0,
+        "cap": 0,
+        "grid_raw": 11,
+        "hand": false
+      }
+    ],
+    "laser": {
+      "from": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "camera": {
+      "eye": [
+        8.731403350830078,
+        -3125.130615234375,
+        201.03936767578125
+      ],
+      "at": [
+        -223.39613342285156,
+        -3080.98486328125,
+        380.38250732421875
+      ]
+    },
+    "bonuses": [
+      {
+        "ptr": 809056784,
+        "pos": [
+          929.6339111328125,
+          -2480.09033203125,
+          250.40902709960938
+        ],
+        "r": 28.35086441040039,
+        "kind": "time",
+        "kind_word": 2100225,
+        "collected": false,
+        "seconds": 60
+      },
+      {
+        "ptr": 809063744,
+        "pos": [
+          -150.576904296875,
+          -2480.08984375,
+          -1651.968017578125
+        ],
+        "r": 28.350847244262695,
+        "kind": "time",
+        "kind_word": 2100481,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 809070704,
+        "pos": [
+          -304.00079345703125,
+          -1963.7462158203125,
+          2183.37109375
+        ],
+        "r": 28.35085105895996,
+        "kind": "time",
+        "kind_word": 2100737,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 809077664,
+        "pos": [
+          -802.047119140625,
+          -1384.2049560546875,
+          1308.4434814453125
+        ],
+        "r": 28.350894927978516,
+        "kind": "time",
+        "kind_word": 2100993,
+        "collected": false,
+        "seconds": 60
+      },
+      {
+        "ptr": 809091584,
+        "pos": [
+          189.4672088623047,
+          38.116943359375,
+          0.9753550291061401
+        ],
+        "r": 28.350873947143555,
+        "kind": "time",
+        "kind_word": 2101505,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 809127408,
+        "pos": [
+          636.1661987304688,
+          -961.8834838867188,
+          -96.06080627441406
+        ],
+        "r": 28.35089683532715,
+        "kind": "time",
+        "kind_word": 3145985,
+        "collected": false,
+        "seconds": 60
+      },
+      {
+        "ptr": 809134368,
+        "pos": [
+          -301.5665588378906,
+          -2319.3203125,
+          -215.81097412109375
+        ],
+        "r": 28.350854873657227,
+        "kind": "time",
+        "kind_word": 3146241,
+        "collected": false,
+        "seconds": 30
+      }
+    ],
+    "ground_mines": {
+      "815027040": {
+        "pos": [
+          -65.21351623535156,
+          -3260.0390625,
+          196.84523010253906
+        ],
+        "arming_s": 0.0,
+        "detonating": false
+      }
+    },
+    "health_items": [],
+    "stage_prompt": false,
+    "mercenaries_phase": 1,
+    "mercenaries_mode": "reunion",
+    "stage_index": 4,
+    "character_index": 7,
+    "players": [
+      {
+        "id": "p1",
+        "slot": 1,
+        "control": "bot",
+        "actor": 808831088,
+        "ptr": 808831088,
+        "pos": [
+          -60.656890869140625,
+          -3261.039306640625,
+          306.8756103515625
+        ],
+        "hp": 328,
+        "hp_max": 1000,
+        "native_actor_verified": true,
+        "provenance": {
+          "kind": "native_ram",
+          "read_only": true,
+          "native_actor_verified": true,
+          "title": "BLUS30491",
+          "manager": 948136384,
+          "slot_address": 948136424,
+          "actor_index_address": 808843140,
+          "actor_index": 0,
+          "native_functions": [
+            "001AD7B4",
+            "001AE010"
+          ],
+          "control_source": "operator_assignment_and_bot_input_fence",
+          "inputs_observed": false
+        }
+      }
+    ],
+    "assistance": {
+      "classification": "mod_assisted",
+      "verified": false,
+      "effects": [
+        "bullet_damage",
+        "extra_time_per_kill",
+        "fire_animation_speed",
+        "fire_rate",
+        "infinite_ammunition",
+        "infinite_mine_training"
+      ],
+      "source": "native_readback_and_worker_mod_state",
+      "reason": "Original rules, all loadouts and prior round writes have not been fully verified."
+    },
+    "input_provenance": {
+      "source": "bot_decisions",
+      "control_player": 1
+    }
+  },
+  "counters": {
+    "bot_player": 1,
+    "menu_presses": 24,
+    "ram_progress": 2773,
+    "rounds": 1,
+    "_merc_unlock_at": 1792870357.6531482,
+    "cursor": 7,
+    "mine_loadout_blocks": 50,
+    "rounds_hooked": 1,
+    "loading_s": 4.0,
+    "player_damage_events": 38,
+    "bow_confirmed_hits": 0,
+    "bow_confirmed_misses": 0,
+    "shots": 51,
+    "hits": 32,
+    "misses": 19,
+    "headshots": 0,
+    "accuracy": 0.627,
+    "miss_short": 2,
+    "miss_past": 10,
+    "miss_beside": 7,
+    "miss_moved": 0,
+    "finishers": 0,
+    "reloads": 0,
+    "pitch_writes": 0,
+    "stun_runs": 0,
+    "legshots": 1,
+    "shots_s": 0,
+    "kills_seen": 51,
+    "max_combo": 13,
+    "turns": 0,
+    "backoffs": 0,
+    "stuck": 0,
+    "pursuits": 1141,
+    "unsighted": 0,
+    "prompt_presses": 36,
+    "fire_animation_writes": 0,
+    "mine_animation_writes": 20,
+    "egg_animation_writes": 0,
+    "round_shots": 51,
+    "round_hits": 32,
+    "round_accuracy": 0.627,
+    "round_intro_wait_s": 0.0,
+    "combat_player_index": 0,
+    "bow_pending_observations": 0,
+    "headshot_pct": 0.0,
+    "shots_per_kill": 1.0,
+    "nearby_enemies": 2,
+    "enemy_awareness_count": 12,
+    "nav_visited_triangles": 484,
+    "nav_observed_crossings": 4071,
+    "nav_route_arrivals": 24,
+    "nav_failed_portals": 7,
+    "nav_oscillating_portals": 52,
+    "nav_damage_risk_nodes": 126,
+    "nav_damage_incidents_retained": 128,
+    "mine_sites_learned": 33,
+    "timer": 431.63,
+    "combo": 0,
+    "score": 41520,
+    "kills": 51,
+    "mercenaries_phase": 1,
+    "stage_index": 4,
+    "character_roster_size": 8,
+    "round_semantic_recalled": 0,
+    "round_memory_recalled": 5,
+    "prior_stage_rounds": 5,
+    "prior_best_bonus_count": 3,
+    "bonus_commitment_patience_s": 16.0,
+    "navigation_atlas_queued": 491,
+    "navigation_atlas_dropped": 0,
+    "motion_turn_rate_var": 0.4122,
+    "motion_idle_spin_s": 16.94,
+    "motion_motion_s": 252.16,
+    "motion_samples": 2727,
+    "mine_detonations_observed": 4,
+    "mine_ground_count": 1,
+    "mine_armed_count": 1,
+    "mine_interval_s": 4.0,
+    "time_bonuses_remaining": 7,
+    "combo_bonuses_remaining": 0,
+    "unreachable_bonuses": 7,
+    "nearest_eta_s": 0.5,
+    "bonus_presses": 5,
+    "qte_presses": 29,
+    "mash_presses": 36,
+    "presses_wiggle": 7,
+    "clock_gain_s": 565.0,
+    "clock_jumps": 39,
+    "bonus_actor_removals": 1,
+    "bonuses_taken": 1,
+    "bonus_s": 59.02000000000001,
+    "weapon_switch_attempts": 14,
+    "weapon_switches": 14,
+    "mine_attempts": 5,
+    "mines_placed": 5,
+    "mine_retreat_distance": 116.2,
+    "player_damage_pending": 0,
+    "player_damage_last_loss": 42,
+    "nav_damage_samples_learned": 38,
+    "los_held_fire": 232,
+    "threat_blasts": 22,
+    "kill_time_added_s": 510.0,
+    "kills_seen_by_combat": 51,
+    "damage_events": 54,
+    "combo_pursuits": 565,
+    "combo_pursuit_fits": 56,
+    "combos_lost": 9,
+    "routes_given_up": 1,
+    "mine_retreats_completed": 4,
+    "heal_equip_attempts": 3,
+    "heal_failures": 1,
+    "heal_use_presses": 2,
+    "heal_items_used": 2,
+    "heals": 2,
+    "mine_spacing_deferrals": 39,
+    "inventory_heal_equips_confirmed": 1,
+    "inventory_heal_equipped_slot": 8,
+    "sprays_restored": 1
+  },
+  "decision": {
+    "phase": "leave_proximity_bomb",
+    "heal_status": "item consumption observed; HP increased",
+    "mine_status": "Leaving planted mine; further placement deferred"
+  },
+  "preceding_history": [
+    {
+      "at": 1792870627.137997,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 748,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870627.3453436,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 748,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870627.6094122,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 748,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870627.8442655,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 748,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870628.137709,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 720,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870628.3695333,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 692,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870628.6826358,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 622,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870628.918375,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870629.1275914,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870629.345493,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870629.6080947,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870629.8122566,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870630.0220504,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870630.2899978,
+      "pos": [
+        -58.75108337402344,
+        -3261.039306640625,
+        308.19696044921875
+      ],
+      "rot": -0.6084056389116483,
+      "hp": 580,
+      "action": 0,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    },
+    {
+      "at": 1792870630.542472,
+      "pos": [
+        -60.656890869140625,
+        -3261.039306640625,
+        306.8756103515625
+      ],
+      "rot": -1.0960116026098756,
+      "hp": 328,
+      "action": 5,
+      "held": [],
+      "plan": {
+        "phase": "leave_proximity_bomb",
+        "target": {
+          "kind": "waypoint",
+          "id": "mine_escape:815027040",
+          "pos": [
+            -614.8830063523624,
+            -3118.648083358498,
+            401.12768580724804
+          ]
+        },
+        "note": ""
+      },
+      "score": 41520,
+      "combo": 0,
+      "kills": 51,
+      "navigation": {
+        "stuck": 0,
+        "phase": "leave_proximity_bomb",
+        "route": "current observed bomb blocks next segment; replanning verified floor detour"
+      },
+      "mine_events": [
+        {
+          "kind": "placement_verified",
+          "at": 1792870613.262605,
+          "actor": 815027040,
+          "pos": [
+            -53.73860168457031,
+            -3261.03955078125,
+            192.05868530273438
+          ],
+          "hp": 1000,
+          "combo": 13,
+          "score": 37850
+        }
+      ]
+    }
+  ],
+  "cluster": {
+    "id": "6cd8a6ad62b8aa91",
+    "game_id": "e7ca89bbeb67360d",
+    "signature": "own_bomb",
+    "label": "own bomb or mine within blast radius"
+  }
+}

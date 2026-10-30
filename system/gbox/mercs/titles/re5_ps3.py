@@ -4234,6 +4234,16 @@ class Bot:
                     route,checkpoint_exit = candidate,True
                     self.nav_dynamic_mines = dict(snap.get('ground_mines') or {})
                     break
+        # If the bot is already inside his own mine's blast radius, walking a
+        # shorter route still passes through the danger. Hold position and let
+        # the arming window elapse rather than moving through the blast.
+        if math.dist(p["pos"], escape["pos"]) < MINE_ESCAPE_CM:
+            if yield_removed_hazard():
+                return None
+            self.stats["mine_retreat_status"] = "inside blast radius: holding position until hazard clears or separation is safe"
+            self.stats["mine_retreats_blocked"] = self.stats.get("mine_retreats_blocked", 0) + 1
+            self.aiming_since = None
+            return {"hold": set()}
         for distance in (450., 300.):                       # a shorter measured way off the bomb before none at all
             if route:
                 break
