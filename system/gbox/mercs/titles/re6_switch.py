@@ -3015,7 +3015,8 @@ class Bot:
         if self.heal_chain and not topping:
             self.heal_chain = False                              # full enough: no tablet past his maximum
         gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
-        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
+        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and not self.down
+                and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
                 and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
