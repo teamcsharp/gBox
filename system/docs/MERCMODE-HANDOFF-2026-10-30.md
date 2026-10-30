@@ -72,6 +72,13 @@ Evidence in root `.scratch-merc-20261028` (remote copies under Spark's
   49 trigger-counted shots/27 observed hits, accuracy0.551, no tick error field.
   Peak spin3065.5deg/s remains a warning about snap/turn behavior, not a success.
   This observation ran during RE6, so no new RE5 native7x readback was obtained.
+- Subsequent `post_deploy_re5_observe_20261030.receipt.json` observed the active
+  RE5 session at a7.5x setting: turn825deg/s, aim yaw/pitch434.25deg/s, with
+  stick_min0.200000003 and stick_max1.200000048. Thus the repaired input range
+  is verified in native RAM at elevated speed. No setting was changed by this
+  read-only probe. It does not prove sustained target precision. The local
+  `.scratch-root-app-pip-20261030.jpg` also confirms the recovered viewer shows
+  the currently active RE5 stream; no recovery-profile selector was installed.
 
 Validation: targeted Python batch127passed; broader RE6/Merc3D batch257passed
 with one fixture failure (the test assumed nondefault CEILING_R400). Correcting
