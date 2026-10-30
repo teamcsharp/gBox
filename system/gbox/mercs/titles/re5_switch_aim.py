@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import struct
+import time
 
 CTRL_VT, QFPS_VT = 0x1ACB410, 0x1ACBCF0
 CTRL_PLAYER, CTRL_ACTIVE, CTRL_QFPS = 0x130, 0x198, 0xDB0
@@ -69,11 +70,13 @@ def aim_state(m, base: int, player: int) -> dict | None:
     try:
         pitch = struct.unpack("<f", m.rd(qf + QF_PITCH, 4))[0]
         _qx, qy, _qz, qw = struct.unpack("<4f", m.rd(player + P_ROT, 16))
+        generation = _q(m, player + 0x1A00)
     except ERRORS:
         return None
     if not (math.isfinite(pitch) and abs(pitch) <= PITCH_LIMIT + 1e-3 and math.isfinite(qy) and math.isfinite(qw)):
         return None
-    return {"qfps": qf, "player": player, "pitch": pitch, "heading": wrap(2.0 * math.atan2(qy, qw))}
+    return {"qfps": qf, "player": player, "pitch": pitch, "heading": wrap(2.0 * math.atan2(qy, qw)),
+            "base": base, "generation": generation, "sampled_at": time.monotonic()}
 
 
 def aim_writer(m):
@@ -86,6 +89,13 @@ def aim_writer(m):
 
     def write(st: dict, pitch: float | None, heading: float | None) -> bool:
         try:
+            # A camera pointer from a previous life/raise is never a write capability.
+            if any(v is not None and not math.isfinite(v) for v in (pitch, heading)):
+                return False
+            if not 0 <= time.monotonic() - st.get("sampled_at", -math.inf) <= 0.15 \
+                    or player_qfps(m, st["base"], st["player"]) != st["qfps"] \
+                    or _q(m, st["player"] + 0x1A00) != st["generation"]:
+                return False
             if pitch is not None:
                 p = max(-PITCH_LIMIT, min(PITCH_LIMIT, float(pitch)))
                 ad.write_memory(st["qfps"] + QF_PITCH, struct.pack("<f", p))

@@ -1110,8 +1110,7 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
-            if AIM_LOCK:                                 # the camera pitch and heading the aim lock writes
-                snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
+            snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
                 snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
                 snap["prompt_read"] = True
@@ -3366,6 +3365,8 @@ class Bot:
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
+        from . import re5_target_feedback
+        act = re5_target_feedback.apply(self, snap, act, now)
         act = self._native_equipment(act, snap)
         from . import re5_switch_wall
         re5_switch_wall.feedback(self, act, snap, now)
@@ -4388,6 +4389,7 @@ class Bot:
 
 
 class RE5Switch(Driver):
+    decision_interval_s = 1.0 / 30.0
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",

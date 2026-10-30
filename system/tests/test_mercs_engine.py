@@ -264,3 +264,26 @@ def test_play_round_is_frame_synced_and_measures_its_reactions(tmp_path):
 
 def test_the_engine_is_not_ready_until_a_live_run_says_so():
     assert engine.READY is False                                         # the deployment waits for the live check
+
+
+@pytest.mark.parametrize('work', [.010, .080])
+def test_title_decision_budget_subtracts_work_and_does_not_catch_up(work, monkeypatch, tmp_path):
+    clk = Clock(); sleeps = []; driver = re4_gc.DRIVER()
+    monkeypatch.setattr(type(driver), 'frame', None)
+    driver.decision_interval_s = 1/30
+    monkeypatch.setattr(engine.time, 'perf_counter', clk)
+    class Brain:
+        def tick(self, snap):
+            clk.t += work
+            return {'hold': ()}
+        def prompt_ok(self, *args): return True
+        def save(self): pass
+    def sleep(dt):
+        sleeps.append(dt); clk.sleep(dt)
+    stats = {}
+    engine.play_round({'driver':'gbox.mercs.titles.re4_gc'}, re4([]), lambda rows: None,
+                      lambda: len(sleeps) >= 50, stats, driver=driver, brain=Brain(),
+                      sleep=sleep, clock=clk, learn_dir=tmp_path)
+    assert sleeps == pytest.approx([max(.001, 1/30-work)]*50)
+    assert stats['decision_work_p95_ms'] == pytest.approx(work*1000)
+    assert stats['decision_hz'] <= 31
