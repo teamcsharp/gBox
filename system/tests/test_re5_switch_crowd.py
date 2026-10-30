@@ -341,7 +341,14 @@ def test_a_short_wall_ray_releases_a_blocked_target_for_another_crowd_threat(mon
     for now in (0.3, 0.3 + R.WALL_DROP_S + 0.05, 0.3 + R.WALL_DROP_S + 0.15):
         clock[0] = now
         act = b.tick(snap(ring, dot=(0.0, 130.0, 150.0), motion=26))
-    assert b.target == 11 and "zr" not in act["hold"] and "rleft" in act["hold"]
+    assert b.target == 11 and "zr" not in act["hold"]
+    # A retarget must not extend a blocked raise forever: after the acquisition
+    # deadline, make space before trying this reachable threat again.
+    assert b.doing == "escape" and act["hold"] == ("lleft",)
+    assert b.stats["aim_repositions"] == 1
     clock[0] += 0.3
+    act = b.tick(snap(ring, dot=chest(ring[1]), motion=26))
+    assert "zl" in act["hold"] and b._aim_wait is None
+    clock[0] += R.READY_S + .01  # the gun was lowered to move; complete this raise
     act = b.tick(snap(ring, dot=chest(ring[1]), motion=26))
     assert {"zl", "zr"} <= set(act["hold"])

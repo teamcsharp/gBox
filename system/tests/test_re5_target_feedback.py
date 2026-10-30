@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gbox.mercs.titles import re5_switch as R, re5_target_feedback as F
+from gbox.mercs.titles import re5_switch as R, re5_switch_aim as F
 
 
 def scene(pitch=0, heading=0, distance=300, ray_pitch=None):
@@ -27,6 +27,79 @@ def controller(ok=True):
                           _writer=lambda: write, _aim_h=lambda *args: R.CHEST_H,
                           _crowd_hit=R.Bot._crowd_hit, _trigger=lambda on, now: {'zr'} if on else set())
     return bot, writes
+
+
+def waiting_bot():
+    bot, _ = controller()
+    bot._gun_down = lambda: setattr(bot, 'aim_since', None)
+    return bot
+
+
+def test_failed_aim_cannot_hold_stationary_indefinitely_or_reset_on_retarget():
+    bot, s, act = waiting_bot(), scene(pitch=1), {'hold': ('zl',)}
+    assert F.keep_active(bot, s, act, 10) == act
+    for t in (10.2, 10.4, 10.6):
+        bot.target += 1
+        assert F.keep_active(bot, s, act, t) == act
+    out = F.keep_active(bot, s, act, 10.76)
+    assert out['hold'] == ('ldown',) and bot.doing == 'escape'
+    assert bot.stats['aim_repositions'] == 1 and bot.aim_since is None
+    bot.doing = 'aim'
+    assert F.keep_active(bot, s, act, 11)['hold'] == ('ldown',)
+    bot.doing = 'aim'
+    assert F.keep_active(bot, s, act, 11.42) == act  # reacquire after bounded move
+
+
+@pytest.mark.parametrize('doing', ['held', 'prompt', 'mine', 'flashbang', 'heal', 'native_equip', 'rearm', 'quick_turn'])
+def test_acquisition_deadline_never_interrupts_priority_actions(doing):
+    bot, s = waiting_bot(), scene()
+    F.keep_active(bot, s, {'hold': ('zl',)}, 0)
+    bot.doing = doing
+    act = {'hold': ('zl', 'zr'), 'tap': 'a'}
+    assert F.keep_active(bot, s, act, 1) == act
+    assert bot._aim_wait is None
+
+
+@pytest.mark.parametrize('motion', [R.MOTION_SHOT, R.MOTION_RELOAD, *R.MOTION_HELD])
+def test_animation_is_not_an_idle_acquisition(motion):
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, act, 0)
+    s['player']['motion'] = motion
+    assert F.keep_active(bot, s, act, 1) == act and bot._aim_wait is None
+
+
+def test_shooting_and_human_control_clear_wait_deadline():
+    bot, s, aim = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, aim, 0)
+    fire = {'hold': ('zl', 'zr')}
+    assert F.keep_active(bot, s, fire, 1) == fire and bot._aim_wait is None
+    F.keep_active(bot, s, aim, 2)
+    bot.stats['operator_control'] = True
+    assert F.keep_active(bot, s, aim, 3) == aim and bot._aim_wait is None
+
+
+def test_new_player_and_backward_clock_do_not_inherit_stall():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, act, 1)
+    assert F.keep_active(bot, s, act, 0) == act
+    s['player']['generation'] += 1
+    assert F.keep_active(bot, s, act, 2) == act
+
+
+def test_escape_checks_mesh_for_backward_and_sideways_steps():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    # Only a leftward corridor is open; moving straight back would hit a wall.
+    s['nav'] = SimpleNamespace(member=lambda p: 1,
+                              floor_segment=lambda start, end: end[0] > 90 and abs(end[2]) < 1)
+    F.keep_active(bot, s, act, 0)
+    assert F.keep_active(bot, s, act, 1)['hold'] == ('lleft',)
+
+
+def test_no_mesh_exit_turns_for_new_sightline_without_wall_pressure():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    s['nav'] = SimpleNamespace(member=lambda p: 1, floor_segment=lambda *args: False)
+    F.keep_active(bot, s, act, 0)
+    assert set(F.keep_active(bot, s, act, 1)['hold']) <= {'rleft', 'rright'}
 
 
 @pytest.mark.parametrize('pitch', [-1., 1.])

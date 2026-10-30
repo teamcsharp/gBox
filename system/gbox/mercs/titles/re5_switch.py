@@ -3360,27 +3360,31 @@ class Bot:
         from .. import primary_weapon
         if primary_weapon.quiescing(self.stats, snap):
             self._gun_down()
+            self._aim_wait = None
             self.doing, self.why = 'native_equip', 'applying the selected primary weapon'
             return {'hold': ()}
         snap = primary_weapon.decision_snapshot(snap)
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
-        from . import re5_target_feedback, re5_weapons
+        from . import re5_switch_aim as re5_target_feedback, re5_weapons
         visible = re5_target_feedback.visible_target(snap)
         self._feedback_visible = visible.get('ptr', visible.get('slot')) if visible else None
         spec = re5_weapons.WEAPONS.get(self._item)
         self._defer_trigger = bool(snap.get('aim_cam') and spec
                                    and spec.family in re5_target_feedback.GUN_FAMILIES)
         act = self._tick(snap, now)
+        self._defer_trigger = False
+        act = re5_target_feedback.apply(self, snap, act, now)
+        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
-        self._defer_trigger = False
-        act = re5_target_feedback.apply(self, snap, act, now)
         act = self._native_equipment(act, snap)
+        self.stats.update(combat_action=self.doing, combat_reason=self.why,
+                          combat_hold=','.join(act.get('hold') or ()))
         from . import re5_switch_wall
         re5_switch_wall.feedback(self, act, snap, now)
         self._count_sticks(act, now)
@@ -4406,6 +4410,7 @@ class RE5Switch(Driver):
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
+                      "aim_repositions", "target_feedback_fire_blocks", "target_feedback_write_failures",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS \
