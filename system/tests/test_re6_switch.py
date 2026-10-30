@@ -3311,3 +3311,55 @@ def test_a_hit_answers_with_a_series_of_quick_shots():
     snap2["player"]["hp"] = 780                                              # shot from afar: nobody close to hit back
     run(bot2, snap2, clock2, 20)
     assert bot2.stats.get("hit_quick_shots", 0) == 0
+def test_a_degenerate_nav_pocket_falls_back_to_straight_at_the_enemy():
+    """#5083 batch: pursuit headings run into geometry. A nav path whose waypoints are all within
+    NAV_DEGEN_R of the bot (a degenerate pocket the mesh replans after each stall) must be dropped,
+    so the bot walks straight at the enemy instead of looping into the same geometry."""
+    class PocketMesh:
+        """A mesh whose path has only waypoints near the bot's feet (a pocket)."""
+        def path(self, a, b):
+            return [(a[0] + 20.0, a[1], a[2])]   # sole waypoint 20 cm ahead (within NAV_DEGEN_R=40cm)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    p = dict(snap["player"], pos=(100.0, 0.0, 100.0))
+    goal = (500.0, 0.0, 100.0)
+    snap["navmesh"] = PocketMesh()
+    assert bot._nav_heading(p, goal, snap, clock[0]) is None                   # degenerate: no heading
+    # A normal mesh (first waypoint far) returns a heading.
+    class NormalMesh:
+        def path(self, a, b):
+            return [(a[0] + 200.0, a[1], a[2])]                               # 2 m ahead: useful
+    snap["navmesh"] = NormalMesh()
+    bot.nav_path = None                                                       # force a replan
+    bot.nav_goal = None
+    h = bot._nav_heading(p, goal, snap, clock[0] + 10)
+    assert h is not None and abs(h - math.pi / 2) < 0.1                          # a real heading toward +x
+
+
+def test_the_pursuit_breaks_free_of_a_degenerate_nav_loop():
+    """#5083: with a degenerate pocket for the nearest enemy, the bot skips it (12 s walk-skip) and
+    walks to the next-nearest instead, rather than stalling in the pocket."""
+    class PocketMesh:
+        """A mesh that pockets the nearest enemy (sole waypoint 20 cm ahead) but gives the next enemy
+        a valid path (waypoint > NAV_DEGEN_R away), so the bot skips the pocket and walks on."""
+        def path(self, a, b):
+            if abs(b[0] - 200.0) < 10.0:
+                return [(a[0] + 20.0, a[1], a[2])]    # pocket: sole waypoint 20 cm ahead (< NAV_DEGEN_R=40 cm)
+            return [(a[0] + 200.0, a[1], a[2])]       # valid: 2 m ahead (> NAV_DEGEN_R)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.down = False
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = PocketMesh()
+    snap["enemies"] = [
+        {"slot": 0, "ptr": 0x9100, "pos": (200.0, 0.0, 200.0), "hp": 700, "hp_max": 700},   # nearest, in the pocket
+        {"slot": 1, "ptr": 0x9200, "pos": (300.0, 0.0, 300.0), "hp": 700, "hp_max": 700},   # next nearest, walkable
+    ]
+    out = bot._pursue(snap["player"], snap, clock[0])
+    # The pocket enemy (0x9100) was skipped after the degenerate heading; the bot walks to 0x9200.
+    assert out is not None and out.get("hold")                              # a walk decision with keys
+    assert bot._walk_target == 0x9200                                        # the second enemy, not the pocket one
+    assert 0x9100 in bot._walk_skip                                          # the pocket enemy is in the 12 s skip
+    assert bot.doing == "walk"
+    assert bot.stats.get("act") == "pursue"
+    assert bot.stats.get("nav_paths", 0) >= 1                               # the mesh was consulted

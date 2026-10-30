@@ -1977,7 +1977,7 @@ MAGNUM_IDS = frozenset({0x07, 0x08})
 # waypoint, the ones within NAV_REACH_R dropped, replanned every NAV_REPLAN_S, on a new goal or after a stall.
 # Navigation turns through the governed right stick. Forward waits for observed facing;
 # a known failed enemy route is deferred rather than replaced with a straight walk. stats nav_paths, nav_fails.
-NAV_WALK, NAV_REACH_R, NAV_REPLAN_S = True, 90.0, 1.5
+NAV_WALK, NAV_REACH_R, NAV_REPLAN_S, NAV_DEGEN_R = True, 90.0, 1.5, 40.0
 # Taking the game's prompts (snapshot prompts; operator 16:54: "if they hit an enemy and they get an opportunity to do a
 # QTE event, they must activate that QTE event immediately"; 17:50-17:52 the climb prompts, "it should be aware that
 # there's a button press that's required for it to relocate to the next area"): a shown prompt's button is pressed at
@@ -3719,6 +3719,14 @@ class Bot:
         while self.nav_path and len(self.nav_path) > 1 and math.hypot(self.nav_path[0][0] - px,
                                                                       self.nav_path[0][2] - pz) <= NAV_REACH_R:
             self.nav_path.pop(0)
+        # A degenerate pocket: every remaining waypoint is within NAV_DEGEN_R of the bot (the mesh returned a
+        # path that ends immediately, e.g. an unreachable goal behind geometry). The side-step loop replans the
+        # same pocket, so fall back to walking straight at it and break the stall. The pop above consumed
+        # waypoints within NAV_REACH_R; those are also within NAV_DEGEN_R, so the all() still catches the
+        # degenerate case even after the pop.
+        if self.nav_path and all(
+                math.hypot(wp[0] - px, wp[2] - pz) <= NAV_DEGEN_R for wp in self.nav_path):
+            return None
         if not self.nav_path:
             return None
         w = self.nav_path[0]
