@@ -1,0 +1,99 @@
+{
+ "cluster": {
+  "id": "b294c62b554c77fd",
+  "game_id": "115f9cdbba115432",
+  "signature": "wall_los_aim",
+  "label": "laser locked on a wall (ray ends short of the target) while aiming out of sight"
+ },
+ "title": "01002A000CD48000",
+ "event_id": "re5540_wall_los_aim_rep",
+ "observed_at": 1793091526.4833808,
+ "hp_before": 600,
+ "hp_after": 488,
+ "hp_max": 900,
+ "loss": 112,
+ "held": [],
+ "counters": {
+  "combo": 0,
+  "deaths": 0,
+  "kills": 1,
+  "score": 300,
+  "timer": 75.42
+ },
+ "decision": {
+  "act": "melee",
+  "aim": "d 287 yaw +3.0 pitch +8.0 on ray keys rleft,zl,zr"
+ },
+ "snapshot": {
+  "bonus_s": 0,
+  "combo": 0,
+  "combo_bonus": 0,
+  "combo_timer": 0.0,
+  "max_combo": 1,
+  "mercenaries_mode": "no_mercy",
+  "mercenaries_phase": 1,
+  "module_base": 260512432128,
+  "score": 300,
+  "kills": 1,
+  "timer": 74.49,
+  "camera": {
+   "pitch": -0.3365251589332596,
+   "pos": [
+    0.0,
+    140.0,
+    -200.0
+   ],
+   "target": [
+    0.0,
+    140.0,
+    100.0
+   ],
+   "unit": 401072619680,
+   "yaw": 0.0
+  },
+  "player": {
+   "ammo": 18,
+   "hp": 488,
+   "hp_max": 900,
+   "motion": 1540,
+   "pos": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "ptr": 401072455840,
+   "rot": 0.0,
+   "state": 0,
+   "tablets": 7
+  },
+  "enemies": [
+   {
+    "hp": 700,
+    "hp_max": 700,
+    "pos": [
+     0.0,
+     0.0,
+     900.0
+    ],
+    "ptr": 401075830944,
+    "slot": 24
+   }
+  ],
+  "laser": {
+   "alpha": 0.86,
+   "at": [
+    0.0,
+    115.0,
+    700.0
+   ],
+   "from": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "up": true
+  }
+ },
+ "preceding_history": [],
+ "schema": "gbox.mercs.incident-replay/1"
+}

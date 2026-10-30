@@ -1637,6 +1637,35 @@ def test_the_lasers_probe_takes_one_out_of_sight_when_the_ray_stops_short():
     assert bot.stats["wall_aim_s"] > 0
 
 
+def test_the_wall_gate_in_los_tick_blocks_the_targeted_one_when_the_ray_ends_short():
+    # the cluster wall_los_aim: the bot aims at a zombie 9 m out, the laser's ray ends at 7 m (a wall between);
+    # after WALL_DROP_S of wall-aiming, the target is blocked (wall_blocks), and wall_aim_s counts the aim-on-wall time
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),),
+                                          laser=((0.0, R.CHEST_H, 700.0), (20.0, 145.0, 30.0), 0.86))   # wall at 7 m
+    # let the bot acquire the target and lock
+    run(bot, snap, clock, int((R.READY_S + R.LOS_PROBE_S) / 0.05) + 6)
+    assert bot.target is not None
+    # the ray is short: wall gate accumulates wall_aim_s and fires after WALL_DROP_S
+    ticks_wall = int(R.WALL_DROP_S / 0.05) + 2
+    run(bot, snap, clock, ticks_wall)
+    assert bot.stats.get("wall_aim_s", 0) > 0, "wall_aim_s should accumulate"
+    # the target is blocked (either by los_blocks or wall_blocks - both are valid defenses)
+    assert bot.is_blocked(snap["enemies"][0], clock[0]), "the target should be blocked"
+
+
+def test_the_wall_gate_clears_when_the_ray_reaches_the_target():
+    # the same setup, but the laser now reaches the enemy (no wall): wall_aim_s does not accumulate, no wall_blocks
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 900.0, 700),),
+                                          laser=((0.0, R.CHEST_H, 850.0), (20.0, 145.0, 30.0), 0.86))   # ray reaches 8.5 m
+    run(bot, snap, clock, int((R.READY_S + R.LOS_PROBE_S) / 0.05) + 6)
+    assert bot.target is not None
+    ticks = int(R.WALL_DROP_S / 0.05) + 4
+    run(bot, snap, clock, ticks)
+    assert bot.stats.get("wall_aim_s", 0) == 0, "no wall: wall_aim_s stays 0"
+    assert bot.stats.get("wall_blocks", 0) == 0, "no wall: no wall_blocks"
+    assert bot.target is not None, "the target is kept"
+
+
 def test_a_close_one_beats_a_far_one_and_low_health_is_survival():
     bot, clock, snap, writes = lock_brain(((300.0, 0.0, 300.0, 700), (0.0, 0.0, 1200.0, 700)))   # 4.2 m and 12 m
     run(bot, snap, clock, 4)
