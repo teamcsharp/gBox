@@ -12,14 +12,16 @@ from dataclasses import dataclass, field
 import struct
 import time
 
-from . import re5_switch as R
+from . import re5_switch as R, re5_weapons
 
 ACTION_ID, ACTION_VTABLE, ACTION_DTI_GETTER = 0x20, 0x1C7F598, 0x96AFF0
 GENERATION, REQUEST_GRID = 0x1A00, 0x3F70
 COUNT, TABLE, REQUESTED, PREVIOUS = 0x1B28, 0x1B38, 0x1B40, 0x1B44
 PRIORITY, PENDING, RESET, CURRENT = 0x1B48, 0x1B4C, 0x1B50, 0x1B60
-SUPPORTED_IDS = frozenset((0x10B, 0x11A, 0x11B, 0x104, 0x109, 0x117, 0x119,
-                           0x106, 0x107, 0x108, 0x10A))
+# Attachment uses the same native action for every catalogued weapon. A matching
+# live object/class and unchanged allocation are still mandatory; this never
+# constructs a weapon or substitutes a different item.
+SUPPORTED_IDS = frozenset(0x100 | item for item in re5_weapons.WEAPONS)
 IDLE_MOTIONS = frozenset((0, 1, 7, 9, 10, 26))
 MAX_READS, MAX_BYTES, MAX_SECONDS = 512, 64 * 1024, 0.05
 

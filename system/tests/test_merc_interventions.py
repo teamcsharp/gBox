@@ -37,6 +37,22 @@ def test_twenty_clicks_remain_distinct_and_complete_once(queue):
     assert all(r['state'] == 'confirmed' for r in q.status('sid')['requests'])
 
 
+def test_weapon_requests_keep_arguments_and_cannot_reuse_an_id_for_another_weapon(queue):
+    q, _ = queue
+    options = {'weapons':[{'item':25,'weapon':'Hydra'}, {'item':27,'weapon':'S&W M500'}]}
+    q.claim('sid','life-1',['flash_now','equip_primary'],options=options)
+    rid = str(uuid.uuid4())
+    row = q.post('sid','equip_primary',rid,'viewer',{'item':25})
+    assert q.status('sid')['options'] == options and row['args'] == {'item':25}
+    assert q.post('sid','equip_primary',rid,'viewer',{'item':25}) == row
+    with pytest.raises(ValueError,match='another operation'):
+        q.post('sid','equip_primary',rid,'viewer',{'item':27})
+    for args in ({'item':True}, {'item':25,'extra':1}, {}, {'item':255}):
+        with pytest.raises(ValueError): q.post('sid','equip_primary',str(uuid.uuid4()),'viewer',args)
+    assert q.claim('sid','life-2',['flash_now','equip_primary'],options=options) == []
+    assert q.status('sid')['requests'][0]['state'] == 'expired'
+
+
 def test_crash_after_claim_never_reexecutes(queue):
     q, now = queue
     row = post(q)

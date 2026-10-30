@@ -216,6 +216,15 @@ class Controller(N.Controller):
                 if self.q(self.player) in (self.heap, self.base + TEMP):
                     self.write(self.player, struct.pack("<Q", self.original))
 
+    def weapon_choices(self):
+        from .re5_weapons import WEAPONS
+        return [{"item": item, "weapon": spec.name, "family": spec.family}
+                for item, spec in sorted(WEAPONS.items())]
+
+    def equip_primary(self, item, *, expected=None):
+        from .re5_switch_weapon_native import replace
+        return replace(self, item, expected=expected)
+
 
 def flash_now(ad):
     with _CREATE_LOCK:

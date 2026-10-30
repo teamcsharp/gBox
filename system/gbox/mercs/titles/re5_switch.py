@@ -1101,7 +1101,8 @@ def snapshot(m) -> dict:
             rot = struct.unpack("<4f", m.rd(p + P_ROT, 16))
             hp, hp_max = struct.unpack("<hh", m.rd(p + P_HP, 4))
             aim_pitch = struct.unpack("<f", m.rd(p + P_AIM_PITCH, 4))[0]
-            snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
+            snap["player"] = {"ptr": p, "generation": u64(m, p + 0x1A00),
+                              "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
                               "motion": m.rd(p + P_MOTION, 1)[0],
                               "aim_pitch": aim_pitch if math.isfinite(aim_pitch) and abs(aim_pitch) < 2.0 else None}
         except (ValueError, OSError):
@@ -3266,6 +3267,12 @@ class Bot:
         bomb in hand sets one down at his feet."""
         inv = snap.get("inventory") or ()
         held = next((s for s in inv if s.get("hand")), None)
+        primary = snap.get('primary_weapon')
+        if primary and self.native_equip is not None:
+            chosen = next((s for s in inv if s.get('grid') == 0 and s.get('item') == primary['item']), None)
+            if chosen is not None and not chosen.get('hand'):
+                self.native_equip.select(0, chosen['id'])
+                return {'hold': ()}
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
                        and s.get("item") not in KNIVES and s.get("item") not in THROWN), None) if want else None
@@ -3344,6 +3351,12 @@ class Bot:
         now = self.clock()
         if self.native_equip is not None:
             self.native_equip.tick()
+        from .. import primary_weapon
+        if primary_weapon.quiescing(self.stats, snap):
+            self._gun_down()
+            self.doing, self.why = 'native_equip', 'applying the selected primary weapon'
+            return {'hold': ()}
+        snap = primary_weapon.decision_snapshot(snap)
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
@@ -4429,6 +4442,11 @@ class RE5Switch(Driver):
         if snap is not None:
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
             snap["preferred_weapon"] = re5_switch_mods.preferred_weapon(ad)   # select_weapon / random_weapon
+            from .. import primary_weapon
+            snap['primary_weapon'] = primary_weapon.snapshot(ad, snap)
+            target_stats = stats if stats is not None else self.stats
+            if target_stats is not None:
+                target_stats['primary_weapon'] = snap['primary_weapon']
         if self.stats is not None:
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)

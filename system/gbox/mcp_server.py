@@ -224,11 +224,13 @@ CONVENIENCE = {
                      obj({"worker":S,"session_id":S})),
     "game_intervention": ("Viewer/operator native intervention for the active stream. op=status returns available capabilities and recent receipts. "
                           "op=flash_now creates and detonates a native flash at the player's position without inventory, input or weapon changes. "
+                          "op=equip_primary uses a weapon item ID offered in status.options.weapons to replace the main weapon now, "
+                          "with a two-minute bot swap lock and a preference for the current match. "
                           "Provide a new UUID request_id for each click; reuse that UUID only when retrying that same request. "
                           "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
                           "Unsupported title/build/resources are reported without substituting a grenade throw.",
-                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now"]},
-                               "request_id": S}, ["session_id", "op"])),
+                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary"]},
+                               "request_id": S, "item": {"type":"integer", "minimum":1, "maximum":255}}, ["session_id", "op"])),
     "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
                  "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
                  "its params, allowed values and when it takes effect. params holds that tool's own fields only (RE5: multiplier, on, "
@@ -589,7 +591,10 @@ def build(base_url: str, token: str) -> Server:
                 return await get(f"/api/sessions/{sid}/interventions")
             if not a.get("request_id"):
                 raise ValueError("request_id must be a new UUID for each intended effect")
-            return await post(f"/api/sessions/{sid}/interventions", {"op": a["op"], "request_id": a["request_id"]})
+            payload = {"op": a["op"], "request_id": a["request_id"]}
+            if a['op'] == 'equip_primary':
+                payload['args'] = {'item': a.get('item')}
+            return await post(f"/api/sessions/{sid}/interventions", payload)
         if name == "game_mod":
             session = await live_session(a["session_id"])
             tool = BC.mod_tool_for(session, a.get("tool"))
