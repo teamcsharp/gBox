@@ -3520,14 +3520,18 @@ class Bot:
         if self.down_dying:
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
-        # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
-        # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
+        # Down at low health: stay down, no rise, no kick, no fire (#5052). The getting-up deaths and the
+        # fall/knockdown/dying chain's hits are made of the bot rising or kicking from the ground at low HP
+        # and taking a full-HP-cliff hit (900->1, 862->1, 400->1, 250->1) while the getup or the kick leaves
+        # him exposed. The wind-up case is a subset of this: at low HP with a melee wind-up near he stays down
+        # until it swings; now he stays down at low HP regardless of what the enemies are doing.
         hp_max = p.get("hp_max")
-        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max and any(
-                windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0):
+        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max:
+            wind = any(windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0)
+            why = "a melee wind-up near" if wind else "low health, staying down"
             self._gun_down()
-            return self._go("down", "down_windup_hold", {"hold": ()},
-                            "down at low health: a melee wind-up near, staying down until it swings")
+            return self._go("down", "down_lowhp_hold", {"hold": ()},
+                            f"down at low health: {why}, staying down")
         near = sorted((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                        and math.dist(me, e["pos"]) <= DOWN_FIGHT_R and not self.is_blocked(e, now)),
                       key=lambda e: math.dist(me, e["pos"]))
