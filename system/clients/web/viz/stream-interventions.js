@@ -101,10 +101,14 @@
                    schedule = root.setTimeout.bind(root), cancel = root.clearTimeout.bind(root)}) {
     const pending = new Map(); let timer = null, dead = false, polling = false;
     function message(row) {
-      const weapon = row.op === 'equip_primary';
-      if (row.state === 'confirmed') return weapon ?
-        `${row.result?.weapon || 'Primary weapon'} equipped. Locked for three minutes; preferred for this match.` : 'Flashbang detonated.';
-      return `${weapon ? 'Weapon selection' : 'Flashbang'} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
+      const weapon = row.op === 'equip_primary', ring = row.op === 'grenade_ring';
+      if (row.state === 'confirmed') {
+        if (weapon) return `${row.result?.weapon || 'Primary weapon'} equipped. Locked for three minutes; preferred for this match.`;
+        if (ring) return `${ringKindLabel(row.result?.kind)} ring detonated (${row.result?.detonated ?? row.result?.requested ?? ''} grenades).`;
+        return 'Flashbang detonated.';
+      }
+      const what = weapon ? 'Weapon selection' : ring ? 'Grenade ring' : 'Flashbang';
+      return `${what} ${row.state}: ${row.result?.reason || row.reason || 'no confirmed effect'}`;
     }
     function wake() { if (!dead && !timer && pending.size) timer = schedule(poll, 100); }
     async function poll() {
@@ -141,7 +145,74 @@
       return out;
     }
     return {flash:sid=>send(sid,'flash_now'), equipPrimary:(sid,item)=>send(sid,'equip_primary',{item}),
+      grenadeRing:(sid,kind)=>send(sid,'grenade_ring',{kind:kind||'flash'}),
       poll, dispose() { dead=true; if(timer)cancel(timer); pending.clear(); }};
+  }
+  // The grenade ring (operator 2026-10-31): ten grenades bloom out from the player and detonate. The type is
+  // chosen beside the button; flash is the default and the only verified type, so the others are shown disabled.
+  const RING_KIND_KEY='gbox.merc.ringKind.v1';
+  const RING_KINDS=[{kind:'flash',label:'Flash',available:true},
+    {kind:'hand',label:'Hand',available:false,reason:'Hand-grenade ring not yet verified on this build.'},
+    {kind:'incendiary',label:'Incendiary',available:false,reason:'Incendiary-grenade ring not yet verified on this build.'}];
+  function ringKindLabel(kind){return (RING_KINDS.find(k=>k.kind===kind)||RING_KINDS[0]).label;}
+  function readRingKind(storage){
+    try{const v=storage?.getItem(RING_KIND_KEY); if(RING_KINDS.some(k=>k.kind===v && k.available))return v;}catch{}
+    return 'flash';
+  }
+  const ringIcon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>';
+  // ringButton fires the ring with the chosen kind; kindButton opens a small chooser (flash preselected, the
+  // unverified types disabled). The chosen kind is remembered per viewer like the flash shortcut.
+  function bindRing(ringButton,{ring,sid,enabled=()=>true,storage,kindButton}={}){
+    const doc=ringButton.ownerDocument,win=doc.defaultView;
+    if(storage===undefined)try{storage=win.localStorage;}catch{}
+    let kind=readRingKind(storage),menu=null,dead=false,last='',sequence=0;
+    const selected=()=>typeof sid==='function'?sid():sid;
+    const active=()=>!dead && enabled() && selected() && ringButton.isConnected;
+    function paint(){
+      ringButton.title=`Grenade ring (${ringKindLabel(kind)}): ten grenades bloom out from the player and detonate.${last?'\n'+last:''}`;
+      ringButton.setAttribute('aria-label',`Grenade ring (${ringKindLabel(kind)})`);
+      if(kindButton){kindButton.textContent=ringKindLabel(kind);kindButton.title='Choose the grenade type for the ring';
+        kindButton.setAttribute('aria-label',`Grenade ring type: ${ringKindLabel(kind)}`);}
+    }
+    function receipt(text,row){if(dead || (row?.sid && row.sid!==selected()))return;last=text;ringButton.dataset.ringState=row?.state||'unavailable';paint();}
+    function fire(event){
+      event?.preventDefault();event?.stopPropagation();
+      if(!active())return;
+      const session=selected(),seq=++sequence,k=kind;
+      receipt('Request sent.',{state:'sending'});
+      Promise.resolve().then(()=>ring(session,k)).then(out=>{
+        if(seq===sequence && session===selected() && out?.request)
+          receipt(out.request.reason||'',{...out.request,sid:session});
+      }).catch(error=>{if(seq===sequence && session===selected())receipt(error.message,{state:'unavailable',sid:session});});
+    }
+    function close(){menu?.remove();menu=null;kindButton?.setAttribute('aria-expanded','false');}
+    function save(value){kind=value;try{storage?.setItem(RING_KIND_KEY,value);}catch{}last='';paint();close();}
+    function chooser(event){
+      event?.preventDefault();event?.stopPropagation();close();if(!active())return;
+      menu=doc.createElement('div');menu.className='ring-kind-menu';menu.setAttribute('role','menu');
+      Object.assign(menu.style,{position:'fixed',zIndex:'10000',background:'#1d1d22',color:'#eee',border:'1px solid #666',borderRadius:'6px',padding:'6px',minWidth:'180px',font:'13px sans-serif',webkitAppRegion:'no-drag'});
+      for(const row of RING_KINDS){
+        const item=doc.createElement('button');item.type='button';item.setAttribute('role','menuitemradio');
+        item.setAttribute('aria-checked',String(row.kind===kind));item.disabled=!row.available;
+        item.textContent=row.label+(row.available?'':' (unverified)');
+        item.title=row.reason||'';
+        Object.assign(item.style,{display:'block',width:'100%',textAlign:'left',padding:'6px',background:row.kind===kind?'#263647':'transparent',color:row.available?'#fff':'#888',border:'0',cursor:row.available?'pointer':'default'});
+        if(row.available)item.onclick=e=>{e.stopPropagation();save(row.kind);};
+        menu.append(item);
+      }
+      doc.body.append(menu);
+      const anchor=(kindButton||ringButton).getBoundingClientRect();
+      menu.style.left=Math.max(4,Math.min(anchor.left,win.innerWidth-menu.offsetWidth-4))+'px';
+      menu.style.top=Math.max(4,Math.min(anchor.bottom+4,win.innerHeight-menu.offsetHeight-4))+'px';
+      kindButton?.setAttribute('aria-expanded','true');menu.querySelector('button:not(:disabled)')?.focus();
+    }
+    function outside(e){if(menu && !menu.contains(e.target) && e.target!==kindButton && !kindButton?.contains(e.target))close();}
+    function refreshed(){kind=readRingKind(storage);paint();}
+    ringButton.addEventListener('click',fire);ringButton.addEventListener('contextmenu',chooser);
+    if(kindButton){kindButton.setAttribute('aria-haspopup','menu');kindButton.addEventListener('click',chooser);}
+    win.addEventListener('storage',refreshed);doc.addEventListener('pointerdown',outside,true);paint();
+    return {receipt,dispose(){dead=true;close();ringButton.removeEventListener('click',fire);ringButton.removeEventListener('contextmenu',chooser);
+      if(kindButton)kindButton.removeEventListener('click',chooser);win.removeEventListener('storage',refreshed);doc.removeEventListener('pointerdown',outside,true);}};
   }
   const gunIcon='<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M2 5h19v5h-7l-1 3H9l-2 7H3l3-10H2V5zm8 5-.5 1.5h2L12 10h-2z"/><path d="M4 3h2v2H4zm13 0h2v2h-2z"/></svg>';
   const damageValue=row=>typeof row.damage==='number' && Number.isFinite(row.damage) && row.damage>=0 ? row.damage : null;
@@ -258,18 +329,24 @@
         finally { opening=false; }
       };
     }
-    let flashControl,weaponControl;
+    let flashControl,weaponControl,ringControl;
     const client = create({...options, notify(text,row) {
       if(row.op==='flash_now')flashControl?.receipt(text,row);
       else if(row.op==='equip_primary')weaponControl?.receipt(text,row);
+      else if(row.op==='grenade_ring')ringControl?.receipt(text,row);
       else {status.textContent=text; options.notify?.(text,row);}
       options.onReceipt?.(row);
     }});
     const weapon = doc.createElement('button'); weapon.type='button';bar.insertBefore(weapon,status);
     weaponControl=bindWeapon(weapon,{api:options.api,equipPrimary:client.equipPrimary,sid:selected,enabled:()=>!disposed});
     flashControl=bindFlash(button,{flash:client.flash,sid:selected,enabled:()=>!disposed});
-    return {dispose() {disposed=true;flashControl.dispose();weaponControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
+    // The grenade ring sits beside the flash button, with its own small type chooser.
+    const ring = doc.createElement('button'); ring.type='button'; ring.innerHTML=ringIcon;
+    const ringKind = doc.createElement('button'); ringKind.type='button'; ringKind.className='ring-kind';
+    bar.insertBefore(ring,status); bar.insertBefore(ringKind,status);
+    ringControl=bindRing(ring,{ring:client.grenadeRing,sid:selected,enabled:()=>!disposed,kindButton:ringKind});
+    return {dispose() {disposed=true;flashControl.dispose();weaponControl.dispose();ringControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
   }
-  const out = {create,mount,bindFlash,bindWeapon,sortedWeapons}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindWeapon,bindRing,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);

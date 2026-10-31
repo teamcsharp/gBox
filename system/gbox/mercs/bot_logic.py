@@ -25,6 +25,8 @@ KNOBS: dict[str, list[tuple]] = {
          "the gun up: the trigger down while the aim closes on one (never into a wall)"),
         ("RAMPAGE_R", "Crowd circle radius (cm)", "Crowd control", "float", 300, 800, 25, ""),
         ("MINES", "Drop mines while moving", "Crowd control", "bool", 0, 1, 1, ""),
+        ("GRENADES", "Grenades (flash bursts on crowds)", "Crowd control", "bool", 0, 1, 1,
+         "when Majini crowd him, a native flash burst, then crowd fire; bounded by a cooldown"),
         ("MINE_EVERY_S", "Seconds between mines", "Crowd control", "float", 3, 60, 1, ""),
         ("MINE_FOE_CLEAR_CM", "No mine with a Majini this near (cm)", "Crowd control", "float", 250, 800, 25, ""),
         ("RELOCATE", "Keep moving (relocate off crowds)", "Movement", "bool", 0, 1, 1, ""),
