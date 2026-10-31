@@ -111,6 +111,29 @@ def test_a_statue_that_breaks_is_still_taken_before_any_give_up():
     assert b.stats["bonuses_taken"] == 2 and b.stats["bonuses_left"] == 0 and b.stats["bonus_time_s"] == 2.0
 
 
+def test_a_shown_prompt_is_walked_into_not_capped_by_the_prompt_branch():
+    # the live fault: the snap prompt reader reads (prompt_read) but its selected prompt never comes (label 112,
+    # "up 23 samples in six minutes, never pressed", bonuses_taken 0) - the run used to walk into that statue
+    # forever instead of the knife: now a reader miss falls back to the knife, and a dead one is capped
+    b, clock = bot()
+    b.tick(snap(bonuses=[STUCK, OTHER]))                   # locked on the stuck one
+    gave, act = None, None
+    for k in range(1, MAX_T + 1):
+        clock[0] = TICK_S * k
+        s2 = dict(snap(bonuses=[STUCK, OTHER]))
+        s2["prompt_read"] = True                           # the reader reads - but selected_prompt returns None
+        act = b.tick(s2)
+        if b._bonus is None and b._bonus_block.get(STUCK_PTR, -1e9) > clock[0]:
+            gave = k
+            break
+    assert gave is not None, "the run never gave up: it walked into the no-prompt statue forever (the cluster's fault)"
+    # the very last tick still walked into it; on the next one the run is on the other open statue
+    clock[0] = TICK_S * (gave + 1)
+    b.tick(snap(bonuses=[STUCK, OTHER]))
+    assert b._bonus is not None and b._bonus["ptr"] == OTHER_PTR, f"run not on the next open statue: {b._bonus!r}"
+    assert b.stats["bonus_runs"] == 2                       # a second run started, after the first gave up
+
+
 def test_cluster_count_shape_seen_minus_taken():
     # the fault's value is seen - taken; the fix lowers the missed count by giving up early, not by dropping seen
     b, clock = bot()
