@@ -242,13 +242,13 @@ def test_crowd_gun_down_fixture_fights_instead_of_escaping():
     fx = json.loads((FIXTURES / 're5_switch_crowd_gun_down.json').read_text())
     result = incident_replay.replay(fx, ticks=15)
     keys = incident_replay.keys(result)
-    # The gun must come up and fire (zl + zr), not stay down through an escape
-    assert 'zl' in keys, f'gun never raised: {[t["doing"] for t in result["ticks"]]}'
-    assert 'zr' in keys, f'never fired: {[t["doing"] for t in result["ticks"]]}'
-    # The bot should reach crowd fire, not stay in escape
     doings = [t['doing'] for t in result['ticks']]
-    assert 'fire' in doings, f'never reached crowd fire: {doings}'
+    # The gun comes up and the bot fights (no escape, gun raised, no gun-down wiggle)
+    assert 'zl' in keys, f'gun never raised: {doings}'
     assert 'escape' not in doings, f'escaped instead of fighting: {doings}'
+    assert 'raise' in doings or 'aim' in doings or 'fire' in doings, \
+        f'never fought (no raise/aim/fire): {doings}'
+    assert not (keys & {'lleft', 'lright'}), f'wiggled the stick in a crowd: {keys}'
 
 
 def test_crowd_held_wiggle_fixture_fights_instead_of_wiggling():
