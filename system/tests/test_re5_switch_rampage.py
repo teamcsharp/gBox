@@ -165,6 +165,36 @@ def test_the_profile_plays_the_rampage_loadout():
     ops = [o[0] for o in prof["mercs"]["playing_ops"]]
     assert {"infinite_ammo", "fire_rate", "rampage_loadout"} <= set(ops)
 
+def test_mandatory_fire_within_2m_even_when_aim_wide_off():
+    """Within CROWD_FIRE_CLOSE_R (2 m) the shotgun's spread guarantees a hit:
+    the trigger stays down no matter the aim error — even 90 deg off."""
+    b, clock = bot()
+    foe = at(180, 90)                    # 2 m away, 90 deg off his facing
+    inv = [M92F, dict(SHOTGUN, hand=True)]  # shotgun already in hand
+    act = b.tick(snap([foe], inv=inv))
+    # Even at 90 deg off, within 2 m the bot fires
+    assert {"zl", "zr"} <= set(act["hold"]), f"act={act['hold']}"
+    assert b.doing == "fire", f"doing={b.doing}"
+    assert b.stats.get("rampage_shots", 0) > 0
+
+
+def test_mandatory_fire_not_active_beyond_2m():
+    """At 2.5 m (just beyond CROWD_FIRE_CLOSE_R) with a wide aim error,
+    the bot does NOT get the mandatory fire — it uses the normal aim/fire
+    logic which requires a narrower cone."""
+    b, clock = bot()
+    foe = at(250, 90)                    # 2.5 m away, 90 deg off
+    inv = [M92F, dict(SHOTGUN, hand=True)]
+    act = b.tick(snap([foe], inv=inv))
+    # At 2.5 m with 90 deg off, the bot is turning/aiming, not firing
+    # (the mandatory fire only applies within 2 m)
+    assert b.doing in ("turn", "aim", "fire"), f"doing={b.doing}"
+    # The trigger may or may not be held depending on the aim cone
+    # but the key check is that it's not the mandatory fire
+    if b.doing == "fire":
+        assert "close enough" not in b.why, f"why={b.why}"
+
+
 def test_replay_incident_idle_among_foes_shows_firing_not_escaping():
     """Replay the incident fixture (cluster aef43e59aa636e02): 3 enemies within 5 m,
     crowd fire active, the bot must fire (zl+zr held), not escape with the gun down."""

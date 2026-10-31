@@ -1905,6 +1905,9 @@ class Bot:
             # laserless raise-up still fires at a near foe (the idle_in_5m_s fault: the aim turns
             # by yaw while the trigger is held, the dot finds the foe as the aim settles).
             on = abs(body_err) <= CLOSE_FIRE_CONE
+        if not on and dist <= CROWD_FIRE_CLOSE_R:
+            # within 2 m the shotgun's spread guarantees a hit: fire no matter the aim
+            on = True
         if dist <= POINT_BLANK_R and abs(body_err) <= self.raise_tol(dist):
             on = True                                    # point blank in front: on him
         if crowd:
