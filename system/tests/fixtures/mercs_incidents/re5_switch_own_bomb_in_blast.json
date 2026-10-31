@@ -1,0 +1,33 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "010018100CD46000",
+  "event_id": "re5-switch-own-bomb-1144754808",
+  "request": "#5068 (77c881d15232adee)",
+  "observed_at": 1761861000.0,
+  "summary": "own_bomb cluster: the bot stood 221 cm from his own RE5 proximity mine, no Majini within trigger range of the mine, yet the mine detonated and reached him. The old guard only fired when a Majini was within TRIGGER_CM of the mine, so it never ran him out. Fields from the batch's representative examples: bomb_cm 221, hp full 1000 before, nearest enemy 3 m from the player on the far side of the mine, no buttons held, no motion.",
+  "hp_before": 1000,
+  "hp_after": 960,
+  "hp_max": 1000,
+  "loss": 40,
+  "held": [],
+  "counters": {"mine_clear_runs": 0, "mine_blasts": 1},
+  "decision": {"act": "no input", "phase": "normal", "why": "idle, no target"},
+  "snapshot": {
+    "combo": 0,
+    "combo_timer": 0.0,
+    "mercenaries_phase": 1,
+    "module_base": 260512432128,
+    "player": {"hp": 1000, "hp_max": 1000, "pos": [0.0, 0.0, 0.0], "ptr": 400636848720, "rot": 0.0, "motion": 0},
+    "enemies": [
+      {"hp": 800, "hp_max": 800, "pos": [-300.0, 0.0, 0.0], "ptr": 400560996976, "slot": 22}
+    ],
+    "kills": 0,
+    "max_combo": 0,
+    "score": 0,
+    "timer": 30.0,
+    "timer_start": 120.0,
+    "inventory": [],
+    "ground_mines": [{"ptr": 44458772480, "pos": [221.0, 0.0, 0.0]}]
+  },
+  "preceding_history": []
+}

@@ -54,8 +54,11 @@ def test_a_bomb_is_due_every_interval_but_not_with_a_majini_near_or_beside_a_bom
     m.last_at, m.last_pos = 0.0, (500.0, 0.0, 0.0)
     assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1) is None         # still beside the last site
     m.last_pos, m.bombs = (900.0, 0.0, 0.0), {0x77: (0.0, 0.0, -400.0)}
-    assert m.tick(p(), snap(ground=[{"ptr": 0x77, "pos": (0.0, 0.0, -400.0)}]), foes((1200, 0)),
-                  MN.EVERY_S + 1) is None                                       # beside a bomb still down
+    # the bomb at -400 is within his blast and not the one he just placed: the guard now runs him out of it, and no
+    # placement starts while he is in its blast (the SPACING_CM check would block it too)
+    act = m.tick(p(), snap(ground=[{"ptr": 0x77, "pos": (0.0, 0.0, -400.0)}]), foes((1200, 0)), MN.EVERY_S + 1)
+    assert act is not None and act.get("hold") and m.state == "idle"            # the guard runs, no cycle started
+    assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
     m.bombs = {}
     assert m.tick(p(), snap(), foes((1200, 0)), MN.EVERY_S + 1) == {"hold": ()} and m.state == "neutral"
     assert MN.Mines({}).tick(p(), {"inventory": [GUN]}, [], 99.0) is None        # no bomb in the inventory
@@ -157,7 +160,9 @@ def test_the_guard_runs_him_out_of_a_bombs_blast_when_a_majini_reaches_it_and_co
     assert m.stats["mine_clear_runs"] == 1                                       # the same run
     assert m.tick(p(pos=(0.0, 0.0, -600.0)), snap(ground=[bomb]), live, 1.6) is None   # out of BLAST_CM: done
     far = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
-    assert m.tick(p(), snap(ground=[bomb]), far, 2.0) is None                    # nobody at it: no run
+    act = m.tick(p(), snap(ground=[bomb]), far, 2.0)                            # nobody at it: still in the blast -> run
+    assert act is not None and act["hold"][:2] == MN.RUN
+    assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
     assert m.tick(p(), snap(), far, 2.1) is None                                 # it left line 11: it went off
     assert m.stats["mines_gone"] == 1 and m.bombs == {}
 
@@ -254,3 +259,77 @@ def test_the_bot_watches_its_bombs_every_tick_even_while_held(switch_bot):
     assert b.doing == "held" and b.stats["mines_gone"] == 1 and b.stats["mine_blasts"] == 1
     for key in ("mine_blasts", "mine_kills", "mine_blast_hp_loss"):
         assert key in R.RE5Switch.round_counters
+
+
+def test_the_2026_10_30_cluster_in_own_blast_runs_out_even_with_no_majini_at_the_bomb():
+    # The live cluster (186 hits, bomb_cm 26-416): his own proximity mine detonated while he stood in its blast, with
+    # no Majini close enough to trigger it (the mine detonates on its own timer, so the old guard - Majini within
+    # TRIGGER_CM of the bomb - never fired). He has already retreated from the bomb he just placed (last_pos points
+    # to that other site); this is an *old* bomb still down, and he has drifted back into its radius on a later
+    # cycle. The _clear guard fires whenever he is in an old bomb's blast, so he runs out before the detonation.
+    # Built from the example fields: hp 1520 -> 1020/1420/1390, motion 20/96 (not the placing motion 29), held ()
+    # (no ZL at the hit).
+    m = MN.Mines({})
+    m.new_round(0.0)
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    m.bombs = {0x77: bomb["pos"]}
+    m.last_pos = (0.0, 0.0, -2000.0)                        # the bomb he just placed is far off; this one is old
+    # The Majini is 1200 cm from the old bomb - well past TRIGGER_CM (350) and past the blast (BLAST_CM=800) - so it
+    # neither triggers the mine nor is it the old guard's case. He is 300 cm from the old bomb: inside the blast.
+    live = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
+    act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
+    assert act["hold"][:2] == MN.RUN and m.stats["mine_clear_runs"] == 1
+    assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+    # He runs until he is out of the blast (RETREAT_CM from the site), then the guard stands down.
+    m.tick(p(pos=(0.0, 0.0, -200.0)), snap(ground=[bomb]), live, 1.2)
+    assert m.stats["mine_clear_runs"] == 1                                       # the same run, still in the blast
+    assert m.tick(p(pos=(0.0, 0.0, -900.0)), snap(ground=[bomb]), live, 1.6) is None   # 12 m from the bomb: out
+    # Outside the blast the guard does not fire: no run, and a bomb with nobody near is left alone.
+    m2 = MN.Mines({})
+    m2.new_round(0.0)
+    m2.bombs = {0x77: bomb["pos"]}
+    m2.last_pos = (0.0, 0.0, -2000.0)
+    assert m2.tick(p(pos=(0.0, 0.0, -1100.0)), snap(ground=[bomb]), live, 2.0) is None   # 14 m: not in the blast
+    # No enemies at all (the cluster's held=() / nearest-enemy-3m-on-far-side case): the guard still fires when he
+    # is in an old bomb's blast, because the mine detonates on its own timer - no Majini trigger needed.
+    m3 = MN.Mines({})
+    m3.new_round(0.0)
+    m3.bombs = {0x77: bomb["pos"]}
+    m3.last_pos = (0.0, 0.0, -2000.0)
+    act3 = m3.tick(p(), snap(ground=[bomb]), [], 1.0)
+    assert act3["hold"][:2] == MN.RUN and m3.stats["mine_clear_runs"] == 1
+    assert m3.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+
+
+def test_the_old_guard_still_fires_on_a_majini_at_the_bomb_and_the_status_differs():
+    # Regression: the original guard case (a Majini within TRIGGER_CM of the bomb while he is in the blast) still
+    # fires, and reports its own distinct status, so the two cases are not conflated.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    m.bombs = {0x77: bomb["pos"]}
+    live = [{"ptr": 10, "pos": (0.0, 0.0, 450.0), "hp": 800}]                    # 150 cm from the bomb: at it
+    act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
+    assert act["hold"][:2] == MN.RUN and m.stats["mine_clear_runs"] == 1
+    assert m.stats["mine_status"] == "a Majini at his bomb: out of its blast"
+
+
+def test_incident_replay_runs_out_of_own_bombs_blast_from_the_recorded_fields():
+    # #5068: replay the recorded cluster incident (bot 221 cm from his own mine, no Majini at the mine) through the
+    # incident_replay harness. Before the fix the old guard only fired when a Majini was within TRIGGER_CM of the
+    # bomb, so the bot stood in the blast and took the hit; the fix runs him out whenever he is in an old bomb's
+    # blast, regardless of Majini proximity.
+    from pathlib import Path
+    from gbox.mercs import incident_replay
+    path = Path(__file__).parent / "fixtures" / "mercs_incidents" / "re5_switch_own_bomb_in_blast.json"
+    fixture = __import__("json").loads(path.read_text(encoding="utf-8"))
+    res = incident_replay.replay(fixture, ticks=1)
+    b = res["bot"]
+    # the bot has this bomb down from an earlier cycle this round (seed from the fixture's ground_mines)
+    for g in fixture["snapshot"]["ground_mines"]:
+        b.mines.bombs[g["ptr"]] = tuple(g["pos"])
+    scene = __import__("copy").deepcopy(fixture["snapshot"])
+    act = b.tick(scene)
+    assert b.doing == "mine" and act["hold"][:2] == MN.RUN
+    assert b.stats["mine_clear_runs"] == 1
+    assert b.stats["mine_status"] == "in his own bomb's blast: out before it detonates"

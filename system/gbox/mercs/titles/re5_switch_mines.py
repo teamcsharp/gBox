@@ -174,15 +174,30 @@ class Mines:
         return "due"
 
     def _clear(self, p: dict, live: list) -> dict | None:
-        """The guard: a Majini at a bomb of his while he stands in its blast: out through the widest gap."""
+        """The guard: the bot standing in an old bomb's blast while a Majini is at it, or simply in the blast.
+
+        Out through the widest gap. The first case is the old guard (Majini closing, the bomb triggers on contact).
+        The second is the live 2026-10-30 RE5 cluster: bomb_cm 26-416, no Majini at the bomb within TRIGGER_CM, yet his
+        own proximity mine detonated and reached him - the mine detonates on its own timer, so the old guard
+        (Majini-within-TRIGGER_CM) never fired and he stood in it. The bomb he just placed is skipped: the retreat
+        state machine (place -> settle -> retreat) already walks him away from that one at RETREAT_CM; the danger is
+        the *other* bombs still down when he drifts back into their radius on a later cycle.
+        """
         pos = p["pos"]
         for ptr, b in self.bombs.items():
-            if flat(pos, b) < BLAST_CM and any(flat(e["pos"], b) <= TRIGGER_CM for e in live):
-                if self.clear_from != ptr:
-                    self.clear_from = ptr
-                    self.stats["mine_clear_runs"] += 1
-                self.stats["mine_status"] = "a Majini at his bomb: out of its blast"
-                return self._run(p, live, b)
+            if self.last_pos is not None and b == self.last_pos:
+                continue                                     # the one he just placed: the retreat handles it
+            if flat(pos, b) >= BLAST_CM:
+                continue
+            if any(flat(e["pos"], b) <= TRIGGER_CM for e in live):
+                reason = "a Majini at his bomb: out of its blast"
+            else:
+                reason = "in his own bomb's blast: out before it detonates"
+            if self.clear_from != ptr:
+                self.clear_from = ptr
+                self.stats["mine_clear_runs"] += 1
+            self.stats["mine_status"] = reason
+            return self._run(p, live, b)
         self.clear_from = None
         return None
 
