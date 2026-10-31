@@ -1275,7 +1275,8 @@ class Combat:
         elif other is not None:
             fire, gate = True, "on another Majini"
         elif point_blank and (on_window or ((lz is None or short or not steering_ray(lz, aim_at))
-                                            and abs(facing) <= READY_FIRE_FACING)):
+                                            and abs(facing) <= READY_FIRE_FACING)
+                             or (lz is None and abs(facing) <= READY_FIRE_FACING)):
             fire, gate = True, "point blank"
         elif not ready and level and dist < READY_FIRE_R and abs(facing) <= READY_FIRE_FACING:
             # a Majini at arm's length in front while the gun comes up (or through hit recovery): the trigger is queued -
