@@ -1779,15 +1779,20 @@ class Bot:
             w["last_big"] = None
 
     def _rampage_gun(self, inv):
-        """The shotgun, else the magnum, on a D-pad slot: (its inventory slot, family) or (None, None)."""
+        """Prefer the gun already in hand within each family; avoid swapping equivalent shotguns."""
         from . import re5_weapons
-        best = (None, None)
-        for fam in RAMPAGE_FAMILIES:
+        for fam in RAMPAGE_FAMILIES:                     # (the magnum first: the flashbang's rush wants it too)
+            candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
-                if s_.get("type") == 1 and s_.get("grid") in QUICK and spec is not None and spec.family == fam:
-                    return s_, fam
-        return best
+                if s_.get("type") == 1 and spec is not None and spec.family == fam \
+                        and (s_.get("hand") or s_.get("grid") in QUICK):
+                    if s_.get("hand"):
+                        return s_, fam
+                    candidates.append(s_)
+            if candidates:
+                return candidates[0], fam
+        return None, None
 
     def _rampage(self, p, live, flat, snap, now):
         """Anyone on his level within RAMPAGE_R: the gun up, the trigger down, the nearest inside held (above)."""
@@ -1803,20 +1808,7 @@ class Bot:
         inv = snap.get("inventory") or ()
         held = next((s_ for s_ in inv if s_.get("hand")), None)
         if not ring:
-            if self._ramp is not None:                   # the circle is clear: the main gun back when the gun is down
-                self._restore, self._ramp = self._ramp.get("main"), None
-            if self._restore is not None and self.aim_since is None and held is not None \
-                    and held.get("item") != self._restore and now - self._swap_at >= SWAP_GAP_S:
-                back = next((s_ for s_ in inv if s_.get("item") == self._restore and s_.get("grid") in QUICK), None)
-                self._swap_at = now
-                if back is None:
-                    self._restore = None
-                    return None
-                self.stats["rampage_swaps"] += 1
-                self.doing, self.why = "raise", "the circle clear: the main gun back"
-                return {"hold": (QUICK[back["grid"]],)}
-            if held is not None and held.get("item") == self._restore:
-                self._restore = None
+            self._ramp, self._restore = None, None       # keep the equipped gun when the circle clears
             return None
         kills = snap.get("kills")
         if self._ramp is None:
