@@ -187,6 +187,11 @@ class Mines:
         (Majini-within-TRIGGER_CM) never fired and he stood in it. The bomb he just placed is skipped: the retreat
         state machine (place -> settle -> retreat) already walks him away from that one at RETREAT_CM; the danger is
         the *other* bombs still down when he drifts back into their radius on a later cycle.
+
+        Also used mid-cycle (place/settle/retreat): the cluster's remaining incidents (2026-10-31, rate 1.131 vs
+        baseline 0.833) show held=['zl'] - the bot was mid-place (bomb in hand) when the blast hit him. The idle-only
+        _clear never fires during a cycle, so he stands in an old bomb's blast while placing a new one. This guard
+        aborts the cycle and runs him out before the detonation.
         """
         pos = p["pos"]
         in_blast, reason = False, None
@@ -216,6 +221,29 @@ class Mines:
             self.stats["mine_status"] = reason
             return self._run(p, live, b)
         self.clear_from = None
+        return None
+
+    def _clear_mid_cycle(self, p: dict, live: list) -> dict | None:
+        """Mid-cycle guard (place/settle/retreat): if the bot is in an OLD bomb's blast, abort the cycle and run out.
+
+        The cluster's remaining incidents (2026-10-31): held=['zl'] means the bot was mid-place (bomb in hand) when
+        the blast hit him. The idle-only _clear never fires during a cycle, so he stands in an old bomb's blast while
+        placing a new one. This check aborts the place/settle/retreat and runs him out before the detonation.
+        The bomb he just placed (last_pos) is skipped - the retreat state machine already handles that one.
+        """
+        pos = p["pos"]
+        for ptr, b in self.bombs.items():
+            if self.last_pos is not None and b == self.last_pos:
+                continue
+            if flat(pos, b) >= BLAST_CM:
+                continue
+            # He is in an old bomb's blast mid-cycle: abort and run out.
+            if self.clear_from != ptr:
+                self.clear_from = ptr
+                self.stats["mine_clear_runs"] += 1
+            self.state, self.t = "retreat", p.get("t", 0.0)
+            self.stats["mine_status"] = "in an old bomb's blast mid-cycle: aborting and running out"
+            return self._run(p, live, b)
         return None
 
     def tick(self, p: dict, snap: dict, live: list, now: float, *, busy: bool = False) -> dict | None:
@@ -258,6 +286,9 @@ class Mines:
                 return None
             return {"hold": ()}
         if self.state == "place":
+            mid = self._clear_mid_cycle(p, live)
+            if mid is not None:
+                return mid
             self.saw_place = self.saw_place or p.get("motion") == MOTION_PLACE
             spent = mine is None or (self.count0 is not None and (mine.get("rounds") or 0) < self.count0)
             new = [g for g in snap.get("ground_mines") or ()
@@ -284,6 +315,9 @@ class Mines:
                 return {"hold": ()}
             return {"hold": ("zl",)} if now - self.t < PRESS_S else {"hold": ()}
         if self.state == "settle":                        # the placing motion: he cannot move until it ends
+            mid = self._clear_mid_cycle(p, live)
+            if mid is not None:
+                return mid
             if p.get("motion") == MOTION_PLACE and now - self.t < SETTLE_S:
                 return {"hold": ()}
             self.state, self.t = "retreat", now

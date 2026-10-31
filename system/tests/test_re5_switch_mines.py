@@ -356,3 +356,45 @@ def test_incident_replay_runs_out_of_own_bombs_blast_from_the_recorded_fields():
     assert b.doing == "mine" and act["hold"][:2] == MN.RUN
     assert b.stats["mine_clear_runs"] == 1
     assert b.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+
+
+def test_mid_cycle_guard_aborts_place_when_in_old_bomb_blast():
+    # #5068 third fix: the cluster's remaining incidents (2026-10-31, rate 1.131 vs baseline 0.833) show
+    # held=['zl'] - the bot was mid-place (bomb in hand) when the blast hit him. The idle-only _clear never
+    # fires during a cycle, so he stands in an old bomb's blast while placing a new one. This guard aborts
+    # the place cycle and runs him out before the detonation.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # An old bomb from a previous cycle, 300 cm from him (inside BLAST_CM=800)
+    old_bomb = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
+    m.bombs = {0x77: (300.0, 0.0, 0.0)}
+    m.last_pos = None  # no recent placement
+    # He is at origin, mid-place cycle (bomb in hand, held=['zl'])
+    live = []  # no Majini
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, live)
+    assert act is not None
+    assert act["hold"][:2] == MN.RUN
+    assert m.stats["mine_clear_runs"] == 1
+    assert m.state == "retreat"
+    assert m.stats["mine_status"] == "in an old bomb's blast mid-cycle: aborting and running out"
+
+
+def test_mid_cycle_guard_skips_the_bomb_just_placed():
+    # The bomb he just placed (last_pos) is skipped by the mid-cycle guard - the retreat state machine
+    # already handles that one.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # The bomb he just placed is 300 cm from him (inside blast), but last_pos points to it
+    m.bombs = {0x77: (300.0, 0.0, 0.0)}
+    m.last_pos = (300.0, 0.0, 0.0)  # this is the one he just placed
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, [])
+    assert act is None  # skipped: last_pos matches
+
+
+def test_mid_cycle_guard_fires_outside_blast_radius():
+    # No guard when outside BLAST_CM.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    m.bombs = {0x77: (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, [])
+    assert act is None
