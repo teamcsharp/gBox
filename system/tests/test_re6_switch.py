@@ -939,11 +939,11 @@ def test_dying_at_one_health_he_presses_for_a_tablet_and_counts_whether_it_took(
     assert bot.stats["tablet_dying_taken"] == 1 and bot.stats["dyings"] == 1 and bot.dying_since is None
 
 
-def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks():
+def test_a_crowd_keeps_the_gun_up_and_crowd_control_backs_out_as_it_attacks():
     four = ((0.0, 0.0, 120.0, 700), (100.0, 0.0, 200.0, 700), (-100.0, 0.0, 220.0, 700), (0.0, 0.0, 280.0, 700))
     bot, clock, snap = brain(round_guest(enemies=four, hp=740, cam_yaw=0.0))   # 82 % with four within 3 m
     bot.held = lambda p, now: False
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # a tablet already
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                        # #5051: no tablet in a crowd
     bot, clock, snap = brain(round_guest(enemies=four, cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 12)
@@ -2385,7 +2385,7 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     bot, clock, snap = brain(round_guest(hp=560, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # above 60 %: none
     bot, clock, snap = brain(round_guest(hp=500, enemies=((0.0, 0.0, 120.0, 700),), cam_yaw=0.0))
-    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # one at arm's length: a tablet anyway
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # #5051: one at arm's length: no tablet in a crowd
     bot, clock, snap = brain(round_guest(hp=400, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))

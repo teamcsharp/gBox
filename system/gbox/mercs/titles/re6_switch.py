@@ -3692,11 +3692,16 @@ class Bot:
         eq = p.get("equipped")
         if (p.get("bomb") or {}).get("out") or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.nade is not None:
             return None
+        # #5051: a crowd check for the heal prompt (the tablet gate above already has one; this one needs it too)
+        crowd = sum(1 for e in (snap.get("enemies") or ()) if e.get("hp", 0) > 0
+                    and math.hypot((e.get("pos") or (0, 0, 0))[0] - p["pos"][0],
+                                   (e.get("pos") or (0, 0, 0))[2] - p["pos"][2]) < CROWD_R)
         for q in shown:
             key, live = q.get("key"), self.prompt_live[(q["ab"], q["type"])]
             hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
             heal = (key == "r" and hp_max and 1 < hp <= TABLET_LOW_HP * hp_max and not self.down
-                    and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S)
+                    and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S
+                    and crowd == 0)   # #5051: no tablet tap in a crowd, prompt or not
             if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
                     or now - live["at"] < PROMPT_REPEAT_S):
                 continue
