@@ -1567,6 +1567,10 @@ DEAD_WAIT_S = 2.5                       # "YOU ARE DEAD - CONTINUE?" takes input
 RELOAD_GAP_S = 1.5
 TABLET_HP, TABLET_CLEAR_R, TABLET_GAP_S = 0.6, 150.0, 3.0   # a tablet (R) at 60 % health or less while he is free,
 TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs out (re6_switch_mods.infinite_tablets);
+TABLET_CROWD_HOLD_S = 1.5               # the gun stays down this long after a tablet spent in a crowd (cluster)
+CROWD_HOLD_BACK_N, CROWD_HOLD_BACK_R = 3, 600.0   # this many within this: the crowd_hold retreat walks the open
+                                                   # heading, not the camera's back (cluster crowd_gun_down: a ldown
+                                                   # into them)
                                         # MercMode's RE6 turn of 2026-10-27 09:29-09:43 took 1 tablet in 8.5 min under
                                         # the old 50 % / nobody-within-1.5 m rule and died 4 times after runs of bites
 # Crowd control (operator 2026-10-27: "when zombies are up close in re6, do a series of quick attacks to deal with them
@@ -2176,6 +2180,7 @@ class Bot:
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when, health) after an R press, until it falls
         self.heal_gain, self.heal_chain = None, False        # a tablet's learned gain; eating on to the top (HEAL_FILL)
+        self.tablet_hold_until = -1e9                         # gun stays down this long after a crowd tablet (cluster)
         self._zl_at = -1e9                                   # when ZL was last held
         self.tablet_dying, self.dying_since = False, None    # that press made while dying; dying since when
         self.keeping_off = False
@@ -2204,6 +2209,7 @@ class Bot:
         self._pulls: list = []                    # pulls ended, waiting out HIT_S: [{target, end, hit, entry}]
         self._dropped: set = set()                # the zombies whose health fell this tick
         self._raise_t = None                      # when the gun went up for the pull to come (first_pull_s)
+        self.crowd_hold_back = None               # the open escape heading for a crowd_hold retreat (None: none computed)
         self._aimctx: dict = {}
         # remote bombs: the step under way (equip / face / aim / throw / thrown / wait / det_aim / det / det_wait)
         self.bomb_phase, self.bomb_phase_at, self.bomb_steps = None, -1e9, 0
@@ -2724,6 +2730,7 @@ class Bot:
         self._hazard_tick(p, live, flat, now)
         self._prompt_shown = self._prompt_book(p, snap, now)
         self._lock_tick(snap, now)
+        self.crowd_hold_back = self._open_heading(p, live) if sum(1 for e in live if flat(e) <= CROWD_HOLD_BACK_R) >= CROWD_HOLD_BACK_N else None   # the open escape heading for the crowd_hold retreat (cluster crowd_gun_down)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
         self.stats["max_within_4m"] = max(self.stats["max_within_4m"], within)
         if within >= SURROUND_N and not self.surrounded:
@@ -3083,6 +3090,8 @@ class Bot:
             if self.tablet_wait is None:
                 self.tablet_wait = (p.get("tablets"), now, hp)
             self.heal_chain = True                               # a burst: tapped on until full enough (topping)
+            if sum(1 for e in live if flat(e) <= CC_CROWD_R) >= CC_BACK_N:   # a crowd around him: the gun stays
+                self.tablet_hold_until = now + TABLET_CROWD_HOLD_S           # down a moment after it (cluster)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
         taunt = self._taunt(p, live, flat, now)
@@ -3164,12 +3173,15 @@ class Bot:
                 self.stats["quick_shots"] += 1
                 self.qshot_release = True
                 return self._go("quick_shot", "quick_shot", {"hold": ("zl", "zr")}, f"one at {dist:.0f} cm: quick shot")
-            if now < self.crowd_hold_until:
-                # the crowd_4_in_2m signature is still active: keep the gun down, back out instead of raising
+            if now < self.crowd_hold_until or now < self.tablet_hold_until:
+                # the crowd_4_in_2m signature is still active (or a crowd tablet was just spent): keep the
+                # gun down, back out instead of raising - along the open escape heading (the cluster crowd_gun_down:
+                # a ldown walked into the crowd)
                 self._gun_down()
                 self.stats["cc_backouts"] = self.stats.get("cc_backouts", 0) + 1
-                return self._go("crowd", "crowd_hold", {"hold": ("ldown",)},
-                                "the crowd_4_in_2m cluster is still close: the gun stays down")
+                hold = self._stick(self.crowd_hold_back, self._cam_yaw) if self.crowd_hold_back is not None else ("ldown",)
+                return self._go("crowd", "crowd_hold", {"hold": hold},
+                                "the crowd_4_in_2m cluster is still close: the gun stays down, out along the way")
             self.aim_since, self._raise_t, self.reraised = now, now, False   # a zombie in front: the gun comes up
         keep_off = (crowd >= CROWD_N or near < KEEP_R             # he steps back while he fires
                     or sum(1 for e in live if flat(e) < CC_BACK_R) >= CC_BACK_N)
