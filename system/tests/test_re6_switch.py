@@ -537,6 +537,28 @@ def test_a_bomb_out_he_backs_off_it_and_kicks_the_ones_on_him_in_the_same_ticks_
     assert all("zr" not in a.get("hold", ()) for a in acts)                   # never set off inside 7 m, however long
 
 
+def test_drift_into_blast_radius_during_det_aim_holds_the_trigger_not_fires():
+    """When the player drifts into the blast's safe radius during the det_aim hold, the bot holds ZL
+    (not ZL+ZR) so the bomb does not set off and damage him — the bomb_act_damage cluster fix."""
+    bot, clock, snap = bomb_out(((40.0, 0.0, 300.0, 700), (-40.0, 0.0, 320.0, 700)))
+    # He starts clear of the bomb (7 m away = safe distance)
+    snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - R.BOMB_SELF_R - 50.0)
+    # Start the det_aim phase: two zombies on the bomb trigger detonation
+    acts = run(bot, snap, clock, 3)
+    # He should be in det_aim now (ZL held, aiming at the bomb)
+    assert bot.bomb_phase == "det_aim", f"phase={bot.bomb_phase}"
+    # Now he drifts back into the blast radius during the aim hold
+    snap["player"]["pos"] = (0.0, 0.0, R.BOMB_AHEAD - 200.0)  # 2 m from bomb, well inside safe
+    acts = run(bot, snap, clock, int(R.BOMB_AIM_S / 0.05) + 3)
+    # The ZL+ZR (detonation) frame must never appear — the trigger was held, not fired
+    assert not any(set(a.get("hold", ())) >= {"zl", "zr"} for a in acts), \
+        f"ZL+ZR fired despite drift: acts={acts}"
+    assert bot.stats["bomb_det_holds"] >= 1, \
+        f"bomb_det_holds not incremented: stats={bot.stats.get('bomb_det_holds')}"
+    # He should still be in det_aim (not transitioned to det)
+    assert bot.bomb_phase in ("det_aim", "wait"), f"phase={bot.bomb_phase}"
+
+
 def test_the_placed_bombs_own_spot_is_used_when_its_unit_is_found():
     g = round_guest(enemies=((0.0, 0.0, 3000.0, 700),))
     p = R.u64(g, R.u64(g, BASE + R.S_PLAYER) + R.P_FIRST)

@@ -1961,6 +1961,10 @@ def windup(e, me=None) -> str | None:
 # SURVIVAL_HP): survival - only the ones within CLOSE_R, backing away from the nearest, no long shots, no upward aim
 # (stats survival_s). stats up_aim_s: the camera's pitch over UP_AIM with no vertical threat (target 0).
 AIM_DY, CEILING_R, CLOSE_R, CLOSE_PITCH, SURVIVAL_HP, UP_AIM = 100.0, 0.0, 600.0, math.radians(8), 0.35, math.radians(20)
+TABLET_CRITICAL_HP = 0.30               # request #5060 (low_hp_heal_unused): the bot sat at or under 30 % health with a
+                                        # tablet in the case while the fight below (quick attacks, hot fire, bonus run) ran
+                                        # past the tablet rule at TABLET_LOW_HP. At or under this line the tablet fires
+                                        # before the combat: healing beats the fight when he is already half dead.
 # AIM_DY 100 / CLOSE_PITCH 8 deg (operator 2026-10-28: "why is it aiming up for no reason? ... It causes losing"; live
 # Rail Yard: the lock wrote +18 deg at one 2.7 m off on a container 1.3 m up, AIM_DY 180 had him on his level and the
 # pitch guard's floor of 15 deg let it): his level is within 1 m, and the lock's pitch for one on it stays under 13 deg.
@@ -2951,6 +2955,23 @@ class Bot:
                 return out
         if self.down:
             return self._down_fight(p, snap, now)
+        # request #5060 (low_hp_heal_unused): at or under TABLET_CRITICAL_HP with a tablet in the case, the tablet fires
+        # before the fight below. The cluster's 63 hits and 6 deaths sit at 30 % or less while the quick attacks, hot
+        # fire and bonus run ran past the tablet rule at TABLET_LOW_HP. Healing beats the fight when he is already half
+        # dead; the normal tablet rule (TABLET_LOW_HP 60 %) still governs the healthier band above.
+        hp_crit, hp_crit_max = p.get("hp") or 0, p.get("hp_max") or 0
+        if (hp_crit_max and hp_crit > 1 and hp_crit <= TABLET_CRITICAL_HP * hp_crit_max
+                and (p.get("tablets") or 0) > 0 and p.get("state") in (0, None)
+                and (self.tablet_wait is None) and now - self.tablet_at >= TABLET_GAP_S):
+            self._gun_down()
+            if now - self._zl_at < TABLET_LOWER_S:
+                return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")
+            self.tablet_at = now
+            self.tablet_wait = (p.get("tablets"), now, hp_crit)
+            self.heal_chain = True
+            self.stats["tablet_presses"] += 1
+            self.stats["tablet_critical_presses"] = self.stats.get("tablet_critical_presses", 0) + 1
+            return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp_crit}/{hp_crit_max}: a tablet (critical)")
         # shoot first (operator 2026-10-28: "just have the bot firing on the enemy like mad if they are in the vicinity of
         # them ... I need him mainly shooting"): one in sight on his level within FIRE_ZONE_R - no bonus run, no green
         # detour, the fight below (stats fire_zone_s)
@@ -4915,6 +4936,15 @@ class Bot:
         if self.bomb_phase in ("aim", "det_aim"):
             if now - self.bomb_phase_at < BOMB_AIM_S:
                 return self._go("bomb", tag, {"hold": ("zl",)}, "the remote readied" if detonate else "the bomb readied")
+            if self.bomb_phase == "det_aim" and detonate and p is not None:
+                # He drifted into the blast's reach since the det_aim check: hold the trigger, not fire it
+                at = self.bomb_at
+                if at is not None:
+                    me = math.hypot(p["pos"][0] - at[0], p["pos"][2] - at[1])
+                    if me < self.book.safe:
+                        self.stats["bomb_det_holds"] += 1
+                        return self._go("bomb", "bomb_det_hold", {"hold": ("zl",)},
+                                        f"drifted to {me:.0f} cm ({self.book.safe:.0f} safe): the gun holds")
             self.bomb_phase, self.bomb_phase_at = ("det" if detonate else "throw"), now
             return self._go("bomb", tag, {"hold": ("zl", "zr")}, "the bomb set off" if detonate else "the bomb thrown")
         if self.bomb_phase in ("throw", "det"):
