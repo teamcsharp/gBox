@@ -348,6 +348,9 @@ COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
 # of the best (+ THREAT_KEEP_CM); one within GRAB_THREAT_R wins unless the current one is that near too.
 THREAT_FIRST, THREAT_NEAR_R, THREAT_CAP_R = True, 400.0, 800.0
 APPROACH_LEAD_S, APPROACH_EMA, TURN_W, THREAT_KEEP, THREAT_KEEP_CM = 0.6, 0.5, 0.5, 1.25, 25.0
+BEHIND_PENALTY = 0.4                       # within BEHIND_R, a Majini behind (his heading + 90 to - 90) scores
+                                           # d x BEHIND_PENALTY: lower than the one in front at the same distance,
+                                           # so the threat pick turns to him first (damage cluster c5ad7896)
 # Pitch up (the same watch: "I will randomly see them point just up in the air"): every aimed tick with the laser more
 # than PITCH_UP_LOG above level is counted with its cause - the target itself that high (pitch_up_target_high), the gun
 # just raised (pitch_up_raise: the camera's old pitch), the target just changed (pitch_up_retarget), else
@@ -2269,12 +2272,20 @@ class Bot:
         self._appr = seen
 
     def _threat_d(self, p, e) -> float:
-        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him."""
+        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him.
+        Within BEHIND_R the turn cost is replaced by a behind penalty (BEHIND_PENALTY): a Majini closing from behind
+        scores lower (more urgent) than one at the same distance in front, so the threat pick turns to him before he
+        grabs (damage cluster c5ad7896: 'one 2.0 m behind' kept losing to the one in front)."""
         px, _, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         v = (self._appr.get(e.get("ptr", e.get("slot"))) or (0.0, 0.0, 0.0))[2]
-        turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) if d > BEHIND_R else 0.0
-        return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+        err = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
+        if d > BEHIND_R:
+            turn = err
+            mult = 1.0 + TURN_W * turn / math.pi
+        else:
+            mult = BEHIND_PENALTY if err > math.pi / 2 else 1.0
+        return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * mult
 
     @staticmethod
     def _threat_near(p, live) -> bool:

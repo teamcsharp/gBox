@@ -576,3 +576,83 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
                       "owner": 1, "target": 0}
     b2.tick(snap)
     assert b2.doing == "held"                                         # the game's Break free: the grab
+
+
+def test_threat_d_behind_penalty_scores_close_behind_more_urgent():
+    """Within BEHIND_R, a Majini behind (bearing > 90 deg) gets a BEHIND_PENALTY multiplier, so _threat_pick
+    prefers him over a front Majini at the same distance - the damage cluster's cause: the one behind kept
+    losing the threat pick and grabbed the bot."""
+    import math as m
+    b, _ = brain()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    # Enemy directly behind (bearing = pi), distance 200 cm
+    behind = {"ptr": 1, "pos": (0.0, 0.0, -200.0), "hp": 800}
+    # Enemy directly in front (bearing = 0), distance 200 cm
+    front  = {"ptr": 2, "pos": (0.0, 0.0,  200.0), "hp": 800}
+    d_behind = b._threat_d(p, behind)
+    d_front  = b._threat_d(p, front)
+    assert d_behind < d_front, f"behind={d_behind:.1f} should be more urgent (lower) than front={d_front:.1f}"
+    # The penalty: behind scores d * BEHIND_PENALTY, front scores d * 1.0
+    assert abs(d_behind - 200.0 * R.BEHIND_PENALTY) < 0.01
+    assert abs(d_front  - 200.0) < 0.01
+
+
+def test_threat_d_behind_penalty_ignores_enemies_in_front():
+    """A Majini in front (bearing < 90 deg) within BEHIND_R gets no penalty: his score is just d."""
+    b, _ = brain()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    # Enemy at bearing 60 deg (in front), distance 200 cm
+    e = {"ptr": 1, "pos": (100.0, 0.0, 173.2), "hp": 800}   # ~60 deg off +z
+    d = b._threat_d(p, e)
+    assert abs(d - 200.0) < 1.0, f"in-front score should be ~d, got {d:.1f}"
+
+
+def test_threat_pick_prefers_behind_within_range(monkeypatch):
+    """_threat_pick with THREAT_FIRST on: the Majini behind wins over a front one at the same distance,
+    so the bot turns to him before he can grab (the cluster's incident pattern)."""
+    b, _ = brain()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    behind = {"ptr": 1, "pos": (0.0, 0.0, -200.0), "hp": 800}
+    front  = {"ptr": 2, "pos": (0.0, 0.0,  200.0), "hp": 800}
+    b._appr = {}
+    pick = b._threat_pick(p, [front, behind], cur=None, now=0.0)
+    assert pick is behind, f"expected the behind Majini (ptr=1), got {pick.get('ptr')}"
+
+
+def test_threat_pick_front_wins_when_behind_is_far():
+    """When the behind Majini is beyond BEHIND_R, the old turn-cost formula applies and a front Majini
+    at the same distance can win the pick."""
+    b, _ = brain()
+    p = {"pos": (0.0, 0.0, 0.0), "rot": 0.0}
+    # Behind at 500 cm (beyond BEHIND_R=300): turn cost = 1 + TURN_W * pi / pi = 1.5, score = 500 * 1.5 = 750
+    behind = {"ptr": 1, "pos": (0.0, 0.0, -500.0), "hp": 800}
+    # Front at 200 cm: score = 200
+    front  = {"ptr": 2, "pos": (0.0, 0.0,  200.0), "hp": 800}
+    b._appr = {}
+    pick = b._threat_pick(p, [front, behind], cur=None, now=0.0)
+    assert pick is front, f"expected the front Majini (ptr=2) to win, got {pick.get('ptr')}"
+
+
+def test_incident_replay_re5_switch_grabbed_from_behind():
+    """Replay the c5ad7896554a076e incident fixture: the bot was grabbed from behind while wiggling to break
+    free. The replay confirms the wiggle decision is preserved and the behind-threat penalty makes the bot
+    turn to the close Majini behind before he can grab again when free."""
+    import json
+    from pathlib import Path
+    from gbox.mercs import incident_replay
+
+    fx = json.loads((Path(__file__).parent / "fixtures" / "mercs_incidents"
+                     / "re5_switch_c5ad7896554a076e.json").read_text())
+    result = incident_replay.replay(fx, ticks=10)
+    assert len(result["ticks"]) == 10
+    # The bot was grabbed (motion 107) and should wiggle to break free on every tick
+    for i, t in enumerate(result["ticks"]):
+        act = t.get("act") or {}
+        hold = set(act.get("hold", ()))
+        assert "lleft" in hold or "lright" in hold, \
+            f"tick {i}: expected wiggle (lleft/lright), got hold={hold}"
+        assert "zr" not in hold, \
+            f"tick {i}: should not be aiming while grabbed, got hold={hold}"
+    # Deterministic: two replays give the same sequence
+    second = incident_replay.replay(fx, ticks=10)
+    assert [t["act"] for t in result["ticks"]] == [t["act"] for t in second["ticks"]]
