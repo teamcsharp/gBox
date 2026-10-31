@@ -309,6 +309,7 @@ QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(120), 1.5, 0.3   # him beh
                                          # (left stick back, then B: 180 deg in 0.3 s, measured; the stick takes ~1.1 s)
 HIT_S = 0.4                              # a Majini's health falls within this of the shot that hit him
 GRAB_R, GRAB_S = 120.0, 0.6
+GRAB_FRONT_R, GRAB_FRONT_CONE = 50.0, math.radians(40)  # one this near, in this cone in front, is about to grab: sidestep
 STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he neither turns nor moves: held (a Majini holds
                                          # him for another's swing; his health does not fall): break free this long
 COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
@@ -3910,6 +3911,18 @@ class Bot:
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
+            # A close Majini is a grab threat at any angle: the cone widens quadratically as the
+            # range shrinks (the grab reach is roughly the arm's length regardless of angle).
+            # GRAB_FRONT_CONE (40 deg) at GRAB_FRONT_R (50 cm); the cone widens quadratically as the
+            _cone = min(math.pi, GRAB_FRONT_CONE * (GRAB_FRONT_R / max(near, 40.0)) ** 2) \
+                   if near <= GRAB_FRONT_R else GRAB_FRONT_CONE
+            _cone_t = min(math.pi, GRAB_FRONT_CONE * (GRAB_FRONT_R / max(dist, 40.0)) ** 2) \
+                      if dist <= GRAB_FRONT_R else GRAB_FRONT_CONE
+            if (near <= GRAB_FRONT_R and abs(near_err) <= _cone) \
+               or (dist <= GRAB_FRONT_R and abs(body_err) <= _cone_t):
+                self.doing, self.why = "sidestep", f"one {min(near, dist) / 100:.1f} m in front (grab risk)"
+                side = "lup" if self._kite_side > 0 else "ldown"
+                return {"hold": (side,) + self._turn(body_err, TURN_TOL)}
             tol = self.raise_tol(dist) * (RERAISE_FRAC if piece(SMOOTH_FAR) and self.turning and near > THREAT_R else 1.0)
             if abs(body_err) > tol:                          # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
