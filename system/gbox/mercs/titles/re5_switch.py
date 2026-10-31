@@ -465,6 +465,7 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # shot motion). unload_s: the trigger down off a confirmed body.
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
 UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = True, math.radians(8), 0.4, 0.2
+UNLOAD_WIDE_CM, UNLOAD_TALL_CM = 54.0, 55.0   # re5_switch_aim's final gate: his body's extent from the chest aim point
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
@@ -723,6 +724,7 @@ KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 /
 # the gun comes back first (Bot._gun_back)
 THROWN = frozenset({0x06, 0x07, 0x08, 0x0A})
 GUN_BACK_GAP_S = 0.6                     # between D-pad taps for the gun (a neutral pad before each)
+NATIVE_EQUIP_GIVEUP_S = 2.0              # a native weapon request not done by then: the D-pad tap / the gun in hand
 # The proximity bombs on the ground (live 2026-10-27, private Citron): each placed bomb is a unit of class uWp0a on
 # sUnit's move line 11, its position at +0x60 (E_POS), ~57 cm ahead of his feet; it leaves the line when it goes off.
 # Two more uWp0a units (the stack's own) sit elsewhere all round: a placed bomb is a NEW one near him.
@@ -3336,8 +3338,16 @@ class Bot:
         if primary and self.native_equip is not None:
             chosen = next((s for s in inv if s.get('grid') == 0 and s.get('item') == primary['item']), None)
             if chosen is not None and not chosen.get('hand'):
-                self.native_equip.select(0, chosen['id'])
-                return {'hold': ()}
+                res = self.native_equip.select(0, chosen['id']) or {}
+                if getattr(self, '_primary_want', (None, 0.0))[0] != chosen['id']:
+                    self._primary_want = (chosen['id'], now)
+                # the operator's gun while its native request can still finish; a failed or overdue one no longer
+                # holds him still (he fights with what he has, the D-pad slot below)
+                if res.get('state') not in ('unknown', 'refused', 'disabled') \
+                        and now - self._primary_want[1] <= NATIVE_EQUIP_GIVEUP_S:
+                    return {'hold': ()}
+            else:
+                self._primary_want = (None, 0.0)
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
                        and s.get("item") not in KNIVES and s.get("item") not in THROWN), None) if want else None
@@ -3458,6 +3468,7 @@ class Bot:
         if self.native_equip is None or snap.get('mercenaries_phase') != PHASE_PLAYING \
                 or ((snap.get('player') or {}).get('hp') or 0) <= 0 \
                 or self.doing not in ('rearm', 'raise', 'heal', 'mine', 'flashbang'):
+            self._native_want = (None, 0.0)                  # the next request's NATIVE_EQUIP_GIVEUP_S starts afresh
             return act
         from .re5_switch_equip import SUPPORTED_IDS
         keys = set(act.get('hold') or ()) | ({act['tap']} if act.get('tap') else set())
@@ -3467,7 +3478,17 @@ class Bot:
         rows = [row for row in snap.get('inventory') or () if row.get('grid') == grids[0]]
         if len(rows) != 1 or rows[0].get('id') not in SUPPORTED_IDS:
             return act  # healing items have a separate, unverified lifecycle
-        self.native_equip.select(grids[0], rows[0]['id'])
+        res = self.native_equip.select(grids[0], rows[0]['id']) or {}
+        # A native request that cannot finish hands the slot back to the D-pad tap: one unconfirmed request made every
+        # later one of that gun this life "previous_request_unconfirmed", and the swallowed tap left him standing with
+        # a bomb in hand (rearm 85 s, 143 taps, Ship Deck 2026-10-31).
+        want = (grids[0], rows[0]['id'])
+        if getattr(self, '_native_want', (None, 0.0))[0] != want:
+            self._native_want = (want, self._now if self._now is not None else 0.0)
+        if res.get('state') in ('unknown', 'refused', 'disabled') \
+                or (self._now is not None and self._now - self._native_want[1] > NATIVE_EQUIP_GIVEUP_S):
+            self.stats['native_equip_fallbacks'] = self.stats.get('native_equip_fallbacks', 0) + 1
+            return act
         return {'hold': ()}
 
     def _tick(self, snap: dict, now: float) -> dict:

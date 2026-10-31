@@ -123,7 +123,9 @@ def test_close_target_uses_actual_low_offset_muzzle_not_nominal_camera_height():
     s['laser'] = {'up': True, 'from': (30, 80, 50), 'at': (30, 80, 5000)}
     act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .05)
     assert writes[-1][0] > 0 and writes[-1][1] < 0
-    assert 'zr' not in act['hold']
+    # 1.5 m away the low ray crosses his hips inside his body's extent: his personal area is unloaded on while the
+    # camera closes (operator 2026-10-31); without UNLOAD the old body-window gate still holds it
+    assert 'zr' in act['hold'] and bot.stats['target_feedback_unloads'] == 1
 
 
 @pytest.mark.parametrize('dt', [0., -.1, .001, .01, .05, 1.])
@@ -211,3 +213,44 @@ def test_closed_loop_converges_with_extra_frames_and_aim_speed(aim_speed):
         heading += aim_speed*.01*(('rleft' in act['hold'])-('rright' in act['hold']))
     assert abs(heading) < .001
     assert pitch == pytest.approx(math.atan2(R.CHEST_H-140,300), abs=.001)
+
+
+
+def _chest_pitch(distance):
+    return math.atan2(R.CHEST_H - 140, distance)
+
+
+def test_personal_area_unloads_on_his_body_and_keeps_correcting():
+    """Operator 2026-10-31: surrounded, he stood aiming (target_feedback_fire_blocks 445-1211 a run). A target within
+    RAMPAGE_R, the gun up and the ray reaching him: the trigger is down on his body's extent while the camera closes."""
+    bot, writes = controller()
+    s = scene(pitch=_chest_pitch(300), heading=math.radians(9), distance=300)     # outside the old 6.8 deg window
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold'] and bot.stats['target_feedback_unloads'] == 1
+    assert writes and abs(writes[-1][1]) < math.radians(9)          # still steering onto his chest
+
+
+def test_arm_length_with_the_aim_over_his_chest_fires():
+    """The live case: a Majini 1.2 m away, the camera level, his chest 14 deg below the aim (the old gate's 10 deg)."""
+    bot, _ = controller()
+    act = F.apply(bot, scene(pitch=0, distance=120), {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold']
+
+
+@pytest.mark.parametrize('heading,pitch,distance,short', [(14, None, 300, False), (5, None, 700, False),
+                                                          (5, None, 300, True), (0, 40, 120, False)])
+def test_personal_area_never_fires_off_his_body_beyond_five_m_or_into_a_wall(heading, pitch, distance, short):
+    bot, _ = controller()
+    s = scene(pitch=_chest_pitch(distance) if pitch is None else math.radians(pitch),
+              heading=math.radians(heading), distance=distance)
+    if short:
+        s['laser']['at'] = (0., 140., 120.)                         # the ray stops 1.2 m out: a wall before him
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .3)
+    assert 'zr' not in act['hold']
+
+
+def test_personal_area_unload_is_off_with_unload(monkeypatch):
+    monkeypatch.setattr(R, 'UNLOAD', False)
+    bot, _ = controller()
+    act = F.apply(bot, scene(pitch=_chest_pitch(300), heading=math.radians(9), distance=300), {'hold': ('zl',)}, .3)
+    assert 'zr' not in act['hold']
