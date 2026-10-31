@@ -1679,6 +1679,8 @@ KITE_N, KITE_R, KITE_SCAN_R, KITE_DIRS = 3, 800.0, 900.0, 16   # (6 m until 20:4
 #   tablet_prompt_presses): the game shows it when it will take the tablet.
 ESCAPE_FIGHT_R, FLASH_NEAR_N, FLASH_NEAR_R = 250.0, 3, 350.0
 QT_BEHIND_R, QT_BEHIND_ERR = 300.0, math.radians(120)
+HIT_TURN_BLOCK_S = 0.8                    # a quick turn this soon after a blow: the one behind gets the bite (the
+                                          # grabbed_front batch's hits - the turn was committing to the one in front)
 # Confirmed-hit fire (operator 15:27: "if the ghidra hook is able to tell them if the shot they are lining up will hit
 # then have them take the shot. I love seeing the long shots"): the laser's ray ending on (or running through) any
 # living zombie fires at once, at any distance; with nobody within ENGAGE_R the gun comes up for one in front out to
@@ -2087,6 +2089,7 @@ class Bot:
         self.combo_prev, self.combo_urgent = 0, False
         self.surrounded = False                              # 8+ within 4 m last tick
         self._p, self._cam_yaw = None, 0.0
+        self._hit_at = None                                  # when the last blow landed (the frame's health fall)
         self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
         self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then
         self.pursuit = None                                  # the combo's pursuit under way: {since, kills}
@@ -2435,6 +2438,11 @@ class Bot:
             self._gun_down()
             return self._go("none", "no_player", {"hold": ()}, "no player (between rounds)")
         if (p.get("hp") or 0) <= 0:
+            hp_now = p.get("hp")
+            if self._tick_hp is not None and isinstance(hp_now, int) and hp_now < self._tick_hp:
+                self._hit_at = now                                 # the blow that emptied the bar (the grab's finisher)
+            self._tick_hp = hp_now if isinstance(hp_now, int) else self._tick_hp  # the bar's already empty: the
+            self._tick_at = now                                    # blow can't land twice (dead_wait ticks)
             self._gun_down()
             self.died = True
             if self.dead_since is None:
@@ -2463,6 +2471,8 @@ class Bot:
             self.stats["bomb_face_s"] = round(self.stats["bomb_face_s"] + min(now - self._tick_at, LOOK_STEP_MAX_S), 2)
         self._tick_hp, self._tick_at = hp_now if isinstance(hp_now, int) else self._tick_hp, now
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
+        if self._tick_hp is not None and isinstance(hp_now, int) and hp_now < self._tick_hp:   # a blow just landed:
+            self._hit_at = now                                                                 # the frame's damage
         self._round_start(snap, now)
         self._score_hits(snap, now)
         self._ppos = p["pos"]
@@ -2732,6 +2742,13 @@ class Bot:
             if chase is not None:
                 return chase
             return self._go("no_foes", "idle", {"hold": ()}, "no zombie alive within reach")
+        if ((p.get("hp") or 0) == 0 and (p.get("hp_max") or 0) > 0
+                and not (self.died or self.dead_since is not None)):      # the full bar gone at once (the grab's
+            self.quick = 0                                       # a normal loss falls through one by one): the ones
+            self.quick_at = now - QUICK_GAP_S                     # on him are already inside MELEE_R; the next quick
+            return self._go("crowd", "grab_kill_react",          # turn would chase the one behind (the batch's hits
+                           {"hold": ("ldown",)},                 # were mid-turn bites - the one behind got the turn,
+                         "hp 0 mid-fight: backing off (the grab that dropped him is on him)")
         cam = snap.get("camera")
         yaw = cam["yaw"] if cam else p["rot"]                    # without the camera: the body's heading stands in
         self._p, self._cam_yaw = p, yaw
@@ -2798,6 +2815,9 @@ class Bot:
                 # bites at ~216 cm, while the turn was still settling). The close ones are handled in place (the crowd
                 # control below: kick or quick shot, the camera turning to a flanker).
                 and not any(flat(e) <= MELEE_R for e in live)
+                and not (self._hit_at is not None
+                         and now - self._hit_at < HIT_TURN_BLOCK_S
+                         and sum(1 for e in live if flat(e) <= CC_R) >= 2)   # the grabbed_front batch's hits: a blow
                 and not any(flat(e) <= QT_BEHIND_R and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
                             < math.radians(60) for e in live) and now - self.quick_at > QUICK_GAP_S
                 and not self.down and p.get("equipped") != BOMB_INDEX
@@ -4423,6 +4443,8 @@ class Bot:
             bomb = round(math.hypot(px - self.bomb_at[0], pz - self.bomb_at[1]))
         log = self.stats.setdefault("death_log", [])
         log.append({"held": bool(self.in_hold), "doing": self.doing, "why": self.why[:80],
+                    "grabbed": self._hit_at is not None and now - self._hit_at < 1.0
+                               and sum(1 for d in near if d <= 200) >= 1,   # a blow within a second of the drop,
                     "lost_by_doing": doing_fall, "hp_3s": [h for _t, h, _d in self.hp_hist[::5]],
                     "near_2m": sum(1 for d in near if d <= 200), "near_4m": sum(1 for d in near if d <= 400),
                     "bomb_phase": self.bomb_phase, "bomb_cm": bomb})

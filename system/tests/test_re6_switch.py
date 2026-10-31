@@ -3086,3 +3086,46 @@ def test_held_prompt_gate_does_not_fire_when_no_hp_fall(monkeypatch):
     snap["player"]["hp"] = 900
     acts = run(bot, snap, clock, 2)
     assert bot.stats.get("grab_recoveries", 0) == 0
+
+
+def test_the_blow_flag_survives_to_the_death_log():
+    """The grabbed_front batch: a blow that emptied the bar (a full drop, the grab's finisher) names itself in the
+    death log - the blow's frame is still inside the second when _death reads it, so the flag survives the tick that
+    the death lands on. A normal loss (one fall at a time) leaves the flag down."""
+    front_and_back = ((0.0, 0.0, 60.0, 700), (0.0, 0.0, -280.0, 700))  # one on him in front, one behind at the turn's
+    bot, clock, snap = brain(round_guest(enemies=front_and_back, cam_yaw=0.0, tablets=0))  # reach (280 < 300)
+    run(bot, snap, clock, 1)                                            # warm: the gun comes up on the front one
+    bot._tick_hp = 900                                                  # the frame before the drop (a full bar)
+    bot._hit_at = clock[0] - 0.5                                        # the blow that emptied it, half a second ago
+    snap["player"]["hp"] = 0                                            # the grab's finisher (a full bar at once)
+    run(bot, snap, clock, 1)
+    dl = bot.stats.get("death_log") or []
+    assert dl and dl[0].get("grabbed") is True and dl[0]["near_2m"] >= 1
+
+
+def test_gradual_loss_is_not_named_a_grab():
+    """A normal fight loses health one fall at a time (hp 900 -> 899, no death): the grab flag never appears, so the
+    batch's count stays for the real full-bar grabs only."""
+    front_and_back = ((0.0, 0.0, 60.0, 700), (0.0, 0.0, -280.0, 700))
+    bot, clock, snap = brain(round_guest(enemies=front_and_back, cam_yaw=0.0, tablets=0))
+    run(bot, snap, clock, 1)
+    snap["player"]["hp"] = 899
+    run(bot, snap, clock, 1)
+    assert bot.doing != "grab_kill_react"
+    assert all(d.get("grabbed") is not True for d in bot.stats.get("death_log") or [])
+
+
+def test_the_blow_flag_survives_to_the_next_ticks():
+    """The grabbed_front batch's hits were mid-turn bites: a blow that emptied the bar (a full drop, the grab's
+    finisher) opens the HIT_TURN_BLOCK window that keeps the quick turn off while the crowd control takes the one on
+    him. The window's timing - set on the frame the fall lands, out after HIT_TURN_BLOCK_S - is what the quick-turn
+    gate reads."""
+    front_and_back = ((0.0, 0.0, 60.0, 700), (0.0, 0.0, -280.0, 700))  # one on him in front, one behind at the turn's
+    bot, clock, snap = brain(round_guest(enemies=front_and_back, cam_yaw=0.0, tablets=0))  # reach (280 < 300)
+    run(bot, snap, clock, 1)                                            # warm: the gun comes up on the front one
+    bot._tick_hp = 900                                                  # the frame before the drop (a full bar)
+    snap["player"]["hp"] = 0                                            # the grab's finisher (a full bar at once)
+    run(bot, snap, clock, 1)
+    assert bot._hit_at is not None and clock[0] - bot._hit_at < R.HIT_TURN_BLOCK_S   # the window is open
+    run(bot, snap, clock, 30)                                           # the window's out
+    assert bot._hit_at is None or clock[0] - bot._hit_at >= R.HIT_TURN_BLOCK_S
