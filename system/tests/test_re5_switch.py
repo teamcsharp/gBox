@@ -652,3 +652,133 @@ def test_critical_hp_with_a_heal_still_heals_instead_of_retreating():
     act = b.tick(snap)
     assert b.escape is None
     assert b.healing is not None or "heal" in str(b.stats.get("heal_status", "")) or act.get("tap") == R.QUICK[7]
+
+
+# --- fall-knockdown damage cluster (#5067) --------------------------------------------------------------------------
+
+def _snap_fall_knockdown(hp=300, hp_max=1000, enemy=(0.0, 0.0, 150.0), rot=0.0):
+    """A snapshot at 30% HP (below HEAL_AT 40%) with a live Majini within 2 m and an empty heal supply."""
+    return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": hp_max},
+            "enemies": [{"ptr": 1, "pos": enemy, "hp": 800, "hp_max": 800}],
+            "inventory": [{"id": 0x101, "type": 1, "item": 0x01, "rounds": 30, "grid": 1, "hand": True}]}
+
+
+def test_fall_knockdown_triggers_retreat_at_or_below_heal_at():
+    """At 30% HP (below HEAL_AT) with a Majini within 2 m and no heals: the bot retreats instead of idling."""
+    b, clock = brain()
+    act = b.tick(_snap_fall_knockdown())
+    assert "lup" in act["hold"] or "ldown" in act["hold"] or "rleft" in act["hold"] or "rright" in act["hold"]
+    assert "zl" not in act["hold"] and "zr" not in act["hold"]
+    assert b.escape is not None
+    assert b.stats["escapes"] == 1
+    assert "fall-knockdown" in str(b.stats.get("heal_status", ""))
+
+
+def test_fall_knockdown_above_heal_at_does_not_retreat():
+    """Above HEAL_AT (40%): no retreat — the fight loop engages normally."""
+    b, clock = brain()
+    act = b.tick(_snap_fall_knockdown(hp=450))   # 45%: above HEAL_AT
+    assert b.escape is None
+    assert b.stats.get("escapes", 0) == 0
+
+
+def test_fall_knockdown_with_distant_enemy_does_not_retreat():
+    """A Majini farther than 2 m at critical HP: the retreat requires a nearby threat."""
+    b, clock = brain()
+    act = b.tick(_snap_fall_knockdown(hp=300, enemy=(0.0, 0.0, 900.0)))
+    assert b.escape is None
+    assert b.stats.get("escapes", 0) == 0
+    assert "zl" in act.get("hold", ())
+
+
+def test_fall_knockdown_retreat_heads_away_from_nearest_threat():
+    """The retreat direction points away from the nearest live Majini."""
+    b, _ = brain()
+    # enemy at +x: run toward -x
+    act = b.tick(_snap_fall_knockdown(enemy=(300.0, 0.0, 0.0)))
+    assert "rleft" in act["hold"]
+    b2, _ = brain()
+    act2 = b2.tick(_snap_fall_knockdown(enemy=(-300.0, 0.0, 0.0)))
+    assert "rright" in act2["hold"]
+
+
+def test_fall_knockdown_retreat_is_bounded_and_lets_combat_resume():
+    """After the escape deadline the gun comes back up."""
+    b, clock = brain()
+    scene = _snap_fall_knockdown()
+    b.tick(scene)
+    deadline = b.escape[1]
+    for when in (0.1, 0.2):
+        clock[0] = when
+        b.tick(scene)
+        assert b.escape[1] == deadline and b.stats["escapes"] == 1
+    clock[0] = deadline + 0.1
+    scene["enemies"][0]["pos"] = (0.0, 0.0, 800.0)
+    act = b.tick(scene)
+    assert b.escape is None and b.stats["escapes"] == 1
+    assert "zl" in act.get("hold", ())
+
+# --- incident replay fixtures (#5067) -----------------------------------------------------------------------------
+# Each replay test feeds the recorded snapshot to a fresh Bot and asserts the fix holds in that exact scene.
+
+import json
+from pathlib import Path
+
+from gbox.mercs import incident_replay
+
+FIXTURES = Path(__file__).parent / 'fixtures' / 'mercs_incidents'
+
+ESCAPE_KEYS = {'lup', 'ldown', 'lleft', 'lright', 'rleft', 'rright'}
+
+
+def _replay(name, ticks=10):
+    fx = json.loads((FIXTURES / name).read_text())
+    return incident_replay.replay(fx, ticks=ticks)
+
+
+def test_replay_30pct_far_threat_does_not_retreat():
+    """30% HP, nearest live Majini 90.7 cm away: the retreat IS the correct response.
+    The fixture records hp_before=300 (the HP when the hit landed); the snapshot's
+    hp=0 is the post-hit value.  Patch the snapshot to the pre-hit HP so the bot
+    sees the critical-but-survivable state.  The bot must enter a bounded retreat
+    (escape set, escapes >= 1) because a Majini is within 2 m and HP <= HEAL_AT."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_30pct_far_threat.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 300/1000 = 30%
+    result = incident_replay.replay(fx, ticks=10)
+    keys = incident_replay.keys(result)
+    assert result['bot'].escape is not None, (
+        f'expected bounded retreat at 30% HP with Majini <2 m away; keys={sorted(keys)}')
+    assert result['bot'].stats.get('escapes', 0) >= 1, (
+        'retreat did not increment escapes')
+    # The retreat heads AWAY from the nearest threat: the held keys should include
+    # an escape direction key (lup/ldown/rleft/rright).
+    escape_holds = keys & ESCAPE_KEYS
+    assert escape_holds, f'no escape-key hold during retreat; keys={sorted(keys)}'
+
+
+def test_replay_fall_knockdown_enemy2_above_heal_at_no_retreat():
+    """hp_before=748, hp_after=496 (49.6%, above HEAL_AT 40%): no retreat.
+    Nearest Majini is 75 cm away — the bot is mid-engagement."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_enemy2.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 748/1000 = 74.8%
+    result = incident_replay.replay(fx, ticks=10)
+    assert result['bot'].escape is None, (
+        f'bot entered retreat above HEAL_AT; keys={sorted(incident_replay.keys(result))}')
+
+
+def test_replay_fall_knockdown_enemy3_above_heal_at_no_retreat():
+    """hp_before=1000, hp_after=650 (65%): well above HEAL_AT, no retreat."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_enemy3.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 1000/1000 = 100%
+    result = incident_replay.replay(fx, ticks=10)
+    assert result['bot'].escape is None, (
+        f'bot entered retreat at 100% HP; keys={sorted(incident_replay.keys(result))}')
+
+
+def test_replay_fall_knockdown_enemy4_above_heal_at_no_retreat():
+    """hp_before=748, hp_after=496 (49.6%): same engagement scene as enemy2."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_enemy4.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 748/1000 = 74.8%
+    result = incident_replay.replay(fx, ticks=10)
+    assert result['bot'].escape is None, (
+        f'bot entered retreat above HEAL_AT; keys={sorted(incident_replay.keys(result))}')
