@@ -77,6 +77,12 @@
         {
           "on": true
         }
+      ],
+      [
+        "instant_qte",
+        {
+          "on": true
+        }
       ]
     ],
     "vocab": {

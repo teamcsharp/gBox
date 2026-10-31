@@ -178,7 +178,8 @@ def test_the_profile_turns_the_mods_and_the_bombs_on_when_a_round_starts():
                                                ["infinite_spray", {"on": True}],                 # sprays never run out
                                                ["kill_time", {"on": True, "seconds": 5}],        # 5 s per kill
                                                ["replace_long_guns", {}],                         # no sniper rifles
-                                               ["rampage_loadout", {"on": True}]]
+                                               ["rampage_loadout", {"on": True}],
+                                               ["instant_qte", {"on": True}]]                     # mash / wiggle by RAM
     assert rm.spec["mercs"]["round_ops"] == [
         ["loadout", {"on": True, "weapons": ["0x1B", "0x1A", "0x0B", "0x19", "0x17", "0x16", "0x04"]}]]   # magnums, shotguns
 

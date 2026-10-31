@@ -4559,6 +4559,12 @@ class RE5Switch(Driver):
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")
+            qte = res.get("qte")
+            if qte is not None:                             # instant_qte (re5_switch_qte): the last event, the totals
+                self.stats["qte_native"] = {k: qte.get(k) for k in ("phase", "reason", "kind", "mode", "native_accepted",
+                                                                    "completed")}
+                self.stats["qte_native_counts"] = dict(qte.get("counts") or {})
+                self.stats["qte_press_outcomes"] = dict(qte.get("press_outcomes") or {})
 
     def result_ready(self, snap, now) -> bool:
         """The round's results tally is over: its score and kills unchanged for a second after at least two on the

@@ -82,7 +82,8 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
     assert out["op"] == "status" and out["edition"] == "switch"
     caps = out["status"]["capabilities"]
     assert caps["weapon_override"]["available"] and caps["unlimited_health"]["available"]
-    assert not caps["instant_qte"]["available"] and caps["instant_qte"]["reason"].startswith("not yet on Switch: ")
+    assert not caps["live_weapon"]["available"] and caps["live_weapon"]["reason"].startswith("not yet on Switch: ")
+    assert not caps["instant_qte"]["available"] and "signatures" in caps["instant_qte"]["reason"]   # no evaluator here
     out = T.re5_mods(T.RE5ModsIn(session_id="lilspark-re5", op="fire_rate", multiplier=40), None)["result"]
     assert out["op"] == "fire_rate" and out["fire_rate_x"] == 40.0 and out["status"]["fire_rate_x"] == 40.0
     assert T.is_switch_re5({"game_id": "52d15709be0fda1a"}) and T.is_switch_re5({"title_id": "010018100cd46000"})
@@ -92,10 +93,10 @@ def test_a_switch_session_goes_to_its_own_mods_with_the_ps3_tools_result_shape(m
 def test_an_op_this_edition_has_not_yet_says_why_and_is_never_a_silent_no_op():
     g = parity_guest()
     ad = Adapter(g)
-    for op in ("live_weapon", "instant_qte"):
-        out = SM.tool_run(ad, op, 3, True)
-        assert out["verified"] is False and out["reason"].startswith("not yet on Switch: ") and out["op"] == op
-    assert SM.tool_run(ad, "qte_assist", None, True)["op"] == "instant_qte"               # the PS3's aliases too
+    out = SM.tool_run(ad, "live_weapon", 3, True)
+    assert out["verified"] is False and out["reason"].startswith("not yet on Switch: ") and out["op"] == "live_weapon"
+    out = SM.tool_run(ad, "qte_assist", None, True)                                         # the PS3's aliases too
+    assert out["op"] == "instant_qte" and out["verified"] is False and "signatures" in out["reason"]
     assert ad.writes == []
     with pytest.raises(ValueError, match="unknown op"):
         SM.tool_run(ad, "teleport")
@@ -295,7 +296,7 @@ def test_apply_saved_answers_each_item_with_its_own_reason():
                                       {"op": "weapon_override", "weapon": 15, "only": True, "name": "bow"}])
     assert out["results"]["fire_rate"]["verified"] and out["results"]["bow"]["verified"]
     assert out["results"]["turn_speed"]["verified"]
-    assert out["results"]["instant_qte"]["reason"].startswith("not yet on Switch: ") and out["verified"] is False
+    assert "signatures" in out["results"]["instant_qte"]["reason"] and out["verified"] is False   # not this guest's code
 
 
 def test_mercs_select_steers_the_switch_menus_to_the_next_rounds_stage_and_character(monkeypatch):

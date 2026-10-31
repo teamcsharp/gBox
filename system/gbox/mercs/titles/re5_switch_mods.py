@@ -26,6 +26,12 @@ ops:
                             Mercenaries loadout templates, from the next round's start (the PS3's semantics, below)
   random_cheats seed=       the PS3's randomizer with the ops this edition has (fire_rate x80, infinite_ammo, loadout,
                             the long guns replaced); addresses: this build's address table
+  instant_qte on=true       (auto_qte_ram, qte_assist) the PS3's native QTE assistance on this build
+                            (gbox.mercs.titles.re5_switch_qte): a shown button-accumulation (mode 4) or stick-wiggle
+                            (mode 6) unit gets its sActionButton progress float (+0x40) set to its target (+0x44), read
+                            back, and the game's own evaluator fires the real event callback. Nothing else is written;
+                            single presses, Resuscitate and stick rotations keep the bot's ordinary input. In the
+                            profile's playing_ops, so the bot has it every round (RE6's auto_qte_ram, #1552)
 
 The PS3 tool (gbox.re5_mods_tool, `re5_mods`) routes a Switch session here (tool_run): the same op names, parameters and
 result shape ({op, ..., status}); an op this edition cannot do yet answers verified False with "not yet on Switch: why",
@@ -945,6 +951,30 @@ def rotten_egg_only(g: RE5Switch, on: bool, rate=None) -> dict:
             "native_equipped": False, "effective_next_round": True}
 
 
+def instant_qte(g: RE5Switch, on: bool = True, operator: bool = False) -> dict:
+    """The PS3's instant_qte on this build (re5_switch_qte): a shown button-accumulation or stick-wiggle unit's progress
+    set to its target every driver snapshot, read back, so the game's own evaluator fires the real callback. On
+    validates main's evaluator / success path / key table first and refuses a build that differs. Configuring it is not
+    an event's completion: maintain() reports each event's outcome (status qte_assist). The operator's own off (the
+    panel, operator=True) is kept: the round's playing_ops do not turn it back on (the PS3 tool's override)."""
+    from . import re5_switch_qte as Q
+    if operator:
+        g.state["qte_operator"] = bool(on)
+    elif on and g.state.get("qte_operator") is False:
+        return {"instant_qte": False, "verified": True, "configured": False, "operator_override": True,
+                "native_outcome_verified": False,
+                "reason": "The operator turned instant_qte off; the round's ops keep it off until the operator turns it on."}
+    try:
+        st = Q.configure(g.state, g, g.base, bool(on))
+    except Q.Reject as error:
+        return {"instant_qte": False, "verified": False, "configured": False, "reason": str(error),
+                "native_outcome_verified": False}
+    return {"instant_qte": bool(on), "verified": True, "configured": bool(on), "native_modes": st["native_modes"],
+            "native_outcome_verified": False, "qte_assist": st,
+            "note": "button accumulation and stick wiggle QTEs completed by the game's own evaluator from RAM "
+                    "(progress only); single presses, Resuscitate and stick rotations keep the bot's input"}
+
+
 def mine_settings(ad) -> dict | None:
     """The session's mine settings for the Switch bot (None: never set: the bot's defaults)."""
     st = ORIG.get(id(ad)) or {}
@@ -1021,6 +1051,10 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
             if enabled and hs and hs.get("on"):
                 hs["last"] = res = _maintain_health(ad, hs, snap)
                 out["writes"] += 1 if res.get("refilled") else 0
+            if (st.get("qte") or {}).get("on"):                # instant_qte: before the bot's tick and its pad input
+                from . import re5_switch_qte
+                out["qte"] = q = re5_switch_qte.maintain(ad, st, snap, enabled=enabled, clock=clock)
+                out["writes"] += q.get("writes", 0)
         except Exception as e:                               # noqa: BLE001 - a missed update never stops a tick
             out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
         return out
@@ -1033,7 +1067,8 @@ def revert_all(g: RE5Switch) -> dict:
            **({"bullet_damage": bullet_damage(g, 1.0)["verified"]} if g.state.get("firepower") else {}),
            **({"turn_speed": turn_speed(g, 1.0)["verified"]} if g.state.get("turn_speed") else {}),
            "infinite_spray": infinite_spray(g, False)["verified"],
-           "unlimited_health": unlimited_health(g, False)["verified"]}
+           "unlimited_health": unlimited_health(g, False)["verified"],
+           "instant_qte": instant_qte(g, False)["verified"]}
     g.state.pop("mine_settings", None)
     if (g.state.get("eggs") or {}).get("on"):
         out["rotten_eggs"] = rotten_egg_only(g, False)["verified"]
@@ -1081,11 +1116,19 @@ ADDRESSES = {
     "player_inventory": {"offset": R.P_INV, "source": "player +0x30F0, 9 slots of 0x38", "live_checked": True},
     "ground_bombs": {"offset": R.MINE_LINE, "source": "sUnit move line 11, class uWp0a, position +0x60",
                      "live_checked": True},
+    "action_button": {"offset": 0x1CEFB78, "source": "sActionButton*: ButtonMgr +0x68 (0x4C0 a player), display "
+                      "units +0x3E8 / +0x448 (0x60): +0x10 cActionButton, +0x18 mode, +0x40 f32 progress, +0x44 f32 "
+                      "target, +0x48 the button's serial (re5_switch_prompt / re5_switch_qte)", "live_checked": True},
+    "qte_evaluator": {"offset": 0x15D130, "source": "the display unit's evaluator: modes through main+0x17504CC; "
+                      "4 -> 0x15F470 and 6 -> 0x15F840 return +0x40 >= +0x44 (code read back live 2026-10-31)",
+                      "live_checked": True},
+    "qte_success": {"offset": 0x15A8A0, "source": "the ButtonMgr's true-return path: button +0x12 needed, +0x13 / +0x14 "
+                    "set, the callback button +0x50 tail-called; +0x13 / +0x14 seen set live after a Y press",
+                    "live_checked": True},
 }
 
 # What the PS3 tool has and this edition does not yet, and why (the panel shows these on its buttons).
 NOT_YET = {
-    "instant_qte": "the QTE progress fields are not mapped on Switch yet",
     "live_weapon": "the native pickup that builds a weapon mid-round (the PS3's 1AEE90 path) is not found on Switch yet",
     "aimbot": "no verified live control for this hook",
     "auto_parry": "no verified live control for this hook",
@@ -1112,6 +1155,8 @@ AVAILABLE = {
     "rotten_egg_only": "Every gun the rotten egg (infinite) from the next round; the throw sped up by the fire rate.",
     "bullet_damage": "every weapon's firepower group (the upgrade table), read back",
     "random_weapon": "Equips a loaded quick-slot gun or longbow; excludes rockets and sniper rifles.",
+    "instant_qte": "Native progress for button accumulation and stick wiggle QTEs (sActionButton +0x40 to its target); "
+                   "the game's own evaluator fires the real callback; single presses keep the bot's input.",
 }
 
 
@@ -1168,6 +1213,10 @@ def full_status(g: RE5Switch) -> dict:
     req = g.state.get("weapon_request")
     st["random_weapon_request"] = {k: v for k, v in req.items() if k != "expires"} if req else None
     caps = st["capabilities"]
+    from . import re5_switch_qte
+    caps["instant_qte"] = re5_switch_qte.capability(g, g.base)       # this build's evaluator, read live
+    st["instant_qte"] = bool((g.state.get("qte") or {}).get("on"))
+    st["qte_assist"] = re5_switch_qte.status(g.state.get("qte"))
     if not guns:
         for op in ("select_weapon", "random_weapon"):
             caps[op] = {"available": False, "reason": "No supported loaded gun or longbow in a quick slot (no round up?)."}
@@ -1187,7 +1236,8 @@ ALIASES = {"fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_
            "more_time": "add_time", "subtract_time": "add_time", "cut_time": "add_time", "set_clock": "set_time",
            "merc_time_set": "set_time", "clock": "set_time", "time_bonus": "time_bonus_multiplier",
            "merc_time_bonus": "time_bonus_multiplier", "auto_qte": "instant_qte", "qte_assist": "instant_qte",
-           "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout"}
+           "auto_qte_ram": "instant_qte", "qte_ram": "instant_qte", "native_qte": "instant_qte",
+           "auto_struggle": "instant_qte", "mine_loadout": "mine_loadout", "proximity_bombs": "mine_loadout"}
 
 
 def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch | None = None, **extra) -> dict:
@@ -1213,6 +1263,8 @@ def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Swi
             res.update(run(ad, op, multiplier, on, g=g))
         elif op == "unlimited_health":
             res.update(unlimited_health(g, bool(on)))
+        elif op == "instant_qte":
+            res.update(instant_qte(g, bool(on), operator=bool(extra.get("operator"))))
         elif op == "rampage_loadout":
             res.update(rampage_loadout(g, bool(on)))
         elif op == "add_time":
