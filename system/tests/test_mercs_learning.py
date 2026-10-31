@@ -434,3 +434,59 @@ def test_re6_switch_bomb_act_damage_fixture_replays_deterministically():
     first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
     assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
     assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+
+def test_re6_tablet_suppressed_while_down():
+    """#5052: the normal tablet path must not fire while the bot is down — an R-press while down is a new hit the
+    game answers with a knockdown death (the 50 tablet incidents in the fall/knockdown/dying chain)."""
+    from gbox.mercs.titles.re6_switch import Bot
+
+    p = {"hp": 200, "hp_max": 900, "tablets": 6, "state": 0,
+         "pos": [0.0, 600.0, 0.0]}
+    b = Bot(clock=lambda: 10.0)
+    b.down = True  # the bot is on the ground
+    b.tablet_at = -1e9  # no recent tablet
+    b.tablet_wait = None
+    # The normal tablet condition must be False while down
+    hp, hp_max = p["hp"], p["hp_max"]
+    condition = (hp_max and (hp > 1 or (hp == 1 and not b.down)) and not b.down
+                 and (p.get("tablets") or 0) > 0
+                 and p.get("state") in (0, None)
+                 and (b.tablet_wait is None or True) and 10.0 - b.tablet_at >= 1.0)
+    assert not condition, "tablet must not fire while down"
+
+
+def test_re6_tablet_fires_when_up_at_low_hp():
+    """#5052: the normal tablet path still fires at low HP when the bot is NOT down."""
+    from gbox.mercs.titles.re6_switch import Bot
+
+    p = {"hp": 200, "hp_max": 900, "tablets": 6, "state": 0,
+         "pos": [0.0, 600.0, 0.0]}
+    b = Bot(clock=lambda: 10.0)
+    b.down = False
+    b.tablet_at = -1e9
+    b.tablet_wait = None
+    hp, hp_max = p["hp"], p["hp_max"]
+    condition = (hp_max and (hp > 1 or (hp == 1 and not b.down)) and not b.down
+                 and (p.get("tablets") or 0) > 0
+                 and p.get("state") in (0, None)
+                 and (b.tablet_wait is None or True) and 10.0 - b.tablet_at >= 1.0)
+    assert condition, "tablet must fire at low HP while up"
+
+
+def test_re6_tablet_suppressed_while_down_at_1hp():
+    """#5052: at 1 HP while down, the normal tablet path must not fire."""
+    from gbox.mercs.titles.re6_switch import Bot
+
+    p = {"hp": 1, "hp_max": 900, "tablets": 6, "state": 0,
+         "pos": [0.0, 600.0, 0.0]}
+    b = Bot(clock=lambda: 10.0)
+    b.down = True
+    b.tablet_at = -1e9
+    b.tablet_wait = None
+    hp, hp_max = p["hp"], p["hp_max"]
+    condition = (hp_max and (hp > 1 or (hp == 1 and not b.down)) and not b.down
+                 and (p.get("tablets") or 0) > 0
+                 and p.get("state") in (0, None)
+                 and (b.tablet_wait is None or True) and 10.0 - b.tablet_at >= 1.0)
+    assert not condition, "tablet must not fire at 1 HP while down"

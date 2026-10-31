@@ -3048,12 +3048,16 @@ class Bot:
         if self.heal_chain and not topping:
             self.heal_chain = False                              # full enough: no tablet past his maximum
         gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
-        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
+        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and not self.down
+                and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
                 and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
                 and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
                      or (hp <= CROWD_TABLET_HP * hp_max
-                         and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
+                         and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))
+                and not (hp == DYING_HP and any(flat(e) <= MELEE_R for e in live))):
+            # the lethal heal tick (#5052): down and at 1 health within MELEE_R is never tablet time - the heal chain
+            # lowers the gun, and the lower window is what the fall/knockdown/dying chain's deaths are made of
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
             if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
                 return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
@@ -3485,12 +3489,21 @@ class Bot:
 
     def _down_fight(self, p, snap, now) -> dict:
         """Down: the nearest within DOWN_FIGHT_R locked and fired at (a kick for one within MELEE_R), no tablet, no
-        stick; nobody near: the stick up to rise. Dying at 1 HP: stay down, no fight, no rise - the kick and the
-        rise at 1 health are what the fall/knockdown/dying chain's deaths are made of (#5052)."""
+        stick; nobody near: the stick up to rise. Dying at 1 HP: stay down, no fight, no rise. Down at low health
+        with a melee wind-up near: stay down until it swings (the felling that the getting-up deaths are made of,
+        #5052) - the kick and the rise at 1 health are what the fall/knockdown/dying chain's deaths are made of."""
         me = p["pos"]
         if self.down_dying:
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
+        # The felling: down at low health with one winding up a melee strike - the single full-HP-cliff hit
+        # (900->1, 862->1) that the getting-up deaths are made of (#5052). Stay down until it swings through.
+        hp_max = p.get("hp_max")
+        if hp_max and (p.get("hp") or 0) <= SURVIVAL_HP * hp_max and any(
+                windup(e, me) == "melee" for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0):
+            self._gun_down()
+            return self._go("down", "down_windup_hold", {"hold": ()},
+                            "down at low health: a melee wind-up near, staying down until it swings")
         near = sorted((e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0
                        and math.dist(me, e["pos"]) <= DOWN_FIGHT_R and not self.is_blocked(e, now)),
                       key=lambda e: math.dist(me, e["pos"]))
