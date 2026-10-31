@@ -706,6 +706,9 @@ HEAL_USE_KEY = "y"                       # the game's own Type D screen leaves Y
                                          # action, B = Cross run: docs/evidence/switch-citron/re5-switch-controls-type-d.jpg)
 HEAL_ENABLED = True                      # on (2026-10-27): watch heal_failures against heals in the live telemetry
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S, EQUIP_ACK_S = 0.35, 4.0, 1.0, 1.0
+HEAL_CROWD_AT = 0.35                   # #5072: heal even with enemies around when at/below this fraction of max HP
+                                       # (the cluster's 5 examples: 22-29% HP, all under 0.35; 0.25 deferred all of
+                                       # them and they died)
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}   # the inventory grid's D-pad positions (the PS3's)
 KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 / WP23 / WP24 KNIFE_*: never the gun
 # Thrown or placed, never the gun: WP06 GRENADE_NORMAL, WP07 GRENADE_FIRE, WP08 GRENADE_FLASH, WP0A MINE_B (the
@@ -3232,11 +3235,13 @@ class Bot:
             return {"hold": ()}
         if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
             return None
+        item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
+        # #5072: the heal is a quick slot, so the item is known before the crowd check; with no heal in the
+        # quick slots there is nothing this rule can use (the critical retreat below still applies).
         near = sum(1 for e in live if flat(e) < HEAL_SAFE_R)
-        if near and hp > HEAL_CRITICAL * hp_max:
+        if item is not None and near and hp > HEAL_CROWD_AT * hp_max:
             self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}"
             return None
-        item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         if item is None:
             # Critical HP with no heals left: retreat away from the nearest threat instead of fighting on
             # (the "low health with no tablet or heal" damage cluster: the bot aimed or fired at <=30% HP
