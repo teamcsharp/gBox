@@ -253,24 +253,35 @@ def test_crowd_gun_down_fixture_fights_instead_of_escaping():
 
 
 def test_re5_switch_crowd_heals_under_50hp_with_enemies_near():
-    """#5072: switch_crowd_lowhp -- the bot fights at 29% HP instead of healing.
+    """#5072: switch_crowd_lowhp -- the bot fights at low HP instead of healing.
 
-    The fix: _heal's defer threshold is HEAL_CROWD_AT (50%) instead of HEAL_CRITICAL (25%),
-    so the bot heals even with enemies within 4 m when under 50% HP, not just under 25%.
+    The fix: the heal is never deferred by the crowd at/below the normal HEAL_AT (40%) line -- a quick-slot item
+    is ready in one D-pad tap, so the bot heals even with enemies within 4 m; only between 40% and HEAL_CROWD_AT
+    does the crowd defer it.
     """
-    from gbox.mercs.titles.re5_switch import Bot, HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL, HEAL_IDS, QUICK
+    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL
 
-    # Fixture 0 from the cluster: hp=286/1000 (29%), 4 enemies within 5 m, heal in quick slot
+    # Fixture 0 from the cluster: hp=286/1000 (29%), 6 enemies within 4 m, heal in quick slot 0
     fx = json.loads((FIXTURES / "re5_switch_crowd_lowhp.json").read_text())
     fx["snapshot"]["player"]["hp"] = fx["hp_before"]  # 286 (29%)
 
     # Before the fix: 29% > HEAL_CRITICAL (25%) -> heal deferred -> fights and dies
-    # After the fix: 29% < HEAL_CROWD_AT (50%) -> heal proceeds
+    # After the fix: 29% < HEAL_AT (40%) -> heal proceeds
     result = incident_replay.replay(fx, ticks=5)
     doings = [t["doing"] for t in result["ticks"]]
     assert "heal" in doings, f"bot did not heal at 29% HP: {doings}"
 
-    # Every cluster fixture example now starts a heal instead of fighting on: 22-29% HP with a quick-slot
+    # At the HEAL_AT boundary (40%) the crowd still does not defer the heal
+    fx["snapshot"]["player"]["hp"] = int(HEAL_AT * fx["hp_max"])
+    doings = [t["doing"] for t in incident_replay.replay(fx, ticks=3)["ticks"]]
+    assert "heal" in doings, f"bot did not heal at the {HEAL_AT:.0%} boundary: {doings}"
+
+    # Above the line (45%) the heal is NOT taken mid-swarm -- no over-healing at full-ish health
+    fx["snapshot"]["player"]["hp"] = int(0.45 * fx["hp_max"])
+    doings = [t["doing"] for t in incident_replay.replay(fx, ticks=3)["ticks"]]
+    assert "heal" not in doings, f"bot healed at 45% with the crowd on him: {doings}"
+
+    # Every cluster fixture example now starts a heal instead of fighting on: 22-32% HP with a quick-slot
     # heal (or a critical retreat when none is left) -- the bot never takes the hit that killed it.
     for i in range(5):
         f = json.loads((FIXTURES / f"re5_switch_crowd_lowhp_{i}.json").read_text())
@@ -278,15 +289,17 @@ def test_re5_switch_crowd_heals_under_50hp_with_enemies_near():
         r = incident_replay.replay(f, ticks=8)
         d = [t["doing"] for t in r["ticks"]]
         assert "heal" in d, f"fixture {i} ({f['hp_before']} HP) did not heal: {d}"
-        assert f["hp_before"] / f["hp_max"] < HEAL_CROWD_AT, \
-            f"fixture {i} hp {f['hp_before'] / f['hp_max']:.0%} not under HEAL_CROWD_AT ({HEAL_CROWD_AT:.0%})"
+        assert f["hp_before"] / f["hp_max"] <= HEAL_AT, \
+            f"fixture {i} hp {f['hp_before'] / f['hp_max']:.0%} not at/below HEAL_AT ({HEAL_AT:.0%})"
 
 
 def test_heal_defer_threshold_is_crowd_not_critical():
     """The heal defer threshold when enemies are near is HEAL_CROWD_AT, not HEAL_CRITICAL."""
-    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_CRITICAL
-    assert HEAL_CROWD_AT > HEAL_CRITICAL, \
-        f"HEAL_CROWD_AT ({HEAL_CROWD_AT}) must be > HEAL_CRITICAL ({HEAL_CRITICAL})"
+    from gbox.mercs.titles.re5_switch import HEAL_CROWD_AT, HEAL_AT, HEAL_CRITICAL
+    assert HEAL_AT > HEAL_CRITICAL, \
+        f"HEAL_AT ({HEAL_AT}) must be > HEAL_CRITICAL ({HEAL_CRITICAL})"
+    assert HEAL_CROWD_AT >= HEAL_AT, \
+        f"HEAL_CROWD_AT ({HEAL_CROWD_AT}) must be >= HEAL_AT ({HEAL_AT}): the crowd defers only above the heal line"
 
 
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
