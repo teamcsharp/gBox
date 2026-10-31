@@ -1584,9 +1584,8 @@ CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back w
 # count fell) say whether the game takes it there, dying_states the action bytes seen while dying.
 DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no tablet while dying (live 13:55: 4 presses
                                         # at 1 health, the count never fell); dyings / dying_states still counted
-# Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
+# In a crowd the gun stays up and firing (the crowd_tablet heal below would lower it there: #5051); in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
-CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
@@ -3030,9 +3029,9 @@ class Bot:
         if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
                 and p.get("state") in (0, None)
                 and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
-                and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
-                     or (hp <= CROWD_TABLET_HP * hp_max
-                         and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
+                and crowd == 0                                    # #5051: the gun stays up and firing in a crowd
+                and (topping or hp <= TABLET_LOW_HP * hp_max
+                     or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R))):
             self._gun_down()                                     # 60 % health or less, free: a tablet (R),
             if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
                 return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
