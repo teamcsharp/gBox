@@ -17,6 +17,7 @@ from mcp.server.lowlevel import Server
 
 from . import hermes_merges, hermes_tasks
 from . import mcp_bot_controls as BC
+from . import merc_live_controls as LC
 from .mercs import directives as bot_directives
 
 READY_LIMIT = 25        # ready_to_verify entries list_requests returns (#1308)
@@ -218,6 +219,10 @@ CONVENIENCE = {
                       "mode lasts. Returns the stored directive row; bot_sessions shows directive_status as the bot acts.",
                       obj({"session_id": S, "command": {"type": "string", "enum": list(bot_directives.COMMANDS)}, "text": S,
                            "hold_s": {"type": "number", "minimum": 0, "maximum": 600}}, ["session_id"])),
+    "game_live_controls": ("Read or adjust the selected active MercMode run through its bounded live control inventory. "
+                           "status returns current mod sliders, behavior knobs and native flash/weapon capabilities. "
+                           "set takes a control ID from that inventory and a bounded value. Native clicks require a fresh UUID. "
+                           "A pending_job must be polled with status/job_id, never resubmitted. Operator actions preserve playback audio.", LC.SCHEMA),
     "live_run_map": ("Read the current Mercenaries map and stream session on a computer. Follows title changes and ignores warmed/preparing sessions. "
                      "Pass worker name/id, or a session_id on that computer. Returns current tactical data and a relative live-map page for viewer/PiP embedding. "
                      "Call again to refresh; the page follows the active run automatically.",
@@ -226,10 +231,12 @@ CONVENIENCE = {
                           "op=flash_now creates and detonates a native flash at the player's position without inventory, input or weapon changes. "
                           "op=equip_primary uses a weapon item ID offered in status.options.weapons to replace the main weapon now, "
                           "with a two-minute bot swap lock and a preference for the current match. "
+                          "op=magnum_quick4 equips a loaded magnum and performs four observed quick shots on supported RE6 only; "
+                          "an interrupted or unobserved action stops with a partial/uncertain receipt and is never replayed. "
                           "Provide a new UUID request_id for each click; reuse that UUID only when retrying that same request. "
                           "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
                           "Unsupported title/build/resources are reported without substituting a grenade throw.",
-                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary"]},
+                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary", "magnum_quick4"]},
                                "request_id": S, "item": {"type":"integer", "minimum":1, "maximum":255}}, ["session_id", "op"])),
     "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
                  "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
@@ -291,6 +298,16 @@ def build(base_url: str, token: str) -> Server:
         if r.status_code >= 400:
             raise RuntimeError(f"{r.status_code}: {r.text[:500]}")
         return r.json()
+
+    async def live_control_post(path, body):
+        # These bounded calls come from the operator's live panel. The core marks
+        # actor=mcp jobs as agent work even when agent_use is false (audio ducking).
+        r = await api.post(path, json=body, headers={"x-gbox-actor": "pine-live-controls"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"{r.status_code}: {r.text[:500]}")
+        return r.json()
+
+    live_controls = LC.Controls(get, live_control_post)
 
     async def _capped_requests(rows=None):
         """Open tickets the inbox job has taken STREAK_CAP runs in a row (#1300 gap 3).
@@ -566,6 +583,8 @@ def build(base_url: str, token: str) -> Server:
             out = await post(f"/api/sessions/{a['session_id']}/directive", body)
             return out | {"matched_from_text": not a.get("command"),
                           "note": "the bot reads it within a second; bot_sessions shows directive_status while it acts"}
+        if name == "game_live_controls":
+            return await live_controls.call(a)
         if name == "live_run_map":
             from urllib.parse import urlencode
             worker, seed = a.get("worker"), a.get("session_id")
@@ -586,6 +605,8 @@ def build(base_url: str, token: str) -> Server:
                     "viewer_path":"/mercs-live.html?"+urlencode({"worker":host["id"]}),
                     "stream_path":f"/api/sessions/{sid}/mjpeg", "interventions_path":f"/api/sessions/{sid}/interventions"}
         if name == "game_intervention":
+            if a.get('op') == 'magnum_quick4' and set(a) - {'session_id', 'op', 'request_id'}:
+                raise ValueError('magnum_quick4 accepts only session_id and a fresh request_id')
             sid = a["session_id"]
             if a["op"] == "status":
                 return await get(f"/api/sessions/{sid}/interventions")

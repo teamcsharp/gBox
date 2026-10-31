@@ -11,7 +11,8 @@ def test_sidebar_reads_behavior_and_mods_in_one_bound_worker_call(monkeypatch):
     from gbox.mercs.titles import re6_switch_mods as mods
     adapter = object()
     monkeypatch.setitem(tools.SESSIONS, 'worker-live', (adapter, {'game_id':'115f9cdbba115432'}))
-    monkeypatch.setattr(BL, 'handle', lambda title, values, reset: {'verified':True,'title':title,'knobs':[]})
+    monkeypatch.setattr(BL, 'handle', lambda *a, **kw: pytest.fail('a panel read must not persist settings'))
+    monkeypatch.setattr(BL, 'status', lambda title: {'verified':True,'title':title,'knobs':[]})
     monkeypatch.setattr(BL, 'weapon_menu', lambda ad, title, weapon: {'weapons':[]})
     calls=[]
     def run(ad, op):
