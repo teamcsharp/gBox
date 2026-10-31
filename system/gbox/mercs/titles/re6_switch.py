@@ -1575,6 +1575,9 @@ TABLET_LOW_HP = 0.6                     # whoever is near: the case never runs o
 # grab (that turn: 30 grabs, 21 of them bites of ~110); the ones further back get the gun's bursts as before.
 CC_R, CC_CONE = 200.0, math.radians(100)   # point blank only (operator 16:30; 350 until then; 5 m all round was tried live
                                         # 2026-10-27 13:43 / 13:53: more holds, fewer kills)
+CC_FLANK_CONE = math.radians(130)          # damage cluster fc45a6229fe006d0: flanking enemies 100-137 deg off-facing
+                                        # fell outside CC_CONE (100 deg), so the bot raised its aim into them instead
+                                        # of dropping the gun for quick attacks; 130 deg catches the observed cluster
 CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
 QA_FAST, CC_FAST_GAP_S = False, 0.15    # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
                                         # back: this often, the gauge kept full by infinite_stamina
@@ -4271,7 +4274,8 @@ class Bot:
         push = self.push if fever and getattr(self, "_p", None) is not None else None
         if push is not None:                                     # the push-through: along the way out, never still
             return self._push_through(push, live, flat, bearing, now)
-        close = [e for e in live if flat(e) <= (FEVER_R if fever else CC_R) and abs(bearing(e)) <= CC_CONE]
+        close = [e for e in live if flat(e) <= (FEVER_R if fever else CC_R)
+                 and abs(bearing(e)) <= max(CC_CONE, CC_FLANK_CONE)]
         if not close:
             if (not fever and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 4
                     and not self._lock_ready(getattr(self, "_snap", {}) or {}, now)):
