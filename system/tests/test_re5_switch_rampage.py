@@ -164,3 +164,32 @@ def test_the_profile_plays_the_rampage_loadout():
     prof = json.loads(pathlib.Path("profiles/gamedata/010018100CD46000-ram.json").read_text(encoding="utf-8"))
     ops = [o[0] for o in prof["mercs"]["playing_ops"]]
     assert {"infinite_ammo", "fire_rate", "rampage_loadout"} <= set(ops)
+
+def test_replay_incident_idle_among_foes_shows_firing_not_escaping():
+    """Replay the incident fixture (cluster aef43e59aa636e02): 3 enemies within 5 m,
+    crowd fire active, the bot must fire (zl+zr held), not escape with the gun down."""
+    import json
+    from pathlib import Path
+    from gbox.mercs import incident_replay as IR
+
+    fx = json.loads((Path(__file__).parent / "fixtures" / "mercs_incidents"
+                     / "re5_switch_idle_among_foes.json").read_text())
+    assert fx["schema"] == "gbox.mercs.incident-replay/1"
+    assert fx["cluster"]["id"] == "aef43e59aa636e02"
+    assert fx["decision"]["act"] == "crowd fire"
+
+    result = IR.replay(fx, ticks=20, dt=0.1)
+    bot, stats = result["bot"], result["stats"]
+
+    # The bot fires: zl and zr are held on every tick
+    for t in result["ticks"]:
+        assert {"zl", "zr"} <= set(t["act"]["hold"]), f"t={t['t']}: {t['act']['hold']}"
+        assert t["doing"] == "fire", f"t={t['t']}: doing={t['doing']}"
+
+    # No escape occurred: the crowd fire suppression kept the gun up
+    assert stats.get("escapes", 0) == 0, f"escapes={stats.get('escapes')}"
+    # The rampage fired: the trigger was down
+    assert stats.get("rampage_shots", 0) > 0, f"rampage_shots={stats.get('rampage_shots')}"
+    assert stats.get("rampage_s", 0) > 0, f"rampage_s={stats.get('rampage_s')}"
+    # The bot was not idle among foes: it was firing
+    assert stats.get("idle_in_5m_s", 0) == 0, f"idle_in_5m_s={stats.get('idle_in_5m_s')}"
