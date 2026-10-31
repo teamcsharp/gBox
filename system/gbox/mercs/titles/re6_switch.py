@@ -1587,6 +1587,7 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
+CROWD_BACK_S = 2.5                        # crowd_4_in_2m: while a flanking cluster is still within the backout's reach
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is
@@ -2168,6 +2169,7 @@ class Bot:
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
         self.melee_at = self.qshot_at = self.reload_at = self.tablet_at = -1e9
+        self._cc_since = -1e9                       # crowd_4_in_2m: when crowd control (the backout) last ran
         self.tablet_wait, self.tablet_missed = None, False   # (the count, when, health) after an R press, until it falls
         self.heal_gain, self.heal_chain = None, False        # a tablet's learned gain; eating on to the top (HEAL_FILL)
         self._zl_at = -1e9                                   # when ZL was last held
@@ -3027,21 +3029,27 @@ class Bot:
         if self.heal_chain and not topping:
             self.heal_chain = False                              # full enough: no tablet past his maximum
         gap = TABLET_CHAIN_S if topping else TABLET_RETRY_S if self.tablet_missed else TABLET_GAP_S
-        if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
-                and p.get("state") in (0, None)
-                and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
-                and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
-                     or (hp <= CROWD_TABLET_HP * hp_max
-                         and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
-            self._gun_down()                                     # 60 % health or less, free: a tablet (R),
-            if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
-                return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
-            self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
-            if self.tablet_wait is None:
-                self.tablet_wait = (p.get("tablets"), now, hp)
-            self.heal_chain = True                               # a burst: tapped on until full enough (topping)
-            self.stats["tablet_presses"] += 1
-            return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
+        # a flanking cluster in the backout (crowd_4_in_2m): four or more within CC_CROWD_R while the backout is
+        # under way -- the gun-down branch's cone can't catch them, so the tablet keeps interrupting the backout
+        # every 0.3 s and he stays exposed to the flanking ones instead of clearing them (damage_clusters'
+        # crowd_4_in_2m cause; the tablet resumes the moment the cluster thins)
+        crowd4 = sum(1 for e in live if flat(e) <= CC_CROWD_R) >= CROWD_TABLET_N
+        if not (crowd4 and now - self._cc_since < CROWD_BACK_S):
+            if (hp_max and (hp > 1 or (hp == DYING_HP and not self.down)) and (p.get("tablets") or 0) > 0
+                    and p.get("state") in (0, None)
+                    and (self.tablet_wait is None or topping) and now - self.tablet_at >= gap
+                    and (topping or hp <= TABLET_LOW_HP * hp_max or (hp <= TABLET_HP * hp_max and near > TABLET_CLEAR_R)
+                         or (hp <= CROWD_TABLET_HP * hp_max
+                             and sum(1 for e in live if flat(e) <= CROWD_TABLET_R) >= CROWD_TABLET_N))):
+                self._gun_down()                                     # 60 % health or less, free: a tablet (R),
+                if now - self._zl_at < TABLET_LOWER_S:               # the gun down a moment first (live 14:41: 24 of 25
+                    return self._go("tablet", "tablet_lower", {"hold": ()}, "the gun down for a tablet")   # R right after ZL ignored)
+                self.tablet_at = now                                 # the gun down for it (the tap lets ZL go first)
+                if self.tablet_wait is None:
+                    self.tablet_wait = (p.get("tablets"), now, hp)
+                self.heal_chain = True                               # a burst: tapped on until full enough (topping)
+                self.stats["tablet_presses"] += 1
+                return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
         taunt = self._taunt(p, live, flat, now)
         if taunt is not None:
             return taunt
@@ -4259,6 +4267,7 @@ class Bot:
         """A zombie up close (CC_R, in front or flanking): the gun down, the game's quick shot every CC_QSHOT_GAP_S and a
         kick at arm's length every CC_KICK_GAP_S (the gauge is kept full), the camera turned to one on the flank; between
         them he steps back. None: nobody that close (the gun's bursts go on)."""
+        self._cc_since = now                                  # crowd_4_in_2m: the backout is under way (the tablet waits)
         fever = now < self.fever_until
         if fever and any(flat(e) <= FEVER_BREAK_R and e.get("ptr", e.get("slot")) not in self.flashed for e in live):
             self.fever_until, fever = now, False                 # one not flashed on him: back to aimed fire
