@@ -455,7 +455,16 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # chest between shots only (never in the shot motion: fire_rate's time scale). A horizontal bearing alone cannot confirm
 # a shot: the dot can be on the ground or a wall. The heading and shot-tail governors apply. Counters: crowd_fire_s,
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
+# Unload (operator 2026-10-31: "when the bot raises their gun, they fire ... If the bot has anyone within 5m, they need to
+# be unloading on threat"; "the bot needs to point their weapon at the enemies"): in crowd fire, the gun up and its ray
+# seen, the trigger is down while the ray is within UNLOAD_CONE (yaw and pitch: about a body width beside him at 3-5 m)
+# of the target's chest, before the dot reaches a body, and the stick keeps bringing it onto his chest between shots -
+# never with the ray ending short of him (a wall, the floor), with no ray (a bearing alone), nor with CAM_DOWN_GUARD's
+# aim at the feet. One Majini within 5 m is unloaded on by the fight (re5_combat UNLOAD_CONE: "threat: unloading").
+# Off a body the trigger comes in bursts of UNLOAD_BURST_S with UNLOAD_TURN_S between them, for the stick (none in the
+# shot motion). unload_s: the trigger down off a confirmed body.
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
+UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = True, math.radians(8), 0.4, 0.2
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
@@ -790,7 +799,11 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
           "relocate", "prompt")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
-MINES, MINE_EVERY_S = True, 120.0
+# More mines (operator 2026-10-31): every 20 s by default; the sidebar's MINE_EVERY_S reaches the running bot every tick
+# when it is the quicker cadence (it used to reach only a bot built after it), and a placement waits only for a Majini
+# within MINE_FOE_CLEAR_CM (was 5 m) or a bomb within MINE_SPACING_CM (was 6 m).
+MINES, MINE_EVERY_S = True, 20.0
+MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
@@ -1940,6 +1953,20 @@ class Bot:
         cosine = sum((dot[k] - origin[k]) * (chest[k] - origin[k]) for k in range(3)) / (reach * distance)
         return math.acos(max(-1.0, min(1.0, cosine))) <= CROWD_CONE
 
+    def _unload(self, r, ok, err, now, dt) -> bool:
+        """The trigger down off a confirmed body (UNLOAD above): ok (the gun up, no wall short of him) and the ray's error
+        (yaw and pitch) within UNLOAD_CONE: bursts of UNLOAD_BURST_S, then UNLOAD_TURN_S, the trigger let go for the stick."""
+        if not (UNLOAD and ok and abs(err) <= UNLOAD_CONE):
+            r["unload"] = None
+            return False
+        t0 = r.get("unload")
+        if t0 is None or now - t0 >= UNLOAD_BURST_S + UNLOAD_TURN_S:
+            r["unload"] = t0 = now
+        if now - t0 >= UNLOAD_BURST_S:
+            return False
+        self.stats["unload_s"] = round(self.stats.get("unload_s", 0.0) + dt, 2)
+        return True
+
     def _rampage(self, p, live, flat, snap, now):
         """Anyone on his level within RAMPAGE_R: the gun up, the trigger down, the nearest inside held (above)."""
         px, py, pz = p["pos"]
@@ -2072,8 +2099,10 @@ class Bot:
                         r["wall"] = None               # another nearby threat on the next tick, gun still raised
                 else:
                     r["wall"] = None
-                if not on:
-                    keys |= self._yaw(yaw_err)
+                short = ray_len < math.dist(origin, chest) - FIRE_SLACK      # the ray ends in front of him
+                on = on or self._unload(r, ready and not short, math.hypot(yaw_err, pitch_err), now, dt)
+                if not on or not where:      # the aim onto his chest between shots, firing or not (operator
+                    keys |= self._yaw(yaw_err)  # 2026-10-31: "point their weapon at the enemies")
             else:
                 keys |= self._yaw(yaw_err)
                 if dist >= CLOSE_PITCH_R and ray_len >= STEER_RAY_CM:
@@ -3538,8 +3567,12 @@ class Bot:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
-        if self.mines is not None and snap.get("mine_settings"):
-            self.mines.configure(snap["mine_settings"])          # the operator's `mines` op (re5_switch_mods.mines)
+        if self.mines is not None:
+            if snap.get("mine_settings"):
+                self.mines.configure(snap["mine_settings"])      # the operator's `mines` op (re5_switch_mods.mines)
+            self.mines.every_s = min(self.mines.every_s, MINE_EVERY_S)   # the sidebar's cadence, when the quicker
+            self.mines.foe_clear_cm, self.mines.spacing_cm = MINE_FOE_CLEAR_CM, MINE_SPACING_CM
+            self.stats["mine_interval_s"] = self.mines.every_s
         self.mode = self._operator_command(p, snap, live, now)
         # The operator's emergency flashbang (#5972): highest priority, every click throws another flash at his feet.
         act = self._flashbang_throw(p, snap, now)

@@ -278,7 +278,7 @@ def test_the_mines_op_sets_the_bots_cadence_through_the_driver_and_can_switch_pl
     assert "not yet on Switch" in SM.tool_run(ad, "mines", "only", True)["note"]
     snap = R.snapshot(g)
     R.RE5Switch()._mods(SimpleNamespace(adapter=ad), snap, True)
-    assert snap["mine_settings"] == {"enabled": True, "interval_s": 120.0, "only": False}   # ("only": the default S)
+    assert snap["mine_settings"] == {"enabled": True, "interval_s": SM.MINE_EVERY_DEFAULT, "only": False}   # ("only": the default S)
     from gbox.mercs.titles import re5_switch_mines as MN
     m = MN.Mines({})
     m.configure({"enabled": False, "interval_s": 30})
