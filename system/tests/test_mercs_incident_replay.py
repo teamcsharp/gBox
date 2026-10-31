@@ -1,12 +1,8 @@
 """Replay test for the frontal-grab fix in re5_ps3.py (request #5135, cluster 16c8292da3adc4a2).
 
-The fixture (tests/fixtures/mercs_incidents/re5_grabbed_front_16c8292da3adc4a2.json) records a bot
-standing 100 cm from a Majini who was walking in to grab him. Before the fix, the bot would walk
-into the grab during gather_time; after the fix, the grab-front threat gate stops the walk and
-transitions to fight.
-
-The fix adds GRAB_FRONT_R / GRAB_FRONT_CONE to re5_ps3.Bot._threat: a Majini within 250 cm and
-within 90 degrees of the bot's heading is a threat, so the gather path is interrupted.
+The fixture (tests/fixtures/mercs_incidents/re5_grabbed_front_16c8292da3adc4a2.json) records the bot
+standing 50 cm from a Majini who was walking in to grab him. Before the fix, the bot walked straight
+into the grab (doing="walk", keys included "lup"). After the fix, the bot sidesteps instead.
 """
 import json
 import math

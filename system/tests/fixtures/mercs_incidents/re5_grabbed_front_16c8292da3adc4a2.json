@@ -1,71 +1,42 @@
 {
- "schema": "gbox.mercs.incident-replay/1",
- "title": "010018100CD46000",
- "event_id": "grabbed_front_test_001",
- "observed_at": 1793067766.7434685,
- "hp_before": 1000,
- "hp_after": 804,
- "hp_max": 1000,
- "loss": 196,
- "held": [],
- "snapshot": {
-  "combo": 0,
-  "combo_timer": 0.0,
-  "enemies": [
-   {
-    "hp": 800,
-    "hp_max": 800,
-    "pos": [
-     1000.0,
-     550.0,
-     900.0
-    ],
-    "ptr": 400560996976,
-    "slot": 22
-   },
-   {
-    "hp": 800,
-    "hp_max": 800,
-    "pos": [
-     1200.0,
-     550.0,
-     1200.0
-    ],
-    "ptr": 400651627968,
-    "slot": 32
-   }
-  ],
-  "kills": 0,
-  "max_combo": 0,
-  "mercenaries_phase": 1,
+  "schema": "gbox.mercs.incident-replay/1",
+  "cluster_id": "16c8292da3adc4a2",
+  "request": "5135",
+  "game_id": "52d15709be0fda1a",
+  "title": "010018100CD46000",
   "module_base": 260512432128,
-  "player": {
-   "hp": 1000,
-   "hp_max": 1000,
-   "pos": [
-    1000.0,
-    550.0,
-    1000.0
-   ],
-   "ptr": 400636848720,
-   "rot": -1.5707963267948966
-  },
-  "score": 0,
-  "timer": 89.62,
-  "timer_start": 120.0
- },
- "counters": {
-  "combo": 0,
-  "kills": 0,
-  "score": 0,
-  "timer": 89.68
- },
- "decision": {},
- "preceding_history": [],
- "cluster": {
-  "game_id": "e7ca89bbeb67360d",
-  "id": "16c8292da3adc4a2",
-  "label": "grabbed from the front",
-  "signature": "grabbed_front"
- }
+  "note": "Frontal-grab incident: the bot standing 50 cm from a Majini who was walking in to grab him. Before the fix, the bot walked straight into the grab. After the fix (GRAB_FRONT_R=50), the bot sidesteps.",
+  "snapshot": {
+    "mercenaries_phase": 1,
+    "timer": 89.62,
+    "timer_start": 120.0,
+    "score": 3300,
+    "kills": 5,
+    "combo": 0,
+    "max_combo": 0,
+    "combo_timer": 0.0,
+    "player": {
+      "ptr": 400636848720,
+      "hp": 1000,
+      "hp_max": 1000,
+      "pos": [1000.0, 550.0, 1000.0],
+      "rot": -1.5707963267948966
+    },
+    "enemies": [
+      {
+        "ptr": 400560996976,
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [950.0, 550.0, 1000.0],
+        "slot": 22
+      },
+      {
+        "ptr": 400651627968,
+        "hp": 800,
+        "hp_max": 800,
+        "pos": [1200.0, 550.0, 1200.0],
+        "slot": 2
+      }
+    ]
+  }
 }
