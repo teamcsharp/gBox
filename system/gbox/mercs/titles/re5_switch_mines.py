@@ -51,7 +51,12 @@ MOTION_PLACE = 29                        # the placing motion (the same byte as 
 SETTLE_S = 1.6                           # the placing motion plays at most this long (live: 1.27-1.41 s from the press)
 CONFIRM_CM = 200.0                       # a new bomb this near where he stood is his (it lands ~57 cm ahead)
 RETREAT_CM, RETREAT_S, RETREAT_GAP_R = 800.0, 3.0, 800.0
-BLAST_CM, TRIGGER_CM = 800.0, 350.0      # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out
+BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
+# the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
+# to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
+# so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
+# (a run of 8 m clears it); the guard's crowd rule is tighter and looser than the trigger: the recorded incident
+# itself had the Majini at 300 cm, and he did run it (the replay keeps the run), while a tighter crowd is a death.
 REARM_S = 1.2
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 RUN = ("b", "lup")
@@ -184,6 +189,7 @@ class Mines:
         the *other* bombs still down when he drifts back into their radius on a later cycle.
         """
         pos = p["pos"]
+        in_blast, reason = False, None
         for ptr, b in self.bombs.items():
             if self.last_pos is not None and b == self.last_pos:
                 continue                                     # the one he just placed: the retreat handles it
@@ -193,6 +199,17 @@ class Mines:
                 reason = "a Majini at his bomb: out of its blast"
             else:
                 reason = "in his own bomb's blast: out before it detonates"
+            in_blast = True
+            break
+        for e in live:
+            if flat(pos, e["pos"]) < CLOSE_MAJINI_CM and in_blast:
+                # The cluster's remaining incidents: he stood in the old bomb's blast (bomb_cm 8-95) while a Majini
+                # was right on him. He cannot outrun the blast through a close crowd - the crowd fire unloads on him
+                # and the blast finishes it (live: 5 within 2 m, 11 within 4 m, and the death). The bomb's timer is
+                # already running, so the run is given up and the gun comes up: the fight unloads on the threat.
+                self.stats["mine_status"] = "in the blast and a close Majini first: the gun up"
+                return {"hold": ()}
+        if in_blast:
             if self.clear_from != ptr:
                 self.clear_from = ptr
                 self.stats["mine_clear_runs"] += 1

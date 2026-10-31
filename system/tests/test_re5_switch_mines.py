@@ -261,6 +261,29 @@ def test_the_bot_watches_its_bombs_every_tick_even_while_held(switch_bot):
         assert key in R.RE5Switch.round_counters
 
 
+def test_a_close_majini_outranks_the_blast_run_he_lets_go_and_the_fight_unloads_on_the_threat():
+    # The cluster's remaining incidents (2026-10-31, bomb_cm 8-95, 4 of the 6 within 2 m of a Majini, 12 within 4 m,
+    # one of them a death): he stood in the old bomb's blast while a Majini was right on him - the blast ran through
+    # him and the crowd fire finished it. A run through a close crowd is a death: the bomb's timer is already
+    # running, so the mine's own clear gives the pad up first (the gun goes back and the fight unloads on the threat,
+    # re5_combat's within-5-m rule), instead of trying to run the gap with the crowd on him.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    m.bombs = {0x77: bomb["pos"]}
+    m.last_pos = (0.0, 0.0, -2000.0)                                # the old bomb, not the one he just placed
+    live = [{"ptr": 10, "pos": (200.0, 0.0, 100.0), "hp": 800}]     # 2.2 m from him: within CLOSE_MAJINI_CM, in the blast
+    act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
+    assert act == {"hold": ()}                                       # the pad given up, not a run
+    assert m.stats["mine_status"] == "in the blast and a close Majini first: the gun up"
+    assert m.state == "idle"                                         # no mine cycle started
+    # The same bomb, a close Majini only beyond FOE_CLEAR_CM: the old guard still runs him out of the blast.
+    far = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
+    act = m.tick(p(pos=(0.0, 0.0, -400.0)), snap(ground=[bomb]), far, 1.4)   # 7 m from the old bomb: in the blast again
+    assert act is not None and act["hold"][:2] == MN.RUN
+    assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+
+
 def test_the_2026_10_30_cluster_in_own_blast_runs_out_even_with_no_majini_at_the_bomb():
     # The live cluster (186 hits, bomb_cm 26-416): his own proximity mine detonated while he stood in its blast, with
     # no Majini close enough to trigger it (the mine detonates on its own timer, so the old guard - Majini within
