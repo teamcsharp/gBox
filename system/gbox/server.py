@@ -201,6 +201,9 @@ def create_app(config: Config) -> FastAPI:
     from .mercs import strategy as mercs_strategy
     mercs_strategy.install(app, store, config, auth)
 
+    from . import merc_live_controls
+    merc_live_controls.install(app, config)
+
     # --- shell ---
     @app.get("/")
     def index():

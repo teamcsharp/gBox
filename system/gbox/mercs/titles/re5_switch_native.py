@@ -227,6 +227,11 @@ class Controller(N.Controller):
             finally:
                 self.detach_completed()
 
+    def current_weapon(self):
+        player, _ = self.ready()
+        held = [row['item'] for row in R.inventory(self, player) if row['type'] == 1 and row['hand']]
+        return held[0] if len(held) == 1 else None
+
     def weapon_choices(self):
         from .re5_weapon_catalogue import choices
         return choices(self)

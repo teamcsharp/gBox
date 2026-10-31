@@ -7,13 +7,40 @@ expire rather than affecting a later round. No latest-value command coalescing.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
+import weakref
+from contextlib import contextmanager
 
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
-OPERATIONS = {"flash_now", "equip_primary"}
+OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4"}
+
+_WAKE_LOCK = threading.Lock()
+_WAITERS = weakref.WeakValueDictionary()
+
+
+@contextmanager
+def wake_on_post(sid):
+    """Local serve/worker dispatch wakes on commit; remote workers retain polling."""
+    event = threading.Event()
+    key = sid, id(event)
+    with _WAKE_LOCK:
+        _WAITERS[key] = event
+    try:
+        yield event
+    finally:
+        with _WAKE_LOCK:
+            _WAITERS.pop(key, None)
+
+
+def wake(sid):
+    with _WAKE_LOCK:
+        for (session, _), event in list(_WAITERS.items()):
+            if session == sid:
+                event.set()
 
 
 class Queue:
@@ -64,7 +91,7 @@ class Queue:
         if op not in OPERATIONS:
             raise ValueError("unsupported intervention")
         args = {} if args is None else args
-        if not isinstance(args, dict) or (op == 'flash_now' and args) or (op == 'equip_primary' and
+        if not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4') and args) or (op == 'equip_primary' and
                 (set(args) != {'item'} or type(args['item']) is not int or not 1 <= args['item'] <= 255)):
             raise ValueError('invalid intervention arguments')
         try:
@@ -96,7 +123,10 @@ class Queue:
                 i = next(i for i,r in enumerate(d["rows"]) if r["state"] in TERMINAL)
                 d["rows"].pop(i)
             return dict(row)
-        return self._change(sid, add)
+        row = self._change(sid, add)
+        if row['state'] == 'queued':
+            wake(sid)  # after commit: no lost notification before the row is visible
+        return row
 
     def claim(self, sid, epoch, capabilities, reason="", options=None):
         options = options or {}
@@ -104,17 +134,21 @@ class Queue:
             if epoch != d["epoch"] or capabilities != d["capabilities"] or options != d.get('options', {}) or now - d.get("seen", 0) >= 1:
                 d.update(epoch=epoch, capabilities=capabilities, seen=now, reason=reason, options=options)
             out = []
-            for r in d["rows"]:
+            # Flashes precede queued equipment work. Claim at most one ordinary
+            # operation so a batch of weapon changes cannot hide new flash taps.
+            ordinary = 0
+            for r in sorted(d["rows"], key=lambda r: r['op'] != 'flash_now'):
                 if r["state"] != "queued":
                     continue
                 if r["epoch"] != epoch or r["op"] not in capabilities:
                     r.update(state="expired", reason="active player or capability changed")
                     self._remember(sid, r)
                     continue
-                if len(out) < 20:
+                if len(out) < 20 and (r['op'] == 'flash_now' or not ordinary):
                     r.update(state="claimed", claim=uuid.uuid4().hex, claimed_at=now)
                     self._remember(sid, r)
                     out.append(dict(r))
+                    ordinary += r['op'] != 'flash_now'
             return out
         return self._change(sid, take)
 
@@ -138,6 +172,10 @@ class Queue:
                 r = next((r for r in d["rows"] if r["id"] == rid), None)
                 if not r or r.get("claim") != claim:
                     raise ValueError("unknown claim")
+                if (r['op'] == 'magnum_quick4' and result.get('state') == 'confirmed' and
+                        any(type(result.get(k)) is not int or result[k] != 4
+                            for k in ('requested', 'completed', 'presses'))):
+                    raise ValueError('magnum confirmation requires exactly four verified quick shots')
                 if r["state"] in ("claimed", "uncertain"):
                     r.update(state=result["state"], result=result, finished_at=now)
                     self.store.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)",
@@ -181,7 +219,10 @@ def install(app, store, auth):
                 type(w.get('item')) is not int or not 1 <= w['item'] <= 255 or
                 not isinstance(w.get('weapon'), str) or len(w['weapon']) > 80 for w in weapons):
             raise HTTPException(422, 'invalid weapon choices')
-        options = {'weapons': weapons} if weapons else {}
+        current = options.get('current_weapon')
+        if current is not None and (type(current) is not int or not 1 <= current <= 255):
+            raise HTTPException(422, 'invalid current weapon')
+        options = {'weapons': weapons, 'current_weapon': current}
         reason = str(body.get("reason") or "")[:300]
         return {"requests": queue.claim(sid, epoch, caps, reason, options)}
 
@@ -220,27 +261,44 @@ def native_controller(ad):
 
 def worker_loop(sid, server, headers, ad, stats_of, alive):
     """Independent of video/input/UI requests; serialized native mailbox owner."""
+    with wake_on_post(sid) as event:
+        _worker_loop(sid, server, headers, ad, stats_of, alive, event)
+
+
+def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
     import httpx
-    from .titles import re6_switch_native as N
+    from .titles import re6_switch_native as N, re6_magnum_quick4 as Q
     ctl, unsupported = None, ""
     try:
         ctl = native_controller(ad)
     except (OSError, ValueError, RuntimeError, AttributeError) as exc:
         unsupported = str(exc)
 
-    def context():
+    catalogue = {}
+
+    def context(full=True):
         if ctl is None:
             return {"epoch": "unsupported", "capabilities": [], "reason": unsupported}
         try:
             prepare = getattr(ctl, "prepare", None)
-            if prepare is not None:
+            if full and prepare is not None:
                 prepare()
             p, generation = ctl.ready()
             stats = stats_of() or {}
             epoch = f"{ctl.pid}:{ctl.identity[1]}:{p}:{generation}:{stats.get('round_evidence_id', '')}"
+            if not full:
+                return {'epoch': epoch}
             choices = getattr(ctl, 'weapon_choices', None)
-            return {"epoch": epoch, "capabilities": ["flash_now"] + (["equip_primary"] if choices else []),
-                    "options": {"weapons": choices()} if choices else {}, "reason": ""}
+            caps = ["flash_now"] + (["equip_primary"] if choices else [])
+            if Q.available(ctl) and not stats.get('operator_control'):
+                caps.append(Q.OP)
+            current = getattr(ctl, 'current_weapon', None)
+            if catalogue.get('epoch') != epoch or time.monotonic() - catalogue.get('at', 0) >= 1:
+                catalogue.update(epoch=epoch, at=time.monotonic(),
+                    options={'weapons': choices() if choices else [],
+                             'current_weapon': current() if current else None})
+            return {"epoch": epoch, "capabilities": caps,
+                    "options": catalogue['options'], "reason": ""}
         except (OSError, ValueError, RuntimeError) as exc:
             return {"epoch": "unavailable", "capabilities": [], "reason": str(exc)[:300]}
 
@@ -254,6 +312,8 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                 if response.status_code == 200:
                     receipts.clear()
         while alive():
+            event.clear()  # before claim: a concurrent post is either read or wakes this iteration
+            had_requests = False
             try:
                 flush()
                 if len(receipts) >= MAX_PENDING - 20:
@@ -262,17 +322,19 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                 ctx = context()
                 response = client.post(f"/api/sessions/{sid}/interventions/claim", json=ctx)
                 if response.status_code == 200:
-                    for row in response.json().get("requests", []):
-                        if not alive() or row["expires"] <= time.time() or row["epoch"] != context()["epoch"]:
+                    rows = response.json().get("requests", [])
+                    had_requests = bool(rows)
+                    for row in rows:
+                        if not alive() or row["expires"] <= time.time() or row["epoch"] != context(full=False)["epoch"]:
                             result = {"state": "unavailable", "reason": "player changed or request expired"}
                         else:
                             try:
                                 stats = stats_of()
-                                if row['op'] == 'equip_primary':
+                                if row['op'] in ('equip_primary', Q.OP):
                                     from . import primary_weapon
                                     player, generation = ctl.ready()
                                     pending = {'id': row['id'], 'player': player, 'generation': generation,
-                                               'until': time.monotonic() + 3.0}
+                                               'until': time.monotonic() + (9.0 if row['op'] == Q.OP else 3.0)}
                                     if stats is None:
                                         raise N.Unavailable('autoplay state is unavailable')
                                     stats['native_weapon_pending'] = pending
@@ -292,11 +354,14 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                                             time.sleep(.01)
                                         if not pending.get('released'):
                                             raise N.Unavailable('bot did not release its inputs for the weapon change')
-                                        if not alive() or row['epoch'] != context()['epoch'] or \
+                                        if not alive() or row['epoch'] != context(full=False)['epoch'] or \
                                                 stats.get('operator_control') or row['expires'] <= time.time():
                                             raise N.Unavailable('player changed, operator took control, or request expired')
-                                        result = ctl.equip_primary(row['args']['item'], expected=(player, generation), allowed=allowed)
-                                        primary_weapon.install(ad, result, ctl.pid)
+                                        if row['op'] == Q.OP:
+                                            result = Q.execute(ctl, expected=(player, generation), allowed=allowed)
+                                        else:
+                                            result = ctl.equip_primary(row['args']['item'], expected=(player, generation), allowed=allowed)
+                                            primary_weapon.install(ad, result, ctl.pid)
                                     finally:
                                         if stats.get('native_weapon_pending') is pending:
                                             stats.pop('native_weapon_pending', None)
@@ -307,8 +372,11 @@ def worker_loop(sid, server, headers, ad, stats_of, alive):
                                         stats["native_flash_confirmed_at"] = time.time()
                             except Exception as exc:  # a failure does not end worker health or retry the game effect
                                 result = {"state": "uncertain" if isinstance(exc, N.Uncertain) else "failed", "reason": str(exc)[:300]}
+                                if row['op'] == Q.OP:
+                                    result.update(op=Q.OP, requested=4, completed=0, presses=0, verified=False)
                         receipts.append((row["id"], {"claim": row["claim"], "result": result}))
                 flush()
             except (httpx.HTTPError, ValueError, OSError):
                 pass
-            time.sleep(.05 if ctl else 1.0)
+            if not had_requests:
+                event.wait(.05 if ctl else 1.0)

@@ -1551,7 +1551,9 @@ def re5_mods(inp: RE5ModsIn, ctx):
     if (inp.op or "").strip().lower() in ("bot_logic", "live_controls") and (is_switch_re6(g) or is_switch_re5(g)):
         from .mercs import bot_logic                     # the operator's live bot settings (the PiP's sidebar)
         title = "re6" if is_switch_re6(g) else "re5"     # (and its weapon dropdown: weapon= equips that one)
-        view = bot_logic.handle(title, inp.values, inp.reset) | bot_logic.weapon_menu(ad, title, inp.weapon)
+        # Polling the live panel is a read; only changed behavior settings rewrite its saved file.
+        logic = bot_logic.handle(title, inp.values, inp.reset) if inp.values or inp.reset else bot_logic.status(title)
+        view = logic | bot_logic.weapon_menu(ad, title, inp.weapon)
         if inp.op.strip().lower() == "live_controls":
             if title == "re6":
                 from .mercs.titles import re6_switch_mods as mods

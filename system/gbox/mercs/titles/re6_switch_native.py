@@ -288,6 +288,20 @@ class Controller:
             raise Unavailable("flash resources are not loaded for this character")
         return player, self.w(player + 0x1308)
 
+    def weapon_choices(self):
+        from .re6_switch_weapon_native import choices
+        return choices(self)
+
+    def equip_primary(self, item, *, expected=None, allowed=None):
+        from .re6_switch_weapon_native import replace
+        return replace(self, item, expected=expected, allowed=allowed)
+
+    def current_weapon(self):
+        player, _ = self.ready()
+        index, item, _ = R.inventory_state(self, player)
+        return item if any(slot == index and 0 <= slot < R.WEAPON_INDEXES and (kind & 255) == item
+                           for kind, slot in R.inventory_guns(self, player).items()) else None
+
     def flash(self):
         with self.lock:
             self.ready()

@@ -893,7 +893,8 @@ def snapshot(m) -> dict:
             motion = struct.unpack("<H", m.rd(p + P_MOTION, 2))[0]
             tablets = struct.unpack("<h", m.rd(p + P_TABLETS, 2))[0]
             equipped, weapon_id, bomb = inventory_state(m, p)
-            snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
+            snap["player"] = {"ptr": p, "generation": struct.unpack("<I", m.rd(p + 0x1308, 4))[0],
+                              "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
                               "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p),
                               "guns": inventory_guns(m, p),
@@ -2503,6 +2504,9 @@ class Bot:
 
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
+        # Only the driver supplies a life-checked, match-scoped operator pick.
+        # Raw telemetry remains complete; native equipment choices honor it.
+        self._operator_primary = snap.get('primary_weapon')
         now = self.clock()
         if self.native_equip is not None:
             self.native_equip.tick()
@@ -2545,6 +2549,9 @@ class Bot:
 
     def _gun_index(self, p, preferred=None):
         guns = p.get('guns') or {}
+        primary = getattr(self, '_operator_primary', None)
+        if primary and (0x100 + primary['item']) in guns:
+            return guns[0x100 + primary['item']]
         if preferred in guns.values():
             return preferred
         return next((guns[k] for k in (0x107, 0x108, 0x105, 0x104, 0x106) if k in guns),
@@ -2553,8 +2560,16 @@ class Bot:
     def _equip_keys(self, p, index, legacy='dright'):
         self._equip_result = None
         if self.native_equip is None:
-            return {'tap': legacy}
+            return {'hold': ()} if getattr(self, '_operator_primary', None) else {'tap': legacy}
         p = p or (self._snap or {}).get('player') or {}
+        primary = getattr(self, '_operator_primary', None)
+        guns = p.get('guns') or {}
+        if primary:
+            wanted = guns.get(0x100 + primary['item'])
+            if primary.get('locked') or index in guns.values():
+                index = wanted
+            if index is None:
+                return {'hold': ()}
         self._equip_result = self.native_equip.select(p, index)
         return {'hold': ()}
 
@@ -2878,8 +2893,10 @@ class Bot:
         """The wanted weapon into his hands - the app's (WANT_WEAPON), else a shotgun for a crowd on him, else a grab's
         pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, resting, or the
         bonus run is on (no interrupting the capsule run)."""
-        want = WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None
         held = p.get("guns") or {}
+        primary = getattr(self, '_operator_primary', None)
+        want = (held.get(0x100 + primary['item']) if primary else
+                WANT_WEAPON if WANT_WEAPON is not None and WANT_WEAPON_AT >= self.grab_weapon_at else None)
         if want is None and not AUTO_SWITCH:
             return None
         if want is None:
@@ -5170,6 +5187,10 @@ class RE6Switch(Driver):
             return
         from . import re6_switch_mods
         res = re6_switch_mods.maintain(ad, snap, enabled=playing)
+        from .. import primary_weapon
+        snap['primary_weapon'] = primary_weapon.snapshot(ad, snap)
+        if self.stats is not None:
+            self.stats['primary_weapon'] = snap['primary_weapon']
         snap["auto_qte"] = bool((re6_switch_mods.ORIG.get(id(ad)) or {}).get("auto_qte"))   # the bot leaves holds to it
         if self.stats is not None:
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)
