@@ -1444,6 +1444,7 @@ class Bot:
         self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
         self.ray_key, self.ray_since = None, 0.0
         self.backoff_until = self.backoff_ready = 0.0
+        self._rear_backoff_until = 0.0             # a Majini closing from behind: step back first (the damage batch)
         self.quick, self.quick_at = 0, -1e9      # the quick turn's step (1 stick back, 2 + B, 3 let go), its B press
         self.target_at = -1e9
         self.prev_target, self.switch_at = None, -1e9   # the one he left and when (FLIP_S)
@@ -1644,6 +1645,7 @@ class Bot:
             self._kills_prev = k
         behind = [e for e in live if flat(e) <= BEHIND_R and e.get("ptr", e.get("slot")) != self.target
                   and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2]
+        self._rear_backoff(p, behind, live, flat, now)       # one closing from behind: keep the distance (the grab)
         on = bool(behind) and self.aim_since is not None
         if on:
             self.stats["behind_threat_s"] = round(self.stats["behind_threat_s"] + dt, 2)
@@ -1662,6 +1664,34 @@ class Bot:
                     del self._long_marks[key]
                 elif e is None or now - t > LONG_KILL_S:
                     del self._long_marks[key]
+
+    def _rear_backoff(self, p, behind, live, flat, now) -> None:
+        """A Majini closing from behind while he aims ahead (the damage batch's 'grabbed from behind'): back up to
+        keep the distance before it reaches arm's length and grabs him. The quick turn only starts for one within
+        3 m, and only at 90 deg - a closing Majini can reach the grab inside that. Backing away from the threat's
+        bearing (its side) does not walk into the one he aims at (front) nor a front crowd. Only with the gun down,
+        one behind, no front threat close enough to be grabbed next, no hold or move already under way. Sets the
+        rear flag and the back-off clock; _decide turns that into the ldown move (same as the front back-off)."""
+        if not behind or self.aim_since is not None:
+            return
+        px, py, pz = p["pos"]
+        if self.fire_down or self.quick or self.mode in ("rush", "hunt"):
+            return
+        if now < self.break_until or p.get("motion") in MOTION_HELD or now < self.backoff_until:
+            return
+        e = min(behind, key=flat)
+        d = flat(e)
+        if not (TOO_CLOSE <= d <= BEHIND_R):                 # the band where a grab is coming (behind_threat_s range)
+            return
+        tol = self.raise_tol(d)
+        front = [x for x in live
+                 if x is not e and abs(wrap(heading(x["pos"][0] - px, x["pos"][2] - pz) - p["rot"])) <= tol
+                 and flat(x) < d]                            # backing away would put us between them and his aim
+        if front:
+            return
+        self._rear_backoff_until = now + BACKOFF_S
+        self.stats["rear_backoffs"] = self.stats.get("rear_backoffs", 0) + 1
+        self._gun_down()
 
     def _pursue(self, p, live, flat, snap, now):
         """The combo running down with nobody on his level in reach: run to the census's best (stuck: a detour)."""
@@ -3735,6 +3765,9 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
+            if now < self._rear_backoff_until:              # one closing from behind: step back first
+                self.doing, self.why = "backoff", "a Majini closing from behind"
+                return {"hold": ("ldown",) + self._turn(body_err)}
             if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R) and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn

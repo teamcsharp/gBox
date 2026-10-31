@@ -1,0 +1,88 @@
+{
+ "schema": "gbox.mercs.incident-replay/1",
+ "title": "010018100CD46000",
+ "event_id": "re5-switch-rear-backoff-75da0d4fb2df698b",
+ "observed_at": 1793370939.4766107,
+ "hp_before": 1000,
+ "hp_after": 804,
+ "hp_max": 1000,
+ "loss": 196,
+ "held": [],
+ "cluster": {
+  "id": "75da0d4fb2df698b",
+  "game_id": "52d15709be0fda1a",
+  "signature": "aimed_away_or_behind",
+  "label": "grabbed from behind while aiming ahead"
+ },
+ "counters": {
+  "combo": 0,
+  "kills": 0,
+  "score": 0,
+  "timer": 89.68
+ },
+ "decision": {},
+ "snapshot": {
+  "player": {
+   "ptr": 1,
+   "pos": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "rot": 0.0,
+   "hp": 1000,
+   "hp_max": 1000,
+   "motion": 0
+  },
+  "enemies": [
+   {
+    "ptr": 10,
+    "pos": [
+     800.0,
+     0.0,
+     0.0
+    ],
+    "hp": 800,
+    "hp_max": 800,
+    "slot": 0
+   },
+   {
+    "ptr": 11,
+    "pos": [
+     169.7056,
+     0.0,
+     -169.7056
+    ],
+    "hp": 800,
+    "hp_max": 800,
+    "slot": 1
+   }
+  ],
+  "inventory": [],
+  "laser": null,
+  "combo": 0,
+  "kills": 0,
+  "score": 0,
+  "timer": 89.68,
+  "timer_start": 120.0
+ },
+ "preceding_history": [
+  {
+   "at": 1793370938.5,
+   "hp": 1000,
+   "held": [],
+   "pos": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "rot": 0.0,
+   "combo": 0,
+   "kills": 0,
+   "score": 0,
+   "mine_events": [],
+   "navigation": {},
+   "plan": {}
+  }
+ ]
+}
