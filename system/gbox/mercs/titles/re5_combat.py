@@ -106,7 +106,9 @@ TAPS_NO_SHOT = 8                       # ... taps without a shot: it wants a hol
 HOLD_FIRE_IDS = frozenset({0x03, 0x09, 0x13, 0x15, 0x1D})  # verified table IDs; 0x25 was not the Gatling
 STEADY_HEAD = True                     # False: the older fire-on-first-overlap policy (tests of that gate)
 HEAD_SETTLE_S = 0.10                   # the dot held on his head this long before the trigger (a steady aim, #3046)
-HEAD_PATIENCE_S = 0.60                 # the dot on his body (head not reachable) this long: take the body shot
+HEAD_PATIENCE_S = 0.25                 # the dot on his body (head not reachable) this long: take the body shot (was 0.6:
+                                       # operator 2026-10-31 "too much time deliberating on the shot")
+UNLOAD_CONE = math.radians(8)          # within THREAT_BLAST_R, the gun up: the trigger down with the aim this near him
 SETTLE_S = 0.08                        # legacy persisted tuning metadata; a first-hit overlap now fires immediately
 FRONT_YAW, FRONT_PITCH = math.radians(60), math.radians(45)  # candidate cone, not a visibility claim
 WALL_CONE = math.radians(10)           # a first hit this short, within this cone of him: a wall in front (coaching #3002)
@@ -1262,7 +1264,8 @@ class Combat:
         line_ok = line_to(lz, aim_at, foot, cone=FIRE_CONE * widen)
         p90 = self.cal.p90(self.character, wid or 0, dist)
         steady = True
-        if STEADY_HEAD and zone == "head" and direct and not point_blank:   # a steady aim: settled on the head, else patience
+        if STEADY_HEAD and zone == "head" and direct and not point_blank \
+                and not (THREAT_BLAST and dist < THREAT_BLAST_R):   # a steady aim: settled on the head (not within 5 m)
             head_ok = self.dot_head_since is not None and now - self.dot_head_since >= HEAD_SETTLE_S
             body_ok = self.dot_body_since is not None and now - self.dot_body_since >= HEAD_PATIENCE_S
             steady = head_ok or body_ok
@@ -1292,7 +1295,14 @@ class Combat:
                 fire, gate = True, "threat: blasting" if THREAT_BLAST and dist < THREAT_BLAST_R else "line to him"
             else:
                 off = math.degrees(math.hypot(est[1] or 0.0, est[2] or 0.0)) if est is not None and est[1] is not None else None
-                fire, gate = False, (f"slewing {off:.0f} deg off him: hold fire" if off is not None else "no line: hold fire")
+                if THREAT_BLAST and dist < THREAT_BLAST_R and off is not None and est[2] is not None \
+                        and math.radians(off) <= UNLOAD_CONE and jump is None:
+                    # anyone within 5 m with the gun up: unload while the aim closes on him (operator 2026-10-31);
+                    # an aim with no pitch (a bearing alone, a torn ray) is no aim: no blind fire
+                    fire, gate = True, "threat: unloading"
+                else:
+                    fire, gate = False, (f"slewing {off:.0f} deg off him: hold fire" if off is not None
+                                         else "no line: hold fire")
         else:
             sighted = line_ok and not dot_required
             # the laser has to stop on him (#881): a ray off the aim point - the ground, beside him, or on past him - holds

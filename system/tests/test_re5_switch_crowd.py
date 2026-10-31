@@ -352,3 +352,55 @@ def test_a_short_wall_ray_releases_a_blocked_target_for_another_crowd_threat(mon
     clock[0] += R.READY_S + .01  # the gun was lowered to move; complete this raise
     act = b.tick(snap(ring, dot=chest(ring[1]), motion=26))
     assert {"zl", "zr"} <= set(act["hold"])
+
+
+def _beside(foot, deg, reach=150.0):
+    """A ray from the muzzle that passes `deg` beside his chest and ends `reach` past him (no wall, not the floor)."""
+    c = chest(foot)
+    d = tuple(c[i] - MUZZLE[i] for i in range(3))
+    a = math.radians(deg)
+    x, z = d[0] * math.cos(a) + d[2] * math.sin(a), -d[0] * math.sin(a) + d[2] * math.cos(a)
+    k = (math.dist(MUZZLE, c) + reach) / math.dist(MUZZLE, c)
+    return (MUZZLE[0] + x * k, MUZZLE[1] + d[1] * k, MUZZLE[2] + z * k)
+
+
+def test_unload_fires_in_bursts_as_the_aim_closes_and_keeps_pointing_at_him():
+    """Operator 2026-10-31: "when the bot raises their gun, they fire ... If the bot has anyone within 5m, they need to be
+    unloading on threat"; "the bot needs to point their weapon at the enemies": the pistol's ray 7 deg beside the target's
+    chest fires (bursts), and the stick still brings it onto him."""
+    b, clock = bot()
+    ring = [at(350, 0), at(380, 75), at(300, -100)]
+    inv = [dict(M92F)]
+    b.tick(snap(ring, inv=inv))
+    held = set()
+    for t in (0.3, 0.333):                                      # (a fine correction pulses every other tick)
+        clock[0] = t
+        act = b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))
+        assert {"zl", "zr"} <= set(act["hold"])
+        held |= set(act["hold"])
+    assert {"rleft", "rright"} & held and b.stats["unload_s"] > 0.0
+    clock[0] = 0.3 + R.UNLOAD_BURST_S + 0.05                   # the burst's pause: the stick alone
+    assert "zr" not in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
+    clock[0] = 0.3 + R.UNLOAD_BURST_S + R.UNLOAD_TURN_S + 0.05   # the next burst
+    assert "zr" in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
+
+
+@pytest.mark.parametrize("deg", [12, 30])
+def test_unload_never_fires_well_off_him(deg):
+    b, clock = bot()
+    ring = [at(350, 0), at(380, 75), at(300, -100)]
+    inv = [dict(M92F)]
+    b.tick(snap(ring, inv=inv))
+    clock[0] = 0.3
+    act = b.tick(snap(ring, dot=_beside(ring[0], deg), motion=26, inv=inv))
+    assert "zr" not in act["hold"] and {"rleft", "rright"} & set(act["hold"])
+
+
+def test_unload_off_keeps_the_old_dot_gate(monkeypatch):
+    monkeypatch.setattr(R, "UNLOAD", False)
+    b, clock = bot()
+    ring = [at(350, 0), at(380, 75), at(300, -100)]
+    inv = [dict(M92F)]
+    b.tick(snap(ring, inv=inv))
+    clock[0] = 0.3
+    assert "zr" not in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
