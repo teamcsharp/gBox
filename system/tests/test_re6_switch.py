@@ -3043,3 +3043,46 @@ def test_overwhelmed_right_after_a_flash_the_remote_bomb_goes_down_at_his_feet(m
     snap2["player"].update(equipped=0, bomb={"count": 5, "out": False}, nades={0x115: (11, 5)})
     run(bot2, snap2, clock2, 1)
     assert bot2.stats["bomb_drops"] == 0
+
+
+def test_held_prompt_gate_suppresses_raise_when_grabbed_from_front(monkeypatch):
+    """Cluster 6b549723: the bot commits to the raise action while a zombie is on him from the front (495 hits,
+    nearest 0.0-0.6 m at +1...+77 deg). The held_prompt gate suppresses the raise and forces an in-place kick."""
+    # Enemy at 50 cm directly in front (bearing 0 deg), player heading 0, state 8 (held)
+    on_him = ((0.0, 0.0, 50.0, 700),)
+    bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0, state=8))
+    bot.held = lambda p, now: False
+    # Start with healthy HP so the gate doesn't fire yet
+    snap["player"]["hp"] = 900
+    run(bot, snap, clock, 1)
+    assert bot.stats.get("grab_recoveries", 0) == 0
+    # Now HP falls (the grab hit) with the enemy still at arm's length in front
+    snap["player"]["hp"] = 700
+    acts = run(bot, snap, clock, 1)
+    assert bot.stats.get("grab_recoveries", 0) == 1
+    assert acts[0]["tap"] == "zr" or "zr" in acts[0].get("hold", ())
+    assert bot.doing == "melee" or bot.stats.get("act") == "grab_recover_kick"
+
+
+def test_held_prompt_gate_does_not_fire_when_enemy_behind(monkeypatch):
+    """The gate only suppresses the raise when the enemy is in front (bearing < 90 deg). Behind: no kick."""
+    # Enemy 50 cm behind (bearing 180 deg), player heading 0, state 8 (held)
+    behind = ((0.0, 0.0, -50.0, 700),)
+    bot, clock, snap = brain(round_guest(enemies=behind, cam_yaw=0.0, state=8))
+    bot.held = lambda p, now: False
+    snap["player"]["hp"] = 900
+    run(bot, snap, clock, 1)
+    snap["player"]["hp"] = 700
+    acts = run(bot, snap, clock, 1)
+    assert bot.stats.get("grab_recoveries", 0) == 0
+    assert bot.doing != "grab_recover_kick"
+
+
+def test_held_prompt_gate_does_not_fire_when_no_hp_fall(monkeypatch):
+    """No HP change: the gate is inert even with an enemy at arm's length in front and the bot held."""
+    on_him = ((0.0, 0.0, 50.0, 700),)
+    bot, clock, snap = brain(round_guest(enemies=on_him, cam_yaw=0.0, state=8))
+    bot.held = lambda p, now: False
+    snap["player"]["hp"] = 900
+    acts = run(bot, snap, clock, 2)
+    assert bot.stats.get("grab_recoveries", 0) == 0

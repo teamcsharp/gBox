@@ -2528,6 +2528,11 @@ class Bot:
             if dying is not None:
                 return dying
         if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
+            # The held_prompt gate: a grab's recovery. Suppress the held/raise action when the bot is held, just
+            # lost HP, and a live enemy is at arm's length in front. Forces an in-place kick instead.
+            gate = self._held_prompt_gate(p, live, flat, snap, now)
+            if gate is not None:
+                return gate
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
                     self.stats["holds"] += 1
@@ -2593,6 +2598,40 @@ class Bot:
         self.stats["grab_det_presses"] += 1
         return True
 
+    def _held_prompt_gate(self, p, live, flat, snap, now) -> dict | None:
+        """A grab's recovery: the bot is held (state in HELD_STATES) and just lost HP with a live enemy at arm's length in front.
+        Suppress the held/raise action and force an in-place crowd-control kick instead. This prevents the bot from
+        committing to the raise action while a zombie is on him from the front, which is the cluster's remaining
+        failure mode (495 hits, nearest enemy 0.0-0.6 m at +1...+77 deg)."""
+        # Only trigger when the bot is in the held state (read from the snapshot, not self.in_hold)
+        held_from_snap = (p.get("state") or 0) in HELD_STATES
+        if not held_from_snap:
+            return None
+        # Track HP history for the falling check (independent of grabbed())
+        hp = p.get("hp") or 0
+        if not self.hp_seen or now - self.hp_seen[-1][0] > GRAB_S:
+            self.hp_seen = [(now, hp)]
+        else:
+            self.hp_seen = [(t, h) for t, h in self.hp_seen if now - t <= GRAB_S] + [(now, hp)]
+        falling = len(self.hp_seen) > 1 and self.hp_seen[-1][1] < self.hp_seen[0][1]
+        if not falling:
+            return None
+        # A live enemy within MELEE_R at a bearing < 90 deg from the player's heading
+        px, py, pz = p["pos"]
+        rot = p.get("rot")
+        for e in live:
+            if flat(e) <= MELEE_R:
+                bearing = wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - (rot if rot is not None else 0))
+                if abs(bearing) < math.radians(90):
+                    # Suppress the raise: force an in-place kick
+                    self.melee_at = now
+                    self.stats["melee"] = self.stats.get("melee", 0) + 1
+                    self.stats["grab_recoveries"] = self.stats.get("grab_recoveries", 0) + 1
+                    return self._go(
+                        "melee", "grab_recover_kick", {"tap": "zr"},
+                        f"grab recovery: one at {flat(e):.0f} cm in front, kick instead of raise")
+        return None
+
     def _weapon_switch(self, p, now) -> dict | None:
         """The wanted weapon into his hands - the app's (WANT_WEAPON), else a shotgun for a crowd on him, else a grab's
         pick: the D-pad's right until the equipped index is it. None: in hand already, not loaded, or resting."""
@@ -2645,6 +2684,9 @@ class Bot:
 
     def _decide(self, p, live, flat, near_e, near, snap, now) -> dict:
         px, py, pz = p["pos"]
+        gate_out = self._held_prompt_gate(p, live, flat, snap, now)
+        if gate_out is not None:
+            return gate_out
         crowd3 = sum(1 for e in live if flat(e) <= OVER_R)
         if crowd3 >= OVER_N:
             self.stats["over_s"] = round(self.stats.get("over_s", 0.0) + TICK_S, 2)
