@@ -3440,3 +3440,59 @@ def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
     quick_turn_ticks = [i for i, t in enumerate(result['ticks']) if t['doing'] == 'quick_turn']
     assert len(quick_turn_ticks) >= 2, \
         f"expected >=2 quick_turn ticks within 20 ticks (1.0s), got {len(quick_turn_ticks)}: {doings}"
+
+
+# --- damage_clusters crowd_4_in_2m: the flanking cluster interrupts the crowd-control back-out -----------------------
+def _load_crowd4_fixture():
+    """#5049's representative frame: 500/900 HP, 8 within 4 m, 10 enemies (two within 2 m), camera turned (yaw pi)."""
+    from gbox.mercs import incident_replay
+    fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
+                     're6_switch_crowd_4_in_2m.json').read_text())
+    return fx, incident_replay
+
+
+def test_crowd4_fixture_replays_deterministically():
+    """The crowd_4_in_2m fixture replays deterministically through incident_replay.replay."""
+    fx, ir = _load_crowd4_fixture()
+    first, second = ir.replay(fx, ticks=20), ir.replay(fx, ticks=20)
+    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
+    assert ir.keys(first) and all(isinstance(k, str) for k in ir.keys(first))
+
+
+def test_crowd4_tablet_does_not_interrupt_the_backout():
+    """#5049 (crowd_4_in_2m): with a flanking cluster (four or more within CC_CROWD_R while the backout is under way)
+    the tablet branch must NOT keep firing -- it preempts crowd control every 0.3 s and leaves him exposed to the
+    flanking ones. With the fix (CROWD_BACK_S: the tablet waits while now - _cc_since < CROWD_BACK_S) the backout runs
+    uninterrupted: at most one tablet tap (the initial gun-down) across the replay, and crowd ticks carry the backouts,
+    kicks and quick shots."""
+    fx, ir = _load_crowd4_fixture()
+    result = ir.replay(fx, ticks=60)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = ir.keys(result)
+    # at most one tablet tap across the whole replay (the initial gun-down), not a tablet every 0.3 s
+    tablet_taps = [t['t'] for t in result['ticks'] if t['act'].get('tap') == 'r' and t['doing'].startswith('tablet')]
+    assert len(tablet_taps) <= 1, \
+        f"tablet kept interrupting the backout {len(tablet_taps)} times: {tablet_taps} (doings={doings})"
+    # the crowd-control backout runs and carries the kicks/quick shots
+    assert doings.count('crowd') >= 5, \
+        f"crowd control barely ran (crowd ticks={doings.count('crowd')}): {doings}"
+    assert result['stats']['cc_backouts'] > 0, f"no backouts: stats={ {k: result['stats'][k] for k in ('cc_backouts','cc_kicks','cc_quick_shots')} }"
+    assert result['stats']['cc_kicks'] + result['stats']['cc_quick_shots'] > 0, \
+        f"crowd control fired no attacks: stats={ {k: result['stats'][k] for k in ('cc_backouts','cc_kicks','cc_quick_shots')} }"
+
+
+def test_crowd4_tablet_still_works_when_no_cluster_is_in_the_backout():
+    """The tablet must still fire when the backout is NOT in progress (the cluster thins): a lone far enemy and low
+    health, no crowd control running -- the tablet is taken (the fix must not over-suppress healing). Built from the
+    example's fields (500/900 HP, 7 tablets) with a single enemy far enough that no flanking cluster is in the backout."""
+    bot, clock, snap = brain(round_guest(hp=500, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)
+    tablet_presses = sum(1 for a in acts if a.get("tap") == "r" and bot.doing.startswith("tablet"))
+    # the tablet is taken (healing is not over-suppressed without a cluster in the backout)
+    assert tablet_presses >= 1 or bot.stats.get("tablet_presses", 0) >= 1, \
+        f"tablet over-suppressed with no cluster in the backout: presses={bot.stats.get('tablet_presses')} doings={[a['doing'] for a in acts]}"
+    # crowd control is not in progress with a single far enemy, so the tablet window is open
+    # (the tablet fired, which means the tablet branch ran -- over-suppression is the bug, not the tablet window)
+    assert bot.stats.get("tablet_presses", 0) >= 1 or tablet_presses >= 1, \
+        "tablet did not fire with no cluster in the backout (over-suppressed)"
