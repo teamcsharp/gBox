@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import struct
+import threading
 import time
 
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
@@ -745,6 +746,17 @@ HUNT_R = 1200.0                          # the "hunt" directive: closer than thi
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
 RUSH_R = 250.0
+# Grenades (operator 2026-10-31: "I want grenades like mad ... the bot itself uses grenades a lot when Majini crowd
+# him. ... they are funny"). The only live-verified RE5 grenade is the native flash (the same spawn/explode the
+# operator's flashbang and the grenade-ring button use), so "grenades like mad" is a native flash burst at a crowd:
+# the Majini around him are stunned and his crowd fire then clears them. It is bounded - one per GRENADE_EVERY_S, only
+# when GRENADE_CROWD_N Majini are within GRENADE_CROWD_R on his level - and runs on a short daemon thread off the 30 Hz
+# tick, serialized by the shared native controller's own lock, with every failure swallowed so it can never stall or
+# crash the bot. On by default; the GRENADES sidebar knob turns it off. (Once a hand/incendiary ring is verified live,
+# this can throw those instead.)
+GRENADES = True
+GRENADE_EVERY_S = 3.0
+GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
 MESH_PROBE_CM = 150.0                    # _mesh_guard: how far ahead his way is checked on the nav mesh
 MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
@@ -1454,6 +1466,7 @@ class Bot:
             self.stats.setdefault(k, 0)
         self.target = None
         self.aim_since = None
+        self._grenade_last, self._grenade_inflight = -1e9, False   # the GRENADES knob: last native flash burst, in flight
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
@@ -3461,7 +3474,46 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
         return act
+
+    def _grenade_crowd(self, snap, now) -> None:
+        """Operator 2026-10-31: grenades like mad. When Majini crowd him, fire one native flash (the only verified RE5
+        grenade), bounded by GRENADE_EVERY_S. Runs off the tick on a daemon thread, serialized by the shared native
+        controller's lock; never raises into the bot. A no-op where the native path is unavailable (e.g. not a live
+        Switch session) - the controller refuses and the reason is recorded."""
+        if not GRENADES or self._grenade_inflight or now - self._grenade_last < GRENADE_EVERY_S:
+            return
+        if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
+            return
+        p = snap.get("player") or {}
+        if (p.get("hp") or 0) <= 0:
+            return
+        ad = getattr(self._m, "adapter", None)
+        if ad is None or getattr(self._m, "mercs_no_modifications", False):
+            return
+        ppos = p.get("pos")
+        if ppos is None:
+            return
+        crowd = sum(1 for e in snap.get("enemies") or ()
+                    if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - ppos[1]) <= LEVEL_DY
+                    and math.hypot(e["pos"][0] - ppos[0], e["pos"][2] - ppos[2]) <= GRENADE_CROWD_R)
+        if crowd < GRENADE_CROWD_N:
+            return
+        self._grenade_last, self._grenade_inflight = now, True
+
+        def fire():
+            try:
+                from ..interventions import native_controller
+                res = native_controller(ad).flash()
+                if isinstance(res, dict) and res.get("state") == "confirmed":
+                    self.stats["bot_grenades"] = self.stats.get("bot_grenades", 0) + 1
+                    self.stats["native_flash_confirmed_at"] = time.time()
+            except Exception as exc:                         # noqa: BLE001 - never stall or crash the bot
+                self.stats["bot_grenade_reason"] = f"{type(exc).__name__}: {exc}"[:120]
+            finally:
+                self._grenade_inflight = False
+        threading.Thread(target=fire, daemon=True, name="re5-bot-grenade").start()
 
     def _native_equipment(self, act, snap):
         """Translate a quick-slot weapon intent into a native attachment request."""

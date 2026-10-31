@@ -233,11 +233,15 @@ CONVENIENCE = {
                           "with a two-minute bot swap lock and a preference for the current match. "
                           "op=magnum_quick4 equips a loaded magnum and performs four observed quick shots on supported RE6 only; "
                           "an interrupted or unobserved action stops with a partial/uncertain receipt and is never replayed. "
-                          "Provide a new UUID request_id for each click; reuse that UUID only when retrying that same request. "
+                          "op=grenade_ring (RE5 Switch) spawns ten grenades in a ring that blooms out from the player and detonates "
+                          "them; kind selects the grenade (flash, the default and the only verified type; hand and incendiary are "
+                          "refused with a reason until verified). Provide a new UUID request_id for each click; reuse that UUID only "
+                          "when retrying that same request. "
                           "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
                           "Unsupported title/build/resources are reported without substituting a grenade throw.",
-                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary", "magnum_quick4"]},
-                               "request_id": S, "item": {"type":"integer", "minimum":1, "maximum":255}}, ["session_id", "op"])),
+                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary", "magnum_quick4", "grenade_ring"]},
+                               "request_id": S, "item": {"type":"integer", "minimum":1, "maximum":255},
+                               "kind": {"type":"string", "enum":["flash", "hand", "incendiary"]}}, ["session_id", "op"])),
     "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
                  "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
                  "its params, allowed values and when it takes effect. params holds that tool's own fields only (RE5: multiplier, on, "
@@ -615,6 +619,8 @@ def build(base_url: str, token: str) -> Server:
             payload = {"op": a["op"], "request_id": a["request_id"]}
             if a['op'] == 'equip_primary':
                 payload['args'] = {'item': a.get('item')}
+            if a['op'] == 'grenade_ring':
+                payload['args'] = {'kind': a.get('kind', 'flash')}
             return await post(f"/api/sessions/{sid}/interventions", payload)
         if name == "game_mod":
             session = await live_session(a["session_id"])

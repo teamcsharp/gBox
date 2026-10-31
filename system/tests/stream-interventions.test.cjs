@@ -1,5 +1,5 @@
 const {test}=require('node:test'); const assert=require('node:assert/strict');
-const {create}=require('../clients/web/viz/stream-interventions.js');
+const {create,RING_KINDS,ringKindLabel,readRingKind}=require('../clients/web/viz/stream-interventions.js');
 const {current}=require('../clients/web/viz/mercs-current.js');
 test('live maps follow the playing title while the previous emulator remains warm',()=>{
   const warm={session_id:'worker-old',game_id:'re5',state:'running'},live={session_id:'worker-new',game_id:'re6',state:'running'};
@@ -41,4 +41,29 @@ test('weapon choice uses the same durable receipts and never substitutes a flash
       return {requests:[{id:'weapon-id',op:'equip_primary',state:'confirmed',result:{weapon:'Hydra'}}]};}});
   await c.equipPrimary('selected-session',25);assert.deepEqual(posts,[{op:'equip_primary',request_id:'weapon-id',args:{item:25}}]);
   assert.deepEqual(notes,[]);await c.poll();assert.match(notes[0],/Hydra equipped.*three minutes/);c.dispose();
+});
+
+test('grenade ring sends the chosen kind and announces the detonation count',async()=>{
+  const posts=[],notes=[];const c=create({uuid:()=> 'ring-id',schedule:()=>1,cancel:()=>{},notify:(s,r)=>notes.push([s,r]),
+    api:async(path,body)=>{if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}
+      return {requests:[{id:'ring-id',op:'grenade_ring',state:'confirmed',result:{kind:'flash',detonated:10,requested:10}}]};}});
+  await c.grenadeRing('sess','flash');
+  assert.deepEqual(posts,[{op:'grenade_ring',request_id:'ring-id',args:{kind:'flash'}}]);
+  assert.deepEqual(notes,[]);await c.poll();
+  assert.match(notes[0][0],/Flash ring detonated \(10 grenades\)/);assert.equal(notes[0][1].op,'grenade_ring');c.dispose();
+});
+
+test('grenade ring defaults to flash when no kind is given',async()=>{
+  const posts=[];const c=create({uuid:()=> 'ring-id',schedule:()=>1,cancel:()=>{},api:async(path,body)=>{
+    if(body){posts.push(body);return {request:{id:body.request_id,state:'queued'}};}return {requests:[]};}});
+  await c.grenadeRing('sess');assert.deepEqual(posts[0].args,{kind:'flash'});c.dispose();
+});
+
+test('ring kind chooser: only flash is selectable, remembered per viewer',()=>{
+  assert.deepEqual(RING_KINDS.map(k=>[k.kind,k.available]),[['flash',true],['hand',false],['incendiary',false]]);
+  assert.equal(ringKindLabel('incendiary'),'Incendiary');
+  const store=(v)=>({getItem:()=>v});
+  assert.equal(readRingKind(store('flash')),'flash');
+  assert.equal(readRingKind(store('hand')),'flash','an unverified stored kind falls back to flash');
+  assert.equal(readRingKind(store(null)),'flash');
 });

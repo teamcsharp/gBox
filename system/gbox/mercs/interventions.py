@@ -16,7 +16,12 @@ from contextlib import contextmanager
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
-OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4"}
+OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring"}
+# The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
+# are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
+# ten spawn/explode pairs the ring runs (each is the verified flash).
+GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
+GRENADE_RING_TTL = 25.0
 
 _WAKE_LOCK = threading.Lock()
 _WAITERS = weakref.WeakValueDictionary()
@@ -63,10 +68,11 @@ class Queue:
                 before = json.dumps(doc, separators=(",", ":"))
                 now = self.clock()
                 for r in doc["rows"]:
+                    ttl = GRENADE_RING_TTL if r["op"] == "grenade_ring" else TTL
                     if r["state"] == "queued" and r["expires"] <= now:
                         r.update(state="expired", reason="request expired before execution")
                         self._remember(sid, r)
-                    if r["state"] == "claimed" and r["claimed_at"] + TTL <= now:
+                    if r["state"] == "claimed" and r["claimed_at"] + ttl <= now:
                         r.update(state="uncertain", reason="worker receipt missing; not replayed")
                         self._remember(sid, r)
                 result = fn(doc, now)
@@ -91,7 +97,12 @@ class Queue:
         if op not in OPERATIONS:
             raise ValueError("unsupported intervention")
         args = {} if args is None else args
-        if not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4') and args) or (op == 'equip_primary' and
+        if op == 'grenade_ring':
+            args = dict(args)
+            kind = args.setdefault('kind', 'flash')
+            if set(args) != {'kind'} or kind not in GRENADE_RING_KINDS:
+                raise ValueError('invalid grenade ring arguments')
+        elif not isinstance(args, dict) or (op in ('flash_now', 'magnum_quick4') and args) or (op == 'equip_primary' and
                 (set(args) != {'item'} or type(args['item']) is not int or not 1 <= args['item'] <= 255)):
             raise ValueError('invalid intervention arguments')
         try:
@@ -114,7 +125,8 @@ class Queue:
                 raise ValueError('weapon is not offered by this session')
             if sum(r["state"] in ("queued", "claimed") for r in d["rows"]) >= MAX_PENDING:
                 raise ValueError("intervention queue is full")
-            row = {"id": request_id, "op": op, "args": dict(args), "source": source, "at": now, "expires": now + TTL,
+            ttl = GRENADE_RING_TTL if op == "grenade_ring" else TTL
+            row = {"id": request_id, "op": op, "args": dict(args), "source": source, "at": now, "expires": now + ttl,
                    "epoch": d["epoch"], "state": "queued"}
             d["rows"].append(row)
             self.store.db.execute("INSERT INTO docs VALUES(?,?,?)",
@@ -290,6 +302,8 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                 return {'epoch': epoch}
             choices = getattr(ctl, 'weapon_choices', None)
             caps = ["flash_now"] + (["equip_primary"] if choices else [])
+            if getattr(ctl, 'grenade_ring', None) is not None:
+                caps.append("grenade_ring")
             if Q.available(ctl) and not stats.get('operator_control'):
                 caps.append(Q.OP)
             current = getattr(ctl, 'current_weapon', None)
@@ -365,6 +379,11 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                                     finally:
                                         if stats.get('native_weapon_pending') is pending:
                                             stats.pop('native_weapon_pending', None)
+                                elif row['op'] == 'grenade_ring':
+                                    result = ctl.grenade_ring(row['args'].get('kind', 'flash'))
+                                    if stats is not None and result.get('state') == 'confirmed':
+                                        stats["grenade_rings"] = stats.get("grenade_rings", 0) + 1
+                                        stats["native_flash_confirmed_at"] = time.time()
                                 else:
                                     result = ctl.flash()
                                     if stats is not None:
