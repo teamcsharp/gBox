@@ -332,6 +332,15 @@ SMOOTH_FLIP = True       # no flip back to the Majini he just left within FLIP_S
 SMOOTH_DOT = False       # the dot takes another Majini after DOT_SWITCH_TICKS (and fires on him at once meanwhile)
 SMOOTH_LEVEL = True      # his own level first, no pitch swings to roofs while ground Majini come (back 14:40)
 SMOOTH_CLOSE = True      # up close the target is kept until it dies or leaves THREAT_R (back 14:40)
+# #5054: the damage cluster behind the Switch bot's near-range deaths is one Majini at 26-57 cm, motion 46-58 cm/s,
+# health falling 262-505 per hit while the bot stands and fires - it never moves while the fight is in his face, so
+# the one it does not face keeps landing on it from the blind side. The keep-moving answer already exists in the
+# far-fight branch (back off 150 cm per tick with the gun down, no spot held long); what was missing was the trigger
+# for the near fight: it only fired with the gun down and the one in front. Now it fires with the fight in face too -
+# inside KEEP_R with nobody at grab range (HELD_R, where standing still is correct) and no grab threat (HELD_R, the
+# quick turn's own threshold), backing off KEEP_CM per tick with the gun down, which is exactly what CLOSE_BACKOFF
+# already does from 7 m, extended down to grab range, so the bot never stands still in the kill zone.
+KEEP_R, KEEP_CM, KEEP_GAP_S = 120.0, 150.0, 1.5
 
 
 def piece(flag: bool) -> bool:
@@ -457,6 +466,15 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
+# #5054, the crowd's own near cover: while crowd fire is on and its target is the one in front (CROWD_FRONT, the
+# bot's face), the nearest one not in front stays at the side or behind, never turned to - it is the one that
+# lands on the bot from the blind side while the bot's trigger is down on the front one (the cluster's field:
+# 26-57 cm at his side, the hit motion 46-58 cm/s, 262-505 hits per turn, the aim always on the front one).
+# With one inside CROWD_BACK_R that is NOT its target (the target is handled: turned to, or the quick turn for
+# the one right behind), the crowd's fire stops and the gun drops first - the trigger only comes back when it
+# faces one again (CROWD_FRONT) or one leaves the ring. The trigger, not the aim, is the damage source here:
+# the aim keeps tracking the front one the whole time. Counters: crowd_backoffs, crowd_back_s.
+CROWD_BACK_R = 150.0
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
                     "offscreen_aim_s", "whips", "rampage_swaps", "crowd_fire_s", "shotgun_swaps")
@@ -1544,6 +1562,7 @@ class Bot:
         self.fighter = None                       # the PS3 combat core (PS3_BRAIN): its accounting and its fight
         self.commands = None                      # the operator's instant commands (gbox.mercs.directives.Reader)
         self.blocked: dict = {}                   # target -> until: "repetitive" drops the one he kept at
+        self._mv_at, self._mv_near = 0.0, 0.0        # the keep-moving (backing off with the fight in face, #5054)
         self.mode = None                          # a standing directive: "fight" / "hunt" / "score"
         from .re5_switch_mines import Mines
         self.mines = Mines(self.stats, every_s=MINE_EVERY_S) if MINES else None
@@ -1946,7 +1965,7 @@ class Bot:
         if crowd:                                        # the nearest in front first: one direction at a time
             front = [e for e in candidates if abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) <= CROWD_FRONT]
             near_front = min(front, key=flat) if front else None
-            if near_front is not None and flat(near_front) < 2.0 * flat(nearest) + 100.0:
+            if near_front is not None and flat(near_front) <= 3.0 * flat(nearest) + 100.0:
                 nearest = near_front
         tgt = cur
         wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in candidates) else None
@@ -1971,6 +1990,23 @@ class Bot:
         body_err = wrap(heading(tgt["pos"][0] - px, tgt["pos"][2] - pz) - p["rot"])
         gun, fam = self._rampage_gun(inv)
         self.stats["rampage_weapon"] = fam or (f"0x{held['item']:03x}" if held else "-")
+        # #5054: the crowd's own near cover - its target is the one in front (CROWD_FRONT); any nearest one inside
+        # CROWD_BACK_R OUT of its facing (side or behind) is the one that lands on the bot from the blind side
+        # while the bot's trigger is down on the front one (the cluster's field: 26-57 cm at his side, the hit
+        # motion 46-58 cm/s, the aim always on the front one). With one in, the crowd's fire stops and the gun
+        # drops first - the trigger only comes back when it faces one again or one leaves the ring. The aim keeps
+        # tracking the front one the whole time; the trigger, not the aim, is the damage source. A target at grab
+        # range (GRAB_THREAT_R) never backs off: the quick turn / point blank handles it.
+        if crowd:
+            cover = next((e for e in ring if flat(e) <= CROWD_BACK_R
+                          and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > CROWD_FRONT), None)
+            if cover is not None and dist > GRAB_THREAT_R and self.aim_since is not None:
+                self._gun_down()
+                self.stats["crowd_backoffs"] = self.stats.get("crowd_backoffs", 0) + 1
+                self.stats["crowd_back_s"] = round(self.stats.get("crowd_back_s", 0.0) + dt, 2)
+                self.doing, self.why = "crowd-back", (f"one {flat(cover) / 100:.1f} m out of its facing "
+                                                     "(not its target): the gun down, the aim holds")
+                return {"hold": ()}
         # attacked from behind: one decisive quick turn (the gun down for it), then up and blasting
         if QUICK_TURN and dist <= BEHIND_R and abs(body_err) > RAMPAGE_BEHIND and now - self.quick_at > QUICK_GAP_S                 and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
             if self.aim_since is not None:
@@ -3728,6 +3764,17 @@ class Bot:
                 self.doing, self.why = "backoff", f"moving out of the crowd ({','.join(self._crowd_keys)})"
                 return {"hold": self._crowd_keys + self._turn(body_err)}
             near_err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+            if KEEP_R <= near < TOO_CLOSE and not self._threat_now:
+                # #5054: the fight in face (26-57 cm, motion 46-58 cm/s, 262-505 per hit): the bot stood and fired,
+                # and the one it did not face kept landing on it from the blind side. Now, with nobody at grab
+                # range (HELD_R) and no grab threat, it backs off KEEP_CM per tick with the gun down - the
+                # far-fight answer from the cluster's own fields, with the same gap as CLOSE_BACKOFF.
+                if now < self._keep_until:
+                    self.doing, self.why = "keep-moving", f"the fight in face ({near / 100:.1f} m)"
+                    return {"hold": ("ldown",) + self._turn(near_err)}
+                self._keep_until, self._keep_ready = now + 0.5, now + KEEP_GAP_S
+                self.stats["keeps"] = self.stats.get("keeps", 0) + 1
+                self._gun_down()
             if CLOSE_BACKOFF and near < TOO_CLOSE and abs(near_err) <= BACKOFF_CONE:   # one in his face: step back
                 if now >= self.backoff_ready:
                     self.backoff_until, self.backoff_ready = now + BACKOFF_S, now + BACKOFF_S + BACKOFF_GAP_S
