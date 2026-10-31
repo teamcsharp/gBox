@@ -2897,7 +2897,7 @@ class Bot:
         if saved is not None:
             return saved
         high = self._off_floor(p, snap, now) if not live else []   # nobody on his floor: one above or below him
-        if self.hazard is not None and not live:                 # nobody to fight and in smoke: out of it
+        if self.hazard is not None and not live and not self._hazard_break_due(p, now):  # nobody to fight and in smoke: out of it
             cam = snap.get("camera")
             return self._go("walk", "hazard_out", {"hold": self._stick(self._open_heading(p, live, self.hazard),
                                                                        cam["yaw"] if cam else p["rot"])},
@@ -3420,6 +3420,15 @@ class Bot:
         self.hazard = min(inside, key=lambda h: math.hypot(px - h[0], pz - h[1])) if inside else None
         if self.hazard is not None:
             self.stats["hazard_s"] = round(self.stats["hazard_s"] + TICK_S, 2)
+
+    HAZARD_BREAK_S = 2.5   # #5056: after a hazard mark is placed, break out of the mark instead of walking out of it
+    def _hazard_break_due(self, p, now) -> bool:
+        # #5056: True when the bot just took HP loss while inside a hazard mark (the mark was placed at his spot
+        # because his health fell with no enemy within HAZARD_CONTACT_R). In that case the hazard is the source
+        # of the damage, and the bot should break out of the mark (fight / move) rather than walk out of it.
+        hp = p.get("hp")
+        return (isinstance(hp, int) and isinstance(self._hz_hp, int) and hp < self._hz_hp
+                and self.hazard is not None)
 
     # --- taunts -----------------------------------------------------------------------------------------------------
     def _windup_tick(self, p, snap, now) -> None:
