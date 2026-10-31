@@ -166,3 +166,34 @@ def test_legacy_flash_directive_does_not_select_an_inventory_grenade():
     assert bot._flashbang_throw(p, snap, 1) is None
     assert bridge.targets == []
     assert 'Native flash intervention required' in bot.stats['directive_status']
+
+
+class FailingBridge(Bridge):
+    def __init__(self, state): super().__init__(); self.state = state
+    def select(self, grid, item):
+        super().select(grid, item)
+        return {'state': self.state, 'reason': 'previous_request_unconfirmed'}
+
+
+@pytest.mark.parametrize('state', ['unknown', 'refused', 'disabled'])
+def test_a_native_request_that_cannot_finish_lets_the_d_pad_tap_through(state):
+    """Ship Deck 2026-10-31: one unconfirmed native request made every later one 'previous_request_unconfirmed' and the
+    swallowed gun-back tap left him with a bomb in hand for 85 s (143 taps). The tap now goes through."""
+    bot = R.Bot(stats={}, equip=FailingBridge(state))
+    bot.doing, bot._now = 'rearm', 10.0
+    snap = {'mercenaries_phase': R.PHASE_PLAYING, 'player': {'hp': 1000}, 'inventory': [{'grid': 1, 'id': 0x10b}]}
+    assert bot._native_equipment({'tap': 'dup'}, snap) == {'tap': 'dup'}
+    assert bot.stats['native_equip_fallbacks'] == 1
+
+
+def test_a_native_request_still_waiting_after_the_give_up_time_lets_the_tap_through():
+    bot = R.Bot(stats={}, equip=FailingBridge('waiting'))
+    snap = {'mercenaries_phase': R.PHASE_PLAYING, 'player': {'hp': 1000}, 'inventory': [{'grid': 1, 'id': 0x10b}]}
+    bot.doing, bot._now = 'rearm', 10.0
+    assert bot._native_equipment({'tap': 'dup'}, snap) == {'hold': ()}
+    bot._now = 10.0 + R.NATIVE_EQUIP_GIVEUP_S + 0.1
+    assert bot._native_equipment({'tap': 'dup'}, snap) == {'tap': 'dup'}
+    bot.doing = 'aim'                                           # another episode starts its own give-up time
+    bot._native_equipment({'hold': ('zl',)}, snap)
+    bot.doing = 'rearm'
+    assert bot._native_equipment({'tap': 'dup'}, snap) == {'hold': ()}

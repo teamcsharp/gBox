@@ -318,6 +318,20 @@ def apply(bot, snap, act, now):
               abs(yaw_error) <= max(math.radians(3), math.atan2(R.BODY_R, max(dist, 1)))
               and abs(pitch_error) <= math.radians(10)
               and bot._crowd_hit(origin, dot, foot, spec.family == 'shotgun'))))
+    # His personal area (operator 2026-10-31: "he needs to be ... doing something always to clear his personal area";
+    # surrounded he stood aiming: 445-1211 blocked pulls a run, the last ones 9-19 deg of pitch off a Majini 1-2 m away,
+    # still his torso): a target within RAMPAGE_R on his level, the gun up and its ray reaching him (no wall or floor
+    # short of him): the trigger stays down while the aim is on his body's extent - UNLOAD_WIDE_CM across and
+    # UNLOAD_TALL_CM up or down from the chest, never under UNLOAD_CONE - and the camera writes above keep closing.
+    d = max(dist, 1.0)
+    if not on and getattr(R, 'UNLOAD', False) and valid_ray \
+            and p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) \
+            and dist <= R.RAMPAGE_R and abs(foot[1] - py) <= R.LEVEL_DY \
+            and abs(yaw_error) <= max(R.UNLOAD_CONE, math.atan2(R.UNLOAD_WIDE_CM, d)) \
+            and abs(pitch_error) <= max(R.UNLOAD_CONE, math.atan2(R.UNLOAD_TALL_CM, d)) \
+            and math.dist(origin, dot) >= math.dist(origin, chest) - R.FIRE_SLACK:
+        on = True
+        bot.stats['target_feedback_unloads'] = bot.stats.get('target_feedback_unloads', 0) + 1
     if not on:
         if 'zr' in keys:
             bot.stats['target_feedback_fire_blocks'] = bot.stats.get('target_feedback_fire_blocks', 0) + 1
