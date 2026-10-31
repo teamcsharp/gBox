@@ -4175,16 +4175,28 @@ class Bot:
                 self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self._fire_t, 0.2), 2)
             self._fire_t = now
             if self.fighter.flickering and self._tick_t is not None:
-                self.stats["flicker_s"] = round(self.stats["flicker_s"] + min(now - self._tick_t, LOOK_STEP_MAX_S), 2)
+                self.stats["flicker_s"] = round(self.stats.get("flicker_s", 0.0) + min(now - self._tick_t, LOOK_STEP_MAX_S), 2)
+            # the fighter path holds the trigger (no _trigger call): track fire_down here
+            if not self.fire_down:
+                self.stats["shots"] += 1
+                if self.trigger_since is None:
+                    self.trigger_since = now
+                self._pull_start(now)
+            self.fire_down, self.fire_at = True, now
+            # the nearest live enemy is the aim target while firing
+            if self.target is None and live:
+                self._set_target(min(live, key=flat).get("ptr", min(live, key=flat).get("slot")), now)
+                self.target_at = now
         else:
             self._fire_t = None
         self.aim_since = (self.aim_since or now) if "zl" in held else None   # (the reload wait keeps the gun up)
         if self._windup_e is not None:
-            # A Majini is winding up right in front of him (PS3 brain firing into the air). Release the trigger
+            # A Majini is winding up right in front of him (PS3 brain firing into the air): drop the trigger
             # and set the wind-up as target so the next tick re-aims at it instead of continuing to fire.
             if self.fire_down:
-                self._trigger(False, now)
-                self.stats["windup_interrupts"] = self.stats.get("windup_interrupts", 0) + 1
+                self.fire_down = False
+                self._pull_end(now, slipped=True)
+            self.stats["windup_interrupts"] = self.stats.get("windup_interrupts", 0) + 1
             if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
                 self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
                 self.target_at = now
