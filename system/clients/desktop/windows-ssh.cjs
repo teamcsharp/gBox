@@ -25,7 +25,7 @@ function create({platform=process.platform, systemRoot=process.env.SystemRoot ||
   const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let pending=null, querying=null, uncertain=false, startupDone=false;
   let last={supported:platform==='win32', state:platform==='win32'?'unknown':'unsupported', message:''};
-  const snapshot=()=>({...last, auto_start:getPreference()===true, busy:!!pending, uncertain});
+  const snapshot=()=>({...last, auto_start:getPreference()===true, busy:!!pending||last.setup_result==='pending', uncertain});
   function run(source, timeout) {
     return new Promise(resolve=>execute(executable, ['-NoProfile','-NonInteractive','-EncodedCommand',encoded(source)],
       {windowsHide:true,timeout,maxBuffer:32768,encoding:'utf8'}, (error,stdout)=>resolve({error,stdout})));
@@ -39,9 +39,9 @@ function create({platform=process.platform, systemRoot=process.env.SystemRoot ||
         if(result.error)throw Error();
         const value=JSON.parse(result.stdout.trim().replace(/^\uFEFF/,''));
         if(!['installed','builtin','running','listening','reachable'].every(k=>typeof value[k]==='boolean'))throw Error();
-        last={...last, ...value, supported:true, state:!value.installed?'not_installed':!value.builtin?'custom_installation':
+        last={...last, ...value, supported:true, status_error:false, message:last.status_error?'':last.message, state:!value.installed?'not_installed':!value.builtin?'custom_installation':
           !value.running?'stopped':value.reachable?'running':'unreachable', observed_at:Date.now()};
-      } catch { last={...last,state:'unknown',message:'Windows SSH status could not be read. Refresh to retry.'}; }
+      } catch { last={...last,state:'unknown',status_error:true,message:'Windows SSH status could not be read. Refresh to retry.'}; }
       changed(snapshot());return snapshot();
     })().finally(()=>{querying=null;});
     return querying;
@@ -51,14 +51,17 @@ function create({platform=process.platform, systemRoot=process.env.SystemRoot ||
     if(pending)return pending;
     if(uncertain)return Promise.resolve(snapshot());
     pending=(async()=>{
-      last={...last,message:'Waiting for Windows elevation or SSH setup. Installation can take several minutes.'};
+      last={...last,setup_result:'pending',message:'Waiting for Windows elevation or SSH setup. Installation can take several minutes.'};
       changed(snapshot());
       const result=await run(elevationScript(executable),20*60*1000);
       const code=result.error?.code ?? 0;
       if(result.error?.killed || typeof code!=='number') {
         uncertain=true;
-        last={...last,message:'SSH setup outcome is unknown. Windows may still be working; refresh status. gBox will not repeat this request.'};
-      } else last={...last,message:code===0?'Windows SSH setup completed.':ERRORS[code]||'Windows did not complete SSH setup.'};
+        last={...last,setup_result:'uncertain',message:'SSH setup outcome is unknown. Windows may still be working; refresh status. gBox will not repeat this request.'};
+      } else last={...last,setup_result:code===0?'success':'failure',message:code===0?'Windows SSH setup completed.':ERRORS[code]||'Windows did not complete SSH setup.'};
+      // An earlier Refresh may still report the pre-setup service state. Finish it,
+      // then read again so setup never completes using that stale snapshot.
+      if(querying)await querying;
       await status();
       return snapshot();
     })().finally(()=>{pending=null;changed(snapshot());});

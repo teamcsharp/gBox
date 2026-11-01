@@ -371,12 +371,16 @@ ipcMain.handle("settings:save", (event, s) => {
 const localSsh = require('./windows-ssh.cjs').create({
   getPreference: () => configuredSettings().autoStartSsh === true,
   savePreference: value => saveSettings({autoStartSsh:value}),
-  changed: state => send('ssh:changed',state),
+  changed: state => { send('ssh:changed',state); if(mini&&!mini.isDestroyed())mini.webContents.send('ssh:changed',state); },
 });
 function assertSshSender(event) {
-  assertClientSender(event);
-  if (event.sender.getURL() !== require('node:url').pathToFileURL(path.join(__dirname,'index.html')).href)
-    throw Error('Only the local gBox Settings page can manage Windows SSH.');
+  const owner = win && event.sender === win.webContents ? win : mini && event.sender === mini.webContents ? mini : null;
+  if (!owner || owner.isDestroyed() || event.senderFrame !== owner.webContents.mainFrame)
+    throw Error('Only the local gBox window can manage Windows SSH.');
+  const actual = new URL(event.sender.getURL());
+  if (owner === mini) actual.search = ''; // the owned PiP's stream/title query is unrelated to authority
+  const expected = require('node:url').pathToFileURL(path.join(__dirname, owner === mini ? 'mini.html' : 'index.html')).href;
+  if (actual.href !== expected) throw Error('Only the local gBox window can manage Windows SSH.');
 }
 ipcMain.handle('ssh:status', event => { assertSshSender(event); return localSsh.status(); });
 ipcMain.handle('ssh:enable', event => { assertSshSender(event); return localSsh.enable(); });

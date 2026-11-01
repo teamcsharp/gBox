@@ -50,6 +50,10 @@
 </script>
 </head>
 <body>
+<button id="ssh-access-button" type="button" aria-label="SSH controls on this PC"></button>
+<div id="ssh-access-popover" role="dialog" aria-label="SSH access to this PC" hidden></div>
+<script src="windows-ssh-ui.js"></script>
+<script>document.body.classList.add('ssh-mini'); GBoxWindowsSsh.mount(null,gbox,{button:document.getElementById('ssh-access-button'),popup:document.getElementById('ssh-access-popover')});</script>
 <img id="v" alt="game">
 <div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>
@@ -155,7 +159,7 @@
   gbox.onMiniContext?.(point => openModifiers({clientX:point.x,clientY:point.y,preventDefault(){}}));
   addEventListener('mousedown', event => { if (!event.target.closest?.('#pip-modifiers')) closeModifiers(); });
   addEventListener('pagehide', closeModifiers);
-  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers, .pip-media')) gbox.miniRestore(); });
+  addEventListener("dblclick", event => { if (!event.target.closest?.('#pip-modifiers, .pip-media, #ssh-access-button, #ssh-access-popover')) gbox.miniRestore(); });
   addEventListener("keydown", e => { if (e.key === "Escape") { if (modifierMenu) closeModifiers(); else gbox.miniRestore(); } });
   // file:// cannot fetch health directly; authenticated IPC avoids CORS and unnecessary timed stream resets.
   window.GBOX_STREAM_FETCH_HEALTH = async src => {

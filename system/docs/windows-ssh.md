@@ -1,7 +1,24 @@
 # Windows SSH in gBox
 
-In the desktop app, open **Settings → SSH access to this PC**. **Enable / start
-SSH** installs the standard Windows OpenSSH Server optional feature if needed,
+On Windows, the desktop app shows a key-icon **Enable SSH** button in the
+full window's title bar area (or just below the chat bar in narrower windows).
+The button remains visible near the upper right, below the compact controls, in
+compact and picture-in-picture views, including the separate mini window. Once
+running it reads **SSH: On**; setup, errors and unreachable local service states
+have distinct labels. When stopped or missing, clicking **Enable SSH** opens the status panel and
+requests Windows setup on this PC. When running or unverified, it opens status
+and refreshes without starting setup. The panel includes **Enable SSH on this PC** and the
+saved **Enable / start SSH when gBox opens** option. The same controls remain
+available in **Settings ? SSH access to this PC**.
+
+These controls always manage the PC running this desktop app, regardless of
+which worker's game is displayed. To enable the i9's service, use the updated
+app on the i9. Installing this update requires a full app relaunch so its main
+process and preload match; an older running app does not gain these APIs from a
+page-only refresh. A status-only click does not request elevation. The explicit **Enable SSH**
+action can show the normal Windows administrator prompt.
+
+**Enable SSH on this PC** installs the standard Windows OpenSSH Server optional feature if needed,
 then starts `sshd`. Windows shows its normal administrator consent/credential
 prompt. Cancelling leaves setup unapproved. Installation may need Windows
 Update, organizational policy changes, or a later Windows restart; gBox reports
@@ -29,7 +46,8 @@ loopback TCP connection to port 22. It does not prove LAN access or a successful
 SSH login. Existing servers listening on another port need their existing
 administration flow. Setup errors remain visible independently of service state.
 
-Only the local desktop main frame can invoke these fixed operations. There is
+Only the owned local desktop or mini window's main frame can invoke these fixed
+operations. Guest frames, remote pages and other windows are rejected. There is
 no remote API or arbitrary shell-command input. Concurrent setup is serialized;
 an uncertain timeout is not retried automatically. Setup uses standard Windows
 elevation, following Microsoft's [OpenSSH installation guidance](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)
@@ -40,8 +58,10 @@ and read-only status checks. It does not install a feature, start a service, or
 change this development machine's firewall. An actual UAC/install/start workflow
 still needs operator acceptance on the target PC.
 
-The focused Node suite passed 27 tests (13 SSH tests plus existing desktop
-authority/profile tests). Both PowerShell scripts parsed successfully without
+The focused Node suite passed 33 tests (19 SSH tests plus existing desktop
+authority/profile tests). The visible launcher, shared panel state, blocked setup states, and both PiP
+visibility/interaction contracts are covered by mocked DOM and source checks;
+no visual end-to-end browser acceptance is claimed. Both PowerShell scripts parsed successfully without
 execution; JavaScript syntax and diff checks passed. A read-only check on the
 development PC reported the built-in service installed and stopped, with no gBox
 firewall rule. No end-to-end installation, elevation consent, or remote login
