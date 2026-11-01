@@ -2454,12 +2454,21 @@ class Bot:
         return best
 
     def _choose(self, p, live, now):
-        """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
-        one if he is in front, else the nearest in front, unless one not in front is about to grab him (GRAB_THREAT_R).
-        Nobody in front: the cost (near and in front; K's learned range preferred), a new one kept COMMIT_S, one within
-        THREAT_R first."""
+        """The Majini to fight. A target this close is not flipped to one behind him (the rear target's flip): one this
+        near behind is the quick turn's / the turn's, not the aim's. One he can shoot without turning (inside raise_tol,
+        in reach) comes first: the current one if he is in front, else the nearest in front, unless one not in front is
+        about to grab him (GRAB_THREAT_R). Nobody in front: the cost (near and in front; K's learned range preferred),
+        a new one kept COMMIT_S, one within THREAT_R first."""
         px, py, pz = p["pos"]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        bear = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])
+        cur = next((e for e in live if e.get("ptr", e.get("slot")) == self.target), None)
+        if cur is not None and flat(cur) <= TOO_CLOSE and abs(bear(cur)) > QUICK_ERR:
+            back = [e for e in live if e is not cur and flat(e) <= THREAT_R
+                    and abs(e["pos"][1] - py) <= LEVEL_DY and abs(bear(e)) > QUICK_ERR]
+            if not back:
+                self._set_target(cur.get("ptr", cur.get("slot")), now)
+                return cur                                 # the rear target: the turn (and the quick turn) is his
         if piece(SMOOTH_LEVEL):                              # no pitching up at a roof while ground Majini come
             ground_near = any(flat(e) <= PITCH_GUARD_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
             calm = [e for e in live
@@ -3499,6 +3508,24 @@ class Bot:
         dist = flat(tgt)
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
+        if self.mode != "score" and dist <= TOO_CLOSE and abs(body_err) > QUICK_ERR:
+            fix = None                                        # the nearest one behind him, on his level
+            for e in live:
+                if e is tgt:
+                    continue
+                de = flat(e)
+                if de <= dist and abs(e["pos"][1] - py) <= LEVEL_DY \
+                        and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > QUICK_ERR:
+                    fix = e
+                    break
+            if fix is not None:
+                self.stats["rear_target_fixes"] = self.stats.get("rear_target_fixes", 0) + 1
+                self._set_target(fix.get("ptr", fix.get("slot")), now)
+                self.target_at = now
+                tgt = fix
+                foot = fix["pos"]
+                dist = flat(fix)
+                body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
             self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
             self._gun_down()
