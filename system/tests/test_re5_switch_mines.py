@@ -261,6 +261,29 @@ def test_the_bot_watches_its_bombs_every_tick_even_while_held(switch_bot):
         assert key in R.RE5Switch.round_counters
 
 
+def test_a_close_majini_outranks_the_blast_run_he_lets_go_and_the_fight_unloads_on_the_threat():
+    # The cluster's remaining incidents (2026-10-31, bomb_cm 8-95, 4 of the 6 within 2 m of a Majini, 12 within 4 m,
+    # one of them a death): he stood in the old bomb's blast while a Majini was right on him - the blast ran through
+    # him and the crowd fire finished it. A run through a close crowd is a death: the bomb's timer is already
+    # running, so the mine's own clear gives the pad up first (the gun goes back and the fight unloads on the threat,
+    # re5_combat's within-5-m rule), instead of trying to run the gap with the crowd on him.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    bomb = {"ptr": 0x77, "pos": (0.0, 0.0, 300.0)}
+    m.bombs = {0x77: bomb["pos"]}
+    m.last_pos = (0.0, 0.0, -2000.0)                                # the old bomb, not the one he just placed
+    live = [{"ptr": 10, "pos": (200.0, 0.0, 100.0), "hp": 800}]     # 2.2 m from him: within CLOSE_MAJINI_CM, in the blast
+    act = m.tick(p(), snap(ground=[bomb]), live, 1.0)
+    assert act == {"hold": ()}                                       # the pad given up, not a run
+    assert m.stats["mine_status"] == "in the blast and a close Majini first: the gun up"
+    assert m.state == "idle"                                         # no mine cycle started
+    # The same bomb, a close Majini only beyond FOE_CLEAR_CM: the old guard still runs him out of the blast.
+    far = [{"ptr": 10, "pos": (0.0, 0.0, 1500.0), "hp": 800}]
+    act = m.tick(p(pos=(0.0, 0.0, -400.0)), snap(ground=[bomb]), far, 1.4)   # 7 m from the old bomb: in the blast again
+    assert act is not None and act["hold"][:2] == MN.RUN
+    assert m.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+
+
 def test_the_2026_10_30_cluster_in_own_blast_runs_out_even_with_no_majini_at_the_bomb():
     # The live cluster (186 hits, bomb_cm 26-416): his own proximity mine detonated while he stood in its blast, with
     # no Majini close enough to trigger it (the mine detonates on its own timer, so the old guard - Majini within
@@ -333,6 +356,71 @@ def test_incident_replay_runs_out_of_own_bombs_blast_from_the_recorded_fields():
     assert b.doing == "mine" and act["hold"][:2] == MN.RUN
     assert b.stats["mine_clear_runs"] == 1
     assert b.stats["mine_status"] == "in his own bomb's blast: out before it detonates"
+
+
+def test_mid_cycle_guard_aborts_place_when_in_old_bomb_blast():
+    # #5068 third fix: the cluster's remaining incidents (2026-10-31, rate 1.131 vs baseline 0.833) show
+    # held=['zl'] - the bot was mid-place (bomb in hand) when the blast hit him. The idle-only _clear never
+    # fires during a cycle, so he stands in an old bomb's blast while placing a new one. This guard aborts
+    # the place cycle and runs him out before the detonation.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # An old bomb from a previous cycle, 300 cm from him (inside BLAST_CM=800)
+    old_bomb = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
+    # The bomb is in the snapshot's ground_mines (the real source), not necessarily in self.bombs
+    snap = {"ground_mines": [old_bomb]}
+    m.last_pos = None  # no recent placement
+    # He is at origin, mid-place cycle (bomb in hand, held=['zl'])
+    live = []  # no Majini
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
+    assert act is not None
+    assert act["hold"][:2] == MN.RUN
+    assert m.stats["mine_clear_runs"] == 1
+    assert m.state == "retreat"
+    assert m.stats["mine_status"] == "in an old bomb's blast mid-cycle: aborting and running out"
+
+
+def test_mid_cycle_guard_fires_for_unconfirmed_mines_not_in_self_bombs():
+    # #5068 fourth fix (this one): the incident replay fixtures (2026-10-31) show mines 8-285 cm from the
+    # bot with held=['zl'] (mid-place). Those mines are in the snapshot's ground_mines but NOT in
+    # self.bombs - they were unconfirmed placements or from a prior round. The previous mid-cycle guard
+    # only checked self.bombs, so it never fired for them. Now the guard checks ground_mines directly.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # A mine 100 cm from the bot, in ground_mines but NOT in self.bombs (unconfirmed placement)
+    unconfirmed = {"ptr": 0x99, "pos": (100.0, 0.0, 0.0)}
+    snap = {"ground_mines": [unconfirmed]}
+    assert m.bombs == {}  # not tracked
+    m.last_pos = None
+    live = []
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
+    assert act is not None
+    assert act["hold"][:2] == MN.RUN
+    assert m.state == "retreat"
+    assert m.stats["mine_clear_runs"] == 1
+
+
+def test_mid_cycle_guard_skips_the_bomb_just_placed():
+    # The bomb he just placed (last_pos) is skipped by the mid-cycle guard - the retreat state machine
+    # already handles that one.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # The bomb he just placed is 300 cm from him (inside blast), but last_pos points to it
+    just_placed = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
+    snap = {"ground_mines": [just_placed]}
+    m.last_pos = (300.0, 0.0, 0.0)  # this is the one he just placed
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
+    assert act is None  # skipped: last_pos matches
+
+
+def test_mid_cycle_guard_fires_outside_blast_radius():
+    # No guard when outside BLAST_CM.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    far = {"ptr": 0x77, "pos": (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
+    snap = {"ground_mines": [far]}
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
+    assert act is None
 
 
 def test_the_sidebar_cadence_and_clearance_reach_a_running_bot_every_tick(monkeypatch):

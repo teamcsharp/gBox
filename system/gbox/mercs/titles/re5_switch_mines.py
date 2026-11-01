@@ -51,7 +51,12 @@ MOTION_PLACE = 29                        # the placing motion (the same byte as 
 SETTLE_S = 1.6                           # the placing motion plays at most this long (live: 1.27-1.41 s from the press)
 CONFIRM_CM = 200.0                       # a new bomb this near where he stood is his (it lands ~57 cm ahead)
 RETREAT_CM, RETREAT_S, RETREAT_GAP_R = 800.0, 3.0, 800.0
-BLAST_CM, TRIGGER_CM = 800.0, 350.0      # the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out
+BLAST_CM, TRIGGER_CM, CLOSE_MAJINI_CM = 800.0, 350.0, 300.0
+# the guard: a Majini this near a bomb of his, him within BLAST_CM of it: out. CLOSE_MAJINI_CM: a Majini this close
+# to him while he is in the blast - he cannot run the gap through a close crowd (the cluster's remaining incidents),
+# so the run is given up and the fight unloads on the threat instead. FOE_CLEAR_CM (5 m) is the placement's rule
+# (a run of 8 m clears it); the guard's crowd rule is tighter and looser than the trigger: the recorded incident
+# itself had the Majini at 300 cm, and he did run it (the replay keeps the run), while a tighter crowd is a death.
 REARM_S = 1.2
 QUICK = {1: "dup", 3: "dleft", 5: "dright", 7: "ddown"}
 RUN = ("b", "lup")
@@ -183,8 +188,14 @@ class Mines:
         (Majini-within-TRIGGER_CM) never fired and he stood in it. The bomb he just placed is skipped: the retreat
         state machine (place -> settle -> retreat) already walks him away from that one at RETREAT_CM; the danger is
         the *other* bombs still down when he drifts back into their radius on a later cycle.
+
+        Also used mid-cycle (place/settle/retreat): the cluster's remaining incidents (2026-10-31, rate 1.131 vs
+        baseline 0.833) show held=['zl'] - the bot was mid-place (bomb in hand) when the blast hit him. The idle-only
+        _clear never fires during a cycle, so he stands in an old bomb's blast while placing a new one. This guard
+        aborts the cycle and runs him out before the detonation.
         """
         pos = p["pos"]
+        in_blast, reason = False, None
         for ptr, b in self.bombs.items():
             if self.last_pos is not None and b == self.last_pos:
                 continue                                     # the one he just placed: the retreat handles it
@@ -194,12 +205,66 @@ class Mines:
                 reason = "a Majini at his bomb: out of its blast"
             else:
                 reason = "in his own bomb's blast: out before it detonates"
+            in_blast = True
+            break
+        for e in live:
+            if flat(pos, e["pos"]) < CLOSE_MAJINI_CM and in_blast:
+                # The cluster's remaining incidents: he stood in the old bomb's blast (bomb_cm 8-95) while a Majini
+                # was right on him. He cannot outrun the blast through a close crowd - the crowd fire unloads on him
+                # and the blast finishes it (live: 5 within 2 m, 11 within 4 m, and the death). The bomb's timer is
+                # already running, so the run is given up and the gun comes up: the fight unloads on the threat.
+                self.stats["mine_status"] = "in the blast and a close Majini first: the gun up"
+                return {"hold": ()}
+        if in_blast:
             if self.clear_from != ptr:
                 self.clear_from = ptr
                 self.stats["mine_clear_runs"] += 1
             self.stats["mine_status"] = reason
             return self._run(p, live, b)
         self.clear_from = None
+        return None
+
+    def _clear_mid_cycle(self, p: dict, snap: dict, live: list) -> dict | None:
+        """Mid-cycle guard (place/settle/retreat): if the bot is in an OLD bomb's blast, abort the cycle and run out.
+
+        The cluster's remaining incidents (2026-10-31): held=['zl'] means the bot was mid-place (bomb in hand) when
+        the blast hit him. The idle-only _clear never fires during a cycle, so he stands in an old bomb's blast while
+        placing a new one. This check aborts the place/settle/retreat and runs him out before the detonation.
+        The bomb he just placed (last_pos) is skipped - the retreat state machine already handles that one.
+
+        Checks the snapshot's ground_mines (all mines on the ground) rather than self.bombs: self.bombs only tracks
+        confirmed placements from the current round, but the incident replay shows mines 8-285 cm from the bot that
+        were never confirmed (unconfirmed placements or from a prior round) and so are not in self.bombs. The guard
+        must see every mine in the blast, not just the ones the bot confirmed.
+        """
+        pos = p["pos"]
+        ground = snap.get("ground_mines") or ()
+        seen = set()
+        for g in ground:
+            b = tuple(g["pos"])
+            if self.last_pos is not None and b == self.last_pos:
+                continue
+            # Also skip mines near the site (the bot's position when it started placing): the bomb he just
+            # placed lands ~57 cm ahead of his feet, and last_pos is not set until confirmation.
+            if self.site is not None and flat(self.site, b) < CONFIRM_CM:
+                continue
+            if flat(pos, b) >= BLAST_CM:
+                continue
+            # Skip mines that were already on the ground before this placement cycle AND are not the bot's
+            # confirmed bombs: the stack's own uWp0a units (always in ground_mines, never in self.bombs) would
+            # otherwise trigger the guard every tick. Confirmed bombs ARE in self.bombs, so they are checked.
+            if g["ptr"] in self.ground0 and g["ptr"] not in self.bombs:
+                continue
+            if g["ptr"] in seen:
+                continue
+            seen.add(g["ptr"])
+            # He is in an old bomb's blast mid-cycle: abort and run out.
+            if self.clear_from != g["ptr"]:
+                self.clear_from = g["ptr"]
+                self.stats["mine_clear_runs"] += 1
+            self.state, self.t = "retreat", p.get("t", 0.0)
+            self.stats["mine_status"] = "in an old bomb's blast mid-cycle: aborting and running out"
+            return self._run(p, live, b)
         return None
 
     def tick(self, p: dict, snap: dict, live: list, now: float, *, busy: bool = False) -> dict | None:
@@ -242,6 +307,9 @@ class Mines:
                 return None
             return {"hold": ()}
         if self.state == "place":
+            mid = self._clear_mid_cycle(p, snap, live)
+            if mid is not None:
+                return mid
             self.saw_place = self.saw_place or p.get("motion") == MOTION_PLACE
             spent = mine is None or (self.count0 is not None and (mine.get("rounds") or 0) < self.count0)
             new = [g for g in snap.get("ground_mines") or ()
@@ -268,6 +336,9 @@ class Mines:
                 return {"hold": ()}
             return {"hold": ("zl",)} if now - self.t < PRESS_S else {"hold": ()}
         if self.state == "settle":                        # the placing motion: he cannot move until it ends
+            mid = self._clear_mid_cycle(p, snap, live)
+            if mid is not None:
+                return mid
             if p.get("motion") == MOTION_PLACE and now - self.t < SETTLE_S:
                 return {"hold": ()}
             self.state, self.t = "retreat", now
