@@ -1,0 +1,1 @@
+{"at": 1793355806.9103456, "host": {"id": "8a376d3177ae42a1", "current_run": null, "dispatch": {"id": "087dd1dd6f27491cbe6895dd6c32d02b", "command": "start", "title": "merc3d", "pip": true, "by": "agent", "operator": false, "at": 1793355806.8952723, "worker": "i9-NUC", "worker_id": "8a376d3177ae42a1"}, "scheduler_note": "starting"}}

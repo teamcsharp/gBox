@@ -1,0 +1,3002 @@
+{
+  "sid": "33d2d777d7444576-c99d1bcc1e904d62",
+  "pid": 25400,
+  "created": 1793356694.3601713,
+  "samples": [
+    {
+      "at": 1793357507.2867868,
+      "mission": 257,
+      "timer": 39.43,
+      "score": 300,
+      "player": {
+        "pos": [
+          183.3682861328125,
+          57.11427688598633,
+          -2945.96435546875
+        ],
+        "rot": 2.069298240590561,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8652020",
+          "hp": 50.0,
+          "class": "MajiniBlackSet",
+          "distance": 339.8,
+          "yaw_error": -0.6
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1149.0,
+          "yaw_error": -94.7
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1323.1,
+          "yaw_error": -117.8
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1702.3,
+          "yaw_error": -116.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2217.7,
+          "yaw_error": -137.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2535.0,
+          "yaw_error": -137.7
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 3035.1,
+          "yaw_error": -99.0
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3621.9,
+          "yaw_error": -103.1
+        }
+      ],
+      "stats": {
+        "rounds": 8,
+        "screen": "playing",
+        "doing": "fire",
+        "why": "square on, close: MajiniBlackSet 256 cm",
+        "t_aim": 2249,
+        "close_shots": 3276,
+        "t_fire": 3534,
+        "fire_key_tried": "y ",
+        "fire_key_switches": 1,
+        "fire_key": "y",
+        "t_turn": 80,
+        "point_blank_shots": 258,
+        "los_blocks": 8
+      }
+    },
+    {
+      "at": 1793357508.3051922,
+      "mission": 257,
+      "timer": 38.47,
+      "score": 600,
+      "player": {
+        "pos": [
+          213.08961486816406,
+          56.138214111328125,
+          -2933.15087890625
+        ],
+        "rot": 1.0397765379428003,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1131.5,
+          "yaw_error": -36.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1307.9,
+          "yaw_error": -60.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1689.0,
+          "yaw_error": -58.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1778.4,
+          "yaw_error": -13.9
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2198.3,
+          "yaw_error": -79.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2532.8,
+          "yaw_error": -79.7
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 3003.9,
+          "yaw_error": -40.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3601.1,
+          "yaw_error": -44.5
+        }
+      ]
+    },
+    {
+      "at": 1793357509.3072002,
+      "mission": 257,
+      "timer": 37.47,
+      "score": 600,
+      "player": {
+        "pos": [
+          309.2901306152344,
+          52.97895050048828,
+          -2800.123291015625
+        ],
+        "rot": 0.4005101414496863,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 948.7,
+          "yaw_error": -2.1
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1183.0,
+          "yaw_error": -28.0
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1555.3,
+          "yaw_error": -25.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1630.7,
+          "yaw_error": 24.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2121.0,
+          "yaw_error": -46.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2432.8,
+          "yaw_error": -45.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2850.0,
+          "yaw_error": -4.6
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3448.4,
+          "yaw_error": -8.7
+        }
+      ]
+    },
+    {
+      "at": 1793357510.3084629,
+      "mission": 257,
+      "timer": 36.47,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.38207761907381727,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 765.5,
+          "yaw_error": -1.4
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.6,
+          "yaw_error": -28.0
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1505.9,
+          "yaw_error": -24.6
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1530.2,
+          "yaw_error": 26.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2091.5,
+          "yaw_error": -46.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2408.3,
+          "yaw_error": -45.8
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2807.8,
+          "yaw_error": -3.7
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3401.5,
+          "yaw_error": -7.8
+        }
+      ]
+    },
+    {
+      "at": 1793357511.3101733,
+      "mission": 257,
+      "timer": 35.5,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.38207761907381727,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 433.6,
+          "yaw_error": -3.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.6,
+          "yaw_error": -28.0
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1494.1,
+          "yaw_error": 24.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1512.2,
+          "yaw_error": -24.9
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2079.1,
+          "yaw_error": -46.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2405.3,
+          "yaw_error": -45.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2805.7,
+          "yaw_error": -3.7
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3403.9,
+          "yaw_error": -7.9
+        }
+      ]
+    },
+    {
+      "at": 1793357512.312186,
+      "mission": 257,
+      "timer": 34.47,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.38207761907381727,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 336.4,
+          "yaw_error": 3.8
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1142.6,
+          "yaw_error": -28.6
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1378.8,
+          "yaw_error": 20.0
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1508.8,
+          "yaw_error": -25.0
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2084.2,
+          "yaw_error": -46.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2400.4,
+          "yaw_error": -45.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2802.3,
+          "yaw_error": -3.5
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3403.9,
+          "yaw_error": -7.8
+        }
+      ]
+    },
+    {
+      "at": 1793357513.3131382,
+      "mission": 257,
+      "timer": 33.53,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.6,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1145.9,
+          "yaw_error": -30.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1375.9,
+          "yaw_error": 17.0
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1499.9,
+          "yaw_error": -27.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.6,
+          "yaw_error": -48.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2403.0,
+          "yaw_error": -48.0
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2802.7,
+          "yaw_error": -5.8
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3406.5,
+          "yaw_error": -9.8
+        }
+      ]
+    },
+    {
+      "at": 1793357514.3151984,
+      "mission": 257,
+      "timer": 32.5,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.6,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1150.1,
+          "yaw_error": -30.1
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1372.1,
+          "yaw_error": 12.4
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1504.8,
+          "yaw_error": -27.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2089.4,
+          "yaw_error": -48.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2401.6,
+          "yaw_error": -48.2
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2810.3,
+          "yaw_error": -5.9
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.3,
+          "yaw_error": -9.9
+        }
+      ]
+    },
+    {
+      "at": 1793357515.3169801,
+      "mission": 257,
+      "timer": 31.53,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.6,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1140.4,
+          "yaw_error": -30.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1365.3,
+          "yaw_error": 8.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1505.8,
+          "yaw_error": -27.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2090.3,
+          "yaw_error": -48.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2408.2,
+          "yaw_error": -47.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2800.5,
+          "yaw_error": -5.8
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.3,
+          "yaw_error": -10.1
+        }
+      ],
+      "stats": {
+        "rounds": 8,
+        "screen": "playing",
+        "doing": "fire",
+        "why": "square on, close: MajiniBlackSet 343 cm",
+        "t_aim": 2289,
+        "close_shots": 3383,
+        "t_fire": 3641,
+        "fire_key_tried": "y ",
+        "fire_key_switches": 1,
+        "fire_key": "y",
+        "t_turn": 80,
+        "point_blank_shots": 258,
+        "los_blocks": 8
+      }
+    },
+    {
+      "at": 1793357516.3236568,
+      "mission": 257,
+      "timer": 30.5,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.6,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1137.2,
+          "yaw_error": -30.8
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1407.1,
+          "yaw_error": 6.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1512.7,
+          "yaw_error": -26.9
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2089.0,
+          "yaw_error": -48.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2407.2,
+          "yaw_error": -48.0
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2799.6,
+          "yaw_error": -5.7
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3398.0,
+          "yaw_error": -9.9
+        }
+      ]
+    },
+    {
+      "at": 1793357517.3859482,
+      "mission": 257,
+      "timer": 29.53,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.1,
+          "yaw_error": 1.6
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1139.1,
+          "yaw_error": -30.3
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1356.3,
+          "yaw_error": 4.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1514.2,
+          "yaw_error": -27.0
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.0,
+          "yaw_error": -47.7
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2406.6,
+          "yaw_error": -47.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2799.9,
+          "yaw_error": -5.7
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.2,
+          "yaw_error": -9.8
+        }
+      ]
+    },
+    {
+      "at": 1793357518.3871598,
+      "mission": 257,
+      "timer": 28.53,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.41795884783739956,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 357.8,
+          "yaw_error": 3.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.3,
+          "yaw_error": -30.1
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1322.1,
+          "yaw_error": 0.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1511.0,
+          "yaw_error": -27.4
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2087.5,
+          "yaw_error": -48.3
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2405.0,
+          "yaw_error": -47.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2808.9,
+          "yaw_error": -5.8
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.9,
+          "yaw_error": -9.8
+        }
+      ]
+    },
+    {
+      "at": 1793357519.3891387,
+      "mission": 257,
+      "timer": 27.57,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.5106668225002365,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 401.2,
+          "yaw_error": 1.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.9,
+          "yaw_error": -35.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1216.4,
+          "yaw_error": -6.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1499.5,
+          "yaw_error": -32.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2082.3,
+          "yaw_error": -53.4
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2406.6,
+          "yaw_error": -53.4
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2806.0,
+          "yaw_error": -11.0
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3404.5,
+          "yaw_error": -15.3
+        }
+      ]
+    },
+    {
+      "at": 1793357520.3905752,
+      "mission": 257,
+      "timer": 26.6,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.516571718705393,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 428.1,
+          "yaw_error": 3.6
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 838.6,
+          "yaw_error": -6.1
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1142.9,
+          "yaw_error": -36.3
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1511.3,
+          "yaw_error": -32.5
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.7,
+          "yaw_error": -53.8
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2401.7,
+          "yaw_error": -53.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2801.4,
+          "yaw_error": -11.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3404.6,
+          "yaw_error": -15.5
+        }
+      ]
+    },
+    {
+      "at": 1793357521.3915982,
+      "mission": 257,
+      "timer": 25.57,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.6302265332905446,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 421.0,
+          "yaw_error": -13.2
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 425.4,
+          "yaw_error": 4.2
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1145.4,
+          "yaw_error": -42.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1512.8,
+          "yaw_error": -39.2
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.9,
+          "yaw_error": -60.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2404.8,
+          "yaw_error": -60.1
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2806.5,
+          "yaw_error": -18.1
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3405.7,
+          "yaw_error": -21.9
+        }
+      ]
+    },
+    {
+      "at": 1793357522.3926198,
+      "mission": 257,
+      "timer": 24.63,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.3504872746439108,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 342.0,
+          "yaw_error": 8.5
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 406.4,
+          "yaw_error": 16.7
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1150.6,
+          "yaw_error": -26.3
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1499.1,
+          "yaw_error": -23.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2081.5,
+          "yaw_error": -44.4
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2405.6,
+          "yaw_error": -44.2
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2810.0,
+          "yaw_error": -2.1
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3399.8,
+          "yaw_error": -6.0
+        }
+      ]
+    },
+    {
+      "at": 1793357523.3944895,
+      "mission": 257,
+      "timer": 23.87,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.6854775376678588,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 331.6,
+          "yaw_error": 2.9
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 411.1,
+          "yaw_error": -10.5
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.9,
+          "yaw_error": -45.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1503.8,
+          "yaw_error": -42.7
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2088.9,
+          "yaw_error": -63.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2401.8,
+          "yaw_error": -63.4
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2798.9,
+          "yaw_error": -21.1
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3399.7,
+          "yaw_error": -25.4
+        }
+      ],
+      "stats": {
+        "rounds": 8,
+        "screen": "playing",
+        "doing": "fire",
+        "why": "square on, close: MajiniBlackSet 405 cm",
+        "t_aim": 2293,
+        "close_shots": 3470,
+        "t_fire": 3728,
+        "fire_key_tried": "y ",
+        "fire_key_switches": 1,
+        "fire_key": "y",
+        "t_turn": 80,
+        "point_blank_shots": 258,
+        "los_blocks": 8
+      }
+    },
+    {
+      "at": 1793357524.4172125,
+      "mission": 257,
+      "timer": 22.83,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.742304313995586,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 243.0,
+          "yaw_error": 3.0
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 296.7,
+          "yaw_error": -13.2
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1136.7,
+          "yaw_error": -49.3
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1505.6,
+          "yaw_error": -45.9
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2087.5,
+          "yaw_error": -66.9
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2408.1,
+          "yaw_error": -66.5
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2799.9,
+          "yaw_error": -24.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3398.6,
+          "yaw_error": -28.5
+        }
+      ]
+    },
+    {
+      "at": 1793357525.4225538,
+      "mission": 257,
+      "timer": 21.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.7423046226521502,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 210.5,
+          "yaw_error": -19.8
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 222.0,
+          "yaw_error": 3.1
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1138.2,
+          "yaw_error": -49.2
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1507.9,
+          "yaw_error": -45.4
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2081.5,
+          "yaw_error": -66.6
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2407.4,
+          "yaw_error": -66.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2803.3,
+          "yaw_error": -24.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3399.6,
+          "yaw_error": -28.4
+        }
+      ]
+    },
+    {
+      "at": 1793357526.4249663,
+      "mission": 257,
+      "timer": 20.83,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.7880868413171834,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 215.7,
+          "yaw_error": -49.4
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 222.7,
+          "yaw_error": -0.6
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1142.7,
+          "yaw_error": -51.2
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1511.8,
+          "yaw_error": -48.6
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.7,
+          "yaw_error": -69.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2406.2,
+          "yaw_error": -69.1
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2806.7,
+          "yaw_error": -27.0
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3401.3,
+          "yaw_error": -31.0
+        }
+      ]
+    },
+    {
+      "at": 1793357527.4290378,
+      "mission": 257,
+      "timer": 19.83,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.8680227745225355,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 130.5,
+          "yaw_error": -57.2
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 211.1,
+          "yaw_error": 0.4
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1145.2,
+          "yaw_error": -55.9
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1511.3,
+          "yaw_error": -53.2
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2088.4,
+          "yaw_error": -74.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2405.1,
+          "yaw_error": -73.4
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2804.0,
+          "yaw_error": -31.4
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3404.3,
+          "yaw_error": -35.8
+        }
+      ]
+    },
+    {
+      "at": 1793357528.4311163,
+      "mission": 257,
+      "timer": 18.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.4947534518063136,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 213.1,
+          "yaw_error": -5.3
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 213.5,
+          "yaw_error": -37.3
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1143.0,
+          "yaw_error": -34.9
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1497.4,
+          "yaw_error": -31.4
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2080.2,
+          "yaw_error": -52.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2406.6,
+          "yaw_error": -52.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2802.2,
+          "yaw_error": -10.1
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3404.7,
+          "yaw_error": -14.3
+        }
+      ]
+    },
+    {
+      "at": 1793357529.4321768,
+      "mission": 257,
+      "timer": 17.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.38005717009722667,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 140.1,
+          "yaw_error": 1.4
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 204.2,
+          "yaw_error": -19.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1143.4,
+          "yaw_error": -28.3
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1509.5,
+          "yaw_error": -24.8
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2085.1,
+          "yaw_error": -46.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2401.6,
+          "yaw_error": -45.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2808.0,
+          "yaw_error": -3.8
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3405.9,
+          "yaw_error": -7.6
+        }
+      ]
+    },
+    {
+      "at": 1793357530.433387,
+      "mission": 257,
+      "timer": 16.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.5645130372781086,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 174.3,
+          "yaw_error": 3.6
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 217.8,
+          "yaw_error": -18.3
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1150.7,
+          "yaw_error": -38.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1509.1,
+          "yaw_error": -35.6
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2087.1,
+          "yaw_error": -56.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2404.2,
+          "yaw_error": -56.4
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2803.2,
+          "yaw_error": -14.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3399.5,
+          "yaw_error": -18.3
+        }
+      ]
+    },
+    {
+      "at": 1793357531.434383,
+      "mission": 257,
+      "timer": 15.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.5734574292231213,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 127.9,
+          "yaw_error": -21.5
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 203.0,
+          "yaw_error": 29.9
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1144.6,
+          "yaw_error": -39.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1504.1,
+          "yaw_error": -35.7
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2088.0,
+          "yaw_error": -56.9
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2405.1,
+          "yaw_error": -57.0
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2798.7,
+          "yaw_error": -14.6
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3401.2,
+          "yaw_error": -19.0
+        }
+      ],
+      "stats": {
+        "rounds": 8,
+        "screen": "playing",
+        "doing": "fire",
+        "why": "square on, close: MajiniBlackSet 207 cm",
+        "t_aim": 2320,
+        "close_shots": 3528,
+        "t_fire": 3786,
+        "fire_key_tried": "y ",
+        "fire_key_switches": 1,
+        "fire_key": "y",
+        "t_turn": 80,
+        "point_blank_shots": 258,
+        "los_blocks": 8
+      }
+    },
+    {
+      "at": 1793357532.444583,
+      "mission": 257,
+      "timer": 14.77,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": 0.20811872981778726,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 209.8,
+          "yaw_error": 58.7
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 216.7,
+          "yaw_error": -2.4
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1136.7,
+          "yaw_error": -18.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1503.8,
+          "yaw_error": -15.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2091.8,
+          "yaw_error": -36.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2400.8,
+          "yaw_error": -35.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2799.5,
+          "yaw_error": 6.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3397.9,
+          "yaw_error": 2.1
+        }
+      ]
+    },
+    {
+      "at": 1793357533.446752,
+      "mission": 257,
+      "timer": 13.8,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": -0.0402465397407568,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 205.1,
+          "yaw_error": -7.6
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 217.0,
+          "yaw_error": 49.7
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1138.2,
+          "yaw_error": -4.3
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1505.4,
+          "yaw_error": -1.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2091.8,
+          "yaw_error": -22.0
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2412.2,
+          "yaw_error": -21.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2809.8,
+          "yaw_error": 20.4
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.8,
+          "yaw_error": 16.4
+        }
+      ]
+    },
+    {
+      "at": 1793357534.4488235,
+      "mission": 257,
+      "timer": 12.77,
+      "score": 600,
+      "player": {
+        "pos": [
+          329.4604187011719,
+          52.31654739379883,
+          -2754.541259765625
+        ],
+        "rot": -0.263883163551134,
+        "hp": 1000.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 140.2,
+          "yaw_error": 65.8
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 162.5,
+          "yaw_error": 0.7
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1142.6,
+          "yaw_error": 9.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1507.1,
+          "yaw_error": 12.2
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2080.5,
+          "yaw_error": -8.8
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2411.2,
+          "yaw_error": -9.1
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2806.0,
+          "yaw_error": 33.4
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3400.5,
+          "yaw_error": 29.3
+        }
+      ]
+    },
+    {
+      "at": 1793357535.4501112,
+      "mission": 257,
+      "timer": 11.77,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.4235145870898506,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 169.1,
+          "yaw_error": -1.7
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 279.7,
+          "yaw_error": 48.8
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1243.4,
+          "yaw_error": 17.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1608.5,
+          "yaw_error": 19.8
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.6,
+          "yaw_error": 0.3
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2495.8,
+          "yaw_error": 0.4
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2881.8,
+          "yaw_error": 41.4
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3488.9,
+          "yaw_error": 37.3
+        }
+      ]
+    },
+    {
+      "at": 1793357536.451062,
+      "mission": 257,
+      "timer": 11.4,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.42351459525270735,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 194.2,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 276.3,
+          "yaw_error": 44.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1242.8,
+          "yaw_error": 17.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1610.6,
+          "yaw_error": 20.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.5,
+          "yaw_error": 0.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2499.3,
+          "yaw_error": 0.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2882.5,
+          "yaw_error": 41.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3487.7,
+          "yaw_error": 37.4
+        }
+      ]
+    },
+    {
+      "at": 1793357537.452554,
+      "mission": 257,
+      "timer": 11.4,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.42351459525270735,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 194.2,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 276.3,
+          "yaw_error": 44.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1242.8,
+          "yaw_error": 17.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1610.6,
+          "yaw_error": 20.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.5,
+          "yaw_error": 0.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2499.3,
+          "yaw_error": 0.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2882.5,
+          "yaw_error": 41.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3487.7,
+          "yaw_error": 37.4
+        }
+      ]
+    },
+    {
+      "at": 1793357538.4551523,
+      "mission": 257,
+      "timer": 11.4,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.42351459525270735,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 194.2,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 276.3,
+          "yaw_error": 44.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1242.8,
+          "yaw_error": 17.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1610.6,
+          "yaw_error": 20.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.5,
+          "yaw_error": 0.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2499.3,
+          "yaw_error": 0.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2882.5,
+          "yaw_error": 41.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3487.7,
+          "yaw_error": 37.4
+        }
+      ]
+    },
+    {
+      "at": 1793357539.4555748,
+      "mission": 257,
+      "timer": 11.4,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.42351459525270735,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 194.2,
+          "yaw_error": 1.5
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 276.3,
+          "yaw_error": 44.0
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1242.8,
+          "yaw_error": 17.1
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1610.6,
+          "yaw_error": 20.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.5,
+          "yaw_error": 0.1
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2499.3,
+          "yaw_error": 0.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2882.5,
+          "yaw_error": 41.3
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3487.7,
+          "yaw_error": 37.4
+        }
+      ],
+      "stats": {
+        "rounds": 8,
+        "screen": "playing",
+        "doing": "fire",
+        "why": "square on, close: MajiniBlackSet 194 cm",
+        "t_aim": 2370,
+        "close_shots": 3648,
+        "t_fire": 3929,
+        "fire_key_tried": "y ",
+        "fire_key_switches": 1,
+        "fire_key": "y",
+        "t_turn": 80,
+        "point_blank_shots": 281,
+        "los_blocks": 8
+      }
+    },
+    {
+      "at": 1793357540.4833424,
+      "mission": 257,
+      "timer": 11.03,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.4235145870898506,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 226.7,
+          "yaw_error": 2.1
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 282.7,
+          "yaw_error": 35.8
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1241.7,
+          "yaw_error": 16.9
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1603.2,
+          "yaw_error": 19.9
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2189.6,
+          "yaw_error": 0.4
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2505.6,
+          "yaw_error": 0.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2883.7,
+          "yaw_error": 41.2
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3489.1,
+          "yaw_error": 37.4
+        }
+      ]
+    },
+    {
+      "at": 1793357541.4852943,
+      "mission": 257,
+      "timer": 10.03,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.42351459117127926,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 251.6,
+          "yaw_error": 23.7
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 310.6,
+          "yaw_error": -0.7
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1240.5,
+          "yaw_error": 16.6
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1603.1,
+          "yaw_error": 20.3
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2179.9,
+          "yaw_error": 0.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2507.1,
+          "yaw_error": 0.2
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2891.3,
+          "yaw_error": 41.1
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3490.4,
+          "yaw_error": 37.5
+        }
+      ]
+    },
+    {
+      "at": 1793357542.4884632,
+      "mission": 257,
+      "timer": 9.03,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": 0.04008005046547241,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 145.1,
+          "yaw_error": -2.3
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 290.0,
+          "yaw_error": -32.2
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1248.0,
+          "yaw_error": -9.7
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1608.1,
+          "yaw_error": -6.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2183.8,
+          "yaw_error": -26.3
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2501.9,
+          "yaw_error": -25.9
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2880.6,
+          "yaw_error": 14.6
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3484.2,
+          "yaw_error": 10.8
+        }
+      ]
+    },
+    {
+      "at": 1793357543.489887,
+      "mission": 257,
+      "timer": 8.03,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": 0.04008005046547241,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 216.6,
+          "yaw_error": -2.8
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 300.0,
+          "yaw_error": -50.2
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1245.6,
+          "yaw_error": -9.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1602.1,
+          "yaw_error": -6.7
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2182.5,
+          "yaw_error": -26.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2504.2,
+          "yaw_error": -26.3
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2880.1,
+          "yaw_error": 14.7
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3485.8,
+          "yaw_error": 10.7
+        }
+      ]
+    },
+    {
+      "at": 1793357544.4912188,
+      "mission": 257,
+      "timer": 7.03,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.17747379686136205,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 200.9,
+          "yaw_error": -37.0
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 230.7,
+          "yaw_error": -6.4
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1235.5,
+          "yaw_error": 2.5
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1602.1,
+          "yaw_error": 6.2
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2188.9,
+          "yaw_error": -13.8
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2505.8,
+          "yaw_error": -13.8
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2881.1,
+          "yaw_error": 27.2
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3482.4,
+          "yaw_error": 23.3
+        }
+      ]
+    },
+    {
+      "at": 1793357545.4936676,
+      "mission": 257,
+      "timer": 6.0,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.8781803716014813,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 161.3,
+          "yaw_error": -1.7
+        },
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 211.5,
+          "yaw_error": 19.8
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1236.3,
+          "yaw_error": 42.4
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1604.3,
+          "yaw_error": 46.2
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2187.8,
+          "yaw_error": 26.2
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2502.7,
+          "yaw_error": 26.6
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2889.1,
+          "yaw_error": 67.2
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3485.2,
+          "yaw_error": 63.6
+        }
+      ]
+    },
+    {
+      "at": 1793357546.4954407,
+      "mission": 257,
+      "timer": 5.0,
+      "score": 600,
+      "player": {
+        "pos": [
+          362.38671875,
+          51.235233306884766,
+          -2849.496826171875
+        ],
+        "rot": -0.9321732188157082,
+        "hp": 760.0
+      },
+      "enemies": [
+        {
+          "ptr": "0x8613820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 126.3,
+          "yaw_error": 26.0
+        },
+        {
+          "ptr": "0x85c9420",
+          "hp": 300.0,
+          "class": "MajiniBlackSet",
+          "distance": 218.1,
+          "yaw_error": -7.6
+        },
+        {
+          "ptr": "0x85d5820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1239.2,
+          "yaw_error": 46.2
+        },
+        {
+          "ptr": "0x862e820",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 1603.1,
+          "yaw_error": 49.1
+        },
+        {
+          "ptr": "0x85df820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2182.5,
+          "yaw_error": 29.5
+        },
+        {
+          "ptr": "0x85f5c20",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 2512.3,
+          "yaw_error": 29.5
+        },
+        {
+          "ptr": "0x85ebc20",
+          "hp": 600.0,
+          "class": "MajiniBlackSet",
+          "distance": 2885.6,
+          "yaw_error": 70.5
+        },
+        {
+          "ptr": "0x8624820",
+          "hp": 600.0,
+          "class": "MajiniEuOriSet",
+          "distance": 3485.0,
+          "yaw_error": 66.6
+        }
+      ]
+    }
+  ]
+}

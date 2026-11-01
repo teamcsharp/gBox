@@ -1,0 +1,158 @@
+{
+  "started": 1793355863.5969563,
+  "samples": [
+    {
+      "at": 1793355864.4570537,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 0.5,
+      "stats": {
+        "screen": "loading",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    },
+    {
+      "at": 1793355872.5713332,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 2.8,
+      "stats": {
+        "screen": "loading",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    },
+    {
+      "at": 1793355880.5964444,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 5.1,
+      "stats": {
+        "screen": "loading",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    },
+    {
+      "at": 1793355888.634814,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 1.3,
+      "stats": {
+        "screen": "loading",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    },
+    {
+      "at": 1793355896.6526437,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 3.5,
+      "stats": {
+        "screen": "select_stage",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    },
+    {
+      "at": 1793355904.7094884,
+      "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+      "phase": "playing",
+      "handover": null,
+      "rounds": 0,
+      "running": true,
+      "age_s": 5.6,
+      "stats": {
+        "screen": "mercs_main",
+        "stage": null,
+        "mission_id": null,
+        "operator_control": false,
+        "operator_takeovers": 0,
+        "round_evidence_id": null,
+        "timer": null
+      },
+      "progress": [
+        1,
+        1,
+        21
+      ]
+    }
+  ],
+  "legacy_mouse_report": {
+    "synthetic_test": true,
+    "at": 1793355864.4661129,
+    "sid": "8a376d3177ae42a1-304e5dd1cec441b3",
+    "response": {
+      "yielded": false
+    }
+  },
+  "ended": 1793355912.7108297,
+  "source_sha256": {
+    "gbox/tools.py": "01f567b25c43fa02feb13e6bfccb9545e0c775f7b034f6da71fcc03abf8c87eb",
+    "gbox/screensaver.py": "22910ade827676543e952e22252412b3ca2ea7097852391f46fde17e6c0460c7",
+    "gbox/mercs/titles/merc3d_3ds.py": "60e09ba2f77d4f4623882b8a8a4eb97b8676d7997aaed7fe2b177ed8c70f71da",
+    "clients/desktop/index.html": "4a36d7f75eec2b9b930da43aa6a3ec82054bfb6591852cc9ac40004dc3b18949"
+  }
+}
