@@ -289,7 +289,10 @@ def test_enemies_walk_sEnemys_unit_list():
         g.u32(n + M.EN_NODE_UNIT, u)
         g.u32(n + M.NODE_NEXT, nodes[k + 1] if k + 1 < len(nodes) else se + M.SE_SENTINEL)
         units.append(u)
-    g.u32(se + M.SE_FIRST, nodes[0])
+    # Native two-ended list, observed on i9 mission 0x0101. Starting at +0x24
+    # returns only the distant tail enemy and misses the nearby attackers.
+    g.u32(se + 0x24, nodes[-1])
+    g.u32(se + 0x28, nodes[0])
     es = M.enemies(g)
     assert [e["ptr"] for e in es] == units
     assert es[2]["hp"] == 100.0 and es[1]["pos"] == (100.0, 0.0, 50.0) and es[0]["class"] == "uEm00Majini"
@@ -351,7 +354,10 @@ def test_missions_are_played_in_order_level_by_level_and_the_game_again(tmp_path
         level = pick.level_for(M.LEVELS)
         tab = pick.tab_for(3)
         seen.append((level, tab))
-        pick.reset()                                         # the round started: on to the next mission
+        mid = level << 8 | tab
+        pick.began(mid)
+        assert pick.cursor[:2] == [level, tab]                # starting is not completion
+        pick.ended(mid, True)
     assert seen[:4] == [(0, 0), (0, 1), (0, 2), (1, 0)]
     assert seen[M.LEVELS * 3] == (0, 0) and pick.cursor[2] == 1   # the whole game, then round again
     again = M._Pick(path=tmp_path / "progress.json")          # a relaunch carries on where it was
@@ -359,6 +365,49 @@ def test_missions_are_played_in_order_level_by_level_and_the_game_again(tmp_path
     locked = M._Pick(path=tmp_path / "locked.json")
     locked.cursor = [3, 0, 0]
     assert locked.level_for(2) == 1                           # LV.4 not open yet: the last open level
+
+
+def test_failed_or_interrupted_mission_retries_and_completion_counts_once(tmp_path):
+    pick = M._Pick(path=tmp_path / 'retry.json')
+    for completed in (False, False, True):
+        assert (pick.level_for(5), pick.tab_for(3)) == (0, 0)
+        pick.began(0)
+        assert M._Pick(path=pick.path).cursor == [0, 0, 0]
+        pick.ended(0, completed)
+    assert pick.cursor == [0, 1, 0]
+    pick.ended(0, True)                                       # repeated result reads must not skip missions
+    assert pick.cursor == [0, 1, 0]
+    pick.level_for(5); pick.tab_for(3); pick.began(1)
+    pick.ended(0x100, True)                                  # another mission's end is not this mission's success
+    assert pick.cursor == [0, 1, 0]
+
+
+def test_resume_inside_mission_tabs_tracks_actual_level(monkeypatch, tmp_path):
+    pick = M._Pick(path=tmp_path / 'inside.json')
+    monkeypatch.setattr(M, 'PICK', pick)
+    scr = M.screen(_select_guest(level=1, open_=2, tab=0, tabs=3, mission=0x100))
+    assert scr['inside'] and pick.level == 1 and pick.tab == 0
+    pick.began(0x100)
+    pick.ended(0x100, True)
+    assert pick.cursor == [1, 1, 0]
+
+
+def test_native_mission_end_advances_but_time_up_and_death_retry(monkeypatch, tmp_path):
+    pick = M._Pick(path=tmp_path / 'native.json')
+    monkeypatch.setattr(M, 'PICK', pick)
+    for terminal in (5, 6, 3):                               # failed, dead, native completed
+        assert (pick.level_for(5), pick.tab_for(3)) == (0, 0)
+        g = _guest('aS0000', STAGE, 2)
+        g.player()
+        sm = g.obj('sMission', 0x130)
+        g.u32(M.S_MISSION, sm); g.u32(sm + M.M_MISSION, 0)
+        assert M.screen(g)['where'] == 'playing'
+        assert pick.cursor == [0, 0, 0]
+        area = M.areas(g)[-1][0]
+        g.u32(area + M.AREA_FLOW + M.FLOW_CUR, terminal)
+        M.screen(g)
+        M.screen(g)
+        assert pick.cursor == ([0, 1, 0] if terminal == 3 else [0, 0, 0])
 
 
 def test_the_autosaves_saved_dialog_is_the_menus_turn_and_takes_a():

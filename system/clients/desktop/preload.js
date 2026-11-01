@@ -2,6 +2,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("gbox", {
   settings: () => ipcRenderer.invoke("settings:get"),
+  sshPlatform: process.platform,
+  sshStatus: () => ipcRenderer.invoke('ssh:status'),
+  sshEnable: () => ipcRenderer.invoke('ssh:enable'),
+  sshPreference: value => ipcRenderer.invoke('ssh:preference',value),
+  onSshChanged: fn => ipcRenderer.on('ssh:changed',(_e,state)=>fn(state)),
   connectionStatus: () => ipcRenderer.invoke('connection:status'),
   selectConnection: mode => ipcRenderer.invoke('connection:select',mode),
   onConnection: fn => ipcRenderer.on('connection:changed',(_e,state)=>fn(state)),
@@ -69,6 +74,7 @@ contextBridge.exposeInMainWorld("gbox", {
   clientVersion: () => ipcRenderer.invoke('client:version'),
   clientUpdate: () => ipcRenderer.invoke('client:update'),          // F5: pull this PC's gBox (main.js, app-update.cjs)
   streamPoster: rect => ipcRenderer.invoke('stream:poster', rect),
+  streamHealth: src => ipcRenderer.invoke('stream:health', src),
   browser: (op, url) => ipcRenderer.invoke("browser:send", op, url),
   embedFocus: () => ipcRenderer.invoke("embed:focus"),
   embedKill: () => ipcRenderer.invoke("embed:kill"),

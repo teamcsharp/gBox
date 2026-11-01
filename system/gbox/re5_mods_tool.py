@@ -698,12 +698,12 @@ def turn_speed(g: RE5, mult) -> dict:
     g.orig["turn"] = {o: base for o, (_, base) in TURN.items()}
     out, ok = {}, True
     for o, (name, base) in TURN.items():
-        want = struct.pack(">f", base * k)
+        # Input thresholds stay normalized; only angular rates are multiplied.
+        want = struct.pack(">f", base if name.startswith("stick_") else base * k)
         ok &= g.wr(p + o, want)
         out[name] = round(g.f32(p + o), 4)
     return {"turn_speed_x": k, "values": out, "verified": ok, "sParameter": f"0x{p:08X}",
-            "note": "the stick turns the player this many times faster, aiming (yaw and pitch) and not; the bot's "
-                    "aim pulses settle up to x3 (a 50 ms pulse at x3 is ~4.5 deg)"}
+            "note": "scales turn, aim yaw and aim pitch rates; preserves the normalized stick input range"}
 
 
 def _upg_group(u: bytearray, wid: int, group: int) -> tuple[int, list[float]]:
@@ -1548,16 +1548,31 @@ def re5_mods(inp: RE5ModsIn, ctx):
     playbook applies the profile's package at round start."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
-    if (inp.op or "").strip().lower() == "bot_logic" and (is_switch_re6(g) or is_switch_re5(g)):
+    if (inp.op or "").strip().lower() in ("bot_logic", "live_controls") and (is_switch_re6(g) or is_switch_re5(g)):
         from .mercs import bot_logic                     # the operator's live bot settings (the PiP's sidebar)
         title = "re6" if is_switch_re6(g) else "re5"     # (and its weapon dropdown: weapon= equips that one)
-        return {"result": bot_logic.handle(title, inp.values, inp.reset) | bot_logic.weapon_menu(ad, title, inp.weapon)}
+        # Polling the live panel is a read; only changed behavior settings rewrite its saved file.
+        logic = bot_logic.handle(title, inp.values, inp.reset) if inp.values or inp.reset else bot_logic.status(title)
+        view = logic | bot_logic.weapon_menu(ad, title, inp.weapon)
+        if inp.op.strip().lower() == "live_controls":
+            if title == "re6":
+                from .mercs.titles import re6_switch_mods as mods
+                status = mods.run(ad, "status")
+            else:
+                from .mercs.titles import re5_switch_mods as mods
+                result = mods.tool_run(ad, "status")
+                status = result.get("status", result)
+            return {"result": {"verified": True, "title": title, "view": view, "status": status}}
+        return {"result": view}
     if is_switch_re6(g):                                 # RE6 on Switch: its own ops
         from .mercs.titles import re6_switch_mods as R6
         extra = {k: v for k, v in (("weapon", inp.weapon), ("seconds", inp.seconds), ("nades", inp.nades),
                                    ("flash", inp.flash), ("aim_lock", inp.aim_lock), ("bomb_drop", inp.bomb_drop))
                  if v is not None}
-        return {"result": R6.run(ad, inp.op, inp.multiplier, inp.on, **extra)}
+        result = R6.run(ad, inp.op, inp.multiplier, inp.on, **extra)
+        if result.get("verified") is True and inp.op != "status":
+            result = {**result, "status": R6.run(ad, "status")}
+        return {"result": result}
     if is_switch_re5(g):                                 # RE5 on Switch: the same ops, routed to its own mods
         from .mercs.titles import re5_switch_mods as SW
         if (inp.op or "").strip().lower() == "apply_saved":

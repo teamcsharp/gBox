@@ -48,6 +48,64 @@ def test_gc_capability_never_reads_dreamcast_addresses():
     assert not any(r["features"].values())
 
 
+def measured_speed_adapter():
+    return SimpleNamespace(autoplay_speed=10, _autoplay_speed_known=True, _autoplay_speed_changing=False,
+        _pso_timing_epoch=4, _pso_verified_player_slots={0, 1},
+        _pso_coop_new_card={'isolated': True, 'session_id': 'buddy', 'path': 'private'},
+        _autoplay_speed_observed={'requested': 10, 'actual': 1., 'lower': .99, 'upper': 1.01,
+            'verified': True, 'monotonic': 99., 'sample_seconds': 1., 'timing_epoch': 4,
+            'source': '3OE2 native timebase 0x80375F20'})
+
+
+def test_speed_capability_separates_requested_from_measured_without_native_calls(monkeypatch):
+    monkeypatch.setattr(pso_controls.time, 'monotonic', lambda: 100.)
+    ad = measured_speed_adapter()
+    result = pso_controls.autoplay_speed_status(ad, True)
+    assert result['requested'] == 10 and result['actual'] == 1
+    assert result['measurement_verified'] and not result['achieved_verified'] and result['valid_for_ms'] == 1000
+    assert result['measurement_source'] == 'native_game_clock'
+    assert 'monotonic' not in result and 'timing_epoch' not in result
+    assert '0x' not in str(result)
+    ad.set_autoplay_speed = lambda *_: pytest.fail('Displaying speed must not change it')
+    cap = pso_controls.capabilities({'platform': 'gamecube', 'title': 'Phantasy Star Online'},
+                                    lambda *_: b'', adapter=ad)
+    assert cap['autoplay_speed'] == result and cap['features']['autoplay_speed']
+
+
+@pytest.mark.parametrize('fault', ['unavailable', 'stale', 'future', 'epoch', 'request', 'unknown', 'changing',
+    'paused', 'paused_threads', 'paused_flag', 'unverified', 'missing', 'bounds', 'nan', 'source', 'mapping', 'card'])
+def test_speed_capability_hides_stale_or_invalid_measurements(monkeypatch, fault):
+    monkeypatch.setattr(pso_controls.time, 'monotonic', lambda: 100.)
+    ad = measured_speed_adapter()
+    observation = ad._autoplay_speed_observed
+    if fault == 'stale': observation['monotonic'] = 98
+    if fault == 'future': observation['monotonic'] = 101
+    if fault == 'epoch': ad._pso_timing_epoch += 1
+    if fault == 'request': ad.autoplay_speed = 8
+    if fault == 'unknown': ad._autoplay_speed_known = False
+    if fault == 'changing': ad._autoplay_speed_changing = True
+    if fault == 'paused': ad._pso_timing_paused = True
+    if fault == 'paused_threads': ad.paused_tids = [1]
+    if fault == 'paused_flag': ad.paused = True
+    if fault == 'unverified': observation['verified'] = False
+    if fault == 'missing': ad._autoplay_speed_observed = None
+    if fault == 'bounds': observation['lower'] = .8
+    if fault == 'nan': observation['actual'] = float('nan')
+    if fault == 'source': observation['source'] = 'hotkey'
+    if fault == 'mapping': ad._pso_verified_player_slots = {0}
+    if fault == 'card': ad._pso_coop_new_card = True
+    result = pso_controls.autoplay_speed_status(ad, fault != 'unavailable')
+    assert not result['measurement_verified'] and not result['achieved_verified'] and 'actual' not in result
+
+
+def test_requested_speed_is_achieved_only_when_entire_measured_interval_matches(monkeypatch):
+    monkeypatch.setattr(pso_controls.time, 'monotonic', lambda: 100.)
+    ad = measured_speed_adapter()
+    ad._autoplay_speed_observed.update(actual=10., lower=9.9, upper=10.1)
+    result = pso_controls.autoplay_speed_status(ad, True)
+    assert result['measurement_verified'] and result['achieved_verified']
+
+
 def test_capabilities_require_code_fingerprint_and_guard_saved_class():
     ad = FakeDC()
     game = {"platform": "dreamcast", "title": "Phantasy Star Online Ver. 2"}

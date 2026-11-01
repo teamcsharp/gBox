@@ -1,5 +1,7 @@
 """PSO session capabilities and boot defaults. Never apply Dreamcast addresses to GameCube."""
+import math
 import threading
+import time
 
 from .psoitems import CLASSES
 
@@ -28,20 +30,67 @@ def is_pso(game):
     return game.get("platform") in ("dreamcast", "gamecube") and "phantasy star online" in game.get("title", "").lower()
 
 
-def capabilities(game, read):
+def autoplay_speed_status(adapter, available):
+    """Only expose a fresh native measurement for the current timing context."""
+    requested = getattr(adapter, 'autoplay_speed', 1)
+    result = {'available': available, 'requested': requested, 'choices': [1, 2, 4, 8, 10],
+              'known': getattr(adapter, '_autoplay_speed_known', False) is True,
+              'changing': bool(getattr(adapter, '_autoplay_speed_changing', False)),
+              'paused': bool(getattr(adapter, '_pso_timing_paused', False) or
+                             getattr(adapter, 'paused', False) or getattr(adapter, 'paused_tids', None)),
+              'measurement_verified': False, 'achieved_verified': False}
+    observation = getattr(adapter, '_autoplay_speed_observed', None)
+    card = getattr(adapter, '_pso_coop_new_card', None)
+    if (not available or not result['known'] or result['changing'] or result['paused'] or
+            not isinstance(card, dict) or card.get('isolated') is not True or
+            not card.get('session_id') or not card.get('path') or
+            set(getattr(adapter, '_pso_verified_player_slots', ())) != {0, 1} or
+            not isinstance(observation, dict) or observation.get('verified') is not True or
+            observation.get('source') != '3OE2 native timebase 0x80375F20' or
+            observation.get('requested') != requested or
+            observation.get('timing_epoch') != getattr(adapter, '_pso_timing_epoch', 0)):
+        return result
+    fields = ('actual', 'lower', 'upper', 'monotonic', 'sample_seconds')
+    if any(type(observation.get(k)) not in (int, float) or not math.isfinite(observation[k]) for k in fields):
+        return result
+    actual, lower, upper, at, duration = (observation[k] for k in fields)
+    age = time.monotonic() - at
+    if not (0 <= age < 2 and .5 <= duration <= 2 and 0 < lower <= actual <= upper <= 12
+            and (upper - lower) / actual <= .05):
+        return result
+    achieved = type(requested) in (int, float) and lower >= requested * .95 and upper <= requested * 1.05
+    result.update(measurement_verified=True, achieved_verified=achieved, actual=actual, lower=lower, upper=upper,
+                  sample_seconds=duration, sample_age_seconds=age, valid_for_ms=(2 - age) * 1000,
+                  measurement_source='native_game_clock')
+    return result
+
+
+def capabilities(game, read, *, player_index=0, adapter=None):
     if game.get('platform') == 'gamecube':
         from types import SimpleNamespace
         from .pso_gc_live import GC
+        ad=adapter or SimpleNamespace(read_memory=read,write_memory=None)
+        players=[]
+        for index in (0,1):
+            entry={'index':index,'label':f'Player {index+1}','available':False,'verified':False}
+            try:
+                actor=GC(ad,player_index=index)
+                pointer=actor.check(require_probe=False)
+                entry.update(available=True,entity_id=index)
+                actor.check()
+                entry['verified']=True
+            except Exception as error:entry['reason']=str(error)
+            players.append(entry)
         supported, reason = False, 'This is not a PSO game'
         if is_pso(game):
             try:
-                GC(SimpleNamespace(read_memory=read, write_memory=None)).check()
+                GC(ad,player_index=player_index).check()
                 supported, reason = True, ''
             except Exception as error:
                 reason = str(error)
         adventure=False
         accuracy=False
-        if supported:
+        if supported and player_index==0:
             try:
                 from .pso_gc_adventure import Adventure
                 Adventure(SimpleNamespace(read_memory=read,write_memory=None)).check()
@@ -52,10 +101,17 @@ def capabilities(game, read):
                 GameCube(SimpleNamespace(read_memory=read,write_memory=None)).check()
                 accuracy=True
             except Exception: pass
+        speed=bool(adapter and getattr(adapter,'_pso_coop_new_card',False) and callable(getattr(adapter,'set_autoplay_speed',None)))
+        features={k:supported for k in ('give','stat','mag','randomized','equip')}
+        features.update({k:supported and player_index==0 for k in ('floor_spawn','floor_rares','floor_clear','equip_any','multi_equip','survival','revive')})
+        features.update({k:adventure for k in ('enemy_drops','walk_through','boss_warp')})
+        features.update(always_hit=accuracy,autoplay_speed=speed)
         return {'version': 'gc', 'label': 'GameCube Plus US revision 2', 'supported': supported, 'reason': reason,
+                'player_index':player_index,'players':players,
+                'selection_note':'Equipment targets the selected verified player. Shared patches and survival controls remain on player 1.',
+                'autoplay_speed':autoplay_speed_status(adapter, speed),
                 'character_class': None, 'classes': list(CLASSES),
-                'features': {k: supported for k in ('floor_spawn','floor_rares','floor_clear','give','equip_any','multi_equip','stat','survival','revive','mag','randomized')} |
-                            {k:adventure for k in ('enemy_drops','walk_through','boss_warp')} | {'always_hit': accuracy},
+                'features':features,
                 'pending': {'areas': 'Teleporter progression needs a verified GameCube patch.',
                             'skins': 'Imported wardrobe cycling needs a native GameCube skin loader.',
                             'npcs': 'NPC model replacement and movement need verified GameCube bindings.'},

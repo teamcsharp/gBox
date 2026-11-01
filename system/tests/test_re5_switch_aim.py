@@ -75,6 +75,16 @@ def test_a_write_that_does_not_hold_is_a_failure():
     assert not A.aim_writer(Session(g))(A.aim_state(g, BASE, PLAYER), 0.1, None)
 
 
+@pytest.mark.parametrize('changed', ['life', 'camera', 'stale', 'nan'])
+def test_writer_revalidates_owner_and_freshness_before_any_write(changed):
+    g = guest(); st = A.aim_state(g, BASE, PLAYER)
+    if changed == 'life': g.q(PLAYER + 0x1A00, 2)
+    if changed == 'camera': g.q(CTRL + A.CTRL_ACTIVE, 0)
+    if changed == 'stale': st['sampled_at'] -= 1
+    assert not A.aim_writer(Session(g))(st, float('nan') if changed == 'nan' else .1, .2)
+    assert not g.writes
+
+
 def test_no_writer_without_an_adapter_or_with_modifications_off():
     assert A.aim_writer(object()) is None
     s = Session(guest())

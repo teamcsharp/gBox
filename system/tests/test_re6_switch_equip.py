@@ -172,12 +172,63 @@ def test_controller_does_not_repeat_uncertain_request_for_same_player_life():
     assert len(writes) == n
 
 
+@pytest.mark.parametrize('finished', [False, True])
+def test_other_ticket_never_acknowledges_or_blacklists_the_new_kind(finished):
+    g, p, obj, writes = fixture()
+    control = E.Controller(g, {})
+    player = {'ptr': p, 'nades': {0x115: (11, 20)}, 'guns': {0x111: 1}}
+    assert control.select(player, 11)['state'] == 'requested'
+    if finished:
+        finish(g, p, obj, 11)
+    else:
+        g._re6_native_equip['deadline'] = 0
+    n = len(writes)
+    result = control.select(player, 1)
+    assert result['state'] == 'deferred' and result['kind'] == 0x111
+    assert result['pending_kind'] == 0x115
+    assert len(writes) == n
+    assert (p, 18, 0x111) not in control.failed
+    assert ((p, 18, 0x115) in control.failed) is not finished
+
+
+def test_uncertain_kinds_remain_refused_when_another_kind_also_fails(monkeypatch):
+    g, p, obj, writes = fixture()
+    control = E.Controller(g, {})
+    player = {'ptr': p, 'guns': {0x111: 1, 0x108: 2}}
+    called = []
+    def uncertain(memory, base, actor, kind, **kw):
+        called.append(kind)
+        return {'state': 'unconfirmed', 'kind': kind, 'reason': 'request_interrupted'}
+    monkeypatch.setattr(E, 'request', uncertain)
+    assert control.select(player, 1)['state'] == 'unconfirmed'
+    assert control.select(player, 2)['state'] == 'unconfirmed'
+    assert control.select(player, 1)['reason'] == 'previous_request_unconfirmed'
+    assert called == [0x111, 0x108] and not writes
+
+
+@pytest.mark.parametrize('block', [None, 'pending', 'ticket', 'busy_action', 'generation'])
+def test_ordinary_cycle_readiness_is_read_only_and_requires_idle_native_context(block):
+    g, p, obj, writes = fixture(0x11b, 3)
+    control = E.Controller(g, {})
+    player = {'ptr': p, 'generation': 18, 'guns': {0x11b: 3}}
+    if block == 'pending': g.put(p + E.MANAGER + 0x3c, b'\x01')
+    if block == 'ticket': g._re6_native_equip = {'kind': 0x11b}
+    if block == 'busy_action': g.q(p + E.MANAGER + 0x48, g.obj('cPlAction_pl_act_attack_ex'))
+    if block == 'generation': player['generation'] = 19
+    assert control.cycle_ready(player, 3) is (block is None)
+    assert writes == []
+
+
 class NativeBridge:
     def __init__(self): self.targets = []
     def tick(self): pass
     def select(self, p, index):
         self.targets.append(index)
-        return {'state': 'requested'}
+        kinds = [kind for kind, slot in (p.get('guns') or {}).items() if slot == index]
+        kinds += [kind for kind, row in (p.get('nades') or {}).items() if row[0] == index]
+        if index == R.BOMB_INDEX and (p.get('bomb') or {}).get('count', 0) > 0:
+            kinds.append(0x116)
+        return {'state': 'requested', 'kind': kinds[0] if kinds else None, 'index': index}
 
 
 def test_live_bot_weapon_request_targets_native_slot_without_wheel(monkeypatch):
@@ -190,14 +241,15 @@ def test_live_bot_weapon_request_targets_native_slot_without_wheel(monkeypatch):
     assert bridge.targets == [4]
 
 
-def test_live_bot_flash_waits_for_native_equip_before_throwing():
+def test_legacy_flash_directive_never_substitutes_an_inventory_throw():
     from gbox.mercs import directives as D
     bridge = NativeBridge()
     bot = R.Bot(stats={}, equip=bridge)
     p = {'ptr': 123, 'pos': (0, 0, 0), 'nades': {0x115: (11, 20)}, 'equipped': 0}
     D.apply_to_stats(bot.stats, D.post('native-flash-6107', 'flashbang'))
-    assert bot._emergency_flashbang(p, {}, 1) == {'hold': ()}
-    assert bridge.targets == [11] and bot.nade['phase'] == 'equip'
+    assert bot._emergency_flashbang(p, {}, 1) is None
+    assert bridge.targets == [] and bot.nade is None
+    assert 'native flash intervention endpoint' in bot.stats['directive_status']
 
 
 def test_live_bot_remote_item_request_has_no_wheel_input():

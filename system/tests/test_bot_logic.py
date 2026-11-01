@@ -6,6 +6,25 @@ from gbox.mercs import bot_logic as BL
 from gbox.mercs.titles import re6_switch as R6
 
 
+def test_sidebar_reads_behavior_and_mods_in_one_bound_worker_call(monkeypatch):
+    from gbox import tools, re5_mods_tool as tool
+    from gbox.mercs.titles import re6_switch_mods as mods
+    adapter = object()
+    monkeypatch.setitem(tools.SESSIONS, 'worker-live', (adapter, {'game_id':'115f9cdbba115432'}))
+    monkeypatch.setattr(BL, 'handle', lambda *a, **kw: pytest.fail('a panel read must not persist settings'))
+    monkeypatch.setattr(BL, 'status', lambda title: {'verified':True,'title':title,'knobs':[]})
+    monkeypatch.setattr(BL, 'weapon_menu', lambda ad, title, weapon: {'weapons':[]})
+    calls=[]
+    def run(ad, op):
+        assert ad is adapter
+        calls.append(op)
+        return {'fire_rate_x':30.0}
+    monkeypatch.setattr(mods, 'run', run)
+    out=tool.re5_mods(tool.RE5ModsIn(session_id='worker-live',op='live_controls'),None)['result']
+    assert out['view']['title']=='re6' and out['status']['fire_rate_x']==30.0
+    assert calls==['status']
+
+
 @pytest.fixture
 def path(tmp_path, monkeypatch):
     saved = {n: getattr(R6, n) for n in ("FLASH_GAP_S", "NADES", "FLASH_N")}

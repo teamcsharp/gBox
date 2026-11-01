@@ -11,8 +11,8 @@ The operator's standing rules (RE5 / RE6 Switch, 2026-10-26/27) are the policy:
     * no idling among foes: with a live enemy anywhere he turns, closes in, aims or kites - never stands still
     * keep the combo: with nobody in reach he runs to the nearest enemy anywhere on the map (the full census)
 
-Controls (the 3DS pad through RetroArch's network gamepad; CONTROLS, set from the live measurements): the circle pad
-(left stick) moves; R raises the gun; while it is up the circle pad moves the aim; FIRE shoots; B runs.
+Type A controls (Capcom's RETM_3DS_DMNL_EN.pdf, pp.10-13): circle pad runs, B walks,
+R aims and Y fires. A uses a herb; it must never be tried as a trigger.
 Headings follow merc3d_3ds.heading_of: 0 = +z, positive toward +x; a target's bearing is atan2(dx, dz).
 """
 from __future__ import annotations
@@ -20,16 +20,16 @@ from __future__ import annotations
 import math
 import time
 
-CONTROLS = {"raise": "r", "fire": "a", "run": "b", "forward": "lup", "back": "ldown", "left": "lleft",
+CONTROLS = {"raise": "r", "fire": "y", "walk": "b", "forward": "lup", "back": "ldown", "left": "lleft",
             "right": "lright", "aim_left": "lleft", "aim_right": "lright", "aim_up": "lup", "aim_down": "ldown"}
 TURN_LEFT_IS_LARGER = True              # stick left turns toward a larger heading (verified live before the flip)
-# The fire button is learned in play (live 2026-10-27, the i9: a whole round of R + A point blank left a 600-vitality
-# Majini at 600): while the gun is up on a target in front within FIRE_PROBE_R, a candidate that leaves his vitality
-# unchanged for FIRE_PROBE_S of trigger time gives way to the next. The working one is kept for the process (FIRE).
-FIRE_CANDIDATES = ("a", "y", "x", "r2", "l", "b")
-FIRE_PROBE_S, FIRE_PROBE_R = 1.5, 350.0
+# Confirm damage in play, but never guess unrelated controls when aim is blocked.
+FIRE_PROBE_R = 350.0
 FIRE = {"key": CONTROLS["fire"], "confirmed": False}
-RELOAD_KEEP = ("FIRE",)
+RELOAD_KEEP = ()  # discard the previous build's guessed trigger on a bot reload
+# The engine diffs held keys; holding a semi-automatic trigger forever produces
+# only one press. Keep the aim raised but give the game observable release frames.
+FIRE_DOWN_S, FIRE_UP_S = 0.10, 0.08
 
 CC_R, CC_N = 260.0, 3                   # crowd control: this many foes inside this radius (cm)
 GRAB_R = 130.0                          # a foe this close behind / beside him: get out first
@@ -88,6 +88,13 @@ class Bot:
         self.long_look = (None, 0.0, -1e9)  # (target, until, last started)
         self.doing, self.why = "idle", ""
         self.probe = None                   # (target ptr, his vitality, trigger seconds so far, last tick)
+        self.trigger_down = False
+        self.trigger_at = None
+        self.movement = None
+        self.escape_until = 0.0
+        self.escape_side = "lleft"
+        self.attack_progress = None
+        self.last_hold = set()
 
     # --- the engine's interface ------------------------------------------------------------------------------------------
     def prompt_ok(self, button, snap, now) -> bool:
@@ -101,9 +108,12 @@ class Bot:
         self.stats[key] = self.stats.get(key, 0) + n
 
     def _go(self, doing: str, keys, why: str = "") -> dict:
+        if doing != "fire":
+            self.trigger_down, self.trigger_at = False, None
         self.doing, self.why = doing, why
         self.stats["doing"], self.stats["why"] = doing, why[:160]
         self._count("t_" + doing)
+        self.last_hold = set(keys)
         return {"hold": tuple(sorted(k for k in keys if k))}
 
     def _steer(self, err: float) -> str | None:
@@ -123,8 +133,8 @@ class Bot:
         return keys
 
     def _fire_key(self, tgt, dist, err, now) -> str:
-        """The trigger to press now: FIRE's key; while it is unconfirmed, a target close in front whose vitality does not
-        fall within FIRE_PROBE_S of trigger time moves FIRE to the next candidate (stats fire_key / fire_key_tried)."""
+        """Use the documented trigger; target damage is recorded separately."""
+        FIRE["key"] = CONTROLS["fire"]
         if FIRE["confirmed"] or dist > FIRE_PROBE_R or abs(err) > math.radians(20):
             return FIRE["key"]
         hp, ptr = tgt.get("hp"), tgt.get("ptr")
@@ -132,20 +142,25 @@ class Bot:
         if pr is None or pr[0] != ptr:
             self.probe = (ptr, hp, 0.0, now)
             return FIRE["key"]
-        spent = pr[2] + min(0.2, max(0.0, now - pr[3]))
         if isinstance(hp, (int, float)) and isinstance(pr[1], (int, float)) and hp < pr[1]:
             FIRE["confirmed"] = True                # he took damage: this is the trigger
             self.stats["fire_key"] = FIRE["key"]
             return FIRE["key"]
-        if spent >= FIRE_PROBE_S:
-            i = FIRE_CANDIDATES.index(FIRE["key"]) if FIRE["key"] in FIRE_CANDIDATES else -1
-            FIRE["key"] = FIRE_CANDIDATES[(i + 1) % len(FIRE_CANDIDATES)]
-            self.stats["fire_key_tried"] = self.stats.get("fire_key_tried", "") + FIRE["key"] + " "
-            self._count("fire_key_switches")
-            self.probe = (ptr, hp, 0.0, now)
-            return FIRE["key"]
-        self.probe = (ptr, pr[1], spent, now)
+        self.probe = (ptr, pr[1], 0.0, now)
         return FIRE["key"]
+
+    def _trigger(self, tgt, dist, err, now) -> str | None:
+        key = self._fire_key(tgt, dist, err, now)
+        if self.trigger_at is None:
+            self.trigger_down, self.trigger_at = True, now
+            self._count("trigger_presses")
+        elif now - self.trigger_at >= (FIRE_DOWN_S if self.trigger_down else FIRE_UP_S):
+            self.trigger_down = not self.trigger_down
+            self.trigger_at = now
+            self._count("trigger_presses" if self.trigger_down else "trigger_releases")
+        # Advance only one phase per observed tick. A slow/stalled reader must
+        # still send a release, rather than skip it with a wall-clock modulo.
+        return key if self.trigger_down else None
 
     @staticmethod
     def _points(e) -> tuple:
@@ -159,6 +174,21 @@ class Bot:
         if not p or (p.get("hp") or 0) <= 0:
             return self._go("idle", (), "no player")
         me, yaw = tuple(p["pos"]), float(p["rot"])
+        # A movement command without displacement is a blocked route, not
+        # progress. Back off and change heading before trying forward again.
+        if now < self.escape_until:
+            return self._go("wall_escape", {CONTROLS["back"], self.escape_side}, "blocked movement: back off and turn")
+        if self.doing in ("chase", "kite") and CONTROLS["forward"] in self.last_hold:
+            if self.movement is None or flat(me, self.movement[1]) >= 30.0:
+                self.movement = (now, me)
+            elif now - self.movement[0] >= 1.0:
+                self.movement = None
+                self.escape_until = now + 0.7
+                self.escape_side = "lright" if self.escape_side == "lleft" else "lleft"
+                self._count("wall_escapes")
+                return self._go("wall_escape", {CONTROLS["back"], self.escape_side}, "no displacement for one second")
+        else:
+            self.movement = None
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
         if not live:
             self.target = None
@@ -176,6 +206,12 @@ class Bot:
             return self._chase(me, yaw, live[0], "every target blocked")
         dist = flat(me, tgt["pos"])
         err = wrap(bearing(me, tgt["pos"]) - yaw)
+        # The current native reader has no laser. Body facing alone cannot
+        # authorize a distant shot, so close into the range we can actually
+        # use instead of spending three seconds raising a gun that cannot fire.
+        # An aim-capable reader may still briefly acquire a missing ray.
+        if "aim" not in snap and dist >= FALLBACK_FIRE_R:
+            return self._chase(me, yaw, tgt, "no laser reader: close to firing range")
         if abs(err) > math.radians(TURN_DEG):
             self.aim_since = None
             if dist > CHASE_R:
@@ -211,7 +247,7 @@ class Bot:
         err = wrap(bearing(me, tgt["pos"]) - yaw)
         keys = {self._steer(err)}
         if abs(err) < math.radians(60):
-            keys |= {CONTROLS["forward"], CONTROLS["run"]}
+            keys.add(CONTROLS["forward"])
         return self._go("chase", keys, why)
 
     def _kite(self, me, yaw, foes, now):
@@ -231,7 +267,7 @@ class Bot:
         err = wrap(self.kite_heading - yaw)
         keys = {self._steer(err)}
         if abs(err) < math.radians(70):
-            keys |= {CONTROLS["forward"], CONTROLS["run"]}
+            keys.add(CONTROLS["forward"])
         return self._go("kite", keys, f"{len(foes)} close, nearest {nearest:.0f} cm")
 
     def _aim(self, snap, me, yaw, tgt, dist, err, now, long: bool = False) -> dict:
@@ -256,14 +292,32 @@ class Bot:
                            - math.atan2(dot[0] - origin[0], dot[2] - origin[2]))
         else:
             yaw_err = err
+            if not long and dist >= FALLBACK_FIRE_R:
+                return self._chase(me, yaw, tgt, "no measured ray: close to firing range")
         keys |= self._aim_keys(yaw_err, pitch_err)
         point_blank = dist < POINT_BLANK and abs(err) < math.radians(15)
         blind_ok = not long and ray is None and dist < FALLBACK_FIRE_R and abs(err) < math.radians(AIM_TOL_DEG)
         if confirmed or point_blank or blind_ok:
-            keys.add(self._fire_key(tgt, dist, err, now))
-            self._count("confirmed_shots" if confirmed else ("point_blank_shots" if point_blank else "close_shots"))
-            if confirmed and dist > 800:
-                self._count("long_shots")
+            progress = self.attack_progress
+            identity = tgt.get("ptr")
+            hp = tgt.get("hp")
+            if progress is None or progress[0] != identity or hp != progress[1]:
+                self.attack_progress = (identity, hp, now)
+            elif now - progress[2] >= 2.0:
+                # Body facing alone is not line-of-sight. Don't fire forever at
+                # an unchanged target behind a wall when no laser is available.
+                self.blocked[identity] = now + BLOCK_S
+                self.target, self.aim_since, self.attack_progress = None, None, None
+                self.escape_until = now + 0.7
+                self._count("ineffective_bursts")
+                return self._go("wall_escape", {CONTROLS["back"], self.escape_side}, "no target damage: change firing position")
+            presses = self.stats.get("trigger_presses", 0)
+            keys.add(self._trigger(tgt, dist, err, now))
+            if self.stats.get("trigger_presses", 0) > presses:
+                # Count trigger requests, not every held/released decision tick.
+                self._count("confirmed_shots" if confirmed else ("point_blank_shots" if point_blank else "close_shots"))
+                if confirmed and dist > 800:
+                    self._count("long_shots")
             self.aim_since = now
             why = "ray on him" if confirmed else ("point blank" if point_blank else "square on, close")
             return self._go("fire", keys, f"{why}: {tgt.get('class')} {dist:.0f} cm")

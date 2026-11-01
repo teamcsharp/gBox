@@ -15,17 +15,22 @@ def category(row):
  return next((name for name,prefix in PREFIXES.items() if row['code'].startswith(prefix)),None)
 
 
-def status(sid):
- state=_states.get(sid,{})
+def _key(sid,player_index=0):
+ return sid if player_index==0 else (sid,player_index)
+
+
+def status(sid,player_index=0):
+ state=_states.get(_key(sid,player_index),{})
  return {k:copy.deepcopy(v) for k,v in state.items() if k not in ('original','generated','owned','catalog','epoch') and not k.startswith('_')}
 
 
 def epoch_valid(m,state):
- return 'epoch' not in state or m.read(MARKER,16).hex()==state['epoch']
+ if '_actor_pointer' in state and m.check()!=state['_actor_pointer']:return False
+ return 'epoch' not in state or m.read(MARKER+16*state.get('player_index',0),16).hex()==state['epoch']
 
 
 def new_epoch(m,state):
- token=uuid.uuid4().bytes;m.write(MARKER,token);state['epoch']=token.hex()
+ token=uuid.uuid4().bytes;m.write(MARKER+16*state.get('player_index',0),token);state['epoch']=token.hex()
 
 
 def cleanup(m,state,kinds=None):
@@ -77,15 +82,16 @@ def tick(m,state,now):
   except Exception:pass # successful equipment changes must never be retried for a recording failure
 
 
-def configure(sid,ad,ctx,on,interval,categories,character_class,catalog):
+def configure(sid,ad,ctx,on,interval,categories,character_class,catalog,*,player_index=0):
  from .pso_gc_extras import Extras
  from .pso_controls import session_lock
  from .psoitems import CLASSES
  if not 5<=interval<=300:raise ValueError('Choose 5 to 300 seconds')
  if on and (not categories or len(set(categories))!=len(categories) or set(categories)-set(PREFIXES)):raise ValueError('Choose weapon, armor, shield and/or mag')
  if on and character_class not in CLASSES:raise ValueError('Choose your class before starting Randomized')
- m=Extras(ad);m.check()
- previous=_states.get(sid)
+ m=Extras(ad,player_index=player_index,pin_player=True);m.check()
+ key=_key(sid,player_index)
+ previous=_states.get(key)
  if previous and previous.get('on'):
   if on:
    if character_class!=previous['character_class']:raise ValueError('Stop Randomized before changing class')
@@ -95,28 +101,31 @@ def configure(sid,ad,ctx,on,interval,categories,character_class,catalog):
    cleanup(m,previous,set(previous['categories'])-set(categories))
    previous.update(interval=interval,categories=list(categories))
    previous['due']=time.monotonic()+interval
-   return status(sid)
+   return status(sid,player_index)
  if not on:
   if previous:
    previous['on']=False
    if not epoch_valid(m,previous):
-    _states.pop(sid,None)
+    _states.pop(key,None)
     return {'on':False,'verified':True,'message':'State load/reset detected. Mode stopped; the restored inventory was left intact.'}
    cleanup(m,previous)
    previous['message']='Randomized stopped; original equipment restored where still present'
-  return status(sid)|{'on':False,'verified':True}
+  return status(sid,player_index)|{'on':False,'verified':True}
  if len(m.inventory())>=30:raise ValueError('Free one inventory slot before starting Randomized')
  for kind in categories:
   if not any(category(r)==kind and r.get('rare') and (not r.get('classes') or character_class in r['classes']) for r in catalog):
    raise ValueError('No class-compatible rare '+kind+' items in the owned disc catalog')
  if previous and previous.get('owned'):raise ValueError('Stop Randomized to clean up the previous generated gear before restarting')
- state={'on':True,'interval':interval,'categories':list(categories),'character_class':character_class,
+ state={'on':True,'interval':interval,'categories':list(categories),'character_class':character_class,'player_index':player_index,
         'original':{category(r):r['id'] for r in m.inventory() if r['equipped'] and category(r)},
-        'generated':{},'owned':{},'catalog':catalog,'due':time.monotonic(),'cycles':0,'message':'Starting Randomized'}
+        'generated':{},'owned':{},'catalog':catalog,'due':time.monotonic(),'cycles':0,'message':'Starting Randomized',
+        '_actor_pointer':m.check()}
  from . import gameplay_actions
- state['_record']=lambda gear,cycle:gameplay_actions.randomized(sid,gear,ctx,cycle)
+ # The legacy replay schema has no player target: do not mislabel player-two
+ # gear as a player-one action. The mode's own status retains its selected slot.
+ state['_record']=(lambda gear,cycle:gameplay_actions.randomized(sid,gear,ctx,cycle)) if player_index==0 else None
  m.hook();new_epoch(m,state)
- _states[sid]=state
+ _states[key]=state
  def watch():
   from .tools import SESSIONS
   while sid in SESSIONS and state.get('on'):
@@ -130,6 +139,6 @@ def configure(sid,ad,ctx,on,interval,categories,character_class,catalog):
     except Exception as error:state.update(on=False,message=str(error)[:250],error=True)
     finally:lock.release()
    time.sleep(.25)
-  if sid not in SESSIONS:_states.pop(sid,None)
- threading.Thread(target=watch,name='pso-randomized-'+sid,daemon=True).start()
- return status(sid)|{'verified':True}
+  if sid not in SESSIONS:_states.pop(key,None)
+ threading.Thread(target=watch,name='pso-randomized-'+sid+'-'+str(player_index),daemon=True).start()
+ return status(sid,player_index)|{'verified':True}

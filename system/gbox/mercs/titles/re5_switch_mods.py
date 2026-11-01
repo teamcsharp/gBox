@@ -75,6 +75,8 @@ UPG_TABLE, UPG_STRIDE = 0x1D13B28, 0x210
 P_TIME_SCALE = 0x1A08
 MOTION_SHOT = 29
 FIRE_MAX = 5.0                                               # the operator's round loadout, 2026-10-28
+SNIPER_FIRE_X = 30.0                                         # operator 2026-11-01: sniper weapons only
+SNIPER_ITEMS = frozenset({0x05, 0x1C, 0x20})
 FIRE_TOP = 1000.0                                            # the PS3 panel's top; the frame rate caps it long before
 CHECK_S = 2.0                                                # maintain reads the no-ammo flags back this often
 SPRAY_ID = 0x304                                             # the First Aid Spray (Chris carries one at grid 7)
@@ -99,7 +101,7 @@ MAGNUMS = (0x10B, 0x11A, 0x11B)
 RAMPAGE_GUN, QUICK_GRIDS = 0x119, frozenset({1, 3, 5, 7})   # WP19 Hydra
 ROCKETS, LONG_GUNS = frozenset({0x10D}), frozenset({0x10D, 0x105, 0x11C, 0x120})   # rocket launcher; and the snipers
 HEALTH_MAX = 30000                                           # unlimited_health's boosted maximum (the PS3's)
-MINE_EVERY_DEFAULT = 120.0                                   # the Switch bot's cadence unless `mines` sets one
+MINE_EVERY_DEFAULT = 20.0                                    # the Switch bot's cadence unless `mines` sets one
 THROWN_ITEMS = frozenset({0x06, 0x07, 0x08, 0x0A})           # grenades and the bomb: a loadout draw keeps them
 ORIG: dict = {}                                              # id(adapter) -> this boot's originals and settings
 _LOCK = threading.RLock()
@@ -179,6 +181,14 @@ class RE5Switch:
         return st
 
 
+def ammo_readback(g: RE5Switch, player: int | None = None) -> dict:
+    flags = [g.u32(g.record(wid) + DEF_NOAMMO) for wid in g.ammo_weapons()]
+    if not flags or any(flag not in (0, 1) for flag in flags):
+        raise RuntimeError('RE5 no-ammo flags are unavailable or invalid')
+    return {'enabled': all(flag == 1 for flag in flags), 'mechanism': 'native_no_ammo_flags',
+            'weapons': len(flags)}
+
+
 def infinite_ammo(g: RE5Switch, on: bool) -> dict:
     orig = g.state.setdefault("noammo", {})
     ok = True
@@ -214,7 +224,8 @@ def fire_rate(g: RE5Switch, mult) -> dict:
         if p and p["ptr"] == g.state["scaled"][0]:
             restored = _restore_scale(g.ad, g.state)
         g.state.pop("scaled", None)
-    return {"fire_rate_x": k, "verified": True, "restored": restored,
+    return {"fire_rate_x": k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
+            "verified": True, "restored": restored,
             "note": "the player's time scale x N while his shot motion plays (maintained every driver snapshot): a "
                     "held ZR repeats about N times faster, capped by the frame rate (live: x8 15 shots/s, x80 25)"}
 
@@ -727,10 +738,12 @@ def turn_speed(g: RE5Switch, mult) -> dict:
         raise RuntimeError(f"sParameter does not hold this build's turn rates ({bad}); not writing")
     out, ok = {}, True
     for o, (name, base) in TURN.items():
-        want = struct.pack("<f", base * k)
+        # These two values describe the stick's input range, not angular rates.
+        # Scaling the dead zone to 1.4 at 7x rejects even full-scale input.
+        want = struct.pack("<f", base if name.startswith("stick_") else base * k)
         ok = g.wr(p + o, want) and ok
         got = struct.unpack("<f", g.rd(p + o, 4))[0]
-        ok = ok and abs(got - base * k) < 1e-3
+        ok = ok and abs(got - (base if name.startswith("stick_") else base * k)) < 1e-3
         out[name] = round(got, 4)
     g.state["turn_speed"] = k
     return {"turn_speed_x": k, "values": out, "verified": bool(ok), "sParameter": hex(p),
@@ -951,6 +964,7 @@ def mine_settings(ad) -> dict | None:
 
 def _restore_scale(ad, st) -> int:
     scaled = st.pop("scaled", None)
+    st.pop('scaled_rate', None)
     if not scaled:
         return 0
     ptr, before = scaled
@@ -970,23 +984,36 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
     player (a raised scale on a player the round already freed is dropped, never written); never raises."""
     with _LOCK:
         st = ORIG.get(id(ad))
-        out = {"active": False, "writes": 0, "verified": True}
+        out = {"active": False, "writes": 0, "verified": True, "infinite_ammo": None}
         if not st:
             return out
         try:
             p = (snap or {}).get("player")
             k = st.get("fire_rate", 1.0)
+            held = next((row for row in (snap or {}).get('inventory') or () if row.get('hand')), None)
+            if k > 1.0 and held and held.get('item') in SNIPER_ITEMS:
+                k = SNIPER_FIRE_X
             scaled = st.get("scaled")
             if scaled and (not p or p.get("ptr") != scaled[0]):
                 st.pop("scaled", None)                       # that player is gone with his round: nothing to put back
             elif scaled and (not enabled or k <= 1.0 or p.get("motion") != MOTION_SHOT):
                 out["writes"] += _restore_scale(ad, st)
+            elif scaled and enabled and p and p.get('motion') == MOTION_SHOT:
+                # Change only a scale we own when the current weapon changes.
+                at = p['ptr'] + P_TIME_SCALE
+                current = struct.unpack('<f', ad.read_memory(at, 4))[0]
+                previous = st.get('scaled_rate', st.get('fire_rate', 1.0))
+                if abs(current - previous) < 1e-3 and abs(current - k) > 1e-3:
+                    ad.write_memory(at, struct.pack('<f', k))
+                    st['scaled_rate'] = k
+                    out['writes'] += 1
             elif enabled and p and k > 1.0 and p.get("motion") == MOTION_SHOT and not scaled:
                 at = p["ptr"] + P_TIME_SCALE
                 before = struct.unpack("<f", ad.read_memory(at, 4))[0]
                 if abs(before - 1.0) < 1e-3:                 # the game's own pace only (not a slow-motion moment)
                     ad.write_memory(at, struct.pack("<f", k))
                     st["scaled"] = (p["ptr"], before)
+                    st['scaled_rate'] = k
                     out["writes"] += 1
             out["active"] = bool(st.get("scaled"))
             now = clock()
@@ -996,6 +1023,12 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 if any(g.u32(g.record(w) + DEF_NOAMMO) != 1 for w in g.ammo_weapons()):
                     out["ammo_restored"] = infinite_ammo(g, True)["verified"]
                     out["writes"] += 1
+            if enabled and held and type(held.get('item')) is int and 0 <= held['item'] < N_WEAPONS:
+                base = st.get('base')
+                if base and ad.read_memory(base + R.SIG_OFF, len(R.SIGNATURE)) == R.SIGNATURE:
+                    flag = struct.unpack('<I', ad.read_memory(base + DEF_TABLE + DEF_STRIDE * held['item'] + DEF_NOAMMO, 4))[0]
+                    if flag in (0, 1):
+                        out['infinite_ammo'] = flag == 1
             if enabled and st.get("infinite_spray"):
                 kept = _maintain_spray(ad, st, snap)
                 out["writes"] += kept
@@ -1020,7 +1053,7 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                 hs["last"] = res = _maintain_health(ad, hs, snap)
                 out["writes"] += 1 if res.get("refilled") else 0
         except Exception as e:                               # noqa: BLE001 - a missed update never stops a tick
-            out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
+            out.update(verified=False, infinite_ammo=None, reason=f"{type(e).__name__}: {e}"[:160])
         return out
 
 
@@ -1191,6 +1224,9 @@ ALIASES = {"fire": "fire_rate", "rapid_fire": "fire_rate", "machine_gun": "fire_
 def tool_run(ad, op: str = "status", multiplier=None, on: bool = True, g: RE5Switch | None = None, **extra) -> dict:
     """The PS3 tool's ops on a Switch session (gbox.re5_mods_tool routes them here): the same names, parameters and
     result shape, {"op", ..., "status"}; an op not on Switch yet answers verified False with the reason."""
+    if op in ("flash_now", "instant_flashbang"):
+        from .re5_switch_native import flash_now
+        return flash_now(ad)
     with _LOCK:
         g = g or RE5Switch(ad)
         op = (op or "status").strip().lower().replace(" ", "_").replace("-", "_")

@@ -1,0 +1,336 @@
+"""Target feedback: noisy close rays, firing evidence, elapsed time and owner guards."""
+import math
+from types import SimpleNamespace
+
+import pytest
+
+from gbox.mercs.titles import re5_switch as R, re5_switch_aim as F
+
+
+def scene(pitch=0, heading=0, distance=300, ray_pitch=None):
+    origin = (0., 140., 0.)
+    rp = pitch if ray_pitch is None else ray_pitch
+    dot = (5000*math.sin(heading)*math.cos(rp), 140+5000*math.sin(rp), 5000*math.cos(heading)*math.cos(rp))
+    return {'player': {'ptr': 1, 'generation': 1, 'pos': (0, 0, 0), 'rot': heading, 'hp': 1000, 'motion': 26},
+            'aim_cam': {'player': 1, 'generation': 1, 'pitch': pitch, 'heading': heading},
+            'inventory': [{'hand': True, 'item': 0x1b}],
+            'enemies': [{'ptr': 2, 'pos': (0, 0, distance), 'hp': 800}],
+            'laser': {'up': True, 'from': origin, 'at': dot}}
+
+
+def controller(ok=True):
+    writes = []
+    def write(st, pitch, heading):
+        writes.append((pitch, heading))
+        return ok
+    bot = SimpleNamespace(target=2, doing='aim', stats={}, aim_since=0, _feedback_at=0,
+                          _writer=lambda: write, _aim_h=lambda *args: R.CHEST_H,
+                          _crowd_hit=R.Bot._crowd_hit, _trigger=lambda on, now: {'zr'} if on else set())
+    return bot, writes
+
+
+def waiting_bot():
+    bot, _ = controller()
+    bot._gun_down = lambda: setattr(bot, 'aim_since', None)
+    return bot
+
+
+def test_failed_aim_cannot_hold_stationary_indefinitely_or_reset_on_retarget():
+    bot, s, act = waiting_bot(), scene(pitch=1), {'hold': ('zl',)}
+    assert F.keep_active(bot, s, act, 10) == act
+    for t in (10.2, 10.4, 10.6):
+        bot.target += 1
+        assert F.keep_active(bot, s, act, t) == act
+    out = F.keep_active(bot, s, act, 10.76)
+    assert out['hold'] == ('ldown',) and bot.doing == 'escape'
+    assert bot.stats['aim_repositions'] == 1 and bot.aim_since is None
+    bot.doing = 'aim'
+    assert F.keep_active(bot, s, act, 11)['hold'] == ('ldown',)
+    bot.doing = 'aim'
+    assert F.keep_active(bot, s, act, 11.42) == act  # reacquire after bounded move
+
+
+@pytest.mark.parametrize('doing', ['held', 'prompt', 'mine', 'flashbang', 'heal', 'native_equip', 'rearm', 'quick_turn'])
+def test_acquisition_deadline_never_interrupts_priority_actions(doing):
+    bot, s = waiting_bot(), scene()
+    F.keep_active(bot, s, {'hold': ('zl',)}, 0)
+    bot.doing = doing
+    act = {'hold': ('zl', 'zr'), 'tap': 'a'}
+    assert F.keep_active(bot, s, act, 1) == act
+    assert bot._aim_wait is None
+
+
+def test_observed_convergence_finishes_a_raise_instead_of_dropping_it_at_075_seconds():
+    bot, s, act = waiting_bot(), scene(pitch=1), {'hold': ('zl',)}
+    for tick in range(11):
+        bot.stats.update(target_feedback_target=2, target_feedback_yaw_deg=0.,
+                         target_feedback_pitch_deg=60.-tick*4.)
+        assert F.keep_active(bot, s, act, tick*.1) == act
+    # A written camera that stops improving is still bounded, not an endless aim.
+    assert 'zl' not in F.keep_active(bot, s, act, 1.3)['hold']
+
+
+@pytest.mark.parametrize('motion', [R.MOTION_SHOT, R.MOTION_RELOAD, *R.MOTION_HELD])
+def test_animation_is_not_an_idle_acquisition(motion):
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, act, 0)
+    s['player']['motion'] = motion
+    assert F.keep_active(bot, s, act, 1) == act and bot._aim_wait is None
+
+
+def test_shooting_and_human_control_clear_wait_deadline():
+    bot, s, aim = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, aim, 0)
+    fire = {'hold': ('zl', 'zr')}
+    assert F.keep_active(bot, s, fire, 1) == fire and bot._aim_wait is None
+    F.keep_active(bot, s, aim, 2)
+    bot.stats['operator_control'] = True
+    assert F.keep_active(bot, s, aim, 3) == aim and bot._aim_wait is None
+
+
+def test_new_player_and_backward_clock_do_not_inherit_stall():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    F.keep_active(bot, s, act, 1)
+    assert F.keep_active(bot, s, act, 0) == act
+    s['player']['generation'] += 1
+    assert F.keep_active(bot, s, act, 2) == act
+
+
+def test_escape_checks_mesh_for_backward_and_sideways_steps():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    # Only a leftward corridor is open; moving straight back would hit a wall.
+    s['nav'] = SimpleNamespace(member=lambda p: 1,
+                              floor_segment=lambda start, end: end[0] > 90 and abs(end[2]) < 1)
+    F.keep_active(bot, s, act, 0)
+    assert F.keep_active(bot, s, act, 1)['hold'] == ('lleft',)
+
+
+def test_no_mesh_exit_turns_for_new_sightline_without_wall_pressure():
+    bot, s, act = waiting_bot(), scene(), {'hold': ('zl',)}
+    s['nav'] = SimpleNamespace(member=lambda p: 1, floor_segment=lambda *args: False)
+    F.keep_active(bot, s, act, 0)
+    assert set(F.keep_active(bot, s, act, 1)['hold']) <= {'rleft', 'rright'}
+
+
+@pytest.mark.parametrize('pitch', [-1., 1.])
+def test_sky_and_ground_correct_towards_chest_without_firing(pitch):
+    bot, writes = controller()
+    act = F.apply(bot, scene(pitch), {'hold': ('zl', 'zr', 'rup')}, .05)
+    assert set(act['hold']) == {'zl'}
+    assert abs(writes[-1][0]) < abs(pitch)
+    assert abs(writes[-1][0]-pitch) <= F.PITCH_RATE*.05 + 1e-8
+
+
+def test_close_collision_ray_cannot_reverse_camera_correction():
+    bot, writes = controller()
+    s = scene(pitch=.5, ray_pitch=-.7, distance=100)
+    F.apply(bot, s, {'hold': ('zl',)}, .05)
+    assert writes[-1][0] < .5  # toward the chest, not upward following the bad ray
+
+
+def test_close_target_uses_actual_low_offset_muzzle_not_nominal_camera_height():
+    bot, writes = controller(); s = scene(distance=150)
+    s['laser'] = {'up': True, 'from': (30, 80, 50), 'at': (30, 80, 5000)}
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .05)
+    assert writes[-1][0] > 0 and writes[-1][1] < 0
+    # The measured segment crosses his hips. A chest-angle heuristic must not
+    # block this real body contact while correction continues.
+    assert 'zr' in act['hold'] and bot.stats['target_feedback_gate'] == 'body segment'
+    assert not bot.stats.get('target_feedback_unloads')
+
+
+@pytest.mark.parametrize('dt', [0., -.1, .001, .01, .05, 1.])
+def test_no_minimum_step_or_stall_catchup(dt):
+    bot, writes = controller()
+    F.apply(bot, scene(heading=.8), {'hold': ('zl', 'rleft')}, dt)
+    assert abs(writes[-1][1]-.8) == pytest.approx(F.YAW_RATE*max(0, min(dt, F.MAX_DT)))
+
+
+def test_ram_write_is_not_proof_a_shot_is_aligned():
+    bot, writes = controller()
+    s = scene(heading=.1)
+    s['laser']['at'] = (0, 0, 50)  # obstruction, despite a successful correction
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .05)
+    assert writes and 'zr' not in act['hold']
+
+
+def test_live_body_and_camera_agreement_resume_firing():
+    bot, _ = controller()
+    s = scene()
+    s['laser']['at'] = (0, R.CHEST_H, 300)
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert set(act['hold']) == {'zl', 'zr'}
+
+
+def test_verified_shot_keeps_trigger_through_brief_recoil_laser_dropout():
+    bot, _ = controller()
+    s = scene()
+    s['laser']['at'] = (0, R.CHEST_H, 300)
+    assert 'zr' in F.apply(bot, s, {'hold': ('zl',)}, .3)['hold']
+    s['player']['motion'] = R.MOTION_SHOT
+    s['laser'] = {'up': False}
+    assert 'zr' in F.apply(bot, s, {'hold': ('zl',)}, .33)['hold']
+    assert bot.stats['target_feedback_gate'] == 'recoil continuation'
+    assert 'zr' in F.apply(bot, s, {'hold': ('zl',)}, .4)['hold']
+    assert 'zr' not in F.apply(bot, s, {'hold': ('zl',)}, .3+R.SHOT_TAIL_S+.01)['hold']
+
+
+@pytest.mark.parametrize('change', ['new_owner', 'new_target', 'moved', 'turned', 'obstruction', 'not_shooting'])
+def test_recoil_continuation_requires_same_owner_target_pose_and_no_new_obstruction(change):
+    bot, _ = controller()
+    s = scene()
+    s['laser']['at'] = (0, R.CHEST_H, 300)
+    F.apply(bot, s, {'hold': ('zl',)}, .3)
+    s['player']['motion'] = R.MOTION_SHOT
+    s['laser']['up'] = False
+    if change == 'new_owner': s['player']['generation'] += 1
+    elif change == 'new_target': s['enemies'][0]['ptr'] = bot.target = 3
+    elif change == 'moved': s['player']['pos'] = (0, 0, 100)
+    elif change == 'turned': s['aim_cam']['heading'] = .5
+    elif change == 'obstruction': s['laser'] = {'up': True, 'from': (0,140,0), 'at': (0,100,50)}
+    elif change == 'not_shooting': s['player']['motion'] = R.MOTION_AIMED
+    assert 'zr' not in F.apply(bot, s, {'hold': ('zl',)}, .33)['hold']
+
+
+def test_reachable_front_enemy_wins_over_prior_rear_target():
+    bot, _ = controller(); s = scene()
+    s['enemies'].append({'ptr': 3, 'pos': (0, 0, -100), 'hp': 800})
+    s['laser']['at'] = (0, R.CHEST_H, 300); bot.target = 3
+    assert F.visible_target(s)['ptr'] == 2
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold'] and bot.target == 2 and bot._aimctx['target'] == 2
+
+
+def test_old_life_cannot_write_or_fire():
+    bot, writes = controller()
+    s = scene(); s['aim_cam']['generation'] = 0
+    act = F.apply(bot, s, {'hold': ('zl', 'zr', 'rdown')}, .05)
+    assert not writes and set(act['hold']) == {'zl'}
+
+
+def test_throwing_and_no_laser_weapons_keep_their_controller():
+    for item in (0x06, 0x08, 0x0a, 0x0f, 0x0d):
+        bot, writes = controller(); s = scene(); s['inventory'][0]['item'] = item
+        act = {'hold': ('zl', 'zr')}
+        assert F.apply(bot, s, act, .05) == act and not writes
+
+
+def test_failed_owner_or_write_check_releases_aim_and_fire_until_fresh_snapshot():
+    bot, _ = controller(False)
+    act = F.apply(bot, scene(pitch=1), {'hold': ('zl', 'zr', 'rdown')}, .05)
+    assert set(act['hold']) == {'zl'}
+
+
+def test_camera_transition_does_not_restore_amplified_sticks_or_blind_fire():
+    bot, writes = controller(); s = scene(); s['aim_cam'] = None
+    act = F.apply(bot, s, {'hold': ('zl', 'zr', 'rdown', 'rright')}, .05)
+    assert set(act['hold']) == {'zl'} and not writes
+    assert bot._feedback_at is None
+
+
+def test_lowered_motion_cannot_push_camera_with_legacy_sticks():
+    bot, writes = controller(); s = scene(); s['player']['motion'] = 11
+    act = F.apply(bot, s, {'hold': ('zl', 'zr', 'rdown')}, .05)
+    assert set(act['hold']) == {'zl'} and not writes
+
+
+def test_operator_control_never_moves_camera_ram():
+    bot, writes = controller(); bot.stats['operator_control'] = True
+    act = {'hold': ('zl',)}
+    assert F.apply(bot, scene(pitch=1), act, .05) == act and not writes
+
+
+@pytest.mark.parametrize('aim_speed', [1, 7])
+def test_closed_loop_converges_with_extra_frames_and_aim_speed(aim_speed):
+    bot, writes = controller()
+    pitch, heading = .9, -.7
+    for frame in range(1, 121):
+        bot.doing = 'aim'
+        act = F.apply(bot, scene(pitch, heading), {'hold': ('zl', 'rup', 'rleft')}, frame/120)
+        # Real input scales can only affect held stick axes. A RAM correction
+        # must release them and remain bounded at 120 Hz as well as at 20 Hz.
+        pitch, heading = writes[-1]
+        pitch += aim_speed*.01*(('rup' in act['hold'])-('rdown' in act['hold']))
+        heading += aim_speed*.01*(('rleft' in act['hold'])-('rright' in act['hold']))
+    assert abs(heading) < .001
+    assert pitch == pytest.approx(math.atan2(R.CHEST_H-140,300), abs=.001)
+
+
+
+def _chest_pitch(distance):
+    return math.atan2(R.CHEST_H - 140, distance)
+
+
+def test_near_body_miss_corrects_without_unloading():
+    bot, writes = controller()
+    s = scene(pitch=_chest_pitch(300), heading=math.radians(9), distance=300)     # outside the old 6.8 deg window
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' not in act['hold'] and not bot.stats.get('target_feedback_unloads')
+    assert writes and abs(writes[-1][1]) < math.radians(9)          # still steering onto his chest
+
+
+def test_arm_length_with_the_aim_over_his_chest_fires():
+    """The live case: a Majini 1.2 m away, the camera level, his chest 14 deg below the aim (the old gate's 10 deg)."""
+    bot, _ = controller()
+    act = F.apply(bot, scene(pitch=0, distance=120), {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold']
+
+
+@pytest.mark.parametrize('heading,pitch,distance,short', [(14, None, 300, False), (5, None, 700, False),
+                                                          (5, None, 300, True), (0, 40, 120, False)])
+def test_personal_area_never_fires_off_his_body_beyond_five_m_or_into_a_wall(heading, pitch, distance, short):
+    bot, _ = controller()
+    s = scene(pitch=_chest_pitch(distance) if pitch is None else math.radians(pitch),
+              heading=math.radians(heading), distance=distance)
+    if short:
+        s['laser']['at'] = (0., 140., 120.)                         # the ray stops 1.2 m out: a wall before him
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .3)
+    assert 'zr' not in act['hold']
+
+
+def test_personal_area_unload_is_off_with_unload(monkeypatch):
+    monkeypatch.setattr(R, 'UNLOAD', False)
+    bot, _ = controller()
+    act = F.apply(bot, scene(pitch=_chest_pitch(300), heading=math.radians(9), distance=300), {'hold': ('zl',)}, .3)
+    assert 'zr' not in act['hold']
+
+
+@pytest.mark.parametrize('item', [0x0b, 0x05, 0x02, 0x09])
+@pytest.mark.parametrize('offset', ['lateral', 'above', 'below'])
+def test_direct_guns_require_body_contact_even_with_unload_enabled(monkeypatch, item, offset):
+    monkeypatch.setattr(R, 'UNLOAD', True)
+    bot, writes = controller()
+    # Representative 4.9 m M29 cluster: broad old gate accepted rays beside/over
+    # the body as long as their endpoint was beyond the target.
+    x, y = (54., R.CHEST_H) if offset == 'lateral' else (0., 195. if offset == 'above' else 20.)
+    pitch, heading = math.atan2(y-140, math.hypot(x, 490)), math.atan2(x, 490)
+    s = scene(pitch=pitch, heading=heading, distance=490)
+    s['inventory'][0]['item'] = item
+    assert not R.Bot._crowd_hit(s['laser']['from'], s['laser']['at'], s['enemies'][0]['pos'])
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, .3)
+    assert 'zr' not in act['hold'] and writes and bot.doing == 'aim'
+    assert bot.stats['target_feedback_gate'] == 'ray misses or stops before target'
+    assert 'aim correction' in bot.why and not bot.stats.get('target_feedback_unloads')
+
+
+def test_blocked_ray_keeps_correcting_then_repositions_if_no_observed_progress():
+    bot = waiting_bot()
+    s = scene(pitch=_chest_pitch(490), heading=math.atan2(54, 490), distance=490)
+    s['inventory'][0]['item'] = 0x0b
+    for t in (1., 1.2, 1.4, 1.6):
+        bot.doing = 'aim'
+        act = F.apply(bot, s, {'hold': ('zl', 'zr')}, t)
+        assert F.keep_active(bot, s, act, t)['hold'] == ('zl',)
+    bot.doing = 'aim'
+    act = F.apply(bot, s, {'hold': ('zl', 'zr')}, 1.8)
+    assert 'zl' not in F.keep_active(bot, s, act, 1.8)['hold']
+    assert bot.doing == 'escape' and bot.stats['aim_repositions'] == 1
+
+
+def test_shotgun_spread_is_named_without_claiming_body_contact():
+    bot, _ = controller()
+    s = scene(pitch=_chest_pitch(490), heading=math.atan2(54, 490), distance=490)
+    s['inventory'][0]['item'] = 0x04
+    act = F.apply(bot, s, {'hold': ('zl',)}, .3)
+    assert 'zr' in act['hold'] and bot._aimctx['contact_kind'] == 'shotgun spread'
+    assert not bot._aimctx['body_contact']

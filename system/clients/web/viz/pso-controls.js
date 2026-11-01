@@ -21,8 +21,26 @@
     }
     return [...groups.values()];
   }
+  function speedCaption(status, elapsedMs = 0) {
+    const requested = status?.requested || 1, prefix = `Requested ${requested}x; `;
+    if (status?.paused) return prefix + 'paused. No current speed measurement.';
+    if (status?.changing) return prefix + 'changing speed. No current speed measurement.';
+    const measured = status?.measurement_verified === true && status?.known === true &&
+      status?.measurement_source === 'native_game_clock' && Number.isFinite(elapsedMs) && elapsedMs >= 0 &&
+      Number.isFinite(status.valid_for_ms) && status.valid_for_ms > 0 && status.valid_for_ms <= 2000 &&
+      [status.actual,status.lower,status.upper].every(Number.isFinite) &&
+      0 < status.lower && status.lower <= status.actual && status.actual <= status.upper && status.upper <= 12 &&
+      (status.upper-status.lower)/status.actual <= .05;
+    if (measured) {
+      const rate = value => String(+value.toFixed(2));
+      if (elapsedMs >= status.valid_for_ms) return prefix + `last measured ${rate(status.actual)}x (stale). No current speed measurement.`;
+      return prefix + `measured ${rate(status.actual)}x (range ${rate(status.lower)}–${rate(status.upper)}x, native game clock).`;
+    }
+    return prefix + (status?.known === false ? 'speed setting unconfirmed. ' : '') + 'Actual game speed has not been measured recently.';
+  }
   function mount(host, io, session) {
     const sid = session.sid, token = {};
+    let selectedPlayer = 0;
     const timeouts = new Set();
     function bounded(promise, message, ms = 12000) {
       let timer;
@@ -36,14 +54,16 @@
       const command_id = `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
       // A timeout is never retried: the game may already have applied this exact command.
       return bounded(io.api(`/api/sessions/${encodeURIComponent(sid)}/rpc`, {op: 'pso_controls',
-        args: {command_id, expires: Date.now()/1000 + 8, input: {session_id: sid, op, ...args}}}),
-        'PSO did not answer in time. The outcome may be unknown; no action was retried. Use Reconnect PSO controls to diagnose the connection.');
+        args: {command_id, expires: Date.now()/1000 + 8, input: {session_id: sid, op, ...args, ...(selectedPlayer ? {player_index:selectedPlayer} : {})}}}),
+        'PSO did not answer in time. The outcome may be unknown; no action was retried. Use Reconnect PSO controls to diagnose the connection.',
+        op==='autoplay_speed'?55000:12000);
     };
     host._psoMount = token;
     const current = () => host.isConnected && host._psoMount === token;
     host.dataset.psoSid = sid;
     let cap, items = [], busy = false, ready = false, prefsReady = false, loading = false, checking = false, recovering = false, loadId = 0, selected = new Set();
     let magId = null, magTimer = null, modeTimer = null, magPatch = {};
+    let speedState = null, speedAt = 0, speedVersion = 0, speedExpiry = null;
     let lootTimer = null, lootDirty = false, lootDraft = null, selectionTouched = false, bossesReady = false, lastTravel = '';
     let groupLimit = 80, loadout = null, planning = false, planId = 0, enemyPoolCodes = [];
     const expanded = new Set();
@@ -66,6 +86,12 @@
       <div class="pso-row" style="justify-content:space-between;flex-wrap:nowrap;align-items:flex-start"><p class="mut" data-profile style="flex:1;min-width:0;margin:6px 0">Checking the running game's version…</p>
         <button type="button" class="act" data-rehook title="Troubleshoot and reconnect PSO controls without restarting the game" aria-label="Reconnect PSO controls" style="flex:none">&#8635;</button></div>
       <div data-rehook-report role="status" aria-live="polite"></div>
+      <label>Equipment player <select data-player aria-label="Equipment player"><option value="0">Player 1</option></select></label>
+      <small data-player-note>Native equipment actions use the verified selected player.</small>
+      <fieldset data-speed-panel disabled hidden><legend>Autoplay speed</legend>
+        <label>Requested speed <input type="range" data-speed min="0" max="4" step="1" value="0"><output data-speed-value>1x</output></label>
+        <small data-speed-note>Dedicated co-op run only. Actual game speed has not been measured.</small>
+      </fieldset>
       <fieldset data-controls disabled><legend>Item database</legend>
         <input type="search" data-search placeholder="Search the disc's item database" aria-label="Search PSO items">
         <div class="pso-row"><select data-category aria-label="Item category">${["Weapons", "Armor", "Mags", "Tools"].map(x => `<option>${x}</option>`).join("")}</select>
@@ -117,7 +143,7 @@
         <small data-preferences>Shared default for supported current and future builds on your PCs. This does not enable patches on an unsupported revision.</small>
       </fieldset>
       <fieldset data-live disabled><legend>Live equipment and stats</legend>
-        <div class="pso-row"><button class="act" data-inventory>Refresh equipment</button></div><div data-inventory-list></div>
+        <div class="pso-row"><button class="act" data-inventory>Refresh equipment</button><button class="act" data-equip-selected disabled>Equip selected item</button></div><div data-inventory-list></div>
         <small data-multi-note></small><div class="pso-stats">${["atp", "mst", "evp", "hp", "dfp", "ata", "lck"].map(x =>
           `<label class="pso-stat" data-stat="${x}" title="Right-click to edit ${x.toUpperCase()}">${x.toUpperCase()} <input type="number" min="0" max="9999" value="900" aria-label="${x.toUpperCase()}"><button class="act" data-set="${x}">Set</button></label>`).join("")}</div>
         <small>Right-click a stat to focus its live editor. Values are bounded by the game's native stat format (0–9999).</small>
@@ -154,22 +180,26 @@
     const say = text => { if (current()) q("[data-status]").textContent = text; };
     function enabled() {
       if (!current()) return;
+      q('[data-player]').disabled=busy || checking || loading || recovering;
+      q('[data-speed-panel]').hidden=!cap?.features?.autoplay_speed;
+      q('[data-speed-panel]').disabled=busy || checking || !cap?.features?.autoplay_speed;
       q("[data-controls]").disabled = !ready;
       q('[data-loadouts]').disabled = !ready || planning || busy || checking;
-      q('[data-loadout-drop]').disabled = !loadout?.codes?.length || planning || busy || checking || !cap?.supported;
+      q('[data-loadout-drop]').disabled = !loadout?.codes?.length || planning || busy || checking || !cap?.supported || cap?.features?.floor_spawn===false;
       q("[data-spawn]").disabled = busy || checking || !ready || !cap?.supported;
       q("[data-live]").disabled = busy || checking || !cap?.supported;
-      q("[data-defaults]").disabled = busy || checking || !prefsReady;
+      q("[data-defaults]").disabled = busy || checking || !prefsReady || selectedPlayer!==0;
       q("[data-retry]").disabled = busy || loading || recovering;
       q('[data-rehook]').disabled = busy || recovering;
       q('[data-rehook]').textContent = recovering ? '…' : '↻';
       q('[data-rehook]').setAttribute('aria-busy',String(recovering));
       q('[data-always-hit]').disabled = busy || checking || !prefsReady || !cap?.features?.always_hit;
-      q("[data-drop]").disabled = busy || checking || !ready || !cap?.supported || !selected.size;
-      q("[data-random]").disabled = busy || checking || !ready || !cap?.supported || !q("[data-class]").value;
+      q("[data-drop]").disabled = busy || checking || !ready || !cap?.supported || !selected.size || cap?.features?.floor_spawn===false;
+      q("[data-random]").disabled = busy || checking || !ready || !cap?.supported || !q("[data-class]").value || cap?.features?.floor_rares===false;
       // Browsing is independent of revision support for native actions.
-      q("[data-clear]").disabled = busy || checking || !ready || !cap?.supported;
+      q("[data-clear]").disabled = busy || checking || !ready || !cap?.supported || cap?.features?.floor_clear===false;
       q("[data-give]").disabled = busy || checking || !ready || !cap?.supported || selected.size !== 1;
+      q('[data-equip-selected]').disabled=busy || checking || !ready || !cap?.supported || !cap?.features?.equip || selected.size!==1;
       for (const [name,feature] of [['survival','survival'],['randomized','randomized'],['mag','mag']])
         q(`[data-${name}]`).disabled=busy || checking || !cap?.supported || !cap?.features?.[feature];
       q('[data-scape]').disabled=!prefsReady;
@@ -182,7 +212,7 @@
     }
     async function run(op, args = {}) {
       if (!current() || busy || checking) return;
-      if (!cap?.supported) { say(cap?.reason || "Live actions are not available for this game revision."); return; }
+      if (!cap?.supported && !(op==='autoplay_speed' && cap?.features?.autoplay_speed)) { say(cap?.reason || "Live actions are not available for this game revision."); return; }
       busy = true; enabled(); say("Applying " + op.replace(/_/g, " ") + "…");
       try {
         const r = await command(op, args);
@@ -305,6 +335,32 @@
     q("[data-random]").onclick = () => run("floor_rares", { ...spawnArgs(), character_class: q("[data-class]").value, highest: q("[data-highest]").checked });
     q("[data-clear]").onclick = () => run("floor_clear", { on: false });
     q("[data-give]").onclick = () => run("give", {code: [...selected][0], count: +q('[data-count]').value});
+    q('[data-equip-selected]').onclick=()=>run('equip',{code:[...selected][0]});
+    const speedChoices=[1,2,4,8,10];
+    function showSpeed(status, started = performance.now(), updateSlider = false) {
+      if (!current()) return;
+      clearTimeout(speedExpiry);
+      speedState = status; speedAt = started;
+      const elapsed = Math.max(0,performance.now()-started);
+      q('[data-speed-note]').textContent=speedCaption(status,elapsed);
+      if (updateSlider) {
+        const requested=status?.requested || 1;
+        q('[data-speed]').value=String(Math.max(0,speedChoices.indexOf(requested)));
+        q('[data-speed-value]').value=requested+'x';
+      }
+      if (status?.measurement_verified && Number.isFinite(status.valid_for_ms) && elapsed < status.valid_for_ms) {
+        speedExpiry=setTimeout(()=>{if(current())q('[data-speed-note]').textContent=speedCaption(speedState,performance.now()-speedAt);},Math.min(2000,status.valid_for_ms-elapsed)+1);
+      }
+    }
+    q('[data-speed]').oninput=()=>q('[data-speed-value]').value=speedChoices[+q('[data-speed]').value]+'x';
+    q('[data-speed]').onchange=async()=>{
+      ++speedVersion;
+      const requested=speedChoices[+q('[data-speed]').value];
+      showSpeed({requested,changing:true});
+      const result=await run('autoplay_speed',{multiplier:requested});
+      // A hotkey receipt is never a measurement, even if a caller labels it verified.
+      if(current())showSpeed({requested:result?.requested || requested,known:result?.input_delivered===true});
+    };
     q("[data-equip]").onchange = async e => {
       if (!current() || busy || checking || !prefsReady) return;
       const on = e.target.checked; busy = true; enabled();
@@ -318,11 +374,15 @@
     };
     q("[data-inventory]").onclick = async () => {
       const r = await run("list"); if (!r || !current()) return;
-      q("[data-inventory-list]").innerHTML = (r.inventory || []).filter(i => i.code.startsWith("00")).map(i =>
+      q("[data-inventory-list]").innerHTML = (r.inventory || []).filter(i => /^(00|02|0101|0102)/.test(i.code)).map(i =>
         `<div class="pso-row"><span>${esc(i.name)}${i.equipped ? " · equipped" : ""}</span>
-        <button class="act" data-multi="${i.slot}" data-on="true">Stack equip</button><button class="act" data-multi="${i.slot}" data-on="false">Unstack</button></div>`).join("") || "No weapons in inventory.";
+        ${cap?.features?.equip && Number.isInteger(i.id) ? `<button class="act" data-equip-id="${i.id}">Equip</button>` : ''}
+        ${i.code.startsWith('00') && cap?.features?.multi_equip!==false ? `<button class="act" data-multi="${i.slot}" data-on="true">Stack equip</button><button class="act" data-multi="${i.slot}" data-on="false">Unstack</button>` : ''}</div>`).join("") || "No equipment in inventory.";
     };
-    q("[data-inventory-list]").onclick = e => { const b = e.target.closest("[data-multi]"); if (b) run("multi_equip", { target: b.dataset.multi, on: b.dataset.on === "true" }); };
+    q("[data-inventory-list]").onclick = e => {
+      const item=e.target.closest('[data-equip-id]');if(item){run('equip',{item_id:+item.dataset.equipId});return;}
+      const b = e.target.closest("[data-multi]"); if (b) run("multi_equip", { target: b.dataset.multi, on: b.dataset.on === "true" });
+    };
     q("[data-live]").addEventListener("click", e => { const b = e.target.closest("[data-set]"); if (!b) return;
       const input = b.parentElement.querySelector("input"), value = +input.value;
       if (!Number.isInteger(value) || value < 0 || value > 9999) return say("Enter a whole number from 0 to 9999.");
@@ -372,19 +432,32 @@
     q('[data-interval]').onchange=()=>{if(q('[data-randomized-on]').checked)q('[data-apply-randomized]').click();};
     modeTimer=setInterval(async()=>{
       if(!current()||busy||checking||!cap?.features?.randomized)return;
-      try {const r=await command('modes');if(current()){showModes(r.randomized);if(r.travel && r.travel.message!==lastTravel){lastTravel=r.travel.message;say(lastTravel);}}}catch(error){say(error.message);}
+      const player=selectedPlayer,version=speedVersion,started=performance.now();
+      try {const r=await command('modes');if(current() && player===selectedPlayer){
+        showModes(r.randomized);
+        if(version===speedVersion && cap?.features?.autoplay_speed)showSpeed(r.autoplay_speed,started);
+        if(r.travel && r.travel.message!==lastTravel){lastTravel=r.travel.message;say(lastTravel);}
+      }}catch(error){if(player===selectedPlayer)say(error.message);}
     },5000);
     async function load(knownCap = null, notice = '') {
       if (!current() || busy || loading || recovering) return;
       const attempt = ++loadId;
+      ++speedVersion;showSpeed(null);
       invalidatePlan();
       loading = true; checking = true; cap = null; prefsReady = false; enabled();
       q("[data-equip]").indeterminate = true;
       const fresh = () => current() && attempt === loadId;
       try {
+        const speedStarted=performance.now();
         const result = knownCap || await command("capabilities");
         if (!fresh()) return;
         cap = result;
+        const players=Array.isArray(cap.players) ? cap.players : [{index:0,label:'Player 1',available:true,verified:cap.supported}];
+        q('[data-player]').innerHTML=players.map(p=>`<option value="${p.index}" ${!p.available?'disabled':''}>${esc(p.label)}${p.verified?'':' (not verified)'}</option>`).join('');
+        q('[data-player]').value=String(selectedPlayer);
+        q('[data-player-note]').textContent=cap.selection_note || 'Live controls target player 1 on this edition.';
+        // A reconnect result was collected earlier; its transport age is unknown.
+        showSpeed(knownCap ? {...cap.autoplay_speed,measurement_verified:false,achieved_verified:false} : cap.autoplay_speed,speedStarted,true);
         checking = false; enabled();
         q("[data-profile]").textContent = cap.supported ? `${cap.label || 'Dreamcast US Ver. 2'} · offline live controls` : cap.reason;
         q("[data-live-reason]").textContent = cap.supported ? "" : "You can browse and select items below. Dropping items, editing stats and changing equipment in this running game require a verified patch: " + cap.reason;
@@ -433,7 +506,7 @@
     }
     q('[data-rehook]').onclick = async()=>{
       if(!current() || busy || recovering)return;
-      ++loadId;loading=false;checking=true;recovering=true;cap=null;bossesReady=false;enabled();
+      selectedPlayer=0;++loadId;loading=false;checking=true;recovering=true;cap=null;bossesReady=false;enabled();
       const report=q('[data-rehook-report]');report.textContent='Reconnecting to this emulator and checking the native mod hook…';
       try{
         const result=await command('rehook');if(!current())return;
@@ -453,9 +526,17 @@
       catch(error){if(current()){e.target.checked=!on;say(error.message);}busy=false;enabled();return;}
       busy=false;if(current())await run('always_hit',{on});enabled();
     };
+    q('[data-player]').onchange=()=>{
+      if(busy || checking || loading)return;
+      selectedPlayer=+q('[data-player]').value;
+      clearTimeout(magTimer);clearTimeout(lootTimer);magPatch={};magId=null;lootDirty=false;
+      q('[data-inventory-list]').textContent='';q('[data-mag-summary]').textContent='Refresh the selected player\'s equipped MAG.';
+      q('[data-mode-state]').textContent='Refresh the selected player\'s equipment mode.';
+      q('[data-class]').value='';load();
+    };
     q("[data-retry]").onclick = ()=>load();
     load();
-    return { dispose() { for(const t of timeouts)clearTimeout(t);timeouts.clear();clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
+    return { dispose() { for(const t of timeouts)clearTimeout(t);timeouts.clear();clearTimeout(speedExpiry);clearTimeout(lootTimer);clearTimeout(magTimer);clearInterval(modeTimer);if (host._psoMount === token) { host._psoMount = null; host.dataset.psoSid = ""; } } };
   }
-  return { mount, isPSO, filterItems, groupItems };
+  return { mount, isPSO, filterItems, groupItems, speedCaption };
 });

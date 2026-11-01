@@ -107,9 +107,11 @@ def _path_len(start, pts) -> float:
 # --- the stage -------------------------------------------------------------------------------------------------------
 def stage_key(title: str, mesh) -> str:
     """A stable key for a navmesh's stage: the same stage gets the same key every round and on every PC (the mesh's
-    triangle count and a CRC of its points to the unit), so the panel's cache and the control plane's survive rounds."""
+    triangle count and a CRC of its points and connectivity), so the panel's cache and the control plane's survive rounds."""
     pts = [int(round(c)) for p in mesh.points for c in p[:3]]
     crc = zlib.crc32(struct.pack(f"<{len(pts)}i", *pts)) & 0xFFFFFFFF if pts else 0
+    indices = [v for triangle in mesh.tris for v in triangle[:3]]
+    crc = zlib.crc32(struct.pack(f"<{len(indices)}i", *indices), crc) & 0xFFFFFFFF
     return f"{title}.nav{len(mesh.tris)}.{crc:08x}"
 
 
@@ -368,7 +370,9 @@ class Tracker:
             prev = self.stage_key
             if self.stage_for(mesh) != prev and prev:
                 self._forget_round()                        # another stage: its hourglasses are new
-        out: dict = {"v": FORMAT, "t": round(now, 3), "title": self.title, "stage": self.stage_key,
+        # A gap/new room without a mesh must not inherit the previous room's floor.
+        current_stage = self.stage_key if mesh is not None and hasattr(mesh, "tris") else ""
+        out: dict = {"v": FORMAT, "t": round(now, 3), "title": self.title, "stage": current_stage,
                      "units": self.units, "screen": str(screen or ("playing" if p else "loading"))[:24]}
         if (plan or {}).get('goal_round'):
             out['goal_round'] = str(plan['goal_round'])[:32]

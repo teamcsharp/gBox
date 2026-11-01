@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 import struct
+import threading
 import time
 
 from .. import tuning                      # learned per-stage constants and dead ends (gbox/mercs/tuning.py)
@@ -70,7 +71,10 @@ DYING_HP = 1                             # the solo dying state keeps exactly 1 
 # The inventory, in the player (live 2026-10-26): slots of 0x38 from +0x30F0; a slot's +0x08 u32 id word 0x0TII (T 1 a
 # weapon uWpII, 2 ammo, 3 a recovery item), +0x0C rounds (an item's count), +0x10 capacity, +0x1C the grid position,
 # +0x20 1 = in hand. Chris (BSAA) starts No Mercy with a First Aid Spray at grid 7 (the D-pad's down).
-P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 9
+# cItemManager has 24 physical records (native constructor 91FAF0 and
+# inventory-add 1C2EF0). The nine visible grid positions are stored separately
+# in INV_GRID; a visible weapon can occupy a later physical record.
+P_INV, INV_SLOT, INV_SLOTS = 0x30F0, 0x38, 24
 INV_ID, INV_ROUNDS, INV_CAP, INV_GRID, INV_HAND = 0x08, 0x0C, 0x10, 0x1C, 0x20
 INV_OBJ = 0x30                           # -> the item's own object (heap); the game zeroes it when the slot empties (live
                                          # 2026-10-27, the spray's slot two seconds after its last use)
@@ -305,6 +309,7 @@ QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(120), 1.5, 0.3   # him beh
                                          # (left stick back, then B: 180 deg in 0.3 s, measured; the stick takes ~1.1 s)
 HIT_S = 0.4                              # a Majini's health falls within this of the shot that hit him
 GRAB_R, GRAB_S = 120.0, 0.6
+GRAB_FRONT_R, GRAB_FRONT_CONE = 50.0, math.radians(40)  # one this near, in this cone in front, is about to grab: sidestep
 STUCK_S, BREAK_S = 0.4, 1.2              # the sticks pressed this long and he neither turns nor moves: held (a Majini holds
                                          # him for another's swing; his health does not fall): break free this long
 COMMIT_S = 1.0                           # a new target is kept this long (a crowd all round does not ping-pong the turn)
@@ -344,6 +349,9 @@ LEVEL_COST, LEVEL_DY = 1.5, 120.0
 # PITCH_GUARD_R; a grab threat (GRAB_THREAT_R) always first. Up close (THREAT_R) he keeps his target until it dies or
 # leaves THREAT_R unless another gets within GRAB_THREAT_R and nearer (no re-pick every tick among equal threats).
 PITCH_SWING, PITCH_GUARD_R, MUZZLE_H = math.radians(25), 600.0, 140.0
+# A hold he cannot break free from in time: one on his level this near, never out-aimed for a farther one (HOLD_FIRST)
+# - the target he already has is kept and shot at (the "grabbed from the front" cluster, #5133: 2.2-3.2 m holds).
+HOLD_FIRST, HOLD_R = True, 350.0
 LEVEL_COUNTERS = ("pitch_swings", "off_level_picks", "close_keeps")
 # Combo time (operator 2026-10-27 13:10: "There should never be him chilling surrounded by enemies ... It is essential to
 # be proactive with combo time"): the Mercenaries combo (cGameSys +0x974 count, +0x97C the window's seconds left). Each
@@ -361,6 +369,9 @@ COMBO_PUSH, COMBO_URGENT_S, COMBO_LAPSE_S, COMBO_REACH = True, 3.0, 0.6, 900.0
 # of the best (+ THREAT_KEEP_CM); one within GRAB_THREAT_R wins unless the current one is that near too.
 THREAT_FIRST, THREAT_NEAR_R, THREAT_CAP_R = True, 400.0, 800.0
 APPROACH_LEAD_S, APPROACH_EMA, TURN_W, THREAT_KEEP, THREAT_KEEP_CM = 0.6, 0.5, 0.5, 1.25, 25.0
+RANGED_CLASSES = frozenset({"uEm10", "uEm12", "uEm14"})   # throwers, crossbow and fire (the ranged cluster's classes)
+RANGED_BAND_IN, RANGED_BAND_OUT = 250.0, 1000.0           # cm: the band where their shots carry but a grab does not yet
+RANGED_PENALTY = 0.35                                     # _threat_d's multiplier in the band: ranged before closing-in
 # Pitch up (the same watch: "I will randomly see them point just up in the air"): every aimed tick with the laser more
 # than PITCH_UP_LOG above level is counted with its cause - the target itself that high (pitch_up_target_high), the gun
 # just raised (pitch_up_raise: the camera's old pitch), the target just changed (pitch_up_retarget), else
@@ -452,7 +463,12 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # chest between shots only (never in the shot motion: fire_rate's time scale). A horizontal bearing alone cannot confirm
 # a shot: the dot can be on the ground or a wall. The heading and shot-tail governors apply. Counters: crowd_fire_s,
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
+# Legacy broad-angle unloading is disabled: a long ray beside a nearby enemy
+# does not establish body contact. Keep correcting until the measured body ray
+# (or a shotgun's spread) reaches him; the bounded acquisition guard can move.
+# The final camera feedback gate never uses this compatibility flag.
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
+UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = False, math.radians(8), 0.4, 0.2
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
@@ -711,6 +727,7 @@ KNIVES = frozenset({0x01, 0x0E, 0x14, 0x23, 0x24})        # WP01 / WP0E / WP14 /
 # the gun comes back first (Bot._gun_back)
 THROWN = frozenset({0x06, 0x07, 0x08, 0x0A})
 GUN_BACK_GAP_S = 0.6                     # between D-pad taps for the gun (a neutral pad before each)
+NATIVE_EQUIP_GIVEUP_S = 2.0              # a native weapon request not done by then: the D-pad tap / the gun in hand
 # The proximity bombs on the ground (live 2026-10-27, private Citron): each placed bomb is a unit of class uWp0a on
 # sUnit's move line 11, its position at +0x60 (E_POS), ~57 cm ahead of his feet; it leaves the line when it goes off.
 # Two more uWp0a units (the stack's own) sit elsewhere all round: a placed bomb is a NEW one near him.
@@ -731,6 +748,17 @@ HUNT_R = 1200.0                          # the "hunt" directive: closer than thi
 # to RUSH_R of the nearest - arm's length, where the game offers its melee prompts (taken at once with a Majini that near,
 # _prompt_wanted) - and his crowd fire raises the magnum before the shotgun (RAMPAGE_FAMILIES). stats rushes.
 RUSH_R = 250.0
+# Grenades (operator 2026-10-31: "I want grenades like mad ... the bot itself uses grenades a lot when Majini crowd
+# him. ... they are funny"). The only live-verified RE5 grenade is the native flash (the same spawn/explode the
+# operator's flashbang and the grenade-ring button use), so "grenades like mad" is a native flash burst at a crowd:
+# the Majini around him are stunned and his crowd fire then clears them. It is bounded - one per GRENADE_EVERY_S, only
+# when GRENADE_CROWD_N Majini are within GRENADE_CROWD_R on his level - and runs on a short daemon thread off the 30 Hz
+# tick, serialized by the shared native controller's own lock, with every failure swallowed so it can never stall or
+# crash the bot. On by default; the GRENADES sidebar knob turns it off. (Once a hand/incendiary ring is verified live,
+# this can throw those instead.)
+GRENADES = True
+GRENADE_EVERY_S = 3.0
+GRENADE_CROWD_N, GRENADE_CROWD_R = 4, 450.0
 MESH_PROBE_CM = 150.0                    # _mesh_guard: how far ahead his way is checked on the nav mesh
 MESH_TURNS = tuple(math.radians(d) for d in (22.5, -22.5, 45, -45, 67.5, -67.5, 90, -90, 112.5, -112.5, 135, -135))
 HAZARD_FREE_R, HAZARD_SPREAD = 400.0, 60.0   # health lost with no Majini this near: the floor there hurts (_hazard_hit)
@@ -787,7 +815,11 @@ DOINGS = ("fire", "aim", "raise", "reraise", "restale", "turn", "unaim", "quick_
           "relocate", "prompt")
 # Proximity bombs left behind (re5_switch_mines: one every MINE_EVERY_S, operator 2026-10-27); only with the bomb in the
 # inventory (re5_switch_mods.mine_loadout gives Chris (BSAA) the stack). gun_backs: the gun back with a throwable in hand
-MINES, MINE_EVERY_S = True, 120.0
+# More mines (operator 2026-10-31): every 20 s by default; the sidebar's MINE_EVERY_S reaches the running bot every tick
+# when it is the quicker cadence (it used to reach only a bot built after it), and a placement waits only for a Majini
+# within MINE_FOE_CLEAR_CM (was 5 m) or a bomb within MINE_SPACING_CM (was 6 m).
+MINES, MINE_EVERY_S = True, 20.0
+MINE_FOE_CLEAR_CM, MINE_SPACING_CM = 400.0, 450.0
 MINE_COUNTERS = ("mines_placed", "mine_attempts", "mine_unconfirmed", "mine_retreats_completed", "mine_equip_failures",
                  "mines_gone", "mine_clear_runs", "mine_blasts", "mine_kills", "mine_blast_hp_loss", "gun_backs")
 # The fight is the RE5 PS3 combat core's (re5_switch_brain.Fighter, operator 2026-10-27: "I assume the bot will get the
@@ -1098,7 +1130,8 @@ def snapshot(m) -> dict:
             rot = struct.unpack("<4f", m.rd(p + P_ROT, 16))
             hp, hp_max = struct.unpack("<hh", m.rd(p + P_HP, 4))
             aim_pitch = struct.unpack("<f", m.rd(p + P_AIM_PITCH, 4))[0]
-            snap["player"] = {"ptr": p, "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
+            snap["player"] = {"ptr": p, "generation": u64(m, p + 0x1A00),
+                              "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max,
                               "motion": m.rd(p + P_MOTION, 1)[0],
                               "aim_pitch": aim_pitch if math.isfinite(aim_pitch) and abs(aim_pitch) < 2.0 else None}
         except (ValueError, OSError):
@@ -1106,8 +1139,7 @@ def snapshot(m) -> dict:
         if snap["player"]:
             snap["laser"] = own_laser(m, p, index) if coop else laser(m, base)
             snap["inventory"] = inventory(m, p)
-            if AIM_LOCK:                                 # the camera pitch and heading the aim lock writes
-                snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
+            snap["aim_cam"] = re5_switch_aim.aim_state(m, base, p)
             if PROMPTS and prompt_table_ok(m, base):     # the game's own prompt (re5_switch_prompt): None when none
                 snap["prompt"] = re5_switch_prompt.selected_prompt(m, base, p, index or 0)
                 snap["prompt_read"] = True
@@ -1436,11 +1468,13 @@ class Bot:
             self.stats.setdefault(k, 0)
         self.target = None
         self.aim_since = None
+        self._grenade_last, self._grenade_inflight = -1e9, False   # the GRENADES knob: last native flash burst, in flight
         self.fire_down = False
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.on_key, self.on_ticks = None, 0      # the target the dot has sat on, for how many ticks in a row
         self.ray_key, self.ray_since = None, 0.0
         self.backoff_until = self.backoff_ready = 0.0
+        self._rear_backoff_until = 0.0             # a Majini closing from behind: step back first (the damage batch)
         self.quick, self.quick_at = 0, -1e9      # the quick turn's step (1 stick back, 2 + B, 3 let go), its B press
         self.target_at = -1e9
         self.prev_target, self.switch_at = None, -1e9   # the one he left and when (FLIP_S)
@@ -1641,6 +1675,7 @@ class Bot:
             self._kills_prev = k
         behind = [e for e in live if flat(e) <= BEHIND_R and e.get("ptr", e.get("slot")) != self.target
                   and abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) > math.pi / 2]
+        self._rear_backoff(p, behind, live, flat, now)       # one closing from behind: keep the distance (the grab)
         on = bool(behind) and self.aim_since is not None
         if on:
             self.stats["behind_threat_s"] = round(self.stats["behind_threat_s"] + dt, 2)
@@ -1659,6 +1694,34 @@ class Bot:
                     del self._long_marks[key]
                 elif e is None or now - t > LONG_KILL_S:
                     del self._long_marks[key]
+
+    def _rear_backoff(self, p, behind, live, flat, now) -> None:
+        """A Majini closing from behind while he aims ahead (the damage batch's 'grabbed from behind'): back up to
+        keep the distance before it reaches arm's length and grabs him. The quick turn only starts for one within
+        3 m, and only at 90 deg - a closing Majini can reach the grab inside that. Backing away from the threat's
+        bearing (its side) does not walk into the one he aims at (front) nor a front crowd. Only with the gun down,
+        one behind, no front threat close enough to be grabbed next, no hold or move already under way. Sets the
+        rear flag and the back-off clock; _decide turns that into the ldown move (same as the front back-off)."""
+        if not behind or self.aim_since is not None:
+            return
+        px, py, pz = p["pos"]
+        if self.fire_down or self.quick or self.mode in ("rush", "hunt"):
+            return
+        if now < self.break_until or p.get("motion") in MOTION_HELD or now < self.backoff_until:
+            return
+        e = min(behind, key=flat)
+        d = flat(e)
+        if not (TOO_CLOSE <= d <= BEHIND_R):                 # the band where a grab is coming (behind_threat_s range)
+            return
+        tol = self.raise_tol(d)
+        front = [x for x in live
+                 if x is not e and abs(wrap(heading(x["pos"][0] - px, x["pos"][2] - pz) - p["rot"])) <= tol
+                 and flat(x) < d]                            # backing away would put us between them and his aim
+        if front:
+            return
+        self._rear_backoff_until = now + BACKOFF_S
+        self.stats["rear_backoffs"] = self.stats.get("rear_backoffs", 0) + 1
+        self._gun_down()
 
     def _pursue(self, p, live, flat, snap, now):
         """The combo running down with nobody on his level in reach: run to the census's best (stuck: a detour)."""
@@ -1777,10 +1840,15 @@ class Bot:
         err = wrap(heading(bx - px, bz - pz) - p["rot"])
         self._goal_dy = by - py                          # a ledge's prompt on the way is taken (PROMPTS: traverse)
         if d <= KNIFE_R and snap.get("prompt_read"):     # at it: its own prompt takes it (Y, PROMPTS); walk into it
-            run["knife_since"] = run["knife_since"] or now
+            # the shown bonus prompt is answered in _prompt ahead of this run; a prompt_read that still shows no
+            # bonus prompt is a reader miss, not the live no-prompt fault - the knife below breaks the real statue
+            if not (snap.get("prompt") or {}).get("label"):
+                run["knife_since"] = run["knife_since"] or now
             if now - run["knife_since"] > KNIFE_TRY_S * (KNIFE_RETRIES + 1):
-                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # no prompt here: another one first
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # the prompt never came: another one first
                 self._bonus = None
+                self.doing, self.why = "walk", "time bonus: the prompt never came - the next one"
+                return {"hold": ("lup",)}
             self.doing, self.why = "walk", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: into it for its prompt"
             return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
         if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
@@ -1882,7 +1950,7 @@ class Bot:
             candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
-                if s_.get("type") == 1 and spec is not None and spec.family == fam \
+                if s_.get("type") == 1 and self._loaded_gun(s_) and spec is not None and spec.family == fam \
                         and (s_.get("hand") or s_.get("grid") in QUICK):
                     if s_.get("hand"):
                         return s_, fam
@@ -1906,6 +1974,20 @@ class Bot:
             return False
         cosine = sum((dot[k] - origin[k]) * (chest[k] - origin[k]) for k in range(3)) / (reach * distance)
         return math.acos(max(-1.0, min(1.0, cosine))) <= CROWD_CONE
+
+    def _unload(self, r, ok, err, now, dt) -> bool:
+        """The trigger down off a confirmed body (UNLOAD above): ok (the gun up, no wall short of him) and the ray's error
+        (yaw and pitch) within UNLOAD_CONE: bursts of UNLOAD_BURST_S, then UNLOAD_TURN_S, the trigger let go for the stick."""
+        if not (UNLOAD and ok and abs(err) <= UNLOAD_CONE):
+            r["unload"] = None
+            return False
+        t0 = r.get("unload")
+        if t0 is None or now - t0 >= UNLOAD_BURST_S + UNLOAD_TURN_S:
+            r["unload"] = t0 = now
+        if now - t0 >= UNLOAD_BURST_S:
+            return False
+        self.stats["unload_s"] = round(self.stats.get("unload_s", 0.0) + dt, 2)
+        return True
 
     def _rampage(self, p, live, flat, snap, now):
         """Anyone on his level within RAMPAGE_R: the gun up, the trigger down, the nearest inside held (above)."""
@@ -1947,7 +2029,11 @@ class Bot:
                 nearest = near_front
         tgt = cur
         wu = self._windup_e if self._windup_e is not None and any(e is self._windup_e for e in candidates) else None
-        if wu is not None and wu is not cur:             # winding up: him first, at once
+        faced = next((e for e in candidates if e.get('ptr', e.get('slot')) ==
+                      getattr(self, '_feedback_visible', None)), None)
+        if faced is not None:                           # finish the reachable body before turning away
+            tgt = faced
+        elif wu is not None and wu is not cur:          # winding up: him first, at once
             tgt, r["retarget_at"] = wu, now
             self.stats["windup_picks"] += 1
         elif cur is None or (flat(nearest) < GRAB_THREAT_R and flat(cur) >= GRAB_THREAT_R and nearest is not cur):
@@ -2035,8 +2121,10 @@ class Bot:
                         r["wall"] = None               # another nearby threat on the next tick, gun still raised
                 else:
                     r["wall"] = None
-                if not on:
-                    keys |= self._yaw(yaw_err)
+                short = ray_len < math.dist(origin, chest) - FIRE_SLACK      # the ray ends in front of him
+                on = on or self._unload(r, ready and not short, math.hypot(yaw_err, pitch_err), now, dt)
+                if not on or not where:      # the aim onto his chest between shots, firing or not (operator
+                    keys |= self._yaw(yaw_err)  # 2026-10-31: "point their weapon at the enemies")
             else:
                 keys |= self._yaw(yaw_err)
                 if dist >= CLOSE_PITCH_R and ray_len >= STEER_RAY_CM:
@@ -2171,7 +2259,8 @@ class Bot:
 
     def _quick_behind(self, p, live, flat, now):
         """A Majini close behind him (the quick turn above): the turn's first step, or the trigger let go first."""
-        if not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
+        if getattr(self, '_feedback_visible', None) is not None \
+                or not QUICK_TURN or now - self.quick_at <= QUICK_GAP_S:
             return None
         px, py, pz = p["pos"]
         bear = lambda e: abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"]))
@@ -2473,12 +2562,17 @@ class Bot:
         self._appr = seen
 
     def _threat_d(self, p, e) -> float:
-        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him."""
+        """How soon this Majini is on him: the distance less APPROACH_LEAD_S of his closing speed, x the turn to him.
+        A ranged class (RANGED_CLASSES) in the band where its shots carry but a grab does not yet (RANGED_BAND) counts
+        RANGED_PENALTY x as soon: it threatens him now, not by closing - threat order (the ranged cluster's cause)."""
         px, _, pz = p["pos"]
         d = math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
         v = (self._appr.get(e.get("ptr", e.get("slot"))) or (0.0, 0.0, 0.0))[2]
         turn = abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - p["rot"])) if d > BEHIND_R else 0.0
-        return max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+        td = max(0.0, d - APPROACH_LEAD_S * max(0.0, v)) * (1.0 + TURN_W * turn / math.pi)
+        if e.get("class") in RANGED_CLASSES and RANGED_BAND_IN <= d <= RANGED_BAND_OUT:
+            return td * RANGED_PENALTY
+        return td
 
     @staticmethod
     def _threat_near(p, live) -> bool:
@@ -2505,9 +2599,20 @@ class Bot:
             best = grab
         elif in_pool and td(cur) <= THREAT_KEEP * td(best) + THREAT_KEEP_CM:
             best = cur
+        if self._held_near(p, live, cur, now) and cur is not None and best is not cur:
+            best = cur                                         # hold first: a farther one is not a swing while he is held
         if best is not cur:
             self.stats["threat_switches"] += 1
         return best
+
+    def _held_near(self, p, live, cur, now) -> bool:
+        """One on his level within HOLD_R (a hold he would not break in time): hold first - the current target kept
+        (HOLD_FIRST), never a swing at a farther one while that near one stands (the grab cluster's cause)."""
+        if not HOLD_FIRST or cur is None or not any(e is cur for e in live):
+            return False
+        px, py, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        return any(abs(e["pos"][1] - py) <= LEVEL_DY and flat(e) <= HOLD_R for e in live)
 
     def _choose(self, p, live, now):
         """The Majini to fight. One he can shoot without turning (inside raise_tol, in reach) comes first: the current
@@ -2552,7 +2657,7 @@ class Bot:
                     self.stats["close_keeps"] += 1           # up close: kept until it dies or leaves THREAT_R
                     self._set_target(cur.get("ptr", cur.get("slot")), now)
                     return cur
-        if self._threat_near(p, live):                       # one on his level within reach of him: threat first
+        if self._threat_near(p, live) or self._held_near(p, live, cur, now):  # a threat or a hold nearby: threat first
             best = self._threat_pick(p, live, cur, now)
             if best is not cur:
                 self.target_at = now
@@ -2988,17 +3093,24 @@ class Bot:
         return bool(falling and near <= GRAB_R)
 
     def _score_hits(self, snap, now) -> None:
-        """A Majini's health falling while the trigger is held, or within HIT_S of letting it go, is a hit."""
+        """Associate observed target HP losses with one recent pull, not every pull.
+
+        This measures target damage near a trigger pull, not bullets or the damage
+        source: flashes, melee and other actors can also hurt the same target.
+        """
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
         fell = {k: self.hp_prev[k] - h for k, h in hp.items() if h < self.hp_prev.get(k, h)}
-        drops = len(fell)
         self.hp_prev = hp
-        for pull in self._pulls:                             # the look: which pull took the health
-            if fell and (pull["end"] is None or now - pull["end"] <= HIT_S):
-                pull["drops"] += drops
-                pull["hp_delta"] -= fell.get(pull["target"], 0)
-        if drops and self.fire_at is not None and now - self.fire_at <= HIT_S:
-            self.stats["hits"] += drops
+        for target, damage in fell.items():
+            pull = next((x for x in reversed(self._pulls) if x['target'] == target
+                         and x['start'] <= now and 0 <= now - (
+                             x['end'] if x['end'] is not None else
+                             self.fire_at if self.fire_at is not None else x['start']) <= HIT_S), None)
+            if pull is not None:
+                pull['drops'] += 1
+                pull['hp_delta'] -= damage
+                self.stats['hits'] += 1
+        self.stats['hit_measurement'] = 'target HP losses near trigger pulls; damage source unverified'
         if self.stats.get("trigger_s"):
             self.stats["hits_per_trigger_s"] = round(self.stats["hits"] / self.stats["trigger_s"], 2)
 
@@ -3087,6 +3199,8 @@ class Bot:
     def _trigger(self, on: bool, now) -> set:
         """ZR held while on him: the game repeats a held trigger at the gun's pace (live: 2.7 shots/s held or tapped
         with the M92F, 25 with the fire-rate mod, which a tapped trigger cannot reach). A pull counts as a shot."""
+        if on and getattr(self, '_defer_trigger', False):
+            return {'zr'}                               # intent; final feedback records only an accepted pull
         if not on:
             if self.fire_down:                               # the aim slid off him: the pull ends
                 self._pull_end(now, slipped=True)
@@ -3257,22 +3371,70 @@ class Bot:
         self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
         return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
 
+    def _loaded_gun(self, row):
+        rounds = row.get('rounds')
+        return (getattr(self, '_infinite_ammo', False) is True or
+                not isinstance(rounds, (int, float)) or rounds > 0)
+
     def _gun_back(self, snap, now) -> dict | None:
         """A grenade or the bomb in hand (THROWN) with nothing else using it: the gun's D-pad slot, a tap every
         GUN_BACK_GAP_S with the pad neutral between, until a gun is in hand. The fight raises with ZL, and ZL with the
         bomb in hand sets one down at his feet."""
         inv = snap.get("inventory") or ()
         held = next((s for s in inv if s.get("hand")), None)
+        primary = snap.get('primary_weapon')
+        if primary and primary.get('usable') is False:
+            primary = None
+        if primary and self.native_equip is not None:
+            chosen = next((s for s in inv if s.get('grid') == 0 and s.get('item') == primary['item']
+                           and self._loaded_gun(s)), None)
+            if chosen is not None and not chosen.get('hand'):
+                res = self.native_equip.select(0, chosen['id']) or {}
+                if getattr(self, '_primary_want', (None, 0.0))[0] != chosen['id']:
+                    self._primary_want = (chosen['id'], now)
+                # the operator's gun while its native request can still finish; a failed or overdue one no longer
+                # holds him still (he fights with what he has, the D-pad slot below)
+                if res.get('state') not in ('unknown', 'refused', 'disabled') \
+                        and now - self._primary_want[1] <= NATIVE_EQUIP_GIVEUP_S:
+                    return {'hold': ()}
+            else:
+                self._primary_want = (None, 0.0)
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
-                       and s.get("item") not in KNIVES and s.get("item") not in THROWN), None) if want else None
+                       and s.get("item") not in KNIVES and s.get("item") not in THROWN
+                       and self._loaded_gun(s)), None) if want else None
         if choice is not None and not choice.get("hand") and self.aim_since is None:
             if now - self._gun_back_at < GUN_BACK_GAP_S:
                 return {"hold": ()}
             self._gun_back_at = now
             self.stats["gun_choices"] = self.stats.get("gun_choices", 0) + 1
             return {"tap": QUICK[choice["grid"]]}
-        if held is None or held.get("type") != 1 or held.get("item") not in THROWN:
+        empty = bool(held and held.get('type') == 1 and held.get('item') not in KNIVES
+                     and held.get('item') not in THROWN and not self._loaded_gun(held))
+        if empty and self.native_equip is not None:
+            candidates = [s for s in inv if s.get('type') == 1 and s.get('item') not in KNIVES
+                          and s.get('item') not in THROWN and self._loaded_gun(s)
+                          and (s.get('rounds') or 0) > 0 and not s.get('hand')]
+            loaded = next((s for s in candidates if s.get('grid') in QUICK), next(iter(candidates), None))
+            if loaded is not None:
+                self.doing, self.why = 'rearm', 'empty gun: selecting an owned loaded weapon'
+                if now - self._gun_back_at < GUN_BACK_GAP_S:
+                    return {'hold': ()}
+                self._gun_back_at = now
+                self.stats['empty_weapon_switches'] = self.stats.get('empty_weapon_switches', 0) + 1
+                if loaded.get('grid') in QUICK:
+                    # Existing native-equipment handling bounds its wait and
+                    # retains the ordinary quick-slot fallback on refusal.
+                    return {'tap': QUICK[loaded['grid']]}
+                key = (loaded.get('slot'), loaded['id'])
+                if getattr(self, '_empty_native_want', (None, 0))[0] != key:
+                    self._empty_native_want = (key, now)
+                result = self.native_equip.select(loaded['grid'], loaded['id']) or {}
+                if result.get('state') in ('unknown', 'refused', 'disabled') or now - self._empty_native_want[1] > NATIVE_EQUIP_GIVEUP_S:
+                    self.stats['empty_weapon_reason'] = 'loaded slot attachment unconfirmed; releasing the wait'
+                    return None
+                return {'hold': ()}
+        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty):
             return None
         if self._rearm(inv, None) is None:
             return None                                      # no gun on a D-pad slot: nothing to go back to
@@ -3285,7 +3447,7 @@ class Bot:
     def _rearm(self, inv, grid) -> dict | None:
         """The gun back in his hands after a heal: the one he held (its D-pad slot), else the first gun on one."""
         guns = [s for s in inv if s["type"] == 1 and s["grid"] in QUICK and s["item"] not in KNIVES
-                and s["item"] not in THROWN]
+                and s["item"] not in THROWN and self._loaded_gun(s)]
         gun = next((s for s in guns if s["grid"] == grid), None) or next(iter(guns), None)
         if gun is None or gun["hand"]:
             return None
@@ -3339,18 +3501,37 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self._infinite_ammo = snap.get('infinite_ammo') is True
         if self.native_equip is not None:
             self.native_equip.tick()
+        from .. import primary_weapon
+        if primary_weapon.quiescing(self.stats, snap):
+            self._gun_down()
+            self._aim_wait = None
+            self.doing, self.why = 'native_equip', 'applying the selected primary weapon'
+            return {'hold': ()}
+        snap = primary_weapon.decision_snapshot(snap)
         self.doing, self.why, self._now = "none", "", now
         held = next((s for s in snap.get("inventory") or () if s.get("hand")), None)
         self._item = held.get("item") if held else None       # the weapon in hand (K's plans are per weapon)
+        from . import re5_switch_aim as re5_target_feedback, re5_weapons
+        visible = re5_target_feedback.visible_target(snap)
+        self._feedback_visible = visible.get('ptr', visible.get('slot')) if visible else None
+        spec = re5_weapons.WEAPONS.get(self._item)
+        self._defer_trigger = bool(snap.get('aim_cam') and spec
+                                   and spec.family in re5_target_feedback.GUN_FAMILIES)
         act = self._tick(snap, now)
+        self._defer_trigger = False
+        act = re5_target_feedback.apply(self, snap, act, now)
+        act = re5_target_feedback.keep_active(self, snap, act, now)
         act = self._mesh_guard(act, snap)                # the way probed on the stage's own nav mesh before a wall
         act = self._wall_gov(act, snap, now)
         act = self._calm_sticks(act, snap, now)
         act = self._governor(act, snap, now)
         act = self._shot_tail(act, snap, now)
         act = self._native_equipment(act, snap)
+        self.stats.update(combat_action=self.doing, combat_reason=self.why,
+                          combat_hold=','.join(act.get('hold') or ()))
         from . import re5_switch_wall
         re5_switch_wall.feedback(self, act, snap, now)
         self._count_sticks(act, now)
@@ -3358,13 +3539,91 @@ class Bot:
             self._look_tick(snap, now)
         except Exception as exc:                             # noqa: BLE001 - the look never stops the bot
             self.stats["look_error"] = f"{type(exc).__name__}: {exc}"[:160]
+        self._grenade_crowd(snap, now)                       # the GRENADES knob: a flash burst at a crowd (side effect)
         return act
+
+    def _grenade_crowd(self, snap, now) -> None:
+        """A crowded, verified attack threat can justify one flash during fire.
+
+        Existing measured enemy motions/attack flags establish the threat. A
+        census alone, or guessed stun/down states, does not establish usefulness.
+        The native controller runs asynchronously; retain its admission context
+        separately from the current firing decision and report refusals honestly.
+        """
+        def blocked(reason):
+            self.stats.update(bot_grenade_state='idle', bot_grenade_reason=reason)
+
+        if not GRENADES:
+            blocked('automatic flashes disabled')
+            return
+        if self._grenade_inflight:
+            return
+        if now - self._grenade_last < GRENADE_EVERY_S:
+            return
+        if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
+            blocked('not autonomous live combat')
+            return
+        # A census alone does not mean a flash helps. Do not inject one while
+        # navigating, placing/escaping mines, healing or struggling to aim. A
+        # verified firing opportunity supplies the follow-through on the stun.
+        if self.doing != "fire" or not self.fire_down or not self.stats.get("target_feedback_on"):
+            blocked('no verified firing follow-through')
+            return
+        p = snap.get("player") or {}
+        if (p.get("hp") or 0) <= 0:
+            blocked('player is not alive')
+            return
+        ad = getattr(self._m, "adapter", None)
+        if ad is None or getattr(self._m, "mercs_no_modifications", False):
+            blocked('native flash unavailable')
+            return
+        ppos = p.get("pos")
+        if ppos is None:
+            blocked('player position unavailable')
+            return
+        distance = lambda e: math.hypot(e['pos'][0] - ppos[0], e['pos'][2] - ppos[2])
+        crowd = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get('pos')
+                 and abs(e["pos"][1] - ppos[1]) <= LEVEL_DY and distance(e) <= GRENADE_CROWD_R]
+        threats = [e for e in crowd if distance(e) <= WINDUP_R and self._winding(e)]
+        self.stats.update(bot_grenade_crowd=len(crowd), bot_grenade_threats=len(threats))
+        if len(crowd) < GRENADE_CROWD_N:
+            blocked('crowd below flash threshold')
+            return
+        if not threats:
+            blocked('crowd has no verified nearby attack windup')
+            return
+        threat = min(threats, key=distance)
+        reason = (f"interrupt {len(threats)} attack windup(s), nearest {distance(threat)/100:.1f} m; "
+                  f"{len(crowd)} nearby, verified firing follow-through")
+        self._grenade_last, self._grenade_inflight = now, True
+        self.stats.update(bot_grenade_state='requested', bot_grenade_reason=reason, bot_grenade_error='',
+                          bot_grenade_requested_at=now, bot_grenade_request_reason=reason,
+                          bot_grenade_threat=threat.get('ptr', threat.get('slot')))
+
+        def fire():
+            try:
+                from ..interventions import native_controller
+                res = native_controller(ad).flash()
+                if isinstance(res, dict) and res.get("state") == "confirmed":
+                    self.stats["bot_grenades"] = self.stats.get("bot_grenades", 0) + 1
+                    self.stats["native_flash_confirmed_at"] = time.time()
+                    self.stats.update(bot_grenade_state='confirmed', bot_grenade_reason=reason, bot_grenade_error='')
+                else:
+                    detail = str(res.get('reason') or res.get('state') or 'no confirmation') if isinstance(res, dict) else 'no confirmation'
+                    self.stats.update(bot_grenade_state='unconfirmed', bot_grenade_reason=detail[:120])
+            except Exception as exc:                         # noqa: BLE001 - never stall or crash the bot
+                error = f"{type(exc).__name__}: {exc}"[:120]
+                self.stats.update(bot_grenade_state='failed', bot_grenade_reason=error, bot_grenade_error=error)
+            finally:
+                self._grenade_inflight = False
+        threading.Thread(target=fire, daemon=True, name="re5-bot-grenade").start()
 
     def _native_equipment(self, act, snap):
         """Translate a quick-slot weapon intent into a native attachment request."""
         if self.native_equip is None or snap.get('mercenaries_phase') != PHASE_PLAYING \
                 or ((snap.get('player') or {}).get('hp') or 0) <= 0 \
                 or self.doing not in ('rearm', 'raise', 'heal', 'mine', 'flashbang'):
+            self._native_want = (None, 0.0)                  # the next request's NATIVE_EQUIP_GIVEUP_S starts afresh
             return act
         from .re5_switch_equip import SUPPORTED_IDS
         keys = set(act.get('hold') or ()) | ({act['tap']} if act.get('tap') else set())
@@ -3374,7 +3633,17 @@ class Bot:
         rows = [row for row in snap.get('inventory') or () if row.get('grid') == grids[0]]
         if len(rows) != 1 or rows[0].get('id') not in SUPPORTED_IDS:
             return act  # healing items have a separate, unverified lifecycle
-        self.native_equip.select(grids[0], rows[0]['id'])
+        res = self.native_equip.select(grids[0], rows[0]['id']) or {}
+        # A native request that cannot finish hands the slot back to the D-pad tap: one unconfirmed request made every
+        # later one of that gun this life "previous_request_unconfirmed", and the swallowed tap left him standing with
+        # a bomb in hand (rearm 85 s, 143 taps, Ship Deck 2026-10-31).
+        want = (grids[0], rows[0]['id'])
+        if getattr(self, '_native_want', (None, 0.0))[0] != want:
+            self._native_want = (want, self._now if self._now is not None else 0.0)
+        if res.get('state') in ('unknown', 'refused', 'disabled') \
+                or (self._now is not None and self._now - self._native_want[1] > NATIVE_EQUIP_GIVEUP_S):
+            self.stats['native_equip_fallbacks'] = self.stats.get('native_equip_fallbacks', 0) + 1
+            return act
         return {'hold': ()}
 
     def _tick(self, snap: dict, now: float) -> dict:
@@ -3474,8 +3743,12 @@ class Bot:
             self.doing, self.why = "reload", "the gun reloads"
             self.aim_since = now                             # reloading: the gun comes back up by itself
             return {"hold": ("zl",)}
-        if self.mines is not None and snap.get("mine_settings"):
-            self.mines.configure(snap["mine_settings"])          # the operator's `mines` op (re5_switch_mods.mines)
+        if self.mines is not None:
+            if snap.get("mine_settings"):
+                self.mines.configure(snap["mine_settings"])      # the operator's `mines` op (re5_switch_mods.mines)
+            self.mines.every_s = min(self.mines.every_s, MINE_EVERY_S)   # the sidebar's cadence, when the quicker
+            self.mines.foe_clear_cm, self.mines.spacing_cm = MINE_FOE_CLEAR_CM, MINE_SPACING_CM
+            self.stats["mine_interval_s"] = self.mines.every_s
         self.mode = self._operator_command(p, snap, live, now)
         # The operator's emergency flashbang (#5972): highest priority, every click throws another flash at his feet.
         act = self._flashbang_throw(p, snap, now)
@@ -3500,6 +3773,15 @@ class Bot:
                     act = self._fight(live, snap, now)
                 else:
                     act = self._decide(p, live, flat, near_e, near, snap, now)
+                if self._windup_e is not None:
+                    # a Majini winding up within reach (its lunge lands WINDUP_HIT_S later): the shot keeps flying at the air.
+                    # The trigger releases, the wind-up is the target, and the next tick's fight re-fires on it.
+                    if self.fire_down:
+                        self._trigger(False, now)
+                        self.stats["windup_interrupts"] += 1
+                    if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
+                        self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
+                        self.target_at = now
         if set(act.get("hold", ())) & {"rleft", "rright", "lup", "ldown"} and "zl" not in act.get("hold", ()):
             self.move_at = now
         return act
@@ -3701,11 +3983,26 @@ class Bot:
                 if now < self.backoff_until:
                     self.doing, self.why = "backoff", f"one {near / 100:.1f} m in front"
                     return {"hold": ("ldown",) + self._turn(body_err)}
+            if now < self._rear_backoff_until:              # one closing from behind: step back first
+                self.doing, self.why = "backoff", "a Majini closing from behind"
+                return {"hold": ("ldown",) + self._turn(body_err)}
             if QUICK_TURN and abs(body_err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S                     and (not CALM or dist <= CALM_QUICK_R) and (now - self.quick_at >= QUICK_BACK_S or dist <= GRAB_THREAT_R):
                 self.doing, self.why = "quick_turn", f"target behind ({math.degrees(body_err):+.0f} deg)"
                 self.stats["quick_turns"] += 1               # him behind: the quick turn
                 self.quick = 2
                 return {"hold": ("ldown",)}
+            # A close Majini is a grab threat at any angle: the cone widens quadratically as the
+            # range shrinks (the grab reach is roughly the arm's length regardless of angle).
+            # GRAB_FRONT_CONE (40 deg) at GRAB_FRONT_R (50 cm); the cone widens quadratically as the
+            _cone = min(math.pi, GRAB_FRONT_CONE * (GRAB_FRONT_R / max(near, 40.0)) ** 2) \
+                   if near <= GRAB_FRONT_R else GRAB_FRONT_CONE
+            _cone_t = min(math.pi, GRAB_FRONT_CONE * (GRAB_FRONT_R / max(dist, 40.0)) ** 2) \
+                      if dist <= GRAB_FRONT_R else GRAB_FRONT_CONE
+            if (near <= GRAB_FRONT_R and abs(near_err) <= _cone) \
+               or (dist <= GRAB_FRONT_R and abs(body_err) <= _cone_t):
+                self.doing, self.why = "sidestep", f"one {min(near, dist) / 100:.1f} m in front (grab risk)"
+                side = "lup" if self._kite_side > 0 else "ldown"
+                return {"hold": (side,) + self._turn(body_err, TURN_TOL)}
             tol = self.raise_tol(dist) * (RERAISE_FRAC if piece(SMOOTH_FAR) and self.turning and near > THREAT_R else 1.0)
             if abs(body_err) > tol:                          # turn round first (fast, the gun down)
                 self.doing, self.why = "turn", f"target {math.degrees(body_err):+.0f} deg at {dist / 100:.1f} m"
@@ -4139,8 +4436,7 @@ class Bot:
 
     # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
     def _pull_start(self, now) -> None:
-        """A trigger pull: its entry in the look, with the aim as it was pulled (_decide's _aimctx). dot_on is "target"
-        for the laser's pulls (the dot on him, or the ray running through him first) and "off" for the laserless aim."""
+        """Record a trigger edge and measured aim evidence, not an emitted bullet."""
         ctx = self._aimctx or {}
         if self._raise_t is not None:                        # the first pull since the gun went up
             self.stats["first_pull_n"] += 1
@@ -4160,12 +4456,23 @@ class Bot:
             self._acq = (None, None)
         target = make_target(id=ctx.get("target"), kind="majini" if ctx.get("target") is not None else None,
                              dist_m=(ctx.get("dist") or 0.0) / 100.0, bearing_deg=-math.degrees(ctx.get("bearing") or 0.0))
+        origin, dot, foot = ctx.get('origin'), ctx.get('dot'), ctx.get('foot')
+        valid_ray = bool(not ctx.get('laserless') and origin and dot and foot
+                         and all(math.isfinite(v) for v in (*origin, *dot, *foot)))
+        body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False))
+        endpoint = ('target' if valid_ray and dot_on(dot, foot) else self._behind(ctx)) if valid_ray else 'off'
+        contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if body else 'unverified')
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
                                       aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
-                                      dot_on="off" if ctx.get("laserless") else "target")
+                                      dot_on='target' if body else endpoint or 'off')
+        entry.update(measurement='trigger_pull', contact=contact,
+                     ray_observed=bool(valid_ray and ctx.get('ray_observed', True)), ray_endpoint=endpoint,
+                     pitch_err_deg=round(math.degrees(ctx['pitch_err']), 2) if ctx.get('pitch_err') is not None else None,
+                     damage_evidence='no target HP decrease observed')
         self._pulls.append({"entry": entry, "start": now, "end": None, "drops": 0, "hp_delta": 0,
                             "target": ctx.get("target"), "where": ctx.get("where"),
-                            "laserless": bool(ctx.get("laserless")), "behind": self._behind(ctx),
+                            "laserless": bool(ctx.get("laserless")), "body_contact": body,
+                            "behind": self._behind(ctx) if body else '',
                             "k": {k: ctx.get(k) for k in ("class", "dist", "item", "dot", "foot", "shooter", "hp_max")}})
         del self._pulls[:-4]                                 # (a pull resolves within HIT_S of its end)
 
@@ -4198,15 +4505,18 @@ class Bot:
                                     f"{self.stats.get('acquire_to_shot_s', 0)} s after acquiring; hits {bands}")
 
     def _resolve_pulls(self, now) -> None:
-        """Pulls whose hit window has passed: hit (a Majini's health fell), or why not."""
+        """Report target HP observations and distinguish body contact from a ray miss."""
         for pull in [x for x in self._pulls if x["end"] is not None and now - x["end"] > HIT_S]:
             self._pulls.remove(pull)
             if pull["drops"]:
                 out, key = "hit:majini", "pulls_hit"
+                pull['entry']['damage_evidence'] = 'target HP decreased within trigger window; damage source unverified'
             elif pull["laserless"]:
                 out, key = "miss:off_target", "pulls_blind"
             elif pull["where"] is not None:
                 out, key = "miss:no_damage", "pulls_dot_miss"
+            elif pull.get('body_contact'):
+                out, key = "miss:no_damage", "pulls_ray_miss"
             else:
                 out, key = "miss:off_target", "pulls_ray_miss"
             self.stats[key] += 1
@@ -4229,6 +4539,13 @@ class Bot:
     def _k_shot(self, pull, out, now) -> None:
         """The pull for the enemy knowledge database: his class, the distance, the weapon, the dot's point on him (a world
         point beside his feet and the shooter: the database takes up / across), kill / hit / miss, the health taken."""
+        # The weapon learner accepts only resolved shots, with no uncertainty
+        # field. A trigger edge and nearby HP loss cannot prove either a bullet
+        # or its damage source (native flashes/other actors also cause damage).
+        # Keep these observations in BotLook, not weapon hit/kill/aim training.
+        if (pull.get('entry') or {}).get('measurement') == 'trigger_pull':
+            self.stats['shot_learning_unverified_skips'] = self.stats.get('shot_learning_unverified_skips', 0) + 1
+            return
         from ..brain import knowledge
         k = pull.get("k") or {}
         dead = pull["drops"] and pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) <= 0
@@ -4337,6 +4654,10 @@ class Bot:
     def _fight(self, live, snap, now) -> dict:
         """The PS3 combat core's decision on the Switch pad (re5_switch_brain.Fighter), with the Switch's trigger time
         and the dropouts fired through counted here."""
+        p = snap["player"]
+        px, _, pz = p["pos"]
+        flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+        self._windup_tick(p, live, flat, now)    # its wind-up accounting: the fighter path never runs _decide's
         try:
             act, self.doing, self.why = self.fighter.fight(snap, live, now)
         except Exception as exc:                             # noqa: BLE001 - a brain error falls back to the Switch's
@@ -4352,10 +4673,31 @@ class Bot:
                 self.stats["trigger_s"] = round(self.stats.get("trigger_s", 0.0) + min(now - self._fire_t, 0.2), 2)
             self._fire_t = now
             if self.fighter.flickering and self._tick_t is not None:
-                self.stats["flicker_s"] = round(self.stats["flicker_s"] + min(now - self._tick_t, LOOK_STEP_MAX_S), 2)
+                self.stats["flicker_s"] = round(self.stats.get("flicker_s", 0.0) + min(now - self._tick_t, LOOK_STEP_MAX_S), 2)
+            # the fighter path holds the trigger (no _trigger call): track fire_down here
+            if not self.fire_down:
+                self.stats["shots"] += 1
+                if self.trigger_since is None:
+                    self.trigger_since = now
+                self._pull_start(now)
+            self.fire_down, self.fire_at = True, now
+            # the nearest live enemy is the aim target while firing
+            if self.target is None and live:
+                self._set_target(min(live, key=flat).get("ptr", min(live, key=flat).get("slot")), now)
+                self.target_at = now
         else:
             self._fire_t = None
         self.aim_since = (self.aim_since or now) if "zl" in held else None   # (the reload wait keeps the gun up)
+        if self._windup_e is not None:
+            # A Majini is winding up right in front of him (PS3 brain firing into the air): drop the trigger
+            # and set the wind-up as target so the next tick re-aims at it instead of continuing to fire.
+            if self.fire_down:
+                self.fire_down = False
+                self._pull_end(now, slipped=True)
+            self.stats["windup_interrupts"] = self.stats.get("windup_interrupts", 0) + 1
+            if self._windup_e.get("ptr", self._windup_e.get("slot")) != self.target:
+                self._set_target(self._windup_e.get("ptr", self._windup_e.get("slot")), now)
+                self.target_at = now
         return act
 
     def prompt_ok(self, button, snap, now) -> bool:
@@ -4372,9 +4714,11 @@ class Bot:
 
 
 class RE5Switch(Driver):
+    decision_interval_s = 1.0 / 30.0
     map_id = MAP_ID
     solo_p1 = True                              # No Mercy on Switch is played solo here: one pad, no partner control
     round_counters = ("shots", "hits", "trigger_s", "holds", "dying", "escapes", "burst_backoffs", "heals",
+                      "aim_repositions", "target_feedback_fire_blocks", "target_feedback_write_failures",
                       "heal_starts", "heal_failures", "turns", "quick_turns", "backoffs", "reraise", "restale",
                       "flicker_s") + BRAIN_COUNTERS + MINE_COUNTERS + MOTION_COUNTERS + K_COUNTERS + LEVEL_COUNTERS + COMBO_COUNTERS \
         + THREAT_COUNTERS \
@@ -4424,8 +4768,14 @@ class RE5Switch(Driver):
         from . import re5_switch_mods
         res = re5_switch_mods.maintain(ad, snap, enabled=playing)
         if snap is not None:
+            snap['infinite_ammo'] = res.get('infinite_ammo') if res.get('verified') else None
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
             snap["preferred_weapon"] = re5_switch_mods.preferred_weapon(ad)   # select_weapon / random_weapon
+            from .. import primary_weapon
+            snap['primary_weapon'] = primary_weapon.snapshot(ad, snap)
+            target_stats = stats if stats is not None else self.stats
+            if target_stats is not None:
+                primary_weapon.record(target_stats, snap['primary_weapon'])
         if self.stats is not None:
             self.stats["rapid_fire_active"] = bool(res.get("active"))
             self.stats["mod_writes"] = self.stats.get("mod_writes", 0) + res.get("writes", 0)

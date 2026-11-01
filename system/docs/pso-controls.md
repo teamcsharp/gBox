@@ -40,6 +40,43 @@ native actions on the emulated game thread. Online sessions are refused.
 
 ## Immediate session commands
 
+On the supported GameCube revision, **Equipment player** selects player 1 or player 2 for
+inventory, normal equip, stats, MAG changes and that player's timed equipment randomizer.
+The second actor must match the native player table, class, vtable, entity ID and entity table.
+Player-two writes additionally require this session's successful two-controller movement probe;
+an actor that is only structurally detected is shown as unverified and its controls stay disabled.
+Each mutating command pins its actor, and each randomizer keeps separate ownership and reset markers.
+Old generated-item IDs are never used to clean up a different recreated actor. Long-lived read-only
+readers can follow valid player recreation across area transitions.
+
+Shared code patches, survival, floor-item operations, enemy-drop policies and stack-equipping remain
+explicitly player-one/shared controls. Selecting player 2 disables those operations rather than
+redirecting them to player 1. Normal **Equip selected item** and inventory-row **Equip** use the
+selected actor's native equipment callback and verify the equipped item afterward.
+
+The **Autoplay speed** slider appears only for the dedicated two-player campaign session. Its choices
+are 1x, 2x, 4x, 8x and 10x, starting at 1x. The panel separates the requested multiplier from a fresh
+native clock measurement: requesting 10x can correctly show a measured 1x. The guarded sampler uses
+two native timebase readings with bounded timing uncertainty; hotkey delivery never proves throughput.
+`measurement_verified` means that a valid rate was measured, while `achieved_verified` additionally
+requires the full measured interval to fall within 5% of the requested rate. At the 1x baseline, or
+without a valid sample, the panel reports that no recent measurement is available.
+
+The existing five-second mode refresh carries the cached measurement without another native call.
+The panel deducts the entire request round trip from its remaining two-second validity, then labels
+an expired value as historical/stale. Pause, reset/restore epoch changes, unknown or changing speed,
+unverified player mapping, or a mismatched request suppress current measurement claims. Reconnect
+results with unknown transport age cannot revive a measurement. These paths have capability and
+caption regression tests; they are not evidence that this session achieved any particular speed.
+
+The eight-second admission deadline remains; an already-started
+speed command has a 45-second server response window, a 50-second desktop bridge timeout and a
+55-second UI timeout, without automatic retries. A full Windows speed decrease can take over twenty
+seconds because each hotkey and modifier must be released between steps. These selected-player paths have guarded-memory and UI regression
+tests; player-two live writes remain unavailable until the session probe establishes controller mapping.
+Player-two mutations and speed requests retain session receipts and audit records. They are excluded
+from the legacy gameplay-action replay journal, whose schema does not preserve their target or multiplier.
+
 GameCube survival, Legendary/Ultimate defaults, timed rare equipment and live MAG
 editing/feeding are described in [PSO survival and MAG controls](pso-survival-mag.md).
 These additions retain the same exact-revision and offline guards.

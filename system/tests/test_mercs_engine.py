@@ -196,6 +196,46 @@ def test_stop_cleanup_runs_even_if_releasing_input_fails(tmp_path):
     assert saved == [True]
 
 
+@pytest.mark.parametrize('rejected', [None, False, {'sent': 0}, {'sent': 1, 'stopped': 'focus'},
+    {'sent': 1, 'held': 'operator'}, {'sent': 1, 'skipped': ['r']}])
+def test_weapon_handover_releases_held_input_before_ack_and_skips_decisions(tmp_path, rejected):
+    from gbox.mercs.titles import re4_gc
+    m, clk, stats, sent = re4([]), Clock(), {}, []
+    driver = re4_gc.DRIVER()
+    original_snapshot = driver.snapshot
+    def snapshot(memory):
+        snap = original_snapshot(memory)
+        snap['player'].update(ptr=123, generation=4)
+        return snap
+    driver.snapshot = snapshot
+    pending = {'player':123, 'generation':4, 'until':float('inf')}
+    decisions = []
+    class Brain:
+        def tick(self, snap):
+            decisions.append(snap)
+            assert not stats.get('native_weapon_pending')
+            return {'hold': {'r'}}
+        def prompt_ok(self, *args): return True
+        def save(self): pass
+    attempts = []
+    def send(rows):
+        sent.extend(rows)
+        if any(row['down'] for row in rows):
+            stats['native_weapon_pending'] = pending
+        else:
+            assert not pending.get('released')
+            attempts.append(rows)
+            if rejected is not None and len(attempts) == 1:
+                return rejected
+        return {'sent': len(rows)}
+    engine.play_round({'driver':'gbox.mercs.titles.re4_gc'}, m, send,
+        lambda: bool(pending.get('released')), stats, driver=driver, brain=Brain(),
+        sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
+    assert sent == [{'key':'r','down':True}] + [{'key':'r','down':False}] * (1 if rejected is None else 2)
+    assert pending['released']
+    assert len(decisions) == 1
+
+
 def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):
     m = re4([])
     m.put(B.P_PLAYER, ">I", 0)                                         # no Leon: a black screen
@@ -234,3 +274,26 @@ def test_play_round_is_frame_synced_and_measures_its_reactions(tmp_path):
 
 def test_the_engine_is_not_ready_until_a_live_run_says_so():
     assert engine.READY is False                                         # the deployment waits for the live check
+
+
+@pytest.mark.parametrize('work', [.010, .080])
+def test_title_decision_budget_subtracts_work_and_does_not_catch_up(work, monkeypatch, tmp_path):
+    clk = Clock(); sleeps = []; driver = re4_gc.DRIVER()
+    monkeypatch.setattr(type(driver), 'frame', None)
+    driver.decision_interval_s = 1/30
+    monkeypatch.setattr(engine.time, 'perf_counter', clk)
+    class Brain:
+        def tick(self, snap):
+            clk.t += work
+            return {'hold': ()}
+        def prompt_ok(self, *args): return True
+        def save(self): pass
+    def sleep(dt):
+        sleeps.append(dt); clk.sleep(dt)
+    stats = {}
+    engine.play_round({'driver':'gbox.mercs.titles.re4_gc'}, re4([]), lambda rows: None,
+                      lambda: len(sleeps) >= 50, stats, driver=driver, brain=Brain(),
+                      sleep=sleep, clock=clk, learn_dir=tmp_path)
+    assert sleeps == pytest.approx([max(.001, 1/30-work)]*50)
+    assert stats['decision_work_p95_ms'] == pytest.approx(work*1000)
+    assert stats['decision_hz'] <= 31

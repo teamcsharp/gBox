@@ -1015,6 +1015,8 @@ window.taskVizCreate = canvas => {
 </script>
 </head>
 <body>
+<button id="ssh-access-button" type="button" aria-label="SSH controls on this PC"></button>
+<div id="ssh-access-popover" role="dialog" aria-label="SSH access to this PC" hidden></div>
 <div id="titlebar">
   <img src="../../assets/brand/gbox-logo.svg" alt=""><span class="ttl">gBox</span><button id="tb-file" title="File">File ▾</button>
   <button id="connection-switch" type="button" title="Choose this PC or the remote library; games keep their own connection">This PC</button>
@@ -1202,6 +1204,7 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div id="windows-ssh" class="card" style="margin-top:20px"></div>
       <div id="ollama-assist" class="card" style="margin-top:20px"></div>
       <div id="gameplay-memory" class="card" style="margin-top:20px"></div>
       <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
@@ -1210,6 +1213,7 @@ window.taskVizCreate = canvas => {
   </main>
 </div>
 <script src="floating.js"></script>
+<script src="windows-ssh-ui.js"></script>
 <script src="gameplay-memory.js"></script>
 <script src="inbox-view.js"></script>
 <script src="player-damage-view.js"></script>
@@ -1287,6 +1291,7 @@ window.GBOX_STREAM_CAPTURE_FRAME = el => {
   return gbox.streamPoster({x:r.left,y:r.top,width:r.width,height:r.height});
 };
 window.GBOX_STREAM_FETCH_HEALTH = async src => {
+  if (gbox.streamHealth) return gbox.streamHealth(src);
   const sid = /\/api\/sessions\/([^/?#]+)\/mjpeg/.exec(src)?.[1];
   if (!sid) throw Error('Unknown stream session');
   const r = await gbox.api('/api/sessions/' + encodeURIComponent(decodeURIComponent(sid)) + '/stream/health');
@@ -1297,7 +1302,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   body.gbox-compact #taskpanel { top:36px; right:8px; width:calc(100vw - 16px); height:calc(100vh - 44px); max-height:none; }
   body.gbox-compact #taskpanel .th { flex-wrap:wrap; padding:6px; }
   body.gbox-compact #reqform { position:fixed; inset:36px 8px 8px; z-index:80; overflow:auto; background:var(--bg); }
@@ -2698,6 +2703,9 @@ function loadPlay() {
 }
 
 // settings
+const windowsSshPanel = GBoxWindowsSsh.mount($("#windows-ssh"),gbox,{button:$("#ssh-access-button"),popup:$("#ssh-access-popover"),
+  restart:()=>GBoxWindowsSsh.restartGuidance(gbox)});
+document.querySelector('aside button[data-s="settings"]').addEventListener('click',()=>windowsSshPanel.refresh());
 const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API token (only if the share/SSH below are unreachable)", "password"],
   ["sshHost", "SSH host for Spark management (alias from ~/.ssh/config)"], ["repoRemote", "Repo path on the Spark"],
   ["repoShare", "Spark repo over SMB (optional, used to read the token)"], ["repoLocal", "This PC's gBox checkout (runs the Windows worker)"],
@@ -3702,7 +3710,7 @@ function gameOutputPlace(){
 }
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = ".piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_HOLES = "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), .piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
 const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, #pad-takeover, [role=dialog], [role=menu], [aria-modal=true]";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
@@ -3728,7 +3736,15 @@ async function embedTick() {
     // Remote PiP keeps its picture while the game restarts. Its continuity poll
     // reconnects only this game's replacement, without changing window bounds.
     // ...the PiP of this PC's own MercMode run waits for its next title instead (mercPipHold: a cold title switch)
-    if (COMPACT.on && COMPACT.local && !mine&&r.ok&&!(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
+    // A selected instance stays in PiP during its worker/session replacement.
+    // Restoring here also overwrites the saved compact intent before relaunch.
+    if (COMPACT.on && COMPACT.local && !mine && r.ok && !pipSelection.preference?.pinned
+        && !(typeof mercPipHold === 'function' && mercPipHold(COMPACT.sid))) await compactRestore();
+    // Saved PiP restoration owns the next selection during a worker gap. An
+    // automatic full-app show here would look like operator navigation to the
+    // checkpoint observer and cancel that intent as soon as the new game starts.
+    if (!COMPACT.on && pipSelection.preference?.pinned && typeof clientRefresh !== 'undefined'
+        && clientRefresh.pending()?.compact) return;
     if (COMPACT.on && !COMPACT.local) {
       if (GPU_GAME.pid) await gpuGameDispose();
       pipHandle(null); EMB.rect = null; EMB.vis = false;
@@ -3785,7 +3801,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#compact-controls.shown, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), #compact-controls.shown, .merc-weapon-menu, .flash-shortcut-menu, .ring-kind-menu, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -3989,7 +4005,7 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-primary-weapon aria-label="Choose primary weapon"></button><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-grenade-ring aria-label="Grenade ring" title="Grenade ring: native blasts around the player. Right-click, or the type button beside it, to choose the grenade."><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button><button type="button" data-grenade-ring-kind class="ring-kind" title="Choose the grenade type for the ring">Flash</button><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
       controls.querySelector('[data-full]').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
       // the flawed-moment button (operator 2026-10-28: "when i click the icon, i basically want to tell it that the way it's
       // handling the situation is flawed and to place a report for it. Sometimes they are running in a corner. Sometimes
@@ -4004,21 +4020,26 @@ const compactController = GBoxCompactGame.create({
           gbox.api(`/api/sessions/${at}/directive`, { command: 'explore' })]);
         toast(note?.ok ? `Report filed with this moment${cmd?.ok ? '; the bot is changing course' : ''}.` : `Report not filed: ${note?.error || 'unknown error'}`);
       };
-      // the flashbang (operator 2026-10-29 #5972: "Emergency flashbang: detonate a flash at the player's position NOW" -
-      // rapid-clickable, no cooldown, every click detonates another flash at once): the flashbang command (gbox.mercs.directives)
-      controls.querySelector('[data-flash]').onclick = async () => {
-        const sid = COMPACT.sid;
-        if (!sid) { toast('No game in the PiP.'); return; }
-        controls.interventions ||= GBoxStreamInterventions.create({api:async (path,body) => {
-          const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
-        }, notify:message=>toast(message)});
-        try { await controls.interventions.flash(sid); }
-        catch(error) { toast(`Flashbang unavailable: ${error.message}`); }
-      };
+      // Direct per-tap native actions; the game is the feedback, never a toast.
+      controls.interventions = GBoxStreamInterventions.create({api:async (path,body) => {
+        const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
+      }, notify:(text,row)=>(row.op==='equip_primary'?controls.weaponControl:row.op==='grenade_ring'?controls.ringControl:controls.flashControl)?.receipt(text,row)});
+      controls.flashControl=GBoxStreamInterventions.bindFlash(controls.querySelector('[data-flash]'),{
+        flash:controls.interventions.flash,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on
+      });
+      controls.weaponControl=GBoxStreamInterventions.bindWeapon(controls.querySelector('[data-primary-weapon]'),{
+        api:compactApi,equipPrimary:controls.interventions.equipPrimary,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on,
+        onOpen:open=>{compactHover(open);embedSoon();}
+      });
+      // The grenade ring (operator 2026-10-31) sits beside the flashbang, with its own small type chooser.
+      controls.ringControl=GBoxStreamInterventions.bindRing(controls.querySelector('[data-grenade-ring]'),{
+        api:compactApi,ring:controls.interventions.grenadeRing,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on,
+        kindButton:controls.querySelector('[data-grenade-ring-kind]')
+      });
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
-    if (controls) controls.querySelector('.compact-title').textContent = compactTitle;
+    if (controls) { controls.querySelector('.compact-title').textContent = compactTitle; controls.weaponControl?.update(); }
     compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
     if (state.on && !state.local) {
       if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; stream.dataset.streamFollow = 'game'; document.body.append(stream); }
@@ -4178,8 +4199,24 @@ async function mercPipPoll() {
   try {
     const host = await mercOwnHost();
     if (!host) return;
-    if (!current()) return; // explicit instance selection survives local dispatches and title rotation
+    if (revision !== pipSelection.revision) return;
     const d = host.dispatch;
+    // Every fresh explicit dispatch selects this instance persistently, even
+    // when there was no previous pin. Otherwise a worker restart restores the
+    // unrelated stream that preceded the local game and loses the local choice.
+    const run = host.current_run;
+    if (d?.id !== MERC_PIP.handled && d?.id !== MERC_PIP.closed && pipSelection.canDispatch(d)
+        && run?.phase === 'playing' && run.session_id && !run.handover) {
+      if (await pipSelection.select(run.session_id, () => true, {dispatch:d})) {
+        Object.assign(MERC_PIP, { handled:d.id, dispatch:d.id, last:run.session_id, away:false, lostAt:0 });
+        mercPipSave();
+      }
+      return;
+    }
+    if (pipSelection.preference?.pinned) {
+      return;
+    }
+    if (!current()) return;
     if (d?.id && d.id !== MERC_PIP.dispatch) { MERC_PIP.dispatch = d.id; MERC_PIP.away = false; }   // a new dispatch: asked again
     if (!host.current_run) MERC_PIP.away = false;                // the operator's choice lasts while this PC's MercMode runs
     const shown = COMPACT.on ? COMPACT.sid : null;
@@ -4265,12 +4302,15 @@ async function restoreClientView() {
   // a saved game whose PC is offline (#2870; the guest knows from the rows, viz/session-refresh.js) is never reopened or
   // retried every 2 s (operator 2026-10-26: after every reload the app went back into i9-NUC's dead Mercenaries 3D
   // session); the view starts fresh and the reconnect flow shows the MercMode game instead
-  if (restored?.offline?.length) { clientRefresh.done(); toast(`The saved game runs on a PC that is offline (${restored.offline.join(', ')}): its view was not reopened.`, 8000); return; }
+  // An explicitly selected instance may be between worker generations during
+  // recovery. Keep its saved PiP intent until the replacement session appears.
+  const pinnedPip = value.compact && pipSelection.preference?.pinned;
+  if (restored?.offline?.length && !pinnedPip) { clientRefresh.done(); toast(`The saved game runs on a PC that is offline (${restored.offline.join(', ')}): its view was not reopened.`, 8000); return; }
   if (value.compact) {
     try { await compactController.enter({ ...value, preserveGuest: true, restoreNavigation: navigation }); }
     catch (error) {
       if (navigation !== clientViewNavigation) { clientRefresh.done(); return; }
-      if (error.offline) { clientRefresh.done(); toast(error.message, 8000); return; }   // an offline PC: no retry loop
+      if (error.offline && !pinnedPip) { clientRefresh.done(); toast(error.message, 8000); return; }   // an unselected offline PC: no retry loop
       // Keep the current window and any held picture during the replacement gap.
       // The retry retains the exact saved selection; it never chooses a newer game.
       if (!restoreClientView.retryAt) toast(error.message + ' Reconnecting your saved view automatically.', 10000);
@@ -4354,7 +4394,7 @@ function padTakeoverPipRender() {
 }
 setInterval(padTakeoverPipRender, 250);
 function compactHover(show) {
-  show = show || compactCoach.pinned();
+  show = show || compactCoach.pinned() || !!document.querySelector('.merc-weapon-menu');
   clearTimeout(compactHoverTimer);
   const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
@@ -4363,7 +4403,7 @@ gbox.onCompactView?.(value => compactController.changed(value));
 // only the picture itself (the stream, the embedded game, the page behind them) leaves the PiP on a double click - never a
 // panel, a menu or a pop-up inside it (operator 2026-10-28: "If I double click or triple click inside of a panel or a pop up
 // or a menu inside of the picture in picture mode, do not exit picture in picture mode")
-const COMPACT_PANELS = '#pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
+const COMPACT_PANELS = '#ssh-access-button, #ssh-access-popover, #pipmenu, #compact-media, #compact-controls, #bot-logic-panel, #bot-logic-tab, .coach-menu, '
   + '#taskpanel, #reqform, #task-evidence, #taskviz, #tkv-media, #rebuild-panel, #pad-takeover, #reconnect, #compact-transition, [role=dialog], [role=menu], .re5-modifiers, .re6-modifiers';
 addEventListener('dblclick', event => { if (COMPACT.on && !event.target.closest?.(COMPACT_PANELS) && !GBoxCompactCoach.isCoachTarget(event.target)) { event.preventDefault(); event.stopPropagation(); compactRestore().catch(error => toast(error.message)); } }, true);
 addEventListener('pointermove', event => { if (COMPACT.on) compactHover(event.clientY < 32); }, { passive:true });
@@ -4579,7 +4619,7 @@ async function pipMercMode(m, opening, open = false) {
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
-  if (!COMPACT.on || event.target.closest?.('#pipmenu')) return;
+  if (!COMPACT.on || event.target.closest?.('#pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;
   event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
 }, true);
 addEventListener('pagehide', closePipMenu);

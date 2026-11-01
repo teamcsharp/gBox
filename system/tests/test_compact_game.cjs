@@ -96,6 +96,7 @@ function embedding({remote=false,ok=true,ended=false,offline=false,pip=true,dock
   const node={classList:{contains:()=>false},hidden:true};
   const wv={dataset:{ready:'false'},executeJavaScript:async code=>{seen.shown.push(code);},getBoundingClientRect:()=>({})};
   const ctx=vm.createContext({nativeSessionLease:null,LIVE_SESSIONS:{peek:()=>({ok,data:sessions})},S:{workerName:'PC'},EMB:emb,COMPACT:compact,
+    pipSelection:{preference:null},clientRefresh:{pending:()=>null},
     $:()=>node,document:{querySelector:selector=>selector==='section.on'?{id:'play'}:selector==='#wv'?wv:null},
     GPU_GAME:{pid:null},gpuGameDispose:async()=>{},pipHandle(){},gbox:{embedSync:async value=>seen.syncs.push(value)},
     compactRestore:async()=>{seen.restores++;compact.on=false;},VIEW:{mode:'compact'},FLOW:{on:false},EYE:{on:false},
@@ -285,8 +286,8 @@ test('picture-in-picture never opens a game whose PC is offline, and never moves
   await assert.rejects(compactController.enter({sid:'nuc-dead'}),/runs on a PC that is offline; it was not opened\. Your view was not changed\./);
   assert.deepEqual(shown,[],'the Sessions view is not moved to it'); assert.equal(compactController.state.on,false);
   // a saved view of such a game is dropped instead of retried every 2 s (the guest reports it offline), and the PiP error carries the offline mark
-  assert.match(html,/if \(restored\?\.offline\?\.length\) \{ clientRefresh\.done\(\); toast\(/);
-  assert.match(html,/if \(error\.offline\) \{ clientRefresh\.done\(\); toast\(error\.message, 8000\); return; \}/);
+  assert.match(html,/if \(restored\?\.offline\?\.length && !pinnedPip\) \{ clientRefresh\.done\(\); toast\(/);
+  assert.match(html,/if \(error\.offline && !pinnedPip\) \{ clientRefresh\.done\(\); toast\(error\.message, 8000\); return; \}/);
   assert.match(html,/throw Object\.assign\(Error\(`\$\{sessionTitle\(session\) \|\| 'This game'\} runs on a PC that is offline/);
 });
 

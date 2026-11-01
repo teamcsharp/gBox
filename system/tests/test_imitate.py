@@ -298,8 +298,11 @@ def test_screensaver_replay_goes_on_in_your_style_and_reports_back(ap, monkeypat
         pad_takeover.forget("s1")
 
 
-def test_a_mouse_move_hands_the_screensaver_game_over_and_autoplay_plays_on(ap, monkeypatch):
+@pytest.mark.parametrize('mercmode', [False, True])
+def test_mouse_handover_preserves_ongoing_mercmode_and_temporary_pad_control(ap, monkeypatch, mercmode):
     t = ap.tools
+    if mercmode:
+        t.SESSIONS['s1'][1]['launch'] = {'mercmode': {'random_stages': True}}
     posts = []
     monkeypatch.setattr(t.httpx, "post", lambda url, **k: posts.append((url.rsplit("/", 1)[-1], k["json"])))
     monkeypatch.setattr(t, "LEARNED", {})
@@ -321,16 +324,25 @@ def test_a_mouse_move_hands_the_screensaver_game_over_and_autoplay_plays_on(ap, 
     t.autoplay(t.AutoplayIn(session_id="s1", op="start", mode="replay", screensaver=True), ap.ctx)
     run = t.AUTOPLAY["s1"]
     for _ in range(1500):
-        if run.get("handed_over") and run["mission"].startswith("learned"):
+        if (mercmode or run.get("handed_over")) and run["mission"].startswith("learned"):
             break
         stop.wait(0.01)
-    assert run.get("handed_over") and not run.get("took_over")
+    assert bool(run.get("handed_over")) is not mercmode and not run.get("took_over")
     assert run["mission"].startswith("learned") and run["thread"].is_alive()   # it plays on, in your style
-    assert ("yield", {"session_id": "s1", "reason": "mouse"}) in posts
+    assert (("yield", {"session_id": "s1", "reason": "mouse"}) in posts) is not mercmode
     try:
         assert pad_takeover.local("s1", {"a"})                 # then the pad: autoplay lets go while they play...
         stop.wait(0.05)
         assert run["thread"].is_alive() and not run.get("took_over") and pad_takeover.active("s1")
+        n = len(ap.sent)
+        pad_takeover.local('s1', set())
+        pad_takeover.LEASES['s1'].clock = lambda: t.time.time() + 60
+        for _ in range(500):
+            if len(ap.sent) > n:
+                break
+            stop.wait(0.01)
+        assert not pad_takeover.active('s1') and len(ap.sent) > n
+        assert run['thread'].is_alive() and not run.get('took_over')
         t.autoplay(t.AutoplayIn(session_id="s1", op="stop"), ap.ctx)    # ...and only Stop ends it
         run["thread"].join(5)
         assert not run["thread"].is_alive() and not pad_takeover.active("s1")

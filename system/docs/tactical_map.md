@@ -275,3 +275,26 @@ The reviewer also retains equipped-item intervals and their observed score, kill
 HP deltas. Counter changes during an interval are observations, not weapon kill
 attribution; gaps over two seconds are excluded. The sidebar exposes weapon sections,
 operator goals, obstruction evidence and the source-attributed guide profile.
+# Map identity audit, 2026-10-30
+
+The live feed now clears the previous floor while a new room has no navmesh,
+and clears the renderer's old layout immediately on a stage change. Delayed
+responses for a predecessor cannot repaint the current room. Mesh cache keys
+include triangle connectivity as well as vertices and triangle count.
+
+Online source checks distinguish reference illustrations from calibrated
+geometry. None of these sources supplies a transform into this build's RAM
+coordinates; they must not be stretched behind live points and labeled accurate.
+
+| Reference | Confirmed constraint for map work |
+| --- | --- |
+| [Capcom RE6 stage descriptions](https://news.capcomusa.com/lets/browse/resident-evil-6-pre-order-bonus-mercenaries-maps-detailed) | Rail Yard has multiple levels; High Seas Fortress spans deck and hangars; The Catacombs includes traps. Do not substitute one rail stage for another. |
+| [Piggyback RE5 sample map](https://www.piggyback.com/us/wp-content/uploads/sites/6/2020/04/RE5_E_SamplePages.pdf) | Public Assembly illustration is a campaign chapter reference, not a verified Mercenaries spawn/item overlay. |
+| [Nintendo Merc3D mission rules](https://www.guiasnintendo.com/0a_NINTENDO_3DS/resident_evil_mercenaries/resident_evil_mercenaries_sp/explicacion.html) | Mission objectives and rank rules differ; Level 1 uses time remaining and EX has different thresholds. |
+| [Nintendo Level 5 guide](https://www.guiasnintendo.com/0a_NINTENDO_3DS/resident_evil_mercenaries/resident_evil_mercenaries_sp/mision5.html) | Castle/night, Mines, Ship Deck, Prison and Deserted Island are distinct mission environments. Mines has confined tunnels; Prison has narrow rooms and passages. |
+| [Nintendo EX guide](https://www.guiasnintendo.com/0a_NINTENDO_3DS/resident_evil_mercenaries/resident_evil_mercenaries_sp/misionex.html) | Revisited environments can move their items. A stage name alone cannot identify a bonus layout. |
+
+Remaining validation: align each native room/mission identity to its own
+geometry, compare at least three non-collinear native landmarks plus floor
+height, and record residual error. No claim that every title's level layout
+has been calibrated follows from the cache/handover fix.

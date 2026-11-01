@@ -82,10 +82,37 @@ explosion path ran, not that every enemy in the level was stunned.
 **Current resource limitation:** the player's inventory must already carry flash
 ID `0x115`, proving its resources are loaded. Unsupported resources return
 unavailable; preloading arbitrary weapons/resources remains separate work.
-RE5, Merc3D, RE4 VR, all-QTE completion and five-second AI diversion are not
-implemented by this controller. Do not close their tickets from this evidence.
+Merc3D, RE4 VR, all-QTE completion and five-second AI diversion are not
+implemented by this controller. RE5 now has its own verified native controller;
+see [RE5 native flash](re5-native-flash.md). Do not close their tickets from this evidence.
 
 ## Interface contract
+
+### Flash button recovery and shortcut (2026-10-30)
+
+The PiP and shared viewer button dispatch every tap independently, without
+confirmation or result toasts. Native receipts remain available through the
+interventions API/MCP; a failure is retained on the button's status/tooltip.
+F is the default shortcut while the stream control is active. Right-click the
+flash icon to change it, unmap it, or restore F. The mapping persists locally;
+typing in a text field and key autorepeat do not trigger flashes. The shortcut
+consumes its key down/up so it does not also become game input.
+
+Historical receipts showed negative explosion returns and a publication
+readback race permanently disabling later clicks. Both RE5/RE6 now allow a
+new request after validating a completed mailbox, its original owner/generation
+and restored dispatch table. Pending/executing calls are not cleared or replayed;
+their dispatcher remains attached until the original call finishes. A native
+1-to-2/3 transition is accepted as publication acknowledgment when the adapter
+reports its equality-readback mismatch. Ordinary memory-write guards remain.
+An uncertain weapon transaction still requires separate recovery.
+
+Quick-menu actions already dispatch directly to the directive endpoint on
+selection. The settings cog is separate; its mutable job polling variable is
+fixed so queued setting jobs can finish. No direct action opens the cog panel.
+
+This does not remove the RE6 loaded-resource requirement, add Merc3D/RE4 VR
+native flash support, or prove an effect during menus, death or paused games.
 
 - `POST /api/sessions/{sid}/interventions` with
   `{"op":"flash_now","request_id":"a fresh UUID per click"}`.
@@ -115,9 +142,22 @@ implemented by this controller. Do not close their tickets from this evidence.
 
 ## User requirements still being implemented
 
-RE5 native instant flash; any-weapon native resource construction/attachment with
+Any-weapon native resource construction/attachment with
 the two-minute primary lock; five-second clicked-point enemy diversion with
 automatic return to player pursuit; native QTE completion beyond the existing
 grab handlers; door/fence navigation; sustained stream/input stability validation.
 Tickets 5972, 6102–6104, 6106–6107 remain open until their full live acceptance.
 6105 is the already-completed run analysis and must not be reopened.
+
+## Later production and LAN validation
+
+After PR1594/1595, 20 production API clicks confirmed 20 RE6 effects in1391.1ms,
+with native calls20.2-146.9ms. Receipt on Spark:
+`production-flash-burst-1793338628335373721.json`.
+
+The subsequent ten-minute LAN probe received31043 frames (26205 changed),
+one connection, zero stream errors and798 successful controls with zero errors.
+Maximum frame gap953ms; control p95 94ms,max3422ms. A90-second sample during
+20 actual RE6 effects also had zero stream/control errors (4978 frames,129 controls).
+These supersede the earlier timeout sample but do not prove actual desktop UI
+acceptance. See [current checkpoint](../MERCMODE-HANDOFF-2026-10-30.md).

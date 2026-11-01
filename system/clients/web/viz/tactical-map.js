@@ -441,10 +441,16 @@
         if (stopped) return;
         if (out && out.seq != null) {
           if (out.same) { if (frame) { frame = { ...frame, age_s: out.age_s, live: out.live }; onStatus && onStatus(frame); } }
-          else { frame = out; seq = out.seq; onFrame && onFrame(frame); }
+          else {
+            if (!out.stage || out.stage !== frame?.stage) {
+              stageKey = null; stageFailed = 0;
+              onStage && onStage(null);
+            }
+            frame = out; seq = out.seq; onFrame && onFrame(frame);
+          }
           if (frame && frame.stage && (frame.stage !== stageKey || !stages.has(frame.stage))) loadStage(frame.stage);
           wait = visible() ? fast : slow;
-        } else if (frame) { frame = null; seq = null; onFrame && onFrame(null); }   // the frames are gone (no round for a while)
+        } else if (frame) { frame = null; seq = null; stageKey = null; onStage && onStage(null); onFrame && onFrame(null); }
       } catch (e) {
         fails++;
         wait = Math.min(slow * 4, fast * 2 ** Math.min(fails, 8));

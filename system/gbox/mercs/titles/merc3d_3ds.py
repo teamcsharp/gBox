@@ -45,9 +45,11 @@ FLOW_STATES, FLOW_COUNT, FLOW_CUR, FLOW_PREV = 0x18, 0x1C, 0x20, 0x24
 # a unit-list node: {vtable 0x899630, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27 on the i9: the
 # player's node 0x8567154 held uPl< Chris > at +0x10; +0x14 is 0, so 0x14 left the bot with "no player")
 SP_FIRST, NODE_NEXT, NODE_OWNER = 0x20, 0x8, 0x10
-# sEnemy +0x1C: a unit list (first node +0x24, the sentinel +0x20 that the last node's link points back to); a node is
-# {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 the unit} (live 2026-10-27, mission 1-3)
-SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x24, 0x8995B8, 0x10, 64
+# sEnemy +0x1C: a unit list. Traversal by node+0x8 starts at manager+0x28;
+# +0x24 is its tail, whose +0x8 already points to the +0x20 sentinel. Starting
+# there hid nine of ten enemies in the i9's mission 0x0101 (live 2026-10-30).
+# A node is {vtable 0x8995B8, +0x4 prev, +0x8 next, +0xC vtable, +0x10 unit}.
+SE_SENTINEL, SE_FIRST, EN_NODE_VT, EN_NODE_UNIT, MAX_ENEMIES = 0x20, 0x28, 0x8995B8, 0x10, 64
 P_POS, P_ROT, P_VIT, P_VIT_MAX = 0x40, 0x50, 0xCC4, 0xCCC
 M_MISSION, M_CHARA, M_ELAPSED, M_LEFT = 0x18, 0x1C, 0x64, 0x68
 M_SCORE, M_COMBO_SCORE, M_COMBO, M_COMBO_T = 0x7C, 0x80, 0x88, 0x94
@@ -95,7 +97,7 @@ RELOAD_KEEP = ("PICK",)
 
 # In order (operator 2026-10-28: "I need mercenaries 3D going from level to level to level to level until it completes the
 # entire game. And then it needs to complete the entire game again. And then ... get five stars or S rank and go for the
-# high score on every single level"): each menu visit takes the next mission - LV.1's tabs, then LV.2's ... LV.5's -
+# high score on every single level"): each completed mission advances through LV.1's tabs, then LV.2's ... LV.5's -
 # and wraps round to play the whole game again; the cursor is saved (PROGRESS_FILE), so a relaunch carries on where it
 # was. A level not open yet keeps him on the last open one until it opens. PROGRESSION False: the old random draw.
 PROGRESSION = True
@@ -135,11 +137,35 @@ class _Pick:
             pass
 
     def reset(self) -> None:
-        if PROGRESSION and getattr(self, "level", None) is not None and getattr(self, "tab", None) is not None:
-            self._advance()                                  # a round started from this visit's pick: on to the next
         self.level = self.tab = None
         self.mission_done = self.chara_done = False
         self.main_key, self.main_presses, self.main_confirmations = None, 0, 0
+
+    def began(self, mission_id) -> None:
+        """Remember the selected mission only after the native game actually starts it."""
+        if getattr(self, 'active', None) is not None:
+            return
+        level, tab = self.level, self.tab
+        tabs = getattr(self, 'tabs_seen', 0)
+        if type(level) is int and type(tab) is int and type(mission_id) is int \
+                and mission_id == (level << 8 | tab) and 0 <= tab < tabs:
+            self.active = (level, tab, tabs)
+            if PROGRESSION:
+                # A locked target may have selected an earlier open level.
+                # Persist the actual mission so failure/relaunch retries it.
+                self.cursor[:2] = [level, tab]
+                self._save()
+        self.reset()
+
+    def ended(self, mission_id, completed: bool) -> None:
+        active = getattr(self, 'active', None)
+        self.active = None
+        if PROGRESSION and completed and active is not None \
+                and type(mission_id) is int and mission_id == (active[0] << 8 | active[1]):
+            self.cursor[:2] = list(active[:2])
+            self.tabs_seen = active[2]
+            self._advance()
+        self.reset()
 
     def _advance(self) -> None:
         level, tab, passes = self.cursor
@@ -349,13 +375,23 @@ def screen(m, merc=None, now: float | None = None) -> dict:
         where = "results"
     elif state in STAGE_STATES:
         where = STAGE_STATES[state]
-        if where == "playing" and (PICK.mission_done or PICK.chara_done):
-            PICK.reset()                                # the round is up: the next selects draw anew
         if where == "playing":
             p = player_unit(m)
             try:
                 if p and struct.unpack("<f", m.rd(p + P_VIT, 4))[0] <= 0:
                     where = "dead"
+            except (ValueError, OSError, RuntimeError, struct.error):
+                pass
+        if where in ('playing', 'dead', 'results'):
+            try:
+                sm = _u32(m, S_MISSION)
+                mid = _u32(m, sm + M_MISSION) if ptr_ok(sm) else None
+                if where == 'playing':
+                    PICK.began(mid)
+                elif where == 'dead' or state == 'cMerceStageFailedState':
+                    PICK.ended(mid, False)
+                elif state == 'cMerceStageEndState':
+                    PICK.ended(mid, True)
             except (ValueError, OSError, RuntimeError, struct.error):
                 pass
     else:
@@ -383,6 +419,7 @@ def _select(m, area: int, where: str) -> dict:
             return out
         out.update(level=level, open_levels=open_, levels=levels)
         if 0 < tabs <= 10 and 0 <= tab < tabs:          # a level is open: its missions as tabs
+            PICK.level = level                       # also when boot/resume begins inside this level's tabs
             out.update(inside=True, cursor=tab, target=PICK.tab_for(tabs), tabs=tabs)
         else:
             out.update(inside=False, cursor=level, target=PICK.level_for(open_))
@@ -492,7 +529,7 @@ class Merc3D(Driver):
             return False
 
     round_counters = ("confirmed_shots", "point_blank_shots", "close_shots", "long_shots", "sky_corrections", "kites",
-                      "los_blocks", "retargets")
+                      "los_blocks", "retargets", "trigger_presses", "trigger_releases", "wall_escapes", "ineffective_bursts")
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         from .merc3d_bot import Bot

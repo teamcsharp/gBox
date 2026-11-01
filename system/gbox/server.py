@@ -201,6 +201,9 @@ def create_app(config: Config) -> FastAPI:
     from .mercs import strategy as mercs_strategy
     mercs_strategy.install(app, store, config, auth)
 
+    from . import merc_live_controls
+    merc_live_controls.install(app, config)
+
     # --- shell ---
     @app.get("/")
     def index():
@@ -1326,7 +1329,9 @@ def create_app(config: Config) -> FastAPI:
         launch_mod = "" if original else (sess.get("launch_mod") or sess.get("staged_mod") or sess.get("mod") or "")
         build = "" if original else BM.session_build(sess)
         exclusive = _exclusive_rpcs3_restart(sess, old_w, tw)
-        card = holds_cloud_card(game, sess)
+        launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
+        buddy = bool(launched.get('pso_coop') or (sess.get('detail') or {}).get('pso_coop'))
+        card = holds_cloud_card(game, sess) or buddy
         beside = sess.get("adapter") not in RELAUNCH_BESIDE_UNSAFE and save_moment and not exclusive and not card
         what = f"{game['title']}" + (f" ({build})" if build else " (original game)" if original else "")
         notes, stopped_first = [], False
@@ -1335,13 +1340,17 @@ def create_app(config: Config) -> FastAPI:
             # frozen emulator fights it for the GPU and the window: close it now, then start fresh.
             say(10, "The game is not responding: closing it now, then starting it fresh")
             try:
-                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
-                         should_stop=should_stop)
+                closed = _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
+                                  should_stop=should_stop)
+                if buddy and (not isinstance(closed, dict) or closed.get('ended') is not True or closed.get('session_id') != sid):
+                    raise HTTPException(409, 'PSO buddy card closure is unconfirmed for this exact session')
                 stopped_first = True
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
                 notes.append(f"The frozen copy did not confirm it closed ({e.detail}); it is replaced anyway.")
+                if buddy:
+                    raise HTTPException(409, 'PSO buddy card closure is unconfirmed; no second copy was launched')
         elif save_moment:
             try:                                          # last played: the moment before the restart (best effort)
                 say(10, "Saving your current moment first (Reload with your last moment can bring it back)")
@@ -1357,12 +1366,16 @@ def create_app(config: Config) -> FastAPI:
         if card and not stopped_first:
             say(15, "Closing the game so its memory card is saved and free for the fresh copy")
             try:
-                _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
-                         should_stop=should_stop)
+                closed = _run_job("session_op", {"session_id": sid, "op": "stop_game", "args": {}}, actor, worker=old_w, wait=60,
+                                  should_stop=should_stop)
+                if buddy and (not isinstance(closed, dict) or closed.get('ended') is not True or closed.get('session_id') != sid):
+                    raise HTTPException(409, 'PSO buddy card closure is unconfirmed for this exact session')
                 stopped_first = True
             except HTTPException as e:
                 if str(e.detail).startswith("cancelled by the operator"):
                     raise
+                if buddy:
+                    raise HTTPException(409, 'PSO buddy card is still in use; confirm the previous session stopped before relaunch')
                 notes.append(f"The previous copy did not confirm it closed ({e.detail}); it is replaced anyway.")
         if exclusive:
             say(15, "Closing this RPCS3 session before starting it fresh")
@@ -1374,7 +1387,7 @@ def create_app(config: Config) -> FastAPI:
         # stays (Windows RPCS3: without it the copy reads the operator's controller and autoplay can't press; RE5 on
         # JAYBUILTFINALE 2026-10-22)
         launched = (store.get("job", sid.split("-", 1)[-1]) or {}).get("input") or {}
-        jump = {"jump": True} if _bot_demo(store, sid) or launched.get("jump") else {}
+        jump = {"jump": True} if not buddy and (_bot_demo(store, sid) or launched.get("jump")) else {}
         pad = {"pad": launched["pad"]} if launched.get("pad") else {}
         # MercMode's parked titles on that PC stay up through any relaunch: 2026-10-26 17:58 a frozen RE4's bot reset
         # (not beside, so no keep) closed every other game there, the warm RE5 included (exit via single_game, rc -9)
@@ -1383,7 +1396,8 @@ def create_app(config: Config) -> FastAPI:
                            if s != sid and (store.get("session", s) or {}).get("state") == "running")
         try:
             new = _run_job("launch_game", {"game": game, "mod": launch_mod, **({"keep_session": sid} if beside else {}),
-                                           **({"keep_sessions": warm_keep} if warm_keep else {}), **jump, **pad},
+                                           **({"keep_sessions": warm_keep} if warm_keep else {}), **jump, **pad,
+                                           **({'pso_coop': True} if buddy else {})},
                            actor, worker=tw["id"], wait=900, should_stop=should_stop,
                            progress=lambda pct, msg: say(20 + pct * .6, msg))
         except HTTPException as e:
@@ -4379,11 +4393,13 @@ def create_app(config: Config) -> FastAPI:
         # each pad event says who sent it (player / ui / autoplay / agent), from the authenticated actor - never what the
         # client wrote: the worker gives the pad to the operator only, never to an agent or a bridge pressing buttons in
         # the same session. The operator's own events also say whether they may take the pad from the session's bot for
-        # a moment (gbox/pad_takeover.py): not from automation, and only from a machine that is viewing this session.
+        # a moment (gbox/pad_takeover.py): not from automation. Operator 2026-10-29: from ANY gBox instance — the
+        # viewing check that used to gate this is gone (office: none, living room: partial); the operator picks up a
+        # controller wherever they are and the bot lets go.
         host = request.client.host if request.client else ""
         operator = padstate._source(actor, {}) in pad_takeover.OPERATOR_SOURCES
         keys = any(isinstance(e, dict) and "rpc" not in e and isinstance(e.get("key"), str) and e["key"] for e in ev.events)
-        claim = operator and keys and not _automated(actor, origin) and operator_guard.viewing(store, sid, host)
+        claim = operator and keys and not _automated(actor, origin)
         events = pad_takeover.stamp(ev.events, lambda e: padstate._source(actor, e), lease=claim, actor=actor,
                                     via=f"{origin.get('client') or 'app'}@{host}" if operator else "")
         if (store.get('session',sid) or {}).get('federation'):
@@ -5225,12 +5241,17 @@ def create_app(config: Config) -> FastAPI:
             store.audit(actor,'session.pso_face',sid,req.args['input'])
         rid, lv = new_id(), _live(sid)
         item = {"rpc": rid, "op": req.op, "args": req.args, "expires_at": time.time()+10.}
+        # A full rate sweep uses ninety native 0.1-step hotkeys. Windows also
+        # dwells before modifier releases: 10x -> 1x takes at least 21.6 seconds.
+        # Keep the existing admission expiry; only acknowledge this admitted
+        # speed change for longer. Never retry an unknown native outcome.
+        rpc_wait = 45 if req.op == 'pso_controls' and (req.args.get('input') or {}).get('op') == 'autoplay_speed' else 10
         with lv["cond"]:
             if req.op in ('pso_controls','memory_cards','pso_face'):
                 pso_rpc_pending[rid] = sid
             lv["input"].append(item)
             lv["cond"].notify_all()
-            if not lv["cond"].wait_for(lambda: rid in rpc_results, 10):
+            if not lv["cond"].wait_for(lambda: rid in rpc_results, rpc_wait):
                 if req.op in ('pso_controls','memory_cards','pso_face'):
                     pso_rpc_pending.pop(rid, None)
                     try: lv['input'].remove(item)

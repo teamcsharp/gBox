@@ -369,6 +369,7 @@ def prepare_mod(inp: PrepareModIn, ctx: Ctx):
 
 class LaunchIn(BaseModel):
     game: CatalogEntry
+    pso_coop: bool = False                  # dedicated persistent buddy card, two independent Dolphin pads
     debug: bool = False                    # prefer an emulator with a full CPU debugger (registers/breakpoints)
     mod: str = ""                          # launch a file mod built with file_mod (folder games, e.g. PS3)
     mod_title: str = ""                    # the operator's name for that build (labels only: launch bar, loader)
@@ -1022,14 +1023,25 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
             # package, folder or runtime isn't ready for an attempted boot.
             src = shadps4.boot_path(str(src))
             shadps4.executable(ctx.config)
+        if inp.pso_coop:
+            if inp.memory_cards or inp.jump or inp.capture_backend:
+                raise ValueError('PSO buddy launch uses its own card and cannot borrow a card, jump state or capture session')
+            from . import pso_coop_setup
+            keep = {inp.keep_session, *inp.keep_sessions}
+            if any(sid in keep and existing.get('game_id') == g.game_id and
+                   getattr(adapter, '_pso_coop_new_card', {}).get('isolated')
+                   for sid, (adapter, existing) in SESSIONS.items()):
+                raise ValueError('A buddy card cannot be opened by two running sessions')
+            diag['pso_coop'] = pso_coop_setup.prepare(ad, g.model_dump(), ctx, rom=src)
         diag["stage"] = "close the previous game"
         checkpoints = _close_previous_games(ctx, keep=[inp.keep_session, *inp.keep_sessions])
         lap("close_previous_s")
         from . import memory_card_sessions
         memory_card_sessions.recover_pending(ctx)
         ad.memory_card_rom=str(src)
-        memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
-                                      operator_cards=inp.memory_cards == "operator")
+        if not inp.pso_coop:
+            memory_card_sessions.checkout(f'{ctx.worker}-{ctx.job_id}',ad,g.model_dump(),ctx,
+                                          operator_cards=inp.memory_cards == "operator")
         if inp.jump and not inp.capture_backend:            # a demo: straight into gameplay (gbox.jumpstate)
             from . import jumpstate
             ad.demo = True                                  # unattended: no modal dialogs, no on-screen messages
@@ -1066,6 +1078,8 @@ def _launch_game(inp: LaunchIn, ctx: Ctx):
     if g.launch.get("kind") != "steam" and not isinstance(ad, adapters.RocketLauncherAdapter):
         gd["_rom_path"] = str(src)                     # for the inspector's ROM viewer
     SESSIONS[sid] = (ad, gd)
+    if inp.pso_coop:
+        detail['pso_coop'] = diag['pso_coop']
     try:                                               # unlock-on-load by held codes (#1986: Soul Calibur II)
         from . import game_unlocks
         held = game_unlocks.post_launch(sid, gd, _gcheat_hold)
@@ -2611,6 +2625,7 @@ class AutoplayIn(BaseModel):
                                            # to the start of a round in the background, then paused there: _prepare_round)
     selection: dict | None = None          # prepare: the MercMode DJ's pick for that round {title, mode, character, stage}
     mission: str = ""                      # mission name; empty = take over from wherever the player is right now
+    campaign: str = ""                     # pso-episodes-1-2: explicit experimental GameCube completion loop
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
@@ -2777,6 +2792,7 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
                            "continuous": bool(run and getattr(run.get('inp'), 'continuous', False)),
                            "recovery": run and run.get('recovery'),
                            "last": run and run.get("result"), "steps": run and len(run["driver"].trace),
+                           **({"campaign": run["live"]} if run and (run.get("live") or {}).get("campaign") else {}),
                            "reaped": [r for r in REAPED if r["session_id"] == inp.session_id][-3:],
                            **({"prepare": run["prepare"].snapshot()} if run and run.get("prepare") is not None else {})}}
     if inp.op != "start":
@@ -2792,6 +2808,8 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
             raise ValueError('Autoplay is stopping; wait for it to stop before starting it again.')
         # A repeated Start updates recovery intent without replacing this run's live mode/style with request defaults.
         active = run.get('inp')
+        if inp.campaign and inp.campaign != getattr(active, 'campaign', ''):
+            raise ValueError('Stop the current autoplay before selecting a different campaign')
         if active is None:
             active = run['inp'] = inp.model_copy(deep=True)
         active.continuous = inp.continuous
@@ -2804,6 +2822,22 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
     d.owns_keyboard = bool(inp.owns_keyboard)
     d.agent_use = bool(getattr(ctx, "agent_use", True))       # the next autoplay job after a relaunch keeps it
     ad, g = SESSIONS[inp.session_id]
+    if inp.campaign:
+        from . import pso_campaign
+        if inp.campaign not in (pso_campaign.CAMPAIGN, pso_campaign.COOP_CAMPAIGN):
+            raise ValueError("Unknown PSO campaign")
+        if inp.mode not in ("auto", "playbook") or inp.mission:
+            raise ValueError("PSO campaign requires auto/playbook mode and no scripted mission")
+        if not pso_campaign.matches(ad, g):
+            raise Unsupported("This campaign requires Phantasy Star Online Episode I & II on GameCube")
+        if inp.campaign == pso_campaign.COOP_CAMPAIGN and not getattr(ad, '_pso_coop_new_card', {}).get('isolated'):
+            raise ValueError('Launch PSO with pso_coop=true before starting the two-player campaign')
+        ready = pso_campaign.preflight(ad, d)    # exact disc and available route model before publishing a bot start
+        if inp.screensaver:
+            _front(ad)
+        elif d.demo:
+            _demo_front(ad)  # same idle-PC focus setup as other playbooks, before the campaign's early return
+        return {"result": _start_playbook(pso_campaign, inp, d, ad, time.time(), ctx, g, game_id) | {"planner": ready}}
     native_team_required = False
     if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3', '52d15709be0fda1a', '115f9cdbba115432'):
         from .mercs.teamplay import TeamStore
@@ -2914,7 +2948,12 @@ def _takeover(run, d, sid, since, pad_stops=True):
     from . import padstate
     run["screensaver"] = bool(getattr(d, "screensaver", None))
     cursor = None                                    # where the mouse rested when autoplay took the game, once per run:
-    if run["screensaver"] and not run.get("handed_over"):   # each phase's watch compares with it (a move between counts)
+    game = (SESSIONS.get(sid) or (None, {}))[1] or {}
+    mercmode = isinstance((game.get("launch") or {}).get("mercmode"), dict)
+    if run["screensaver"] and not mercmode and not run.get("handed_over"):
+        # MercMode is an ongoing session, even while the operator uses this PC.
+        # Its pad lease handles temporary gameplay intervention. Desktop mouse
+        # movement must not discard the scheduler's run or its round count.
         if "rest_cursor" not in run:
             run["rest_cursor"] = _cursor()
         cursor = run["rest_cursor"]
@@ -2947,8 +2986,8 @@ def _bot_lease(run, d, sid, since):
     moment ... then just put down a controller and give the gameplay back to the bot"): the operator's controller, on
     this PC or forwarded by their app from any PC, makes it let go at once and it takes the pad back takeover_idle_s
     (gbox.toml, 3 s) after their last input - never a stop, so F5 and MercMode carry on and Stop / F3 still stop it. A
-    human / co-op Mercenaries session's P1 belongs to the human (no takeover there). The screensaver's mouse hand-over
-    is watched as before."""
+    human / co-op Mercenaries session's P1 belongs to the human (no takeover there). Only ordinary idle-PC screensavers
+    watch for mouse hand-over; MercMode keeps its run while the operator works around it."""
     from . import pad_takeover
     cfg = getattr(run.get("ctx"), "config", None)
     pad_takeover.bind(sid, run, idle_s=getattr(cfg, "takeover_idle_s", None), data_dir=getattr(cfg, "data_dir", None),
@@ -3290,13 +3329,24 @@ def _start_playbook(pb, inp, d, ad, since, ctx=None, g=None, game_id=None) -> di
             if "style" in inspect.signature(pb.play).parameters and ctx is not None and game_id:
                 try:                                           # the operator's learned style does the fighting
                     from . import imitate
-                    _, model = _style_model(ctx, _recorded_play(ctx, game_id), ad, game_id, (g or {}).get("platform"))
+                    recordings = _recorded_play(ctx, game_id)
+                    if name in ("pso_campaign", "pso_coop"):
+                        recordings = [row for row in recordings if row.get("game_id") == game_id
+                                      and row.get("adapter") == ad.name == "dolphin"]
+                    own, model = _style_model(ctx, recordings, ad, game_id, (g or {}).get("platform"))
                     if model["total"] >= imitate.MIN_LEARN_BURSTS:
-                        kw["style"] = imitate.Style(model, knobs=inp.style)
+                        kw["style"] = imitate.Style(model | {"provenance": {
+                            "game_id": game_id, "adapter": ad.name,
+                            "run_ids": [row["id"] for row in own],
+                        }}, knobs=inp.style)
                 except Exception:                              # noqa: BLE001 - no recorded play: the playbook's own way
                     pass
             if "game" in inspect.signature(pb.play).parameters:
                 kw["game"] = dict(g or {})                     # its game and build (a playbook's own jump / menu state)
+            if "driver" in inspect.signature(pb.play).parameters:
+                kw["driver"] = d
+            if "players" in inspect.signature(pb.play).parameters and inp.campaign == 'pso-coop-episodes-1-2':
+                kw['players'] = 2
             if 'session_id' in inspect.signature(pb.play).parameters:
                 kw['session_id'] = sid
             if 'source_job_id' in inspect.signature(pb.play).parameters and ctx is not None:

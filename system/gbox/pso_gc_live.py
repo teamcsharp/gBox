@@ -2,11 +2,14 @@
 import math
 import hashlib
 import struct
+import threading
 import time
+from functools import wraps
 from .registry import Unsupported
 
 DOL_SHA256='1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a'
 PLAYER=0x8050EA10
+ENTITY_TABLE=0x8050D460
 PHASE=0x804FE120
 VT_UPDATE=0x804C3BC8
 ORIGINAL_UPDATE=0x801BB330
@@ -86,9 +89,33 @@ def dispatcher(survival=True,header=None,survival_address=None):
 CODE=dispatcher()
 FLUSH_CODE=bytes.fromhex('7c00186c7c0004ac7c001fac4c00012c4e800020')
 
+_dispatcher_locks_guard=threading.Lock()
+
+
+def dispatcher_lock(ad):
+    """All GC instances for one emulator share its native command queue."""
+    with _dispatcher_locks_guard:
+        lock=getattr(ad,'_pso_dispatcher_lock',None)
+        if lock is None:
+            lock=threading.RLock()
+            ad._pso_dispatcher_lock=lock
+        return lock
+
+
+def queue_serialized(fn):
+    @wraps(fn)
+    def run(self,*args,**kwargs):
+        with dispatcher_lock(self.ad):
+            return fn(self,*args,**kwargs)
+    return run
+
 
 class GC:
-    def __init__(self,ad):
+    def __init__(self,ad,player_index=0,*,pin_player=False):
+        if type(player_index) is not int or player_index not in (0,1):
+            raise ValueError('Choose player 1 or player 2')
+        self.ad,self.player_index,self._player_binding=ad,player_index,None
+        self.pin_player=pin_player
         self.read,self.write=ad.read_memory,ad.write_memory
         self.publish=getattr(getattr(ad,'dbg',None),'write',None) or self.write
 
@@ -98,7 +125,7 @@ class GC:
         if address&3 or not 0x80000000<=address<=0x81800000-size:raise RuntimeError('PSO pointer is outside MEM1')
         return address
 
-    def check(self,player=True):
+    def check(self,player=True,*,require_probe=True):
         if self.read(0x80000000,8)!=b'GPOE8P\0\x02':raise Unsupported('PSO GameCube controls require GPOE8P disc 0 revision 2 (3OE2)')
         for address,expected in GUARDS.items():
             if self.read(address,len(expected))!=expected:raise Unsupported(f'PSO GameCube executable fingerprint differs at {address:#x}')
@@ -106,12 +133,28 @@ class GC:
         if patch not in (bytes.fromhex('881d0000'),bytes.fromhex('38000005')):raise Unsupported('Unexpected GameCube equipment code')
         if self.u32(PHASE)!=0xE:raise Unsupported('GameCube native actions require an active offline free-play session')
         if not player:return
-        p=self.ptr(self.u32(PLAYER),0x1200)
+        slots=self.read(PLAYER,8)
+        p=self.ptr(struct.unpack_from('>I',slots,self.player_index*4)[0],0x1200)
         name=self.ptr(self.u32(p),16)
         if self.read(name,11)!=b'TObjPlayer\0':raise Unsupported('The local PSO player is not initialized')
         if self.u32(p+0x18)!=VT_UPDATE-12:raise Unsupported('Unexpected PSO player vtable')
+        if self.u16(p+0x1C)!=self.player_index:raise Unsupported('PSO player slot and entity identity disagree')
+        if self.player_index:
+            # The second slot is admitted only when the same live actor appears
+            # in the game's bounded entity table, never by a guessed offset alone.
+            entries=struct.unpack('>256I',self.read(ENTITY_TABLE,256*4))
+            active=entries[:entries.index(0)] if 0 in entries else entries
+            if p==struct.unpack_from('>I',slots,0)[0] or p not in active:
+                raise Unsupported('Player 2 is not a distinct active PSO entity')
+            if require_probe and self.player_index not in getattr(self.ad,'_pso_verified_player_slots',()):
+                raise Unsupported('Player 2 needs the co-op controller movement verification in Pioneer 2 before native equipment changes')
+        if self.read(PLAYER,8)!=slots:raise Unsupported('PSO players changed during verification; refresh')
+        if self.pin_player and self._player_binding is not None and self._player_binding!=p:
+            raise Unsupported('The selected PSO player changed; refresh before another equipment action')
+        self._player_binding=p
         return p
 
+    @queue_serialized
     def hook(self):
         self.check()
         head=self.read(HEADER,16)
@@ -145,6 +188,7 @@ class GC:
         self.write(QUEUE,bytes(QMAX*QSZ))
         self.write(VT_UPDATE,struct.pack('>I',CAVE))  # data pointer: works on an already-running JIT session
 
+    @queue_serialized
     def call(self,calls,timeout=2):
         if not 1<=len(calls)<=QMAX:raise ValueError('Native batch must contain 1–20 calls')
         self.hook()
@@ -199,8 +243,12 @@ class GC:
         remaining={i for i,_ in self.floor_items()};removed=sum(i not in remaining for i in ids)
         return {'removed':removed,'verified':removed==len(ids),'scope':'only gBox-spawned items'}
 
+    @queue_serialized
     def unhook(self):
-        if self.u32(VT_UPDATE)==CAVE:self.write(VT_UPDATE,struct.pack('>I',ORIGINAL_UPDATE))
+        if self.u32(VT_UPDATE)==CAVE:
+            if any(self.u32(QUEUE+i*QSZ) for i in range(QMAX)):
+                raise RuntimeError('A PSO command is still pending; cannot remove its dispatcher')
+            self.write(VT_UPDATE,struct.pack('>I',ORIGINAL_UPDATE))
 
     def equip_any(self,on):
         self.check();self.hook()

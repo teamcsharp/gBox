@@ -6,6 +6,7 @@ import struct
 import pytest
 
 from gbox.mercs.titles import re5_combat as C
+from gbox.mercs.titles import re5_engage as E
 
 @pytest.fixture(autouse=True)
 def _legacy_fire_gate(monkeypatch, request):
@@ -906,6 +907,41 @@ def test_a_moderate_error_at_the_muzzle_is_steered_and_the_blast_waits_for_his_w
     m.put(LASER + C.LASER_DOT, ">3f", 40.0, 110.0, 260.0)   # 11 deg off his chest (past him): inside his window at 1.5 m
     act = bot.tick(s, s["player"], s["enemies"][0], 0.1)["hold"]
     assert {"l1", "r1"} <= act and bot.stats["fire_gate"] == "threat: blasting", act
+
+
+def test_a_majini_115_deg_to_the_side_still_gets_faced_instead_of_a_gun_down_swing():
+    # #5126: the bot swung to the target 115 deg off its heading and was hit at arm's length (82 cm) by the one
+    # beside it; front_clear used the 35 deg cone, so nothing "in front" and the gun went down
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    # attacker 115 deg to the right, 82 cm flat - just outside the 35 deg FRONT_CONE, inside the 120 deg clear sector
+    s = snap(m, enemy=(110.0, 0.0, -40.0))
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
+    assert not act["hold"] & {"rleft", "rright"} or "l1" in act["hold"] or bot.stats.get("combat", "").startswith(
+        "aiming the gun"), act  # not a bare gun-down swing: the side threat is faced first
+    # the 35 deg cone would have allowed the swing (nothing "in front"); the 120 deg sector holds him
+    assert E.front_threat(s["player"], s["enemies"], cone=E.FRONT_CONE) is None
+    assert E.front_threat(s["player"], s["enemies"], cone=C.FRONT_CLEAR_CONE) is s["enemies"][0]
+
+
+def test_a_majini_straight_behind_still_gets_the_quick_turn_not_a_side_gate():
+    # the 120 deg clear sector must not swallow a rear threat - the quick turn stays the rear path
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, -300.0))
+    assert bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"] == {"ldown", "cross"}
+
+
+def test_the_swing_still_starts_when_only_a_far_front_majini_stand():
+    # beyond FRONT_CLEAR_R the front Majini is no front_clear threat: the gun-down swing to the target proceeds
+    m = world(aiming=False)
+    bot = C.Combat(m, {}, clock=lambda: 0.0)
+    s = snap(m, enemy=(0.0, 0.0, 1000.0))                 # the target 1000 cm ahead
+    s["enemies"].append({"slot": 1, "ptr": ENEMY + 1, "pos": (100.0, 0.0, 600.0), "hp": 800, "hp_max": 800})  # 608 cm off,
+    # inside the 120 deg sector but past FRONT_CLEAR_R - not in the clear sector
+    s["player"]["rot"] = math.radians(100)                # facing 100 deg off the target: past SWING_TURN
+    act = bot.tick(s, s["player"], s["enemies"][0], 0.0)
+    assert act["hold"] == {"ldown", "cross"}              # the quick-turn press (the body swing goes on gun-down)
 
 
 def test_a_majini_behind_gets_the_quick_turn_and_the_aim_takes_over_once_the_heading_swings():

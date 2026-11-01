@@ -37,6 +37,22 @@ def test_twenty_clicks_remain_distinct_and_complete_once(queue):
     assert all(r['state'] == 'confirmed' for r in q.status('sid')['requests'])
 
 
+def test_weapon_requests_keep_arguments_and_cannot_reuse_an_id_for_another_weapon(queue):
+    q, _ = queue
+    options = {'weapons':[{'item':25,'weapon':'Hydra'}, {'item':27,'weapon':'S&W M500'}]}
+    q.claim('sid','life-1',['flash_now','equip_primary'],options=options)
+    rid = str(uuid.uuid4())
+    row = q.post('sid','equip_primary',rid,'viewer',{'item':25})
+    assert q.status('sid')['options'] == options and row['args'] == {'item':25}
+    assert q.post('sid','equip_primary',rid,'viewer',{'item':25}) == row
+    with pytest.raises(ValueError,match='another operation'):
+        q.post('sid','equip_primary',rid,'viewer',{'item':27})
+    for args in ({'item':True}, {'item':25,'extra':1}, {}, {'item':255}):
+        with pytest.raises(ValueError): q.post('sid','equip_primary',str(uuid.uuid4()),'viewer',args)
+    assert q.claim('sid','life-2',['flash_now','equip_primary'],options=options) == []
+    assert q.status('sid')['requests'][0]['state'] == 'expired'
+
+
 def test_crash_after_claim_never_reexecutes(queue):
     q, now = queue
     row = post(q)
@@ -122,6 +138,66 @@ def test_http_routes_require_auth_and_running_session(tmp_path):
     store.db.close()
 
 
+def test_ammo_click_requires_actual_boolean_and_matching_readback(queue):
+    q, _ = queue
+    options = {'infinite_ammo': {'available': True, 'enabled': False}}
+    q.claim('sid', 'life-1', ['set_infinite_ammo'], options=options)
+    for args in ({}, {'enabled': 1}, {'enabled': 'true'}, {'enabled': True, 'extra': 1}):
+        with pytest.raises(ValueError):
+            q.post('sid', 'set_infinite_ammo', str(uuid.uuid4()), 'viewer', args)
+    row = q.post('sid', 'set_infinite_ammo', str(uuid.uuid4()), 'viewer', {'enabled': True})
+    claim = q.claim('sid', 'life-1', ['set_infinite_ammo'], options=options)[0]
+    for value in (False, 1, None):
+        with pytest.raises(ValueError):
+            q.finish('sid', row['id'], claim['claim'], {'state': 'confirmed', 'verified': True, 'enabled': value})
+    result = q.finish('sid', row['id'], claim['claim'], {'state': 'confirmed', 'verified': True, 'enabled': True})
+    assert result['state'] == 'confirmed'
+
+
+def test_noninventory_weapons_can_be_selected_unless_explicitly_unavailable(queue):
+    q, _ = queue
+    options = {'weapons': [{'item': 25, 'weapon': 'Hydra', 'in_inventory': False},
+        {'item': 27, 'weapon': 'S&W M500', 'in_inventory': False, 'available': False,
+         'reason': 'native creation is not verified'}]}
+    q.claim('sid', 'life-1', ['equip_primary'], options=options)
+    assert q.post('sid', 'equip_primary', str(uuid.uuid4()), 'viewer', {'item': 25})['state'] == 'queued'
+    with pytest.raises(ValueError, match='native creation'):
+        q.post('sid', 'equip_primary', str(uuid.uuid4()), 'viewer', {'item': 27})
+
+
+def test_ammo_and_grenade_capabilities_need_available_readback(queue):
+    q, _ = queue
+    options = {'infinite_ammo': {'available': False, 'enabled': None},
+               'grenade_kinds': [{'kind': 'flash', 'available': True}, {'kind': 'hand', 'available': False}]}
+    q.claim('sid', 'life-1', ['set_infinite_ammo', 'grenade_ring'], options=options)
+    for op, args in [('set_infinite_ammo', {'enabled': True}), ('grenade_ring', {'kind': 'hand'})]:
+        with pytest.raises(ValueError, match='unavailable'):
+            q.post('sid', op, str(uuid.uuid4()), 'viewer', args)
+    assert q.post('sid', 'grenade_ring', str(uuid.uuid4()), 'viewer', {'kind': 'flash'})['state'] == 'queued'
+
+
+def test_http_readback_validation_and_finite_weapon_hold(tmp_path):
+    store = Store(tmp_path)
+    store.put('session', 'sid', {'state': 'running'})
+    app = FastAPI()
+    I.install(app, store, lambda: 'fixture')
+    body = {'epoch': 'life', 'capabilities': ['equip_primary', 'set_infinite_ammo'], 'options': {
+        'weapons': [{'item': 25, 'weapon': 'Hydra', 'in_inventory': False}],
+        'infinite_ammo': {'available': True, 'enabled': False},
+        'primary_weapon': {'item': 25, 'weapon': 'Hydra', 'locked': True, 'lock_remaining_s': 180},
+        'grenade_kinds': [{'kind': 'flash', 'available': True}]}}
+    with TestClient(app) as client:
+        path = '/api/sessions/sid/interventions'
+        assert client.post(path + '/claim', json=body).status_code == 200
+        assert client.get(path).json()['options']['primary_weapon']['lock_remaining_s'] == 180
+        for field, bad in [('infinite_ammo', {'available': True, 'enabled': 1}),
+                           ('primary_weapon', dict(body['options']['primary_weapon'], lock_remaining_s=181)),
+                           ('grenade_kinds', [{'kind': 'invented', 'available': True}])]:
+            invalid = body | {'options': body['options'] | {field: bad}}
+            assert client.post(path + '/claim', json=invalid).status_code == 422
+    store.db.close()
+
+
 def test_pinned_native_assets_and_mapping_guards():
     for _, name, size, digest in N.CODE:
         data=N.IMAGES[name]
@@ -136,26 +212,28 @@ def test_pinned_native_assets_and_mapping_guards():
     (3, True, True, True), (1, True, True, False), (2, True, True, False),
     (3, False, True, False), (3, True, False, False),
 ])
-def test_only_completed_allocation_loss_can_recover_for_a_new_click(state, restored, recoverable, allowed):
+def test_only_completed_detached_calls_can_recover_for_a_new_click(state, restored, recoverable, allowed):
     import threading
     ctl=N.Controller.__new__(N.Controller)
     ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=recoverable
     ctl.heap=0x1000;ctl.manager=0x2000;ctl.base=0x100000000
-    ctl.check=lambda:None
+    ctl.player=0x3000;ctl.generation=99
+    ctl.check_build=lambda:None
     ctl.validate_heap=lambda:None
-    ctl.w=lambda at:state
-    ctl.q=lambda at:ctl.base+N.VT if restored else ctl.heap
+    ctl.w=lambda at:99 if at==ctl.heap+0x98 else state
+    ctl.q=lambda at:ctl.player if at==ctl.heap+0x90 else ctl.base+N.VT if restored else 0xBAD
+    ctl.write=lambda *a:pytest.fail('No recovery write to a foreign table')
     ctl.call=lambda *a:pytest.fail('Recovery must never replay the native operation')
     assert ctl.recover_completed_call() is allowed
     assert ctl.failed is (not allowed)
 
 
-def test_changed_player_cannot_clear_native_failure():
+def test_changed_build_cannot_clear_native_failure():
     import threading
     ctl=N.Controller.__new__(N.Controller)
     ctl.lock=threading.Lock();ctl.failed=True;ctl.recoverable=True
-    def changed():raise N.Unavailable('player allocation changed')
-    ctl.check=changed
-    with pytest.raises(N.Unavailable,match='player allocation'):
+    def changed():raise N.Unavailable('executable changed')
+    ctl.check_build=changed
+    with pytest.raises(N.Unavailable,match='executable'):
         ctl.recover_completed_call()
     assert ctl.failed

@@ -23,6 +23,14 @@ from gbox.models import Job
 from gbox.store import Store
 
 HELPER = "SPEED = 1\n\n\ndef speed():\n    return SPEED\n"
+
+
+@pytest.mark.parametrize('name', ['re4_gc_native', 're5_switch_native', 're6_switch_native'])
+def test_native_controller_locks_require_process_restart(name):
+    assert not H.allowed('gbox.mercs.titles.' + name)
+    assert H.classify(['gbox/mercs/titles/' + name + '.py'])['action'] == 'restart'
+
+
 BOT = "from .helper import speed\n\nVERSION = 'v1'\n\n\ndef tick():\n    return (VERSION, speed())\n"
 MENUS = ("class Roster:\n    def __init__(self):\n        self.played = {}\n\n    def label(self):\n        return 'old'\n\n\n"
          "ROSTER = Roster()\n")
@@ -388,6 +396,8 @@ def test_starts_wait_for_a_reload_and_the_reloads_own_restarts_go_through():
     (["gbox/mercs/titles/re5_combat.py", "gbox/screensaver.py"], "restart"),
     (["gbox/server.py"], "restart"), (["gbox/hot_reload.py"], "restart"), (["gbox/tools.py"], "restart"),
     (["gbox/mercs/warm_boot.py"], "restart"), (["gbox/re5_mods_tool.py"], "restart"),
+    (["gbox/mercs/titles/re5_switch_native.py"], "restart"),
+    (["gbox/mercs/titles/re6_switch_native.py"], "restart"),
     (["profiles/gamedata/BLUS30491-ram.json"], "restart"), (["adapters/x.py"], "restart"), (["gbox.toml"], "restart"),
     (["gbox/mercs/notes.json"], "restart"), (["hermes/gbox/SKILL.md"], "restart"),
     (["docs/hot-update.md", "clients/desktop/app.js", "tests/test_hot_reload.py"], "none"),

@@ -30,6 +30,7 @@ function rig(session = SESSION) {
     assert.equal(body.tool, 're5_mods');
     assert.equal(body.agent_use, false);
     const input = body.input;
+    if (input.op === 'live_controls') return ok({verified:true,title:r.view.title,view:structuredClone(r.view),status:structuredClone(r.status)});
     if (input.op === 'bot_logic') {
       for (const [name, value] of Object.entries(input.values || {})) r.view.knobs.find(k => k.name === name).value = value;
       return ok(structuredClone(r.view));
@@ -45,7 +46,7 @@ function rig(session = SESSION) {
     r.sb.update({ on: true, sid: session.session_id, session });
   };
   r.jobs = () => r.calls.filter(c => c.url === '/api/jobs');
-  r.changes = () => r.jobs().filter(c => !['status', 'bot_logic'].includes(c.body.input.op) || c.body.input.values || c.body.input.reset);
+  r.changes = () => r.jobs().filter(c => !['status', 'bot_logic', 'live_controls'].includes(c.body.input.op) || c.body.input.values || c.body.input.reset);
   r.select(session);
   return r;
 }
@@ -146,7 +147,7 @@ test('an old job response cannot replace settings or clear a new session request
   const gate = defer(), posted = defer(), nextGate = defer(), nextPosted = defer();
   r.hook = (_url, body) => {
     if (body?.input?.values) { posted.resolve(); return gate.promise; }
-    if (body?.input?.session_id === RE5.session_id && body.input.op === 'bot_logic') { nextPosted.resolve(); return nextGate.promise; }
+    if (body?.input?.session_id === RE5.session_id && body.input.op === 'live_controls') { nextPosted.resolve(); return nextGate.promise; }
   };
   const old = r.sb.set('FLASH_GAP_S', 3);
   await posted.promise;
@@ -156,7 +157,7 @@ test('an old job response cannot replace settings or clear a new session request
   assert.equal(await old, false);
   assert.equal(r.sb.state().busy, true, 'the old finally cannot release the new request');
   assert.equal(r.sb.state().view, null);
-  nextGate.resolve(ok({ ...VIEW, title: 're5' }));
+  nextGate.resolve(ok({view:{ ...VIEW, title: 're5' },status:STATUS}));
   assert.equal(await fresh, true);
   assert.equal(r.sb.state().view.title, 're5');
   assert.equal(r.sb.state().busy, false);
@@ -253,6 +254,17 @@ test('desktop supplies session identity after updating the displayed stream; lab
 
 const WEAPONS = [{ id: 8, name: 'Elephant Killer', kind: 'magnum', loaded: false },
   { id: 4, name: 'Shotgun', kind: 'shotgun', loaded: true }, { id: 1, name: 'Nine-Oh-Nine (909)', kind: 'handgun', loaded: true }];
+
+test('sidebar initialization takes one worker job and accepts its mutation readback without a second job', async () => {
+  const r=rig(RE5);
+  assert.equal(await r.sb.refresh(),true);
+  assert.deepEqual(r.jobs().map(c=>c.body.input.op),['live_controls']);
+  r.hook=(_url,body)=>body?.input?.op==='fire_rate'
+    ?ok({verified:true,status:{...r.status,fire_rate_x:30}}):undefined;
+  assert.equal(await r.sb.setMod('fire_rate',30),true);
+  assert.deepEqual(r.jobs().map(c=>c.body.input.op),['live_controls','fire_rate']);
+  assert.equal(r.sb.state().status.fire_rate_x,30);
+});
 
 test('the weapon dropdown sits in the header, most powerful first, the current pick selected', () => {
   const h = S.html({ ...VIEW, weapons: WEAPONS, weapon_current: 4 }, '', { status: STATUS, title: 're6', scope: '2' });

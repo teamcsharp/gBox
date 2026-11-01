@@ -67,7 +67,8 @@ def test_exact_gc_revision_enables_panel_without_dc_reads():
     for a,b in H.GUARDS.items():ram.put(a,b)
     for a,_,_,b in H.SITES:ram.put(a,b)
     cap=pso_controls.capabilities({'title':'Phantasy Star Online Episode I & II Plus','platform':'gamecube'},ram.read_memory)
-    assert cap['supported'] and all(cap['features'].values())
+    assert cap['supported'] and all(v for k,v in cap['features'].items() if k!='autoplay_speed')
+    assert not cap['features']['autoplay_speed']
     assert 'GameCube' in cap['label']
     assert len(cap['classes'])==12
 

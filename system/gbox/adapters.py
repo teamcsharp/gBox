@@ -580,7 +580,7 @@ def win_send_keys(pid: int, events: list[dict], hidden_ok: bool = False, polite:
     import ctypes
     from ctypes import wintypes
     u, k = ctypes.windll.user32, ctypes.windll.kernel32
-    if hidden_ok and any(e.get('key') not in {'F13', 'F14', 'F15', 'Control_L', 'Control_R', 'Shift_R'} for e in events):
+    if hidden_ok and any(e.get('key') not in {'F13', 'F14', 'F15', 'Control_L', 'Control_R', 'Shift_R', 'Shift_L'} for e in events):
         raise ValueError('Background emulator input accepts only gBox Dolphin hotkeys')
     h = _pid_window(pid)
     if not h and not hidden_ok:
@@ -2471,6 +2471,8 @@ class StandaloneAdapter(Adapter):
 class DolphinAdapter(StandaloneAdapter):
     """GameCube / Wii on standalone Dolphin (flatpak), Vulkan on the GPU, GDB stub for CPU debugging."""
     name = "dolphin"
+    coop_players = 1
+    autoplay_speed = 1.0
     supported = StandaloneAdapter.supported | {'fast_forward'}
     flatpak = "org.DolphinEmu.dolphin-emu"
     # The session's 1280x720 display (StandaloneAdapter.screen): Dolphin's fullscreen window fills it and pillarboxes a
@@ -2487,6 +2489,7 @@ class DolphinAdapter(StandaloneAdapter):
     STATE_WAIT_S = 20.0                          # Dolphin compresses and writes a state on its own thread
     # gBox pad -> keys; GCPadNew.ini binds the same keys to the GameCube pad (Dolphin names letter keys in upper case)
     keys = {"up": "Up", "down": "Down", "left": "Left", "right": "Right", "a": "x", "b": "z", "x": "s", "y": "a",
+            "lup": "Up", "ldown": "Down", "lleft": "Left", "lright": "Right",
             "l": "q", "r": "w", "l2": "q", "r2": "w", "select": "e", "z": "e", "start": "Return",
             "cup": "i", "cdown": "k", "cleft": "j", "cright": "l", "dup": "t", "ddown": "g", "dleft": "f", "dright": "h"}
     PAD_INI = """[GCPad1]
@@ -2680,14 +2683,18 @@ D-Pad/Right = `H`
     def _argv(self, rom: str) -> list[str]:
         user = Path(getattr(self, 'gameplay_demo_user', self.config.runtime / "dolphin-user"))
         (user / "Config").mkdir(parents=True, exist_ok=True)
-        (user / "Config" / "GCPadNew.ini").write_text(self.PAD_INI)
+        from . import pso_coop_setup
+        (user / "Config" / "GCPadNew.ini").write_text(
+            pso_coop_setup.pad_ini(self.PAD_INI) if self.coop_players == 2 else self.PAD_INI)
         (user / "Config" / "Hotkeys.ini").write_text('[Hotkeys]\nDevice = XInput2/0/Virtual core pointer\n'
             'Emulation Speed/Disable Emulation Speed Limit = `Tab`\n'
             'Save State/Save State Slot 8 = `Shift_L` & `F8`\n'
             'Load State/Load State Slot 8 = !`Shift_L` & `F8`\n'
             'Save State/Save State Slot 1 = `Shift_L` & `F1`\n'
             'Load State/Load State Slot 1 = !`Shift_L` & `F1`\n'
-            'Save State/Save State Slot 10 = `Shift_L` & `F10`\n')     # demo jump states only (jump_save)
+            'Save State/Save State Slot 10 = `Shift_L` & `F10`\n'
+            'Emulation Speed/Increase Emulation Speed = `F13`\n'
+            'Emulation Speed/Decrease Emulation Speed = `F14`\n')
         self._gecko_setup(user, rom)
         opts = {"Dolphin.General.GDBPort": self.port, "Dolphin.Core.GFXBackend": "Vulkan", "Dolphin.Core.EnableCheats": "True",
                 "Dolphin.General.HotkeysRequireFocus": "False",  # private Xvfb has no window manager to give Qt focus
@@ -2710,6 +2717,7 @@ D-Pad/Right = `H`
         opts.update(self._graphics_options())
         opts.update(self._title_options())
         opts.update(self._jump_opts())
+        opts.update(pso_coop_setup.speed_options(self))
         return ["flatpak", "run", "--die-with-parent", f"--filesystem={user}", *extra, self.flatpak, "-b", "-u", str(user),
                 *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")], *self._jump_args(), "-e", rom]
 
@@ -2722,6 +2730,32 @@ D-Pad/Right = `H`
         return Path(getattr(self, 'gameplay_demo_user', self.config.runtime / 'dolphin-user')) / 'StateSaves'
 
     ff_on = False
+
+    def send_input_player(self, events, player=1):
+        from .pso_coop_setup import input_rows
+        if player == 2 and self.coop_players != 2:
+            raise ValueError('Player 2 was not connected at launch')
+        rows = input_rows(events, player)
+        if player == 1:
+            return self.send_input(rows)
+        # Raw P2 keys must not be translated again through the P1 key map.
+        args = []
+        pressed = set()
+        for row in rows:
+            key, down = row['key'], row['down']
+            if not down and key in pressed:
+                args += ['sleep', '0.06']
+            args += ['keydown' if down else 'keyup', key]
+            pressed.add(key)
+        if args:
+            self._xdo(*args)
+        return {'sent': len(rows), 'player': player}
+
+    def set_autoplay_speed(self, multiplier):
+        from .pso_coop_setup import set_speed
+        return set_speed(self, multiplier, lambda direction: self._xdo(
+            'keydown', 'F13' if direction == 'Increase' else 'F14', 'sleep', '0.06',
+            'keyup', 'F13' if direction == 'Increase' else 'F14', 'sleep', '0.06'))
 
     def normal_speed(self) -> dict:
         self._xdo('keyup', 'Tab')
@@ -2739,7 +2773,29 @@ D-Pad/Right = `H`
         self._xdo('keydown', 'Shift_L', 'keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8', 'keyup', 'Shift_L')
         return {"slot": 8}
 
+    def _invalidate_pso_timing(self) -> None:
+        # A same-room restore can retain player pointers and a plausible clock
+        # delta. Invalidate before input, including an uncertain hotkey result.
+        self._pso_timing_epoch = getattr(self, '_pso_timing_epoch', 0) + 1
+        self._autoplay_speed_observed = None
+
+    def load_state(self, slot: int | None = None) -> dict:
+        self._invalidate_pso_timing()
+        return super().load_state()
+
+    def pause(self) -> dict:
+        self._invalidate_pso_timing()
+        self._pso_timing_paused = True
+        return super().pause()
+
+    def resume(self) -> dict:
+        self._invalidate_pso_timing()
+        result = super().resume()
+        self._pso_timing_paused = False
+        return result
+
     def checkpoint_load(self) -> dict:
+        self._invalidate_pso_timing()
         self._xdo('keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8')
         return {"slot": 8}
 
@@ -2766,6 +2822,7 @@ D-Pad/Right = `H`
     def jump_boot(self, src) -> None:
         """Boot this launch straight into a jump state. Only gbox/jumpstate.arm_boot calls it, for a launch that asks
         for a jump (the screensaver, autoplay on launch) when this PC has one for the same game and build."""
+        self._invalidate_pso_timing()
         self.jump_from = Path(src)
 
     def _jump_args(self) -> list[str]:
@@ -2847,7 +2904,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
     # capture session - never answer each other's keys) plus right/left Ctrl and right Shift. Hotkeys work without focus
     # (HotkeysRequireFocus False), so nothing else is bound: Esc, F1-F12, Tab... stay the game's / the operator's.
     LANES = ("F13", "F14", "F15")
-    HOTKEY_MODS = ("RCONTROL", "RSHIFT", "LCONTROL")
+    HOTKEY_MODS = ("RCONTROL", "RSHIFT", "LCONTROL", "LSHIFT")
     HOTKEYS = {                                 # Dolphin hotkey -> modifiers held with the lane key (exactly these)
         "Emulation Speed/Disable Emulation Speed Limit": (),          # held while gBox fast-forwards
         "General/Reset": ("RSHIFT",),
@@ -2858,8 +2915,10 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         # demo jump states (gbox/jumpstate.py): saved only, loaded at boot. Its chord holds every modifier, so with
         # fast-forward off (the lane key up) no other chord is ever true while it is pressed.
         "Save State/Save State Slot 10": ("RCONTROL", "LCONTROL", "RSHIFT"),
+        "Emulation Speed/Increase Emulation Speed": ("LSHIFT",),
+        "Emulation Speed/Decrease Emulation Speed": ("LSHIFT", "RSHIFT"),
     }
-    _MOD_KEY = {"RCONTROL": "Control_R", "RSHIFT": "Shift_R", "LCONTROL": "Control_L"}   # win_send_keys names
+    _MOD_KEY = {"RCONTROL": "Control_R", "RSHIFT": "Shift_R", "LCONTROL": "Control_L", "LSHIFT": "Shift_L"}
     _lanes: dict[str, object] = {}              # lane key -> the adapter holding it (this worker process)
     _lanes_lock = threading.Lock()
     lane = "F13"
@@ -2920,7 +2979,9 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         if not getattr(self, 'gameplay_demo_user', None):
             (exe.parent / "portable.txt").touch()
         (user / "Config").mkdir(parents=True, exist_ok=True)
-        (user / "Config" / "GCPadNew.ini").write_text(self.PAD_INI_WIN)
+        from . import pso_coop_setup
+        (user / "Config" / "GCPadNew.ini").write_text(
+            pso_coop_setup.pad_ini(self.PAD_INI_WIN, windows=True) if self.coop_players == 2 else self.PAD_INI_WIN)
         self.lane = self._claim_lane()
         (user / "Config" / "Hotkeys.ini").write_text(self.hotkeys_ini(self.lane))   # read once, when this Dolphin starts
         self._gecko_setup(user, rom)
@@ -2967,6 +3028,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         opts.update(self._graphics_options())
         opts.update(self._title_options())
         opts.update(self._jump_opts())
+        opts.update(pso_coop_setup.speed_options(self))
         return [str(exe), "-b", "-u", str(user), *[a for k, v in opts.items() for a in ("-C", f"{k}={v}")],
                 *self._jump_args(), "-e", rom]
 
@@ -3062,15 +3124,19 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
 
     def pause(self) -> dict:
         """Dolphin has no pause command gBox can send; its emulation threads are suspended instead (window stays live)."""
+        self._invalidate_pso_timing()
+        self._pso_timing_paused = True
         with self._memory_control_lock():
             if not self.paused_tids:
                 self.paused_tids = win_suspend_emulation(self.proc.pid)
             return {"state": "PAUSED", "threads": len(self.paused_tids)}
 
     def resume(self) -> dict:
+        self._invalidate_pso_timing()
         with self._memory_control_lock():
             n = win_resume_threads(self.paused_tids or [])
             self.paused_tids = None
+            self._pso_timing_paused = False
             return {"state": "PLAYING", "threads": n}
 
     def query_runtime(self) -> dict:
@@ -3083,10 +3149,29 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         # polite: autoplay's own input on a PC the operator may be using (bot demos): never takes their keyboard
         # the D-pad on T / G / F / H as on Linux (PAD_INI_WIN): RE4 reads its menus from the D-pad, and with no key for
         # it every menu press was dropped ("sent": 0) - the i9-NUC bot sat on the main menu (2026-10-22)
-        keymap = {"z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l",
+        keymap = {"lup": "up", "ldown": "down", "lleft": "left", "lright": "right",
+                  "z": "e", "cup": "k", "cdown": "i", "cleft": "j", "cright": "l",
                   "dup": "t", "ddown": "g", "dleft": "f", "dright": "h"}
         rows = [{**e, "key": keymap.get(e["key"], e["key"])} for e in events]
         return win_send_keys(self.proc.pid, rows, polite=True) if polite else win_send_keys(self.proc.pid, rows)
+
+    def send_input_player(self, events, player=1, polite=False):
+        from .pso_coop_setup import input_rows
+        if player == 2 and self.coop_players != 2:
+            raise ValueError('Player 2 was not connected at launch')
+        rows = input_rows(events, player)
+        if player == 1:
+            return self.send_input(rows, polite=polite)
+        # Uppercase raw letters bypass PAD_KEYS aliases (notably b -> z).
+        # Scan lookup is case insensitive; normal focus checks still apply.
+        return win_send_keys(self.proc.pid, [{**row, 'key': row['key'].upper()} for row in rows], polite=polite)
+
+    def set_autoplay_speed(self, multiplier):
+        from .pso_coop_setup import set_speed
+        def press(direction):
+            self._hotkey(f'Emulation Speed/{direction} Emulation Speed')
+            time.sleep(0.06)  # the native hotkey poll must observe the release too
+        return set_speed(self, multiplier, press)
 
     def save_state(self, slot: int | None = None) -> dict:
         """Dolphin's slot 1 (gBox's Save state / state_transfer). Confirmed by the file Dolphin writes, or it raises."""
@@ -3096,12 +3181,14 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"slot": 1, "path": str(f), "bytes": f.stat().st_size, "verified": True}
 
     def load_state(self, slot: int | None = None) -> dict:
+        self._invalidate_pso_timing()
         self._hotkey("Load State/Load State Slot 1")
         return {"slot": 1}
 
     def reset(self) -> dict:
         """The console's reset button (Dolphin's Reset hotkey on this Dolphin's lane): the game restarts in place, same
         disc, same mod, same window; the session and its view stay."""
+        self._invalidate_pso_timing()
         if self.ff_on:                                     # a reset leaves fast-forward off
             win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
             self.ff_on = False
@@ -3124,6 +3211,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"slot": 8}
 
     def checkpoint_load(self) -> dict:
+        self._invalidate_pso_timing()
         self._hotkey("Load State/Load State Slot 8")
         return {"slot": 8}
 

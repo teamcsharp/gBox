@@ -104,6 +104,10 @@ ALL_CHARACTERS = 0x3FFFFFFF                              # 4 costume bits for ea
 CAP_MAX = 200                                            # a capacity above this is not a gun's magazine
 CHECK_S = 0.25                                           # maintain tops up at most this often
 FIRE_MAX = 5.0                                               # operator 2026-10-28: "make the max fire rate multiplier for a weapon 5x"
+SNIPER_FIRE_X = 30.0                                         # operator 2026-11-01, sniper weapons only
+# Verified lookup 10ECE20 + jump table 218A034: 109/10A use 09/0A;
+# 10B uses 0B normally and 2A in alternate mode. 09's native interval is 10s.
+SNIPER_RECORDS = frozenset({0x09, 0x0A, 0x0B, 0x2A})
 FIRE_TABLE, FIRE_STRIDE, FIRE_RECORDS = 0x2962170, 0x1A0, 48   # the weapon parameter table (lookup main+0x10ECE20)
 FIRE_INTERVAL, FIRE_TAG, FIRE_TAG_VALUE = 0x1C, 0x4, 60        # f32 the seconds between two shots; i32 60 in every record
 FIRE_SITE, FIRE_SITE_WORD = 0xB2701C, 0xBD401C08               # main+0xB26F90: ldr s8, [x0, #0x1c] (this build's check)
@@ -333,6 +337,7 @@ class RE6Switch:
               "qte_rolled": list(self.state.get("qte_rolled") or ()),
               "infinite_grenades": bool(self.state.get("infinite_grenades")), "auto_qte": bool(self.state.get("auto_qte")),
               "quick_attack_x": self.state.get("quick_attack", 1.0),
+              "throw_speed_x": self.state.get("throw_speed", THROW_SPEED_X) if self.state.get("fire_rate") else self.state.get("throw_speed", 1.0),
               "magnum_speed_x": self.state.get("magnum_speed", MAGNUM_SPEED_X) if self.state.get("fire_rate") else 1.0,
               "down_fire_x": self.state.get("down_fire", DOWN_FIRE_X) if self.state.get("fire_rate") else 1.0,
               "next_weapon": hex(self.state["next_weapon"]) if self.state.get("next_weapon") else None,
@@ -350,13 +355,19 @@ class RE6Switch:
         return st
 
 
+def ammo_readback(g: RE6Switch, player: int | None = None) -> dict:
+    return {'enabled': bool(g.state.get('infinite_ammo')), 'mechanism': 'magazine_maintenance',
+            'magazines': [{'rounds': rounds, 'capacity': cap} for _, rounds, cap in g.slots(player)]
+            if player else []}
+
+
 def infinite_ammo(g: RE6Switch, on: bool) -> dict:
-    g.state["infinite_ammo"] = bool(on)
     filled = 0
     snap = R.snapshot(g.m)
     p = snap.get("player")
     if on and p:
         filled = _top_up(g.ad, g, p["ptr"])
+    g.state["infinite_ammo"] = bool(on)
     return {"infinite_ammo": bool(on), "verified": True, "topped_up": filled,
             "note": "every gun's magazine kept at its capacity (each driver snapshot tops up a slot that fired): the "
                     "gun never empties and never reloads"}
@@ -383,10 +394,15 @@ def _put_count(ad, addr: int, value: int) -> None:
     any other mismatch raises as the adapter does."""
     try:
         ad.write_memory(addr, struct.pack("<h", value))
-    except RuntimeError:
+    except RuntimeError as exc:
+        if str(exc) != 'memory write not confirmed by read-back':
+            raise
         now = struct.unpack("<h", ad.read_memory(addr, 2))[0]
         if not 0 <= value - now <= RACE_SPENT:
             raise
+    now = struct.unpack('<h', ad.read_memory(addr, 2))[0]
+    if not 0 <= value - now <= RACE_SPENT:
+        raise RuntimeError('ammo count write not confirmed by read-back')
 
 
 def _keep_tablets(ad, g: RE6Switch, player: int) -> int:
@@ -1076,6 +1092,8 @@ def fire_interval(index: int, k: float, magnum: float | None = None, throw: floa
     / magnum for the magnums when that is given, / throw for the three grenades when that is given; the build's own for
     the remote bomb, the knife and the melee weapons (and at k=1 with neither)."""
     orig = FIRE_ORIGINAL[index]
+    if index in SNIPER_RECORDS and k > 1.0:
+        return max(FIRE_FLOOR, orig / SNIPER_FIRE_X)
     if index in THROW_RECORDS and throw and throw > 1.0:
         return max(FIRE_FLOOR, orig / throw)
     if index in MAGNUM_RECORDS and magnum and magnum > 1.0:
@@ -1138,7 +1156,8 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
     g.state["fire_rate"] = k
     g.state["fire_magnum"], g.state["fire_throw"] = magnum, throw
     rifle = _f32(fire_interval(0x0F, k))
-    return {"fire_rate_x": k, "magnum_x": magnum, "throw_x": throw, "verified": True, "writes": writes,
+    return {"fire_rate_x": k, "sniper_fire_rate_x": SNIPER_FIRE_X if k > 1.0 else 1.0,
+            "magnum_x": magnum, "throw_x": throw, "verified": True, "writes": writes,
             "assault_rifle_interval_s": round(rifle, 4),
             "magnum_interval_s": round(_f32(fire_interval(0x07, k, magnum)), 4),
             "grenade_interval_s": round(_f32(fire_interval(0x13, k, magnum, throw)), 4),
@@ -1160,7 +1179,8 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
     (at most every CHECK_S), only into the snapshot's own player; never raises."""
     with _LOCK:
         st = ORIG.get(id(ad))
-        out = {"active": False, "writes": 0, "verified": True}
+        out = {"active": False, "writes": 0, "verified": True,
+               "infinite_ammo": bool(st.get('infinite_ammo')) if st and enabled else None}
         down_fire_on = bool(st and st.get("fire_rate") and ((st.get("down_fire", DOWN_FIRE_X) or 1.0) > 1.0
                                                             or st.get("down_on")))
         keeping = st and any(st.get(k) for k in ("infinite_ammo", "infinite_tablets", "infinite_stamina",
@@ -1208,7 +1228,7 @@ def maintain(ad, snap=None, *, enabled: bool = True, clock=time.monotonic) -> di
                     out["writes"] += kept
             out["active"] = True
         except Exception as e:                               # noqa: BLE001 - a missed top-up never stops a tick
-            out.update(verified=False, reason=f"{type(e).__name__}: {e}"[:160])
+            out.update(verified=False, infinite_ammo=None, reason=f"{type(e).__name__}: {e}"[:160])
         return out
 
 

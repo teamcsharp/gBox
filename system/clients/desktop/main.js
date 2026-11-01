@@ -33,8 +33,7 @@ let localControlError = '', remoteManagement = { ssh:false }, remoteManagementPe
 let catalogSyncPending=null,catalogSyncAt=0,catalogSyncOffset=0;
 let bridgePairPending=null,bridgePairKey=null;
 
-app.setPath("userData", STANDALONE ? path.join(STANDALONE, ".tools", "desktop-profile")       // standalone: own profile + single-instance lock
-                                  : path.join(app.getPath("appData"), "gbox-desktop"));   // keep settings where they were (productName = gBox)
+app.setPath("userData", require('./desktop-profile.cjs').resolve(app.getPath("appData"), STANDALONE));
 const GAME_FRAME_DIR = path.join(app.getPath("userData"), "game-frames");
 process.env.GBOX_GAME_FRAME_DIR = GAME_FRAME_DIR;                  // worker/tracker also use a standalone profile's capture cache
 const SETTINGS = path.join(app.getPath("userData"), "settings.json");
@@ -52,6 +51,7 @@ const DEFAULTS = {
   token: "",                                          // optional: paste once if neither share nor SSH is reachable
   workerName: os.hostname(),
   autoStartWorker: true,
+  autoStartSsh: false,                                  // explicit per-PC opt-in; setup uses Windows UAC
   controlMode: 'local',                                // this PC remains usable without the remote control plane
   volume: 30,
 };
@@ -361,7 +361,30 @@ function saveSettings(s) {
   remoteTokenReader.reset();
   return settings();
 }
-ipcMain.handle("settings:save", (_e, s) => saveSettings(s));
+ipcMain.handle("settings:save", (event, s) => {
+  if (Object.hasOwn(s || {}, 'autoStartSsh')) {
+    assertSshSender(event);
+    if (typeof s.autoStartSsh !== 'boolean') throw Error('Expected a boolean SSH startup preference.');
+  }
+  return saveSettings(s);
+});
+const localSsh = require('./windows-ssh.cjs').create({
+  getPreference: () => configuredSettings().autoStartSsh === true,
+  savePreference: value => saveSettings({autoStartSsh:value}),
+  changed: state => { send('ssh:changed',state); if(mini&&!mini.isDestroyed())mini.webContents.send('ssh:changed',state); },
+});
+function assertSshSender(event) {
+  const owner = win && event.sender === win.webContents ? win : mini && event.sender === mini.webContents ? mini : null;
+  if (!owner || owner.isDestroyed() || event.senderFrame !== owner.webContents.mainFrame)
+    throw Error('Only the local gBox window can manage Windows SSH.');
+  const actual = new URL(event.sender.getURL());
+  if (owner === mini) actual.search = ''; // the owned PiP's stream/title query is unrelated to authority
+  const expected = require('node:url').pathToFileURL(path.join(__dirname, owner === mini ? 'mini.html' : 'index.html')).href;
+  if (actual.href !== expected) throw Error('Only the local gBox window can manage Windows SSH.');
+}
+ipcMain.handle('ssh:status', event => { assertSshSender(event); return localSsh.status(); });
+ipcMain.handle('ssh:enable', event => { assertSshSender(event); return localSsh.enable(); });
+ipcMain.handle('ssh:preference', (event,value) => { assertSshSender(event); return localSsh.preference(value); });
 ipcMain.handle('rec:preferences', () => recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording }));
 ipcMain.handle('rec:preferences-save', (_e, p) => saveSettings({ recording: recordingExport.preferences(p) }).recording);
 ipcMain.handle("token", () => token());
@@ -1049,6 +1072,14 @@ ipcMain.handle('client:version', async event => {
 });
 ipcMain.handle('client:handoff', event => { assertClientSender(event); return handoffView; });
 ipcMain.handle('stream:poster', (event, rect) => streamPoster.capture(win, event, rect, compactWindow.state().on));
+ipcMain.handle('stream:health', async (event, src) => {
+  assertClientSender(event);
+  const state = connection?.snapshot();
+  if (!state) throw Error('The gBox connection is starting.');
+  return require('./stream-health.cjs').read(src, {
+    origins: [state.localUrl, state.remoteUrl], token: origin => connection.token(origin), fetch
+  });
+});
 ipcMain.handle('client:handoff-saved', event => { assertClientSender(event); handoffView = null; return true; });
 function saveClientView(state = savedClientState, server = savedClientOrigin) {
   if (!state || state.v !== 1 || !win || win.isDestroyed()) return false;
@@ -1533,6 +1564,7 @@ app.whenReady().then(() => {
     if (settings().autoStartWorker) startWorker();
   }
   startAudioVolumeHelper();
+  localSsh.startup().catch(() => logPush('ssh','Windows SSH initialization failed; use Settings to retry.'));
 });
 let sessionsShutDown = false;
 function shutdownSessions() {

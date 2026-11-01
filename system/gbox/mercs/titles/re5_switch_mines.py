@@ -41,7 +41,7 @@ import collections
 import math
 
 MINE_ID = 0x10A
-EVERY_S = 120.0                          # one every two minutes while he plays the round (tunable)
+EVERY_S = 20.0                           # one every 20 s while he plays the round (tunable; operator 2026-10-31: more)
 SPACING_CM = 600.0                       # never within this of the last site or of a bomb still down (a double blast)
 FOE_CLEAR_CM = 500.0                     # a Majini this near: not now (out of the blast before it comes: a run of 8 m;
                                          # was 8 m - none were ever placed in a No Mercy crowd, 19:50 / 19:53)
@@ -88,6 +88,7 @@ class Mines:
         self.stats = stats
         self.every_s = every_s
         self.enabled = True                            # the `mines` op can switch new placements off (configure)
+        self.foe_clear_cm, self.spacing_cm = FOE_CLEAR_CM, SPACING_CM   # the driver may set its own each tick
         self.state, self.t = "idle", 0.0
         self.last_at, self.last_pos = None, None       # the last placement (confirmed, or its motion seen)
         self.round_t0 = None
@@ -170,10 +171,10 @@ class Mines:
             return None
         pos = p["pos"]
         sites = ([self.last_pos] if self.last_pos is not None else []) + list(self.bombs.values())
-        if any(flat(pos, b) < SPACING_CM for b in sites):
+        if any(flat(pos, b) < self.spacing_cm for b in sites):
             self.stats["mine_status"] = "moving away from the last bomb first"
             return None
-        if any(flat(pos, e["pos"]) < FOE_CLEAR_CM for e in live):
+        if any(flat(pos, e["pos"]) < self.foe_clear_cm for e in live):
             self.stats["mine_status"] = "a Majini too close to place one"
             return None
         return "due"

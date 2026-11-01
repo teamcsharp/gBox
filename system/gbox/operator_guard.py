@@ -26,7 +26,8 @@ WATCH_TTL_S = 180
 
 def report_watch(store, viewer: str, sid: str | None, *, now=None, host: str = ""):
     """Short renewable viewer lease; applies to bot demos as well as human-owned sessions. host: the viewing machine's
-    address (viewing(): the pad takeover's check that input comes from a machine that watches the session)."""
+    address (kept for the launch guard and diagnostics; the pad takeover no longer gates on it — operator 2026-10-29:
+    the controller takes the bot's game from any gBox instance)."""
     import time
     if not sid:
         store.delete("session_watch", viewer)
@@ -41,9 +42,9 @@ _VIEWING: dict[tuple, tuple] = {}
 
 def viewing(store, sid: str, host: str = "", *, now=None) -> bool:
     """Whether the machine at `host` watches session `sid` right now: its app said it shows the session
-    (POST /api/broadcast/watching) or it streams it (GET /api/sessions/{sid}/mjpeg). The operator's pad input takes the
-    pad from the session's bot only then (gbox/pad_takeover.py): a client never claims a session it isn't viewing. A row
-    written before hosts were recorded counts for any machine."""
+    (POST /api/broadcast/watching) or it streams it (GET /api/sessions/{sid}/mjpeg). Used by the launch guard
+    (watched_sessions) and diagnostics; the pad takeover no longer gates on it (operator 2026-10-29: the controller
+    takes the bot's game from any gBox instance). A row written before hosts were recorded counts for any machine."""
     import time
     now = time.time() if now is None else now
     hit = _VIEWING.get((sid, host))

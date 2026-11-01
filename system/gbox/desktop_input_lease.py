@@ -7,6 +7,7 @@ unless that remote lease actually ends. Unknown remote event shapes fail closed.
 from __future__ import annotations
 
 import threading
+from functools import wraps
 
 MARKER='_gbox_desktop_input_lease'
 
@@ -14,6 +15,7 @@ MARKER='_gbox_desktop_input_lease'
 class InputLease:
     def __init__(self,send,secret,*,normalize=lambda player,key:(player,key),axis=lambda identity:None):
         self.send,self.secret,self.normalize,self.axis=send,secret,normalize,axis
+        self.__wrapped__=send  # expose the existing polite keyword through inspect.signature
         self.local={};self.remote={};self.lock=threading.RLock()
 
     def identity(self,event):
@@ -106,6 +108,7 @@ def attach(adapter,secret,*,initial_local=()):
     # retaining the actual player number and original per-port method.
     scoped=getattr(adapter,'send_input_player',None)
     if callable(scoped):
+        @wraps(scoped)
         def send_player(events,player=2,*args,**kwargs):
             with lease.lock:
                 original=lease.send

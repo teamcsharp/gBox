@@ -1,6 +1,40 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {withPage}=require('../scripts/browser_lifecycle.cjs');
 const PSO=require('../clients/web/viz/pso-controls.js');
+
+test('speed captions distinguish a measured shortfall, expiry and invalid timing context',()=>{
+ const measured={requested:10,known:true,measurement_verified:true,achieved_verified:false,actual:1,lower:.99,upper:1.01,
+   valid_for_ms:1000,measurement_source:'native_game_clock'};
+ assert.match(PSO.speedCaption(measured,100),/Requested 10x; measured 1x/);
+ assert.match(PSO.speedCaption(measured,1000),/last measured 1x \(stale\)/);
+ for(const patch of [{known:false},{paused:true},{changing:true},{measurement_verified:false},
+   {actual:NaN},{lower:.8},{valid_for_ms:5000},{measurement_source:'hotkey'}])
+  assert.doesNotMatch(PSO.speedCaption({...measured,...patch},100),/; measured 1x/);
+ assert.doesNotMatch(PSO.speedCaption(measured,-1),/; measured 1x/);
+ assert.doesNotMatch(PSO.speedCaption({requested:10,input_delivered:true,achieved_verified:true}),/; measured/);
+});
+
+test('measured speed panel expires locally and speed delivery cannot revive a measurement',async()=>{
+ await withPage(async evaluate=>{
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await evaluate(`document.body.innerHTML='<div id="host"></div>';window.calls=[];
+   window.waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Speed feedback timeout')};
+   window.io={api:async(p,b)=>{
+    if(p.endsWith('/rpc')){const i=b.args.input;calls.push(i);
+     if(i.op==='capabilities')return {version:'gc',supported:true,classes:[],pending:{},features:{autoplay_speed:true},
+      autoplay_speed:{requested:10,known:true,measurement_verified:true,achieved_verified:false,actual:1,lower:.99,upper:1.01,valid_for_ms:1200,measurement_source:'native_game_clock'}};
+     return {requested:i.multiplier,input_delivered:true,achieved_verified:true};
+    }return p.includes('/items')?[]:{equip_any:true};}};
+   window.panel=GBoxPSO.mount(document.querySelector('#host'),io,{sid:'measured'});
+   waitFor(()=>document.querySelector('[data-speed-note]').textContent.includes('; measured 1x'));`);
+  assert.match(await evaluate(`document.querySelector('[data-speed-note]').textContent`),/Requested 10x; measured 1x/);
+  await evaluate(`waitFor(()=>document.querySelector('[data-speed-note]').textContent.includes('(stale)'));`);
+  assert.equal(await evaluate(`calls.length`),1,'expiry must not issue a native operation');
+  await evaluate(`document.querySelector('[data-speed]').value='2';document.querySelector('[data-speed]').dispatchEvent(new Event('change'));waitFor(()=>document.querySelector('[data-speed-note]').textContent.includes('Requested 4x; Actual'));`);
+  assert.doesNotMatch(await evaluate(`document.querySelector('[data-speed-note]').textContent`),/; measured|Native rate verified/);
+  await evaluate(`panel.dispose();`);
+ });
+});
 test('verified GameCube actions use live RPC, suppress double clicks and never retry unknown outcomes',async()=>{
  await withPage(async(evaluate,send)=>{
   await send('Emulation.setDeviceMetricsOverride',{width:1000,height:1300,deviceScaleFactor:1,mobile:false});
@@ -52,6 +86,43 @@ async function loadPanel(evaluate){
   }};return GBoxPSO.mount(host,wrapped,session);
  };`);
 }
+
+test('player-two equipment targets its slot and co-op speed remains a requested rate',async()=>{
+ await withPage(async(evaluate,send)=>{
+  await send('Emulation.setDeviceMetricsOverride',{width:1000,height:1300,deviceScaleFactor:1,mobile:false});
+  await evaluate(fs.readFileSync(path.join(__dirname,'../clients/web/viz/pso-controls.js'),'utf8'));
+  await evaluate(`document.body.innerHTML='<div id="host" style="width:440px"></div>';window.calls=[];
+   window.waitFor=async fn=>{for(let n=0;n<300;n++){if(fn())return;await new Promise(r=>setTimeout(r,10));}throw Error('Selected player timeout')};
+   window.io={api:async(p,b)=>{
+    if(p.endsWith('/rpc')){
+     const i=b.args.input;calls.push(i);
+     if(i.op==='capabilities')return {version:'gc',supported:true,player_index:i.player_index||0,classes:['HUmar'],pending:{},
+      players:[{index:0,label:'Player 1',available:true,verified:true},{index:1,label:'Player 2',available:true,verified:true}],
+      features:{equip:true,give:true,mag:true,stat:true,randomized:true,autoplay_speed:true,
+       floor_spawn:!i.player_index,floor_rares:!i.player_index,floor_clear:!i.player_index,multi_equip:!i.player_index,survival:!i.player_index},
+      autoplay_speed:{requested:1,achieved_verified:false}};
+     if(i.op==='list')return {inventory:[{id:23,slot:0,code:'001000',name:'Rare blade',equipped:false}]};
+     if(i.op==='autoplay_speed')return {requested:i.multiplier,input_delivered:true,achieved_verified:false};
+     if(i.op==='modes')return {randomized:{on:false}};
+     return {verified:true};
+    }
+    if(p.includes('/items'))return [{code:'001000',name:'Rare blade',cat:'Weapons',stars:12,rare:true,classes:['HUmar']}];
+    return {equip_any:true};}};
+   GBoxPSO.mount(document.querySelector('#host'),io,{sid:'two'});waitFor(()=>document.querySelector('[data-player]').options.length===2&&!document.querySelector('[data-player]').disabled);`);
+  await evaluate(`document.querySelector('[data-player]').value='1';document.querySelector('[data-player]').dispatchEvent(new Event('change'));waitFor(()=>calls.some(c=>c.op==='capabilities'&&c.player_index===1)&&!document.querySelector('[data-player]').disabled);`);
+  assert.equal(await evaluate(`document.querySelector('[data-drop]').disabled`),true);
+  assert.equal(await evaluate(`document.querySelector('[data-speed-panel]').disabled`),false);
+  await evaluate(`document.querySelector('[data-code]').click();document.querySelector('[data-equip-selected]').click();waitFor(()=>calls.some(c=>c.op==='equip'&&c.code==='001000')&&!document.querySelector('[data-player]').disabled);`);
+  await evaluate(`(async()=>{document.querySelector('[data-inventory]').click();await waitFor(()=>document.querySelector('[data-equip-id]'));document.querySelector('[data-equip-id]').click();await waitFor(()=>calls.some(c=>c.op==='equip'&&c.item_id===23)&&!document.querySelector('[data-player]').disabled);})()`);
+  assert.equal(await evaluate(`document.querySelectorAll('[data-multi]').length`),0);
+  await evaluate(`document.querySelector('[data-class]').value='HUmar';document.querySelector('[data-class]').dispatchEvent(new Event('change'));document.querySelector('[data-randomized-on]').checked=true;document.querySelector('[data-randomized-on]').dispatchEvent(new Event('change'));waitFor(()=>calls.some(c=>c.op==='randomized')&&!document.querySelector('[data-player]').disabled);`);
+  await evaluate(`document.querySelector('[data-speed]').value='3';document.querySelector('[data-speed]').dispatchEvent(new Event('input'));document.querySelector('[data-speed]').dispatchEvent(new Event('change'));waitFor(()=>document.querySelector('[data-speed-note]').textContent.includes('Requested 8x'));`);
+  const mutations=await evaluate(`calls.filter(c=>['equip','randomized','autoplay_speed'].includes(c.op))`);
+  assert.equal(mutations.length,4);
+  assert(mutations.every(c=>c.player_index===1));
+  assert.match(await evaluate(`document.querySelector('[data-speed-note]').textContent`),/Actual game speed has not been measured/);
+ });
+});
 
 test('item filters update immediately and match actual class metadata',()=>{
  const rows=[{code:'a',name:'Hunter',stars:12,rare:true,cat:'Weapons',classes:['HUmar']},{code:'b',name:'Ranger',stars:12,rare:true,cat:'Weapons',classes:['RAmar']},{code:'c',name:'COMMON',stars:1,rare:false,cat:'Weapons',classes:['HUmar']}];

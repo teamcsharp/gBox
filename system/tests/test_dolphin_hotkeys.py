@@ -42,10 +42,13 @@ def test_launch_writes_gbox_hotkeys_and_lifts_the_focus_gate(dolphin):
     assert ini.startswith("[Hotkeys]\nDevice = DInput/0/Keyboard Mouse\n")
     k = lambda name: f"`DInput/0/Keyboard Mouse:{name}`"
     lines = dict(line.split(" = ", 1) for line in ini.splitlines()[1:])
-    assert lines["Save State/Save State Slot 1"] == f"{k('F13')} & {k('RCONTROL')} & {k('RSHIFT')} & !{k('LCONTROL')}"
-    assert lines["Load State/Load State Slot 1"] == f"{k('F13')} & {k('RCONTROL')} & !{k('RSHIFT')} & !{k('LCONTROL')}"
-    assert lines["General/Reset"] == f"{k('F13')} & {k('RSHIFT')} & !{k('RCONTROL')} & !{k('LCONTROL')}"
-    assert lines["Emulation Speed/Disable Emulation Speed Limit"] == f"{k('F13')} & !{k('RCONTROL')} & !{k('RSHIFT')} & !{k('LCONTROL')}"
+    assert lines["Save State/Save State Slot 1"] == f"{k('F13')} & {k('RCONTROL')} & {k('RSHIFT')} & !{k('LCONTROL')} & !{k('LSHIFT')}"
+    assert lines["Load State/Load State Slot 1"] == f"{k('F13')} & {k('RCONTROL')} & !{k('RSHIFT')} & !{k('LCONTROL')} & !{k('LSHIFT')}"
+    assert lines["General/Reset"] == f"{k('F13')} & {k('RSHIFT')} & !{k('RCONTROL')} & !{k('LCONTROL')} & !{k('LSHIFT')}"
+    assert lines["Emulation Speed/Disable Emulation Speed Limit"] == f"{k('F13')} & !{k('RCONTROL')} & !{k('RSHIFT')} & !{k('LCONTROL')} & !{k('LSHIFT')}"
+    assert len({frozenset(mods) for mods in ad.HOTKEYS.values()}) == len(ad.HOTKEYS)
+    assert set(ad.HOTKEYS['Emulation Speed/Increase Emulation Speed']) == {'LSHIFT'}
+    assert set(ad.HOTKEYS['Emulation Speed/Decrease Emulation Speed']) == {'LSHIFT', 'RSHIFT'}
     # hotkeys work without focus, so nothing a person presses is bound: no Esc (Stop), F1-F12, Tab...
     assert set(lines) == {"Device", *adapters.DolphinWinAdapter.HOTKEYS}
     for word in ("ESCAPE", "`F1`", ":F1`", "TAB", "RETURN"):

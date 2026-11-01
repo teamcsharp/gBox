@@ -756,6 +756,8 @@ def _flush_jit(ad) -> bool:
 # --- the gBox tool ---------------------------------------------------------------------------------------------------
 class ModsIn(BaseModel):
     session_id: str
+    player_index: int = Field(default=0,ge=0,le=1,strict=True)
+    multiplier: int = Field(default=1,ge=1,le=10,strict=True)
     op: str = "status"          # Platform-specific operations; pso_controls.capabilities gates native support.
     on: bool = True             # crit_always / equip_any / key_bypass / move_speed / rare_drops: on/off
     value: int = 999999         # meseta: amount
@@ -850,6 +852,17 @@ def pso_mods(inp: ModsIn, ctx):
     on=true/false codes=[..] (every enemy and box drops a rare from the list; defaults to the rarest 2OEF items) | status."""
     from .tools import SESSIONS
     ad, g = SESSIONS[inp.session_id]
+    if inp.op=='autoplay_speed':
+        from .pso_live import deadline
+        if not getattr(ad,'_pso_coop_new_card',False) or not callable(getattr(ad,'set_autoplay_speed',None)):
+            raise Unsupported('Speed controls require the dedicated PSO co-op autoplay session')
+        if inp.multiplier not in (1,2,4,8,10):raise ValueError('Choose 1x, 2x, 4x, 8x or 10x speed')
+        deadline(ctx)
+        return {'result':ad.set_autoplay_speed(inp.multiplier)}
+    if inp.player_index and inp.op not in ('capabilities','list','status','give','equip','stat','mag','mag_set','mag_feed','randomized','modes'):
+        raise Unsupported('This action is shared or player-one-only; select player 1 explicitly')
+    if inp.player_index and g.get('platform')!='gamecube':
+        raise Unsupported('Player 2 equipment is only mapped for the verified GameCube build')
     if inp.op == 'rehook':
         from .pso_rehook import recover
         return {'result':recover(inp.session_id,ad,g,ctx)}
@@ -862,7 +875,7 @@ def pso_mods(inp: ModsIn, ctx):
         return {'result':result}
     if inp.op == "capabilities":
         from .pso_controls import capabilities
-        return {"result": capabilities(g, ad.read_memory)}
+        return {"result": capabilities(g, ad.read_memory,player_index=inp.player_index,adapter=ad)}
     if g.get("platform") == "gamecube":
         from .pso_live import gamecube
         return {"result": gamecube(inp, ctx, ad)}

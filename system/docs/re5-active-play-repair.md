@@ -1,5 +1,67 @@
 # RE5 active-play repair — October 26, 2026
 
+## October 30 update: Switch target feedback and bounded acquisition
+
+PR [1614](https://github.com/teamcsharp/gBox/pull/1614) repairs the current Switch
+driver. The October 26 RPCS3 findings below describe a different controller.
+
+The Switch crowd rule could keep the gun raised indefinitely while four nearby
+enemies also suppressed ordinary escape. The new final firing gate uses the
+owned QFPS camera, the actual muzzle origin and a live reachable enemy body.
+Yaw/pitch corrections use elapsed time, capped at 50 ms, and release digital aim
+sticks, including during camera transitions. Read-back proves a write only;
+fresh observed geometry must authorize a shot. A reachable front target takes
+precedence over turning toward an enemy behind the player.
+
+A blocked acquisition now gets 0.75 seconds before a 0.65-second reposition.
+Retargeting does not restart that deadline. Forward, backward and sideways
+directions are checked against available navigation geometry; movement still
+passes through the wall and shot-animation guards. A new clear shot returns to
+aiming/firing. Throws, mines, healing, QTEs, human control and native equipment
+handover retain priority. This fixes indefinite combat aiming; it is not a claim
+that every possible wait in every title has been eliminated.
+
+RE5 requests a 30 Hz decision budget, subtracting actual work instead of sleeping
+a full interval after it. Telemetry exposes decision rate/work/p95, combat action
+and held keys, aim waiting/repositions, target error and write/fire refusals.
+Spark already has all 20 CPUs available with no CPU quota. No Pine service or
+resource policy was changed. More cores alone do not correct aiming geometry.
+
+Validation and activation at approximately 15:28 UTC:
+
+- 178 targeted tests passed after the final camera-transition correction,
+  covering aim, crowds, walls/navigation, animation priorities and weapon locks.
+  The preceding aim/scheduling/reload suite passed 187 tests.
+- Hash-checked candidate installation preserved the separate Pine/native-hook
+  edits and kept backups. Reload job `a3ab674c07724ddf` activated the final aim
+  module with a measured 0.78-second bot handover; no game/service restart.
+- Spark session `30e9b63ca2ee4375-3b50bd73d65b4a35` showed explicit repositioning,
+  real position changes, gunfire and enemy HP losses. Decision rates in the first
+  live sample were about 22-30 Hz. Later samples also contained slower ticks.
+- Ship Deck round `9e1350b1d64a4e6dadac79045f5220eb` **died**, score 10,730:
+  failure under the operator's rule. Increased hit counters do not make it pass.
+- The following Mines fragment `cee21687e50e485ca76cb13103477ac0` reached 75
+  kills, two recorded mine placements and one bonus before the final hot reload
+  recorded it as interrupted. Native S rank was not verified. Reload fragments
+  must not be counted as completed successful rounds.
+- After that reload, fresh native samples showed the resumed Mines session
+  progressing from 90 to 103 kills, with sampled QFPS pitch near -3 to -11 degrees
+  rather than pinned to the floor. This is not proof of final survival or S rank.
+
+Private receipts: Spark `gBox_alt/scratch/agent/re5-aim-trace-1793373816054466517.json`,
+`re5-aim-trace-1793374091734601677.json`,
+`feedback-watch-1793373865136536173.json`,
+`feedback-watch-1793374054607933378.json`, and
+`active-outcomes-1793374124040366864.json`. Final scoped rollback copies are under
+`re5-keep-active-v2/before-1793374050187070292` in that same scratch directory.
+The controller lives in the established `re5_switch_aim.py` module because the
+worker's initial reload registry did not reliably discover the first new helper.
+
+Remaining acceptance: uninterrupted S-or-better survival, boss/close-crowd
+dispatch, confirmed mine detonations, and equivalent no-stall verification for
+RE6 and Mercenaries 3D. Keep autoplay running; do not launch games on JAYBUILTFINALE
+or overwrite the concurrent Pine integration while continuing this work.
+
 ## Findings
 
 The running bot was receiving fresh telemetry and issuing input. A retained
