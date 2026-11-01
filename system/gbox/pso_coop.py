@@ -22,6 +22,7 @@ import httpx
 from . import pso_campaign as solo
 from .pso_coop_nav import Maps, room_key
 from .pso_coop_native import context as native_context, SpeedSampler
+from .pso_coop_menu import MenuProgress
 from .pso_gc_live import PLAYER, VT_UPDATE
 from .registry import Unsupported
 
@@ -37,6 +38,14 @@ existing personal card, enter online play, or change emulator settings. If the
 isolated-new-card authorization is false, only select existing campaign characters;
 card initialization/new character replacement requires needs_operator=true.
 Read the actual screen, move a visible selection one step at a time, then reassess.
+Before a menu confirmation, name menu_title, selected_option, intended_option,
+and selection_evidence describing the visible cursor/highlight. The highlighted
+option is not necessarily the desired option. On the software license screen,
+Agree and Disagree are separate choices: if Disagree is highlighted, move to
+Agree and reobserve; do not press A on Disagree. Never combine navigation and
+confirmation in one action. If the highlight is unclear, return no action and
+explain the uncertainty. Use previous_menu_attempt to notice an unchanged menu;
+do not keep repeating a confirmation that has not advanced it.
 Select offline multi mode, join both controllers, and choose the requested episode
 and difficulty when naturally unlocked. If a difficulty is locked, report locked
 and continue leveling the same buddies at their highest available difficulty.
@@ -51,6 +60,7 @@ credits in multiplayer or seek single-player quests. The game
 has no dodge roll: evade by moving out of attacks. Do not assume an action palette
 button is healing; read it. Return only JSON with thought, screen
 (gameplay|menu|loading|credits|death|unknown), needs_operator, difficulty_locked,
+menu_title, selected_option, intended_option, selection_evidence,
 and actions [{player:1|2, keys:[a|b|x|y|l|r|start|up|down|left|right|lup|ldown|lleft|lright], secs:0..0.6}].
 At most four short actions. Player-specific waypoints may be returned as goals
 [{player:1|2,x:number,z:number,room:integer,reason:string}] ONLY from native entities
@@ -244,11 +254,12 @@ class EmulationPaused(InputDeferred):
 
 
 class Inputs:
-    def __init__(self, ad, stopped, *, send_primary=None, polite=False):
+    def __init__(self, ad, stopped, *, send_primary=None, polite=False, stats=None):
         if not callable(getattr(ad, "send_input_player", None)):
             raise Unsupported("This Dolphin adapter has no independent second controller")
         self.ad, self.stopped = ad, stopped
         self.send_primary, self.polite = send_primary, polite
+        self.stats = stats if stats is not None else {}
         try:
             self.has_polite = "polite" in inspect.signature(ad.send_input_player).parameters
         except (TypeError, ValueError):
@@ -261,10 +272,17 @@ class Inputs:
             result = self.ad.send_input_player(events, player=player, polite=self.polite)
         else:
             result = self.ad.send_input_player(events, player=player)
+        self.stats.update(last_input_player=player, last_input_keys=','.join(e['key'] for e in events),
+                          last_input_requested=len(events),
+                          last_input_sent=result.get('sent', 0) if isinstance(result, dict) else 0,
+                          last_input_held=str(result.get('held') or result.get('stopped') or '')[:200] if isinstance(result, dict) else '')
         if check and (not isinstance(result, dict) or result.get("sent") != len(events)
                       or result.get("held") or result.get("stopped")):
             reason = (result.get("held") or result.get("stopped")) if isinstance(result, dict) else None
             raise InputDeferred(reason or "PSO controller did not acknowledge every input event")
+        if check:
+            self.stats['input_batches_acknowledged'] = self.stats.get('input_batches_acknowledged', 0) + 1
+            self.stats['input_down_events_acknowledged'] = self.stats.get('input_down_events_acknowledged', 0) + sum(bool(e.get('down', True)) for e in events)
         return result
 
     def speed(self):
@@ -537,7 +555,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats = stats if stats is not None else {}
     reader, inputs = Reader(ad), Inputs(ad, stopped, send_primary=send,
         polite=bool((getattr(driver, "demo", False) or getattr(driver, "screensaver", None))
-                    and not getattr(driver, "owns_keyboard", False)))
+                    and not getattr(driver, "owns_keyboard", False)), stats=stats)
     ledger = getattr(ad, "_pso_coop_progress", None) or Progress()
     ad._pso_coop_progress = ledger
     authorization = getattr(ad, "_pso_coop_new_card", {}) or {}
@@ -555,6 +573,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats["recorded_input_evidence"] = recorded
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pso-coop-planner")
     pending, planned_identity, planned_frame, last_plan_at, errors = None, None, None, 0., 0
+    menu, planner_errors = MenuProgress(), 0
     mapped = False
     ad._pso_verified_player_slots = set()
     initialize = (authorization.get("isolated") is True and authorization.get("session_id") == session_id
@@ -598,8 +617,26 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if speed_sampler.failure:
                     stats["speed_sampling_error"] = speed_sampler.failure
                 if pending is not None and pending.done():
-                    plan, pending = pending.result(), None
-                    selected = actions(plan)
+                    completed, pending = pending, None  # a failed future must not be read again forever
+                    stats['planner_latency_s'] = round(time.monotonic() - last_plan_at, 3)
+                    try:
+                        plan = completed.result()
+                        selected = actions(plan)
+                    except (OSError, ValueError, KeyError, httpx.HTTPError) as exc:
+                        planner_errors += 1
+                        stats.update(planner_consecutive_errors=planner_errors,
+                                     planner_state='failed_observation',
+                                     planner_last_error=f'{type(exc).__name__}: {exc}'[:400],
+                                     planner_failures=stats.get('planner_failures', 0) + 1)
+                        if planner_errors >= 5:
+                            stats.update(ok=False, campaign_state='needs_operator',
+                                         stopped_reason='Five planner observations failed; inputs released')
+                            break
+                        solo.wait(min(planner_errors, 3), stopped)
+                        continue
+                    planner_errors = 0
+                    stats.update(planner_consecutive_errors=0, planner_last_error='', planner_state='observed',
+                                 planner_actions=len(selected), planner_responses=stats.get('planner_responses', 0) + 1)
                     stats.update(thought=str(plan.get("thought", ""))[:400], screen=plan.get("screen", "unknown"),
                                  difficulty_locked=bool(plan.get("difficulty_locked")))
                     if plan.get("needs_operator"):
@@ -621,10 +658,21 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                             # cannot inject stale movement into a currently busy fight.
                             combat = state.get("verified") and any(e.get("kind") == "enemy" and e.get("hp", 0) > 0 for e in state.get("entities", []))
                             if not combat or any(p.get("hp", 0) < p.get("hp_max", 1) * .35 for p in state.get("players", {}).values()):
+                                selected, reason = menu.review(plan, selected, state_identity(state))
+                                stats.update(menu_repeated_attempts=menu.repeats, menu_input_withheld=reason,
+                                             menu_selected_option=menu.previous.get('selected_option', ''),
+                                             menu_intended_option=menu.previous.get('intended_option', ''),
+                                             planned_input_player=selected[0][0] if selected else 0,
+                                             planned_input_keys=','.join(selected[0][1]) if selected else '')
+                                if menu.stalled:
+                                    stats.update(ok=False, campaign_state='needs_operator', stopped_reason=reason)
+                                    break
                                 # Menus are observed after every individual input.
                                 # A confirm must never cascade into an unseen dialog.
                                 for command in selected[:1]:
                                     inputs.hold([command])
+                                    if menu.previous:
+                                        menu.previous['input_delivery_verified'] = True
                     else:
                         stats["action"] = "discarded_stale_plan"
                 if pending is None and time.monotonic() - last_plan_at > (2.1 if ledger.boss_zero else 8):
@@ -632,6 +680,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                "isolated_new_card_initialization_authorized": initialize,
                                "native_state": state, "controller_mapping_verified": mapped,
                                "current_goals": controller.goals,
+                               "previous_menu_attempt": menu.previous,
                                "recorded_input_evidence": recorded,
                                "next": ("Use the normal save/quit path, Change Game Mode, and choose the next requested episode and available difficulty"
                                         if ledger.awaiting_entry else
@@ -639,6 +688,9 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     planned_frame, planned_identity = ad.get_frame(), state_identity(state)
                     pending = executor.submit(planner, planned_frame, context)
                     last_plan_at = time.monotonic()
+                    stats.update(planner_requests=stats.get('planner_requests', 0) + 1,
+                                 planner_state='waiting', input_polite=inputs.polite,
+                                 second_pad_polite_supported=inputs.has_polite)
                 if mapped and state.get("verified"):
                     stats["action"] = "coordinated_native_combat_or_navigation"
                     controller.tick(state)
