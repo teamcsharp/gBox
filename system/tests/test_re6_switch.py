@@ -973,6 +973,56 @@ def test_a_crowd_gets_a_tablet_earlier_and_crowd_control_backs_out_as_it_attacks
     assert attacks and all("ldown" in a["hold"] for a in attacks) and bot.stats["cc_backouts"] > 0
 
 
+def test_flanking_enemy_at_110deg_gets_crowd_control_not_aimed_fire():
+    """#5047 (fc45a6229fe006d0): an enemy 1.5 m away at 110 deg off-facing falls outside CC_CONE (100 deg)
+    but inside CC_FLANK_CONE (130 deg). The bot must enter crowd control (turning to the enemy) instead
+    of raising its aim into the flanking threat."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((150.0 * math.sin(math.radians(110)), 0.0, 150.0 * math.cos(math.radians(110)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    # The bot should be in crowd control (cc_turn or quick_turn), not aiming
+    assert bot.stats["act"] in ("cc_turn", "cc_quick_shot", "cc_kick", "quick_turn"), \
+        f"flanking enemy at 110 deg not caught by crowd control: act={bot.stats['act']}"
+
+
+def test_flanking_enemy_at_137deg_gets_crowd_control_not_aimed_fire():
+    """#5047 (fc45a6229fe006d0): an enemy at 137 deg off-facing (observed in the cluster) falls
+    outside CC_CONE but inside CC_FLANK_CONE. The bot must enter crowd control (quick turn)."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((180.0 * math.sin(math.radians(137)), 0.0, 180.0 * math.cos(math.radians(137)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["act"] in ("cc_turn", "cc_quick_shot", "cc_kick", "quick_turn"), \
+        f"flanking enemy at 137 deg not caught by crowd control: act={bot.stats['act']}"
+
+
+def test_flanking_enemy_at_99deg_gets_crowd_control_not_aimed_fire():
+    """#5047 (fc45a6229fe006d0): an enemy at 99 deg off-facing is inside CC_CONE (100 deg).
+    The bot must enter crowd control."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((160.0 * math.sin(math.radians(99)), 0.0, 160.0 * math.cos(math.radians(99)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["act"] in ("cc_turn", "cc_quick_shot", "cc_kick", "quick_turn"), \
+        f"flanking enemy at 99 deg not caught by crowd control: act={bot.stats['act']}"
+
+
+def test_enemy_at_150deg_gets_quick_turn_not_crowd_control():
+    """Regression: an enemy at 150 deg off-facing is outside CC_FLANK_CONE (130 deg).
+    The bot should use quick_turn (existing behavior) rather than crowd control."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((200.0 * math.sin(math.radians(150)), 0.0, 200.0 * math.cos(math.radians(150)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats["act"] == "quick_turn", \
+        f"enemy at 150 deg should get quick_turn not crowd control: act={bot.stats['act']}"
+
+
 def test_a_bomb_only_healthy_with_nobody_near_and_three_coming_at_most_every_thirty_seconds():
     four = ((0.0, 0.0, 700.0, 700), (150.0, 0.0, 800.0, 700), (-150.0, 0.0, 750.0, 700), (0.0, 0.0, 1100.0, 700))
     for kw, enemies in (({"hp": 900}, four[:2]),                                       # two coming: no
