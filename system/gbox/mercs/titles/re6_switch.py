@@ -2537,7 +2537,13 @@ class Bot:
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
-        if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
+        # request #5050 (grabbed from the front): the RAM held byte lags the grab - the cluster's hits are state 0
+        # (free) with HP already falling at 0.0-0.2 m, so the fight path (raise / cc_kick) runs in the window before
+        # the hold is confirmed and the instant kill lands. The HP-fall grab heuristic (falling health, an enemy at
+        # grab range) is therefore trusted regardless of the state byte when he is not already in a hold: it drops
+        # him straight into the break-free escape instead of the in-place fight.
+        grab = self.grabbed(p, near, now) if (not held and now >= self.break_until) else False
+        if held or now < self.break_until or grab or self.held(p, now):
             # The held_prompt gate: a grab's recovery. Suppress the held/raise action when the bot is held, just
             # lost HP, and a live enemy is at arm's length in front. Forces an in-place kick instead.
             gate = self._held_prompt_gate(p, live, flat, snap, now)

@@ -3129,3 +3129,31 @@ def test_the_blow_flag_survives_to_the_next_ticks():
     assert bot._hit_at is not None and clock[0] - bot._hit_at < R.HIT_TURN_BLOCK_S   # the window is open
     run(bot, snap, clock, 30)                                           # the window's out
     assert bot._hit_at is None or clock[0] - bot._hit_at >= R.HIT_TURN_BLOCK_S
+
+
+def test_a_grab_with_a_free_state_byte_still_breaks_free_instead_of_fighting():
+    # request #5050 (grabbed from the front): the cluster's hits are state 0 (free) with HP already falling at
+    # 0.0-0.2 m - the RAM held byte has not confirmed the hold yet, so before this fix the fight path (raise /
+    # cc_kick) ran and the instant kill landed. Now the HP-fall grab heuristic (falling health, an enemy at grab
+    # range) drops him straight into the break-free escape even while the state byte still says free.
+    # enemy 0.6 m in front (within GRAB_R = 120 cm), state byte 0 (free), HP falling 900 -> 300 (a full-bar grab)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 60.0, 700),), cam_yaw=0.0, state=0, tablets=0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 1)                                            # warm: records HP 900 in hp_seen
+    snap["player"]["hp"] = 300                                          # the grab's drop (a full bar at once)
+    acts = run(bot, snap, clock, 4)
+    assert bot.doing == "held" and "B mashed" in bot.why          # the break-free escape (action 0: free state)
+    assert all(set(a.get("hold", ())) & {"b"} or set(a.get("hold", ())) <= {"lup", "ldown", "lleft", "lright"}
+               for a in acts)
+    assert not any(a.get("hold") == ("zl", "zr") for a in acts)         # no quick shot fired while grabbed
+
+
+def test_a_grab_heuristic_does_not_trip_when_health_is_stable():
+    # The same enemy at 0.6 m with health holding steady is a fight, not a grab: the falling-health gate is what
+    # arms the heuristic, so a stable bar keeps the normal fight path.
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 60.0, 700),), cam_yaw=0.0, state=0, tablets=0))
+    bot.held = lambda p, now: False
+    run(bot, snap, clock, 1)
+    snap["player"]["hp"] = 900                                          # no fall: still 900
+    acts = run(bot, snap, clock, 4)
+    assert bot.doing != "break_free"                                    # the fight path runs, not the escape
