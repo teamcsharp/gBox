@@ -610,8 +610,11 @@ class DesktopBridge:
                             prior = {'ok': False, 'error': 'Previous RPC outcome is unknown; it was not repeated'}
                             self.store.put('desktop_bridge_rpc', key, prior)
                             try:
+                                args = event.get('args') or {}
+                                speed_change = event.get('op') == 'pso_controls' and (args.get('input') or {}).get('op') == 'autoplay_speed'
                                 reply = local.post('/api/sessions/' + sid + '/rpc',
-                                                   json={'op': event['op'], 'args': event.get('args') or {}})
+                                                   json={'op': event['op'], 'args': args},
+                                                   **({'timeout': 50} if speed_change else {}))
                                 if reply.is_success:prior = {'ok': True, 'data': reply.json()}
                                 else:prior = {'ok': False, 'error': 'Local RPC was refused (' + str(reply.status_code) + ')'}
                             except (httpx.HTTPError, ValueError):

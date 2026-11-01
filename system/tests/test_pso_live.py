@@ -12,6 +12,25 @@ def body(op='floor_clear',**args):
     return {'command_id':str(uuid.uuid4()),'expires':time.time()+8,'input':{'op':op,**args}}
 
 
+def test_modes_reuses_cached_measured_speed_without_a_native_clock_call(monkeypatch):
+    from gbox import pso_controls as C, pso_gc_live as G, pso_gc_extras as E, pso_gc_adventure as A
+    from test_pso_controls import measured_speed_adapter
+    ad = measured_speed_adapter()
+    ad.read_memory = lambda *_: b''
+    ad.write_memory = lambda *_: pytest.fail('Status must not write game memory')
+    ad.set_autoplay_speed = lambda *_: pytest.fail('Status must not change speed')
+    monkeypatch.setattr(C.time, 'monotonic', lambda: 100.)
+    monkeypatch.setattr(G.GC, 'check', lambda *_: 1)
+    monkeypatch.setattr(E.Extras, 'check', lambda *_: 1)
+    monkeypatch.setattr(E.Extras, 'u32', lambda *_: 0)
+    monkeypatch.setattr(A.Adventure, 'travel_status', lambda *_: {})
+    monkeypatch.setattr(G.GC, 'call', lambda *_: pytest.fail('Status must not enqueue a native call'))
+    result = L.gamecube(T.ModsIn(session_id='buddy', op='modes'), None, ad)
+    assert result['autoplay_speed']['measurement_verified']
+    assert result['autoplay_speed']['actual'] == 1 and result['autoplay_speed']['requested'] == 10
+    assert not result['autoplay_speed']['achieved_verified']
+
+
 @pytest.mark.parametrize('mutation',[lambda b:b.update(expires=0),lambda b:b.update(expires=float('nan')),
     lambda b:b['input'].update(op='write_memory'),lambda b:b['input'].update(address=0x80000000),
     lambda b:b['input'].update(session_id='other'),lambda b:b.update(command_id='invalid')])
@@ -46,6 +65,20 @@ def test_failure_is_not_executed_again(monkeypatch,tmp_path):
     assert calls==[1]
 
 
+@pytest.mark.parametrize('op,player,records',[('give',0,1),('give',1,0),('autoplay_speed',0,0)])
+def test_receipts_keep_selected_player_actions_out_of_legacy_primary_replay(monkeypatch,tmp_path,op,player,records):
+    from gbox import gameplay_actions
+    ctx=Ctx(Config(data_dir=tmp_path,granted_permissions=['memory_write']))
+    monkeypatch.setitem(tools.SESSIONS,'selected-record',(object(),{'title':'Phantasy Star Online','platform':'gamecube'}))
+    captured=[]
+    monkeypatch.setattr(gameplay_actions,'record',lambda *args:captured.append(args))
+    monkeypatch.setattr(T,'pso_mods',lambda inp,ctx:{'result':{'verified':True}})
+    request=body(op,player_index=player)
+    result=L.execute('selected-record',request,ctx)
+    assert result['command_id']==request['command_id']
+    assert len(captured)==records
+
+
 def test_worker_permission_and_missing_context_are_enforced(monkeypatch,tmp_path):
     monkeypatch.setitem(tools.SESSIONS,'permission',(object(),{'title':'Phantasy Star Online','platform':'gamecube'}))
     with pytest.raises(Unsupported):L.execute('permission',body(),None)
@@ -55,7 +88,7 @@ def test_worker_permission_and_missing_context_are_enforced(monkeypatch,tmp_path
 def test_catalog_delay_checks_expiry_before_native_mutation(monkeypatch):
     from gbox import pso_gc_live
     calls=[]
-    monkeypatch.setattr(pso_gc_live,'GC',lambda ad:SimpleNamespace(check=lambda:None,floor_spawn=lambda *a:calls.append(a)))
+    monkeypatch.setattr(pso_gc_live,'GC',lambda ad,**kw:SimpleNamespace(check=lambda:None,floor_spawn=lambda *a:calls.append(a)))
     ctx=SimpleNamespace(pso_expires=time.time()+8)
     def late(*args):
         ctx.pso_expires=0

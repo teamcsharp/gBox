@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("gbox", {
   settings: () => ipcRenderer.invoke("settings:get"),
+  sshStatus: () => ipcRenderer.invoke('ssh:status'),
+  sshEnable: () => ipcRenderer.invoke('ssh:enable'),
+  sshPreference: value => ipcRenderer.invoke('ssh:preference',value),
+  onSshChanged: fn => ipcRenderer.on('ssh:changed',(_e,state)=>fn(state)),
   connectionStatus: () => ipcRenderer.invoke('connection:status'),
   selectConnection: mode => ipcRenderer.invoke('connection:select',mode),
   onConnection: fn => ipcRenderer.on('connection:changed',(_e,state)=>fn(state)),

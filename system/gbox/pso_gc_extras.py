@@ -66,6 +66,7 @@ class Extras(GC):
   return p
 
  def survival(self,on):
+  if self.player_index:raise Unsupported('Automatic Scape Doll is currently verified for player 1 only')
   self.check();self.hook();self.write(SURVIVAL,struct.pack('>I',int(on)))
   return {'permanent_scape':bool(on),'verified':self.u32(SURVIVAL)==int(on),
           'note':'Virtual Scape Doll: native revival on death, no inventory slot or consumable required.'}

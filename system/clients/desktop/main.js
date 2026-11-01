@@ -51,6 +51,7 @@ const DEFAULTS = {
   token: "",                                          // optional: paste once if neither share nor SSH is reachable
   workerName: os.hostname(),
   autoStartWorker: true,
+  autoStartSsh: false,                                  // explicit per-PC opt-in; setup uses Windows UAC
   controlMode: 'local',                                // this PC remains usable without the remote control plane
   volume: 30,
 };
@@ -360,7 +361,26 @@ function saveSettings(s) {
   remoteTokenReader.reset();
   return settings();
 }
-ipcMain.handle("settings:save", (_e, s) => saveSettings(s));
+ipcMain.handle("settings:save", (event, s) => {
+  if (Object.hasOwn(s || {}, 'autoStartSsh')) {
+    assertSshSender(event);
+    if (typeof s.autoStartSsh !== 'boolean') throw Error('Expected a boolean SSH startup preference.');
+  }
+  return saveSettings(s);
+});
+const localSsh = require('./windows-ssh.cjs').create({
+  getPreference: () => configuredSettings().autoStartSsh === true,
+  savePreference: value => saveSettings({autoStartSsh:value}),
+  changed: state => send('ssh:changed',state),
+});
+function assertSshSender(event) {
+  assertClientSender(event);
+  if (event.sender.getURL() !== require('node:url').pathToFileURL(path.join(__dirname,'index.html')).href)
+    throw Error('Only the local gBox Settings page can manage Windows SSH.');
+}
+ipcMain.handle('ssh:status', event => { assertSshSender(event); return localSsh.status(); });
+ipcMain.handle('ssh:enable', event => { assertSshSender(event); return localSsh.enable(); });
+ipcMain.handle('ssh:preference', (event,value) => { assertSshSender(event); return localSsh.preference(value); });
 ipcMain.handle('rec:preferences', () => recordingExport.preferences({ ...RECORDING_DEFAULTS, ...settings().recording }));
 ipcMain.handle('rec:preferences-save', (_e, p) => saveSettings({ recording: recordingExport.preferences(p) }).recording);
 ipcMain.handle("token", () => token());
@@ -1540,6 +1560,7 @@ app.whenReady().then(() => {
     if (settings().autoStartWorker) startWorker();
   }
   startAudioVolumeHelper();
+  localSsh.startup().catch(() => logPush('ssh','Windows SSH initialization failed; use Settings to retry.'));
 });
 let sessionsShutDown = false;
 function shutdownSessions() {

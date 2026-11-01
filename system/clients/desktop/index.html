@@ -1202,6 +1202,7 @@ window.taskVizCreate = canvas => {
     <section id="settings"><div class="pane" style="max-width:640px">
       <form id="sform"></form>
       <button class="act pri" id="ssave">Save</button> <span class="mut" id="ssaved"></span>
+      <div id="windows-ssh" class="card" style="margin-top:20px"></div>
       <div id="ollama-assist" class="card" style="margin-top:20px"></div>
       <div id="gameplay-memory" class="card" style="margin-top:20px"></div>
       <div id="showcase" style="margin-top:22px;border:1px solid var(--line,#333);border-radius:8px;padding:10px 12px"></div>
@@ -1210,6 +1211,7 @@ window.taskVizCreate = canvas => {
   </main>
 </div>
 <script src="floating.js"></script>
+<script src="windows-ssh-ui.js"></script>
 <script src="gameplay-memory.js"></script>
 <script src="inbox-view.js"></script>
 <script src="player-damage-view.js"></script>
@@ -2699,6 +2701,8 @@ function loadPlay() {
 }
 
 // settings
+const windowsSshPanel = GBoxWindowsSsh.mount($("#windows-ssh"),gbox);
+document.querySelector('aside button[data-s="settings"]').addEventListener('click',()=>windowsSshPanel.refresh());
 const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API token (only if the share/SSH below are unreachable)", "password"],
   ["sshHost", "SSH host for Spark management (alias from ~/.ssh/config)"], ["repoRemote", "Repo path on the Spark"],
   ["repoShare", "Spark repo over SMB (optional, used to read the token)"], ["repoLocal", "This PC's gBox checkout (runs the Windows worker)"],

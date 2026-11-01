@@ -11,7 +11,7 @@ from .registry import Unsupported
 OPS = frozenset(('capabilities', 'rehook', 'status', 'list', 'floor_spawn', 'floor_rares', 'floor_clear',
                  'floor_list', 'give', 'equip_any', 'always_hit', 'multi_equip', 'stat',
                  'survival','revive','mag','mag_set','mag_feed','randomized','modes','legendary',
-                 'enemy_drops','walk_through','bosses','boss_warp','adventure_status'))
+                 'enemy_drops','walk_through','bosses','boss_warp','adventure_status','equip','autoplay_speed'))
 READS = frozenset(('capabilities', 'status', 'list', 'floor_list','mag','modes','bosses','adventure_status'))
 _receipts = {}
 _guard = threading.Lock()
@@ -104,8 +104,12 @@ def execute(sid, body, ctx):
             result['command_id'] = body['command_id']
             receipt['result'] = result
             try:
-                from . import gameplay_actions
-                gameplay_actions.record(sid,body['input'],result,ctx,body['command_id'])
+                # The legacy replay schema drops player_index and multiplier.
+                # Keep these actions in command receipts/audit, never replay P2
+                # gear against P1 or an unmeasured speed request as a native rate.
+                if inp.player_index==0 and inp.op!='autoplay_speed':
+                    from . import gameplay_actions
+                    gameplay_actions.record(sid,body['input'],result,ctx,body['command_id'])
             except Exception:pass  # Applied mutations must never become retries because recording failed.
             return result
         except Exception as error:
@@ -149,7 +153,7 @@ def gamecube(inp, ctx, ad):
     import random
     from .pso_gc_live import GC, EQUIP_PATCH
     from .psoitems import CLASSES, rare_pool
-    m = GC(ad)
+    m = GC(ad,player_index=inp.player_index,pin_player=True)
     m.check()
     if inp.op in ('enemy_drops','walk_through','bosses','boss_warp','adventure_status'):
         from .pso_gc_adventure import Adventure,validate_pool
@@ -169,7 +173,7 @@ def gamecube(inp, ctx, ad):
         from .pso_gc_extras import Extras,legendary
         from . import pso_modes
         from .pso_gc_live import SURVIVAL,CAVE,VT_UPDATE
-        m=Extras(ad);m.check();deadline(ctx)
+        m=Extras(ad,player_index=inp.player_index,pin_player=True);m.check();deadline(ctx)
         if inp.op in ('survival','legendary'):
             result=m.survival(inp.on) if inp.op=='survival' else legendary(ad,inp.on)
             ad._pso_preferences_dirty=True
@@ -181,12 +185,15 @@ def gamecube(inp, ctx, ad):
             return m.mag_set(inp.item_id,inp.properties) if inp.op=='mag_set' else m.mag_feed(inp.item_id,inp.code)
         if inp.op=='modes':
             from .pso_gc_adventure import Adventure
-            return {'permanent_scape':m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id),
-                    'travel':Adventure(ad).travel_status()}
+            from .pso_controls import autoplay_speed_status
+            return {'permanent_scape':not inp.player_index and m.u32(VT_UPDATE)==CAVE and m.u32(SURVIVAL)==1,'randomized':pso_modes.status(inp.session_id,inp.player_index),
+                    'travel':Adventure(ad).travel_status(),
+                    'autoplay_speed':autoplay_speed_status(ad, bool(getattr(ad,'_pso_coop_new_card',False) and
+                        callable(getattr(ad,'set_autoplay_speed',None))))}
         rows=catalog(ctx,'gc') if inp.on else []
         deadline(ctx)
-        return pso_modes.configure(inp.session_id,ad,ctx,inp.on,inp.interval,inp.categories,inp.character_class,rows)
-    if inp.op in ('floor_spawn', 'floor_rares', 'give', 'list'):
+        return pso_modes.configure(inp.session_id,ad,ctx,inp.on,inp.interval,inp.categories,inp.character_class,rows,player_index=inp.player_index)
+    if inp.op in ('floor_spawn', 'floor_rares', 'give', 'list','equip'):
         rows = catalog(ctx, 'gc')
         by_code = {i['code']: i for i in rows}
     deadline(ctx)
@@ -194,6 +201,21 @@ def gamecube(inp, ctx, ad):
         return {'stats': m.shown_stats(), 'equip_any': m.read(EQUIP_PATCH, 4).hex() == '38000005'}
     if inp.op == 'list':
         return {'inventory': [r | {'name': by_code.get(r['code'][:4]+'00' if r['code'].startswith('02') else r['code'], {}).get('name', r['code'])} for r in m.inventory()]}
+    if inp.op == 'equip':
+        from .pso_gc_extras import Extras
+        gear=Extras(ad,player_index=inp.player_index,pin_player=True);gear.check()
+        item_id=inp.item_id
+        if item_id is None:
+            code=inp.code.strip().lower()
+            if code not in by_code or not code.startswith(('00','02','0101','0102')):
+                raise ValueError('Select one equippable item from this disc catalog')
+            made=gear.give(code)
+            if not made.get('verified') or len(made.get('ids',[]))!=1:
+                raise RuntimeError('The selected equipment was not acknowledged; refresh inventory before retrying')
+            item_id=made['ids'][0]
+        verified=gear.equip_id(item_id)
+        return {'verified':verified,'item_id':item_id,'player_index':inp.player_index,
+                'message':'Equipment applied to player '+str(inp.player_index+1) if verified else 'The game refused this equipment; the item was retained'}
     if inp.op == 'equip_any':
         result=m.equip_any(inp.on);ad._pso_preferences_dirty=True
         return result
@@ -209,7 +231,14 @@ def gamecube(inp, ctx, ad):
         code = inp.code.strip().lower()
         if code not in by_code:
             raise ValueError('Choose an item code from this GameCube disc database')
-        return m.give(code, max(1, min(20, inp.count)))
+        result=m.give(code, max(1, min(20, inp.count)))
+        if inp.equip and result.get('verified') and result.get('ids'):
+            from .pso_gc_extras import Extras
+            gear=Extras(ad,player_index=inp.player_index,pin_player=True)
+            gear._player_binding=m._player_binding
+            result['equipped']=gear.equip_id(result['ids'][0])
+            result['verified']=bool(result['equipped'])
+        return result
     if inp.op in ('floor_spawn', 'floor_rares'):
         count = max(1, min(20, inp.count))
         if inp.op == 'floor_rares':
