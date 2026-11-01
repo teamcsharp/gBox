@@ -783,6 +783,8 @@ RAISE_WIDTH = 1.25                       # the gun comes up once he is inside th
 POINT_BLANK_RAY, POINT_BLANK_R = 60.0, 150.0   # a ray this short with him this near in front: the dot is on him
 SWITCH_ERR = math.radians(20)            # the aim far off the target: a Majini this near the ray is taken instead
 GRAB_THREAT_R = 120.0                    # one this near, not in front, is turned to before the ones in front
+WINDUP_FIRE, WINDUP_FIRE_R = True, 250.0 # #5053 faced_melee: an attack already winding up this close on his level - the gun
+                                         # must be on him before the swing lands: a quick turn instead of the slow aim turn
 CLOSE_BACKOFF, BURST_BACKOFF, HEALTHY_ESCAPES = False, False, False   # no back-offs, no bursts cut short; escapes hurt only
 # Long shots with care (operator 2026-10-27: "raining fire ... with the aimbot improving allowing them to fire with great
 # distance and precision if the opportunity allows"). Live 04:00-04:13 (rain fire): 27 pulls at Majini 8-22 m hit 16; the
@@ -3598,6 +3600,32 @@ class Bot:
                 return {"tap": "a"}
             return {"tap": "dleft" if cursor > want else "dright"}
         self.dead_since = None
+        if WINDUP_FIRE:
+            # #5053 faced_melee: an incoming melee this close, already winding up - the quick turn, the gun down
+            # for it. Measured from the snapshot itself (never the wind-up ledger: the decision order runs the
+            # melee before the ledger fills). The slow aim turn (turn + laser settle, trigger only once aimed)
+            # lets the swing land - the recorded frames show the bot aiming, no trigger, when the hit connected.
+            live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0]
+            if live:
+                px, py, pz = p["pos"]
+                flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+                wu = min((e for e in live if flat(e) <= WINDUP_FIRE_R
+                          and abs(e["pos"][1] - py) <= LEVEL_DY
+                          and (e.get("motion") in WINDUP_MOTIONS or (e.get("act") or 0) & E_ATTACKING)),
+                         key=flat, default=None)
+                if wu is not None:
+                    err = wrap(heading(wu["pos"][0] - px, wu["pos"][2] - pz) - p["rot"])
+                    key = wu.get("ptr", wu.get("slot"))
+                    self._set_target(key, now)
+                    self.target_at = now
+                    self._gun_down()
+                    self.stats["behind_turns"] += 1
+                    self.stats["quick_turns"] += 1
+                    self.quick = 2
+                    self.doing, self.why = ("quick_turn",
+                                            f"faced melee: a swing winding up {flat(wu) / 100:.1f} m "
+                                            f"({math.degrees(err):+.0f} deg): the quick turn")
+                    return {"hold": ("ldown",)}
         self._round_start(snap, now)
         # start each round facing open ground (once per round, before any movement)
         if not getattr(self, "_start_facing_done", True):
