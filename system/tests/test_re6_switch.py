@@ -3589,3 +3589,80 @@ def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
     quick_turn_ticks = [i for i, t in enumerate(result['ticks']) if t['doing'] == 'quick_turn']
     assert len(quick_turn_ticks) >= 2, \
         f"expected >=2 quick_turn ticks within 20 ticks (1.0s), got {len(quick_turn_ticks)}: {doings}"
+def test_repeated_stalls_trigger_direct_walk_fallback():
+    """#5083: after PURSUE_STALL_S seconds of no progress while pursuing (side-steps don't help),
+    the bot forces a direct-walk fallback (ignores the nav mesh) to break the geometry loop
+    that caused the 157.0/round pursuit_stuck outlier."""
+    class StuckMesh:
+        """A mesh that gives a valid heading (waypoint > NAV_DEGEN_R) but the bot can't follow it
+        due to geometry — the bot gets stuck and side-steps don't help."""
+        def path(self, a, b):
+            return [(a[0] + 200.0, a[1], a[2])]  # valid: 2 m ahead (> NAV_DEGEN_R)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.down = False
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    snap["navmesh"] = StuckMesh()
+    snap["enemies"] = [
+        {"slot": 0, "ptr": 0xC100, "pos": (200.0, 0.0, 200.0), "hp": 700, "hp_max": 700},
+    ]
+    t0 = clock[0]
+    # Tick 1: bot starts pursuing, no stall yet
+    bot._pursue(snap["player"], snap, t0)
+    assert bot._stall_since is None, "no stall on the first tick"
+    # Tick 2 (1 s later): bot is stuck (didn't move > PURSUE_STUCK_CM), but the stuck check
+    # requires now - pursue_spot[0] > PURSUE_STUCK_S (strictly greater), so it doesn't fire yet.
+    t1 = t0 + 1.0
+    bot._pursue(snap["player"], snap, t1)
+    assert bot.stats.get("pursuit_stuck", 0) == 0, "stuck check hasn't fired yet (strict >)"
+    # Tick 3 (2 s later): stuck check fires, side-step triggers, stall timer starts
+    t2 = t0 + 2.0
+    bot._pursue(snap["player"], snap, t2)
+    assert bot.stats.get("pursuit_stuck", 0) == 1, "first stall recorded"
+    assert bot._stall_since is not None, "stall timer started"
+    assert bot._stall_since == t2, "stall began at the first stuck tick"
+    # Ticks 4-12: bot keeps getting stuck, stall timer accumulates
+    for i in range(3, 12):
+        t_i = t0 + float(i)
+        bot._pursue(snap["player"], snap, t_i)
+    # Tick 13 (12 s after t2): stall timeout triggers, direct walk forced
+    t_stall = t2 + R.PURSUE_STALL_S + 0.1
+    bot.nav_path = None  # force replan
+    out = bot._pursue(snap["player"], snap, t_stall)
+    # The bot should be walking directly at the enemy (not following the nav mesh)
+    # Since the mesh gives a valid heading, `want` would normally be set.
+    # But the stall timeout forces `want = None`, so the bot walks directly.
+    assert bot._stall_since is None, "stall timer reset after the fallback"
+    # Verify the bot is still pursuing (not skipping)
+    assert bot._walk_target == 0xC100
+
+def test_stall_timer_resets_on_meaningful_progress():
+    """#5083: after 5 seconds of stalling, if the bot moves > PURSUE_STUCK_CM (meaningful progress),
+    the stall timer resets and the bot can stall again without triggering the fallback immediately."""
+    class StuckMesh:
+        def path(self, a, b):
+            return [(a[0] + 200.0, a[1], a[2])]
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.down = False
+    snap["navmesh"] = StuckMesh()
+    snap["enemies"] = [
+        {"slot": 0, "ptr": 0xD100, "pos": (200.0, 0.0, 200.0), "hp": 700, "hp_max": 700},
+    ]
+    t0 = clock[0]
+    # Start stalling
+    snap["player"]["pos"] = (100.0, 0.0, 100.0)
+    bot._pursue(snap["player"], snap, t0)
+    # Tick 2: stuck check hasn't fired yet (strict >)
+    t1 = t0 + 1.0
+    bot._pursue(snap["player"], snap, t1)
+    # Tick 3: stuck check fires, stall timer starts
+    t2 = t0 + 2.0
+    bot._pursue(snap["player"], snap, t2)
+    assert bot._stall_since is not None, "stall timer active"
+    # Bot moves > PURSUE_STUCK_CM: stall timer resets
+    snap["player"]["pos"] = (150.0, 0.0, 150.0)  # moved ~70 cm
+    t3 = t2 + 1.0
+    bot.nav_path = None
+    out = bot._pursue(snap["player"], snap, t3)
+    assert bot._stall_since is None, f"stall timer should reset on progress, got {bot._stall_since}"

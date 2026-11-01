@@ -1856,6 +1856,9 @@ COMBO_LOW_S = 3.0
 # time). With the combo running (COMBO_LOW_S) a pursuit is counted: pursuit_kills when the kill count rises, pursuit_
 # lapses when the combo lapses first; census_alive / census_floor the stage's living zombies and those on his floor.
 PURSUE_STUCK_CM, PURSUE_STUCK_S, PURSUE_SIDE_S = 30.0, 1.0, 0.8
+# A time-based stall timeout: after PURSUE_STALL_S seconds of no progress while pursuing,
+# force a direct-walk fallback (ignore the nav mesh) to break the geometry loop.
+PURSUE_STALL_S = 10.0
 # Taunts (operator 15:33: "taunts and random dances when they do damage to a large group or kill a boss"): RE6's partner
 # call on the right stick's click puts him in his emotion action (cPlAction_pl_act_emotion, the game's own gesture and
 # line; the HUD's uIdEmotion). After TAUNT_KILLS kills within TAUNT_KILLS_S, a blast (bomb / grenade) that took
@@ -2277,7 +2280,8 @@ class Bot:
         self._kills_prev, self._bosses = None, {}             # the kill count; the big ones alive {id: max health}
         self._blast_kills_seen = (0, 0)                      # bomb_kills, grenade_kills already looked at
         self._taunt_seen = False
-        self.pursue_spot, self.pursue_side_until = None, -1e9   # (since when, where) for the stuck check; a side step                       # this tick's player and camera yaw (crowd control's way out)
+        self.pursue_spot, self.pursue_side_until = None, -1e9   # (since when, where) for the stuck check; a side step
+        self._stall_since = None                                 # when the current stall began (for the direct-walk fallback)
         self.hp_hist: list = []                              # (when, his health, doing) for the last HP_HIST_S
         self.book = BlastBook(learn_dir)                     # the blast's learned reach (this title)
         self.stage_dir = Path(learn_dir) / "stages" if learn_dir else None   # what each stage taught (stage_book)
@@ -3994,14 +3998,23 @@ class Bot:
             self.pursuit = {"since": now, "kills": snap.get("kills")}
         if self.pursue_spot is None or math.hypot(px - self.pursue_spot[1][0], pz - self.pursue_spot[1][1]) > PURSUE_STUCK_CM:
             self.pursue_spot = (now, (px, pz))
+            self._stall_since = None                             # meaningful progress: reset the stall timer
         elif now - self.pursue_spot[0] > PURSUE_STUCK_S and now >= self.pursue_side_until:
             self.stats["pursuit_stuck"] += 1                     # against something: a side step
             self.pursue_side_until = now + PURSUE_SIDE_S
             self.detour = "lright" if self.detour == "lleft" else "lleft"
             self.pursue_spot = (now, (px, pz))
+            # Track the stall: when did it begin?
+            if self._stall_since is None:
+                self._stall_since = self.pursue_spot[0]
         side = (self.detour,) if now < self.pursue_side_until else ()
         if side:
             self.nav_path = None                                 # a stall: plan again after the side step
+        # Time-based stall timeout: after PURSUE_STALL_S of no progress, force a direct walk.
+        stalled = (self._stall_since is not None and now - self._stall_since > PURSUE_STALL_S)
+        if stalled:
+            want = None                                          # ignore the nav mesh: direct walk
+            self._stall_since = None                             # reset after the fallback
         keys = self._walk_keys(p, heading(e["pos"][0] - px, e["pos"][2] - pz) if want is None else want, snap, side)
         floor = "his floor" if abs(e["pos"][1] - py) <= MAX_DY else "another floor"
         return self._go("walk", "pursue", {"hold": keys}, f"after the nearest of {len(alive)} ({floor}, {d:.0f} cm)")
