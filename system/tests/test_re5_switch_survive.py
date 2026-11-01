@@ -82,9 +82,13 @@ def test_a_heal_equips_the_spray_uses_it_confirms_and_rearms():
 
 
 def test_a_heal_waits_for_a_safe_moment_unless_critical():
+    # HEAL_CROWD_AT == HEAL_AT (0.40): the crowd never defers the heal because the heal guard
+    # (hp > HEAL_AT * hp_max) blocks any HP above the crowd threshold, so the deferral window is empty.
     b, clock = brain()
-    act = b.tick(snap(hp=350, enemies=[at(300, 0)]))                                # 35 %, one within 4 m: fight
-    assert "tap" not in act and b.stats["heal_starts"] == 0 and "1 Majini within 4 m" in b.stats["heal_deferred"]
+    act = b.tick(snap(hp=450, enemies=[at(300, 0)]))                                # 45 %: above HEAL_AT, no heal at all
+    assert "tap" not in act and b.stats["heal_starts"] == 0
+    b, clock = brain()
+    assert b.tick(snap(hp=350, enemies=[at(300, 0)])) == {"tap": "ddown"}         # 35 %: heal anyway (below HEAL_AT)
     b, clock = brain()
     assert b.tick(snap(hp=200, enemies=[at(300, 0)])) == {"tap": "ddown"}         # 20 %: heal anyway
     b, clock = brain()
@@ -103,6 +107,46 @@ def test_a_heal_that_does_not_take_gives_up_and_rearms():
     assert b.stats["heal_failures"] == 1 and act == {"tap": "dleft"}
     clock[0] += 0.1
     assert "tap" not in b.tick(snap(hp=300, inv=in_hand))                         # HEAL_RETRY_S before the next try
+
+
+def test_a_failed_heal_at_critical_hp_retries_immediately():
+    """#5072 iter 3: the post-deploy incidents (3 HP, 2 heals in case, decision "no input"/"walk")
+    show the bot dies in the HEAL_RETRY_S window after a failed heal.  At/below HEAL_CRITICAL
+    the retry window is skipped so the bot re-attempts the heal on the very next tick."""
+    b, clock = brain()
+    # Start a heal at 300 HP (30%), let it fail (no HP gain within HEAL_ATTEMPT_S)
+    b.tick(snap(hp=300))
+    in_hand = [dict(GUN, hand=False), dict(SPRAY, hand=True)]
+    for k in range(1, 20):
+        clock[0] = 0.25 * k
+        act = b.tick(snap(hp=300, inv=in_hand))
+        if b.healing is None:
+            break
+    assert b.stats["heal_failures"] == 1
+    # Simulate the bot being hit down to critical HP (200 = 20%, below HEAL_CRITICAL=25%)
+    clock[0] += 0.1   # 0.1s after the failure — within HEAL_RETRY_S=1.0s
+    act = b.tick(snap(hp=200, inv=in_hand))
+    # The critical-HP retry-skip should trigger a new heal attempt immediately
+    assert b.healing is not None, "critical HP should skip the retry window and re-attempt the heal"
+    assert b.stats["heal_starts"] == 2
+
+
+def test_a_failed_heal_above_critical_hp_still_waits():
+    """Above HEAL_CRITICAL the retry window still applies (no behavior change)."""
+    b, clock = brain()
+    b.tick(snap(hp=300))
+    in_hand = [dict(GUN, hand=False), dict(SPRAY, hand=True)]
+    for k in range(1, 20):
+        clock[0] = 0.25 * k
+        act = b.tick(snap(hp=300, inv=in_hand))
+        if b.healing is None:
+            break
+    assert b.stats["heal_failures"] == 1
+    # 300 HP = 30%, above HEAL_CRITICAL=25%: retry window still applies
+    clock[0] += 0.1
+    act = b.tick(snap(hp=300, inv=in_hand))
+    assert b.healing is None, "above critical HP the retry window should still block"
+    assert b.stats["heal_starts"] == 1
 
 
 def test_a_ring_is_left_through_its_widest_gap():
