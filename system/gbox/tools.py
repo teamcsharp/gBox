@@ -2833,6 +2833,10 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
         if inp.campaign == pso_campaign.COOP_CAMPAIGN and not getattr(ad, '_pso_coop_new_card', {}).get('isolated'):
             raise ValueError('Launch PSO with pso_coop=true before starting the two-player campaign')
         ready = pso_campaign.preflight(ad, d)    # exact disc and available route model before publishing a bot start
+        if inp.screensaver:
+            _front(ad)
+        elif d.demo:
+            _demo_front(ad)  # same idle-PC focus setup as other playbooks, before the campaign's early return
         return {"result": _start_playbook(pso_campaign, inp, d, ad, time.time(), ctx, g, game_id) | {"planner": ready}}
     native_team_required = False
     if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3', '52d15709be0fda1a', '115f9cdbba115432'):
