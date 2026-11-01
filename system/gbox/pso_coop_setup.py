@@ -8,18 +8,32 @@ import threading
 from pathlib import Path
 
 SPEEDS = (1, 2, 4, 8, 10)
-# These keys do not overlap P1 or Dolphin's existing F1/F8/F10 state hotkeys.
+# Linux keeps its established private-display map. Windows also shares gBox's
+# global desktop shortcuts, so its private P2 map must avoid all function keys.
 PAD2 = {"up": "F2", "down": "F3", "left": "F4", "right": "F5",
         "lup": "F2", "ldown": "F3", "lleft": "F4", "lright": "F5",
         "a": "F6", "b": "F7", "x": "F9", "y": "F11", "start": "F12",
         "l": "u", "l2": "u", "r": "o", "r2": "o", "z": "p", "select": "p",
         "cup": "c", "cdown": "v", "cleft": "b", "cright": "n"}
+PAD2_WIN = {**PAD2, "up": "NUMPAD8", "down": "NUMPAD2", "left": "NUMPAD4", "right": "NUMPAD6",
+            "lup": "NUMPAD8", "ldown": "NUMPAD2", "lleft": "NUMPAD4", "lright": "NUMPAD6",
+            "a": "d", "b": "r", "x": "m", "y": "y", "start": "SPACE"}
 P1_ALIASES = {"lup": "up", "ldown": "down", "lleft": "left", "lright": "right"}
 
 
 def pad_ini(base: str, windows=False) -> str:
     """Add an independent keyboard-only second pad; keep P1's established layout."""
+    if windows:
+        # Dolphin otherwise disconnects P1 before reading its keyboard fallbacks
+        # when the default XInput gamepad is absent. This is a private PSO INI.
+        first = re.search(r"(?ms)(^\[GCPad1\][ \t]*\r?\n)(.*?)(?=^\[|\Z)", base)
+        if first is None:
+            raise ValueError("PSO private pad configuration requires GCPad1")
+        fields = re.sub(r"(?mi)^Options/Always Connected[ \t]*=.*(?:\n|$)", "", first[2])
+        base = (base[:first.start()] + first[1] + "Options/Always Connected = True\n"
+                + fields + base[first.end():])
     device = "DInput/0/Keyboard Mouse" if windows else "XInput2/0/Virtual core pointer"
+    keys = PAD2_WIN if windows else PAD2
     fields = {"Buttons/A": "a", "Buttons/B": "b", "Buttons/X": "x", "Buttons/Y": "y",
               "Buttons/Z": "z", "Buttons/Start": "start", "Main Stick/Up": "up",
               "Main Stick/Down": "down", "Main Stick/Left": "left", "Main Stick/Right": "right",
@@ -27,18 +41,19 @@ def pad_ini(base: str, windows=False) -> str:
               "C-Stick/Right": "cright", "Triggers/L": "l", "Triggers/R": "r",
               "Triggers/L-Analog": "l", "Triggers/R-Analog": "r"}
     return base.rstrip() + "\n\n[GCPad2]\nDevice = " + device + "\n" + "".join(
-        f"{field} = `{PAD2[key].upper()}`\n" for field, key in fields.items())
+        f"{field} = `{keys[key].upper()}`\n" for field, key in fields.items())
 
 
-def input_rows(events, player):
+def input_rows(events, player, *, windows=False):
     if player not in (1, 2):
         raise ValueError("PSO buddy controls support players 1 and 2")
+    keys = PAD2_WIN if windows else PAD2
     out = []
     for event in events:
         key = event["key"]
-        if player == 2 and key not in PAD2:
+        if player == 2 and key not in keys:
             raise ValueError(f"Unsupported second-pad control: {key}")
-        out.append({"key": PAD2[key] if player == 2 else P1_ALIASES.get(key, key),
+        out.append({"key": keys[key] if player == 2 else P1_ALIASES.get(key, key),
                     "down": bool(event.get("down", True))})
     return out
 

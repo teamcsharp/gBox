@@ -425,6 +425,8 @@ STICK = {"lleft": (0, 0, -0x7FFF), "lright": (0, 0, 0x7FFF), "lup": (0, 1, -0x7F
 STICK.update({"cleft": STICK["rleft"], "cright": STICK["rright"], "cup": STICK["rup"], "cdown": STICK["rdown"]})
 _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 1), "Return": (0x1C, 0), "Shift_R": (0x36, 0),
          "8": (0x48, 0), "2": (0x50, 0), "4": (0x4B, 0), "6": (0x4D, 0),
+         "NUMPAD8": (0x48, 0), "NUMPAD2": (0x50, 0), "NUMPAD4": (0x4B, 0), "NUMPAD6": (0x4D, 0),
+         "SPACE": (0x39, 0),
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
                                                                      0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
                                                                      0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32])}}
@@ -3159,7 +3161,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         from .pso_coop_setup import input_rows
         if player == 2 and self.coop_players != 2:
             raise ValueError('Player 2 was not connected at launch')
-        rows = input_rows(events, player)
+        rows = input_rows(events, player, windows=True)
         if player == 1:
             return self.send_input(rows, polite=polite)
         # Uppercase raw letters bypass PAD_KEYS aliases (notably b -> z).

@@ -112,8 +112,27 @@ def attach(adapter,secret,*,initial_local=()):
         def send_player(events,player=2,*args,**kwargs):
             with lease.lock:
                 original=lease.send
-                lease.send=lambda rows,*a,**k:scoped(rows,player,*a,**k)
-                try:return lease([{**row,'player':player} for row in events],*args,**kwargs)
+                emitted=None
+                def forward(rows,*a,**k):
+                    nonlocal emitted
+                    emitted=len(rows)
+                    if 'dolphin' in name and player==1:
+                        # The scoped P1 method delegates to this lease now. Use
+                        # the captured emitter after the normal P1 transform.
+                        from .pso_coop_setup import input_rows
+                        return original(input_rows(rows,1),*a,**k)
+                    return scoped(rows,player,*a,**k)
+                lease.send=forward
+                try:
+                    rows=[{**row,'player':player} for row in events]
+                    result=lease(rows,*args,**kwargs)
+                    # Axis ownership can expand one request into multiple key
+                    # events. Confirm the logical count only after all emitted
+                    # events were acknowledged; retain the physical sent count.
+                    if ('dolphin' in name and isinstance(result,dict)
+                            and type(result.get('sent')) is int and result['sent']==emitted):
+                        result={**result,'logical_sent':len(rows)}
+                    return result
                 finally:lease.send=original
         adapter.send_input_player=send_player
     adapter._desktop_input_lease=lease

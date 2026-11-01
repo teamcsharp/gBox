@@ -1497,6 +1497,83 @@ def _player_takeover_input(events) -> bool:
                and event.get("down", True) is True for event in events or ())
 
 
+class _SessionPadSender:
+    """Route Dolphin's public pad events without losing their controller port."""
+    def __init__(self, ad):
+        import inspect
+        self.ad, self.held, self.lock = ad, {}, threading.RLock()
+        self.scoped = (getattr(ad, 'name', None) == 'dolphin'
+                       and callable(getattr(ad, 'send_input_player', None)))
+        self.polite = self.scoped and 'polite' in inspect.signature(ad.send_input_player).parameters
+
+    def _groups(self, events):
+        from .pso_coop_setup import PAD2
+        groups = []
+        for event in events:
+            player = event.get('player', 1)
+            if type(player) is not int or player not in (1, 2):
+                raise ValueError('Unsupported Dolphin controller port')
+            if player == 2 and (getattr(self.ad, 'coop_players', 1) != 2 or event.get('key') not in PAD2):
+                raise ValueError('Second Dolphin controller is unavailable or its key is unsupported')
+            if not groups or groups[-1][0] != player:
+                groups.append((player, []))
+            groups[-1][1].append(event)
+        return groups
+
+    def clear(self):
+        if not self.scoped:
+            return
+        with self.lock:
+            rows, self.held = list(self.held.values()), {}
+            for player in (1, 2):
+                group = [row for row in rows if row.get('player', 1) == player]
+                if not group:
+                    continue
+                try:
+                    self.ad.send_input_player([{**row, 'down': False} for row in group], player=player)
+                except Exception:
+                    pass  # Still attempt the other port after a failed release.
+
+    def relay_release(self, events):
+        if not self.scoped:
+            return self.ad.send_input(events)
+        # The existing takeover Gate remembers key names only. Restore the port
+        # from its actual relayed holds, so yielding P2 cannot release P1 instead.
+        with self.lock:
+            keys = {row.get('key') for row in events if row.get('down') is False}
+            rows = [{**row, 'down': False} for row in self.held.values()
+                    if row.get('src') == 'autoplay' and row.get('key') in keys]
+            return self.send(rows)
+
+    def send(self, events, *, polite=False):
+        if not self.scoped:
+            return _polite_send(self.ad, events) if polite else self.ad.send_input(events)
+        from .desktop_input_lease import MARKER
+        with self.lock:
+            try:
+                groups = self._groups(events)  # Validate every port before delivering any press.
+                results = []
+                for player, group in groups:
+                    for row in group:
+                        if row.get('down', True):
+                            self.held[(player, row.get('key'), row.get(MARKER))] = dict(row)
+                    result = self.ad.send_input_player(group, player=player,
+                        **({'polite': True} if polite and self.polite else {}))
+                    count_key = 'logical_sent' if getattr(self.ad, '_desktop_input_lease', None) else 'sent'
+                    if (not isinstance(result, dict) or result.get('held') or result.get('stopped')
+                            or result.get('error') or result.get('blocked') or result.get('ok') is False
+                            or type(result.get(count_key)) is not int or result[count_key] != len(group)):
+                        raise RuntimeError('Dolphin input batch was not fully delivered')
+                    for row in group:
+                        if not row.get('down', True):
+                            self.held.pop((player, row.get('key'), row.get(MARKER)), None)
+                    results.append(result)
+                return results
+            except Exception:
+                self.clear()
+                raise
+
+
 def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
     """Live session plumbing, three independent loops so nothing slow can stall the video:
     frames  - pushed the moment the encoder produces one (up to the stream fps, 60),
@@ -1514,6 +1591,7 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
         return _upload_stream_frames(sid, ad, stream, server, headers)
 
     answer = _rpc_answerer(sid, httpx.Client(base_url=server, headers=headers, timeout=10), ctx)
+    pad_sender = _SessionPadSender(ad)
 
     def inputs():
         # one channel carries pad/keyboard events and read-only inspector requests ({"rpc": id, "op", "args"})
@@ -1539,15 +1617,17 @@ def _pump(sid: str, ad, server: str, headers: dict, ctx=None):
                             padstate.PLAYER_TOUCH[sid] = time.time()          # -> autoplay hands control back
                         from . import pad_takeover        # the operator's input takes the pad from the bot for a moment:
                         game_pad = pad_takeover.inputs(   # the bot lets go first; its relayed presses wait meanwhile
-                            sid, game_pad, ad.send_input if "send_input" in ad.supported else None)
+                            sid, game_pad, pad_sender.relay_release if "send_input" in ad.supported else None)
                     if pad and game_pad and "send_input" in ad.supported:
                         demo = getattr((AUTOPLAY.get(sid) or {}).get("driver"), "demo", False)
                         if demo and game_pad and all(e.get("src") == "autoplay" for e in pad):
-                            _polite_send(ad, game_pad)            # a bot demo's own presses (vision / missions)
+                            pad_sender.send(game_pad, polite=True)  # a bot demo's own presses (vision / missions)
                         else:
-                            ad.send_input(game_pad)
+                            pad_sender.send(game_pad)
                 except Exception:
+                    pad_sender.clear()
                     time.sleep(0.5)
+            pad_sender.clear()
 
     threading.Thread(target=frames, daemon=True).start()
     threading.Thread(target=inputs, daemon=True).start()
@@ -2626,6 +2706,8 @@ class AutoplayIn(BaseModel):
     selection: dict | None = None          # prepare: the MercMode DJ's pick for that round {title, mode, character, stage}
     mission: str = ""                      # mission name; empty = take over from wherever the player is right now
     campaign: str = ""                     # pso-episodes-1-2: explicit experimental GameCube completion loop
+    pso_vision_model: str = Field(default="", max_length=200, pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._:/-]*)?$")
+                                           # explicit PSO start only: this run's model, existing configured endpoint
     goal: str = ""                         # games without missions: what to do ("make progress", "win this race"...)
     record: bool = False
     assist: bool = False                   # hold the player's HP while gBox plays (opt-in, released when it stops)
@@ -2755,6 +2837,10 @@ def autoplay(inp: AutoplayIn, ctx: Ctx):
 
 def _autoplay(inp: AutoplayIn, ctx: Ctx):
     from .autoplay import Driver
+    if inp.pso_vision_model:
+        from .pso_campaign import CAMPAIGN, COOP_CAMPAIGN
+        if inp.op != 'start' or inp.campaign not in (CAMPAIGN, COOP_CAMPAIGN):
+            raise ValueError('pso_vision_model requires an explicit PSO campaign start')
     if inp.op == 'prepare':
         return {"result": _prepare_round(inp, ctx)}
     if inp.op in ('start', 'stop'):
@@ -2810,6 +2896,8 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
         active = run.get('inp')
         if inp.campaign and inp.campaign != getattr(active, 'campaign', ''):
             raise ValueError('Stop the current autoplay before selecting a different campaign')
+        if inp.pso_vision_model and inp.pso_vision_model != getattr(active, 'pso_vision_model', ''):
+            raise ValueError('Stop the current PSO autoplay before selecting a different vision model')
         if active is None:
             active = run['inp'] = inp.model_copy(deep=True)
         active.continuous = inp.continuous
@@ -2832,6 +2920,7 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
             raise Unsupported("This campaign requires Phantasy Star Online Episode I & II on GameCube")
         if inp.campaign == pso_campaign.COOP_CAMPAIGN and not getattr(ad, '_pso_coop_new_card', {}).get('isolated'):
             raise ValueError('Launch PSO with pso_coop=true before starting the two-player campaign')
+        d.pso_vision_model = inp.pso_vision_model
         ready = pso_campaign.preflight(ad, d)    # exact disc and available route model before publishing a bot start
         if inp.screensaver:
             _front(ad)
