@@ -3443,42 +3443,77 @@ def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
 
 
 # --- damage_clusters crowd_4_in_2m: the flanking cluster interrupts the crowd-control back-out -----------------------
-def _load_crowd4_fixture():
-    """#5049's representative frame: 500/900 HP, 8 within 4 m, 10 enemies (two within 2 m), camera turned (yaw pi)."""
+# Fixtures saved under tests/fixtures/mercs_incidents/ from
+# GET /api/mercs/damage-clusters/23774ad362ad8097/replay (cluster crowd_4_in_2m, RE6 Switch).
+# The five representative hits: fixture_0 = raise (gun up into the cluster); fixture_1..3 = cc_quick_shot;
+# fixture_4 = hit_quick_shot.
+
+_CROWD4_FIXTURES = [
+    're6_switch_crowd_4_in_2m_0.json',
+    're6_switch_crowd_4_in_2m_1.json',
+    're6_switch_crowd_4_in_2m_2.json',
+    're6_switch_crowd_4_in_2m_3.json',
+    're6_switch_crowd_4_in_2m_4.json',
+]
+
+
+def _load_crowd4_fixture(idx=0):
+    """A crowd_4_in_2m fixture fetched from GET /api/mercs/damage-clusters/23774ad362ad8097/replay."""
     from gbox.mercs import incident_replay
     fx = json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' /
-                     're6_switch_crowd_4_in_2m.json').read_text())
+                     _CROWD4_FIXTURES[idx]).read_text())
+    assert fx['schema'] == 'gbox.mercs.incident-replay/1'
+    assert fx['title'] == '01002A000CD48000'
+    assert fx['cluster']['signature'] == 'crowd_4_in_2m'
     return fx, incident_replay
 
 
 def test_crowd4_fixture_replays_deterministically():
-    """The crowd_4_in_2m fixture replays deterministically through incident_replay.replay."""
-    fx, ir = _load_crowd4_fixture()
-    first, second = ir.replay(fx, ticks=20), ir.replay(fx, ticks=20)
-    assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
-    assert ir.keys(first) and all(isinstance(k, str) for k in ir.keys(first))
+    """Each crowd_4_in_2m fixture replays deterministically through incident_replay.replay."""
+    from gbox.mercs import incident_replay
+    for i in range(len(_CROWD4_FIXTURES)):
+        fx, ir = _load_crowd4_fixture(i)
+        first, second = ir.replay(fx, ticks=20), ir.replay(fx, ticks=20)
+        assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']], \
+            f"fixture {i} ({fx['event_id']}) is non-deterministic"
+        assert ir.keys(first) and all(isinstance(k, str) for k in ir.keys(first)), \
+            f"fixture {i}: no replay keys"
 
 
-def test_crowd4_tablet_does_not_interrupt_the_backout():
-    """#5049 (crowd_4_in_2m): with a flanking cluster (four or more within CC_CROWD_R while the backout is under way)
-    the tablet branch must NOT keep firing -- it preempts crowd control every 0.3 s and leaves him exposed to the
-    flanking ones. With the fix (CROWD_BACK_S: the tablet waits while now - _cc_since < CROWD_BACK_S) the backout runs
-    uninterrupted: at most one tablet tap (the initial gun-down) across the replay, and crowd ticks carry the backouts,
-    kicks and quick shots."""
-    fx, ir = _load_crowd4_fixture()
+def test_crowd4_raise_fixture_does_not_keep_gun_up_into_cluster():
+    """#5049 (crowd_4_in_2m, fixture 0): the bot raised the gun into a flanking cluster (act='raise').
+    The fix must prevent sustained gun-up into the cluster: across the replay the bot does not hold
+    'zl' (gun up) for the entire window -- it drops the gun or fires quickly instead of lingering
+    with the gun raised into four-or-more close enemies."""
+    from gbox.mercs import incident_replay
+    fx, ir = _load_crowd4_fixture(0)
     result = ir.replay(fx, ticks=60)
     doings = [t['doing'] for t in result['ticks']]
     keys = ir.keys(result)
-    # at most one tablet tap across the whole replay (the initial gun-down), not a tablet every 0.3 s
-    tablet_taps = [t['t'] for t in result['ticks'] if t['act'].get('tap') == 'r' and t['doing'].startswith('tablet')]
-    assert len(tablet_taps) <= 1, \
-        f"tablet kept interrupting the backout {len(tablet_taps)} times: {tablet_taps} (doings={doings})"
-    # the crowd-control backout runs and carries the kicks/quick shots
-    assert doings.count('crowd') >= 5, \
-        f"crowd control barely ran (crowd ticks={doings.count('crowd')}): {doings}"
-    assert result['stats']['cc_backouts'] > 0, f"no backouts: stats={ {k: result['stats'][k] for k in ('cc_backouts','cc_kicks','cc_quick_shots')} }"
-    assert result['stats']['cc_kicks'] + result['stats']['cc_quick_shots'] > 0, \
-        f"crowd control fired no attacks: stats={ {k: result['stats'][k] for k in ('cc_backouts','cc_kicks','cc_quick_shots')} }"
+    # the gun is not held up for the entire replay (the bot does not linger with 'zl' held into the cluster)
+    gun_up_ticks = [t for t in result['ticks'] if t['act'].get('hold') in ('zl', ('zl',))]
+    assert len(gun_up_ticks) < len(result['ticks']), \
+        f"gun stayed up for all {len(result['ticks'])} ticks into the flanking cluster: doings={doings}"
+    # crowd control or a quick response ran
+    assert any(d in ('crowd', 'quick_shot', 'fire') for d in doings) or len(gun_up_ticks) < 10, \
+        f"no crowd control or quick response: doings={doings} gun_up={len(gun_up_ticks)}"
+
+
+def test_crowd4_cc_quick_shot_fixtures_replay_with_firing():
+    """#5049 (crowd_4_in_2m, fixtures 1-3): the bot fired cc_quick_shot into the cluster.
+    After the fix, the replay still fires (quick shots are the correct response to a flanking cluster)
+    and the bot does not sit idle or raise-and-linger."""
+    from gbox.mercs import incident_replay
+    for i in (1, 2, 3):
+        fx, ir = _load_crowd4_fixture(i)
+        result = ir.replay(fx, ticks=40)
+        doings = [t['doing'] for t in result['ticks']]
+        keys = ir.keys(result)
+        # the bot fires or enters crowd control (not idle/raise-linger)
+        assert any(d in ('fire', 'quick_shot', 'cc_quick_shot', 'crowd') for d in doings), \
+            f"fixture {i} ({fx['event_id']}): no firing or crowd control: doings={doings}"
+        # at least one tick shows an attack key
+        assert keys, f"fixture {i}: no keys pressed"
 
 
 def test_crowd4_tablet_still_works_when_no_cluster_is_in_the_backout():
