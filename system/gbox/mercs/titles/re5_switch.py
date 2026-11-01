@@ -3332,8 +3332,44 @@ class Bot:
                 st["equip_at"], st["equips"] = now, st["equips"] + 1
                 return {"tap": QUICK[item["grid"]]}
             return {"hold": ()}
-        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+        if hp_max <= 0 or now - self.heal_at < HEAL_RETRY_S:
             return None
+        # Fall-knockdown retreat, downed phase (#5067): the bot is already at critical HP or below (<= HEAL_CRITICAL)
+        # — possibly already knocked down (motion 8, "down": true) — with Majini within 2 m.  The previous fix
+        # (HEAL_AT 40%) only fires while standing; once HP hits 1-2% the hp<=1 early-return below skips the retreat
+        # entirely and the bot mashes "Resuscitate" while swarmed, dying.  Retreat first, before the fight loop
+        # can engage, to close the window in which the bot is downed and taking hits with no gun.
+        if hp <= HEAL_CRITICAL * hp_max and live:
+            near_count = sum(1 for e in live if flat(e) <= 200.0)
+            if near_count and (self.escape is None or now >= self.escape[1]) and now - self.escape_at >= ESCAPE_GAP_S:
+                nearest = min(live, key=lambda e: flat(e))
+                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                self._gun_down()
+                self.escape = (away, now + ESCAPE_S)
+                self.escape_at = now
+                self.round_escapes += 1
+                self.stats["escapes"] += 1
+                self.stats["heal_status"] = f"fall-knockdown downed retreat at {hp / hp_max:.0%} ({near_count} near)"
+                err = wrap(away - p["rot"])
+                return {"hold": RUN + self._turn(err, TURN_TOL)}
+        if hp <= 1:
+            return None
+        # Fall-knockdown retreat, standing phase (#5067): when HP drops below HEAL_AT the bot was idling at idle
+        # instead of fleeing, taking repeated hits from Majini within 2 m and dying.  A bounded retreat at this
+        # threshold — before the fight loop can engage — closes the window in which the bot stands still.
+        if hp <= HEAL_AT * hp_max and live:
+            near_count = sum(1 for e in live if flat(e) <= 200.0)
+            if near_count and (self.escape is None or now >= self.escape[1]) and now - self.escape_at >= ESCAPE_GAP_S:
+                nearest = min(live, key=lambda e: flat(e))
+                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                self._gun_down()
+                self.escape = (away, now + ESCAPE_S)
+                self.escape_at = now
+                self.round_escapes += 1
+                self.stats["escapes"] += 1
+                self.stats["heal_status"] = f"fall-knockdown retreat at {hp / hp_max:.0%} ({near_count} near)"
+                err = wrap(away - p["rot"])
+                return {"hold": RUN + self._turn(err, TURN_TOL)}
         near = sum(1 for e in live if flat(e) < HEAL_SAFE_R)
         if near and hp > HEAL_CRITICAL * hp_max:
             self.stats["heal_deferred"] = f"{near} Majini within {HEAL_SAFE_R / 100:.0f} m at {hp / hp_max:.0%}"
@@ -3647,6 +3683,25 @@ class Bot:
             self._grab_at = now                          # a grab began (hits_after_windup)
         self._was_held = motion in MOTION_HELD
         stuck = self.held(p, now) and (motion is None or near > RAMPAGE_R)
+        # Fall-knockdown downed-phase retreat (#5067, fix 2): the bot is dying (hp == DYING_HP = 1) or
+        # at critical HP or below, with Majini within 2 m.  The held state mashes "Resuscitate" while
+        # swarmed and the bot dies.  A bounded retreat first — before the mash — closes the window.
+        # The _heal check below handles hp > 1; this handles the hp == 1 case that the held state
+        # intercepts before _heal is reached.
+        if held and p.get("hp", 0) <= DYING_HP and live and (self.escape is None or now >= self.escape[1]) and now - self.escape_at >= ESCAPE_GAP_S:
+            near_count = sum(1 for e in live if flat(e) <= 200.0)
+            if near_count:
+                nearest = min(live, key=lambda e: flat(e))
+                away = heading(p["pos"][0] - nearest["pos"][0], p["pos"][2] - nearest["pos"][2])
+                self._gun_down()
+                self.escape = (away, now + ESCAPE_S)
+                self.escape_at = now
+                self.round_escapes += 1
+                self.stats["escapes"] += 1
+                self.stats["heal_status"] = f"fall-knockdown downed retreat at {p['hp'] / p['hp_max']:.0%} ({near_count} near)"
+                err = wrap(away - p["rot"])
+                self.doing, self.why = "escape", "fall-knockdown downed retreat"
+                return {"hold": RUN + self._turn(err, TURN_TOL)}
         if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
             if held:                                         # held, or dying: break free / recover (RAM says so)
                 if not self.in_hold:
