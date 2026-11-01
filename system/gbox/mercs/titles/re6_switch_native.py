@@ -284,9 +284,62 @@ class Controller:
             raise Unavailable("no living player in an active Mercenaries round")
         if struct.unpack("<h", self.rd(player + R.P_HP, 2))[0] <= 0:
             raise Unavailable("player is not alive")
-        if 0x115 not in R.inventory_items(self, player):
-            raise Unavailable("flash resources are not loaded for this character")
         return player, self.w(player + 0x1308)
+
+    def _ammo_backend(self):
+        from . import re6_switch_mods as mods
+        return mods, mods.RE6Switch
+
+    def ammo_status(self):
+        """Read this title's supported ammo mechanism without installing a hook."""
+        mods, game_type = self._ammo_backend()
+        try:
+            with self.lock, mods._LOCK:
+                epoch = self.ready()
+                result = mods.ammo_readback(game_type(self.ad), epoch[0])
+                if self.ready() != epoch:
+                    raise Unavailable('player allocation changed during ammo readback')
+                return {'available': True, **result}
+        except (RuntimeError, OSError, ValueError, struct.error) as exc:
+            return {'available': False, 'enabled': None, 'reason': str(exc)[:200]}
+
+    def set_infinite_ammo(self, enabled, *, expected=None, allowed=None):
+        """Use the existing mod, with the same life/input guard before every write."""
+        if type(enabled) is not bool:
+            raise Unavailable('enabled must be a boolean')
+        mods, game_type = self._ammo_backend()
+        with self.lock, mods._LOCK:
+            epoch = self.ready() if expected is None else expected
+            permit = allowed or (lambda: True)
+
+            def guard():
+                if not permit() or self.ready() != epoch:
+                    raise Unavailable('player, round, input owner, or request deadline changed')
+
+            guard()
+            game = game_type(self.ad)
+            adapter = self.ad
+
+            class GuardedAdapter:
+                def __getattr__(self, name):
+                    return getattr(adapter, name)
+
+                def write_memory(self, address, data):
+                    guard()
+                    return adapter.write_memory(address, data)
+
+            # Keep ORIG keyed by the real session adapter; the wrapper only
+            # protects this operation's writes, never creates another mod state.
+            game.ad = GuardedAdapter()
+            game.m.adapter = game.ad
+            result = mods.infinite_ammo(game, enabled)
+            guard()
+            readback = mods.ammo_readback(game, epoch[0])
+            guard()
+            if not result.get('verified') or readback.get('enabled') is not enabled:
+                raise Uncertain('infinite ammo change was not confirmed by readback')
+            return {'state': 'confirmed', 'verified': True, 'op': 'set_infinite_ammo',
+                    'player': epoch[0], 'player_generation': epoch[1], **readback}
 
     def weapon_choices(self):
         from .re6_switch_weapon_native import choices

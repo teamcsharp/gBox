@@ -6,7 +6,9 @@ import httpx
 import pytest
 
 
-def test_mcp_weapon_selection_preserves_click_identity_and_native_item(monkeypatch):
+@pytest.mark.parametrize('op,fields,args', [('equip_primary', {'item': 25}, {'item': 25}),
+    ('set_infinite_ammo', {'enabled': True}, {'enabled': True})])
+def test_mcp_weapon_selection_preserves_click_identity_and_native_item(monkeypatch, op, fields, args):
     pytest.importorskip('mcp')
     from mcp.client import Client
     from gbox.mcp_server import build
@@ -34,8 +36,8 @@ def test_mcp_weapon_selection_preserves_click_identity_and_native_item(monkeypat
             status = await client.call_tool('game_intervention', {'session_id': 'worker-game', 'op': 'status'})
             assert json.loads(status.content[0].text)['options']['weapons'][0]['item'] == 25
             result = await client.call_tool('game_intervention', {'session_id': 'worker-game',
-                'op': 'equip_primary', 'item': 25, 'request_id': rid})
+                'op': op, **fields, 'request_id': rid})
             assert json.loads(result.content[0].text)['request']['state'] == 'queued'
 
     asyncio.run(check())
-    assert seen == [{'op': 'equip_primary', 'request_id': rid, 'args': {'item': 25}}]
+    assert seen == [{'op': op, 'request_id': rid, 'args': args}]

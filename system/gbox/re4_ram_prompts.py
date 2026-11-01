@@ -324,11 +324,17 @@ def source(mem, stats: dict | None = None):
     seen = [False]
 
     def ask():
+        if stats is not None:
+            # Never authorize a new TAKE using an earlier frame's bonus action.
+            stats["ram_action"] = None
+            stats["ram_action_aev"] = None
         try:
             button = prompt_from_ram(mem, check_disc=not seen[0])
             seen[0] = True
             if button and stats is not None:
-                stats["ram_action"] = action_from_ram(mem, with_zones=False)["action"]
+                action = action_from_ram(mem, with_zones=False)
+                stats["ram_action"] = action["action"]
+                stats["ram_action_aev"] = action.get("aev")
         except Unknown:
             raise
         except Exception as e:                       # noqa: BLE001 - a read that failed: vision decides

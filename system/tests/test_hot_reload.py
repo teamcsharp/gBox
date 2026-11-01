@@ -23,6 +23,14 @@ from gbox.models import Job
 from gbox.store import Store
 
 HELPER = "SPEED = 1\n\n\ndef speed():\n    return SPEED\n"
+
+
+@pytest.mark.parametrize('name', ['re4_gc_native', 're5_switch_native', 're6_switch_native'])
+def test_native_controller_locks_require_process_restart(name):
+    assert not H.allowed('gbox.mercs.titles.' + name)
+    assert H.classify(['gbox/mercs/titles/' + name + '.py'])['action'] == 'restart'
+
+
 BOT = "from .helper import speed\n\nVERSION = 'v1'\n\n\ndef tick():\n    return (VERSION, speed())\n"
 MENUS = ("class Roster:\n    def __init__(self):\n        self.played = {}\n\n    def label(self):\n        return 'old'\n\n\n"
          "ROSTER = Roster()\n")

@@ -122,6 +122,7 @@ YAW_RATE, PITCH_RATE = math.radians(140), math.radians(90)
 MAX_DT = 0.05
 GUN_FAMILIES = frozenset({'handgun', 'magnum', 'shotgun', 'automatic', 'rifle'})
 ACQUIRE_S, REPOSITION_S, REPOSITION_CM = .75, .65, 100.
+ACQUIRE_MAX_S, PROGRESS_GRACE_S = 2., .25
 COMBAT_AIM = frozenset({'aim', 'fire', 'raise', 'reraise', 'restale'})
 
 
@@ -137,6 +138,7 @@ def keep_active(bot, snap, act, now):
     identity = p.get('ptr'), p.get('generation')
     state = getattr(bot, '_aim_wait', None)
     if (bot.stats.get('operator_control') is True or bot.doing not in COMBAT_AIM
+            or 'zl' not in keys
             or not p.get('pos') or (p.get('hp') or 0) <= 0
             or p.get('motion') in R.MOTION_HELD or p.get('motion') == R.MOTION_RELOAD
             or 'zr' in keys or p.get('motion') == R.MOTION_SHOT
@@ -149,7 +151,23 @@ def keep_active(bot, snap, act, now):
         state = bot._aim_wait = {'identity': identity, 'since': now, 'seen': now, 'until': None}
     state['seen'] = now
     bot.stats['aim_wait_s'] = round(now - state['since'], 2)
+    if p.get('motion') == 22 and now - state['since'] < R.LASER_STUCK_S:
+        return act  # let the native raise complete; the existing laser timeout remains bounded
+    # A smooth correction can need more than .75 s after a rear target/raise.
+    # Keep it while observed error improves; a successful RAM write by itself
+    # is not progress. The hard cap still bounds a moving/unreachable target.
+    target = bot.stats.get('target_feedback_target')
+    yaw, pitch = bot.stats.get('target_feedback_yaw_deg'), bot.stats.get('target_feedback_pitch_deg')
+    if target is not None and isinstance(yaw, (int, float)) and isinstance(pitch, (int, float)):
+        error = math.hypot(yaw, pitch)
+        if state.get('target') != target:
+            state.update(target=target, best_error=error)
+        elif math.isfinite(error) and error < state.get('best_error', math.inf) - 1.:
+            state.update(best_error=error, progress_at=now)
     if state['until'] is None and now - state['since'] < ACQUIRE_S:
+        return act
+    if state['until'] is None and now - state['since'] < ACQUIRE_MAX_S \
+            and now - state.get('progress_at', -math.inf) <= PROGRESS_GRACE_S:
         return act
     px, py, pz = p['pos']
     crowd = [e for e in snap.get('enemies') or () if (e.get('hp') or 0) > 0 and e.get('pos')
@@ -240,17 +258,24 @@ def apply(bot, snap, act, now):
 
     keys = set(act.get('hold') or ())
     p, cam = snap.get('player') or {}, snap.get('aim_cam')
+    # Permission to fire/flash belongs to THIS snapshot. Every early return
+    # must leave a prior target's accepted contact behind.
+    bot.stats.update(target_feedback_on=False, target_feedback_ram=False,
+                     target_feedback_gate='no verified target this tick')
     previous = getattr(bot, '_feedback_at', None)
     bot._feedback_at = now
     if bot.stats.get('operator_control') is True or 'zl' not in keys \
             or bot.doing not in ('aim', 'fire', 'raise', 'reraise', 'restale'):
         bot._feedback_at = None
+        bot._feedback_contact = None
         return act
     held = next((s for s in snap.get('inventory') or () if s.get('hand')), None)
     spec = re5_weapons.WEAPONS.get(held.get('item')) if held else None
     if not spec or spec.family not in GUN_FAMILIES or not p.get('pos'):
+        bot._feedback_contact = None
         return act
     if not cam:
+        bot._feedback_contact = None
         # Production snapshots include this key even during camera transitions.
         # A temporarily inactive QFPS must not hand aim back to amplified digital
         # sticks; wait for ownership or let keep_active make space. Older readers
@@ -261,10 +286,15 @@ def apply(bot, snap, act, now):
             return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
         return act
     if cam.get('player') != p.get('ptr') or cam.get('generation') != p.get('generation'):
+        bot._feedback_contact = None
+        bot._trigger(False, now)
+        bot.doing = 'aim'
+        bot.stats['target_feedback_gate'] = 'camera owner changed'
         return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
     candidates = [e for e in snap.get('enemies') or () if (e.get('hp') or 0) > 0 and e.get('pos')]
     target = visible_target(snap) or next((e for e in candidates if e.get('ptr', e.get('slot')) == bot.target), None)
     if target is None:
+        bot._feedback_contact = None
         bot._trigger(False, now)
         return dict(act, hold=tuple(sorted(keys - STICKS - {'zr'})))
 
@@ -309,30 +339,47 @@ def apply(bot, snap, act, now):
         key = 'target_feedback_writes' if written else 'target_feedback_write_failures'
         bot.stats[key] = bot.stats.get(key, 0) + 1
         if not written:
+            bot._feedback_contact = None
             bot._trigger(False, now)
             return dict(act, hold=tuple(sorted(keys - {'zr'})))
     # The write above is an intention. Only this snapshot's actual aim can
     # authorize fire; it must be observed aligned on a later sample.
-    on = (valid_ray and p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT)
-          and (R.dot_on(dot, foot) or (
-              abs(yaw_error) <= max(math.radians(3), math.atan2(R.BODY_R, max(dist, 1)))
-              and abs(pitch_error) <= math.radians(10)
-              and bot._crowd_hit(origin, dot, foot, spec.family == 'shotgun'))))
-    # His personal area (operator 2026-10-31: "he needs to be ... doing something always to clear his personal area";
-    # surrounded he stood aiming: 445-1211 blocked pulls a run, the last ones 9-19 deg of pitch off a Majini 1-2 m away,
-    # still his torso): a target within RAMPAGE_R on his level, the gun up and its ray reaching him (no wall or floor
-    # short of him): the trigger stays down while the aim is on his body's extent - UNLOAD_WIDE_CM across and
-    # UNLOAD_TALL_CM up or down from the chest, never under UNLOAD_CONE - and the camera writes above keep closing.
+    body_contact = bool(valid_ray and bot._crowd_hit(origin, dot, foot, False))
+    spread_contact = bool(valid_ray and not body_contact and spec.family == 'shotgun'
+                          and bot._crowd_hit(origin, dot, foot, True))
+    contact_kind = ('body endpoint' if body_contact and R.dot_on(dot, foot) else
+                    'body segment' if body_contact else 'shotgun spread' if spread_contact else '')
+    on = bool(p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) and (body_contact or spread_contact))
+    # A nearby target and a long ray do not establish body contact. In particular,
+    # UNLOAD's broad yaw/pitch window let the M29 fire beside a target at 4-5 m.
+    # Keep correcting above while blocked; keep_active bounds failed acquisition.
+    # An actual body segment (including close hips/shoulders) needs no extra
+    # chest-angle window. Only a shotgun may use the measured spread cone.
     d = max(dist, 1.0)
-    if not on and getattr(R, 'UNLOAD', False) and valid_ray \
-            and p.get('motion') in (R.MOTION_AIMED, R.MOTION_SHOT) \
-            and dist <= R.RAMPAGE_R and abs(foot[1] - py) <= R.LEVEL_DY \
-            and abs(yaw_error) <= max(R.UNLOAD_CONE, math.atan2(R.UNLOAD_WIDE_CM, d)) \
-            and abs(pitch_error) <= max(R.UNLOAD_CONE, math.atan2(R.UNLOAD_TALL_CM, d)) \
-            and math.dist(origin, dot) >= math.dist(origin, chest) - R.FIRE_SLACK:
+    # Recoil motion 29 briefly hides the laser. The legacy crowd controller
+    # preserves its held trigger through that interval; this final gate must not
+    # cancel the same verified shot on every recoil frame. Continue ONLY a shot
+    # accepted on the preceding sample, for one shot-tail window, with the same
+    # owner/target and stationary, aligned aim. Never refresh the contact from a
+    # missing ray or ignore a newly observed obstruction.
+    contact = getattr(bot, '_feedback_contact', None)
+    recoil = bool(not on and not valid_ray and not laser.get('up') and contact
+                  and contact.get('kind') in ('body endpoint', 'body segment', 'shotgun spread')
+                  and p.get('motion') == R.MOTION_SHOT
+                  and 0 <= now - contact['at'] <= R.SHOT_TAIL_S
+                  and contact['identity'] == (p.get('ptr'), p.get('generation'))
+                  and contact['weapon'] == held.get('item')
+                  and contact['target'] == target.get('ptr', target.get('slot'))
+                  and math.dist(p['pos'], contact['pos']) <= R.WALL_SLACK
+                  and abs(R.wrap(cam['heading'] - contact['heading'])) <= math.radians(3)
+                  and abs(cam['pitch'] - contact['pitch']) <= math.radians(3)
+                  and abs(yaw_error) <= max(math.radians(3), math.atan2(R.BODY_R, d))
+                  and abs(pitch_error) <= math.radians(10))
+    if recoil:
         on = True
-        bot.stats['target_feedback_unloads'] = bot.stats.get('target_feedback_unloads', 0) + 1
+        bot.stats['target_feedback_recoil_holds'] = bot.stats.get('target_feedback_recoil_holds', 0) + 1
     if not on:
+        bot._feedback_contact = None
         if 'zr' in keys:
             bot.stats['target_feedback_fire_blocks'] = bot.stats.get('target_feedback_fire_blocks', 0) + 1
         keys.discard('zr')
@@ -346,11 +393,30 @@ def apply(bot, snap, act, now):
             setter = getattr(bot, '_set_target', None)
             if callable(setter): setter(key, now)
             else: bot.target = key
+        feedback_origin = contact['origin'] if recoil else origin
+        feedback_dot = contact['dot'] if recoil else dot
+        accepted_kind = contact['kind'] if recoil else contact_kind
         bot._aimctx = dict(getattr(bot, '_aimctx', None) or {}, target=key, dist=dist,
-                          yaw_err=yaw_error, foot=tuple(foot), origin=tuple(origin), dot=tuple(dot),
-                          where=R.dot_on(dot, foot), laserless=False, gate='verified live target')
+                          yaw_err=yaw_error, pitch_err=pitch_error, foot=tuple(foot),
+                          origin=tuple(feedback_origin), dot=tuple(feedback_dot),
+                          where=R.dot_on(feedback_dot, foot), laserless=False,
+                          contact_kind=accepted_kind, ray_observed=not recoil,
+                          body_contact=contact['body'] if recoil else body_contact,
+                          gate='verified shot recoil' if recoil else 'measured ' + accepted_kind)
         keys |= bot._trigger(True, now)
         bot.doing = 'fire'
+        if not recoil:
+            bot._feedback_contact = {'at': now, 'identity': (p.get('ptr'), p.get('generation')),
+                                     'target': key, 'pos': tuple(p['pos']),
+                                     'heading': cam['heading'], 'pitch': cam['pitch'], 'weapon': held.get('item'),
+                                     'origin': tuple(origin), 'dot': tuple(dot),
+                                     'kind': contact_kind, 'body': body_contact}
+    bot.stats['target_feedback_gate'] = 'recoil continuation' if recoil else contact_kind if on else \
+        'waiting for aimed motion' if p.get('motion') not in (R.MOTION_AIMED, R.MOTION_SHOT) else \
+        'no current laser' if not valid_ray else 'ray misses or stops before target'
+    if not on:
+        bot.why = (f"aim correction: {bot.stats['target_feedback_gate']} "
+                   f"(yaw {math.degrees(yaw_error):+.1f}, pitch {math.degrees(pitch_error):+.1f} deg)")
     bot.stats.update(target_feedback_target=target.get('ptr', target.get('slot')),
                      target_feedback_yaw_deg=round(math.degrees(yaw_error), 2),
                      target_feedback_pitch_deg=round(math.degrees(pitch_error), 2),

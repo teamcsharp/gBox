@@ -187,6 +187,9 @@ def test_a_take_dialog_is_answered_no_unless_he_is_taking_a_time_bonus():
     bot.goal = {"item": hg, "pos": (0.0, 0.0), "path": [(0.0, 0.0)]}
     p = B.snapshot(m)["player"]
     bot.timer_since = now[0] - 2.0
+    assert bot._dialog_answer(p, now[0]) == "b"  # the route goal is not proof of what TAKE will pick up
+    bot.stats.update(ram_action="TAKE", ram_action_aev={"item_id": 0x73, "type": 3, "enabled": True})
+    assert bot._bonus_take_allowed(p, now[0] - 0.2)
     assert bot._dialog_answer(p, now[0]) == "a"
 
 

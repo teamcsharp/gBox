@@ -364,10 +364,7 @@ def _beside(foot, deg, reach=150.0):
     return (MUZZLE[0] + x * k, MUZZLE[1] + d[1] * k, MUZZLE[2] + z * k)
 
 
-def test_unload_fires_in_bursts_as_the_aim_closes_and_keeps_pointing_at_him():
-    """Operator 2026-10-31: "when the bot raises their gun, they fire ... If the bot has anyone within 5m, they need to be
-    unloading on threat"; "the bot needs to point their weapon at the enemies": the pistol's ray 7 deg beside the target's
-    chest fires (bursts), and the stick still brings it onto him."""
+def test_default_crowd_fight_corrects_body_misses_without_unload_bursts():
     b, clock = bot()
     ring = [at(350, 0), at(380, 75), at(300, -100)]
     inv = [dict(M92F)]
@@ -376,13 +373,13 @@ def test_unload_fires_in_bursts_as_the_aim_closes_and_keeps_pointing_at_him():
     for t in (0.3, 0.333):                                      # (a fine correction pulses every other tick)
         clock[0] = t
         act = b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))
-        assert {"zl", "zr"} <= set(act["hold"])
+        assert 'zl' in act['hold'] and 'zr' not in act['hold']
         held |= set(act["hold"])
-    assert {"rleft", "rright"} & held and b.stats["unload_s"] > 0.0
+    assert {"rleft", "rright"} & held and not b.stats.get('unload_s')
     clock[0] = 0.3 + R.UNLOAD_BURST_S + 0.05                   # the burst's pause: the stick alone
     assert "zr" not in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
     clock[0] = 0.3 + R.UNLOAD_BURST_S + R.UNLOAD_TURN_S + 0.05   # the next burst
-    assert "zr" in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
+    assert "zr" not in b.tick(snap(ring, dot=_beside(ring[0], 7), motion=26, inv=inv))["hold"]
 
 
 @pytest.mark.parametrize("deg", [12, 30])

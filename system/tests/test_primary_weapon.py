@@ -19,17 +19,75 @@ def setup():
     return ad, snap
 
 
-def test_three_minute_lock_then_match_preference_without_changing_telemetry_inventory():
+def test_three_minute_lock_expires_without_changing_telemetry_inventory():
     ad, snap = setup()
     snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1179.9)
     locked = P.decision_snapshot(snap)
-    assert locked['inventory'] == [snap['inventory'][0]]
+    assert locked['inventory'] == [snap['inventory'][0], snap['inventory'][3]]
     assert len(snap['inventory']) == 4 and locked['primary_weapon']['locked']
     assert P.snapshot(ad, snap, clock=lambda: 1120)['locked']
     snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1180)
     later = P.decision_snapshot(snap)
-    assert later['inventory'] == [snap['inventory'][0], snap['inventory'][3]]
-    assert later['preferred_weapon']['item'] == 25 and not later['primary_weapon']['locked']
+    assert later['inventory'] == snap['inventory']
+    assert snap['primary_weapon'] is None and ad._merc_primary_weapon is None
+
+
+@pytest.mark.parametrize('infinite,rounds,usable', [(False, 0, False), (True, 0, True),
+    (False, 1, True), (False, None, True)])
+def test_empty_weapon_releases_choice_only_when_ammo_is_finite(infinite, rounds, usable):
+    ad, snap = setup()
+    snap['inventory'][0]['rounds'] = rounds
+    snap['infinite_ammo'] = infinite
+    snap['primary_weapon'] = P.snapshot(ad, snap, clock=lambda: 1010)
+    assert snap['primary_weapon']['usable'] is usable
+    decision = P.decision_snapshot(snap)
+    if not usable:
+        assert decision['inventory'] == snap['inventory']
+        assert decision['primary_weapon'] is None and decision['preferred_weapon'] is None
+    else:
+        assert decision['preferred_weapon']['item'] == 25
+
+
+def test_re6_slot_ammo_and_dolphin_process_identity_are_supported():
+    ad, snap = setup()
+    del ad._guest
+    snap.pop('inventory')
+    snap['player'].update(guns={0x119: 3}, gun_ammo={3: 0})
+    assert P.snapshot(ad, snap, pid=10, clock=lambda: 1010)['usable'] is False
+    assert P.snapshot(ad, snap, pid=11, clock=lambda: 1010) is None
+
+
+def test_new_selection_starts_a_fresh_three_minutes():
+    ad, snap = setup()
+    P.install(ad, dict(state='confirmed', verified=True, item=11, weapon='M92F', player=100,
+                      player_generation=9, weapon_generation=16), 10, clock=lambda: 1100)
+    active = P.snapshot(ad, snap, clock=lambda: 1180)
+    assert active['item'] == 11 and active['lock_remaining_s'] == 100
+
+
+def test_expiring_snapshot_cannot_clear_a_newer_selection():
+    ad, snap = setup()
+    def clock():
+        P.install(ad, dict(state='confirmed', verified=True, item=11, weapon='M92F', player=100,
+                          player_generation=9, weapon_generation=16), 10, clock=lambda: 1180)
+        return 1180
+    assert P.snapshot(ad, snap, clock=clock) is None
+    assert P.snapshot(ad, snap, clock=lambda: 1181)['item'] == 11
+
+
+@pytest.mark.parametrize('title', ['re5', 're6', 'unknown'])
+def test_missing_weapon_allows_fallback_only_with_inventory_evidence(title):
+    ad, snap = setup()
+    if title == 're5':
+        snap['inventory'] = snap['inventory'][1:]
+    else:
+        snap.pop('inventory')
+        if title == 're6':
+            snap['player']['guns'] = {0x10B: 1}
+    primary = P.snapshot(ad, snap, clock=lambda: 1010)
+    assert primary['usable'] is (title == 'unknown')
+    if title != 'unknown':
+        assert 'unavailable' in primary['fallback_reason']
 
 
 @pytest.mark.parametrize('change', ['pid', 'player', 'generation', 'phase'])
@@ -59,6 +117,8 @@ def test_handover_acknowledges_only_after_successful_input_release(monkeypatch):
         raise OSError('input transport failed')
     with pytest.raises(OSError):
         P.release_for_handover(stats, snap, failed)
+    assert not pending.get('released')
+    assert not P.release_for_handover(stats, snap, lambda keys: False)
     assert not pending.get('released')
     released = []
     assert P.release_for_handover(stats, snap, lambda keys: released.append(keys))

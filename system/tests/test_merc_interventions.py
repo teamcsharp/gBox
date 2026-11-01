@@ -138,6 +138,66 @@ def test_http_routes_require_auth_and_running_session(tmp_path):
     store.db.close()
 
 
+def test_ammo_click_requires_actual_boolean_and_matching_readback(queue):
+    q, _ = queue
+    options = {'infinite_ammo': {'available': True, 'enabled': False}}
+    q.claim('sid', 'life-1', ['set_infinite_ammo'], options=options)
+    for args in ({}, {'enabled': 1}, {'enabled': 'true'}, {'enabled': True, 'extra': 1}):
+        with pytest.raises(ValueError):
+            q.post('sid', 'set_infinite_ammo', str(uuid.uuid4()), 'viewer', args)
+    row = q.post('sid', 'set_infinite_ammo', str(uuid.uuid4()), 'viewer', {'enabled': True})
+    claim = q.claim('sid', 'life-1', ['set_infinite_ammo'], options=options)[0]
+    for value in (False, 1, None):
+        with pytest.raises(ValueError):
+            q.finish('sid', row['id'], claim['claim'], {'state': 'confirmed', 'verified': True, 'enabled': value})
+    result = q.finish('sid', row['id'], claim['claim'], {'state': 'confirmed', 'verified': True, 'enabled': True})
+    assert result['state'] == 'confirmed'
+
+
+def test_noninventory_weapons_can_be_selected_unless_explicitly_unavailable(queue):
+    q, _ = queue
+    options = {'weapons': [{'item': 25, 'weapon': 'Hydra', 'in_inventory': False},
+        {'item': 27, 'weapon': 'S&W M500', 'in_inventory': False, 'available': False,
+         'reason': 'native creation is not verified'}]}
+    q.claim('sid', 'life-1', ['equip_primary'], options=options)
+    assert q.post('sid', 'equip_primary', str(uuid.uuid4()), 'viewer', {'item': 25})['state'] == 'queued'
+    with pytest.raises(ValueError, match='native creation'):
+        q.post('sid', 'equip_primary', str(uuid.uuid4()), 'viewer', {'item': 27})
+
+
+def test_ammo_and_grenade_capabilities_need_available_readback(queue):
+    q, _ = queue
+    options = {'infinite_ammo': {'available': False, 'enabled': None},
+               'grenade_kinds': [{'kind': 'flash', 'available': True}, {'kind': 'hand', 'available': False}]}
+    q.claim('sid', 'life-1', ['set_infinite_ammo', 'grenade_ring'], options=options)
+    for op, args in [('set_infinite_ammo', {'enabled': True}), ('grenade_ring', {'kind': 'hand'})]:
+        with pytest.raises(ValueError, match='unavailable'):
+            q.post('sid', op, str(uuid.uuid4()), 'viewer', args)
+    assert q.post('sid', 'grenade_ring', str(uuid.uuid4()), 'viewer', {'kind': 'flash'})['state'] == 'queued'
+
+
+def test_http_readback_validation_and_finite_weapon_hold(tmp_path):
+    store = Store(tmp_path)
+    store.put('session', 'sid', {'state': 'running'})
+    app = FastAPI()
+    I.install(app, store, lambda: 'fixture')
+    body = {'epoch': 'life', 'capabilities': ['equip_primary', 'set_infinite_ammo'], 'options': {
+        'weapons': [{'item': 25, 'weapon': 'Hydra', 'in_inventory': False}],
+        'infinite_ammo': {'available': True, 'enabled': False},
+        'primary_weapon': {'item': 25, 'weapon': 'Hydra', 'locked': True, 'lock_remaining_s': 180},
+        'grenade_kinds': [{'kind': 'flash', 'available': True}]}}
+    with TestClient(app) as client:
+        path = '/api/sessions/sid/interventions'
+        assert client.post(path + '/claim', json=body).status_code == 200
+        assert client.get(path).json()['options']['primary_weapon']['lock_remaining_s'] == 180
+        for field, bad in [('infinite_ammo', {'available': True, 'enabled': 1}),
+                           ('primary_weapon', dict(body['options']['primary_weapon'], lock_remaining_s=181)),
+                           ('grenade_kinds', [{'kind': 'invented', 'available': True}])]:
+            invalid = body | {'options': body['options'] | {field: bad}}
+            assert client.post(path + '/claim', json=invalid).status_code == 422
+    store.db.close()
+
+
 def test_pinned_native_assets_and_mapping_guards():
     for _, name, size, digest in N.CODE:
         data=N.IMAGES[name]

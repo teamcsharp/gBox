@@ -41,6 +41,7 @@ next frame.
 import struct
 import threading
 import time
+from functools import wraps
 
 from pydantic import BaseModel
 
@@ -66,6 +67,29 @@ STATE: dict = {}                    # id(adapter) -> this session's mod state th
 # G4BE08 map (profiles/gamedata/G4BE08-ram.json knows only the enemies' +0x322), so "full" is the highest hp seen this
 # round, never under 1200 (Leon's health at a Mercenaries start; a First Aid Spray refills to full).
 FIRST_AID_THRESHOLD, FIRST_AID_COOLDOWN_S, FIRST_AID_HP_FLOOR = 0.35, 2.5, 1200
+_NATIVE_LOCK_CREATE = threading.Lock()
+_UNBOUND_NATIVE_LOCK = threading.RLock()
+
+
+def native_lock(ad):
+    """One dispatcher/scratch-buffer owner across the bot and live controls."""
+    with _NATIVE_LOCK_CREATE:
+        if ad is None or not hasattr(ad, "__dict__"):
+            return _UNBOUND_NATIVE_LOCK
+        lock = getattr(ad, "_re4_native_lock", None) if ad is not None else None
+        if lock is None:
+            lock = threading.RLock()
+            if ad is not None:
+                ad._re4_native_lock = lock
+        return lock
+
+
+def _serialized_game(fn):
+    @wraps(fn)
+    def wrapped(g, *args, **kwargs):
+        with native_lock(getattr(g, "ad", None)):
+            return fn(g, *args, **kwargs)
+    return wrapped
 
 
 class Mem:
@@ -150,11 +174,17 @@ class RE4:
             return False
         return self.m.rd(pg + 0x20, 1)[0] == 3 and 0x80000000 <= self.m.u32(R.P_PLAYER) < 0x81800000
 
+    @_serialized_game
     def call(self, fn: int, *args: int, timeout: float = 6.0) -> int:
         """Run fn(r3..) on the game thread at the end of the next frame; returns r3. GameCube: only while a room runs.
         The dispatcher sits in the main loop, which runs every frame, room loads included, so a call queued then
         would run on a player and an attache case still being rebuilt (2026-10-20: RE4 froze in a room load,
         pG+0x20 = 2 with MEM1 static, right after `equip` was applied to the session)."""
+        if self.state.get("native_call_uncertain"):
+            raise RuntimeError("an earlier RE4 native call has an uncertain outcome; relaunch before another call")
+        guard = getattr(self, "before_call", None)
+        if guard is not None:
+            guard()
         if self.in_room() is False:
             raise RuntimeError("the game is loading a room or showing a menu; this needs Leon in a running room "
                                "(try again in play)")
@@ -169,14 +199,30 @@ class RE4:
             raise RuntimeError("dispatcher queue full (is the game paused or frozen?)")
         regs = list(args) + [0] * (8 - len(args))
         self.m.wr(q + 4, struct.pack(">8I", *[r & 0xFFFFFFFF for r in regs]) + bytes(12))
-        self.m.wr(q, struct.pack(">I", fn))
-        t = time.time()
-        while self.m.u32(q) != 0:
-            if time.time() - t > timeout:
-                self.m.wr(q, bytes(4))
-                raise RuntimeError("the game did not run the request (paused, loading or in a menu?) - try again in play")
-            time.sleep(0.05)
-        return self.m.u32(q + 44)
+        if guard is not None:
+            guard()
+        try:
+            # Publishing a function pointer is an edge, not an idempotent data
+            # write: a transport error can arrive after the game consumed it.
+            # Mem.wr retries are deliberately bypassed for this one write.
+            # Dolphin's ordinary write_memory additionally compares the written
+            # bytes immediately; a consumed mailbox is already zero by then.
+            # Use its existing debugger transport once, and observe completion
+            # below. Never fall back to another publication after any exception.
+            debugger = getattr(self.ad, "debugger", None)
+            publish = debugger().write if callable(debugger) else self.ad.write_memory
+            publish(q, struct.pack(">I", fn))
+            t = time.monotonic()
+            while self.m.u32(q) != 0:
+                if time.monotonic() - t > timeout:
+                    # It may already be executing. Do not clear/reuse its mailbox
+                    # or imply that a timed-out effect is safe to request again.
+                    raise RuntimeError("RE4 native call completion was not observed; relaunch before retrying")
+                time.sleep(0.05)
+            return self.m.u32(q + 44)
+        except Exception:
+            self.state["native_call_uncertain"] = True
+            raise
 
     # ---- state -------------------------------------------------------------------------------------------------
     def pg(self):
@@ -299,6 +345,7 @@ def write_recs(g, recs: list):
     g.m.wr(g.V.RECS, b"".join(struct.pack(">BBHH", *r) for r in recs) + b"\xfe" + bytes(5))
 
 
+@_serialized_game
 def equip_item(g, iid: int) -> dict:
     wc = weapon_classes(g)
     if iid not in wc:
@@ -311,6 +358,8 @@ def equip_item(g, iid: int) -> dict:
             raise RuntimeError(f"no room in the attache case for {R.item_name(iid)}")
         given = True
         it = next((x for x in g.items() if x["id"] == iid), None)
+    if not it:
+        raise RuntimeError("take-item returned without a readable inventory item; equipment was not changed")
     g.call(g.V.EQUIP_NOW, it["addr"])
     time.sleep(0.3)
     cls = g.m.rd(g.pg() + 0x4FBC, 1)[0]
@@ -319,6 +368,7 @@ def equip_item(g, iid: int) -> dict:
             "verified": held == iid and cls == wc[iid][0]}
 
 
+@_serialized_game
 def weapon_mod(g, iid: int, fire_rate=None, damage=None, reset=False) -> dict:
     wc = weapon_classes(g)
     if iid not in wc:
@@ -399,6 +449,7 @@ def install_blasts(g):
         g.m.wr(g.V.HOOKS + 8, struct.pack(">I", g.V.PERIODIC))
 
 
+@_serialized_game
 def blast(g, kind: str, at: str = "player") -> dict:
     install_blasts(g)
     pg = g.pg()
@@ -924,12 +975,14 @@ def merc_loadout_list(g) -> dict:
             "note": "records run right after the game's own Merc loadout routine (0x80018CC4) when a run starts"}
 
 
-RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72, 0x35}   # Matilda, Krauser's knife, combat knife, Krauser's bow, arrows: not a gun to
-                                                  # shoot Ganados with; the Rocket Launcher (operator 2026-10-26: "always be replaced
-MAGNUMS = (0x29, 0x2A, 0x2B)                      # with a magnum of a random type"): Broken Butterfly, Killer7, Killer7 w/ Silencer
+RANDOM_SKIP = {0x03, 0x0D, 0x38, 0x52, 0x72, 0x35}   # unsupported automatic guns, arrows, and the disposable rocket;
+                                                  # automatic rocket selections use a verified shotgun instead
+MAGNUMS = (0x29, 0x2A, 0x2B)                      # Broken Butterfly, Killer7, Killer7 w/ Silencer
+SHOTGUNS = (0x2C, 0x2D, 0x94)                     # Shotgun, Striker, Riot Gun (verified item/weapon tables)
+ROCKETS = (0x35, 0x6D)
 SNIPERS = (0x2E, 0x2F)                            # Rifle, Rifle (semi-auto): drawn, they become the Hand Cannon (operator
 HANDCANNON, HANDCANNON_AMMO = 0x37, 0x1A          # 2026-10-27: "replace anyone's sniper rifle with a 40x rapid fire
-FIRE_X = {HANDCANNON: 40}                         # handcannon. I want these people dispatching foes") at its own fire_x
+FIRE_X = {HANDCANNON: 40, **{i: 30 for i in SNIPERS}}  # explicit sniper picks keep their requested 30x class interval
 
 
 def random_pool(g) -> list[tuple[int, int | None]]:
@@ -962,12 +1015,21 @@ def random_loadout(ad, g, character: str = "leon", seed=None, guns: int = 1, amm
         # the time; otherwise the draw (operator 2026-10-26: "randomly assign weapons sometimes giving them random
         # weapons from the campaign")
         wanted = str(weapon).lower().replace(" ", "")
-        if wanted in ("rocketlauncher", "rocket", "0x35"):      # never the rocket: a random magnum instead
-            wanted = R.item_name(rng.choice(MAGNUMS)).lower().replace(" ", "")
+        if wanted in ("rocketlauncher", "rocket", "0x35", "0x6d", "infiniterocketlauncher"):
+            shotguns = [p for p in pool if p[0] in SHOTGUNS]
+            if not shotguns:
+                raise RuntimeError("no verified shotgun is available for automatic rocket replacement")
+            wanted = R.item_name(rng.choice(shotguns)[0]).lower().replace(" ", "")
         pool = [p for p in pool if R.item_name(p[0]).lower().replace(" ", "") == wanted] or pool
     if not pool:
         raise RuntimeError("no givable weapons in the weapon table")
     picks = rng.sample(pool, min(max(1, int(guns)), len(pool)))
+    # Automatic choices only. Explicit equip_item/Controller picks are never substituted.
+    if any(i in ROCKETS for i, _ in picks):
+        shotguns = [p for p in random_pool(g) if p[0] in SHOTGUNS]
+        if not shotguns:
+            raise RuntimeError("no verified shotgun is available for automatic rocket replacement")
+        picks = list(dict.fromkeys(rng.choice(shotguns) if i in ROCKETS else (i, am) for i, am in picks))
     if any(i in SNIPERS for i, _ in picks):                    # never a sniper rifle: the Hand Cannon in its place
         cannon = (HANDCANNON, HANDCANNON_AMMO if HANDCANNON_AMMO in R.ITEMS else None)
         picks = list(dict.fromkeys(cannon if i in SNIPERS else (i, am) for i, am in picks))
@@ -1037,12 +1099,37 @@ def operator_overrides(ad) -> dict:
     return STATE.setdefault(id(ad), {}).setdefault("operator_overrides", {})
 
 
+def operator_choice_active(ad) -> bool:
+    """Keep only a live explicit equipment lease, never a previous round's pick."""
+    choice = getattr(ad, "_merc_primary_weapon", None) or {}
+    if choice.get("lock_until", 0) <= time.monotonic():
+        return False
+    try:
+        from .mercs.titles.re4_gc_native import context
+        c = context(ad, Mem(ad))
+        return (c["active"] and c["identity"][0] == choice.get("pid")
+                and (c["player"], c["generation"]) == (choice.get("player"), choice.get("player_generation")))
+    except (OSError, ValueError, RuntimeError, AttributeError):
+        return False
+
+
 def run(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
+        character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
+        multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
+        speed: float = 0, g=None, **extra) -> dict:
+    with native_lock(ad):
+        return _run_locked(ad, op, item, count, target, on, seconds, character, items, fire_rate, damage, reset,
+                           multiplier, melee_only, kind, force, direction, speed, g, **extra)
+
+
+def _run_locked(ad, op: str, item: str = "", count: int = 0, target: str = "", on: bool = True, seconds: float = 0,
         character: str = "", items: list | None = None, fire_rate=None, damage=None, reset: bool = False,
         multiplier: float = 2.0, melee_only: bool = True, kind: str = "", force: float = 0, direction: str = "",
         speed: float = 0, g=None, **extra) -> dict:
     name = canonical(op)
     operator = bool(extra.pop("operator", False))
+    if not operator and name in LOADOUT_OPS and operator_choice_active(ad):
+        return {"op": name, "verified": True, "skipped": "the explicit weapon selection owns its three-minute lease"}
     args = dict(item=item, target=target, seconds=seconds, items=items, fire_rate=fire_rate, damage=damage,
                 melee_only=melee_only, kind=kind, force=force, direction=direction, speed=speed, g=g)
     if name not in OPERATOR_SETTINGS and name not in LOADOUT_OPS:

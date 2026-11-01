@@ -1737,7 +1737,7 @@ def test_frags_and_incendiaries_go_in_turn_at_most_every_ten_seconds(monkeypatch
     assert bot.nade["kind"] == "fire"                                         # the incendiary's turn
 
 
-def test_a_yellow_in_sight_is_shot_through_the_lock_and_one_out_of_sight_walked_to():
+def test_a_yellow_is_walked_to_even_when_the_lock_and_laser_can_see_it():
     g = round_guest(enemies=((0.0, 0.0, 6000.0, 700),), cam_yaw=0.0)
     u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1500.0))            # 15 m ahead
     bot, clock, snap, writes = lock_brain(())
@@ -1746,8 +1746,10 @@ def test_a_yellow_in_sight_is_shot_through_the_lock_and_one_out_of_sight_walked_
     snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
     snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.BONUS_H, 1500.0), "up": True}   # the dot on it
     acts = run(bot, snap, clock, 8)
-    assert any("zr" in a.get("hold", ()) for a in acts) and bot.stats["bonus_shots"] >= 1 and writes
-    assert all("lup" not in a.get("hold", ()) for a in acts)                  # shot from here, not walked to
+    assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["bonus_shots"] == 0 and not writes
+    assert any("lup" in a.get("hold", ()) for a in acts)
+    snap["player"]["pos"] = (0.0, 0.0, 1400.0)
+    assert {"tap": "zr"} in run(bot, snap, clock, 12)
     snap["bonuses"] = []
     run(bot, snap, clock, 1)
     assert bot.stats["yellows_taken"] == 1 and u
@@ -1759,8 +1761,8 @@ def test_a_yellow_in_sight_is_shot_through_the_lock_and_one_out_of_sight_walked_
     snap.update(R.snapshot(g))
     snap["aim_cam"] = {"addr": 0xABC0, "pitch": 0.0, "yaw": 0.0}
     snap["laser"] = {"from": (20.0, 145.0, 30.0), "at": (0.0, R.BONUS_H, 400.0), "up": True}    # a wall at 4 m
-    acts = run(bot, snap, clock, int(R.BONUS_SEE_S / 0.05) + 4)
-    assert bot.stats["bonus_unseen"] == 1 and bot.stats["bonus_shots"] == 0 and "lup" in acts[-1]["hold"]
+    acts = run(bot, snap, clock, 3)                           # movement begins; do not hold a fake player still into wall recovery
+    assert bot.stats["bonus_unseen"] == 0 and bot.stats["bonus_shots"] == 0 and "lup" in acts[-1]["hold"]
 
 
 def test_greens_wait_for_the_match_and_save_a_running_out_combo():
@@ -2179,21 +2181,21 @@ def test_the_snapshot_finds_the_time_and_combo_bonuses_by_their_action():
     assert "bonuses" not in R.snapshot(g)
 
 
-def test_with_nobody_near_it_shoots_a_time_bonus_and_books_it_taken(monkeypatch):
+def test_legacy_shooting_is_limited_to_combo_bonuses_and_books_it_taken(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))   # the dot on the bonus
-    u = bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                   # 10 m ahead
+    u = bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 0.0, 1000.0), cls="uSm5924")
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, 12)
     assert bot.doing == "bonus" and all("zl" in a["hold"] for a in acts[1:])
     assert any("zr" in a["hold"] for a in acts) and bot.stats["bonus_shots"] >= 2 and bot.stats["shots"] == 0
     snap["bonuses"] = []                                                               # it broke
     run(bot, snap, clock, 1)
-    assert bot.stats["bonuses_taken"] == 1 and bot.stats["time_bonuses_taken"] == 1 and bot.bonus_target is None
+    assert bot.stats["bonuses_taken"] == 1 and bot.stats["combo_bonuses_taken"] == 1 and bot.bonus_target is None
     snap["mercenaries_phase"] = R.PHASE_OVER                                           # the round's end
     run(bot, snap, clock, 1)
-    assert bot.stats["bonus_log"] == [{"seen": 1, "taken": 1, "time": 1, "combo": 0, "missed": 0}]
+    assert bot.stats["bonus_log"] == [{"seen": 1, "taken": 1, "time": 0, "combo": 1, "missed": 0}]
     assert bot.stats["bonuses_missed"] == 0 and u
 
 
@@ -2201,7 +2203,7 @@ def test_no_bonus_shot_with_a_bomb_out(monkeypatch):
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=(), laser=((0.0, R.BONUS_H, 1000.0), (20.0, 145.0, 30.0), 0.86))
-    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
+    bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 0.0, 1000.0), cls="uSm5924")
     bot, clock, snap = brain(g)
     snap["player"].update(equipped=R.BOMB_INDEX, bomb={"count": 5, "out": True}, pos=(0.0, 0.0, -1500.0))
     bot.bomb_at, bot.bomb_since, bot.bomb_phase = (0.0, 0.0), clock[0], "wait"
@@ -2213,7 +2215,7 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(mon
     monkeypatch.setattr(R, "BONUS_PURSUIT", True)                             # the shooting kept, behind its switch
     monkeypatch.setattr(R, "BONUS_RUN", False)
     g = round_guest(enemies=((0.0, 0.0, 400.0, 700),))                               # a zombie 4 m ahead
-    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))
+    bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 0.0, 1000.0), cls="uSm5924")
     bot, clock, snap = brain(g)
     run(bot, snap, clock, 6)
     assert bot.doing != "bonus" and bot.stats["bonus_shots"] == 0
@@ -2221,7 +2223,7 @@ def test_no_bonus_with_a_zombie_near_and_one_out_of_sight_is_left_and_missed(mon
     for cache in (R._FOUND, R._MISS):                                                  # (its laser too)
         cache.clear()
     g = round_guest(enemies=((0.0, 0.0, 4000.0, 700),), laser=((0.0, R.BONUS_H, 500.0), (20.0, 145.0, 30.0), 0.86))
-    bonus_piece(g, "cSmTimeBonusAct_Wait", (0.0, 0.0, 1000.0))                       # a wall at 5 m: the dot short
+    bonus_piece(g, "cSmComboBonusAct_Wait", (0.0, 0.0, 1000.0), cls="uSm5924")      # a wall at 5 m: the dot short
     bot, clock, snap = brain(g)
     acts = run(bot, snap, clock, int(R.BONUS_TRY_S / 0.05) + 4)
     assert all("zr" not in a.get("hold", ()) for a in acts) and bot.stats["bonus_skips"] == 1
@@ -2893,7 +2895,8 @@ def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back
     ad = Adapter(g)
     cell = lambda i: table + mods.FIRE_STRIDE * i + mods.FIRE_INTERVAL
     iv = lambda i: struct.unpack("<f", g.rd(cell(i), 4))[0]
-    guns = [i for i, v in enumerate(mods.FIRE_ORIGINAL) if i not in mods.FIRE_SKIP and 0 < v < mods.FIRE_GUN_MAX]
+    guns = [i for i, v in enumerate(mods.FIRE_ORIGINAL)
+            if i in mods.SNIPER_RECORDS or (i not in mods.FIRE_SKIP and 0 < v < mods.FIRE_GUN_MAX)]
     out = mods.run(ad, "rapid_fire", multiplier=4)
     assert out["verified"] and out["fire_rate_x"] == 4.0 and out["writes"] == len(guns)
     assert sorted(a for a, _ in ad.writes) == sorted(cell(i) for i in guns)            # the interval cells, nothing else
@@ -2902,8 +2905,8 @@ def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back
     assert struct.unpack("<f", g.rd(table + mods.FIRE_STRIDE * 0x0F + 0x30, 4))[0] == pytest.approx(0.24)
     ad.writes.clear()
     assert mods.run(ad, "fire_rate", multiplier=4)["writes"] == 0 and ad.writes == []       # already there
-    assert mods.run(ad, "fire", multiplier=80)["writes"] == len(guns)
-    assert iv(0x0F) == pytest.approx(mods.FIRE_FLOOR) and iv(0x0B) == pytest.approx(2.25 / 80)  # never below the floor
+    assert mods.run(ad, "fire", multiplier=80)["writes"] == len(guns) - len(mods.SNIPER_RECORDS)
+    assert iv(0x0F) == pytest.approx(mods.FIRE_FLOOR) and iv(0x0B) == pytest.approx(2.25 / 30)  # sniper override, floor elsewhere
     off = mods.run(ad, "fire_rate", on=False)
     assert off["fire_rate_x"] == 1.0 and off["writes"] == len(guns)
     assert all(iv(i) == pytest.approx(v) for i, v in enumerate(mods.FIRE_ORIGINAL))
