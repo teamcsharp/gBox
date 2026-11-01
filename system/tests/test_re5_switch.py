@@ -782,3 +782,73 @@ def test_replay_fall_knockdown_enemy4_above_heal_at_no_retreat():
     result = incident_replay.replay(fx, ticks=10)
     assert result['bot'].escape is None, (
         f'bot entered retreat above HEAL_AT; keys={sorted(incident_replay.keys(result))}')
+
+
+# --- fall-knockdown downed-phase retreat (#5067, fix 2) --------------------------------------------------------------
+# The fatal fixtures (hp_before=1, hp_after=0, motion=8) show the bot already downed/knocked down
+# at 0.1% HP with Majini within 2 m.  The standing-phase fix (HEAL_AT 40%) never fires because the
+# hp<=1 early-return in _heal skips the retreat check entirely.  Fix 2 adds a pre-heal check at
+# HEAL_CRITICAL (25%) that fires when the bot is at critical HP or below AND Majini are within 2 m.
+
+def _snap_downed(hp=20, hp_max=1000, enemy=(0.0, 0.0, 150.0), rot=0.0):
+    """A snapshot at critical HP (below HEAL_CRITICAL 25%) with a live Majini within 2 m."""
+    return {"player": {"pos": (0.0, 0.0, 0.0), "rot": rot, "hp": hp, "hp_max": hp_max},
+            "enemies": [{"ptr": 1, "pos": enemy, "hp": 800, "hp_max": 800}],
+            "inventory": [{"id": 0x101, "type": 1, "item": 0x01, "rounds": 30, "grid": 1, "hand": True}]}
+
+
+def test_downed_phase_triggers_retreat_at_critical_hp():
+    """At 2% HP (below HEAL_CRITICAL 25%) with a Majini within 2 m: the bot retreats, not idles."""
+    b, clock = brain()
+    act = b.tick(_snap_downed(hp=20))
+    assert "lup" in act["hold"] or "ldown" in act["hold"] or "rleft" in act["hold"] or "rright" in act["hold"]
+    assert "zl" not in act["hold"] and "zr" not in act["hold"]
+    assert b.escape is not None
+    assert b.stats["escapes"] == 1
+    assert "downed" in str(b.stats.get("heal_status", ""))
+
+
+def test_downed_phase_above_heal_critical_does_not_retreat():
+    """At 30% HP (above HEAL_CRITICAL 25%): the standing-phase fix handles it, not the downed-phase."""
+    b, clock = brain()
+    act = b.tick(_snap_downed(hp=300))
+    # 30% is below HEAL_AT 40% so the standing-phase fix fires, not the downed-phase
+    assert b.escape is not None
+    assert "downed" not in str(b.stats.get("heal_status", ""))
+
+
+def test_downed_phase_no_near_enemy_does_not_retreat():
+    """At critical HP but the nearest Majini is 5 m away: no retreat (the threat is not close enough)."""
+    b, clock = brain()
+    act = b.tick(_snap_downed(hp=20, enemy=(0.0, 0.0, 500.0)))
+    assert b.escape is None
+    assert b.stats.get("escapes", 0) == 0
+
+
+def test_downed_phase_replay_fixture0_pre_hit():
+    """Fixture 0: hp_before=1, hp_after=0, motion=8 (downed), 1 enemy within 2 m.
+    Patch the snapshot to the pre-hit HP (1/1000 = 0.1%, below HEAL_CRITICAL) and
+    verify the bot enters a bounded retreat instead of idling at idle."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_enemy0.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 1/1000 = 0.1%
+    result = incident_replay.replay(fx, ticks=10)
+    bot = result['bot']
+    keys = incident_replay.keys(result)
+    assert bot.escape is not None, (
+        f'expected downed-phase retreat at 0.1% HP with Majini <2 m; keys={sorted(keys)}')
+    assert bot.stats.get('escapes', 0) >= 1, 'downed-phase retreat did not increment escapes'
+    escape_holds = keys & ESCAPE_KEYS
+    assert escape_holds, f'no escape-key hold during downed-phase retreat; keys={sorted(keys)}'
+
+
+def test_downed_phase_replay_fixture1_pre_hit():
+    """Fixture 1: hp_before=1, hp_after=0, motion=8 (downed), 3 enemies within 2 m.
+    Same fatal pattern as fixture 0 but with more enemies swarming."""
+    fx = json.loads((FIXTURES / 'fall_knockdown_enemy1.json').read_text())
+    fx['snapshot']['player']['hp'] = fx['hp_before']  # 1/1000 = 0.1%
+    result = incident_replay.replay(fx, ticks=10)
+    bot = result['bot']
+    keys = incident_replay.keys(result)
+    assert bot.escape is not None, (
+        f'expected downed-phase retreat at 0.1% HP with 3 Majini <2 m; keys={sorted(keys)}')
+    assert bot.stats.get('escapes', 0) >= 1, 'downed-phase retreat did not increment escapes'
