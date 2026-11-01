@@ -3555,10 +3555,15 @@ class Bot:
             return self._go("down", "down_rise", {"hold": ("lup",)}, "down, nobody near: rising")
         e = near[0]
         d = math.dist(me, e["pos"])
-        if d < MELEE_R and now - self.melee_at >= MELEE_GAP_S:
-            self.melee_at = now
-            self.stats["melee"] += 1
-            return self._go("down", "down_kick", {"tap": "zr"}, f"down: a kick at the one at {d:.0f} cm")
+        # the down-kick hold (damage cluster #5052): a melee-range enemy while down - no kick, no rise.
+        # The kick-and-rise cycle at medium HP is what the getting-up deaths are made of (cc_kick 7,
+        # down_rise 2, bonus_run 2); the enemy swings the moment the bot kicks or rises, and the
+        # full-HP-cliff hit lands while the getup or kick leaves him exposed. He stays down until the
+        # enemy is out of melee range or dead, then rises (down_rise above with nobody near).
+        if d <= WINDUP_R:
+            self._gun_down()
+            return self._go("down", "down_hold", {"hold": ()},
+                            f"down, one at {d:.0f} cm in melee range: holding, no kick, no rise")
         if self.aim_since is None:
             self.aim_since = now
         locked = self._lock(p, e, snap, now)
