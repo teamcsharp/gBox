@@ -367,16 +367,37 @@ def test_mid_cycle_guard_aborts_place_when_in_old_bomb_blast():
     m.new_round(0.0)
     # An old bomb from a previous cycle, 300 cm from him (inside BLAST_CM=800)
     old_bomb = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
-    m.bombs = {0x77: (300.0, 0.0, 0.0)}
+    # The bomb is in the snapshot's ground_mines (the real source), not necessarily in self.bombs
+    snap = {"ground_mines": [old_bomb]}
     m.last_pos = None  # no recent placement
     # He is at origin, mid-place cycle (bomb in hand, held=['zl'])
     live = []  # no Majini
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, live)
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
     assert act is not None
     assert act["hold"][:2] == MN.RUN
     assert m.stats["mine_clear_runs"] == 1
     assert m.state == "retreat"
     assert m.stats["mine_status"] == "in an old bomb's blast mid-cycle: aborting and running out"
+
+
+def test_mid_cycle_guard_fires_for_unconfirmed_mines_not_in_self_bombs():
+    # #5068 fourth fix (this one): the incident replay fixtures (2026-10-31) show mines 8-285 cm from the
+    # bot with held=['zl'] (mid-place). Those mines are in the snapshot's ground_mines but NOT in
+    # self.bombs - they were unconfirmed placements or from a prior round. The previous mid-cycle guard
+    # only checked self.bombs, so it never fired for them. Now the guard checks ground_mines directly.
+    m = MN.Mines({})
+    m.new_round(0.0)
+    # A mine 100 cm from the bot, in ground_mines but NOT in self.bombs (unconfirmed placement)
+    unconfirmed = {"ptr": 0x99, "pos": (100.0, 0.0, 0.0)}
+    snap = {"ground_mines": [unconfirmed]}
+    assert m.bombs == {}  # not tracked
+    m.last_pos = None
+    live = []
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, live)
+    assert act is not None
+    assert act["hold"][:2] == MN.RUN
+    assert m.state == "retreat"
+    assert m.stats["mine_clear_runs"] == 1
 
 
 def test_mid_cycle_guard_skips_the_bomb_just_placed():
@@ -385,9 +406,10 @@ def test_mid_cycle_guard_skips_the_bomb_just_placed():
     m = MN.Mines({})
     m.new_round(0.0)
     # The bomb he just placed is 300 cm from him (inside blast), but last_pos points to it
-    m.bombs = {0x77: (300.0, 0.0, 0.0)}
+    just_placed = {"ptr": 0x77, "pos": (300.0, 0.0, 0.0)}
+    snap = {"ground_mines": [just_placed]}
     m.last_pos = (300.0, 0.0, 0.0)  # this is the one he just placed
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, [])
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
     assert act is None  # skipped: last_pos matches
 
 
@@ -395,6 +417,7 @@ def test_mid_cycle_guard_fires_outside_blast_radius():
     # No guard when outside BLAST_CM.
     m = MN.Mines({})
     m.new_round(0.0)
-    m.bombs = {0x77: (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
-    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, [])
+    far = {"ptr": 0x77, "pos": (900.0, 0.0, 0.0)}  # 900 cm: outside BLAST_CM=800
+    snap = {"ground_mines": [far]}
+    act = m._clear_mid_cycle({"pos": (0.0, 0.0, 0.0), "rot": 0.0}, snap, [])
     assert act is None

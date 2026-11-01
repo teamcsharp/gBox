@@ -223,23 +223,43 @@ class Mines:
         self.clear_from = None
         return None
 
-    def _clear_mid_cycle(self, p: dict, live: list) -> dict | None:
+    def _clear_mid_cycle(self, p: dict, snap: dict, live: list) -> dict | None:
         """Mid-cycle guard (place/settle/retreat): if the bot is in an OLD bomb's blast, abort the cycle and run out.
 
         The cluster's remaining incidents (2026-10-31): held=['zl'] means the bot was mid-place (bomb in hand) when
         the blast hit him. The idle-only _clear never fires during a cycle, so he stands in an old bomb's blast while
         placing a new one. This check aborts the place/settle/retreat and runs him out before the detonation.
         The bomb he just placed (last_pos) is skipped - the retreat state machine already handles that one.
+
+        Checks the snapshot's ground_mines (all mines on the ground) rather than self.bombs: self.bombs only tracks
+        confirmed placements from the current round, but the incident replay shows mines 8-285 cm from the bot that
+        were never confirmed (unconfirmed placements or from a prior round) and so are not in self.bombs. The guard
+        must see every mine in the blast, not just the ones the bot confirmed.
         """
         pos = p["pos"]
-        for ptr, b in self.bombs.items():
+        ground = snap.get("ground_mines") or ()
+        seen = set()
+        for g in ground:
+            b = tuple(g["pos"])
             if self.last_pos is not None and b == self.last_pos:
+                continue
+            # Also skip mines near the site (the bot's position when it started placing): the bomb he just
+            # placed lands ~57 cm ahead of his feet, and last_pos is not set until confirmation.
+            if self.site is not None and flat(self.site, b) < CONFIRM_CM:
                 continue
             if flat(pos, b) >= BLAST_CM:
                 continue
+            # Skip mines that were already on the ground before this placement cycle AND are not the bot's
+            # confirmed bombs: the stack's own uWp0a units (always in ground_mines, never in self.bombs) would
+            # otherwise trigger the guard every tick. Confirmed bombs ARE in self.bombs, so they are checked.
+            if g["ptr"] in self.ground0 and g["ptr"] not in self.bombs:
+                continue
+            if g["ptr"] in seen:
+                continue
+            seen.add(g["ptr"])
             # He is in an old bomb's blast mid-cycle: abort and run out.
-            if self.clear_from != ptr:
-                self.clear_from = ptr
+            if self.clear_from != g["ptr"]:
+                self.clear_from = g["ptr"]
                 self.stats["mine_clear_runs"] += 1
             self.state, self.t = "retreat", p.get("t", 0.0)
             self.stats["mine_status"] = "in an old bomb's blast mid-cycle: aborting and running out"
@@ -286,7 +306,7 @@ class Mines:
                 return None
             return {"hold": ()}
         if self.state == "place":
-            mid = self._clear_mid_cycle(p, live)
+            mid = self._clear_mid_cycle(p, snap, live)
             if mid is not None:
                 return mid
             self.saw_place = self.saw_place or p.get("motion") == MOTION_PLACE
@@ -315,7 +335,7 @@ class Mines:
                 return {"hold": ()}
             return {"hold": ("zl",)} if now - self.t < PRESS_S else {"hold": ()}
         if self.state == "settle":                        # the placing motion: he cannot move until it ends
-            mid = self._clear_mid_cycle(p, live)
+            mid = self._clear_mid_cycle(p, snap, live)
             if mid is not None:
                 return mid
             if p.get("motion") == MOTION_PLACE and now - self.t < SETTLE_S:
