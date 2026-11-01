@@ -11,6 +11,9 @@
       state.supported?'The gBox LAN firewall rule needs setup.':'';
     return [labels[state.state]||labels.unknown,rule,state.message||''].filter(Boolean).join(' ');
   }
+  function healthy(state={}) {
+    return state.state==='running'&&!state.busy&&!state.uncertain&&state.setup_result!=='failure'&&!state.status_error&&!state.ui_error;
+  }
   function badge(state={}) {
     if(state.busy)return 'SSH: Setup';
     if(state.uncertain)return 'SSH: Check';
@@ -51,6 +54,7 @@
     #ssh-access-button[data-state=running] {background:#17382c;border-color:#499c78;}
     #ssh-access-button[data-attention=true] {background:#49351d;border-color:#bc965d;}
     #ssh-access-button:focus-visible,#ssh-access-popover button:focus-visible {outline:2px solid #8abbff;outline-offset:2px;}
+    body.gbox-compact #ssh-access-button[data-healthy=true],body.ssh-mini #ssh-access-button[data-healthy=true] {display:none!important;}
     #ssh-access-button[hidden],#ssh-access-popover[hidden] {display:none!important;}
     #ssh-access-popover {position:fixed;top:40px;right:150px;z-index:113;width:min(380px,calc(100vw - 16px));
       max-height:calc(100vh - 56px);box-sizing:border-box;overflow:auto;padding:14px;border:1px solid #586a82;
@@ -95,6 +99,10 @@
     const canEnable=()=>setupReady()&&state.state!=='unknown';
     const canForce=()=>setupReady()&&state.state==='unknown';
     function close(){if(popup)popup.hidden=true;button?.setAttribute('aria-expanded','false');button?.focus();}
+    const body=button?.ownerDocument?.body,compact=()=>body?.classList?.contains('gbox-compact')||body?.classList?.contains('ssh-mini');
+    const Observer=button?.ownerDocument?.defaultView?.MutationObserver;
+    const modeObserver=body&&Observer?new Observer(()=>{if(popup&&!popup.hidden&&healthy({...state,busy:working||state.busy})&&compact())close();}):null;
+    modeObserver?.observe(body,{attributes:true,attributeFilter:['class']});
     if(button){
       button.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-6 0 3-3"/></svg><span data-ssh-caption>SSH: Check</span>';
       button.setAttribute('aria-controls','ssh-access-popover');button.setAttribute('aria-expanded','false');
@@ -117,6 +125,8 @@
       each('[data-ssh-restart]',el=>{el.textContent=restartLabel;el.hidden=!state.restart_needed;el.disabled=working||state.busy||state.uncertain||typeof restart!=='function';});
       each('[data-ssh-restart-help]',el=>{el.hidden=!state.restart_needed;});
       if(button){button.hidden=state.supported===false;button.querySelector('[data-ssh-caption]').textContent=badge({...state,busy:working||state.busy});
+        button.dataset.healthy=String(healthy({...state,busy:working||state.busy}));
+        if(popup&&!popup.hidden&&button.dataset.healthy==='true'&&compact())close();
         button.dataset.state=state.state||'unknown';button.dataset.attention=String(state.setup_result==='failure'||!!state.status_error||!!state.ui_error||!!state.uncertain||state.state==='unreachable');
         button.title=(canEnable()&&['stopped','not_installed'].includes(state.state)?'Enable SSH on this PC. Windows may ask for administrator approval. ':'SSH on this PC only. ')+describe(state)+' Open SSH controls and the app-start preference.';}
     }
@@ -158,7 +168,7 @@
     each('[data-ssh-refresh]',el=>{el.onclick=refresh;});
     io.onSshChanged?.(paint);
     refresh();
-    return {refresh};
+    return {refresh,dispose(){modeObserver?.disconnect();}};
   }
-  return {describe,badge,failure,restartGuidance,mount};
+  return {describe,badge,healthy,failure,restartGuidance,mount};
 });

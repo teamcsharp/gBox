@@ -117,15 +117,17 @@ test('settings panel saves its opt-in and starts only on the explicit button',as
 
 function quickFixture(options={}) {
   function element(){return {textContent:'',checked:false,disabled:false,hidden:false,dataset:{},attributes:{},
-    setAttribute(k,v){this.attributes[k]=v;},focus(){this.focused=true;},addEventListener(k,v){this[k]=v;}};}
+    setAttribute(k,v){this.attributes[k]=v;},focus(){this.focused=true;this.focusCount=(this.focusCount||0)+1;},addEventListener(k,v){this[k]=v;}};}
   function host(){const nodes=new Map();return {...element(),innerHTML:'',querySelector:k=>{if(!nodes.has(k))nodes.set(k,element());return nodes.get(k);}};}
-  const settings=host(),popup=host(),button=host(),calls=[];let current=options.current||{supported:true,state:'stopped',auto_start:false},notify,finish;
+  const settings=host(),popup=host(),button=host(),calls=[];
+  let mode=options.mode||'',modeChanged;
+  button.ownerDocument={body:{classList:{contains:name=>name===mode}},defaultView:{MutationObserver:class{constructor(fn){modeChanged=fn;}observe(){}disconnect(){}}}};let current=options.current||{supported:true,state:'stopped',auto_start:false},notify,finish;
   const io={sshStatus:async()=>{calls.push('status');return current;},onSshChanged:fn=>{notify=fn;},
     sshPreference:async value=>{calls.push('preference');return current={...current,auto_start:value};},
     sshEnable:()=>{calls.push('enable');return new Promise(resolve=>{finish=resolve;});}};
   Object.assign(io,options.io||{});
   const control=UI.mount(settings,io,{button,popup,restart:options.restart});
-  return {settings,popup,button,calls,control,notify:value=>{current=value;notify(value);},finish:value=>{current=value;finish(value);}};
+  return {settings,popup,button,calls,control,setMode:value=>{mode=value;modeChanged?.();},notify:value=>{current=value;notify(value);},finish:value=>{current=value;finish(value);}};
 }
 test('persistent launcher starts SSH on click; running-state panel shares preference and explicit setup',async()=>{
   const f=quickFixture();await new Promise(resolve=>setImmediate(resolve));
@@ -299,4 +301,23 @@ test('unconfirmed Windows capability never advertises an executable force action
   assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/confirm its Windows backend/);
   await f.popup.querySelector('[data-ssh-force]').onclick();assert.equal(f.calls.includes('enable'),false);
   await f.popup.querySelector('[data-ssh-restart]').onclick();assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/Manual restart instructions/);
+});
+
+test('healthy SSH hides only compact and mini launchers and closes a popup when its mode changes',async()=>{
+  const f=quickFixture({current:{supported:true,state:'running',setup_result:'success'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.button.hidden,false,'full app retains its launcher');assert.equal(f.button.dataset.healthy,'true');
+  await f.button.onclick();assert.equal(f.popup.hidden,false);
+  f.setMode('gbox-compact');assert.equal(f.popup.hidden,true);assert.equal(f.button.attributes['aria-expanded'],'false');
+  f.setMode('');await f.button.onclick();assert.equal(f.popup.hidden,false);
+  f.setMode('ssh-mini');assert.equal(f.popup.hidden,true);
+  const focusCount=f.button.focusCount;f.notify({supported:true,state:'running'});f.setMode('ssh-mini');assert.equal(f.button.focusCount,focusCount,'repeated healthy paints never steal focus');
+  assert.match(f.popup.innerHTML,/body.gbox-compact #ssh-access-button\[data-healthy=true\],body.ssh-mini #ssh-access-button\[data-healthy=true\] \{display:none!important;/);
+  f.notify({supported:true,state:'running',setup_result:'failure',message:'Setup failed'});
+  assert.equal(f.button.dataset.healthy,'false');assert.equal(f.button.hidden,false);
+});
+test('pending uncertain and failed SSH states remain visible even if service reports running',()=>{
+  assert.equal(UI.healthy({state:'running',setup_result:'success'}),true);
+  for(const value of [{state:'stopped'},{state:'unreachable'},{state:'running',busy:true},{state:'running',uncertain:true},
+      {state:'running',setup_result:'failure'},{state:'running',status_error:true},{state:'running',ui_error:true}])assert.equal(UI.healthy(value),false);
 });

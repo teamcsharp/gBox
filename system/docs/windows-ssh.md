@@ -2,8 +2,11 @@
 
 On Windows, the desktop app shows a key-icon **Enable SSH** button in the
 full window's title bar area (or just below the chat bar in narrower windows).
-The button remains visible near the upper right, below the compact controls, in
+The button appears near the upper right, below the compact controls, in
 compact and picture-in-picture views, including the separate mini window. Once
+SSH is healthy and running, PiP hides the indicator and closes its popup; the
+full app and Settings retain access. Pending, uncertain and error states remain
+visible in PiP. Once
 running it reads **SSH: On**; setup, errors and unreachable local service states
 have distinct labels. When stopped or missing, clicking **Enable SSH** opens the status panel and
 requests Windows setup on this PC. When running or unverified, it opens status
@@ -74,7 +77,7 @@ and read-only status checks. It does not install a feature, start a service, or
 change this development machine's firewall. An actual UAC/install/start workflow
 still needs operator acceptance on the target PC.
 
-The focused Node suite passed 42 tests (28 SSH tests plus existing desktop
+The focused Node suite passed 44 tests (30 SSH tests plus existing desktop
 authority/profile tests). The visible launcher, shared panel state, blocked setup states, and both PiP
 visibility/interaction contracts are covered by mocked DOM and source checks;
 no visual end-to-end browser acceptance is claimed. Both PowerShell scripts parsed successfully without
