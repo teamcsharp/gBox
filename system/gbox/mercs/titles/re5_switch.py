@@ -1845,10 +1845,15 @@ class Bot:
         err = wrap(heading(bx - px, bz - pz) - p["rot"])
         self._goal_dy = by - py                          # a ledge's prompt on the way is taken (PROMPTS: traverse)
         if d <= KNIFE_R and snap.get("prompt_read"):     # at it: its own prompt takes it (Y, PROMPTS); walk into it
-            run["knife_since"] = run["knife_since"] or now
+            # the shown bonus prompt is answered in _prompt ahead of this run; a prompt_read that still shows no
+            # bonus prompt is a reader miss, not the live no-prompt fault - the knife below breaks the real statue
+            if not (snap.get("prompt") or {}).get("label"):
+                run["knife_since"] = run["knife_since"] or now
             if now - run["knife_since"] > KNIFE_TRY_S * (KNIFE_RETRIES + 1):
-                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # no prompt here: another one first
+                self._bonus_block[b["ptr"]] = now + BONUS_BLOCK_S   # the prompt never came: another one first
                 self._bonus = None
+                self.doing, self.why = "walk", "time bonus: the prompt never came - the next one"
+                return {"hold": ("lup",)}
             self.doing, self.why = "walk", f"time bonus {b.get('secs')} s at {d / 100:.1f} m: into it for its prompt"
             return {"hold": ("lup",) + self._turn(err, KNIFE_FACE)}
         if d <= KNIFE_R:                                 # at it: face it, then the knife until it breaks
