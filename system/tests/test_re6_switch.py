@@ -959,6 +959,37 @@ def test_quick_turn_low_hp_far_enemy_keeps_the_quick_gap():
     assert act == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1
 
 
+def test_cc_turn_low_hp_no_camera_swing(monkeypatch):
+    """Incident (damage cluster #5052: flanking melee deaths at low HP): one enemy flanking within CC_R
+    but outside the CC cone, low HP - the camera swing (cc_turn) is the opening for the cliff hit.
+    The bot holds put (turn_hold) instead of swinging the camera to him."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((-180.0, 0.0, -100.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)
+    cc_turns = [a for a in acts if a.get("hold") == bot._turn(R.wrap(
+        R.heading(-180.0, -100.0) - 0.0))]
+    cc_kicks = [a for a in acts if "zr" in a.get("hold", ()) or a.get("tap") == "zr"]
+    # the bot must NOT swing the camera and must hold put (turn_hold: no keys)
+    assert not cc_turns, f"camera swung away: {cc_turns}"
+    assert not cc_kicks, f"kick fired: {cc_kicks}"
+    assert bot.doing == "turn" and bot.stats.get("act") == "turn_hold", \
+        f"expected turn_hold but got doing={bot.doing} act={bot.stats.get('act')}"
+
+
+def test_cc_turn_high_hp_swing_still_fires():
+    """Sanity: same flanking geometry at full HP - the cc_turn camera swing still fires."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((-180.0, 0.0, -100.0, 700),), hp=900, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)
+    cc_turns = [a for a in acts if bot.doing == "crowd" and bot.stats.get("cc_quick_shots", 0) == 0
+                and a.get("hold") == bot._turn(R.wrap(R.heading(-180.0, -100.0) - 0.0))]
+    # the bot should swing the camera to the flanking enemy (cc_turn)
+    assert any(a.get("hold") == bot._turn(R.wrap(R.heading(-180.0, -100.0) - 0.0)) for a in acts), \
+        f"expected cc_turn camera swing, got: {acts[:5]}"
+
+
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False

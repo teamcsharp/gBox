@@ -3164,6 +3164,12 @@ class Bot:
                     self.quick = 2
                     return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
                                     f"him behind ({math.degrees(err):+.0f} deg): the quick turn")
+                # low-HP flanking hold (damage cluster #5052): within WINDUP_R but not behind enough for the
+                # quick-turn gate - no camera swing either; the regular turn branch would rotate him into
+                # the flanking attacker's windup arc
+                if self.survival and abs(err) > math.radians(60) and any(flat(e) <= WINDUP_R for e in live):
+                    return self._go("turn", "turn_hold", {"hold": ()},
+                                    f"one {flat(min(live, key=flat)):.0f} cm to the side: low HP, the camera holds")
                 self.stats["turns"] += 1                         # the camera turns to him (fast, the gun down)
                 return self._go("turn", "turn", {"hold": self._turn(err)},
                                 f"nobody in front: turning {math.degrees(err):+.0f} deg to him")
