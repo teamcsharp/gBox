@@ -426,6 +426,7 @@ STICK.update({"cleft": STICK["rleft"], "cright": STICK["rright"], "cup": STICK["
 _SCAN = {"Up": (0x48, 1), "Down": (0x50, 1), "Left": (0x4B, 1), "Right": (0x4D, 1), "Return": (0x1C, 0), "Shift_R": (0x36, 0),
          "8": (0x48, 0), "2": (0x50, 0), "4": (0x4B, 0), "6": (0x4D, 0),
          "NUMPAD8": (0x48, 0), "NUMPAD2": (0x50, 0), "NUMPAD4": (0x4B, 0), "NUMPAD6": (0x4D, 0),
+         "NUMPAD7": (0x47, 0), "NUMPAD9": (0x49, 0), "NUMPAD1": (0x4F, 0), "NUMPAD3": (0x51, 0),
          "SPACE": (0x39, 0),
          **{c: (sc, 0) for c, sc in zip("qwertyuiopasdfghjklzxcvbnm", [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
                                                                      0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,

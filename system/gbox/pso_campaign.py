@@ -33,7 +33,7 @@ FINAL_FLOORS = {1: 14, 2: 13}
 REQUIRED_FLOORS = {1: set(range(1, 15)), 2: set(range(1, 16))}
 GAME_IDS = {"436e0bb84d5337d1", "7a3692dc0cbc9b82", "6b55435e3c565370"}
 BUTTONS = {"a", "b", "x", "y", "l", "r", "start", "up", "down", "left", "right",
-           "lup", "ldown", "lleft", "lright"}
+           "lup", "ldown", "lleft", "lright", "dup", "ddown", "dleft", "dright"}
 PROMPT = """You control Phantasy Star Online Episode I & II Plus on GameCube.
 Complete offline Episode I and Episode II on Normal, then repeat using the same
 existing character. The requested episode and observed native state are below.
@@ -47,7 +47,9 @@ Heal with inventory items or techniques when HP is low. Do not assume B is heal:
 read the palette. Equip useful acquired equipment. Return from death normally.
 Menus/door puzzles are your job; native combat handles nearby ordinary enemies.
 Choose at most 4 short input actions then reassess. Use lup/ldown/lleft/lright for
-the analog stick, up/down/left/right for menus, a/b/x/y/l/r/start for buttons.
+the analog stick (up/down/left/right are also analog aliases). Use
+dup/ddown/dleft/dright for the D-pad in in-game menus; use a/b/x/y/l/r/start
+for buttons. Boot menus may also respond to the analog stick.
 Label credits ONLY if ending credits or an unmistakable episode ending are visible;
 an empty room, a dead regular enemy, a loading screen or boss form change is not
 completion. The controller independently requires native boss and route evidence.

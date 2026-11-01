@@ -64,13 +64,86 @@ has no dodge roll: evade by moving out of attacks. Do not assume an action palet
 button is healing; read it. Return only JSON with thought, screen
 (gameplay|menu|loading|credits|death|unknown), needs_operator, difficulty_locked,
 menu_title, selected_option, intended_option, selection_evidence,
-and actions [{player:1|2, keys:[a|b|x|y|l|r|start|up|down|left|right|lup|ldown|lleft|lright], secs:0..0.6}].
+and actions [{player:1|2, keys:[a|b|x|y|l|r|start|dup|ddown|dleft|dright|lup|ldown|lleft|lright], secs:0..0.6}].
+Use lup/ldown/lleft/lright for character movement and dup/ddown/dleft/dright for menus;
+the main stick can move the character behind an open in-game menu.
 At most four short actions. Player-specific waypoints may be returned as goals
 [{player:1|2,x:number,z:number,room:integer,reason:string}] ONLY from native entities
 in context or clearly supported nearby movement; do not invent a distant route.
 Credits means visible genuine ending credits, never an empty arena or loading.
 """
 PROMPT += solo.RECORDING_PROMPT
+
+GAMEPLAY_PROMPT = """Control the two EXISTING buddies in the CURRENT GameCube PSO offline multiplayer game.
+The top view is Player 1; the bottom view is Player 2. Native memory verifies both
+players already joined. Their saved names/classes and current positions are in
+context. Continue the current objective; do not revisit title/offline setup or
+character creation. Do not press Start or quit merely because this is a new plan.
+
+Prioritize the current native objective and observed landmarks over uncertain
+image geometry. On Episode I floor 0 (Pioneer 2), reach the field departure area
+together and inspect the route to Forest. Native class TObjCityDoor_Warp identifies
+an observed TOWN EXIT CANDIDATE, not a proven usable portal or completed transport.
+Approach that actual object using a goal for each player within 300 units in its
+room. The purple glowing device near the buddies may be a different town telepipe;
+color alone does not establish the field exit. Never invent coordinates.
+For other areas, inspect actual nearby exits/switches and objective progress;
+an object's class and coordinates alone do not prove the full route or room clear.
+
+Return goals using ONLY the exact x,z,room of an observed nearby native landmark
+when its role is supported. Native movement handles steering and remembered
+obstacles. Combat uses fresh enemy RAM; do not interrupt it with an old plan.
+The main transporter destination list appears at its center. Both players must
+be aboard before offline transport activates. Require a fresh visible destination
+list and selected option before proposing A; do not claim Forest was entered
+until the native area changes. Do not claim completion, transport or door opening.
+
+Use lup/ldown/lleft/lright for short character movement, dup/ddown/dleft/dright for
+menu selection. Main-stick movement can move a character behind an open menu.
+If a menu is actually visible, report screen=menu, menu_title, selected_option,
+intended_option and selection_evidence; the independent menu guard must approve
+it. Never combine navigation and confirmation. If uncertain return no action.
+Return only JSON with thought, screen (gameplay|menu|loading|death|unknown),
+needs_operator, difficulty_locked, menu_title, selected_option, intended_option,
+selection_evidence, actions [{player:1|2,keys:[a|b|x|y|l|r|start|dup|ddown|dleft|dright|lup|ldown|lleft|lright],secs:0..0.4}],
+and goals [{player:1|2,x:number,z:number,room:integer,reason:string}]. Prefer goals
+over raw movement for observed landmarks. At most one goal and one action per
+player. When goals suffice return actions:[]; the controller will move both buddies.
+"""
+GAMEPLAY_PROMPT += solo.RECORDING_PROMPT
+
+
+def planner_input(context):
+    """Keep verified gameplay separate from boot instructions and irrelevant RAM rows."""
+    state = context.get('native_state') or {}
+    players = state.get('players') or {}
+    if not (context.get('existing_buddies') is True and state.get('verified') is True and
+            state.get('phase') == 14 and set(players) == {1, 2} and not context.get('awaiting_entry')):
+        return PROMPT, context
+    fields = ('class', 'kind', 'entity_id', 'room', 'x', 'y', 'z', 'heading_deg', 'hp', 'hp_max')
+    def summary(entity):
+        return {key: entity[key] for key in fields if key in entity}
+    landmarks = []
+    for entity in state.get('entities', []):
+        if entity.get('kind') != 'object' or not all(type(entity.get(key)) in (int, float) and
+                math.isfinite(entity[key]) for key in ('x', 'y', 'z')):
+            continue
+        nearby = any(entity.get('room') == player.get('room') and
+                     abs(entity['y'] - player.get('y', 0)) <= 15 and
+                     math.hypot(entity['x'] - player['x'], entity['z'] - player['z']) <= 300
+                     for player in players.values())
+        if nearby:
+            landmarks.append(summary(entity))
+    landmarks.sort(key=lambda e: (e.get('class') != 'TObjCityDoor_Warp', e.get('entity_id', 0)))
+    enemies = [summary(e) for e in state.get('entities', []) if e.get('kind') == 'enemy' and e.get('hp', 0) > 0]
+    compact = {key: context[key] for key in ('characters', 'existing_buddies', 'next', 'target_episode',
+               'target_difficulty', 'campaign_state', 'visited_floors', 'missing_floors', 'current_goals',
+               'controller_mapping_verified', 'recorded_input_evidence', 'previous_menu_attempt') if key in context}
+    compact.update(episode=state.get('episode'), floor=state.get('floor'), difficulty=state.get('difficulty'),
+                   native_players={player: summary(entity) for player, entity in players.items()},
+                   nearby_native_landmarks=landmarks[:32], native_enemies_alive=len(enemies),
+                   nearby_native_enemies=enemies[:24], initialization_authorized=False)
+    return GAMEPLAY_PROMPT, compact
 
 
 def character_preferences(seed=None):
@@ -117,7 +190,8 @@ def buddy_context(characters, state, authorization, session_id, *, seen=False, a
     else:
         task = "Select and join the same saved buddy identities from the existing campaign card; never create, replace or initialize characters"
     return {"characters": characters, "existing_buddies": existing,
-            "isolated_new_card_initialization_authorized": initialize, "next": task}
+            "isolated_new_card_initialization_authorized": initialize,
+            "awaiting_entry": bool(awaiting_entry), "next": task}
 
 
 def actions(plan):
@@ -573,6 +647,20 @@ def state_identity(state):
             tuple((k, p["ptr"], p.get("room"), bool(p.get("hp"))) for k, p in sorted(state.get("players", {}).items())))
 
 
+def observe_menu_controls(menu, frame, state, controller, inputs, stats):
+    """A visible menu can coexist with phase 14; stop movement before either pad path."""
+    paused = menu.observe_frame(frame, native_gameplay=bool(state.get("verified") and state.get("phase") == 14),
+                                identity=state_identity(state))
+    stats["menu_controls_paused"] = paused
+    stats["menu_observation"] = menu.observation
+    if paused:
+        controller.goals.clear()
+        controller.approaches.clear()
+        inputs.release()
+        stats["action"] = "waiting_for_observed_menu"
+    return paused
+
+
 def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id="", upload=None, style=None):
     if driver is None:
         raise ValueError("PSO co-op requires an autoplay driver")
@@ -631,7 +719,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     stats["action"] = "waiting_for_area_loader"
                     solo.wait(.15, stopped)
                     continue
-                if state.get("verified") and not mapped:
+                menu_paused = observe_menu_controls(menu, ad.get_frame(), state, controller, inputs, stats)
+                if state.get("verified") and not mapped and not menu_paused:
                     stats["controller_mapping"] = mapping_probe(reader, inputs, state)
                     mapped = True
                     ad._pso_verified_player_slots = {0, 1}
@@ -680,14 +769,16 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                             stats["last_receipt"] = receipt
                             controller.goals.clear()
                         elif not (plan.get("screen") == "credits" and ledger.boss_zero):
-                            controller.accept_goals(plan, state)
+                            if not menu_paused and plan.get("screen") == "gameplay":
+                                controller.accept_goals(plan, state)
                             # Combat is always chosen from current RAM; a slow model
                             # cannot inject stale movement into a currently busy fight.
                             combat = state.get("verified") and any(e.get("kind") == "enemy" and e.get("hp", 0) > 0 for e in state.get("entities", []))
-                            if not combat or any(p.get("hp", 0) < p.get("hp_max", 1) * .35 for p in state.get("players", {}).values()):
+                            if menu_paused or not combat or any(p.get("hp", 0) < p.get("hp_max", 1) * .35 for p in state.get("players", {}).values()):
                                 selected, reason = menu.review(plan, selected, state_identity(state),
                                     frame=planned_frame, fresh_frame=ad.get_frame(),
-                                    native_gameplay=bool(state.get('verified') and state.get('phase') == 14))
+                                    native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
+                                    finish_save=ledger.awaiting_entry is True)
                                 stats.update(menu_repeated_attempts=menu.repeats, menu_input_withheld=reason,
                                              menu_independent_selection=menu.previous.get('independent_selection'),
                                              menu_selected_option=menu.previous.get('selected_option', ''),
@@ -709,18 +800,24 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     context = {**ledger.status(), **buddy_context(characters, state, authorization, session_id,
                                    seen=seen_buddies, awaiting_entry=ledger.awaiting_entry),
                                "native_state": state, "controller_mapping_verified": mapped,
+                               "menu_controls_paused": menu_paused,
                                "current_goals": controller.goals,
                                "previous_menu_attempt": menu.previous,
                                "recorded_input_evidence": recorded}
                     planned_frame, planned_identity = ad.get_frame(), state_identity(state)
-                    pending = executor.submit(planner, planned_frame, context)
+                    planner.prompt, planning_context = planner_input(context)
+                    pending = executor.submit(planner, planned_frame, planning_context)
                     last_plan_at = time.monotonic()
                     stats.update(planner_requests=stats.get('planner_requests', 0) + 1,
                                  planner_state='waiting', input_polite=inputs.polite,
                                  second_pad_polite_supported=inputs.has_polite)
                 if mapped and state.get("verified"):
-                    stats["action"] = "coordinated_native_combat_or_navigation"
-                    controller.tick(state)
+                    # Reobserve after any planner input; Start/menu overlays leave
+                    # native phase 14 unchanged and must never receive steering/L.
+                    menu_paused = observe_menu_controls(menu, ad.get_frame(), state, controller, inputs, stats)
+                    if not menu_paused:
+                        stats["action"] = "coordinated_native_combat_or_navigation"
+                        controller.tick(state)
                 errors = 0
                 solo.wait(.05, stopped)
             except SpeedUnknown as exc:

@@ -14,10 +14,12 @@ PAD2 = {"up": "F2", "down": "F3", "left": "F4", "right": "F5",
         "lup": "F2", "ldown": "F3", "lleft": "F4", "lright": "F5",
         "a": "F6", "b": "F7", "x": "F9", "y": "F11", "start": "F12",
         "l": "u", "l2": "u", "r": "o", "r2": "o", "z": "p", "select": "p",
-        "cup": "c", "cdown": "v", "cleft": "b", "cright": "n"}
+        "cup": "c", "cdown": "v", "cleft": "b", "cright": "n",
+        "dup": "y", "ddown": "m", "dleft": "d", "dright": "r"}
 PAD2_WIN = {**PAD2, "up": "NUMPAD8", "down": "NUMPAD2", "left": "NUMPAD4", "right": "NUMPAD6",
             "lup": "NUMPAD8", "ldown": "NUMPAD2", "lleft": "NUMPAD4", "lright": "NUMPAD6",
-            "a": "d", "b": "r", "x": "m", "y": "y", "start": "SPACE"}
+            "a": "d", "b": "r", "x": "m", "y": "y", "start": "SPACE",
+            "dup": "NUMPAD7", "ddown": "NUMPAD9", "dleft": "NUMPAD1", "dright": "NUMPAD3"}
 P1_ALIASES = {"lup": "up", "ldown": "down", "lleft": "left", "lright": "right"}
 
 
@@ -39,7 +41,9 @@ def pad_ini(base: str, windows=False) -> str:
               "Main Stick/Down": "down", "Main Stick/Left": "left", "Main Stick/Right": "right",
               "C-Stick/Up": "cup", "C-Stick/Down": "cdown", "C-Stick/Left": "cleft",
               "C-Stick/Right": "cright", "Triggers/L": "l", "Triggers/R": "r",
-              "Triggers/L-Analog": "l", "Triggers/R-Analog": "r"}
+              "Triggers/L-Analog": "l", "Triggers/R-Analog": "r",
+              "D-Pad/Up": "dup", "D-Pad/Down": "ddown",
+              "D-Pad/Left": "dleft", "D-Pad/Right": "dright"}
     return base.rstrip() + "\n\n[GCPad2]\nDevice = " + device + "\n" + "".join(
         f"{field} = `{keys[key].upper()}`\n" for field, key in fields.items())
 

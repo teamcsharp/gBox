@@ -20,16 +20,68 @@ class MenuProgress:
         self.key = None
         self.repeats = 0
         self._license_up = None
+        self._controls_paused = False
+        self._pause_identity = None
+        self._cancel_frame = None
+        self._exit_samples = 0
+        self._exit_frame = None
+        self.observation = {}
 
-    def review(self, plan, commands, identity, *, frame=None, fresh_frame=None, native_gameplay=False):
+    @property
+    def controls_paused(self):
+        return self._controls_paused
+
+    def observe_frame(self, frame, *, native_gameplay=False, identity=None):
+        """Pause native pad control before probing/moving under a visible menu.
+
+        Phase 14 alone does not prove the menu closed. After a permitted B,
+        require two observations of both demonstrated gameplay HUDs, or a
+        verified native phase/area transition. Unknown transitions stay paused.
+        """
+        observed = observe_boot(frame)
+        license_menu = observe(frame)
+        self.observation = license_menu if license_menu.get('recognized') else observed
+        area = tuple(identity[:3]) if isinstance(identity, (tuple, list)) and len(identity) >= 3 else None
+        visible = bool(license_menu.get('recognized') or observed.get('recognized') or observed.get('menu_visible'))
+        if visible:
+            if not self._controls_paused:
+                self._pause_identity = area
+            self._controls_paused = True
+            self._exit_samples = 0
+            self._exit_frame = None
+        elif self._controls_paused:
+            changed_area = bool(native_gameplay and area and area[0] == 14 and
+                self._pause_identity and area != self._pause_identity and
+                all(value is not None for value in area))
+            exit_visible = bool(native_gameplay and self._cancel_frame and
+                observed.get('gameplay_visible') and observed.get('frame_sha256') != self._cancel_frame)
+            if not exit_visible:
+                self._exit_samples, self._exit_frame = 0, None
+            elif observed.get('frame_sha256') != self._exit_frame:
+                self._exit_samples += 1
+                self._exit_frame = observed['frame_sha256']
+            if changed_area or self._exit_samples >= 2:
+                self._controls_paused = False
+                self._pause_identity = self._cancel_frame = None
+                self._exit_samples = 0
+                self._exit_frame = None
+        return self._controls_paused
+
+    def review(self, plan, commands, identity, *, frame=None, fresh_frame=None, native_gameplay=False,
+               finish_save=False):
         observed = observe(frame)
         current = observe(fresh_frame)
         known = observed['recognized']
         boot = observe_boot(frame) if not known and not current['recognized'] else {}
         fresh_boot = observe_boot(fresh_frame) if boot else {}
         boot_known = bool(boot.get('recognized') or fresh_boot.get('recognized'))
+        menu_visible = bool(boot.get('menu_visible') or fresh_boot.get('menu_visible'))
         menu_screen = plan.get('screen') in ('menu', 'unknown', None)
-        if not known and not current['recognized'] and not boot_known and not menu_screen and native_gameplay:
+        if known or current['recognized'] or boot_known or menu_visible or plan.get('screen') == 'menu':
+            if not self._controls_paused:
+                self._pause_identity = tuple(identity[:3]) if isinstance(identity, (tuple, list)) and len(identity) >= 3 else None
+            self._controls_paused = True
+        if not known and not current['recognized'] and not boot_known and not menu_visible and not menu_screen and native_gameplay and not self.controls_paused:
             self.key, self.repeats, self.previous = None, 0, {}
             self._license_up = None
             return commands, ''
@@ -65,6 +117,18 @@ class MenuProgress:
             current = fresh_boot
             if not boot.get('recognized') or not current.get('recognized') or signature(boot) != signature(current):
                 reason = 'Boot menu or selection changed; plan again from a fresh frame'
+            elif current.get('menu') in ('ingame_start', 'quit_confirm', 'after_save'):
+                safe = next_key(current, self.players, finish_save=finish_save is True)
+                if chosen and (chosen[0][0] != current.get('player') or len(chosen[0][1]) != 1):
+                    reason = 'Observed split-screen menu requires a separate player-one action'
+                elif safe is None:
+                    reason = 'After-save navigation requires the native campaign completion state'
+                else:
+                    chosen = [(1, [safe], .08)]
+                    if safe == 'b':
+                        self._cancel_frame = current.get('frame_sha256')
+                        self._exit_samples = 0
+                        self._exit_frame = None
             elif not chosen:
                 reason = 'No menu action returned; reobserve the visible selection'
             elif chosen[0][0] != 1 or len(chosen[0][1]) != 1:

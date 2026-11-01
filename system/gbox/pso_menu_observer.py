@@ -21,15 +21,16 @@ def _ink(image):
     return (a.min(2) > 145) & ((a.max(2) - a.min(2)) < 115)
 
 
-def _text(image, name):
+def _text(image, name, *, offset=(0, 0), dark=False):
     row = _TEXT[name]
     ref = np.unpackbits(np.frombuffer(zlib.decompress(base64.b85decode(row['data'])), dtype=np.uint8))
     ref = ref[:int(np.prod(row['shape']))].reshape(row['shape']).astype(bool)
     best = 0.
     for dx in (-1, 0, 1):
         for dy in (-1, 0, 1):
-            box = tuple(v + (dx if n % 2 == 0 else dy) for n, v in enumerate(row['box']))
-            mask = _ink(image.crop(box))
+            box = tuple(v + offset[n % 2] + (dx if n % 2 == 0 else dy) for n, v in enumerate(row['box']))
+            crop = image.crop(box)
+            mask = np.asarray(crop).max(2) < 115 if dark else _ink(crop)
             denominator = int(mask.sum() + ref.sum())
             if denominator:
                 best = max(best, float(2 * (mask & ref).sum() / denominator))
@@ -52,6 +53,7 @@ def _selected(image, boxes, *, minimum=.16, maximum_other=.07):
 def observe(frame):
     """Read a bounded, complete frame. No input or memory operations occur."""
     result = {'recognized': False, 'menu': None, 'selected': None,
+              'menu_visible': False, 'gameplay_visible': False,
               'reason': 'Boot menu and selection are not independently recognized'}
     if not isinstance(frame, bytes) or not 0 < len(frame) <= 8_000_000:
         return result
@@ -71,6 +73,23 @@ def observe(frame):
 
     found = []
 
+    # These observations are demonstrated only in P1's top split-screen view.
+    # A matching lower-view panel is a reason to pause, never permission to
+    # send P1 controls into a menu whose owner has not been demonstrated.
+    start_names = ('start_item', 'start_customize', 'start_status', 'start_options', 'start_quit')
+    def start_labels(offset=(0, 0)):
+        return [max(_text(image, name, offset=offset), _text(image, name, offset=offset, dark=True))
+                for name in start_names]
+    start = start_labels()
+    quit_names = ('quit_question', 'quit_yes', 'quit_no')
+    quit_labels = [_text(image, name) for name in quit_names]
+    after_names = ('after_title', 'after_mode', 'after_characters', 'after_quit')
+    after_labels = [_text(image, name) for name in after_names]
+    result['menu_visible'] = bool(sum(score >= .72 for score in start) >= 4 or
+        quit_labels[0] >= .8 or after_labels[0] >= .8 or
+        sum(score >= .72 for score in start_labels((0, 290))) >= 4 or
+        _text(image, 'quit_question', offset=(0, 290)) >= .8)
+
     def matches(names):
         variants = {'online': ('online', 'online_selected'),
                     'offline': ('offline', 'offline_unselected'),
@@ -80,7 +99,19 @@ def observe(frame):
 
     def record(menu, labels, index):
         if index is not None:
-            found.append({'menu': menu, 'selected': labels[index], 'option_index': index})
+            found.append({'menu': menu, 'selected': labels[index], 'option_index': index, 'player': 1})
+
+    if min(start) >= .72:
+        record('ingame_start', ('Item Pack', 'Customize', 'Status', 'Options', 'Quit Game'),
+               _selected(image, [(31, y, 130, y + 13) for y in (116, 135, 154, 173, 192)],
+                         minimum=.45, maximum_other=.12))
+    if min(quit_labels) >= .8:
+        record('quit_confirm', ('Yes', 'No'), _selected(image,
+               [(400, y, 495, y + 10) for y in (138, 162)], minimum=.35, maximum_other=.12))
+    if min(after_labels) >= .8:
+        record('after_save', ('Change Game Mode', 'Change Characters', 'Quit Game'),
+               _selected(image, [(170, y, 465, y + 12) for y in (221, 282, 342)],
+                         minimum=.1, maximum_other=.04))
 
     if matches(('main_title', 'online', 'offline', 'options', 'website')):
         record('main', ('Online Game', 'Offline Game', 'Options', 'Website'),
@@ -110,14 +141,25 @@ def observe(frame):
     if len(found) == 1:
         result.update(found[0], recognized=True,
                       reason='Static English menu labels and one orange selection independently matched')
+    result['menu_visible'] = bool(result['menu_visible'] or found)
+    # Used only to verify departure after a permitted B cancellation. These
+    # small HP/TP label masks contain no character names or mutable bar values.
+    result['gameplay_visible'] = bool(not result['menu_visible'] and
+        _text(image, 'hud_p1') >= .85 and _text(image, 'hud_p2') >= .85)
     return result
 
 
-def next_key(observation, players=1):
+def next_key(observation, players=1, *, finish_save=False):
     """One conservative input toward the authorized offline campaign setup."""
     if not observation.get('recognized') or type(players) is not int or players not in (1, 2):
         return None
     menu, index = observation['menu'], observation['option_index']
+    if menu == 'ingame_start':
+        return ('a' if index == 4 else 'ddown') if finish_save else 'b'
+    if menu == 'quit_confirm':
+        return ('a' if index == 0 else 'dup') if finish_save else 'b'
+    if menu == 'after_save':
+        return ('a' if index == 0 else 'dup') if finish_save else None
     if menu == 'main':
         return ('down', 'a', 'up', 'up')[index]
     if menu == 'mode':
@@ -209,3 +251,48 @@ _TEXT = {'main_title': {'box': (199, 314, 535, 346),
  'calendar_no': {'box': (328, 467, 361, 490),
                  'shape': (23, 33),
                  'data': 'c-muNfB-fo_6N+3?LQbF9G7AEkj~CfW88Sa&a&Zwe9wUb-eU<CY{dpL%+@pb80X(%XE^?hxgqg$V}rrZg9jvR3Lo(B$v<FYW`Dqd4gi7L8!G'}}
+
+
+# Observed split-screen P1 menus and static HUD labels only.
+_TEXT.update({'start_item': {'box': (40, 114, 121, 131),
+                'shape': (17, 81),
+                'data': 'c${NkfB_B=!GC~(L4gI#`oO>-!6X1=F-b5m@Gyd;8QB;Z*cjTF8ILeDvoSU^xHljE&*0eK{BVY1vtdtzVoS2X4S_}u7YF+Th7B1U4u6sq_!uf0Y*-ZP3<Y=?{y4}n2^es6Fflw*;AP|x;BjGQP?TUh(86;_iJ?KTCt1O{`Jf<!1OMTN9SR44E@5D1NMJw$0Bjl};{'},
+ 'start_customize': {'box': (38, 133, 124, 151),
+                     'shape': (18, 86),
+                     'data': 'c${NkfCG65#RSA>7#J9V6bAzXn*;*`3q(Qyih;m^f#Jc20?PwT%*+e|?S~IP{Lk^vj)TF;kVWE1nu0-(0wc!(0Y|}(hBku(EQ${tSzMG@<PS3lG#_LU6zDLhXJK$+Y!PsAQfzFHNaSD>U>4+PVPhz6NtAHtaZ$41ZTKVKe(>-^fsQ|R3<rc5n1N1E079$)07C^Mzy'},
+ 'start_status': {'box': (54, 153, 111, 170),
+                  'shape': (17, 57),
+                  'data': 'c$|}G00YSbV2UHLfuVtcfra4!LjnT>6GK6T4FelvgGG%EBWFW_gffpni-Q~wV~a!*17jQeVHU#&436xHZ2}e?3QYoyJS;2*juH-SO3W4sJqGTQ3_oP*`0V)`3|IshSQr`5001V(6l?'},
+ 'start_options': {'box': (47, 172, 114, 189),
+                   'shape': (17, 67),
+                   'data': 'c${PYzyJZy7?{AcKmtPoh-Twq-~kIXv>$xL&wucNfWR3G=fpE<OiU8TIF1=~FgQ3#929U7Y~bK<lu+Vml4E4#P-bxyaCl&l$dk~a#KFQOVb~+s!^qH3&z{&M&7rt~{lE_y#|JDj3=9$s*Z}|^LK@='},
+ 'start_quit': {'box': (38, 191, 124, 208),
+                'shape': (17, 86),
+                'data': 'c${NDz`(%3-vA^S3>z3&7?MFOh9(9E0cI8ui;ahY;Q$YVfC5lNfW`Sh0^^7O%?BLZ1o;>nSPmC)HZpR!2(Za9cAQCKVNn!t;IQCR66_HaXmMmvQ25c|{=xl_APYl7Uy`DHW4nZl05g+eM@s^;jIw|On?#$EU<dz)KaLIZhktZ9Kag|$$j%_g{z#FXfe-)yGd?5m'},
+ 'quit_question': {'box': (180, 75, 347, 119),
+                   'shape': (44, 167),
+                   'data': 'c$}q^v5Ffp5Qcx94(%4g>+57#ybgH*EiSUf5j)L2hs*}2wYefG0@h|t+?b@jA`hcIhrPy-Hl+{0z=kv?EOus{#^)}aU<CRH&3u{}0nb|3faw7jPsBao41_q<_!7)INO>wYCuX74si=G)u=w)|6R=ufYbSv2WOm?qJ<E0o>X~=QD@xMmDg-v$MS|q<p>^A$8+I(T0?YDH!>ok5PYgKL(r9olw86;Acy5S~-Kis{d~0yPht%H?AJ_2_Qym<ugQ~nb5Z{eSkC?HAhj6rf*<k*3B`2_63V0i{Qa2>VRkpmOl9-a-P!)5%ByqZ3D0-;Nz9?M(%KeelL)@;q|1gQ!^uMb6@X=wmsLgAztq2@kx{v44%Hk@c)J>Tv@NY|-&z|;R|GXCd-)fqw&cy*)axT6no1AIvGuh@$<WwAPTAl^oR2X8{evxzqB@sm(ITVY^QRmIOY6cB-ayPOpS8)cRhCf&diWe_fVcAlr9I~B#^8}}0X^ZFJ%8f4(GM-3D?5tGY9%5?O65)j~(T?))S_eCb6%7O;DcxX0dA!<?EBM5951!w#20bdha^&htVTKUxK3v036GIIRWms4murZ28G<_O0B;hnC%+Z>a%@=WF%*YiLgfKbWHPa1-@Aycrh}H1yzRjxUi~I#>aH4b'},
+ 'quit_yes': {'box': (427, 133, 468, 154),
+              'shape': (21, 41),
+              'data': 'c$`JSAr6B;5J1sCEP;v*MXn%$Bj6Emly$YOM~p&osNHapIRXbjR1w~TTjlz571{ZaH-71RFvc!xpfYU`TbyEZGGcEXt;g{yA(f6H7D5;W^+7b&o@L4x!~0x$`~fO#7PS'},
+ 'quit_no': {'box': (431, 157, 466, 178),
+             'shape': (21, 35),
+             'data': 'c${Nk0D}(<783Oh?94m{3?Gu28RU2p5||&(U}MNJW;noeEJ1>C#u;V?!<h{UY}N)m42PdFHb~SQNML5~;bBPl*xbOwC-Z=@@!$`jNh}O-001I@7O4'},
+ 'after_title': {'box': (100, 72, 590, 100),
+                 'shape': (28, 490),
+                 'data': 'c%0o-JB}ka6nq2+rlaA;#(=zn!wKkaAH_$Qum{^1av=i>b%W7OYzhkGtbGETf&xXxQ0TxEmgwiAJPY5zfX$!*R=*GHRgpyh%_TBDill%1{JmJnQu&o^>?qJzRNLQ(kB<F9GJj3jbU)Cy0Qi^goA#Tj4=-xwLL9j;J6(0iBm?h~5mhCp7t2wxra@)f!gcL=%LfjEv(ENY<%K-3o+rht+@Ys0g9<E)R*1`z_sPhrIN7Xt!)Km36IVdl_Z)g)Z#?fgFFH`}*@)C9FZX=mD!7(bi>s;<iC1p@dMn;U?I)C+P7S-%rC%i)^yUx-J=k=q#WTJ5P9&c^@<pv&Jx&>{py%ZEDUym~HZnS-<tKVj@q&Z?rivTyERj*0Fqpxp_&JSQBtuFh703*BUowegoeEiZVy=$vMfxzPPv;$L#6{91lToh-=!T9kydWZU`k-Icl>rnviR9!&jyI%eAj@gU{xk&$DkCwk&bvHngOM0OPligr+V2)Wadb2vi>5j1@8&2Wx8l+{Tjsccbf%tD$$pUsj6?+w1%uNm=Z{+`t<iD;=`1Ig;T-6==*{|fSNyh>)?A#k{OOWQ<H&1{dR0be+T>-_JvwNdVET!kWFpV2({W~J&#(hYUaVeo8pj)HK0^M4{_CGH`9>NiX{0Y49;txzk;}-_`pV@-dffoaH`1Jag`$Ao{+!@knwf5-U7sEZQx1b?W9RfT5J-2T)#^2$8tDOY1|v>fp06{M4r3duD{7<jJ+{YWEFV@d*A}HElx8++&!yadQ93s01$iQO4jr_Wr(K1R`DIXRz9hEd45fE-GCdzc26q|Xl`b8i?e=eb6FGVKqvReOdw#{Kmcbs5*LQnwP|JBfTr)_Qr+aECm-89+*1T_C%3Pg}3EIHk1s*~#DD9U{oSJ>NA~UXu=Ld<qdJf%ifzpE0jkH~~fWHNUv=ir0E#ppW-h}6@U*$O<qA7jA6cM9eoojb2-$+YFg-616kXss)l@JMW`)Eeg`j`;Wl)k_^umjQE`>S+Y<{e01o+}&fKq&n4e)a#t8~Hz7e*yA|QM3'},
+ 'after_mode': {'box': (278, 216, 474, 239),
+                'shape': (23, 196),
+                'data': 'c$~G7KTE?v7{)K$kfr8z?2wYL;CRx)4Stb;gKNY=g^;9E79p!c(XZg>)`WstO705?JqYM#uVm<zo_Rh0%x-<&`N#7<&qK(eMRmwxaAAQYrSc}mN~#1D%Cx4rRF^&1pcBZ237}9|^w5W_hn%<4!CdLMb2dACG?;DPX(9Dh#)yBMLfw!cc<|eXctq<DsH3xzW^QDRbawl4=_?{#oT>gAxMHj=gwO##A63G5B;D13QHL~d7#f`7J~JMc7MQDg3%q187AQgsK)JR+G{(C$!i+9f2Cc(tKYjHjQENKai*2FFgrmTQjBqxxFS)%MZ<hh@&_PTttb;iH&QPW=^l4IUkgMQx`gSXf-~EKPEsdR}2d!=CesDg-syRtOrgHGx;*f;){!|`(w14#l&q%#1'},
+ 'after_characters': {'box': (250, 278, 482, 301),
+                      'shape': (23, 232),
+                      'data': 'c$~G-KW@S>6b5idsp<vAJpdx@4d@mmB%g(;W77>J1VNR`R&G%B7#*S#%R@G}0D~h2kG!ahD_K130PP9#CQCp0&-a;-R^}!QMNwD|REP|CF%4jj78l_0J)}ZaM-Fi<gqg#PT68F_#|@<d_Q-+PLK+S;X8lfW{!qX5$?(Nt;&8}%q}G{7wqzrtNuMMSQszne9FgcBF&fzeTdQ$^a>(JSN21sr3s=MomR$~I*P*#Qh+$lB5A6HiV?GBwV=--zHuy!7K$gcb;D^8Sr|2{}9hRCpd=%Sbn&PVCu+p7#6#gsqa;;oWhZ9`oQLL2SH5ldtxyQ9{Xv5OU>(buFR%v^#&kRK68e)~$(R8qo#^c^x%g@L-{0s}fyd!}kG;8ORTb>i}Zn(z'},
+ 'after_quit': {'box': (246, 335, 379, 361),
+                'shape': (26, 133),
+                'data': 'c$}3`F-`+95Zu!hu8@C#KZ4>X@c>X(QHqp)LVm&>x`L7?#HSQ#7g59!8xQLcXi?VkS~I(2kC*7y=+&*>1`v-SKZk^o%hEH{fzW55I_%{M$XvZz9fh%71Lz?<D+3dt(fEiB($N6#FymBvs4Y`E>+*P%u>Hi|2*k;5DcrT{VEb$h6JCoy;wRn@sG<6iueinm0$FxfjE^(ywYB(PV$)1$pqMUDDYhe*KgHbAiyPeq?V3Vyk_CnK#cC37=F&=tA>qrM<fvXAJaxDyqy?%?>+a_H{uAFF0ONQ'},
+ 'hud_p1': {'box': (58, 56, 82, 85),
+            'shape': (29, 24),
+            'data': 'c${NkKmdv44-!cdGRYG1k3UE}267oBk{BeM7{~wsy^sdc'},
+ 'hud_p2': {'box': (58, 291, 82, 318),
+            'shape': (27, 24),
+            'data': 'c${NkKmY;f4-&}|KqUWIK>jh1%^;BkLYRR6@CSBg2__H{U}FBj#LNIe3``6F(bWn0'}})
