@@ -939,6 +939,26 @@ def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
     assert act == {"hold": ("ldown",)} and bot.quick == 2 and bot.stats["quick_turns"] == 1
 
 
+def test_no_quick_turn_low_hp_enemy_within_windup(monkeypatch):
+    """Incident (damage cluster #5052: quick_turn deaths at 900->1, 522->1, 400->1, 275->1, 250->1, 124->1):
+    low HP (<= SURVIVAL_HP), one melee attacker within WINDUP_R behind - the body-spin away is the opening
+    for the full-HP-cliff hit. The quick turn keeps the full QUICK_GAP_S settle; the backout stays down."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -400.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.quick_at = clock[0] - R.QUICK_GAP_S - 0.5                 # past the full settle: the turn is due
+    act = run(bot, snap, clock, 1)[0]
+    assert "lright" not in act.get("hold", ()) and bot.stats.get("quick_turns") in (0, None)   # no camera swing, no walk
+
+
+def test_quick_turn_low_hp_far_enemy_keeps_the_quick_gap():
+    """Same low HP, but the lone behind enemy is outside WINDUP_R - the fast QT_TURN_GAP_S turn still fires."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -600.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.quick_at = clock[0] - R.QUICK_GAP_S - 0.5                 # past the full settle: the turn is due
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1
+
+
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False

@@ -3105,9 +3105,13 @@ class Bot:
         # one behind him alone (none in front): the quick turn waits QT_TURN_GAP_S, not the full QUICK_GAP_S settle
         # (damage cluster fc45a6229fe006d0: 4 hits per turn while the 1.5 s settle let the one behind reach him);
         # a crowd of four flanking (crowd_4_in_2m) keeps the QUICK_GAP_S: the quick turn must not outrun the
-        # crowd-control backout that is its own remedy there
-        qgap = QT_TURN_GAP_S if (behind and not has_front and sum(1 for e in live if flat(e) <= CC_CROWD_R) < 4) \
-              else QUICK_GAP_S
+        # crowd-control backout that is its own remedy there; and a low-HP bot (<= SURVIVAL_HP) keeps the full
+        # QUICK_GAP_S whenever any enemy is within WINDUP_R: the body-spin away is exactly the opening that
+        # turns a 15-16 % graze into the full-HP-cliff hit (damage cluster #5052: quick_turn deaths at 900->1,
+        # 522->1, 400->1, 275->1, 250->1, 124->1)
+        qgap = QUICK_GAP_S if (self.survival and any(flat(e) <= WINDUP_R for e in live)) \
+              else (QT_TURN_GAP_S if (behind and not has_front and sum(1 for e in live if flat(e) <= CC_CROWD_R) < 4) \
+                    else QUICK_GAP_S)
         if (behind and not has_front and now - self.quick_at > qgap
                 and not self.down and p.get("equipped") != BOMB_INDEX
                 and not (self.push is not None and now < self.fever_until)):   # (the push-through faces its way)
@@ -3151,6 +3155,11 @@ class Bot:
                         return chase
                     return self._go("walk", "walk_no_route", {"hold": ()}, "no reachable enemy route: releasing forward")
                 if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S:
+                    # the low-HP hold (damage cluster #5052): a melee attacker within WINDUP_R - no camera
+                    # swing away (the spin is the opening for the full-HP-cliff hit); he stays put and holds
+                    if self.survival and any(flat(e) <= WINDUP_R for e in live):
+                        return self._go("turn", "turn_hold", {"hold": ()},
+                                        f"one {flat(min(live, key=flat)):.0f} cm behind: low HP, the camera holds")
                     self.stats["quick_turns"] += 1               # him behind: the quick turn
                     self.quick = 2
                     return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
@@ -4376,7 +4385,8 @@ class Bot:
             walk = ("lup",) if d >= MELEE_R * 0.8 else ()
             return self._go("crowd", "fever_close", {"hold": walk + self._turn(err, TURN_TOL)},
                             f"melee fever: in to the one at {d:.0f} cm")
-        if abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and d > MELEE_R:
+        if (abs(err) > QUICK_ERR and now - self.quick_at > QUICK_GAP_S and d > MELEE_R
+                and not (self.survival and any(flat(e) <= WINDUP_R for e in live))):
             self.stats["quick_turns"] += 1                       # one behind: the quick turn
             self.quick = 2
             return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)}, f"one {d:.0f} cm behind: the quick turn")
@@ -4401,6 +4411,12 @@ class Bot:
             return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
         if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
+            # (low HP with a melee attacker closing: no camera swing - the turn is the opening for the cliff hit,
+            # the crowd_4_in_2m / quick_turn deaths in damage cluster #5052; he stays put and holds his fire)
+            if self.survival and any(flat(e) <= WINDUP_R for e in live):
+                step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)
+                return self._go("crowd", "cc_space", {"hold": step},
+                                f"one {d:.0f} cm behind: low HP, the camera holds")
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
         step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)
