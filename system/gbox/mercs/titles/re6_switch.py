@@ -1874,6 +1874,13 @@ AIM_LOCK_R, BIG_HP, OFF_FLOOR_AIM_H, OFF_FLOOR_HIT_R = 1500.0, 900, 60.0, 90.0
 # into a crowd the lock sweeps while he backs out. stats sweeps (targets left after SWEEP_SHOTS), targets_shot,
 # targets_per_min (targets shot at a minute since the first aimed shot).
 SWEEP_SHOTS, CC_CROWD_R, CLOSING_W = 3, 400.0, 0.5
+# The sweep never holds one the nearest threat has passed (batch #5048, aimed_away_or_behind, threshold
+# "distance 400 cm, angle 45 deg"): the cluster's hits are ones at 1.0-3.1 m more than 45 deg off the aim's
+# line while the lock finished the far one, and a kick aimed past one at +17 deg that let the 1.0 m / -166 deg
+# ones hit. Once any one closer than SWEEP_HOLD_R (400 cm, the cluster's distance arm) is off the aim's line by
+# more than SWEEP_HOLD_BEAR (45 deg, its angle arm) than the one being finished, the sweep hands it the target
+# at once instead of finishing the far one's SWEEP_SHOTS; closing speed still weighs the swap.
+SWEEP_HOLD_R, SWEEP_HOLD_BEAR = 400.0, math.radians(45)
 FLASH = False                            # the flash alone at FLASH_N within FLASH_R (NADES adds the hand / incendiary
                                         # grenades and the melee fever after a flash)
 # Down (operator 16:22: "when the character is down, They need to raise their weapon and blast like mad, nailing each
@@ -2354,7 +2361,7 @@ class Bot:
             self.target = best.get("ptr", best.get("slot"))
             return best
         if locking:                                              # the sweep: target after target
-            return self._sweep(p, live, now)
+            return self._sweep(p, live, now, yaw, getattr(self, "_snap", None))
         best = min(live, key=lambda e: self._cost(p, yaw, e))
         cur = next((e for e in live if self.target is not None and e.get("ptr", e.get("slot")) == self.target), None)
         px, _, pz = p["pos"]
@@ -3445,10 +3452,25 @@ class Bot:
         self.lock_w = (pitch, want_yaw, want_pitch)
         return True
 
-    def _sweep(self, p, live, now):
+    def _sweep(self, p, live, now, yaw=None, snap=None):
         """The lock's sweep: the current target until SWEEP_SHOTS aimed shots (or his health is gone), then the nearest
-        other one, one closing in first (CLOSING_W of its approach in cm/s off its distance)."""
+        other one, one closing in first (CLOSING_W of its approach in cm/s off its distance). One that closed to within
+        SWEEP_HOLD_R more than SWEEP_HOLD_BEAR off the aim's line is handed the target at once (#5048)."""
         me = p["pos"]
+        # the aim's line: lock_w[1] is the camera's yaw as _lock wrote it toward the held target (set by the time
+        # _sweep runs inside _aim). Without it (a one-off tick before the camera converged) the camera's line on the
+        # held target stands in, then the passed yaw, then the body's heading.
+        aim_yaw = None
+        if self.lock_w is not None:
+            aim_yaw = self.lock_w[1]
+        elif (snap or {}).get("camera") is not None and self.target is not None:
+            cam = snap["camera"]
+            cur_e = next((e for e in live if e.get("ptr", e.get("slot")) == self.target), None)
+            if cur_e is not None:
+                aim_yaw = heading(cur_e["pos"][0] - cam["pos"][0], cur_e["pos"][2] - cam["pos"][2])
+        if aim_yaw is None:
+            cam = (snap or {}).get("camera")
+            aim_yaw = cam["yaw"] if cam is not None else (yaw if yaw is not None else p.get("rot") or 0.0)
         dist = {e.get("ptr", e.get("slot")): math.dist(me, e["pos"]) for e in live}
         closing = {}
         for tid, d in dist.items():
@@ -3457,9 +3479,22 @@ class Bot:
         self._edist = {tid: (d, now) for tid, d in dist.items()}
         cur = next((e for e in live if e.get("ptr", e.get("slot")) == self.target), None)
         if cur is not None and (self.sweep_n.get(self.target, 0) < SWEEP_SHOTS or len(live) == 1):
+            # The nearest threat has passed the one being finished (the aimed-away / behind hits of #5048): one within
+            # SWEEP_HOLD_R of him, closer than the one being finished, and off the aim's line by more than
+            # SWEEP_HOLD_BEAR is handed the target at once. The cluster's arms are 400 cm and 45 deg.
+            px, _, pz = p["pos"]
+            flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
+            # how far off the aim's line: 0 on the line, pi behind it (the float wrap() lands -pi on pi: abs is symmetric).
+            bear = lambda e: abs(wrap(math.atan2(e["pos"][0] - px, e["pos"][2] - pz) - aim_yaw))
+            passed = any(e for e in live
+                         if e is not cur and flat(e) < SWEEP_HOLD_R and flat(e) < flat(cur)
+                         and bear(e) > SWEEP_HOLD_BEAR)
+            if not passed:
+                return cur
+        others = [e for e in live if e is not cur]
+        if not others:
             return cur
-        rest = [e for e in live if e is not cur] or live
-        best = min(rest, key=lambda e: dist[e.get("ptr", e.get("slot"))]
+        best = min(others, key=lambda e: dist[e.get("ptr", e.get("slot"))]
                    - CLOSING_W * max(0.0, closing[e.get("ptr", e.get("slot"))]))
         if cur is not None and best is not cur:
             self.stats["sweeps"] += 1

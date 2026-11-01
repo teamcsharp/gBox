@@ -1228,10 +1228,12 @@ def test_the_aim_writer_writes_both_floats_and_reads_them_back():
     assert R.aim_writer(Off()) is None
 
 
-def lock_brain(enemies, laser=None, ok=True):
+def lock_brain(enemies, laser=None, ok=True, cam_pos=None):
     bot, clock, snap = brain(round_guest(enemies=enemies, cam_yaw=0.0, laser=laser))
     bot.held = lambda p, now: False
     writes = []
+    if cam_pos is not None:                                                   # place the camera on the aim's line
+        snap["camera"]["pos"] = cam_pos
 
     def ram(addr, pitch, yaw):
         writes.append((addr, pitch, yaw))
@@ -1393,6 +1395,21 @@ def test_a_closing_one_is_swept_before_a_standing_one_as_near():
     back["pos"] = (x, y, z - 100.0)                                           # it comes 1 m closer in 0.05 s
     run(bot, snap, clock, 1)
     assert bot.target == first
+
+
+def test_the_sweep_still_holds_one_who_merely_moves_around_him():
+    # No pass: the 1.7 m one is only +17 deg off his aim (the gun's own line) - not more than SWEEP_HOLD_BEAR,
+    # so the sweep keeps finishing the 3.1 m one (the cluster is a behind / aimed-away hit, not any close one).
+    near, far = (17.0, 0.0, 169.0, 700), (0.0, 0.0, 310.0, 700)
+    bot, clock, snap, writes = lock_brain((near, far))
+    bot.target = None
+    run(bot, snap, clock, 1)
+    near_e = next(e for e in snap["enemies"] if e["pos"][2] < 200)
+    far_e = next(e for e in snap["enemies"] if e["pos"][2] >= 200)
+    bot.target = far_e["ptr"]
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS - 1
+    run(bot, snap, clock, 1)
+    assert bot.target == far_e["ptr"]                                          # held: +17 deg is inside the cone
 
 
 def test_point_blank_crowd_gets_aimed_fire_and_a_lone_one_the_quick_shot():
@@ -3586,3 +3603,120 @@ def test_grabbed_from_behind_fixture_takes_quick_turn_not_escape():
     quick_turn_ticks = [i for i, t in enumerate(result['ticks']) if t['doing'] == 'quick_turn']
     assert len(quick_turn_ticks) >= 2, \
         f"expected >=2 quick_turn ticks within 20 ticks (1.0s), got {len(quick_turn_ticks)}: {doings}"
+
+
+def test_sweep_hands_target_to_close_behind_threat_aimed_away():
+    """#5048 down_kick example: sweeping the far one (3.1 m ahead, bearing ~0 deg), a 1.7 m zombie appears
+    directly behind (bearing ~180 deg). The sweep must hand the target to the close behind threat at once,
+    not finish the far one's remaining SWEEP_SHOTS."""
+    # far one 310 cm ahead, behind one 170 cm behind
+    far, behind = (0.0, 0.0, 310.0, 700), (0.0, 0.0, -170.0, 700)
+    bot, clock, snap, writes = lock_brain((far, behind))
+    bot.target = None
+    run(bot, snap, clock, 1)
+    # the bot picks the nearest first (the behind one at 170 cm)
+    # now set the target to the far one and simulate the sweep being mid-fire on it
+    far_e = next(e for e in snap["enemies"] if e["ptr"] != bot.target)
+    bot.target = far_e["ptr"]
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS - 1          # one shot left on the far one
+    p = snap["player"]
+    live = [e for e in snap["enemies"] if (e.get("hp") or 0) > 0]
+    yaw = p.get("rot") or 0.0
+    result = bot._sweep(p, live, clock[0], yaw, snap)
+    # the sweep must have handed the target to the behind one (170 cm < 310 cm, bearing 180 deg > 45 deg)
+    assert result["ptr"] == next(e for e in live if e["pos"][2] < 0)["ptr"], \
+        f"sweep kept the far target: got {result['pos']}, expected the behind one"
+
+
+def test_sweep_hands_target_to_close_threat_behind_in_bomb_escape():
+    """#5048 bomb_escape example: sweeping the front one (2.7 m ahead, bearing ~179 deg), two zombies at
+    1.0 m and 2.0 m behind (bearings ~166 and ~165 deg). The closest behind one (100 cm) must get the
+    target immediately — it is closer than the far one and more than 45 deg off the aim line."""
+    front, behind1, behind2 = (0.0, 0.0, 270.0, 700), (0.0, 0.0, -100.0, 700), (50.0, 0.0, -200.0, 700)
+    bot, clock, snap, writes = lock_brain((front, behind1, behind2))
+    bot.target = None
+    run(bot, snap, clock, 1)
+    front_e = next(e for e in snap["enemies"] if e["pos"][2] > 200)
+    bot.target = front_e["ptr"]
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS - 1
+    p = snap["player"]
+    live = [e for e in snap["enemies"] if (e.get("hp") or 0) > 0]
+    yaw = p.get("rot") or 0.0
+    result = bot._sweep(p, live, clock[0], yaw, snap)
+    # the closest behind one (100 cm) must be picked
+    assert result["ptr"] == next(e for e in live if e["pos"][2] == -100.0)["ptr"], \
+        f"sweep kept the front target: got {result['pos']}, expected the closest behind one"
+
+
+def test_sweep_holds_target_when_near_threat_is_in_front():
+    """#5048 near case: a zombie 1.7 m away at +17 deg (within the 45 deg aim cone) should NOT trigger a
+    sweep swap — the bot keeps finishing the current target. The swap only fires for threats more than
+    SWEEP_HOLD_BEAR (45 deg) off the aim line."""
+    # near one at ~17 deg, far one ahead
+    near, far = (17.0, 0.0, 169.0, 700), (0.0, 0.0, 310.0, 700)
+    bot, clock, snap, writes = lock_brain((near, far))
+    bot.target = None
+    run(bot, snap, clock, 1)
+    far_e = next(e for e in snap["enemies"] if e["pos"][2] >= 200)
+    bot.target = far_e["ptr"]
+    bot.sweep_n[bot.target] = R.SWEEP_SHOTS - 1
+    p = snap["player"]
+    live = [e for e in snap["enemies"] if (e.get("hp") or 0) > 0]
+    yaw = p.get("rot") or 0.0
+    result = bot._sweep(p, live, clock[0], yaw, snap)
+    # the near one is at ~17 deg — within 45 deg, so the sweep must hold the far target
+    assert result["ptr"] == far_e["ptr"], \
+        f"sweep swapped to the in-cone near one: got {result['pos']}, expected to hold the far target"
+
+
+# ---------------------------------------------------------------------------
+# #5048 replay fixtures: the recorded aimed_away_or_behind incidents of the
+# damage cluster 4c555fe0788706b4, driven through incident_replay.replay. Each
+# fixture is one driver snapshot at a hit: a close threat sits off the aim's
+# line (behind or on the flank, more than SWEEP_HOLD_BEAR / 45 deg). The bot's
+# recorded answer there is to give that threat its attention — a quick turn
+# (ldown) for the one behind, or turning (rleft) to face the one on the flank
+# — instead of finishing a far target's sweep and getting hit.
+# ---------------------------------------------------------------------------
+
+def _load_5048_fixture(name):
+    from pathlib import Path
+    return json.loads((Path(__file__).parent / 'fixtures' / 'mercs_incidents' / name).read_text())
+
+
+def test_5048_behind_quick_turn_fixture_replays_facing_the_behind_threat():
+    """The one behind (229 cm, bearing ~180 deg off the aim): the recorded answer is a quick turn
+    (ldown stick) to face it. Assert the replay takes the quick turn, not a far-target sweep."""
+    from gbox.mercs import incident_replay
+    fx = _load_5048_fixture('re6_switch_sweep_hands_over_behind_quick_turn.json')
+    result = incident_replay.replay(fx, ticks=20)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = incident_replay.keys(result)
+    assert 'ldown' in keys, f"no quick-turn stick against the behind threat: doings={doings} keys={sorted(keys)}"
+    assert 'quick_turn' in doings, f"never reached quick_turn on the behind threat: doings={doings}"
+
+
+def test_5048_flank_133cm_fixture_replays_turning_to_face_the_flank():
+    """The one at 133 cm on the flank (+86 deg off the aim line, more than the 45 deg hold bearing):
+    the recorded answer is turning (rleft stick) to face it. Assert the replay turns, not sweeping a
+    far target."""
+    from gbox.mercs import incident_replay
+    fx = _load_5048_fixture('re6_switch_sweep_hands_over_flank_turning.json')
+    result = incident_replay.replay(fx, ticks=20)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = incident_replay.keys(result)
+    assert 'rleft' in keys, f"no turning stick to face the flank threat: doings={doings} keys={sorted(keys)}"
+    assert 'crowd' in doings or 'turn' in str(doings).lower(), f"never faced the flank threat: doings={doings}"
+
+
+def test_5048_flank_80cm_fixture_replays_turning_to_face_the_flank():
+    """The one at 80 cm on the flank (+88 deg off the aim line): the recorded answer is turning
+    (rleft) to face it. The closest threat in the cluster — the one most likely to hit first — must
+    get the aim, not a far target the bot was mid-sweep on."""
+    from gbox.mercs import incident_replay
+    fx = _load_5048_fixture('re6_switch_sweep_hands_over_flank_80cm.json')
+    result = incident_replay.replay(fx, ticks=20)
+    doings = [t['doing'] for t in result['ticks']]
+    keys = incident_replay.keys(result)
+    assert 'rleft' in keys, f"no turning stick to face the 80 cm flank threat: doings={doings} keys={sorted(keys)}"
+    assert 'crowd' in doings, f"never faced the 80 cm flank threat: doings={doings}"
