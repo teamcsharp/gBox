@@ -9,7 +9,23 @@ have distinct labels. When stopped or missing, clicking **Enable SSH** opens the
 requests Windows setup on this PC. When running or unverified, it opens status
 and refreshes without starting setup. The panel includes **Enable SSH on this PC** and the
 saved **Enable / start SSH when gBox opens** option. The same controls remain
-available in **Settings ? SSH access to this PC**.
+available in **Settings > SSH access to this PC**.
+
+If Windows status cannot be read, the panel offers **Force enable SSH
+(Administrator)**. This explicit action uses the same fixed Windows setup,
+custom-service checks, named mutex, scoped firewall rule and authentication
+preservation. It does not run automatically, bypass UAC, or repeat a busy or
+uncertain setup. Status failures identify timeout, PowerShell launch failure,
+command failure or invalid response separately.
+
+A missing desktop bridge, missing SSH IPC handler, or rejected local-window
+identity instead shows a specific explanation and **Check update / restart
+instructions**. This uses the existing guarded local updater and then explains
+how to quit and start the full app. It never calls the F5 reload/force path,
+automatically stops games, or rebuilds Spark. Waiting, skipped and failed updates
+retain their outcome instead of being described as a restart. The separate mini
+window opens the full app to use this control. No shell fallback is executed
+when the required backend is absent.
 
 These controls always manage the PC running this desktop app, regardless of
 which worker's game is displayed. To enable the i9's service, use the updated
@@ -58,7 +74,7 @@ and read-only status checks. It does not install a feature, start a service, or
 change this development machine's firewall. An actual UAC/install/start workflow
 still needs operator acceptance on the target PC.
 
-The focused Node suite passed 33 tests (19 SSH tests plus existing desktop
+The focused Node suite passed 42 tests (28 SSH tests plus existing desktop
 authority/profile tests). The visible launcher, shared panel state, blocked setup states, and both PiP
 visibility/interaction contracts are covered by mocked DOM and source checks;
 no visual end-to-end browser acceptance is claimed. Both PowerShell scripts parsed successfully without

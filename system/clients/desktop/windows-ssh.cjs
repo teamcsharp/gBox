@@ -27,8 +27,9 @@ function create({platform=process.platform, systemRoot=process.env.SystemRoot ||
   let last={supported:platform==='win32', state:platform==='win32'?'unknown':'unsupported', message:''};
   const snapshot=()=>({...last, auto_start:getPreference()===true, busy:!!pending||last.setup_result==='pending', uncertain});
   function run(source, timeout) {
-    return new Promise(resolve=>execute(executable, ['-NoProfile','-NonInteractive','-EncodedCommand',encoded(source)],
-      {windowsHide:true,timeout,maxBuffer:32768,encoding:'utf8'}, (error,stdout)=>resolve({error,stdout})));
+    return new Promise(resolve=>{try {execute(executable, ['-NoProfile','-NonInteractive','-EncodedCommand',encoded(source)],
+      {windowsHide:true,timeout,maxBuffer:32768,encoding:'utf8'}, (error,stdout)=>resolve({error,stdout}));}
+      catch(error){resolve({error,stdout:''});}});
   }
   function status() {
     if(platform!=='win32')return Promise.resolve(snapshot());
@@ -39,9 +40,15 @@ function create({platform=process.platform, systemRoot=process.env.SystemRoot ||
         if(result.error)throw Error();
         const value=JSON.parse(result.stdout.trim().replace(/^\uFEFF/,''));
         if(!['installed','builtin','running','listening','reachable'].every(k=>typeof value[k]==='boolean'))throw Error();
-        last={...last, ...value, supported:true, status_error:false, message:last.status_error?'':last.message, state:!value.installed?'not_installed':!value.builtin?'custom_installation':
+        last={...last, ...value, supported:true, status_error:false, status_error_kind:null, message:last.status_error?'':last.message, state:!value.installed?'not_installed':!value.builtin?'custom_installation':
           !value.running?'stopped':value.reachable?'running':'unreachable', observed_at:Date.now()};
-      } catch { last={...last,state:'unknown',status_error:true,message:'Windows SSH status could not be read. Refresh to retry.'}; }
+      } catch {
+        const kind=result.error?.killed||result.error?.code==='ETIMEDOUT'?'status_timeout':
+          result.error?.code==='ENOENT'?'powershell_missing':result.error?'status_command_failed':'status_response_invalid';
+        const reason={status_timeout:'The Windows status command timed out.',powershell_missing:'Windows PowerShell could not be started.',
+          status_command_failed:'The Windows status command failed.',status_response_invalid:'Windows returned an unreadable status response.'}[kind];
+        last={...last,state:'unknown',status_error:true,status_error_kind:kind,message:reason+' You can explicitly try Force enable SSH (Administrator).'};
+      }
       changed(snapshot());return snapshot();
     })().finally(()=>{querying=null;});
     return querying;

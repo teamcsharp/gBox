@@ -53,7 +53,7 @@
 <button id="ssh-access-button" type="button" aria-label="SSH controls on this PC"></button>
 <div id="ssh-access-popover" role="dialog" aria-label="SSH access to this PC" hidden></div>
 <script src="windows-ssh-ui.js"></script>
-<script>document.body.classList.add('ssh-mini'); GBoxWindowsSsh.mount(null,gbox,{button:document.getElementById('ssh-access-button'),popup:document.getElementById('ssh-access-popover')});</script>
+<script>document.body.classList.add('ssh-mini'); GBoxWindowsSsh.mount(null,gbox,{button:document.getElementById('ssh-access-button'),popup:document.getElementById('ssh-access-popover'),restartLabel:'Open full app for recovery',restart:async()=>{await gbox.miniRestore();return {reason:'Full app opened. Use its SSH panel to check updates and view restart instructions.'};}});</script>
 <img id="v" alt="game">
 <div class="bar"><img src="../../assets/brand/gbox-logo.svg" style="height:16px;width:auto" alt=""><span id="t"></span>
   <button id="full" title="Back to the full app (or double-click the game)">⤢ Full app</button></div>

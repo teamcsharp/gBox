@@ -115,15 +115,16 @@ test('settings panel saves its opt-in and starts only on the explicit button',as
   assert.match(host.innerHTML,/does not verify remote login/);
 });
 
-function quickFixture() {
+function quickFixture(options={}) {
   function element(){return {textContent:'',checked:false,disabled:false,hidden:false,dataset:{},attributes:{},
     setAttribute(k,v){this.attributes[k]=v;},focus(){this.focused=true;},addEventListener(k,v){this[k]=v;}};}
   function host(){const nodes=new Map();return {...element(),innerHTML:'',querySelector:k=>{if(!nodes.has(k))nodes.set(k,element());return nodes.get(k);}};}
-  const settings=host(),popup=host(),button=host(),calls=[];let current={supported:true,state:'stopped',auto_start:false},notify,finish;
+  const settings=host(),popup=host(),button=host(),calls=[];let current=options.current||{supported:true,state:'stopped',auto_start:false},notify,finish;
   const io={sshStatus:async()=>{calls.push('status');return current;},onSshChanged:fn=>{notify=fn;},
     sshPreference:async value=>{calls.push('preference');return current={...current,auto_start:value};},
     sshEnable:()=>{calls.push('enable');return new Promise(resolve=>{finish=resolve;});}};
-  const control=UI.mount(settings,io,{button,popup});
+  Object.assign(io,options.io||{});
+  const control=UI.mount(settings,io,{button,popup,restart:options.restart});
   return {settings,popup,button,calls,control,notify:value=>{current=value;notify(value);},finish:value=>{current=value;finish(value);}};
 }
 test('persistent launcher starts SSH on click; running-state panel shares preference and explicit setup',async()=>{
@@ -210,4 +211,92 @@ test('setup completion reads fresh status after an older overlapping refresh',as
   callbacks[2](null,JSON.stringify(state({running:true,reachable:true})));
   const result=await setup;assert.equal(result.state,'running');assert.equal(result.busy,false);
   assert.equal(UI.badge(result),'SSH: On');
+});
+
+test('unknown Windows status offers explicit force setup and never starts it on refresh or launcher',async()=>{
+  const f=quickFixture({current:{supported:true,state:'unknown',status_error:true,status_error_kind:'status_command_failed'}});
+  await new Promise(resolve=>setImmediate(resolve));
+  const force=f.popup.querySelector('[data-ssh-force]');assert.equal(force.hidden,false);assert.equal(force.disabled,false);
+  assert.equal(f.popup.querySelector('[data-ssh-enable]').disabled,true);
+  await f.button.onclick();assert.equal(f.calls.includes('enable'),false);
+  const setup=force.onclick();assert.equal(f.calls.filter(x=>x==='enable').length,1);assert.equal(force.disabled,true);
+  await force.onclick();assert.equal(f.calls.filter(x=>x==='enable').length,1);
+  f.finish({supported:true,state:'running',setup_result:'success'});await setup;
+  assert.equal(f.button.querySelector('[data-ssh-caption]').textContent,'SSH: On');assert.equal(force.hidden,true);
+});
+test('force setup never bypasses unsupported custom busy or uncertain state',async()=>{
+  const f=quickFixture();await new Promise(resolve=>setImmediate(resolve));
+  for(const state of [{supported:false,state:'unknown'},{supported:true,state:'custom_installation'},
+      {supported:true,state:'unknown',busy:true},{supported:true,state:'unknown',uncertain:true}]){
+    f.notify(state);await f.popup.querySelector('[data-ssh-force]').onclick();
+  }
+  assert.equal(f.calls.includes('enable'),false);
+});
+test('missing bridge and missing IPC handler show restart and never invoke a force fallback',async()=>{
+  for(const io of [{sshStatus:undefined},{sshStatus:async()=>{throw Error("Error invoking remote method 'ssh:status': Error: No handler registered for ssh:status");}}]){
+    let restarts=0;
+    const f=quickFixture({io:{sshPlatform:'win32',...io},restart:async()=>{restarts++;return {reason:'Guarded restart requested'};}});
+    await new Promise(resolve=>setImmediate(resolve));
+    const status=f.popup.querySelector('[data-ssh-status]').textContent;
+    assert.match(status,/bridge|no SSH handler/);assert.match(status,/Restart/);
+    assert.equal(f.popup.querySelector('[data-ssh-force]').disabled,true);
+    await f.popup.querySelector('[data-ssh-force]').onclick();assert.equal(f.calls.includes('enable'),false);
+    const restart=f.popup.querySelector('[data-ssh-restart]');assert.equal(restart.hidden,false);assert.equal(restart.disabled,false);
+    await restart.onclick();assert.equal(restarts,1);assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/Guarded restart/);
+  }
+});
+test('window-identity rejection is distinct and cannot force setup',async()=>{
+  const f=quickFixture({io:{sshPlatform:'win32',sshStatus:async()=>{throw Error('Only the local gBox window can manage Windows SSH.');}}});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/window identity/);
+  assert.equal(f.popup.querySelector('[data-ssh-force]').disabled,true);
+});
+test('setup handler missing is safe to restart but an uncertain setup reply stays locked',async()=>{
+  for(const [message,uncertain]of [["No handler registered for 'ssh:enable'",false],['IPC reply lost',true]]){
+    let calls=0;
+    const f=quickFixture({current:{supported:true,state:'unknown'},io:{sshEnable:async()=>{calls++;throw Error(message);}}});
+    await new Promise(resolve=>setImmediate(resolve));await f.popup.querySelector('[data-ssh-force]').onclick();
+    await f.popup.querySelector('[data-ssh-force]').onclick();assert.equal(calls,1);
+    assert.equal(f.popup.querySelector('[data-ssh-restart]').hidden,uncertain);
+    assert.equal(f.popup.querySelector('[data-ssh-force]').disabled,true);
+  }
+});
+test('backend status failure categories remain supported and allow explicit fixed-script setup',async()=>{
+  for(const [error,kind]of [[{code:1},'status_command_failed'],[{code:'ENOENT'},'powershell_missing'],[{code:'ETIMEDOUT',killed:true},'status_timeout']]){
+    const f=fixture([{error},{},{data:state({running:true,reachable:true})}]);
+    const status=await f.api.status();assert.equal(status.supported,true);assert.equal(status.status_error_kind,kind);
+    assert.match(status.message,/Force enable SSH/);assert.equal(f.calls.length,1);
+    assert.equal((await f.api.enable()).state,'running');assert.match(f.calls[1].source,/-Verb RunAs/);
+  }
+  const api=W.create({platform:'win32',execute:()=>{throw Object.assign(Error('spawn failed'),{code:'ENOENT'});}});
+  assert.equal((await api.status()).status_error_kind,'powershell_missing');
+});
+test('restart guidance never invokes any reload or broad Spark relaunch',()=>{
+  const index=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
+  const block=index.slice(index.indexOf('const windowsSshPanel'),index.indexOf('const FIELDS'));
+  assert.match(block,/GBoxWindowsSsh.restartGuidance\(gbox/);assert.doesNotMatch(block,/clientRefresh|clientReload|gbox.relaunch/);
+  const mini=fs.readFileSync(path.join(__dirname,'../clients/desktop/mini.html'),'utf8');
+  assert.match(mini,/restartLabel:'Open full app for recovery'/);assert.match(mini,/await gbox.miniRestore\(\)/);
+});
+
+test('update check reports each outcome with manual restart guidance and never consumes an F5 force latch',async()=>{
+  let updated=0;const io={clientReload:()=>assert.fail('no reload'),relaunch:()=>assert.fail('no relaunch'),
+    clientUpdate:async()=>{updated++;return {state:'current',restart:true,version:{restart:true}};}};
+  const current=await UI.restartGuidance(io);assert.match(current.reason,/files are current/);assert.match(current.reason,/Quit the full/);assert.equal(updated,1);
+  assert.match((await UI.restartGuidance({})).reason,/no local updater bridge/);
+  for(const state of ['updated','waiting','skipped','failed']){
+    io.clientUpdate=async()=>({state,detail:'Specific update result'});
+    const result=await UI.restartGuidance(io);assert.match(result.reason,/Specific update result/);assert.match(result.reason,/Quit the full/);
+    assert.equal(result.state,undefined); // no claimed activation or restart receipt
+  }
+});
+
+test('unconfirmed Windows capability never advertises an executable force action after generic IPC failure',async()=>{
+  const f=quickFixture({io:{sshStatus:async()=>{throw Error('IPC disconnected');}},restart:async()=>({reason:'Manual restart instructions'})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.popup.querySelector('[data-ssh-force]').disabled,true);
+  assert.equal(f.popup.querySelector('[data-ssh-restart]').hidden,false);
+  assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/confirm its Windows backend/);
+  await f.popup.querySelector('[data-ssh-force]').onclick();assert.equal(f.calls.includes('enable'),false);
+  await f.popup.querySelector('[data-ssh-restart]').onclick();assert.match(f.popup.querySelector('[data-ssh-status]').textContent,/Manual restart instructions/);
 });

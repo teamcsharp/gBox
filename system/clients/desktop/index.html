@@ -2703,7 +2703,8 @@ function loadPlay() {
 }
 
 // settings
-const windowsSshPanel = GBoxWindowsSsh.mount($("#windows-ssh"),gbox,{button:$("#ssh-access-button"),popup:$("#ssh-access-popover")});
+const windowsSshPanel = GBoxWindowsSsh.mount($("#windows-ssh"),gbox,{button:$("#ssh-access-button"),popup:$("#ssh-access-popover"),
+  restart:()=>GBoxWindowsSsh.restartGuidance(gbox)});
 document.querySelector('aside button[data-s="settings"]').addEventListener('click',()=>windowsSshPanel.refresh());
 const FIELDS = [["apiUrl", "Control plane URL (the DGX Spark)"], ["token", "API token (only if the share/SSH below are unreachable)", "password"],
   ["sshHost", "SSH host for Spark management (alias from ~/.ssh/config)"], ["repoRemote", "Repo path on the Spark"],
