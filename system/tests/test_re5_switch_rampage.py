@@ -178,21 +178,54 @@ def test_mandatory_fire_within_2m_even_when_aim_wide_off():
     assert b.stats.get("rampage_shots", 0) > 0
 
 
-def test_mandatory_fire_not_active_beyond_2m():
-    """At 2.5 m (just beyond CROWD_FIRE_CLOSE_R) with a wide aim error,
+def test_mandatory_fire_not_active_beyond_2_5m():
+    """At 3 m (beyond CROWD_FIRE_CLOSE_R=2.5 m) with a wide aim error,
     the bot does NOT get the mandatory fire — it uses the normal aim/fire
     logic which requires a narrower cone."""
     b, clock = bot()
-    foe = at(250, 90)                    # 2.5 m away, 90 deg off
+    foe = at(300, 90)                    # 3 m away, 90 deg off
     inv = [M92F, dict(SHOTGUN, hand=True)]
     act = b.tick(snap([foe], inv=inv))
-    # At 2.5 m with 90 deg off, the bot is turning/aiming, not firing
-    # (the mandatory fire only applies within 2 m)
+    # At 3 m with 90 deg off, the bot is turning/aiming, not firing
     assert b.doing in ("turn", "aim", "fire"), f"doing={b.doing}"
-    # The trigger may or may not be held depending on the aim cone
-    # but the key check is that it's not the mandatory fire
     if b.doing == "fire":
         assert "close enough" not in b.why, f"why={b.why}"
+
+
+def test_mandatory_fire_at_2_3m_with_80deg_aim_off():
+    """The incident scenario: enemy at 2.3 m, 80 deg off facing — previously
+    did NOT fire (beyond the old 200 cm threshold); now it does."""
+    b, clock = bot()
+    foe = at(230, 80)                    # 2.3 m, 80 deg off
+    inv = [M92F, dict(SHOTGUN, hand=True)]
+    act = b.tick(snap([foe], inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"]), f"act={act['hold']} doing={b.doing}"
+    assert b.doing == "fire"
+
+
+def test_mandatory_fire_at_2_5m_exact_with_80deg_aim_off():
+    """At CROWD_FIRE_CLOSE_R (2.5 m) with 80 deg off — fires (within the
+    90 deg quick-turn band, so the body turns first but the trigger stays down)."""
+    b, clock = bot()
+    foe = at(250, 80)
+    inv = [M92F, dict(SHOTGUN, hand=True)]
+    act = b.tick(snap([foe], inv=inv))
+    # At 2.5 m with 80 deg off, the bot fires (crowd close range)
+    assert b.doing == "fire", f"doing={b.doing} act={act['hold']}"
+
+
+def test_three_foes_within_2_5m_all_fire_regardless_of_aim():
+    """The cluster scenario: 3 enemies within 2.5 m, bot faces one — all fire
+    without needing to aim at each one individually."""
+    b, clock = bot()
+    e1 = at(230, 0)       # 2.3 m, facing
+    e2 = at(220, 80)      # 2.2 m, 80 deg off
+    e3 = at(250, -80)     # 2.5 m, 80 deg off
+    inv = [M92F, dict(SHOTGUN, hand=True)]
+    act = b.tick(snap([e1, e2, e3], inv=inv))
+    assert {"zl", "zr"} <= set(act["hold"]), f"act={act['hold']} doing={b.doing}"
+    assert b.doing == "fire"
+    assert b.stats.get("rampage_shots", 0) > 0
 
 
 def test_replay_incident_idle_among_foes_shows_firing_not_escaping():
