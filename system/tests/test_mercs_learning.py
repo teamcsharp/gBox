@@ -1,5 +1,6 @@
 """The RE bots' self-improvement loop (gbox/mercs/learning.py): rounds joined to hits, round faults, changes that went
 live, their measured effect, and the follow-up of closed batches; the incident replay harness."""
+import copy
 import json
 import math
 from pathlib import Path
@@ -334,6 +335,64 @@ def test_re6_switch_bomb_act_damage_fixture_replays_deterministically():
     first, second = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
     assert [t['act'] for t in first['ticks']] == [t['act'] for t in second['ticks']]
     assert incident_replay.keys(first) and all(isinstance(k, str) for k in incident_replay.keys(first))
+
+
+def test_re6_switch_hazard_break_bonus_run_bails_when_crowded():
+    """#5056: re6-switch-hazard-break — the bonus run walked straight through a zombie in the crowd for the bonus
+    (the hit at 1704bfde: a time bonus at 634 cm dead ahead, a zombie at 60 cm; the run's BONUS_BLOCK_R check looked
+    flat-only and missed the one in the way). The run must bail out (None) so the decision falls through to the fight."""
+    import math
+    from gbox.mercs.titles.re6_switch import Bot, BONUS_BLOCK_R
+
+    b = Bot(clock=lambda: 100.0)
+    p = {"pos": [0.0, 0.0, 0.0], "rot": 0.0, "hp": 600, "hp_max": 1000}
+    # a zombie in the way (flat 60 cm, level) and a bonus beyond it (flat 634 cm, dead ahead)
+    live = [{"ptr": 1, "hp": 500, "pos": [0.0, 0.0, -60.0]}]
+    bonuses = [{"ptr": 2, "kind": "time", "pos": [0.0, -370.0, -634.0]}]
+    snap = {"bonuses": bonuses}
+    out = b._bonus_run(p, live, lambda e: math.dist(p["pos"], e["pos"]), snap, 100.0)
+    assert out is None, f"bonus run walked through the crowd: {out}"
+
+    # control: no zombie in the way, the same bonus still reachable - the run walks to it
+    b2 = Bot(clock=lambda: 100.0)
+    out2 = b2._bonus_run(p, [], lambda e: math.dist(p["pos"], e["pos"]), snap, 100.0)
+    assert out2 is not None and out2.get("hold"), f"run should walk to the bonus: {out2}"
+
+    # control: a zombie just outside BONUS_BLOCK_R does not block the run
+    b3 = Bot(clock=lambda: 100.0)
+    far_live = [{"ptr": 3, "hp": 500, "pos": [0.0, 0.0, -(BONUS_BLOCK_R + 50.0)]}]
+    out3 = b3._bonus_run(p, far_live, lambda e: math.dist(p["pos"], e["pos"]), snap, 100.0)
+    assert out3 is not None and out3.get("hold"), f"run should not bail at {BONUS_BLOCK_R + 50} cm: {out3}"
+
+
+def test_re6_switch_hazard_break_fixtures_replay_through_the_harness():
+    """#5056: the cluster's surviving examples replay through the incident harness (schema-valid, deterministic,
+    the tick ledger intact); the 1704bfde example, seeded with the hazard the bot stood in, shows the bonus run
+    bailing (hazard_break_due) and the fight taking over."""
+    import math
+    import pytest
+    from gbox.mercs import incident_replay
+
+    for name in ("re6_switch_hazard_break_1704bfde.json", "re6_switch_hazard_break_b0c6dccd.json",
+                 "re6_switch_hazard_break_0e84b731.json"):
+        fx = json.loads((FIXTURES / name).read_text())
+        r1, r2 = incident_replay.replay(fx, ticks=12), incident_replay.replay(fx, ticks=12)
+        assert [t["act"] for t in r1["ticks"]] == [t["act"] for t in r2["ticks"]]
+        assert incident_replay.keys(r1)
+
+    # the 1704bfde example: the bot stood in a hazard mark when it took the 300-loss. Seeding the Bot with that
+    # mark (and the hp it had before the hit) makes hazard_break_due fire: the bonus run bails and the fight
+    # takes over. Without the seed the replay is static (hp never falls, no mark placed) and the run proceeds.
+    fx = json.loads((FIXTURES / "re6_switch_hazard_break_1704bfde.json").read_text())
+    from gbox.mercs.titles.re6_switch import Bot
+    b = Bot(clock=lambda: 100.0)
+    # seed: the hazard mark the bot stood in, and the hp before the hit (so _hazard_tick sees the fall)
+    px, pz = fx["snapshot"]["player"]["pos"][0], fx["snapshot"]["player"]["pos"][2]
+    b.hazards = [(px, pz, 1000.0)]
+    b.hazard = (px, pz)
+    b._hz_hp = 900  # hp before the hit (the fixture's hp is the post-hit value)
+    t = b.tick(copy.deepcopy(fx["snapshot"]))
+    assert t.get("doing") != "bonus", f"bonus run did not bail with a live hazard: {t}"
 
 
 def test_boss_smoke_cluster_breaks_out_instead_of_staying():

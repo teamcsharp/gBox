@@ -4276,6 +4276,9 @@ class Bot:
         if any(flat(e) <= BONUS_BLOCK_R for e in live):          # one in the way: fought first
             self.run_hit_since = None
             return None
+        if self._hazard_break_due(p, now):                      # #5056: in a hazard, just took HP loss: bail, fight
+            self.run_hit_since = None
+            return None
         reach = lambda b: math.hypot(b["pos"][0] - px, b["pos"][2] - pz)
         b = next((c for c in cands if c["ptr"] == self.run_target), None)
         if b is not None and (now - self.run_since > BONUS_WALK_S
