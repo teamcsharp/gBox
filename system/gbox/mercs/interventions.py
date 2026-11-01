@@ -7,6 +7,7 @@ expire rather than affecting a later round. No latest-value command coalescing.
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 import uuid
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 KIND = "merc_interventions"
 MAX_PENDING, KEEP, TTL, FRESH = 64, 128, 10.0, 3.0
 TERMINAL = {"confirmed", "failed", "unavailable", "expired", "uncertain"}
-OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring"}
+OPERATIONS = {"flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"}
 # The grenade-ring button's selectable types. "flash" is the default and the only one verified; the others
 # are refused by the native controller with a reason (never silently substituted). A longer TTL covers the
 # ten spawn/explode pairs the ring runs (each is the verified flash).
@@ -97,7 +98,10 @@ class Queue:
         if op not in OPERATIONS:
             raise ValueError("unsupported intervention")
         args = {} if args is None else args
-        if op == 'grenade_ring':
+        if op == 'set_infinite_ammo':
+            if not isinstance(args, dict) or set(args) != {'enabled'} or type(args['enabled']) is not bool:
+                raise ValueError('infinite ammo needs an explicit boolean enabled value')
+        elif op == 'grenade_ring':
             args = dict(args)
             kind = args.setdefault('kind', 'flash')
             if set(args) != {'kind'} or kind not in GRENADE_RING_KINDS:
@@ -120,9 +124,18 @@ class Queue:
                 return {k:v for k,v in old.items() if k != "claim"}
             if now - d.get("seen", 0) > FRESH or op not in d["capabilities"]:
                 raise ValueError(d.get("reason") or "native intervention is unavailable")
-            if op == 'equip_primary' and args['item'] not in {
-                    w['item'] for w in d.get('options', {}).get('weapons', [])}:
-                raise ValueError('weapon is not offered by this session')
+            if op == 'equip_primary':
+                offered = next((w for w in d.get('options', {}).get('weapons', []) if w['item'] == args['item']), None)
+                if offered is None:
+                    raise ValueError('weapon is not offered by this session')
+                if offered.get('available') is False:
+                    raise ValueError(str(offered.get('reason') or 'weapon is unavailable for this session')[:300])
+            if op == 'set_infinite_ammo' and d.get('options', {}).get('infinite_ammo', {}).get('available') is not True:
+                raise ValueError('infinite ammo is unavailable for this session')
+            kinds = d.get('options', {}).get('grenade_kinds')
+            if op == 'grenade_ring' and kinds is not None and not any(
+                    k['kind'] == args['kind'] and k['available'] is True for k in kinds):
+                raise ValueError('this grenade kind is unavailable for this session')
             if sum(r["state"] in ("queued", "claimed") for r in d["rows"]) >= MAX_PENDING:
                 raise ValueError("intervention queue is full")
             ttl = GRENADE_RING_TTL if op == "grenade_ring" else TTL
@@ -188,6 +201,12 @@ class Queue:
                         any(type(result.get(k)) is not int or result[k] != 4
                             for k in ('requested', 'completed', 'presses'))):
                     raise ValueError('magnum confirmation requires exactly four verified quick shots')
+                if r['op'] == 'set_infinite_ammo' and result.get('state') == 'confirmed' and \
+                        result.get('enabled') is not r['args']['enabled']:
+                    raise ValueError('infinite ammo confirmation needs the requested readback value')
+                if r['op'] == 'equip_primary' and result.get('state') == 'confirmed' and \
+                        result.get('item') != r['args']['item']:
+                    raise ValueError('weapon confirmation does not match the requested weapon')
                 if r["state"] in ("claimed", "uncertain"):
                     r.update(state=result["state"], result=result, finished_at=now)
                     self.store.db.execute("INSERT OR REPLACE INTO docs VALUES(?,?,?)",
@@ -229,12 +248,39 @@ def install(app, store, auth):
         weapons = options.get('weapons', []) if isinstance(options, dict) else None
         if not isinstance(weapons, list) or len(weapons) > 64 or any(not isinstance(w, dict) or
                 type(w.get('item')) is not int or not 1 <= w['item'] <= 255 or
-                not isinstance(w.get('weapon'), str) or len(w['weapon']) > 80 for w in weapons):
+                not isinstance(w.get('weapon'), str) or len(w['weapon']) > 80 or
+                'available' in w and type(w['available']) is not bool for w in weapons):
             raise HTTPException(422, 'invalid weapon choices')
         current = options.get('current_weapon')
         if current is not None and (type(current) is not int or not 1 <= current <= 255):
             raise HTTPException(422, 'invalid current weapon')
+        ammo = options.get('infinite_ammo')
+        primary = options.get('primary_weapon')
+        kinds = options.get('grenade_kinds')
         options = {'weapons': weapons, 'current_weapon': current}
+        if kinds is not None:
+            if (not isinstance(kinds, list) or len(kinds) > len(GRENADE_RING_KINDS) or any(
+                    not isinstance(k, dict) or k.get('kind') not in GRENADE_RING_KINDS or
+                    type(k.get('available')) is not bool for k in kinds)
+                    or len({k['kind'] for k in kinds}) != len(kinds)):
+                raise HTTPException(422, 'invalid grenade kind status')
+            options['grenade_kinds'] = [{'kind': k['kind'], 'available': k['available'],
+                'reason': str(k.get('reason') or '')[:300]} for k in kinds]
+        if ammo is not None:
+            if (not isinstance(ammo, dict) or type(ammo.get('available')) is not bool
+                    or ammo.get('enabled') is not None and type(ammo.get('enabled')) is not bool
+                    or ammo.get('available') is True and type(ammo.get('enabled')) is not bool):
+                raise HTTPException(422, 'invalid infinite ammo status')
+            options['infinite_ammo'] = {k: ammo[k] for k in ('available', 'enabled') if k in ammo}
+            options['infinite_ammo']['reason'] = str(ammo.get('reason') or '')[:300]
+        if primary is not None:
+            if (not isinstance(primary, dict) or type(primary.get('item')) is not int
+                    or not 1 <= primary['item'] <= 255 or not isinstance(primary.get('weapon'), str)
+                    or len(primary['weapon']) > 80 or type(primary.get('locked')) is not bool
+                    or type(primary.get('lock_remaining_s')) not in (int, float)
+                    or not math.isfinite(primary['lock_remaining_s']) or not 0 <= primary['lock_remaining_s'] <= 180):
+                raise HTTPException(422, 'invalid weapon hold status')
+            options['primary_weapon'] = {k: primary[k] for k in ('item', 'weapon', 'locked', 'lock_remaining_s')}
         reason = str(body.get("reason") or "")[:300]
         return {"requests": queue.claim(sid, epoch, caps, reason, options)}
 
@@ -255,9 +301,10 @@ def install(app, store, auth):
 
 def native_controller(ad):
     """One serialized native controller per adapter, shared by UI and MCP."""
-    from .titles import re5_switch_native, re6_switch_native
+    from .titles import re5_switch_native, re6_switch_native, re4_gc_native
     reasons = []
-    for module, attribute in ((re6_switch_native, "_re6_native_flash"),
+    for module, attribute in ((re4_gc_native, "_re4_native_controls"),
+                              (re6_switch_native, "_re6_native_flash"),
                               (re5_switch_native, "_re5_native_flash")):
         try:
             with module._CREATE_LOCK:
@@ -307,10 +354,26 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
             if Q.available(ctl) and not stats.get('operator_control'):
                 caps.append(Q.OP)
             current = getattr(ctl, 'current_weapon', None)
+            ammo_status = getattr(ctl, 'ammo_status', None)
+            grenade_kinds = getattr(ctl, 'grenade_kinds', None)
             if catalogue.get('epoch') != epoch or time.monotonic() - catalogue.get('at', 0) >= 1:
                 catalogue.update(epoch=epoch, at=time.monotonic(),
                     options={'weapons': choices() if choices else [],
                              'current_weapon': current() if current else None})
+                if grenade_kinds:
+                    catalogue['options']['grenade_kinds'] = grenade_kinds()
+                if ammo_status:
+                    try:
+                        catalogue['options']['infinite_ammo'] = ammo_status()
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        catalogue['options']['infinite_ammo'] = {'available': False, 'enabled': None, 'reason': str(exc)[:300]}
+                from . import primary_weapon
+                primary = primary_weapon.snapshot(ad, {'mercenaries_phase': 1,
+                    'player': {'ptr': p, 'generation': generation}}, pid=ctl.pid)
+                if primary:
+                    catalogue['options']['primary_weapon'] = primary
+            if catalogue['options'].get('infinite_ammo', {}).get('available') is True:
+                caps.append('set_infinite_ammo')
             return {"epoch": epoch, "capabilities": caps,
                     "options": catalogue['options'], "reason": ""}
         except (OSError, ValueError, RuntimeError) as exc:
@@ -379,6 +442,13 @@ def _worker_loop(sid, server, headers, ad, stats_of, alive, event):
                                     finally:
                                         if stats.get('native_weapon_pending') is pending:
                                             stats.pop('native_weapon_pending', None)
+                                elif row['op'] == 'set_infinite_ammo':
+                                    expected = ctl.ready()
+                                    def allowed_ammo():
+                                        return alive() and row['expires'] > time.time() and \
+                                            row['epoch'] == context(full=False)['epoch']
+                                    result = ctl.set_infinite_ammo(row['args']['enabled'], expected=expected, allowed=allowed_ammo)
+                                    catalogue.clear()  # next published status must be read after this write
                                 elif row['op'] == 'grenade_ring':
                                     result = ctl.grenade_ring(row['args'].get('kind', 'flash'))
                                     if stats is not None and result.get('state') == 'confirmed':

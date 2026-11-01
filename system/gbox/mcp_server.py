@@ -230,7 +230,8 @@ CONVENIENCE = {
     "game_intervention": ("Viewer/operator native intervention for the active stream. op=status returns available capabilities and recent receipts. "
                           "op=flash_now creates and detonates a native flash at the player's position without inventory, input or weapon changes. "
                           "op=equip_primary uses a weapon item ID offered in status.options.weapons to replace the main weapon now, "
-                          "with a two-minute bot swap lock and a preference for the current match. "
+                          "with a three-minute bot preference; an empty gun permits a loaded fallback. "
+                          "op=set_infinite_ammo takes enabled=true|false and confirms the game's readback. "
                           "op=magnum_quick4 equips a loaded magnum and performs four observed quick shots on supported RE6 only; "
                           "an interrupted or unobserved action stops with a partial/uncertain receipt and is never replayed. "
                           "op=grenade_ring (RE5 Switch) spawns ten grenades in a ring that blooms out from the player and detonates "
@@ -239,8 +240,9 @@ CONVENIENCE = {
                           "when retrying that same request. "
                           "Queued does not mean detonated: poll status until confirmed or an explicit failure. "
                           "Unsupported title/build/resources are reported without substituting a grenade throw.",
-                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary", "magnum_quick4", "grenade_ring"]},
+                          obj({"session_id": S, "op": {"type":"string", "enum":["status", "flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"]},
                                "request_id": S, "item": {"type":"integer", "minimum":1, "maximum":255},
+                               "enabled": B,
                                "kind": {"type":"string", "enum":["flash", "hand", "incendiary"]}}, ["session_id", "op"])),
     "game_mod": ("Apply one live RAM mod to the session's game on its own PC and wait for the read-back. The tool follows the game: "
                  "re5_mods (Resident Evil 5 Gold, PS3) or re_mods (Resident Evil 4, GameCube / Wii); game_mod_ops lists every op with "
@@ -621,6 +623,10 @@ def build(base_url: str, token: str) -> Server:
                 payload['args'] = {'item': a.get('item')}
             if a['op'] == 'grenade_ring':
                 payload['args'] = {'kind': a.get('kind', 'flash')}
+            if a['op'] == 'set_infinite_ammo':
+                if type(a.get('enabled')) is not bool:
+                    raise ValueError('infinite ammo needs an explicit boolean enabled value')
+                payload['args'] = {'enabled': a['enabled']}
             return await post(f"/api/sessions/{sid}/interventions", payload)
         if name == "game_mod":
             session = await live_session(a["session_id"])

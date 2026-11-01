@@ -152,8 +152,15 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         rows = [{"key": k, "down": False} for k in sorted(held - keys)] + \
                [{"key": k, "down": True} for k in sorted(keys - held)]
         if rows:
-            send(rows)
+            receipt = send(rows)
+            if receipt is False or (isinstance(receipt, dict) and
+                    (receipt.get('stopped') or receipt.get('held') or receipt.get('skipped') or
+                     receipt.get('sent') != len(rows))):
+                # Keep the held set until the transport accepts the release;
+                # a native equipment handover must not acknowledge dropped input.
+                return False
         held = set(keys)
+        return True
 
     def next_frame():
         """Frame-synced: wait (polling the title's frame counter, a 4-byte read) until the game has stepped since the
@@ -527,8 +534,9 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
             if observe_only:
                 next_frame()
                 continue
-            from .primary_weapon import release_for_handover
-            if release_for_handover(stats, snap, hold):
+            from .primary_weapon import release_for_handover, quiescing
+            if not stats.get('operator_control') and quiescing(stats, snap):
+                release_for_handover(stats, snap, hold)
                 next_frame()
                 continue
             chords = pp.step(now, ok=lambda b: bot.prompt_ok(b, snap, now))

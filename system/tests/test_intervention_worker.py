@@ -63,3 +63,39 @@ def test_weapon_handover_rechecks_context_and_always_releases_bot(monkeypatch, c
     assert calls == ([25] if change == 'none' else [])
     assert results[0]['result']['state'] == ('confirmed' if change == 'none' else 'failed')
     assert hasattr(ad, '_merc_primary_weapon') is (change == 'none')
+
+
+@pytest.mark.parametrize('change', ['none', 'player', 'expired', 'stopped'])
+def test_ammo_write_is_fenced_to_claimed_life_and_reports_readback(monkeypatch, change):
+    import json
+    ad, results, calls = SimpleNamespace(), [], []
+    life, running, clock = [2], [True], [100.0]
+    ctl = SimpleNamespace(pid=123, identity=(123, 99), ready=lambda: (456, life[0]),
+        ammo_status=lambda: {'available': True, 'enabled': False},
+        grenade_kinds=lambda: [{'kind': 'flash', 'available': True}])
+    def toggle(enabled, *, expected, allowed):
+        assert enabled is True and expected == (456, 2) and allowed()
+        calls.append(enabled)
+        return {'state': 'confirmed', 'verified': True, 'enabled': True}
+    ctl.set_infinite_ammo = toggle
+    monkeypatch.setattr(I, 'native_controller', lambda _: ctl)
+    monkeypatch.setattr(I.time, 'time', lambda: clock[0])
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path.endswith('/claim'):
+            assert 'set_infinite_ammo' in body['capabilities']
+            assert body['options']['infinite_ammo']['enabled'] is False
+            assert body['options']['grenade_kinds'][0]['kind'] == 'flash'
+            if change == 'player': life[0] = 3
+            if change == 'expired': clock[0] = 111
+            if change == 'stopped': running[0] = False
+            return httpx.Response(200, json={'requests': [{'id': 'click', 'claim': 'once',
+                'op': 'set_infinite_ammo', 'args': {'enabled': True}, 'expires': 110, 'epoch': body['epoch']}]})
+        results.extend(body['results'])
+        running[0] = False
+        return httpx.Response(200, json={})
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kwargs: original(**kwargs, transport=httpx.MockTransport(handler)))
+    I.worker_loop('sid', 'http://fixture', {}, ad, lambda: {}, lambda: running[0])
+    assert calls == ([True] if change == 'none' else [])
+    assert results[0]['result']['state'] == ('confirmed' if change == 'none' else 'unavailable')

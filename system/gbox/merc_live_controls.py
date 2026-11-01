@@ -50,6 +50,7 @@ ALLOWED = {
     "magnum_quick4": {"session_id", "op", "request_id"},
     "equip_primary": {"session_id", "op", "request_id", "item"},
     "grenade_ring": {"session_id", "op", "request_id", "kind"},
+    "set_infinite_ammo": {"session_id", "op", "request_id", "enabled"},
 }
 GRENADE_RING_KINDS = ("flash", "hand", "incendiary")
 SCHEMA = {"type": "object", "additionalProperties": False,
@@ -57,6 +58,7 @@ SCHEMA = {"type": "object", "additionalProperties": False,
               "op": {"type": "string", "enum": list(ALLOWED), "default": "status"},
               "job_id": {"type": "string"}, "control": {"type": "string"},
               "value": {"type": ["number", "boolean"]}, "request_id": {"type": "string"},
+              "enabled": {"type": "boolean"},
               "item": {"type": "integer", "minimum": 1, "maximum": 255},
               "kind": {"type": "string", "enum": list(GRENADE_RING_KINDS)}},
           "required": ["session_id"]}
@@ -73,7 +75,7 @@ def validate_request(args):
         raise ValueError("invalid session_id")
     if op == "set" and (not isinstance(args.get("control"), str) or "value" not in args):
         raise ValueError("set needs control and value")
-    if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring"):
+    if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"):
         import uuid
         try:
             uuid.UUID(args.get("request_id", ""))
@@ -81,6 +83,8 @@ def validate_request(args):
             raise ValueError("a new UUID request_id is required for each click") from None
     if op == "equip_primary" and (type(args.get("item")) is not int or not 1 <= args["item"] <= 255):
         raise ValueError("invalid primary weapon item")
+    if op == "set_infinite_ammo" and type(args.get("enabled")) is not bool:
+        raise ValueError("infinite ammo needs an explicit boolean enabled value")
     if op == "grenade_ring" and "kind" in args and args["kind"] not in GRENADE_RING_KINDS:
         raise ValueError("invalid grenade ring kind")
     if "job_id" in args and (not isinstance(args["job_id"], str) or not args["job_id"] or len(args["job_id"]) > 160):
@@ -242,13 +246,15 @@ class Controls:
             result["reason"] = "This game's worker has no live behavior sliders; native actions appear when supported."
         cached = self.cache.get(sid, {})
         result["controls"] = control_inventory(ctx["controls_title"], cached.get("view", {}), cached.get("status", {}))
-        if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring"):
+        if op in ("flash_now", "equip_primary", "magnum_quick4", "grenade_ring", "set_infinite_ammo"):
             await self.check_run(ctx)  # reject a handover between the capability read and click
             body = {"op": op, "request_id": args["request_id"]}
             if op == "equip_primary":
                 body["args"] = {"item": args["item"]}
             if op == "grenade_ring":
                 body["args"] = {"kind": args.get("kind", "flash")}
+            if op == "set_infinite_ammo":
+                body["args"] = {"enabled": args["enabled"]}
             out = await self.post(f"/api/sessions/{quote(sid, safe='')}/interventions", body)
             row = out["request"]
             result["action"] = {"state": row["state"], "request": row}

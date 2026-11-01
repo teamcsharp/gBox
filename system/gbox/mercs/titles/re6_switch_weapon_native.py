@@ -8,10 +8,24 @@ from . import re6_switch as R, re6_switch_equip as E, re6_switch_native as N
 
 def choices(ctl):
     from .re6_switch_mods import WEAPON_NAMES, WEAPON_KIND
-    player, _ = ctl.ready()
-    return [{'item': kind & 255, 'weapon': WEAPON_NAMES[kind & 255],
-             'family': WEAPON_KIND.get(kind & 255, 'weapon')}
-            for kind in sorted(R.inventory_guns(ctl, player)) if kind & 255 in WEAPON_NAMES and kind in E.GUNS]
+    epoch = ctl.ready()
+    player, _ = epoch
+    guns = R.inventory_guns(ctl, player)
+    index, active, _ = R.inventory_state(ctl, player)
+    rows = []
+    for item, name in WEAPON_NAMES.items():
+        kind = 0x100 + item
+        loaded = kind in guns
+        supported = kind in E.GUNS
+        reason = ('' if loaded and supported else
+                  'This weapon hand lifecycle is not verified on this RE6 build.' if not supported else
+                  'Not loaded this round; native weapon creation and resource registration are not yet verified.')
+        rows.append({'item': item, 'weapon': name, 'family': WEAPON_KIND.get(item, 'weapon'),
+                     'in_inventory': loaded, 'equipped': loaded and guns[kind] == index and active == item,
+                     'available': loaded and supported, 'reason': reason})
+    if ctl.ready() != epoch:
+        raise N.Unavailable('player allocation changed during weapon catalogue readback')
+    return rows
 
 
 def select(ctl, item, *, expected, allowed, clock=time.monotonic, sleep=time.sleep):

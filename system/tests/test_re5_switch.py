@@ -412,9 +412,10 @@ def test_bot_breaks_free_when_held_and_resuscitates_when_dying(snap, kind, patte
     assert keys == set(pattern) and b.stats[kind] == 1    # "Break free": the stick shaken; "Resuscitate": A mashed
 
 
-def test_bot_breaks_free_when_the_stick_does_not_move_him():
+def test_bot_breaks_free_when_the_stick_does_not_move_him_without_a_motion_byte():
     b, clock = brain()
     far = bot_snap((600.0, 0.0, 0.0))                                     # a turn he cannot make
+    far['player'].pop('motion', None)  # only older readers need the no-progress hold heuristic
     for k in range(12):
         clock[0] = 0.05 * k
         act = b.tick(far)

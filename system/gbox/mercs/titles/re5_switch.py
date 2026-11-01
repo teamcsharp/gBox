@@ -463,17 +463,12 @@ NEAR_FOCUS, NEAR_FOCUS_R = True, 600.0
 # chest between shots only (never in the shot motion: fire_rate's time scale). A horizontal bearing alone cannot confirm
 # a shot: the dot can be on the ground or a wall. The heading and shot-tail governors apply. Counters: crowd_fire_s,
 # shotgun_swaps (the shotgun / magnum put up), rampage_kills, unaims_in_5m (target 0).
-# Unload (operator 2026-10-31: "when the bot raises their gun, they fire ... If the bot has anyone within 5m, they need to
-# be unloading on threat"; "the bot needs to point their weapon at the enemies"): in crowd fire, the gun up and its ray
-# seen, the trigger is down while the ray is within UNLOAD_CONE (yaw and pitch: about a body width beside him at 3-5 m)
-# of the target's chest, before the dot reaches a body, and the stick keeps bringing it onto his chest between shots -
-# never with the ray ending short of him (a wall, the floor), with no ray (a bearing alone), nor with CAM_DOWN_GUARD's
-# aim at the feet. One Majini within 5 m is unloaded on by the fight (re5_combat UNLOAD_CONE: "threat: unloading").
-# Off a body the trigger comes in bursts of UNLOAD_BURST_S with UNLOAD_TURN_S between them, for the stick (none in the
-# shot motion). unload_s: the trigger down off a confirmed body.
+# Legacy broad-angle unloading is disabled: a long ray beside a nearby enemy
+# does not establish body contact. Keep correcting until the measured body ray
+# (or a shotgun's spread) reaches him; the bounded acquisition guard can move.
+# The final camera feedback gate never uses this compatibility flag.
 CROWD_FIRE, CROWD_FIRE_N, CROWD_FIRE_CLOSE_R = True, 3, 200.0
-UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = True, math.radians(8), 0.4, 0.2
-UNLOAD_WIDE_CM, UNLOAD_TALL_CM = 54.0, 55.0   # re5_switch_aim's final gate: his body's extent from the chest aim point
+UNLOAD, UNLOAD_CONE, UNLOAD_BURST_S, UNLOAD_TURN_S = False, math.radians(8), 0.4, 0.2
 CROWD_FRONT, CROWD_CONE = math.radians(60), math.radians(10)
 OFFSCREEN_ERR, WHIP_DEG, WHIP_BACK_DEG, WHIP_S, SWAP_GAP_S = math.radians(60), 90.0, 45.0, 1.0, 1.0
 RAMPAGE_COUNTERS = ("rampage_s", "rampage_shots", "rampage_kills", "idle_in_5m_s", "unaims_in_5m", "behind_turns",
@@ -1955,7 +1950,7 @@ class Bot:
             candidates = []
             for s_ in inv or ():
                 spec = re5_weapons.WEAPONS.get(s_.get("item"))
-                if s_.get("type") == 1 and spec is not None and spec.family == fam \
+                if s_.get("type") == 1 and self._loaded_gun(s_) and spec is not None and spec.family == fam \
                         and (s_.get("hand") or s_.get("grid") in QUICK):
                     if s_.get("hand"):
                         return s_, fam
@@ -3098,17 +3093,24 @@ class Bot:
         return bool(falling and near <= GRAB_R)
 
     def _score_hits(self, snap, now) -> None:
-        """A Majini's health falling while the trigger is held, or within HIT_S of letting it go, is a hit."""
+        """Associate observed target HP losses with one recent pull, not every pull.
+
+        This measures target damage near a trigger pull, not bullets or the damage
+        source: flashes, melee and other actors can also hurt the same target.
+        """
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
         fell = {k: self.hp_prev[k] - h for k, h in hp.items() if h < self.hp_prev.get(k, h)}
-        drops = len(fell)
         self.hp_prev = hp
-        for pull in self._pulls:                             # the look: which pull took the health
-            if fell and (pull["end"] is None or now - pull["end"] <= HIT_S):
-                pull["drops"] += drops
-                pull["hp_delta"] -= fell.get(pull["target"], 0)
-        if drops and self.fire_at is not None and now - self.fire_at <= HIT_S:
-            self.stats["hits"] += drops
+        for target, damage in fell.items():
+            pull = next((x for x in reversed(self._pulls) if x['target'] == target
+                         and x['start'] <= now and 0 <= now - (
+                             x['end'] if x['end'] is not None else
+                             self.fire_at if self.fire_at is not None else x['start']) <= HIT_S), None)
+            if pull is not None:
+                pull['drops'] += 1
+                pull['hp_delta'] -= damage
+                self.stats['hits'] += 1
+        self.stats['hit_measurement'] = 'target HP losses near trigger pulls; damage source unverified'
         if self.stats.get("trigger_s"):
             self.stats["hits_per_trigger_s"] = round(self.stats["hits"] / self.stats["trigger_s"], 2)
 
@@ -3369,6 +3371,11 @@ class Bot:
         self.stats["heal_status"] = f"healing at {hp / hp_max:.0%} ({near} near)"
         return {"hold": ()} if item["hand"] else {"tap": QUICK[item["grid"]]}
 
+    def _loaded_gun(self, row):
+        rounds = row.get('rounds')
+        return (getattr(self, '_infinite_ammo', False) is True or
+                not isinstance(rounds, (int, float)) or rounds > 0)
+
     def _gun_back(self, snap, now) -> dict | None:
         """A grenade or the bomb in hand (THROWN) with nothing else using it: the gun's D-pad slot, a tap every
         GUN_BACK_GAP_S with the pad neutral between, until a gun is in hand. The fight raises with ZL, and ZL with the
@@ -3376,8 +3383,11 @@ class Bot:
         inv = snap.get("inventory") or ()
         held = next((s for s in inv if s.get("hand")), None)
         primary = snap.get('primary_weapon')
+        if primary and primary.get('usable') is False:
+            primary = None
         if primary and self.native_equip is not None:
-            chosen = next((s for s in inv if s.get('grid') == 0 and s.get('item') == primary['item']), None)
+            chosen = next((s for s in inv if s.get('grid') == 0 and s.get('item') == primary['item']
+                           and self._loaded_gun(s)), None)
             if chosen is not None and not chosen.get('hand'):
                 res = self.native_equip.select(0, chosen['id']) or {}
                 if getattr(self, '_primary_want', (None, 0.0))[0] != chosen['id']:
@@ -3391,14 +3401,40 @@ class Bot:
                 self._primary_want = (None, 0.0)
         want = (snap.get("preferred_weapon") or {}).get("item")      # the operator's gun (re5_switch_mods.select_weapon)
         choice = next((s for s in inv if s.get("type") == 1 and s.get("item") == want and s.get("grid") in QUICK
-                       and s.get("item") not in KNIVES and s.get("item") not in THROWN), None) if want else None
+                       and s.get("item") not in KNIVES and s.get("item") not in THROWN
+                       and self._loaded_gun(s)), None) if want else None
         if choice is not None and not choice.get("hand") and self.aim_since is None:
             if now - self._gun_back_at < GUN_BACK_GAP_S:
                 return {"hold": ()}
             self._gun_back_at = now
             self.stats["gun_choices"] = self.stats.get("gun_choices", 0) + 1
             return {"tap": QUICK[choice["grid"]]}
-        if held is None or held.get("type") != 1 or held.get("item") not in THROWN:
+        empty = bool(held and held.get('type') == 1 and held.get('item') not in KNIVES
+                     and held.get('item') not in THROWN and not self._loaded_gun(held))
+        if empty and self.native_equip is not None:
+            candidates = [s for s in inv if s.get('type') == 1 and s.get('item') not in KNIVES
+                          and s.get('item') not in THROWN and self._loaded_gun(s)
+                          and (s.get('rounds') or 0) > 0 and not s.get('hand')]
+            loaded = next((s for s in candidates if s.get('grid') in QUICK), next(iter(candidates), None))
+            if loaded is not None:
+                self.doing, self.why = 'rearm', 'empty gun: selecting an owned loaded weapon'
+                if now - self._gun_back_at < GUN_BACK_GAP_S:
+                    return {'hold': ()}
+                self._gun_back_at = now
+                self.stats['empty_weapon_switches'] = self.stats.get('empty_weapon_switches', 0) + 1
+                if loaded.get('grid') in QUICK:
+                    # Existing native-equipment handling bounds its wait and
+                    # retains the ordinary quick-slot fallback on refusal.
+                    return {'tap': QUICK[loaded['grid']]}
+                key = (loaded.get('slot'), loaded['id'])
+                if getattr(self, '_empty_native_want', (None, 0))[0] != key:
+                    self._empty_native_want = (key, now)
+                result = self.native_equip.select(loaded['grid'], loaded['id']) or {}
+                if result.get('state') in ('unknown', 'refused', 'disabled') or now - self._empty_native_want[1] > NATIVE_EQUIP_GIVEUP_S:
+                    self.stats['empty_weapon_reason'] = 'loaded slot attachment unconfirmed; releasing the wait'
+                    return None
+                return {'hold': ()}
+        if held is None or held.get("type") != 1 or (held.get("item") not in THROWN and not empty):
             return None
         if self._rearm(inv, None) is None:
             return None                                      # no gun on a D-pad slot: nothing to go back to
@@ -3411,7 +3447,7 @@ class Bot:
     def _rearm(self, inv, grid) -> dict | None:
         """The gun back in his hands after a heal: the one he held (its D-pad slot), else the first gun on one."""
         guns = [s for s in inv if s["type"] == 1 and s["grid"] in QUICK and s["item"] not in KNIVES
-                and s["item"] not in THROWN]
+                and s["item"] not in THROWN and self._loaded_gun(s)]
         gun = next((s for s in guns if s["grid"] == grid), None) or next(iter(guns), None)
         if gun is None or gun["hand"]:
             return None
@@ -3465,6 +3501,7 @@ class Bot:
     # --- the decision ----------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        self._infinite_ammo = snap.get('infinite_ammo') is True
         if self.native_equip is not None:
             self.native_equip.tick()
         from .. import primary_weapon
@@ -3506,29 +3543,62 @@ class Bot:
         return act
 
     def _grenade_crowd(self, snap, now) -> None:
-        """Operator 2026-10-31: grenades like mad. When Majini crowd him, fire one native flash (the only verified RE5
-        grenade), bounded by GRENADE_EVERY_S. Runs off the tick on a daemon thread, serialized by the shared native
-        controller's lock; never raises into the bot. A no-op where the native path is unavailable (e.g. not a live
-        Switch session) - the controller refuses and the reason is recorded."""
-        if not GRENADES or self._grenade_inflight or now - self._grenade_last < GRENADE_EVERY_S:
+        """A crowded, verified attack threat can justify one flash during fire.
+
+        Existing measured enemy motions/attack flags establish the threat. A
+        census alone, or guessed stun/down states, does not establish usefulness.
+        The native controller runs asynchronously; retain its admission context
+        separately from the current firing decision and report refusals honestly.
+        """
+        def blocked(reason):
+            self.stats.update(bot_grenade_state='idle', bot_grenade_reason=reason)
+
+        if not GRENADES:
+            blocked('automatic flashes disabled')
+            return
+        if self._grenade_inflight:
+            return
+        if now - self._grenade_last < GRENADE_EVERY_S:
             return
         if self.stats.get("operator_control") or snap.get("mercenaries_phase") != PHASE_PLAYING:
+            blocked('not autonomous live combat')
+            return
+        # A census alone does not mean a flash helps. Do not inject one while
+        # navigating, placing/escaping mines, healing or struggling to aim. A
+        # verified firing opportunity supplies the follow-through on the stun.
+        if self.doing != "fire" or not self.fire_down or not self.stats.get("target_feedback_on"):
+            blocked('no verified firing follow-through')
             return
         p = snap.get("player") or {}
         if (p.get("hp") or 0) <= 0:
+            blocked('player is not alive')
             return
         ad = getattr(self._m, "adapter", None)
         if ad is None or getattr(self._m, "mercs_no_modifications", False):
+            blocked('native flash unavailable')
             return
         ppos = p.get("pos")
         if ppos is None:
+            blocked('player position unavailable')
             return
-        crowd = sum(1 for e in snap.get("enemies") or ()
-                    if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - ppos[1]) <= LEVEL_DY
-                    and math.hypot(e["pos"][0] - ppos[0], e["pos"][2] - ppos[2]) <= GRENADE_CROWD_R)
-        if crowd < GRENADE_CROWD_N:
+        distance = lambda e: math.hypot(e['pos'][0] - ppos[0], e['pos'][2] - ppos[2])
+        crowd = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get('pos')
+                 and abs(e["pos"][1] - ppos[1]) <= LEVEL_DY and distance(e) <= GRENADE_CROWD_R]
+        threats = [e for e in crowd if distance(e) <= WINDUP_R and self._winding(e)]
+        self.stats.update(bot_grenade_crowd=len(crowd), bot_grenade_threats=len(threats))
+        if len(crowd) < GRENADE_CROWD_N:
+            blocked('crowd below flash threshold')
             return
+        if not threats:
+            blocked('crowd has no verified nearby attack windup')
+            return
+        threat = min(threats, key=distance)
+        reason = (f"interrupt {len(threats)} attack windup(s), nearest {distance(threat)/100:.1f} m; "
+                  f"{len(crowd)} nearby, verified firing follow-through")
         self._grenade_last, self._grenade_inflight = now, True
+        self.stats.update(bot_grenade_state='requested', bot_grenade_reason=reason, bot_grenade_error='',
+                          bot_grenade_requested_at=now, bot_grenade_request_reason=reason,
+                          bot_grenade_threat=threat.get('ptr', threat.get('slot')))
 
         def fire():
             try:
@@ -3537,8 +3607,13 @@ class Bot:
                 if isinstance(res, dict) and res.get("state") == "confirmed":
                     self.stats["bot_grenades"] = self.stats.get("bot_grenades", 0) + 1
                     self.stats["native_flash_confirmed_at"] = time.time()
+                    self.stats.update(bot_grenade_state='confirmed', bot_grenade_reason=reason, bot_grenade_error='')
+                else:
+                    detail = str(res.get('reason') or res.get('state') or 'no confirmation') if isinstance(res, dict) else 'no confirmation'
+                    self.stats.update(bot_grenade_state='unconfirmed', bot_grenade_reason=detail[:120])
             except Exception as exc:                         # noqa: BLE001 - never stall or crash the bot
-                self.stats["bot_grenade_reason"] = f"{type(exc).__name__}: {exc}"[:120]
+                error = f"{type(exc).__name__}: {exc}"[:120]
+                self.stats.update(bot_grenade_state='failed', bot_grenade_reason=error, bot_grenade_error=error)
             finally:
                 self._grenade_inflight = False
         threading.Thread(target=fire, daemon=True, name="re5-bot-grenade").start()
@@ -4361,8 +4436,7 @@ class Bot:
 
     # --- the look (stats look, gbox.mercs.bot_look: "look at the bot") ----------------------------------------------
     def _pull_start(self, now) -> None:
-        """A trigger pull: its entry in the look, with the aim as it was pulled (_decide's _aimctx). dot_on is "target"
-        for the laser's pulls (the dot on him, or the ray running through him first) and "off" for the laserless aim."""
+        """Record a trigger edge and measured aim evidence, not an emitted bullet."""
         ctx = self._aimctx or {}
         if self._raise_t is not None:                        # the first pull since the gun went up
             self.stats["first_pull_n"] += 1
@@ -4382,12 +4456,23 @@ class Bot:
             self._acq = (None, None)
         target = make_target(id=ctx.get("target"), kind="majini" if ctx.get("target") is not None else None,
                              dist_m=(ctx.get("dist") or 0.0) / 100.0, bearing_deg=-math.degrees(ctx.get("bearing") or 0.0))
+        origin, dot, foot = ctx.get('origin'), ctx.get('dot'), ctx.get('foot')
+        valid_ray = bool(not ctx.get('laserless') and origin and dot and foot
+                         and all(math.isfinite(v) for v in (*origin, *dot, *foot)))
+        body = bool(valid_ray and self._crowd_hit(origin, dot, foot, False))
+        endpoint = ('target' if valid_ray and dot_on(dot, foot) else self._behind(ctx)) if valid_ray else 'off'
+        contact = ctx.get('contact_kind') or ('body endpoint' if endpoint == 'target' else 'body segment' if body else 'unverified')
         entry = self.look.record_shot(ctx.get("weapon"), ctx.get("gate"), target,
                                       aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
-                                      dot_on="off" if ctx.get("laserless") else "target")
+                                      dot_on='target' if body else endpoint or 'off')
+        entry.update(measurement='trigger_pull', contact=contact,
+                     ray_observed=bool(valid_ray and ctx.get('ray_observed', True)), ray_endpoint=endpoint,
+                     pitch_err_deg=round(math.degrees(ctx['pitch_err']), 2) if ctx.get('pitch_err') is not None else None,
+                     damage_evidence='no target HP decrease observed')
         self._pulls.append({"entry": entry, "start": now, "end": None, "drops": 0, "hp_delta": 0,
                             "target": ctx.get("target"), "where": ctx.get("where"),
-                            "laserless": bool(ctx.get("laserless")), "behind": self._behind(ctx),
+                            "laserless": bool(ctx.get("laserless")), "body_contact": body,
+                            "behind": self._behind(ctx) if body else '',
                             "k": {k: ctx.get(k) for k in ("class", "dist", "item", "dot", "foot", "shooter", "hp_max")}})
         del self._pulls[:-4]                                 # (a pull resolves within HIT_S of its end)
 
@@ -4420,15 +4505,18 @@ class Bot:
                                     f"{self.stats.get('acquire_to_shot_s', 0)} s after acquiring; hits {bands}")
 
     def _resolve_pulls(self, now) -> None:
-        """Pulls whose hit window has passed: hit (a Majini's health fell), or why not."""
+        """Report target HP observations and distinguish body contact from a ray miss."""
         for pull in [x for x in self._pulls if x["end"] is not None and now - x["end"] > HIT_S]:
             self._pulls.remove(pull)
             if pull["drops"]:
                 out, key = "hit:majini", "pulls_hit"
+                pull['entry']['damage_evidence'] = 'target HP decreased within trigger window; damage source unverified'
             elif pull["laserless"]:
                 out, key = "miss:off_target", "pulls_blind"
             elif pull["where"] is not None:
                 out, key = "miss:no_damage", "pulls_dot_miss"
+            elif pull.get('body_contact'):
+                out, key = "miss:no_damage", "pulls_ray_miss"
             else:
                 out, key = "miss:off_target", "pulls_ray_miss"
             self.stats[key] += 1
@@ -4451,6 +4539,13 @@ class Bot:
     def _k_shot(self, pull, out, now) -> None:
         """The pull for the enemy knowledge database: his class, the distance, the weapon, the dot's point on him (a world
         point beside his feet and the shooter: the database takes up / across), kill / hit / miss, the health taken."""
+        # The weapon learner accepts only resolved shots, with no uncertainty
+        # field. A trigger edge and nearby HP loss cannot prove either a bullet
+        # or its damage source (native flashes/other actors also cause damage).
+        # Keep these observations in BotLook, not weapon hit/kill/aim training.
+        if (pull.get('entry') or {}).get('measurement') == 'trigger_pull':
+            self.stats['shot_learning_unverified_skips'] = self.stats.get('shot_learning_unverified_skips', 0) + 1
+            return
         from ..brain import knowledge
         k = pull.get("k") or {}
         dead = pull["drops"] and pull["target"] is not None and (self.hp_prev.get(pull["target"]) or 0) <= 0
@@ -4673,6 +4768,7 @@ class RE5Switch(Driver):
         from . import re5_switch_mods
         res = re5_switch_mods.maintain(ad, snap, enabled=playing)
         if snap is not None:
+            snap['infinite_ammo'] = res.get('infinite_ammo') if res.get('verified') else None
             snap["mine_settings"] = re5_switch_mods.mine_settings(ad)   # the `mines` op's cadence for the bot
             snap["preferred_weapon"] = re5_switch_mods.preferred_weapon(ad)   # select_weapon / random_weapon
             from .. import primary_weapon

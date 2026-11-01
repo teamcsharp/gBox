@@ -221,6 +221,7 @@ def test_with_the_map_takes_the_time_bonuses_in_the_planned_order_with_a():
     m.put(PL + 0x94, ">3f", 0.0, 0.0, -5200.0)                            # at its stand point (-5300)
     assert bot.tick(B.snapshot(m)) != {"tap": "a"}                        # facing away from it (-z): turn first
     facing(m, 0.0)                                                        # the item is 200 ahead (+z)
+    bot.stats.update(ram_action="TAKE", ram_action_aev={"item_id": 0x73, "type": 3, "enabled": True})
     assert bot.tick(B.snapshot(m)) == {"tap": "a"}                        # facing it, against it: TAKE
 
 
@@ -859,7 +860,9 @@ def test_a_take_prompt_for_dropped_ammo_is_ignored_but_an_hourglass_goal_takes_i
     bot = B.Bot(m, clock=lambda: now[0], nav=False)
     bot.stats["ram_action"] = "TAKE"
     assert not bot.prompt_ok("a", B.snapshot(m)) and bot.stats["pickups_skipped"] == 1
-    bot.goal = {"item": {"pos": (0, 0, 100)}}                               # walking to a time-bonus hourglass
+    bot.goal = {"item": {"pos": (0, 0, 100), "stand": (0, 0, 100)}}
+    assert not bot.prompt_ok("a", B.snapshot(m))                          # a goal cannot identify a nearby pickup
+    bot.stats["ram_action_aev"] = {"item_id": 0x73, "type": 3, "enabled": True}
     assert bot.prompt_ok("a", B.snapshot(m))
     bot.goal, bot.stats["ram_action"] = None, "KICK"
     assert bot.prompt_ok("a", B.snapshot(m))

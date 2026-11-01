@@ -11,7 +11,7 @@ test('damage order is numeric, keeps unknowns last, and never changes the advert
   assert.deepEqual(rows.map(r=>r.item),[1,2,3,4,5]);
 });
 
-test('PiP weapon menu stays visible, labels inventory, sends an immediate single selection and follows title changes',async()=>{
+test('PiP weapon menu stays visible, labels inventory, sends an immediate single selection and follows title changes',async(t)=>{
   const desktop=fs.readFileSync(path.join(__dirname,'../clients/desktop/index.html'),'utf8');
   const compactHide=desktop.match(/body\.gbox-compact >[^\n]+?\{[^}]+\}/)[0];
   const html=desktop.match(/controls\.innerHTML = ('<span class="compact-title"[^\n]+?');/)[1];
@@ -32,7 +32,7 @@ test('PiP weapon menu stays visible, labels inventory, sends an immediate single
         {item:2,weapon:'M92F',damage:1500,in_inventory:true},
         {item:25,weapon:'Hydra',damage:5500,in_inventory:true,equipped:true},
         {item:27,weapon:'S&W M500',damage:50000,in_inventory:false},
-        {item:54,weapon:'rotten egg',damage:null}
+        {item:54,weapon:'Unavailable native gun',damage:null,available:false,reason:'No native weapon object exists for this loadout'}
       ]}};
       window.api=async(p,b)=>{if(b){posts.push({p,b});return {request:{id:b.request_id,state:'queued'}};}
         reads.push(p);if(delayed)await new Promise(r=>release=r);return state;};
@@ -47,6 +47,9 @@ test('PiP weapon menu stays visible, labels inventory, sends an immediate single
     assert.match(await evaluate(`document.querySelector('[data-weapon-item="27"]').textContent`),/Not in inventory/);
     assert.match(await evaluate(`document.querySelector('[data-weapon-item="2"]').textContent`),/In inventory/);
     assert.match(await evaluate(`document.querySelector('[data-weapon-item="54"]').textContent`),/Inventory not reported/);
+    assert.equal(await evaluate(`document.querySelector('[data-weapon-item="54"]').disabled`),true);
+    assert.match(await evaluate(`document.querySelector('[data-weapon-item="54"]').textContent`),/No native weapon object/);
+    assert.equal(await evaluate(`document.querySelector('[data-weapon-item="27"]').disabled`),false,'not owned does not mean unavailable');
     assert.equal(await evaluate(`document.querySelector('[data-weapon-item="25"]').getAttribute('aria-pressed')`),'true');
     await evaluate(`window.option=document.querySelector('[data-weapon-item="27"]');option.click();option.click();new Promise(r=>setTimeout(r,10))`);
     assert.equal(await evaluate('posts.length'),1,'even a detached button cannot submit twice');
@@ -63,7 +66,19 @@ test('PiP weapon menu stays visible, labels inventory, sends an immediate single
     assert.match(await evaluate(`document.querySelector('.merc-weapon-menu').textContent`),/No active player/);
     await evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));`);
     assert.equal(await evaluate(`document.querySelector('.merc-weapon-menu')`),null);
+    await evaluate(`state={available:true,capabilities:['equip_primary','set_infinite_ammo'],options:{weapons:[{item:7,weapon:'Test weapon',in_inventory:false}],infinite_ammo:{available:true,enabled:false}}};gun.click();new Promise(r=>setTimeout(r,10))`);
+    assert.equal(await evaluate(`document.querySelector('[data-infinite-ammo]').getAttribute('aria-pressed')`),'false');
+    assert.match(await evaluate(`document.querySelector('[data-infinite-ammo]').getAttribute('aria-label')`),/Infinite ammo: Off/);
+    await evaluate(`window.ammoButton=document.querySelector('[data-infinite-ammo]');ammoButton.click();ammoButton.click();new Promise(r=>setTimeout(r,10))`);
+    assert.equal(await evaluate(`posts.filter(r=>r.b.op==='set_infinite_ammo').length`),1);
+    assert.equal(await evaluate(`ammoButton.getAttribute('aria-pressed')`),'false','queued is not confirmed On');
+    assert.equal(await evaluate(`ammoButton.dataset.state`),'pending');
+    await evaluate(`window.ammoPost=posts.find(r=>r.b.op==='set_infinite_ammo');state.options.infinite_ammo.enabled=true;state.requests=[{id:ammoPost.b.request_id,op:'set_infinite_ammo',state:'confirmed',result:{enabled:true}}];new Promise(r=>setTimeout(r,180))`);
+    assert.equal(await evaluate(`ammoButton.getAttribute('aria-pressed')`),'true');
+    assert.equal(await evaluate(`ammoButton.dataset.state`),'confirmed');
+    assert.equal(await evaluate(`getComputedStyle(ammoButton).display`),'inline-flex');
     assert.equal(await evaluate('stream===document.querySelector("#compact-stream") && source===stream.src && changes===0'),true);
     await evaluate('picker.dispose();client.dispose()');
+    t.diagnostic('Weapon and infinite-ammo feature assertions completed before browser cleanup.');
   },{timeoutMs:30000});}finally{server.closeAllConnections();await new Promise(r=>server.close(r));}
 });

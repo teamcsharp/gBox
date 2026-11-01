@@ -58,6 +58,22 @@ class Plane:
         return httpx.Response(200,json=self.answer(r.method,r.url.path,json.loads(r.content) if r.content else None))
 async def no_delay(_):pass
 
+
+def test_direct_ammo_toggle_preserves_boolean_and_session_identity():
+    async def check():
+        p = Plane()
+        c = LC.Controls(p.get, p.post, sleep=no_delay)
+        rid = str(uuid.uuid4())
+        result = await c.call({'session_id': SID, 'op': 'set_infinite_ammo', 'enabled': True, 'request_id': rid})
+        assert result['action']['state'] == 'queued'
+        assert p.posts == [(f'/api/sessions/{SID}/interventions',
+            {'op': 'set_infinite_ammo', 'request_id': rid, 'args': {'enabled': True}})]
+        for invalid in (1, 'true', None):
+            with pytest.raises(ValueError):
+                await c.call({'session_id': SID, 'op': 'set_infinite_ammo', 'enabled': invalid, 'request_id': str(uuid.uuid4())})
+        assert len(p.posts) == 1
+    asyncio.run(check())
+
 def test_inventory_bounds_readback_and_operator_jobs():
     async def check():
         p=Plane();c=LC.Controls(p.get,p.post,sleep=no_delay);out=await c.call({'session_id':SID})

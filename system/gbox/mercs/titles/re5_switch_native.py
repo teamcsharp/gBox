@@ -71,6 +71,10 @@ def table_bytes(base, vt):
 
 
 class Controller(N.Controller):
+    def _ammo_backend(self):
+        from . import re5_switch_mods as mods
+        return mods, mods.RE5Switch
+
     def __init__(self, ad):
         if os.name != "posix" or os.uname().machine.lower() not in ("aarch64", "arm64") or getattr(ad, "address_mode", None) != "direct":
             raise Unavailable("native flash currently requires Linux Switch NCE")

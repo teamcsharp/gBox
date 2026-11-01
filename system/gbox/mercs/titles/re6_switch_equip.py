@@ -191,7 +191,8 @@ def poll(memory, *, now=None):
             raise _Stop("request_timeout")
         if view["current"] != REQUEST_ID:
             raise _Stop("request_interrupted")
-        return {"state": "pending", "kind": ticket["kind"], "accepted": not view["pending"]}
+        return {"state": "pending", "kind": ticket["kind"], "index": view["index"],
+                "accepted": not view["pending"]}
     except (_Stop, OSError, ValueError, RuntimeError, OverflowError, struct.error) as exc:
         memory._re6_native_equip = None
         return {"state": "unconfirmed", "kind": ticket["kind"],
@@ -276,18 +277,36 @@ class Controller:
     """Session-bound driver bridge. Refusal never falls back to wheel inputs."""
     def __init__(self, memory, stats):
         self.memory, self.stats = memory, stats
-        self.failed = None
+        self.failed = set()
 
     def record(self, result):
         self.stats['native_equip'] = result
         return result
+
+    def cycle_ready(self, player, index):
+        """Read-only proof that ordinary pad cycling will not overlap a request."""
+        if (getattr(self.memory, '_re6_native_equip', None) or self.stats.get('operator_control')
+                or getattr(self.memory, 'mercs_no_modifications', False)):
+            return False
+        kinds = [kind for kind, slot in (player.get('guns') or {}).items() if slot == index]
+        if len(kinds) != 1:
+            return False
+        try:
+            base = R.module_base(self.memory)
+            rd = _Reads(self.memory)
+            view = _view(rd, base, player.get('ptr'), kinds[0])
+            return (view['index'] == index and view['generation'] == player.get('generation')
+                    and not view['pending'] and view['priority'] == -1 and view['current'] != REQUEST_ID
+                    and R.class_name(rd, view['active_action']) in FREE_ACTIONS)
+        except (_Stop, OSError, ValueError, RuntimeError, OverflowError, struct.error):
+            return False
 
     def tick(self):
         ticket = getattr(self.memory, '_re6_native_equip', None)
         if ticket:
             result = poll(self.memory)
             if result.get('state') == 'unconfirmed':
-                self.failed = (ticket['player'], ticket['generation'], ticket['kind'])
+                self.failed.add((ticket['player'], ticket['generation'], ticket['kind']))
             return self.record(result)
         return None
 
@@ -302,15 +321,26 @@ class Controller:
         if len(kinds) != 1:
             return self.record({'state': 'deferred', 'reason': 'target_unavailable'})
         kind = kinds.pop()
+        ticket = getattr(self.memory, '_re6_native_equip', None)
+        if ticket:
+            # A shared in-flight request belongs to its original kind. Polling
+            # a grenade must never admit, or blacklist, an unrelated gun.
+            result = self.tick()
+            if ticket['kind'] == kind and ticket['player'] == player.get('ptr'):
+                return result
+            return self.record({'state': 'deferred', 'kind': kind, 'index': index,
+                                'reason': 'another_request_in_flight',
+                                'pending_kind': ticket['kind'], 'pending_state': result.get('state')})
         try:
             base = R.module_base(self.memory)
             generation = _Reads(self.memory).u32(player.get('ptr', 0) + GENERATION)
             identity = (player.get('ptr'), generation, kind)
-            if self.failed == identity:
+            self.failed = {entry for entry in self.failed if entry[:2] == identity[:2]}
+            if identity in self.failed:
                 return self.record({'state': 'unconfirmed', 'kind': kind, 'reason': 'previous_request_unconfirmed'})
             result = request(self.memory, base, player.get('ptr'), kind, expected_index=index)
             if result.get('state') == 'unconfirmed':
-                self.failed = identity
+                self.failed.add(identity)
         except (OSError, ValueError, RuntimeError, struct.error):
             result = {'state': 'deferred', 'reason': 'memory_error'}
         return self.record(result)

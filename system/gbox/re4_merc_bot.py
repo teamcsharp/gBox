@@ -561,8 +561,18 @@ def snapshot(m) -> dict:
             enemies.append({"slot": k, "pos": struct.unpack_from(">3f", d, o + 0x94), "hp": enemy_hp, "hp_max": enemy_hp_max,
                             **threats_ram.em_fields(d, o)})
         thrown = threats_ram.thrown(d, n, stride)
-    return {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
+    snap = {"room": room, "hp": hp, "timer": round(u32(m, MERC_TIMER) / 30.0, 1), "combo": u32(m, MERC + 0x28),
             "player": player, "weapon": weapon, "enemies": enemies, "thrown": thrown}
+    ad = getattr(m, "adapter", None) or getattr(m, "ad", None)
+    if ad is not None:
+        from .mercs.titles.re4_gc_native import normalize_snapshot, Unavailable
+        try:
+            snap = normalize_snapshot(ad, m, snap)
+        except (Unavailable, OSError):
+            # The read-only playbook can operate through a non-local adapter.
+            # Native intervention identity remains unavailable, never guessed.
+            snap.update(mercenaries_phase=0, primary_weapon=None)
+    return snap
 
 
 def in_mercenaries(snap: dict) -> bool:
@@ -1781,7 +1791,7 @@ class Bot:
         if self.stats.get("ram_action") == "CLIMB UP":             # a ladder: never climbed (LADDER_AVOID)
             self.stats["ladders_refused"] = self.stats.get("ladders_refused", 0) + 1
             return False
-        if self.stats.get("ram_action") == "TAKE" and not (self.goal or {}).get("item"):
+        if self.stats.get("ram_action") == "TAKE" and not self._bonus_take_allowed(s.get("player"), now, mark=False):
             # ammo / grenades a Ganado dropped: infinite ammo, never worth Leon's second (operator 2026-10-24: "dont
             # have the bot pick up ammo in any mode ... Just fight"); hourglasses are taken by _take's own goal
             self.stats["pickups_skipped"] = self.stats.get("pickups_skipped", 0) + 1
@@ -1790,6 +1800,22 @@ class Bot:
             if t.kind not in ("near", "down") and t.eta < PROMPT_GUARD_S and t.dist < 2500:
                 self.stats["prompts_held"] = self.stats.get("prompts_held", 0) + 1
                 return False
+        if self.stats.get("ram_action") == "TAKE":
+            self._bonus_take_allowed(s.get("player"), now)
+        return True
+
+    def _bonus_take_allowed(self, p, now=None, *, mark=True) -> bool:
+        """An hourglass goal alone cannot authorize the ammo TAKE beside it."""
+        now = self.clock() if now is None else now
+        aev = self.stats.get("ram_action_aev") or {}
+        h = (self.goal or {}).get("item") or {}
+        if (self.stats.get("ram_action") != "TAKE" or aev.get("item_id") not in (0x73, 0x75)
+                or aev.get("type") != 3 or not aev.get("enabled") or not p or not h.get("stand")):
+            return False
+        if math.dist(tuple(p["pos"]), tuple(h["stand"])) >= 2 * TAKE_R:
+            return False
+        if mark:
+            self._bonus_take_receipt = (self.room, p.get("ptr"), now)
         return True
 
     @staticmethod
@@ -2298,7 +2324,10 @@ class Bot:
                     self.r_since = None
                     return {"hold": {"up"}}
             self.r_since = None
-            return {"tap": "a"}                                           # TAKE
+            if self._bonus_take_allowed(p, now):
+                return {"tap": "a"}
+            self.stats["pickups_skipped"] = self.stats.get("pickups_skipped", 0) + 1
+            return {"hold": set()}  # wait for the actual hourglass TAKE, never a nearby dropped item
         return self._follow(p, now)
 
     def _run_to(self, p, target_xyz, now) -> dict:
@@ -2775,12 +2804,19 @@ class Bot:
                     self.stats["turn_rate"] = round(self.turn_rate, 2)
 
     def tick(self, s: dict) -> dict:
+        from .mercs import primary_weapon
+        primary_weapon.record(self.stats, s.get("primary_weapon"))
+        s = primary_weapon.decision_snapshot(s)
         p = s["player"]
         now = self.clock()
         if not hasattr(self, "turn_rate"):
             self.turn_rate = TURN_RATE
         self._learn_turn(p, now)
         act = self._tick(s)
+        if isinstance(act, dict) and act.get("tap") == "a" and self.stats.get("ram_action") == "TAKE" \
+                and not self._bonus_take_allowed(p, now):
+            self.stats["pickups_skipped"] = self.stats.get("pickups_skipped", 0) + 1
+            act = {"hold": set()}
         keys = act.get("hold", set()) if isinstance(act, dict) else set()
         turning = (keys & {"left", "right"}) and not (keys & {"r", "up", "down", "b"}) and len(keys & {"left", "right"}) == 1
         self._turn_obs = (now, p["rot"], bool(turning)) if p else None
@@ -2899,7 +2935,11 @@ class Bot:
         once a dialog has been up 6 s (one A does not close)."""
         h = (self.goal or {}).get("item")
         px, _, pz = p["pos"]
-        taking = h is not None and math.hypot(h["stand"][0] - px, h["stand"][2] - pz) < 2 * TAKE_R
+        receipt = getattr(self, "_bonus_take_receipt", None)
+        taking = (h is not None and h.get("stand") is not None
+                  and math.hypot(h["stand"][0] - px, h["stand"][2] - pz) < 2 * TAKE_R
+                  and receipt is not None and receipt[:2] == (self.room, p.get("ptr"))
+                  and 0 <= now - receipt[2] <= 6)
         if taking and now - self.timer_since <= 6:
             return "a"
         if not taking:
@@ -3136,6 +3176,8 @@ def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[
     """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in. With stats:
     stats["round_loadout"] records the draw for the round it arms (LoadoutCheck verifies it in that round)."""
     from . import re_mods_tool as RM
+    if RM.operator_choice_active(ad):
+        return []  # the verified explicit selection owns these three minutes
     try:
         r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1], **({"equip_now": True} if equip_now else {}))
     except Exception as e:                           # noqa: BLE001 - a failed draw keeps the last loadout
@@ -3178,6 +3220,18 @@ class LoadoutCheck:
         if r != self.round:
             self.round, self.next_at = r, now + LOADOUT_CHECK_S
         lo = self.stats.get("round_loadout")
+        primary = s.get("primary_weapon") or {}
+        rows = s.get("inventory") or []
+        current = next((row for row in rows if row.get("item") == s.get("weapon")), None)
+        empty = bool(current and type(current.get("rounds")) in (int, float) and current["rounds"] <= 0
+                     and s.get("infinite_ammo") is not True)
+        selection = (primary.get("item") if primary.get("locked") and primary.get("usable") is not False else None,
+                     s.get("weapon"), empty)
+        previous = getattr(self, "selection", None)
+        self.selection = selection
+        if isinstance(lo, dict) and previous is not None and previous != selection:
+            lo.update(verified=False, checks=0, fixes=0)
+            self.next_at = now
         if not isinstance(lo, dict) or lo.get("round") != r or lo.get("verified") is True or now < self.next_at:
             return lo
         if lo.get("checks", 0) >= LOADOUT_FIXES + 3:
@@ -3196,6 +3250,38 @@ class LoadoutCheck:
         g = RM.RE4(self.ad)
         classes = RM.weapon_classes(g)
         want, held = lo.get("gun_id"), s.get("weapon")
+        primary = s.get("primary_weapon") or {}
+        if primary.get("locked") and primary.get("usable") is not False:
+            want = primary["item"]
+            lo.update(operator_selected=True, gun_id=want, gun=weapon_name(want), fixes=0)
+        elif lo.pop("operator_selected", False):
+            # The lease expired or the selected gun is known empty: resume this
+            # round's automatic policy instead of retaining an expired override.
+            want = held
+        if not primary.get("locked") or primary.get("usable") is False:
+            inventory_unknown = "inventory" in s and not s["inventory"] and held in classes
+            if inventory_unknown:
+                want = held
+                lo["fallback_reason"] = "inventory unavailable; keep the verified weapon already in hand"
+            if not inventory_unknown and (want in RM.SNIPERS or held in RM.SNIPERS and want is None):
+                want = RM.HANDCANNON
+            if not inventory_unknown and (want in RM.ROCKETS or held in RM.ROCKETS and want is None):
+                import random
+                available = [i for i in RM.SHOTGUNS if i in classes]
+                want = random.choice(available) if available else held
+            # Depletion is proved by a known inventory count. An empty/unreadable
+            # inventory list never causes an arbitrary weapon replacement.
+            rows = s.get("inventory") or []
+            current = next((row for row in rows if row.get("item") == held), None)
+            if current and type(current.get("rounds")) in (int, float) and current["rounds"] <= 0 \
+                    and s.get("infinite_ammo") is not True:
+                loaded = [row["item"] for row in rows if row.get("type") == 1 and row.get("item") in classes
+                          and row.get("item") not in (*RM.SNIPERS, *RM.ROCKETS)
+                          and type(row.get("rounds")) in (int, float) and row["rounds"] > 0]
+                if loaded:
+                    want = loaded[0]
+                    lo["fallback_reason"] = "held weapon is empty; switching to a loaded inventory gun"
+        lo.update(gun_id=want, gun=weapon_name(want))
         lo.update(equipped_id=held, equipped=weapon_name(held), equipped_ok=want is not None and held == want)
         if want is None and held in classes:
             # no draw recorded for this round (an instant round from a save state keeps the state's gun; a draw that
@@ -3797,11 +3883,17 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
         nonlocal held
         if bot.stats.get("operator_control") is True:   # the operator has the pad (gbox.pad_takeover released our keys):
             held = set()                                 # nothing sent; back from a clean hand when the pad goes idle
-            return
+            return False
         rows = [{"key": k, "down": False} for k in sorted(held - keys)] + [{"key": k, "down": True} for k in sorted(keys - held)]
         if rows:
-            send(rows)
+            receipt = send(rows)
+            if receipt is False or isinstance(receipt, dict) and (receipt.get("stopped") or receipt.get("held")
+                    or receipt.get("skipped") or type(receipt.get("sent")) is int and receipt["sent"] != len(rows)):
+                bot.stats["input_release_pending"] = True
+                return False  # retain held keys for the next release attempt; no native handover acknowledgement
         held = set(keys)
+        bot.stats["input_release_pending"] = False
+        return True
     while not stopped():
         if ad is not None and getattr(ad, "paused", False):
             # paused (the MercMode park, the pause button): no read and no press until it plays again, and a stop
@@ -3971,6 +4063,11 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
             if getattr(bot, "trace", None) is not None:
                 bot.trace.meta.update(round_gap_s=gap, round_start_via="retry")
         if room_on and s.get('player') and s.get('hp',0)>0:
+            from .mercs.primary_weapon import quiescing, release_for_handover
+            if bot.stats.get("operator_control") is not True and quiescing(bot.stats, s):
+                release_for_handover(bot.stats, s, hold)
+                sleep(min(tick_s, 0.05))
+                continue
             playing_observed=True
             if getattr(bot, "trace", None) is not None:
                 px_, py_, pz_ = s['player']['pos']

@@ -196,7 +196,9 @@ def test_stop_cleanup_runs_even_if_releasing_input_fails(tmp_path):
     assert saved == [True]
 
 
-def test_weapon_handover_releases_held_input_before_ack_and_skips_decisions(tmp_path):
+@pytest.mark.parametrize('rejected', [None, False, {'sent': 0}, {'sent': 1, 'stopped': 'focus'},
+    {'sent': 1, 'held': 'operator'}, {'sent': 1, 'skipped': ['r']}])
+def test_weapon_handover_releases_held_input_before_ack_and_skips_decisions(tmp_path, rejected):
     from gbox.mercs.titles import re4_gc
     m, clk, stats, sent = re4([]), Clock(), {}, []
     driver = re4_gc.DRIVER()
@@ -207,23 +209,31 @@ def test_weapon_handover_releases_held_input_before_ack_and_skips_decisions(tmp_
         return snap
     driver.snapshot = snapshot
     pending = {'player':123, 'generation':4, 'until':float('inf')}
+    decisions = []
     class Brain:
         def tick(self, snap):
+            decisions.append(snap)
             assert not stats.get('native_weapon_pending')
             return {'hold': {'r'}}
         def prompt_ok(self, *args): return True
         def save(self): pass
+    attempts = []
     def send(rows):
         sent.extend(rows)
         if any(row['down'] for row in rows):
             stats['native_weapon_pending'] = pending
         else:
             assert not pending.get('released')
+            attempts.append(rows)
+            if rejected is not None and len(attempts) == 1:
+                return rejected
+        return {'sent': len(rows)}
     engine.play_round({'driver':'gbox.mercs.titles.re4_gc'}, m, send,
         lambda: bool(pending.get('released')), stats, driver=driver, brain=Brain(),
         sleep=clk.sleep, clock=clk, learn_dir=tmp_path)
-    assert sent == [{'key':'r','down':True}, {'key':'r','down':False}]
+    assert sent == [{'key':'r','down':True}] + [{'key':'r','down':False}] * (1 if rejected is None else 2)
     assert pending['released']
+    assert len(decisions) == 1
 
 
 def test_play_round_reports_a_lost_game_and_a_stop(tmp_path):

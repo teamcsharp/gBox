@@ -110,8 +110,52 @@ def test_a_ray_through_him_that_takes_nothing_names_what_the_dot_met_behind_him(
     clock[0] = 0.9
     b.tick(snap([(foe, 800)], dot=(behind[0] + 301.0, behind[1], behind[2])))
     shot = b.stats["look"]["shots"][-1]
-    assert b.stats["pulls_ray_miss"] == 1 and shot["outcome"] == "miss:off_target"
+    assert b.stats["pulls_ray_miss"] == 1 and shot["outcome"] == "miss:no_damage"
     assert shot["gate"] == "ray through him (the dot on the wall behind him)"
+    assert shot['contact'] == 'body segment' and shot['ray_endpoint'] == 'wall'
+    assert shot['measurement'] == 'trigger_pull' and shot['damage_evidence'] == 'no target HP decrease observed'
+
+
+def test_unrelated_enemy_damage_does_not_make_target_pull_a_hit(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b.hp_prev = {10:800, 11:800}
+    b._aimctx = {'target':10, 'dist':490, 'origin':MUZZLE, 'dot':chest(foe), 'foot':foe, 'where':'body'}
+    b._pull_start(1.)
+    b._score_hits({'enemies':[{'ptr':10,'hp':800},{'ptr':11,'hp':100}]}, 1.1)
+    b._pull_end(1.2)
+    b._resolve_pulls(2.)
+    shot = b.look.shots[-1]
+    assert shot['outcome'] == 'miss:no_damage' and shot['hp_delta'] is None
+    assert b.stats['hits'] == 0 and b.stats['pulls_hit'] == 0
+
+
+def test_one_target_damage_sample_is_not_credited_to_multiple_pulls(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b.hp_prev = {10:800}
+    b._aimctx = {'target':10, 'dist':490, 'origin':MUZZLE, 'dot':chest(foe), 'foot':foe, 'where':'body'}
+    b._pull_start(1.)
+    b._pull_end(1.1)
+    b._pull_start(1.2)
+    b._score_hits({'enemies':[{'ptr':10,'hp':700}]}, 1.3)
+    b._pull_end(1.4)
+    b._resolve_pulls(2.)
+    assert [s['hp_delta'] for s in b.look.shots] == [None, -100]
+    assert b.stats['hits'] == 1 and b.stats['pulls_hit'] == 1
+    assert 'damage source unverified' in b.look.shots[-1]['damage_evidence']
+
+
+def test_long_ray_beside_target_is_not_logged_as_target_contact(k_calls):
+    b, _ = bot()
+    foe = at(490, 0)
+    b._aimctx = {'target':10, 'dist':490, 'origin':MUZZLE, 'dot':(150,110,1000), 'foot':foe, 'where':None}
+    b._pull_start(1.)
+    b._pull_end(1.1)
+    b._resolve_pulls(2.)
+    shot = b.look.shots[-1]
+    assert shot['dot_on'] != 'target' and shot['contact'] == 'unverified'
+    assert shot['outcome'] == 'miss:off_target' and 'behind him' not in shot['gate']
 
 
 def test_turning_the_body_to_a_side_target_while_another_stands_in_front_is_counted():
@@ -161,11 +205,14 @@ def test_aiming_without_shooting_with_a_majini_close_is_idle_among_foes():
     b, clock = bot()
     foe = at(300, 0)
     b.tick(snap([(foe, 800)]))
-    for k in range(1, 12):                                            # the dot stays beside him: steering, no pull
+    for k in range(1, 8):                                             # steering is still idle until it opens a shot
         clock[0] = 0.1 * k
         b.tick(snap([(foe, 800)], dot=(150.0 + k * 0.1, 110.0, 300.0)))
     assert b.doing == "aim" and b.stats["shots"] == 0
-    assert b.stats["look_idle_among_foes_s"] == pytest.approx(1.1, abs=0.05)   # raising and steering, 1.1 s
+    assert b.stats["look_idle_among_foes_s"] == pytest.approx(.7, abs=0.05)
+    clock[0] = .9
+    b.tick(snap([(foe, 800)], dot=(151., 110., 300.)))
+    assert b.doing == 'escape' and b.stats['shots'] == 0  # no indefinitely stationary raise
 
 
 @pytest.fixture
@@ -184,7 +231,7 @@ def classed(s, cls="uEm10"):
     return s
 
 
-def test_every_resolved_pull_goes_to_the_enemy_knowledge_database(k_calls):
+def test_trigger_hp_correlation_does_not_train_weapon_shot_statistics(k_calls):
     b, clock = bot()
     foe = at(500, 0)
     b.tick(classed(snap([(foe, 800)])))
@@ -193,14 +240,12 @@ def test_every_resolved_pull_goes_to_the_enemy_knowledge_database(k_calls):
         clock[0] = t
         b.tick(classed(snap([(foe, h)], dot=dot)))
     shots = [c for c in k_calls if c[0] == "shot"]
-    assert len(shots) == 1
-    _, a, kw = shots[0]
-    assert a == (R.MAP_ID, "uEm10", None, 5.0, 0x02, chest(foe), "hit", -100)
-    assert kw["enemy_id"] == 10 and kw["zone"] == "body" and kw["fire_mode"] == "hold" and kw["units_per_m"] == 100.0
-    assert kw["enemy_pos"] == foe and kw["shooter_pos"] == (0.0, 0.0, 0.0) and kw["hp_max"] == 800
+    assert not shots and b.stats['shot_learning_unverified_skips'] == 1
+    assert b.look.shots[-1]['hp_delta'] == -100 and b.look.shots[-1]['contact'] == 'body endpoint'
+    assert 'damage source unverified' in b.look.shots[-1]['damage_evidence']
 
 
-def test_a_kill_and_a_ray_through_miss_are_told_apart(k_calls):
+def test_death_and_no_damage_observations_stay_visible_without_weapon_training(k_calls):
     b, clock = bot()
     foe = at(500, 0)
     b.tick(classed(snap([(foe, 800)])))
@@ -210,7 +255,7 @@ def test_a_kill_and_a_ray_through_miss_are_told_apart(k_calls):
     clock[0] = 1.0
     b.tick(classed(snap([(foe, 0)], dot=(chest(foe)[0], chest(foe)[1] + 5.0, chest(foe)[2]))))
     kills = [c for c in k_calls if c[0] == "shot"]
-    assert kills and kills[0][1][6] == "kill" and kills[0][1][7] == -800
+    assert not kills and b.look.shots[-1]['hp_delta'] == -800
     b, clock = bot()
     k_calls.clear()
     behind = along(MUZZLE, chest(foe), 1000.0)
@@ -221,8 +266,8 @@ def test_a_kill_and_a_ray_through_miss_are_told_apart(k_calls):
     b.tick(classed(snap([(foe, 800)], dot=(behind[0] + 300.0, behind[1], behind[2]))))
     clock[0] = 0.9
     b.tick(classed(snap([(foe, 800)], dot=(behind[0] + 301.0, behind[1], behind[2]))))
-    miss = [c for c in k_calls if c[0] == "shot"][0]
-    assert miss[1][5] is None and miss[1][6] == "miss" and miss[2]["zone"] is None   # no point: the dot was not on him
+    assert not [c for c in k_calls if c[0] == 'shot']
+    assert b.look.shots[-1]['outcome'] == 'miss:no_damage' and b.look.shots[-1]['hp_delta'] is None
 
 
 def test_a_health_loss_is_blamed_and_the_majini_are_observed_ten_times_a_second(k_calls):
