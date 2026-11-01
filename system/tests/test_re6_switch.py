@@ -745,6 +745,7 @@ def test_readying_a_bomb_is_given_up_when_one_comes_close():
     run(bot, snap, clock, 1)
     assert bot.bomb_phase == "equip"
     snap["enemies"][0]["pos"] = (0.0, 0.0, 150.0)                             # one at 1.5 m while the wheel turns
+    snap["laser"] = {"from": (0.0, R.CHEST_H, 0.0), "at": (0.0, R.CHEST_H, 150.0), "up": True}
     run(bot, snap, clock, 1)
     assert bot.bomb_phase is None and bot.stats["bomb_aborts"] == 1 and bot.doing == "crowd"
 
@@ -1118,7 +1119,8 @@ def test_quick_attack_runs_his_quick_attacks_ten_times_faster_and_puts_his_clock
 
 def test_with_quick_attacks_fast_crowd_control_presses_back_to_back_and_counts_them(monkeypatch):
     monkeypatch.setattr(R, "QA_FAST", True)
-    g = round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0)
+    g = round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0,
+                    laser=((0.0, R.CHEST_H, 180.0), (0.0, R.CHEST_H, 0.0), 0.86))
     bot, clock, snap = brain(g)
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 20)                                          # 1 s
@@ -1400,7 +1402,9 @@ def test_point_blank_crowd_gets_aimed_fire_and_a_lone_one_the_quick_shot():
     acts = run(bot, snap, clock, 10)
     assert bot.stats["cc_quick_shots"] == 0 and bot.stats["quick_shots"] == 0
     assert any("zl" in a.get("hold", ()) for a in acts) and writes                # the gun up on the lock
-    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 180.0, 700),))              # a lone one
+    bot, clock, snap, writes = lock_brain(((0.0, 0.0, 180.0, 700),),
+                                        laser=((0.0, R.CHEST_H, 180.0), (0.0, R.CHEST_H, 0.0), 0.86))
+    snap["laser"] = {"from": (0.0, R.CHEST_H, 0.0), "at": (0.0, R.CHEST_H, 180.0), "up": True}
     acts = run(bot, snap, clock, 3)
     assert {"hold": ("zl", "zr")} in acts and bot.stats["quick_shots"] >= 1
 
@@ -2150,7 +2154,8 @@ def test_a_zombie_the_trigger_never_hurts_is_left_for_another():
 
 def test_point_blank_quick_shots_never_leave_one_even_when_they_miss():
     assert R.CC_R <= R.BLOCK_MIN_R                                            # crowd control only where nothing blocks
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))   # 1.5 m: always fought
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0,
+                                         laser=((0.0, R.CHEST_H, 150.0), (0.0, R.CHEST_H, 0.0), 0.86)))
     bot.held = lambda p, now: False
     run(bot, snap, clock, int(4 * R.CC_QSHOT_GAP_S / 0.05))
     assert bot.stats["cc_blocks"] == 0 and bot.doing == "crowd" and bot.stats["cc_quick_shots"] >= 4
@@ -2316,7 +2321,9 @@ def test_the_quick_turn_for_one_behind():
 def test_melee_for_one_at_arms_length_and_the_quick_shot_for_one_close():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 100.0, 700),), cam_yaw=0.0))
     assert run(bot, snap, clock, 1)[0] == {"tap": "zr"} and bot.stats["melee"] == 1
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # point blank (CC_R)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0,
+                                         laser=((0.0, R.CHEST_H, 180.0), (0.0, R.CHEST_H, 0.0), 0.86)))
+    snap["laser"] = {"from": (0.0, R.CHEST_H, 0.0), "at": (0.0, R.CHEST_H, 180.0), "up": True}
     acts = run(bot, snap, clock, 2)
     assert acts[0]["hold"] == ("zl", "zr") and acts[1]["hold"] == () and bot.stats["quick_shots"] == 1
 
@@ -3087,12 +3094,13 @@ def test_zombies_up_close_get_quick_shots_and_kicks_and_the_ones_further_back_th
     assert bot.doing in ("fire", "aim", "raise") and any("zr" in a.get("hold", ()) for a in acts)
 
 
-def test_kicks_at_arms_length_every_point_four_seconds_and_a_flanker_is_turned_to():
+def test_ineffective_close_kicks_make_room_for_aim_and_a_flanker_is_turned_to():
     bot, clock, snap = brain(round_guest(enemies=((20.0, 0.0, 100.0, 700),), cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 21)                                         # 1 s with one at arm's length
-    assert acts[0] == {"tap": "zr"} and bot.stats["cc_kicks"] == 3            # one every CC_KICK_GAP_S
-    assert bot.stats["cc_quick_shots"] >= 1                                  # quick shots between the kicks
+    assert acts[0] == {"tap": "zr"} and bot.stats["cc_kicks"] == 2
+    assert any('zl' in a.get('hold', ()) for a in acts)                       # unchanged target: bounded gun acquisition
+    assert bot.stats["cc_quick_shots"] == 0                                  # no laser contact: conserve rounds between kicks
     bot, clock, snap = brain(round_guest(enemies=((180.0, 0.0, 0.0, 700),), cam_yaw=0.0))   # 1.8 m off to the right
     act = run(bot, snap, clock, 1)[0]
     assert bot.doing == "crowd" and act["hold"] == bot._turn(R.heading(180.0, 0.0))   # the camera to him
@@ -3151,7 +3159,7 @@ def test_a_front_crowd_within_the_cone_is_unchanged():
     # a four within 2 m with one in front/within CC_CONE: the original gun-down path still owns them (no behavior change)
     bot, clock, snap = brain(round_guest(
         enemies=((0.0, 0.0, 150.0, 700), (150.0, 0.0, 160.0, 700), (-150.0, 0.0, 160.0, 700), (0.0, 0.0, 190.0, 700)),
-        cam_yaw=0.0))
+        cam_yaw=0.0, laser=((0.0, R.CHEST_H, 150.0), (0.0, R.CHEST_H, 0.0), 0.86)))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 30)
     assert bot.doing == "crowd"                                                    # still crowd control, as before the fix
@@ -3211,7 +3219,7 @@ def test_crowd_hold_set_by_cc_kick_path():
     """When the normal crowd control path (cc_kick) fires with 4+ within 2m, crowd_hold_until must be set."""
     import math as _m
     # One enemy in front within CC_R (in cone), three more within 2m on the flanks
-    enemies = ((0.0, 0.0, 150.0, 700),  # front, in cone
+    enemies = ((0.0, 0.0, 100.0, 700),  # front, actually within melee range
                (190.0 * _m.sin(_m.radians(-101.0)), 0.0, 190.0 * _m.cos(_m.radians(-101.0)), 700),
                (190.0 * _m.sin(_m.radians(117.0)), 0.0, 190.0 * _m.cos(_m.radians(117.0)), 700),
                (190.0 * _m.sin(_m.radians(162.0)), 0.0, 190.0 * _m.cos(_m.radians(162.0)), 700))
@@ -3219,6 +3227,7 @@ def test_crowd_hold_set_by_cc_kick_path():
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, 12)
     assert bot.crowd_hold_until > 0.0, "crowd_hold_until must be set when cc_kick fires with 4+ within 2m"
+    assert bot.stats["cc_kicks"] > 0
     assert bot.doing == "crowd" or any(a.get("doing") == "crowd" for a in acts)
 
 
@@ -3448,7 +3457,8 @@ def test_tablets_are_confirmed_by_health_and_eaten_to_the_top_never_past_it():
 
 def test_a_hit_answers_with_a_series_of_quick_shots():
     # operator 2026-10-29: "if the bot is hit in RE6, he needs to do a series of quick attacks in response" (HIT_QS_N)
-    g = round_guest(hp=900, enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0)
+    g = round_guest(hp=900, enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0,
+                    laser=((0.0, R.CHEST_H, 150.0), (0.0, R.CHEST_H, 0.0), 0.86))
     bot, clock, snap = brain(g)
     run(bot, snap, clock, 2)
     snap["player"]["hp"] = 780                                               # bitten

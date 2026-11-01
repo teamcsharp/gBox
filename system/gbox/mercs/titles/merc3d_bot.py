@@ -76,7 +76,7 @@ def near_ray(origin, dot, point, radius: float, slack: float = 60.0) -> bool:
 class Bot:
     """tick(snap) -> {"hold": keys}. stats counts what it did (the engine's round_counters)."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, strategy=None):
         self.stats = stats if stats is not None else {}
         self.clock = clock
         self.target = None                  # the target's ptr
@@ -95,6 +95,8 @@ class Bot:
         self.escape_side = "lleft"
         self.attack_progress = None
         self.last_hold = set()
+        self.strategy = strategy
+        self.instruction = None
 
     # --- the engine's interface ------------------------------------------------------------------------------------------
     def prompt_ok(self, button, snap, now) -> bool:
@@ -170,6 +172,25 @@ class Bot:
     # --- the decision ---------------------------------------------------------------------------------------------------
     def tick(self, snap: dict) -> dict:
         now = self.clock()
+        if self.strategy is not None:
+            self.instruction = None
+            self.stats.pop('level_objective', None)
+            self.stats.pop('strategy_error', None)
+            try:
+                self.instruction = self.strategy.instruction(snap)
+                self.stats['level_strategy'] = dict(self.strategy.receipt)
+                if self.instruction:
+                    self.stats['level_objective'] = {k: self.instruction.get(k) for k in
+                        ('action', 'target', 'reason', 'executable', 'source_urls')}
+                if self.strategy.receipt.get('replan') and self.target is not None:
+                    # A measured stalled attempt yields a different live target;
+                    # the existing aim/crowd/obstacle checks still decide inputs.
+                    self.blocked[self.target] = now + BLOCK_S
+                    self.target = None
+            except Exception as error:
+                self.stats['level_strategy'] = {'context_available': False, 'plan_available': False,
+                                                'completion_verified': False}
+                self.stats['strategy_error'] = str(error)[:240]
         p = snap.get("player")
         if not p or (p.get("hp") or 0) <= 0:
             return self._go("idle", (), "no player")
@@ -192,6 +213,8 @@ class Bot:
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and e.get("pos")]
         if not live:
             self.target = None
+            if self.instruction and not self.instruction.get('executable'):
+                return self._go('objective_blocked', (), 'Objective needs verified ' + self.instruction['action'] + ' targets')
             return self._go("no_foes", (), "no enemy alive")
         live.sort(key=lambda e: flat(me, e["pos"]))
         # crowd control first: room before a fight
@@ -231,6 +254,12 @@ class Bot:
     def _choose(self, me, yaw, live, now):
         cur = next((e for e in live if e.get("ptr") == self.target), None)
         free = [e for e in live if self.blocked.get(e.get("ptr"), 0) <= now]
+        instruction = self.instruction or {}
+        if instruction.get('executable') and instruction.get('action') == 'defeat_boss':
+            cls = (instruction.get('binding') or {}).get('enemy_class')
+            preferred = [e for e in free if cls and e.get('class') == cls]
+            if preferred:
+                free = preferred
         if not free:
             return None
         best = min(free, key=lambda e: flat(me, e["pos"]) + ANGLE_COST * abs(math.degrees(wrap(bearing(me, e["pos"]) - yaw))))

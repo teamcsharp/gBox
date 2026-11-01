@@ -407,8 +407,210 @@
     doc.addEventListener('keydown',key);doc.addEventListener('keyup',key);win.addEventListener('resize',position);paint();
     return {receipt,update,close,dispose(){dead=true;ammoControl.dispose();ammoClient.dispose();close();button.removeEventListener('click',open);doc.removeEventListener('pointerdown',outside,true);doc.removeEventListener('keydown',key);doc.removeEventListener('keyup',key);win.removeEventListener('resize',position);}};
   }
+  const replayIcon='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 8a8 8 0 0 0-13-3L3 9m0-6v6h6M4 16a8 8 0 0 0 13 3l4-4m0 6v-6h-6"/></svg>';
+  const stageIcon='<svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 5 4-5z" fill="currentColor"/></svg>';
+
+  // Percentages are a draft until the worker returns its saved configuration.
+  function stageWeights(rows, changedId=null, requested=null) {
+    const next=rows.map(row=>({...row,weight:row.enabled?Math.max(0,Number(row.weight)||0):0}));
+    const enabled=next.filter(row=>row.enabled);
+    if(!enabled.length)throw Error('Include at least one stage.');
+    const changed=enabled.find(row=>row.id===changedId);
+    if(changed && requested!==null){
+      changed.weight=enabled.length===1?100:Math.max(0,Math.min(100,Number(requested)||0));
+      const rest=enabled.filter(row=>row!==changed),total=rest.reduce((sum,row)=>sum+row.weight,0),remaining=100-changed.weight;
+      for(const row of rest)row.weight=total?remaining*row.weight/total:remaining/rest.length;
+    }else{
+      const total=enabled.reduce((sum,row)=>sum+row.weight,0);
+      for(const row of enabled)row.weight=total?100*row.weight/total:100/enabled.length;
+    }
+    // Largest remainders give readable hundredths and an exact 100.00% total.
+    const units=enabled.map(row=>({row,value:Math.floor(row.weight*100+1e-7),fraction:row.weight*100-Math.floor(row.weight*100+1e-7)}));
+    let remaining=10000-units.reduce((sum,row)=>sum+row.value,0);
+    const order=[...units].sort((a,b)=>b.fraction-a.fraction||a.row.id-b.row.id);
+    for(let i=0;remaining>0;i++,remaining--)order[i%order.length].value++;
+    for(const row of units)row.row.weight=row.value/100;
+    return next;
+  }
+
+  function roundReport(value, session) {
+    if(!value || value.session_id!==session || typeof value.available!=='boolean')throw Error('Invalid icon panel status for this session.');
+    if(value.available && (!Array.isArray(value.stages) || !value.stages.length ||
+        value.stages.some(row=>!Number.isInteger(row.id)||typeof row.name!=='string'||typeof row.enabled!=='boolean'||
+          !Number.isFinite(row.weight)||row.weight<0||row.weight>100)||
+        new Set(value.stages.map(row=>row.id)).size!==value.stages.length || typeof value.loop?.enabled!=='boolean'))
+      throw Error('Stage preferences could not be verified.');
+    if(value.available && value.current_stage!==null && value.current_stage!==undefined && !Number.isInteger(value.current_stage))
+      throw Error('Current stage could not be verified.');
+    const quick=value.quick_attack;
+    if(quick?.available===true && (typeof quick.enabled!=='boolean'||!Number.isInteger(quick.count)||quick.count<1||quick.count>8||!Number.isFinite(quick.interval_s)||quick.interval_s<8||quick.interval_s>120))
+      throw Error('Quick attack preferences could not be verified.');
+    return value;
+  }
+
+  function createRoundControls({api,sid,changed=()=>{},uuid=()=>root.crypto.randomUUID()}) {
+    let report=null,error='',message='',pending=null,dead=false,bound=null,readSequence=0,epoch=0;
+    const selected=()=>typeof sid==='function'?sid():sid;
+    function sync(){const next=selected();if(next!==bound){bound=next;report=null;error='';message='';pending=null;readSequence++;epoch++;}return bound;}
+    function snapshot(){sync();return {sid:bound,report,error,message,pending:pending?{...pending}:null};}
+    function emit(){changed(snapshot());}
+    function accept(value,session){
+      report=roundReport(value,session);
+      const receipts=[value.receipt,...(Array.isArray(value.receipts)?value.receipts:[])].filter(Boolean);
+      const match=pending && receipts.find(row=>row.request_id===pending.id && ['queued','applied','rejected'].includes(row.status));
+      if(match){if(match.status==='rejected'){error=match.error||match.reason||'The worker rejected this request.';message='Request rejected: '+error;}
+        else{message=pending.op==='replay'?'Next-round preference '+match.status+'.':'Preferences '+match.status+'.';error='';}pending=null;}
+      return match?.status;
+    }
+    async function refresh(){
+      const session=sync(),version=epoch,sequence=++readSequence;if(dead||!session)return;
+      try{const value=await api(`/api/sessions/${encodeURIComponent(session)}/rpc`,{op:'merc_round_controls',args:{op:'status'}});
+        if(dead||version!==epoch||session!==selected()||sequence!==readSequence)return;
+        const receiptStatus=accept(value,session);if(!pending&&receiptStatus!=='rejected')error='';emit();return report;
+      }catch(exc){if(!dead&&version===epoch&&session===selected()&&sequence===readSequence){error=exc.message||'Icon panel status could not be read.';emit();}}
+    }
+    async function mutate(op,args){
+      const session=sync();if(dead||!session)throw Error('No active game selected.');
+      if(pending)throw Error('The previous request is still pending. Refresh its status before another change.');
+      if(report?.available!==true)throw Error(report?.reason||'Round controls are unavailable for this session.');
+      const id=uuid(),version=epoch;pending={id,op,state:'sending'};error='';message='Sending request...';readSequence++;emit();
+      try{const value=await api(`/api/sessions/${encodeURIComponent(session)}/rpc`,{op:'merc_round_controls',args:{op,request_id:id,...args}});
+        if(dead||version!==epoch||session!==selected())return;
+        if(pending?.id!==id)return report;
+        readSequence++;accept(value,session);
+        if(pending){pending.state='uncertain';error='No matching receipt returned. Refresh status; this request will not be repeated.';}
+        emit();return report;
+      }catch(exc){if(dead||version!==epoch||session!==selected())return;
+        if(pending?.id!==id)return report;
+        pending.state='uncertain';error=(exc.message||'Request outcome unknown.')+' Refresh status; this request will not be repeated.';emit();}
+    }
+    return {snapshot,refresh,update(){sync();emit();},
+      replay(){return mutate('replay',{mode:'once'});},
+      loop(enabled){if(typeof enabled!=='boolean')return Promise.reject(Error('Loop requires an explicit on/off value.'));return mutate('replay',{mode:'loop',enabled});},
+      stages(rows){let normalized;try{normalized=stageWeights(rows);}catch(error){return Promise.reject(error);}
+        return mutate('stages',{stages:normalized.map(({id,enabled,weight})=>({id,enabled,weight}))});},
+      reset(){return mutate('stages',{reset:true});},
+      quickAttack(value){if(typeof value.enabled!=='boolean'||!Number.isInteger(value.count)||value.count<1||value.count>8||!Number.isFinite(value.interval_s)||value.interval_s<8||value.interval_s>120)
+        return Promise.reject(Error('Quick attacks need 1-8 attacks and an interval of 8-120 seconds.'));
+        if(report?.quick_attack?.available!==true)return Promise.reject(Error('Quick attacks are unavailable for this title.'));
+        return mutate('quick_attack',{enabled:value.enabled,count:value.count,interval_s:value.interval_s});},
+      dispose(){dead=true;epoch++;pending=null;}
+    };
+  }
+
+  function bindReplayGesture(button,{replay,loop,enabled=()=>true,identity=()=>null,schedule=(fn,ms)=>root.setTimeout(fn,ms),cancel=id=>root.clearTimeout(id)}) {
+    let timer=null,point=null,suppress=false,disposed=false,gestureIdentity,hasPointer=false;
+    function clear(){if(timer!==null)cancel(timer);timer=null;}
+    function down(event){if(event.button!==undefined&&event.button!==0)return;clear();suppress=false;
+      if(disposed||!enabled())return;gestureIdentity=identity();hasPointer=true;point={x:event.clientX,y:event.clientY};
+      if(!event.ctrlKey)timer=schedule(()=>{timer=null;if(!disposed&&enabled()&&gestureIdentity===identity()){suppress=true;loop();}},600);}
+    function move(event){if(point&&Number.isFinite(event.clientX)&&Math.hypot(event.clientX-point.x,event.clientY-point.y)>8)clear();}
+    function up(){clear();point=null;}
+    function abort(){up();suppress=false;}
+    function click(event){event.preventDefault();event.stopPropagation();clear();
+      if(disposed||!enabled())return;
+      if(event.detail!==0&&hasPointer&&gestureIdentity!==identity()){hasPointer=false;suppress=false;return;}hasPointer=false;
+      if(suppress && event.detail!==0){suppress=false;return;}suppress=false;
+      if(event.ctrlKey)loop();else replay();}
+    function context(event){event.preventDefault();event.stopPropagation();}
+    const handlers={pointerdown:down,pointermove:move,pointerup:up,pointercancel:abort,pointerleave:up,click,contextmenu:context};
+    for(const [name,fn] of Object.entries(handlers))button.addEventListener(name,fn);
+    return {cancelPending(){clear();point=null;suppress=true;},dispose(){disposed=true;clear();for(const [name,fn] of Object.entries(handlers))button.removeEventListener(name,fn);}};
+  }
+
+  function bindIconPanel(button,{api,sid,enabled=()=>true,menuButton,onOpen=()=>{}}) {
+    const doc=button.ownerDocument,win=doc.defaultView||root;
+    let dead=false,menu=null,timer=null,bound=null,menuSid=null,draft=null,dirty=false,localError='',nodes=null,gesture=null,gestureEpoch=0;
+    const selected=()=>typeof sid==='function'?sid():sid;
+    const active=()=>!dead&&enabled()&&!!selected();
+    const stopEvent=e=>{e?.preventDefault();e?.stopPropagation();};
+    const styleCheck=(label,input)=>{Object.assign(label.style,{display:'inline-flex',alignItems:'center',gap:'6px',margin:'0',minWidth:'0',font:'inherit',color:'inherit'});Object.assign(input.style,{width:'auto',flex:'0 0 auto',margin:'0'});};
+    const styleButton=el=>Object.assign(el.style,{border:'1px solid #647081',borderRadius:'4px',background:'#26313e',color:'#f1f5f9',padding:'5px 8px',cursor:'pointer'});
+    button.type='button';button.innerHTML=replayIcon;button.dataset.roundReplay='';
+    menuButton.type='button';menuButton.innerHTML=stageIcon;menuButton.dataset.stagePreferences='';
+    menuButton.setAttribute('aria-label','Stage choices and quick attacks');menuButton.setAttribute('aria-haspopup','dialog');
+    button.style.touchAction='manipulation';button.style.flexShrink='0';menuButton.style.flexShrink='0';
+    const state=createRoundControls({api,sid,changed:paint});
+    function close(){if(menu){menu.remove();menu=null;nodes=null;menuSid=null;draft=null;dirty=false;onOpen(false);}menuButton.setAttribute('aria-expanded','false');}
+    function position(){if(!menu)return;const r=menuButton.getBoundingClientRect();menu.style.left=Math.max(4,Math.min(r.right-menu.offsetWidth,win.innerWidth-menu.offsetWidth-4))+'px';menu.style.top=Math.max(4,Math.min(r.bottom+4,win.innerHeight-menu.offsetHeight-4))+'px';}
+    function failure(error){localError=error.message||String(error);paint(state.snapshot());}
+    async function action(fn){const session=selected();localError='';try{await fn();}catch(error){if(session===selected())failure(error);}if(!dead)paint(state.snapshot());}
+    function paint(view){
+      if(dead)return;
+      if(bound!==selected()){bound=selected();gestureEpoch++;gesture?.cancelPending();close();localError='';}
+      const report=view.report,busy=!!view.pending,available=active()&&report?.available===true;
+      button.disabled=!available||busy;menuButton.disabled=!active();
+      const looping=report?.loop?.enabled===true;
+      button.setAttribute('aria-pressed',String(looping));button.setAttribute('aria-busy',String(busy));
+      button.dataset.roundState=busy?'pending':view.error?'error':looping?'loop':report?.replay_pending?'queued':available?'ready':'unavailable';
+      button.style.color=localError||view.error?'#ffb49b':looping?'#9dd8ff':report?.replay_pending?'#f4ce7a':'';
+      button.style.borderColor=localError||view.error?'#dc8e72':busy?'#d4bb70':looping?'#85bce8':'';
+      const loopStage=report?.stages?.find(row=>row.id===report.loop?.stage_id)?.name||'the selected stage';
+      const status=localError||view.error||report?.reason||(!available?'Reading round controls...':busy?'Request pending':looping?`Looping ${loopStage} at round boundaries`:report?.replay_pending?'Same stage queued for the next round':view.message);
+      button.title=`Replay this stage next round with a different character. Ctrl-click or hold to ${looping?'stop':'start'} looping. ${status||''}`;
+      button.setAttribute('aria-label',looping?`Stage loop on: ${loopStage}. Click to replay; Ctrl-click or hold to stop loop`:'Replay stage next round with a different character; Ctrl-click or hold to loop');
+      menuButton.title='Stage choices, weights and quick attacks';
+      if(!menu||menuSid!==selected())return;
+      nodes.status.textContent=status||'Changes apply at the next round boundary.';nodes.status.style.color=localError||view.error?'#ffb49b':'#c9d1db';
+      nodes.heading.textContent=report?.title?`${report.title} stages`:'Stage preferences';
+      nodes.current.textContent=report?.current_stage===null||report?.current_stage===undefined?'Current stage not yet verified.':`Current stage: ${report.stages?.find(row=>row.id===report.current_stage)?.name||report.current_stage}`;
+      nodes.loop.checked=looping;nodes.loopText.textContent=looping?` Loop ${loopStage} after each round`:' Loop the current stage each round';nodes.loop.disabled=!available||busy;nodes.refresh.disabled=busy&&view.pending?.state==='sending';
+      if(!report?.stages){nodes.list.replaceChildren();return;}
+      if(!dirty){draft=report.stages.map(row=>({...row}));}
+      const signature=JSON.stringify(draft.map(row=>[row.id,row.name]));
+      if(signature!==nodes.signature){nodes.signature=signature;nodes.list.replaceChildren();nodes.rows=new Map();const owner=menu;
+        for(const row of draft){const wrap=doc.createElement('div');Object.assign(wrap.style,{display:'grid',gridTemplateColumns:'minmax(0,1.1fr) minmax(0,1fr) 48px',gap:'6px',alignItems:'center',padding:'6px 0'});
+          const label=doc.createElement('label'),check=doc.createElement('input');check.type='checkbox';const name=doc.createElement('span');name.textContent=row.name;name.style.overflowWrap='anywhere';label.append(check,name);styleCheck(label,check);
+          const slider=doc.createElement('input');slider.type='range';slider.min='0';slider.max='100';slider.step='1';slider.setAttribute('aria-label',`${row.name} stage probability`);Object.assign(slider.style,{width:'100%',minWidth:'0',margin:'0'});
+          const amount=doc.createElement('output');amount.style.textAlign='right';wrap.append(label,slider,amount);nodes.list.append(wrap);nodes.rows.set(row.id,{check,slider,amount});
+          check.onchange=()=>{if(menu!==owner)return;edit(()=>{const next=draft.map(r=>r.id===row.id?{...r,enabled:check.checked,weight:check.checked?(r.weight||100/draft.length):0}:r);return stageWeights(next);});};
+          slider.oninput=()=>{if(menu===owner)edit(()=>stageWeights(draft,row.id,Number(slider.value)));};
+        }
+      }
+      for(const row of draft){const item=nodes.rows.get(row.id);item.check.checked=row.enabled;item.check.disabled=!available||busy;item.slider.disabled=!available||busy||!row.enabled;item.slider.value=String(row.weight);item.amount.textContent=row.weight.toFixed(2).replace(/\.00$/,'')+'%';}
+      nodes.apply.disabled=!available||busy||!dirty;nodes.invert.disabled=!available||busy;nodes.reset.disabled=!available||busy;nodes.unsaved.textContent=dirty?'Unsaved stage choices. Total: 100%.':'';
+      const quick=report.quick_attack;nodes.quick.hidden=!quick?.available;
+      if(quick?.available){if(doc.activeElement!==nodes.count)nodes.count.value=String(quick.count);if(doc.activeElement!==nodes.interval)nodes.interval.value=String(quick.interval_s);nodes.quickOn.checked=quick.enabled===true;
+        nodes.intervalText.textContent=`Every ${Number(nodes.interval.value)} seconds`;
+        nodes.quickOn.disabled=nodes.count.disabled=nodes.interval.disabled=!available||busy;}
+      position();
+    }
+    function edit(fn){if(!menu||menuSid!==selected()||!active())return;try{draft=fn();dirty=true;localError='';}catch(error){localError=error.message;}paint(state.snapshot());}
+    function toggleLoop(){const report=state.snapshot().report;if(report?.available)action(()=>state.loop(!report.loop.enabled));}
+    gesture=bindReplayGesture(button,{identity:()=>selected()+':'+gestureEpoch,enabled:()=>active()&&!button.disabled,replay:()=>action(()=>state.replay()),loop:toggleLoop});
+    function quickSave(){return action(()=>state.quickAttack({enabled:nodes.quickOn.checked,count:Number(nodes.count.value),interval_s:Number(nodes.interval.value)}));}
+    function open(event){stopEvent(event);if(menu){close();return;}if(!active())return;menuSid=selected();
+      menu=doc.createElement('div');menu.className='merc-round-menu';menu.setAttribute('role','dialog');menu.setAttribute('aria-label','Icon panel stage preferences');
+      const owned=menu,session=menuSid,isCurrent=()=>menu===owned&&menuSid===session&&session===selected()&&active();
+      Object.assign(menu.style,{position:'fixed',zIndex:'10000',width:'390px',maxWidth:'calc(100vw - 8px)',maxHeight:'calc(100vh - 36px)',overflowY:'auto',boxSizing:'border-box',background:'#1b2027',color:'#edf1f5',border:'1px solid #627083',borderRadius:'7px',padding:'10px',font:'12px system-ui',webkitAppRegion:'no-drag',boxShadow:'0 6px 24px #0009'});
+      const heading=doc.createElement('strong'),current=doc.createElement('div'),note=doc.createElement('p'),status=doc.createElement('div');status.setAttribute('role','status');note.textContent='Replay uses a different character on the same stage next round. Stage preferences never reset the current fight.';note.style.color='#c0cad6';
+      const loopLabel=doc.createElement('label'),loop=doc.createElement('input'),loopText=doc.createElement('span');loop.type='checkbox';loopText.textContent=' Loop the current stage each round';loopLabel.append(loop,loopText);styleCheck(loopLabel,loop);loopLabel.style.margin='8px 0';loop.onchange=()=>{if(isCurrent())return action(()=>state.loop(loop.checked));};
+      const list=doc.createElement('div');list.setAttribute('role','group');list.setAttribute('aria-label','Included stages and selection probabilities');
+      const actions=doc.createElement('div');Object.assign(actions.style,{display:'flex',gap:'6px',flexWrap:'wrap',margin:'8px 0'});
+      const invert=doc.createElement('button'),reset=doc.createElement('button'),apply=doc.createElement('button'),refresh=doc.createElement('button');
+      for(const [el,text] of [[invert,'Invert'],[reset,'Reset defaults'],[apply,'Apply stages'],[refresh,'Refresh']]){el.type='button';el.textContent=text;styleButton(el);actions.append(el);}
+      invert.onclick=()=>{if(isCurrent())edit(()=>stageWeights(draft.map(row=>({...row,enabled:!row.enabled,weight:row.enabled?0:1}))));};
+      reset.onclick=()=>{if(isCurrent())return action(async()=>{await state.reset();if(isCurrent()&&!state.snapshot().pending&&!state.snapshot().error){dirty=false;draft=null;}});};
+      apply.onclick=()=>{if(isCurrent())return action(async()=>{await state.stages(draft);if(isCurrent()&&!state.snapshot().pending&&!state.snapshot().error){dirty=false;draft=null;}});};refresh.onclick=()=>{if(isCurrent())return state.refresh();};
+      const unsaved=doc.createElement('div');unsaved.style.color='#edcf8c';
+      const quick=doc.createElement('fieldset');quick.style.margin='10px 0 0';const legend=doc.createElement('legend');legend.textContent='RE6 quick attacks';quick.append(legend);
+      const quickLabel=doc.createElement('label'),quickOn=doc.createElement('input');quickOn.type='checkbox';quickLabel.append(quickOn,doc.createTextNode('Enable quick attacks'));styleCheck(quickLabel,quickOn);quick.append(quickLabel);
+      const countLabel=doc.createElement('label');countLabel.textContent=' Attacks per burst ';const count=doc.createElement('select');count.setAttribute('aria-label','Quick attacks per burst');for(let i=1;i<=8;i++){const option=doc.createElement('option');option.value=String(i);option.textContent=String(i);count.append(option);}count.value='4';countLabel.append(count);Object.assign(countLabel.style,{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'6px',margin:'8px 0',font:'inherit',color:'inherit'});count.style.width='60px';quick.append(countLabel);
+      const intervalLabel=doc.createElement('label'),interval=doc.createElement('input'),intervalText=doc.createElement('span');interval.type='range';interval.min='8';interval.max='120';interval.step='1';interval.value='24';interval.setAttribute('aria-label','Quick attack interval in seconds');interval.style.width='100%';intervalLabel.append(intervalText,interval);quick.append(intervalLabel);interval.oninput=()=>{intervalText.textContent=`Every ${interval.value} seconds`;};interval.onchange=count.onchange=quickOn.onchange=()=>{if(isCurrent())return quickSave();};
+      nodes={heading,current,status,loop,loopText,list,apply,invert,reset,refresh,unsaved,quick,quickOn,count,interval,intervalText,rows:new Map(),signature:null};
+      menu.append(heading,current,note,loopLabel,list,unsaved,actions,quick,status);doc.body.append(menu);menuButton.setAttribute('aria-expanded','true');onOpen(true);paint(state.snapshot());position();menu.tabIndex=-1;menu.focus({preventScroll:true});state.refresh();
+    }
+    function outside(event){if(menu&&!menu.contains(event.target)&&!button.contains(event.target)&&!menuButton.contains(event.target))close();}
+    function key(event){if(!menu)return;if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();close();menuButton.focus();return;}if(menu.contains(event.target))event.stopPropagation();}
+    async function poll(){timer=null;if(dead)return;if(active())await state.refresh();if(!dead)timer=win.setTimeout(poll,5000);}
+    menuButton.addEventListener('click',open);doc.addEventListener('pointerdown',outside,true);doc.addEventListener('keydown',key);doc.addEventListener('keyup',key);win.addEventListener('resize',position);
+    paint(state.snapshot());poll();
+    return {close,update(){const next=selected(),changed=next!==bound;state.update();if(!active())close();if(changed&&active())state.refresh();},dispose(){dead=true;close();gesture.dispose();state.dispose();if(timer!==null)win.clearTimeout(timer);menuButton.removeEventListener('click',open);doc.removeEventListener('pointerdown',outside,true);doc.removeEventListener('keydown',key);doc.removeEventListener('keyup',key);win.removeEventListener('resize',position);}};
+  }
+
   function mount(host, options) {
     const doc = host.ownerDocument, bar = doc.createElement('div'); bar.className = 'stream-interventions';
+    bar.setAttribute('role','toolbar');bar.setAttribute('aria-label','Icon panel');
     const button = doc.createElement('button'); button.type='button'; button.textContent='⚡ Instant flashbang';
     const status = doc.createElement('span'); status.setAttribute('role','status');
     bar.append(button, status); host.append(bar);
@@ -433,7 +635,7 @@
         finally { opening=false; }
       };
     }
-    let flashControl,weaponControl,ringControl;
+    let flashControl,weaponControl,ringControl,iconPanel;
     const client = create({...options, notify(text,row) {
       if(row.op==='flash_now')flashControl?.receipt(text,row);
       else if(row.op==='equip_primary')weaponControl?.receipt(text,row);
@@ -441,6 +643,8 @@
       else {status.textContent=text; options.notify?.(text,row);}
       options.onReceipt?.(row);
     }});
+    const replay = doc.createElement('button'), stages = doc.createElement('button');bar.insertBefore(replay,button);bar.insertBefore(stages,button);
+    iconPanel=bindIconPanel(replay,{api:options.api,sid:selected,enabled:()=>!disposed,menuButton:stages});
     const weapon = doc.createElement('button'); weapon.type='button';bar.insertBefore(weapon,status);
     weaponControl=bindWeapon(weapon,{api:options.api,equipPrimary:client.equipPrimary,sid:selected,enabled:()=>!disposed});
     flashControl=bindFlash(button,{flash:client.flash,sid:selected,enabled:()=>!disposed});
@@ -449,8 +653,8 @@
     const ringKind = doc.createElement('button'); ringKind.type='button'; ringKind.className='ring-kind';
     bar.insertBefore(ring,status); bar.insertBefore(ringKind,status);
     ringControl=bindRing(ring,{api:options.api,ring:client.grenadeRing,sid:selected,enabled:()=>!disposed,kindButton:ringKind});
-    return {dispose() {disposed=true;flashControl.dispose();weaponControl.dispose();ringControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
+    return {dispose() {disposed=true;iconPanel.dispose();flashControl.dispose();weaponControl.dispose();ringControl.dispose();client.dispose();sidebar?.dispose();if(activeSidebar===sidebar)activeSidebar=null;bar.remove();}, client};
   }
-  const out = {create,mount,bindFlash,bindWeapon,bindRing,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
+  const out = {create,mount,bindFlash,bindWeapon,bindRing,bindIconPanel,bindReplayGesture,createRoundControls,stageWeights,roundReport,ammoView,createAmmoControl,sortedWeapons,RING_KINDS,ringKindLabel,readRingKind,ringKindOptions}; root.GBoxStreamInterventions=out;
   if(typeof module==='object' && module.exports)module.exports=out;
 })(typeof globalThis==='object'?globalThis:this);

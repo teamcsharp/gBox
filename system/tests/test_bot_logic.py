@@ -57,6 +57,27 @@ def test_reset_puts_the_shipped_values_back(path):
     assert R6.FLASH_GAP_S == shipped and BL.apply_saved("re6", path) == {}
 
 
+def test_invalid_multi_setting_command_has_no_partial_live_or_saved_effect(path, monkeypatch):
+    before = R6.FLASH_GAP_S
+    monkeypatch.setattr(BL, '_write', lambda *_: pytest.fail('invalid command must not save'))
+    with pytest.raises(ValueError, match='not a live'):
+        BL.handle('re6', {'FLASH_GAP_S': 9., 'UNKNOWN': 1}, path=path)
+    assert R6.FLASH_GAP_S == before and not path.exists()
+
+
+def test_failed_save_preserves_live_values_and_previous_saved_file(path, monkeypatch):
+    BL.handle('re6', {'FLASH_GAP_S': 7., 'NADES': True}, path=path)
+    before = path.read_bytes()
+    shipped = dict(R6._BOT_LOGIC_SHIPPED)
+    def fail(*_):
+        raise OSError('disk unavailable')
+    monkeypatch.setattr(BL, '_write', fail)
+    with pytest.raises(OSError, match='disk unavailable'):
+        BL.handle('re6', {'NADES': False}, reset=['FLASH_GAP_S'], path=path)
+    assert R6.FLASH_GAP_S == 7. and R6.NADES is True
+    assert path.read_bytes() == before and R6._BOT_LOGIC_SHIPPED == shipped
+
+
 def test_weapon_menu_lists_re6_most_powerful_first_and_equips_through_live_weapon(monkeypatch):
     from gbox.mercs import bot_logic
     from gbox.mercs.titles import re6_switch_mods as R6

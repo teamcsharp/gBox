@@ -102,10 +102,10 @@
       [
         "bot_options",
         {
-          "nades": false,
+          "nades": true,
           "bomb_drop": false,
           "aim_lock": true,
-          "flash": false
+          "flash": true
         }
       ],
       [

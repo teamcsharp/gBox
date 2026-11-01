@@ -195,11 +195,16 @@ def _count_round(stage, character) -> None:
 def stage_target(m, unit: int) -> int:
     """The stage select's target: the queued stage when it can start, else this visit's random draw among the stages
     whose bit is set (+0x58); STAGE_TARGET when the mask can't be read."""
+    from ..round_controls import for_memory
+    control = for_memory(m)
     try:
         mask = struct.unpack("<I", m.rd(unit + STAGE_UNLOCKED, 4))[0]
     except (ValueError, OSError, struct.error):
-        return STAGE_TARGET
+        return None if control is not None and control.managed else STAGE_TARGET
     open_ = [i for i in range(len(STAGES)) if mask >> i & 1]
+    if control is not None and control.managed:
+        PICK.stage = control.choose_stage(open_)
+        return PICK.stage
     if not open_:
         return STAGE_TARGET
     if PICK.stage not in open_:
@@ -265,10 +270,15 @@ def player_target(m, unit: int) -> int:
     """The character select's cursor index for the wanted character (a queued one, else PLAYER_ID): its place in the
     select's own list of ids, which grows as characters unlock; PLAYER_TARGET when the list can't be read or lacks
     him."""
+    from ..round_controls import for_memory
+    control = for_memory(m)
     try:
         n = _i32(m, unit + PLAYER_COUNT)
         if 0 < n <= 16:
             ids = struct.unpack(f"<{n}i", m.rd(unit + PLAYER_IDS, 4 * n))
+            if control is not None and control.managed:
+                PICK.character = control.choose_character(ids)
+                return ids.index(PICK.character) if PICK.character in ids else None
             want = wanted_character(ids)
             if want in ids:
                 return ids.index(want)
@@ -276,7 +286,7 @@ def player_target(m, unit: int) -> int:
                 return ids.index(PLAYER_ID)
     except (ValueError, OSError, struct.error):
         pass
-    return PLAYER_TARGET
+    return None if control is not None and control.managed else PLAYER_TARGET
 
 
 def continue_target() -> int:
@@ -301,6 +311,7 @@ LASER_LINES, LASER_DOT, LASER_FROM, LASER_UP, LASER_UP_MIN = (22,), 0x60, 0x440,
 MUZZLE_NEAR = 400.0                     # the muzzle rides ~190 cm from his feet while the gun is up
 RESCAN_S, WALK_MAX = 0.5, 4096
 P_AMMO = 0x507E                         # s16: first inventory slot's rounds; only the initial gun occupies it
+P_FIRE_COOLDOWN = 0x5AEC                 # f32: native fire routine rearms it; frame update decrements it (exact-build profile)
 P_STATE, P_MOTION = 0x6E2, 0x598        # u8 the action's kind, u16 its motion (live 2026-10-26, 20 samples a second): kind
                                         # 0 free, 1 hit (a moment), 2 / 64 / 66 a shot (64 -> 66 -> 2 a quick shot), 3
                                         # knocked down, 8 -> 9 / 25 held by a zombie (its bite: 450 -> 300 health), the
@@ -933,11 +944,13 @@ def snapshot(m) -> dict:
             tablets = struct.unpack("<h", m.rd(p + P_TABLETS, 2))[0]
             equipped, weapon_id, bomb = inventory_state(m, p)
             ammo = inventory_ammo(m, p, equipped)
+            cooldown = struct.unpack('<f', m.rd(p + P_FIRE_COOLDOWN, 4))[0]
             snap["player"] = {"ptr": p, "generation": struct.unpack("<I", m.rd(p + 0x1308, 4))[0],
                               "pos": pos, "rot": heading_of(rot), "hp": hp, "hp_max": hp_max, "ammo": ammo,
                               "state": state, "motion": motion, "tablets": tablets, "weapon_id": weapon_id,
                               "equipped": equipped, "bomb": bomb, "nades": inventory_items(m, p),
                               "guns": inventory_guns(m, p), "gun_ammo": inventory_gun_ammo(m, p),
+                              "fire_cooldown_s": cooldown if math.isfinite(cooldown) and -1 <= cooldown <= 30 else None,
                               "action": unit_action(m, p)}
             if hp <= 0:                                     # dead: CONTINUE? and its cursor, once it takes input
                 over = ui_units(m, base).get("uIdGameover00")
@@ -1037,6 +1050,18 @@ def screen(m, merc=None, now: float | None = None) -> dict:
     if p and "uIdMerceUI" in ui:
         if (p.get("hp") or 0) <= 0:
             return out | {"where": "dead"}
+        from ..round_controls import for_memory
+        control = for_memory(m)
+        if phase == PHASE_PLAYING and control is not None:
+            # Read the round the game actually loaded, not the requested menu target.
+            try:
+                gm = game_man(m, base)
+                actual_stage = _i32(m, gm + GM_STAGE) if gm else None
+                actual_character = costume_code(_i32(m, gm + GM_COSTUME)) if gm else None
+                if actual_character is not None:
+                    control.native_identity(actual_stage, CHARACTERS.index(actual_character[0]))
+            except (ValueError, OSError, struct.error):
+                pass
         if phase == PHASE_PLAYING and (PICK.stage is not None or PICK.costume is not None or PICK.queued):
             PICK.last = {"stage": PICK.stage, "character": PICK.character if PICK.character is not None
                          else PICK.queued.get("character", PLAYER_ID), "costume": PICK.costume}
@@ -1111,7 +1136,10 @@ def continue_prompt(m, over: int) -> dict:
         cursor = _i32(m, over + CONTINUE_CURSOR) if ready else None
     except (ValueError, OSError):
         cursor = None
-    return {"where": "dead", "cursor": cursor if cursor in (0, 1) else None, "target": continue_target()}
+    from ..round_controls import for_memory
+    control = for_memory(m)
+    return {"where": "dead", "cursor": cursor if cursor in (0, 1) else None,
+            "target": CONTINUE_NO if control is not None and control.managed else continue_target()}
 
 
 def step(scr: dict) -> str | None:
@@ -1375,11 +1403,7 @@ def near_line(origin, toward, pt, r: float, reach: float = 1e9) -> bool:
 
 # --- the shot's geometry (a zombie's body; RE6's are human-sized like RE5's Majini) ---------------------------------------
 HEAD_H, HEAD_R, KNEE_H, SHOULDER_H, BODY_R, CHEST_H = 160.0, 22.0, 45.0, 145.0, 36.0, 115.0
-# The trigger's tolerance (operator 2026-10-28: "have the aimbot improving aim over time ... Precision is important. I want
-# them taking pot shots and nailing people with precision over time"): besides the ray on him, the laser within fire_tol
-# of his chest fires; a pull that took health widens it by FIRE_TOL_STEP, a miss narrows it (FIRE_TOL_MIN..MAX). Rounds
-# showed 6-10 s aiming for 1 s firing with 13 of 13 hits: the gate, not the aim, held the shots back. stats fire_tol_deg.
-FIRE_TOL_DEG0, FIRE_TOL_MIN, FIRE_TOL_MAX, FIRE_TOL_STEP = 3.0, 1.0, 6.0, 0.15
+# Trigger authorization uses segment_hits; successful past shots never widen the current geometric hit test.
 FIRE_SLACK = 60.0                       # a ray ending this much short of him ends on something in front of him
 
 
@@ -1591,6 +1615,8 @@ QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 200.0, math.radians(35), 1.5   # point blank 
 # hurt"): health lost queues HIT_QS_N quick shots (both triggers: the game's quick shot, double damage and a stagger),
 # HIT_QS_GAP_S apart once he is free to act, while one stands within HIT_QS_R. stats hit_responses, hit_quick_shots.
 HIT_QS_N, HIT_QS_GAP_S, HIT_QS_R = 3, 0.35, 400.0
+PERIODIC_QA, PERIODIC_QA_COUNT, PERIODIC_QA_INTERVAL_S = True, 4, 24.0
+PERIODIC_QA_CONTACT_S, PERIODIC_QA_ACK_S = .25, 1.2
 READY_S, LASER_WAIT_S, RAY_STALE_S = 0.12, 0.7, 1.0
 KEEP_TARGET, THREAT_R, COMMIT_S = 1.5, 250.0, 1.0
 HIT_S = 0.45                            # a zombie's health falls within this of the shot that hit him
@@ -2128,7 +2154,8 @@ class Bot:
     tablet count falls (an ignored press is tried again). Dead: "Continue?" YES by the cursor read in RAM (the same round
     again at once; NO when REPLAY_ON_DEATH is off), the replay counted as the next round."""
 
-    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None, equip=None):
+    def __init__(self, stats: dict | None = None, clock=time.monotonic, learn_dir=None, ram=None, equip=None,
+                 round_control=None):
         from ..bot_look import BotLook
         self.stats = stats if stats is not None else {}
         self.clock = clock
@@ -2195,6 +2222,7 @@ class Bot:
         self.nav_path, self.nav_goal, self.nav_at = None, None, -1e9   # the walk's waypoints; toward what; planned when
         self.ram = ram                                       # the aim lock's writer (aim_writer); None: the keys aim
         self.native_equip = equip
+        self.round_control = round_control
         self.lock_tid, self.lock_w, self.lock_fails, self.lock_off_until = None, None, [], -1e9
         self.lock_write_at = None
         self.pitch_bias, self.lock_view = 0.0, None          # the pitch's learned correction; the last view (yaw, pitch)
@@ -2212,6 +2240,8 @@ class Bot:
         self.reraised = False                     # this raise already looked for the laser unit again
         self.fire_down = False
         self.crowd_hold_until = -1e9              # the crowd_4_in_2m signature: keep the gun down until this time
+        self._cc_last_kick = self._cc_gun_target = None
+        self._cc_gun_until = -1e9
         self.yaw_pulse = self.pitch_pulse = self.turn_pulse = 0
         self.ray_key, self.ray_since = None, 0.0
         self.quick, self.quick_at = 0, -1e9
@@ -2224,6 +2254,10 @@ class Bot:
         self.keeping_off = False
         self.qshot_release = False
         self.hit_qs = 0                                      # quick shots still owed for a hit (HIT_QS_N)
+        self.periodic_qa_due = None
+        self.periodic_qa_last = None
+        self.periodic_qa_remaining = 0
+        self.periodic_qa_arm = self.periodic_qa_wait = None
         self.still, self.move_at, self.break_until, self.in_hold = None, -1e9, -1e9, False
         self.hold_since, self.hold_pressed = None, False     # the RAM hold under way: since when, anything pressed
         self.wiggle = 0
@@ -2287,10 +2321,10 @@ class Bot:
                                                              # (a blast seen this tick is read against them)
         # line of sight
         self.blocked: dict = {}                              # zombie -> until when he is out of sight (never fired at)
+        self._block_reason: dict = {}
         self.seen: dict = {}                                 # zombie -> when his health last fell to a shot
         self.laser_seen: dict = {}                           # zombie -> when the laser's ray last reached him
         self.fire_track = None                               # [zombie, since, his health then, last on the line]
-        self.fire_tol = math.radians(FIRE_TOL_DEG0)          # the learned trigger tolerance (FIRE_TOL_* above)
         self.ray_yaw = None                                  # the camera's yaw when the laser's ray last moved
         self.cc_shot = None                                  # (zombie, when, {zombie: health} within CC_R)
         self.cc_miss: dict = {}
@@ -2313,6 +2347,12 @@ class Bot:
                 self.stats["deaths_continued"] = self.stats.get("deaths_continued", 0) + 1
                 self.stats["round_start_via"] = "dead/retry"
                 self._round_started = now
+                self.periodic_qa_due = now + PERIODIC_QA_INTERVAL_S
+                self.periodic_qa_last = None
+                self.periodic_qa_remaining = 0
+                self.periodic_qa_arm = self.periodic_qa_wait = None
+                self._cc_last_kick = self._cc_gun_target = None
+                self._cc_gun_until = -1e9
                 tuning.apply(MAP_ID, tuning.stage_name(STAGES, PICK.last.get("stage")), self.stats)
                 self.target, self.hp_prev, self.hp_seen = None, {}, []
                 self.tablet_wait, self.tablet_missed = None, False
@@ -2320,6 +2360,7 @@ class Bot:
             self.continued = None
         if self._round_started is None:
             self._round_started = now
+            self.periodic_qa_due = now + PERIODIC_QA_INTERVAL_S
             tuning.apply(MAP_ID, tuning.stage_name(STAGES, PICK.last.get("stage")), self.stats)
         self._stage_book(snap)
 
@@ -2675,7 +2716,7 @@ class Bot:
                 self.stats["backtrack_m"] = round(self.stats["backtrack_m"] + (d - self._run_d[1]) / 100.0, 2)
             self._run_d = (self.run_target, d)
         if not hold or self.in_hold or self.stats.get("act") in ("break_free", "held_auto_qte", "grab_detonate",
-                                                                "quick_turn", "quick_turn_settle"):
+                                                                "quick_turn", "quick_turn_settle", "prompt_stick"):
             return out                                           # (a grab's escape and the quick turn: exempt)
         boosted = p.get("action") in BOOSTED_ACTIONS or (p.get("action") == "cPlAction_pl_act_weapon_fire"
                                                           and p.get("weapon_id") in MAGNUM_IDS)
@@ -2724,7 +2765,7 @@ class Bot:
             if cursor is None:                                   # CONTINUE? not taking input yet
                 return self._go("dead", "dead_wait", {"hold": ()}, "dead: Continue? not taking input yet")
             self.dead_taps += 1
-            want = continue_target()
+            want = CONTINUE_NO if self.round_control is not None and self.round_control.managed else continue_target()
             if cursor == want:                                   # A only on the answer the pace wants
                 self.continued = "yes" if want == CONTINUE_YES else "no"
                 return self._go("dead", "continue", {"tap": "a"}, f"Continue? {self.continued}")
@@ -2742,6 +2783,13 @@ class Bot:
         self.hp_hist = [h for h in self.hp_hist if now - h[0] <= HP_HIST_S] + [(now, p.get("hp"), self.doing)]
         self._round_start(snap, now)
         self._score_hits(snap, now)
+        cooldown = p.get('fire_cooldown_s')
+        fire_identity = (p.get('ptr'), p.get('generation'), p.get('equipped'), p.get('weapon_id'))
+        prior = getattr(self, '_native_fire_sample', None)
+        if (isinstance(cooldown, (int, float)) and prior and prior[0] == fire_identity
+                and p.get('action') == 'cPlAction_pl_act_weapon_fire' and cooldown > max(0., prior[1] + .001)):
+            self.stats['native_fire_rearms_observed'] = self.stats.get('native_fire_rearms_observed', 0) + 1
+        self._native_fire_sample = (fire_identity, cooldown) if isinstance(cooldown, (int, float)) else None
         self._ppos = p["pos"]
         self._mesh = snap.get("navmesh")
         global _NAV_MESH
@@ -2758,17 +2806,6 @@ class Bot:
         self._bomb_track(p, snap, now)
         self._blast_tick(p, snap, now)
         self._bonus_book(snap)
-        if self.qshot_release:                                   # a quick shot: both triggers went down last tick
-            self.qshot_release = False
-            return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
-        if self.quick:                                           # the quick turn: the stick back, + B, let go
-            step, self.quick = self.quick, (self.quick + 1) % 4
-            if step == 2:
-                self.quick_at = now
-            return self._go("quick_turn", "quick_turn",
-                            {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}, "the quick turn")
-        if now - self.quick_at < QUICK_SETTLE_S:
-            return self._go("quick_turn", "quick_turn_settle", {"hold": ()}, "the quick turn settles")
         px, py, pz = p["pos"]
         live = [e for e in snap.get("enemies") or () if (e.get("hp") or 0) > 0 and abs(e["pos"][1] - py) <= MAX_DY]
         flat = lambda e: math.hypot(e["pos"][0] - px, e["pos"][2] - pz)
@@ -2779,20 +2816,14 @@ class Bot:
         self._census_tick(p, snap, live)
         self._taunt_watch(snap, now)
         self._windup_tick(p, snap, now)
-        if getattr(self, "hit_qs", 0) > 0:                       # hit: quick shots back at whoever is on him (HIT_QS_N)
-            close_by = [e for e in live if flat(e) <= HIT_QS_R]
-            if not close_by:
-                self.hit_qs = 0
-            elif not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S and p.get("ammo") != 0:
-                self.hit_qs -= 1
-                self.qshot_at = now
-                self.qshot_release = True
-                self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
-                return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
-                                f"hit: a quick shot back ({self.hit_qs} more)")
         self._down_tick(p, snap, now)
         self._hazard_tick(p, live, flat, now)
         self._prompt_shown = self._prompt_book(p, snap, now)
+        if (p.get('state') in HELD_STATES or
+                any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
+            self._periodic_qa_interrupt()
+        else:
+            self._periodic_qa_observe(p, now)
         self._lock_tick(snap, now)
         self.crowd_hold_back = self._open_heading(p, live) if sum(1 for e in live if flat(e) <= CROWD_HOLD_BACK_R) >= CROWD_HOLD_BACK_N else None   # the open escape heading for the crowd_hold retreat (cluster crowd_gun_down)
         within = sum(1 for e in live if flat(e) <= CC_BACK_R)
@@ -2818,7 +2849,9 @@ class Bot:
             dying = self._dying(p, now)
             if dying is not None:
                 return dying
-        if held or now < self.break_until or (state is None and self.grabbed(p, near, now)) or self.held(p, now):
+        if held or (state is None and (now < self.break_until or self.grabbed(p, near, now) or self.held(p, now))):
+            self.quick, self.qshot_release, self.periodic_qa_arm = 0, False, None
+            self._periodic_qa_interrupt()
             if held:                                         # RAM says a zombie holds him: shake him off
                 if not self.in_hold:
                     self.stats["holds"] += 1
@@ -2852,7 +2885,34 @@ class Bot:
         self.in_hold = False
         took = self._prompt(p, snap, now)                        # the game's own prompt: pressed at once
         if took is not None:
+            self.quick, self.qshot_release, self.periodic_qa_arm = 0, False, None
+            self._periodic_qa_interrupt()
             return took
+        if self.qshot_release:                                  # prompts may preempt this ordinary release tick
+            self.qshot_release = False
+            return self._go("quick_shot", "quick_shot_release", {"hold": ()}, "the quick shot's triggers let go")
+        if self.quick:
+            step, self.quick = self.quick, (self.quick + 1) % 4
+            if step == 2:
+                self.quick_at = now
+            return self._go("quick_turn", "quick_turn",
+                            {"hold": ("ldown",) if step == 1 else ("ldown", "b") if step == 2 else ()}, "the quick turn")
+        if now - self.quick_at < QUICK_SETTLE_S:
+            return self._go("quick_turn", "quick_turn_settle", {"hold": ()}, "the quick turn settles")
+        if getattr(self, "hit_qs", 0) > 0:
+            close_by = [e for e in live if flat(e) <= HIT_QS_R]
+            if not close_by:
+                self.hit_qs = 0
+            elif (not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S
+                  and p.get("ammo") != 0 and any(self._measured_contact(e, now) for e in close_by)
+                  and not any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)
+                  and not ((p.get('tablets') or 0) > 0 and (p.get('hp') or 0) <= TABLET_CRITICAL_HP * (p.get('hp_max') or 0))):
+                self.hit_qs -= 1
+                self.qshot_at = now
+                self.qshot_release = True
+                self.stats["hit_quick_shots"] = self.stats.get("hit_quick_shots", 0) + 1
+                return self._go("quick_shot", "hit_quick_shot", {"hold": ("zl", "zr")},
+                                f"hit: a quick shot back ({self.hit_qs} more)")
         switched = self._weapon_switch(p, now)                   # the weapon asked for (the app, a grab's pick)
         if switched is not None:
             return switched
@@ -3238,6 +3298,9 @@ class Bot:
                 self.tablet_hold_until = now + TABLET_CROWD_HOLD_S           # down a moment after it (cluster)
             self.stats["tablet_presses"] += 1
             return self._go("tablet", "tablet", {"tap": "r"}, f"health {hp}/{hp_max}: a tablet")
+        periodic = self._periodic_quick_attack(p, live, flat, now)
+        if periodic is not None:
+            return periodic
         taunt = self._taunt(p, live, flat, now)
         if taunt is not None:
             return taunt
@@ -3293,7 +3356,8 @@ class Bot:
                             f"the nearest at {dist:.0f} cm is out of sight: walking round ({self.detour})")
         if self.aim_since is None:
             near_err = bearing(near_e) if near_e is not None else math.pi
-            if near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S:
+            if (near < MELEE_R and abs(near_err) <= MELEE_CONE and now - self.melee_at >= MELEE_GAP_S
+                    and now >= getattr(self, '_cc_gun_until', -1e9)):
                 self.melee_at = now                              # one at arm's length in front: a kick
                 self.stats["melee"] += 1
                 return self._go("melee", "melee", {"tap": "zr"}, f"one at {near:.0f} cm in front: a kick")
@@ -3312,7 +3376,8 @@ class Bot:
                 return self._go("turn", "turn", {"hold": self._turn(err)},
                                 f"nobody in front: turning {math.degrees(err):+.0f} deg to him")
             lone = not self._lock_ready(snap, now) or sum(1 for e in live if flat(e) <= CC_CROWD_R) < 2
-            if lone and dist < QSHOT_R and abs(err) <= QSHOT_CONE and now - self.qshot_at >= QSHOT_GAP_S and p.get("ammo") != 0:
+            if (lone and dist < QSHOT_R and abs(err) <= QSHOT_CONE and now - self.qshot_at >= QSHOT_GAP_S
+                    and p.get("ammo") != 0 and self._measured_contact(tgt, now)):
                 self.qshot_at = now                              # close in front: the game's own quick shot
                 self.stats["quick_shots"] += 1
                 self.qshot_release = True
@@ -3425,18 +3490,19 @@ class Bot:
             foot = tgt["pos"]
             self.target, self.target_at = tgt.get("ptr", tgt.get("slot")), now
             yaw_err, pitch_err = ray_error(origin, dot, (foot[0], foot[1] + CHEST_H, foot[2]))
-        near_on = (on_e is None and source == "laser" and abs(yaw_err) <= getattr(self, "fire_tol", 0.0)
-                   and abs(pitch_err) <= getattr(self, "fire_tol", 0.0)    # within the learned tolerance of his chest,
-                   and math.dist(origin, dot) >= math.dist(origin, chest) - FIRE_SLACK   # the ray reaching him (no wall)
-                   and not self.is_blocked(tgt, now))
-        if near_on:
-            on_e = tgt
-        on = on_e is not None and source == "laser" and getattr(self, "lock_redirect_at", None) != now
+        on = (on_e is not None and source == "laser" and p.get("ammo") != 0
+              and getattr(self, "lock_redirect_at", None) != now
+              and segment_hits(origin, dot, on_e["pos"]))
         auto = p.get("weapon_id") in AUTO_IDS
-        trig = self._trigger(on, now, auto)
+        cooldown = p.get('fire_cooldown_s')
+        ready = auto or cooldown is None or cooldown <= 0
+        trig = self._trigger(on and ready, now, auto)
+        self.stats['fire_contact_verified'] = bool(on)
+        self.stats['fire_cooldown_s'] = cooldown
+        self.stats['fire_trigger_requested'] = bool(trig)
         if trig:
             if source == "laser":
-                self.stats["confirmed_shots"] += 1               # the ray itself on him: the hit confirmed
+                self.stats["confirmed_shots"] += 1               # verified trigger request; actual damage is tracked separately
             if set(back) & {"lup", "ldown", "lleft", "lright"}:
                 self.stats["moving_shots"] += 1
             if on_e is not None and dist > LONG_KILL_R:
@@ -3459,8 +3525,9 @@ class Bot:
         self.stats["aim"] = (f"d {dist:.0f} yaw {math.degrees(yaw_err):+.1f} pitch {math.degrees(pitch_err):+.1f} "
                              f"on {where or ('line' if on else '-')} via {source}{' LOCK' if locked else ''} "
                              f"keys {','.join(sorted(keys))}")
-        return self._go("fire" if on else "aim", "aim", {"hold": tuple(sorted(keys))},
-                        (f"on a zombie at {dist:.0f} cm ({source})" if on else
+        return self._go("fire" if trig else "aim", "aim", {"hold": tuple(sorted(keys))},
+                        (f"target verified; native gun cooldown {cooldown:.3f}s" if on and not ready else
+                         f"on a zombie at {dist:.0f} cm ({source})" if on else
                          f"steering {math.degrees(yaw_err):+.0f} deg to him ({source})") + (", stepping back" if back else ""))
 
     def _quick_tick(self, p, snap, now) -> None:
@@ -3480,6 +3547,110 @@ class Bot:
         if quick and isinstance(k, int) and isinstance(self.qa_kills_k, int) and k > self.qa_kills_k:
             self.stats["quick_attack_kills"] += k - self.qa_kills_k
         self.qa_in, self.qa_kills_k = quick, k
+
+    def _periodic_qa_interrupt(self) -> None:
+        """A prompt owns its resulting action; it cannot acknowledge an earlier burst."""
+        if self.periodic_qa_remaining or self.periodic_qa_wait is not None or self.periodic_qa_arm is not None:
+            self.stats['periodic_qa_interrupted'] = self.stats.get('periodic_qa_interrupted', 0) + 1
+        self.periodic_qa_remaining = 0
+        self.periodic_qa_arm = self.periodic_qa_wait = None
+        self.stats['periodic_qa_remaining'] = 0
+
+    def _periodic_qa_observe(self, p, now) -> None:
+        """Observe the game's action after a requested burst press; an input is not a landed attack."""
+        waiting = self.periodic_qa_wait
+        life = (p.get('ptr'), p.get('generation'), p.get('equipped'), p.get('weapon_id'))
+        if waiting is not None and waiting['life'] != life:
+            self.periodic_qa_wait = None
+            self.periodic_qa_remaining = 0
+            return
+        if waiting is not None and p.get('action') in QUICK_ACTION_NAMES and not waiting['seen']:
+            waiting['seen'] = True
+            self.stats['periodic_qa_native_actions'] = self.stats.get('periodic_qa_native_actions', 0) + 1
+
+    def _periodic_quick_attack(self, p, live, flat, now) -> dict | None:
+        """Bounded periodic quick shots, below native prompts, healing and equipment recovery.
+
+        Both triggers need a fresh edge. Release aim once after measured contact,
+        then allow only a short, identity/movement-checked contact carryover. An
+        unseen native action expires the burst instead of blindly repeating it.
+        """
+        from .re6_switch_equip import FREE_ACTIONS
+        if not PERIODIC_QA:
+            self.periodic_qa_remaining = 0
+            self.periodic_qa_arm = self.periodic_qa_wait = None
+            return None
+        anchor = self.periodic_qa_last if self.periodic_qa_last is not None else self._round_started
+        if anchor is None:
+            return None
+        self.periodic_qa_due = anchor + PERIODIC_QA_INTERVAL_S
+        self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
+        if self.periodic_qa_remaining == 0 and self.periodic_qa_wait is None and now < self.periodic_qa_due:
+            return None
+        if (self.down or self.nade is not None or self.bomb_phase is not None or
+                (p.get('bomb') or {}).get('out') or
+                any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)):
+            self.periodic_qa_arm = None
+            return None
+        waiting = self.periodic_qa_wait
+        if waiting is not None:
+            if waiting['seen'] and p.get('action') not in QUICK_ACTION_NAMES:
+                self.periodic_qa_wait = None
+            elif now - waiting['at'] > PERIODIC_QA_ACK_S:
+                self.periodic_qa_wait = None
+                self.periodic_qa_remaining = 0
+                self.stats['periodic_qa_unconfirmed'] = self.stats.get('periodic_qa_unconfirmed', 0) + 1
+                return None
+            else:
+                return self._go('quick_shot', 'periodic_quick_wait', {'hold': ()},
+                                'periodic burst: waiting for the native quick attack to finish')
+        if self.periodic_qa_remaining and now > self.periodic_qa_last + 6.0:
+            self.periodic_qa_remaining, self.periodic_qa_arm = 0, None
+            self.stats['periodic_qa_expired'] = self.stats.get('periodic_qa_expired', 0) + 1
+            return None
+        if self.periodic_qa_remaining == 0 and now < self.periodic_qa_due:
+            return None
+        eq, ammo = p.get('equipped'), p.get('ammo')
+        ready = p.get('state') == 0 and p.get('action') in FREE_ACTIONS
+        finishing_shot = p.get('state') in (0, 2) and p.get('action') == 'cPlAction_pl_act_weapon_fire'
+        if (not isinstance(eq, int) or not 0 <= eq < WEAPON_INDEXES or not isinstance(ammo, int) or ammo <= 0
+                or not (ready or finishing_shot)
+                or now - self.qshot_at < HIT_QS_GAP_S):
+            self.periodic_qa_arm = None
+            return None
+        life = (p.get('ptr'), p.get('generation'), eq, p.get('weapon_id'))
+        arm = self.periodic_qa_arm
+        if arm is not None:
+            target = next((e for e in live if e.get('ptr', e.get('slot')) == arm['target']), None)
+            if (life != arm['life'] or target is None or now - arm['at'] > PERIODIC_QA_CONTACT_S
+                    or math.dist(p['pos'], arm['player_pos']) > 20 or math.dist(target['pos'], arm['target_pos']) > 30
+                    or flat(target) > HIT_QS_R or not self._sight(target, now)):
+                self.periodic_qa_arm = None
+                return None
+            if not ready:
+                return self._go('quick_shot', 'periodic_quick_release', {'hold': ()},
+                                'periodic burst: let the current native gun action finish')
+            self.periodic_qa_arm = None
+            self.periodic_qa_remaining -= 1
+            self.qshot_at, self.qshot_release = now, True
+            self.periodic_qa_wait = {'at': now, 'seen': False, 'life': life}
+            self.stats['periodic_qa_requests'] = self.stats.get('periodic_qa_requests', 0) + 1
+            self.stats['periodic_qa_remaining'] = self.periodic_qa_remaining
+            return self._go('quick_shot', 'periodic_quick_shot', {'hold': ('zl', 'zr')},
+                            f'periodic burst: verified nearby target, {self.periodic_qa_remaining} requests left')
+        target = next((e for e in sorted(live, key=flat) if flat(e) <= HIT_QS_R
+                       and not self.is_blocked(e, now) and self._measured_contact(e, now)), None)
+        if target is None:
+            return None
+        if self.periodic_qa_remaining == 0:
+            self.periodic_qa_remaining = int(PERIODIC_QA_COUNT)
+            self.periodic_qa_last, self.periodic_qa_due = now, now + PERIODIC_QA_INTERVAL_S
+            self.stats['periodic_qa_bursts'] = self.stats.get('periodic_qa_bursts', 0) + 1
+        self.periodic_qa_arm = {'at': now, 'life': life, 'target': target.get('ptr', target.get('slot')),
+                                'player_pos': tuple(p['pos']), 'target_pos': tuple(target['pos'])}
+        self._gun_down()
+        return self._go('quick_shot', 'periodic_quick_release', {'hold': ()},
+                        'periodic burst: release aim before the simultaneous quick-shot triggers')
 
     # --- the RAM aim lock --------------------------------------------------------------------------------------------
     def _lock_ready(self, snap, now) -> bool:
@@ -3918,7 +4089,7 @@ class Bot:
             heal = (key == "r" and hp_max and 1 < hp <= TABLET_LOW_HP * hp_max and not self.down
                     and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S)
             if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
-                    or now - live["at"] < PROMPT_REPEAT_S):
+                    or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
             if heal:
                 self.stats["tablet_prompt_presses"] = self.stats.get("tablet_prompt_presses", 0) + 1
@@ -4340,14 +4511,33 @@ class Bot:
         self.nade, self.nade_last = None, now
 
     # --- line of sight ---------------------------------------------------------------------------------------------
+    def _measured_contact(self, e, now) -> bool:
+        """Current body contact, excluding a pre-redirect ray and a frozen ray after camera movement."""
+        snap = getattr(self, "_snap", {}) or {}
+        lz = snap.get("laser")
+        if not lz or not lz.get("up") or getattr(self, "lock_redirect_at", None) == now:
+            return False
+        origin, dot = tuple(lz["from"]), tuple(lz["at"])
+        cam = snap.get("camera")
+        if ((origin, dot) == self.ray_key and now - self.ray_since > RAY_STALE_S
+                and (cam is None or self.ray_yaw is None or abs(wrap(cam["yaw"] - self.ray_yaw)) > RAY_STALE_TURN)):
+            return False
+        return segment_hits(origin, dot, e["pos"])
+
     def is_blocked(self, e, now) -> bool:
         """Out of sight: blocked within BLOCK_S, or behind a wall by the nav mesh (_sight), and not within BLOCK_MIN_R of
         him (one that close is always fought)."""
         me = self._ppos
         if me is not None and math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) < BLOCK_MIN_R:
             return False
-        if self.blocked.get(e.get("ptr", e.get("slot")), -1e9) > now:
-            return True
+        tid = e.get("ptr", e.get("slot"))
+        contact = self._measured_contact(e, now)
+        if self.blocked.get(tid, -1e9) > now:
+            if not contact or getattr(self, "_block_reason", {}).get(tid) != "los_blocks":
+                return True                                     # no-damage cooldowns still conserve ammunition
+            self.blocked.pop(tid, None)
+        if contact:
+            return False                                        # measured body contact outranks old floor-nav rejection
         return not self._sight(e, now)
 
     def _sight(self, e, now) -> bool:
@@ -4381,6 +4571,7 @@ class Bot:
         if self.blocked.get(tid, -1e9) <= now:
             self.stats[why] += 1
         self.blocked[tid] = now + BLOCK_S
+        self._block_reason[tid] = why
         if self.target == tid:
             self.target = None
         if self.fire_track is not None and self.fire_track[0] == tid:
@@ -4414,6 +4605,7 @@ class Bot:
         hp = {e.get("ptr", e.get("slot")): e.get("hp") or 0 for e in snap.get("enemies") or ()}
         for k in [k for k, t in self.blocked.items() if t <= now]:
             del self.blocked[k]
+            self._block_reason.pop(k, None)
         ft = self.fire_track
         if ft is not None:
             tid, since, h0, last = ft
@@ -4467,7 +4659,8 @@ class Bot:
             return self._go("crowd", "push_kick", {"hold": move + ("zr",)},
                             f"the push-through: a kick at the one in the way at {d:.0f} cm")
         qgap = CC_FAST_GAP_S if QA_FAST else CC_QSHOT_GAP_S
-        if d >= MELEE_R and now - self.qshot_at >= qgap and p.get("ammo") != 0:
+        if (d >= MELEE_R and now - self.qshot_at >= qgap and p.get("ammo") != 0
+                and self._measured_contact(e, now)):
             self.qshot_at = now
             self.stats["quick_shots"] += 1
             self.stats["fever_quick_shots"] += 1
@@ -4508,14 +4701,35 @@ class Bot:
         else:
             e = min(close, key=flat)
             d, err = flat(e), bearing(e)
-            # the crowd_4_in_2m signature also fires when someone IS in the cone (the cc_kick/cc_turn path):
-            # keep the gun down for the duration so the fire loop doesn't re-raise into the cluster
-            if not fever and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 4:
-                self.crowd_hold_until = now + 1.0
+        p = getattr(self, '_p', None) or {}
+        if not fever and (p.get('ammo') or 0) > 0:
+            # Repeated ineffective kicks get a bounded chance to acquire a firing
+            # line on that same target. Newly closing enemies and attack windups
+            # retain their immediate defensive priority.
+            last = getattr(self, '_cc_last_kick', None)
+            safe_raise = not any(windup(z, p.get('pos')) == 'melee' and flat(z) < MELEE_R for z in live)
+            if (last and last[:2] == (e.get('ptr', e.get('slot')), e.get('hp')) and last[2] >= 2
+                    and safe_raise and now - self.melee_at >= CC_KICK_GAP_S):
+                self._cc_last_kick = None
+                self._cc_gun_until = now + .9
+                self._cc_gun_target = e.get('ptr', e.get('slot'))
+            same_target = getattr(self, '_cc_gun_target', None) == e.get('ptr', e.get('slot'))
+            if (safe_raise and same_target and
+                    (now < getattr(self, '_cc_gun_until', -1e9)
+                     or (self.aim_since is not None and self._measured_contact(e, now)))):
+                self.crowd_hold_until = now
+                return None
         crowd = (not fever and self._lock_ready(getattr(self, "_snap", {}) or {}, now)
                  and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 2)
         if crowd and d >= MELEE_R:                               # a crowd: the lock's aimed fire sweeps them
+            self.crowd_hold_until = now                          # this branch chose aiming, so do not veto its raise
             return None
+        if (d >= MELEE_R and abs(err) <= CC_ATTACK_CONE
+                and ((getattr(self, "_p", None) or {}).get("ammo") == 0 or not self._measured_contact(e, now))):
+            self.crowd_hold_until = now
+            return None                                         # acquire the actual ray before spending a quick shot
+        if not fever and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= 4:
+            self.crowd_hold_until = now + 1.0
         self._gun_down()
         if fever:                                                # after a flash: in among the stunned ones
             kick_gap = CC_FAST_GAP_S if QA_FAST else CC_KICK_GAP_S
@@ -4526,7 +4740,8 @@ class Bot:
                 return self._go("crowd", "fever_kick", {"hold": ("zr",) + self._turn(err, CC_ATTACK_CONE)},
                                 f"melee fever: a kick at the one at {d:.0f} cm")
             qgap = CC_FAST_GAP_S if QA_FAST else CC_QSHOT_GAP_S
-            if d >= MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qgap and self._p.get("ammo") != 0:
+            if (d >= MELEE_R and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qgap
+                    and self._p.get("ammo") != 0 and self._measured_contact(e, now)):
                 self.qshot_at = now                              # the stunned ones further off: quick shots
                 self.stats["quick_shots"] += 1
                 self.stats["fever_quick_shots"] += 1
@@ -4549,9 +4764,13 @@ class Bot:
             self.melee_at = now
             self.stats["melee"] += 1
             self.stats["cc_kicks"] += 1
+            identity = (e.get('ptr', e.get('slot')), e.get('hp'))
+            last = getattr(self, '_cc_last_kick', None)
+            self._cc_last_kick = (*identity, last[2] + 1 if last and last[:2] == identity else 1)
             return self._go("crowd", "cc_kick", {"hold": out + ("zr",)} if backing else {"tap": "zr"},
                             f"one at {d:.0f} cm: a kick (crowd control)" + (", backing out" if backing else ""))
-        if not crowd and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap and self._p.get("ammo") != 0:
+        if (not crowd and abs(err) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap
+                and self._p.get("ammo") != 0 and self._measured_contact(e, now)):
             self.qshot_at = now                                  # a lone one at point blank: the quick shot
             self.stats["quick_shots"] += 1
             self.stats["cc_quick_shots"] += 1
@@ -4722,7 +4941,7 @@ class Bot:
         on = short = False
         if lz is not None and lz.get("up") and now - self.aim_since >= READY_S:
             origin, dot = tuple(lz["from"]), tuple(lz["at"])
-            on = p.get("ammo") != 0 and near_ray(origin, dot, pt, BONUS_HIT_R)
+            on = p.get("ammo") != 0 and near_ray(origin, dot, pt, BONUS_HIT_R) and getattr(self, "lock_redirect_at", None) != now
             short = math.dist(origin, dot) < math.dist(origin, pt) - FIRE_SLACK
         wall = not self._bonus_sight(p, b, snap)
         if wall or (not on and now - self.bshot[1] > BONUS_SEE_S
@@ -4813,7 +5032,7 @@ class Bot:
             dot = tuple(origin[k] + (cam["target"][k] - origin[k]) * far / have for k in range(3))
         else:
             return self._go("bonus", "bonus_raise", {"hold": ("zl",)}, f"a {kind} bonus at {d:.0f} cm: the gun comes up")
-        on = p.get("ammo") != 0 and near_ray(origin, dot, pt, BONUS_HIT_R)
+        on = source == "laser" and p.get("ammo") != 0 and near_ray(origin, dot, pt, BONUS_HIT_R)
         yaw_err, pitch_err = ray_error(origin, dot, pt)
         fire = set()
         if on:
@@ -5197,6 +5416,8 @@ class Bot:
                                           make_target(id=str(target), kind="zombie", dist_m=(ctx.get("dist") or 0) / 100.0),
                                           aim_err_deg=-math.degrees(ctx.get("yaw_err") or 0.0),
                                           dot_on="target" if ctx.get("source") == "laser" else "off")
+            entry['measurement'] = 'trigger_request'
+            entry['damage_evidence'] = 'Target HP change is correlated; damage source and bullet emission are unverified'
             pos_of = getattr(self, "_pos_of", {}) or {}
             self._pull = {"target": target, "start": now, "end": None, "hit": False, "entry": entry,
                           "k": {"dist": ctx.get("dist"), "foot": pos_of.get(target), "shooter": self._ppos,
@@ -5208,20 +5429,19 @@ class Bot:
             self._pulls.remove(pull)
             self.stats["pulls_hit" if pull["hit"] else "pulls_miss"] += 1
             self._k_shot(pull, now)
-            tol = getattr(self, "fire_tol", math.radians(FIRE_TOL_DEG0))   # learn the trigger's tolerance from the result
-            tol += math.radians(FIRE_TOL_STEP) * (1 if pull["hit"] else -1)
-            self.fire_tol = min(math.radians(FIRE_TOL_MAX), max(math.radians(FIRE_TOL_MIN), tol))
-            self.stats["fire_tol_deg"] = round(math.degrees(self.fire_tol), 2)
             self.miss_streak = 0 if pull["hit"] else getattr(self, "miss_streak", 0) + 1
             if MISS_QA_N and self.miss_streak >= MISS_QA_N:     # three misses running: quick attacks up close
                 self.qa_burst, self.miss_streak = MISS_QA_COUNT, 0
-            self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:off_target")
+            self.look.resolve(pull["entry"], "hit:zombie" if pull["hit"] else "miss:no_damage")
 
     def _k_shot(self, pull, now) -> None:
         """Every resolved pull, the misses above all, into the enemy knowledge database (operator 2026-10-28: "I want a
         report filed for every missed shot so that the aim bot can check into and investigate every single missed shot
         ... and calibrate"): the distance, the weapon, the dot's point by his feet and the shooter, hit or miss; K's
         learned aim then calibrates from them (enemy_db, as RE5's). stats k_shots, k_misses."""
+        if (pull.get('entry') or {}).get('measurement') == 'trigger_request':
+            self.stats['unattributed_shot_learning_skips'] = self.stats.get('unattributed_shot_learning_skips', 0) + 1
+            return
         try:
             from ..brain import knowledge
             k = pull.get("k") or {}
@@ -5392,7 +5612,9 @@ class RE6Switch(Driver):
             from .. import lessons as L
             learn_dir = L.ROOT.parent / "learned" / MAP_ID
         from .re6_switch_equip import Controller
-        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), equip=Controller(m, stats))
+        from ..round_controls import for_memory
+        return Bot(stats=stats, clock=clock, learn_dir=learn_dir, ram=aim_writer(m), equip=Controller(m, stats),
+                   round_control=for_memory(m))
 
     def prompt_keys(self, button) -> list:
         return [tuple(str(button).split("+"))]

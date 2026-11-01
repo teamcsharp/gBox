@@ -54,6 +54,7 @@ NOT_BOT = frozenset({                      # under gbox.mercs, but state or thre
     "gbox.mercs.warm_boot",                # the MercMode warm pool's pause/resume observers (adapter-lifetime threads)
     "gbox.mercs.damage",                   # the worker-lifetime player-damage delivery thread and its file locks
     "gbox.mercs.directives",               # the chat's instant commands: an in-memory store the control plane writes
+    "gbox.mercs.round_controls",           # session receipts and locks shared by live RPCs and bot menus
     "gbox.mercs.interventions",            # durable routes and adapter-lifetime native request consumers
     "gbox.mercs.titles.re6_switch_native",  # native mailbox owner/lock must not be replaced while a call executes
     "gbox.mercs.titles.re5_switch_native",  # same adapter-lifetime mailbox ownership as RE6

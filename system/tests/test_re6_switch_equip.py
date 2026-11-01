@@ -1,5 +1,6 @@
 """Native action publication, refusal, and hand attachment readback (no UI input)."""
 import struct
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,7 +174,9 @@ def test_controller_does_not_repeat_uncertain_request_for_same_player_life():
 
 
 @pytest.mark.parametrize('finished', [False, True])
-def test_other_ticket_never_acknowledges_or_blacklists_the_new_kind(finished):
+def test_other_ticket_never_acknowledges_or_blacklists_the_new_kind(finished, monkeypatch):
+    # This tests ticket attribution, independently of host scheduling delays.
+    monkeypatch.setattr(E, 'time', SimpleNamespace(monotonic=lambda: 100.0))
     g, p, obj, writes = fixture()
     control = E.Controller(g, {})
     player = {'ptr': p, 'nades': {0x115: (11, 20)}, 'guns': {0x111: 1}}
@@ -189,6 +192,18 @@ def test_other_ticket_never_acknowledges_or_blacklists_the_new_kind(finished):
     assert len(writes) == n
     assert (p, 18, 0x111) not in control.failed
     assert ((p, 18, 0x115) in control.failed) is not finished
+
+
+@pytest.mark.parametrize('expires_after_read', [False, True])
+def test_native_read_time_budget_still_refuses_expired_reads(expires_after_read, monkeypatch):
+    g, p, obj, writes = fixture()
+    samples = iter([100.0, 100.0, 100.031] if expires_after_read else [100.0, 100.031])
+    monkeypatch.setattr(E, 'time', SimpleNamespace(monotonic=lambda: next(samples)))
+    reads = E._Reads(g)
+    with pytest.raises(E._Stop, match='^time_budget$'):
+        reads.rd(p, 4)
+    assert reads.reads == int(expires_after_read)
+    assert writes == []
 
 
 def test_uncertain_kinds_remain_refused_when_another_kind_also_fails(monkeypatch):

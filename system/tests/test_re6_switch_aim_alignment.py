@@ -92,8 +92,11 @@ def test_point_blank_emergency_quick_shots_survive_without_a_laser():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
     bot.held = lambda p, now: False
     acts = run(bot, snap, clock, int(2 * R.CC_QSHOT_GAP_S / 0.05))
-    assert bot.stats["cc_quick_shots"] >= 2
-    assert any("zr" in act.get("hold", ()) for act in acts)
+    # Close range does not establish a clear projectile path. Acquire the gun's
+    # measured line before requesting emergency quick shots.
+    assert bot.stats["cc_quick_shots"] == 0
+    assert any('zl' in a.get('hold', ()) for a in acts)
+    assert all('zr' not in a.get('hold', ()) and a.get('tap') != 'zr' for a in acts)
 
 
 def test_a_material_camera_redirect_cannot_fire_using_the_pre_write_ray():
@@ -159,7 +162,8 @@ def test_camera_movement_during_melee_does_not_poison_the_next_aim_lock():
 
 
 def test_retreating_body_cannot_quick_turn_the_camera_away_from_a_visible_threat():
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0,
+        laser=((0.0, R.CHEST_H, 150.0), (0.0, R.CHEST_H, 0.0), 0.86)))
     bot.held = lambda p, now: False
     snap['player']['rot'] = math.pi  # running away, but still looking at the enemy
     acts = run(bot, snap, clock, 6)

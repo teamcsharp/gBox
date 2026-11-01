@@ -1,6 +1,7 @@
 """Mercenaries 3D (3DS) driver (gbox.mercs.titles.merc3d_3ds) on a fake guest: screens named by the area stack's flow
 states and the classes the game's own DTIs give, the player and the mission counters from RAM."""
 import struct
+import pytest
 
 from gbox.mercs.titles import merc3d_3ds as M
 
@@ -380,6 +381,32 @@ def test_failed_or_interrupted_mission_retries_and_completion_counts_once(tmp_pa
     pick.level_for(5); pick.tab_for(3); pick.began(1)
     pick.ended(0x100, True)                                  # another mission's end is not this mission's success
     assert pick.cursor == [0, 1, 0]
+
+
+@pytest.mark.parametrize('open_levels, tabs, expected', [(1, 3, 2), (2, 3, 2), (3, 5, 4), (4, 5, 4)])
+def test_locked_next_level_retries_available_rankup_not_first_tutorial(tmp_path, open_levels, tabs, expected):
+    pick = M._Pick(path=tmp_path / 'rankup.json')
+    pick.cursor = [open_levels, 0, 0]
+    for completed in (False, True, True):
+        assert pick.level_for(open_levels) == open_levels - 1
+        assert pick.tab_for(tabs) == expected
+        assert 'B rank' in pick.progression_reason
+        mid = ((open_levels - 1) << 8) | expected
+        pick.began(mid)
+        pick.ended(mid, completed)
+        # Objective end does not prove B rank and cannot discard the unlock goal.
+        assert pick.cursor == [open_levels, 0, 0]
+    assert pick.level_for(open_levels + 1) == open_levels
+    assert pick.unlock_growth is True
+    assert pick.tab_for(3) == 0
+
+
+def test_rankup_target_never_selects_a_tab_missing_from_native_menu(tmp_path):
+    pick = M._Pick(path=tmp_path / 'partial.json')
+    pick.cursor = [3, 0, 0]
+    assert pick.level_for(3) == 2
+    assert pick.tab_for(3) == 2
+    assert 'unavailable' in pick.progression_reason
 
 
 def test_resume_inside_mission_tabs_tracks_actual_level(monkeypatch, tmp_path):
