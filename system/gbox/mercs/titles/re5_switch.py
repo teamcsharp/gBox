@@ -3222,7 +3222,14 @@ class Bot:
                 st["equip_at"], st["equips"] = now, st["equips"] + 1
                 return {"tap": QUICK[item["grid"]]}
             return {"hold": ()}
-        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max or now - self.heal_at < HEAL_RETRY_S:
+        # #5072 (iter 3): the post-deploy incidents (3 HP, 2 heals in case, decision "no input" / "walk")
+        # show the bot dies in the HEAL_RETRY_S window after a failed heal: the retry is blocked for 1 s
+        # but the Majini kill him in that time.  At/below HEAL_CRITICAL the retry window is skipped so the
+        # bot re-attempts the heal on the very next tick instead of fighting on with a dead item.
+        critical = hp <= HEAL_CRITICAL * hp_max
+        if hp_max <= 0 or hp <= 1 or hp > HEAL_AT * hp_max:
+            return None
+        if not critical and now - self.heal_at < HEAL_RETRY_S:
             return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         # #5072: the heal is a quick slot, so the item is known before the crowd check; with no heal in the
