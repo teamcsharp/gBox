@@ -1,228 +1,163 @@
-# PSO interactive 2D map — data + directive contracts
+# PSO map directives + collision-surface publishing (RTS steering)
 
-Status: v1 (2026-11-02). Owner of the **map feed + client renderer + directive write path**: the
-PSO-map build. Owner of the **nav** (reading RAM, publishing the surface, and *consuming* the
-directives below): the sibling PSO-nav agent (`pso_coop*`). This doc is the handshake between them.
+The PSO party plays deterministically from RAM (no vision LLM). This defines how
+the **Mercenaries Map viewer** steers P1 like an RTS and how the PSO bot publishes
+the collision surfaces it extracts, so the map agent can render a live, clickable
+map and pathfind-preview over it. Proposed contract — map agent and bot converge
+here. Produced by the PSO bot: `pso_map.py` (extraction + directive parsing),
+`pso_coop.py` (controller consumes directives, publishes surfaces).
 
-The whole map is built from the game's RAM — no vision, no screenshots. Players, enemies, switches,
-doors, the walkable surface and the stage flags all come out of memory (the nav agent already reads
-them each tick; the feed re-serves them read-only).
+## Where things live (campaign runtime root)
 
-Pipeline:
+`<config.runtime>/autoplay/pso-coop/<card_id>/` (same root as RoomMap + the
+knowledge crystal). On the i9 that is `D:/gBox/runtime/autoplay/pso-coop/<id>/`.
 
-```
-RAM  --(pso_coop, each tick)-->  telemetry.stats.pso_map   --\
-                                 pso-knowledge.json (crystal) --> /api/pso/map/<sid> --> pso-map.js (canvas)
-                                 stage-flag RPC (read_memory) --/
-operator click on canvas --> POST /api/sessions/<sid>/pso-directive --> pso_coop consumes (A* to target)
-```
+- `pso-directive.json` — the operator's current directive (map agent / API WRITES,
+  bot POLLS each tick by mtime). One active directive at a time.
+- `pso-maps/<fingerprint>.json` — the extracted collision surface for one area/room
+  template (bot WRITES on first entry; map viewer READS). Keyed by the same
+  `room_key` fingerprint the knowledge crystal uses.
+- `pso-knowledge.json` — the crystal; each room record also carries a `surface`
+  summary (cell count, bounds, size, map-file name) so the crystal is the map DB
+  index of every surface traversed across Episodes 1 & 2.
 
----
+## Collision surface format (`pso-maps/<fingerprint>.json`, bot → viewer)
 
-## 1. Operator → bot: PSO directives
-
-The operator clicks the map; the client POSTs a structured directive. The nav agent polls it and
-makes **P1 (the sole navigator / leader)** act on it. P2+ are swarm-followers and need no directive.
-
-### Endpoints
-
-- `POST /api/sessions/<sid>/pso-directive` — write the newest directive (operator/agent).
-- `GET  /api/sessions/<sid>/pso-directive` — read the newest directive + the kind catalogue.
-
-Both require the normal bearer auth (`Authorization: Bearer <token>`); `x-gbox-actor` is recorded as
-the source. Only the **newest** directive per session is kept (newest-wins, like the Mercenaries
-directive channel). The store is in-memory, bounded, TTL ~10 min.
-
-### Directive payloads (POST body)
-
-All coordinates are **PSO world coordinates** (the same `x` / `z` the nav agent reads from the player
-and object structs — right-handed, +y up). `y` is optional; the floor plane is `x`/`z`.
-
-```jsonc
-// Double-click an open point on the walkable surface → navigate there (RTS move order).
-{ "kind": "goto",   "x": -233.2, "z": 128.3, "floor": 1, "room": 10 }   // floor/room optional, advisory
-
-// Single-click a switch / floor panel → go stand on it and press it.
-{ "kind": "press",  "switch_id": "sw_5_12" }                 // preferred: the id from the feed
-{ "kind": "press",  "x": -210.0, "z": 95.0 }                 // or a world position
-
-// Click an enemy → the swarm attacks it (P1 leads, P2+ follow fire).
-{ "kind": "attack", "enemy_id": "ene_5_3" }                  // preferred: the id from the feed
-{ "kind": "attack", "x": -180.0, "z": 60.0 }
-
-// Click a door / barrier → go to it (and open it once its switch condition is met).
-{ "kind": "open",   "door_id": "door_5_1" }
-{ "kind": "open",   "x": -250.0, "z": 300.0 }
-
-// Clear the manual order → resume autonomous play (continue to the exit teleporter when idle).
-{ "kind": "clear" }
-```
-
-`kind` is required and one of `goto | press | attack | open | clear`. For `press`/`attack`/`open`,
-supply **either** the id (`switch_id` / `enemy_id` / `door_id`) **or** a world `x`+`z`. Unknown fields
-are ignored. Out-of-range / non-finite coordinates are rejected (422).
-
-### GET response
-
-```jsonc
+```json
 {
-  "directive": {                 // null when none is set
-    "seq": 42,                   // monotonic; the nav agent acts only when seq changes
-    "kind": "goto",
-    "x": -233.2, "z": 128.3, "floor": 1, "room": 10,
-    "switch_id": null, "enemy_id": null, "door_id": null,
-    "at": 1793652200.1,          // unix seconds
-    "until": 1793652800.1,       // TTL expiry
-    "source": "operator"         // the x-gbox-actor that posted it
-  },
-  "kinds": ["goto", "press", "attack", "open", "clear"]
+  "version": 1,
+  "fingerprint": "<room_key hash>",
+  "episode": 1, "floor": 1, "room": 10,
+  "geometry_identity": "<hash>",
+  "size": 12.0,                      // world units per grid cell
+  "bounds": {"min_x": -600, "min_z": -560, "max_x": 540, "max_z": 560},
+  "cells": [[cx, cz], ...],          // walkable cells (grid coords; world = (c+0.5)*size)
+  "gates": [ {"class": "TObjDoorKey", "x": -127.0, "z": 71.0, "room": 10, "flag": 7,
+              "kind": "switch"}, ... ],   // doors/panels/switches/barriers + warps
+  "warps": [ {"class": "TObjAreaWarpForest", "x": .., "z": .., "room": ..} ],
+  "players": {"1": [x, z], "2": [x, z]}
 }
 ```
 
-### How the nav agent should consume it (pso_coop)
+World<->cell: `world = ((cx + 0.5) * size, (cz + 0.5) * size)`; `cell = (floor(x/size), floor(z/size))`.
+A viewer click in world coords becomes a GOTO directive with that `x,z`.
 
-1. Poll `GET /api/sessions/<sid>/pso-directive` (or read it alongside your existing directive poll).
-2. Track `directive.seq`. When it changes, latch the new order for **P1**.
-3. Resolve the target:
-   - `goto {x,z}` → A* to that world point on the extracted surface.
-   - `press {switch_id|x,z}` → path to the switch, stand/press (reuse the panel logic).
-   - `attack {enemy_id|x,z}` → set P1's combat target; the swarm already follows P1.
-   - `open {door_id|x,z}` → path to the door; open when its gate flag is satisfied.
-   - `clear` (or no directive, or an expired one) → resume autonomous-to-exit: continue to the
-     area's portal / teleporter to leave the level.
-4. A directive never presses a key by itself — it changes *what P1 decides*, so all your normal
-   safeguards (line-of-sight, blast distance, stuck recovery) stay in force.
-5. When you reach / complete the order, you may echo progress in `telemetry.stats.pso_map.target`
-   (see §3) so the operator sees it land on the map.
+## Directive format (`pso-directive.json`, viewer/API → bot)
+
+```json
+{ "id": "<unique per click>", "op": "goto|press|attack|clear",
+  "x": -120.0, "z": 70.0,            // goto: world target (double-click point)
+  "room": 10,                        // optional scope check
+  "flag": 7,                         // press: stage-flag index to force-open
+  "ptr": "80DB....",                 // attack: specific enemy object
+  "episode": 1, "floor": 1,          // optional validity scope
+  "ts": 1793650000.0 }
+```
+
+- **goto** — P1 A*-pathfinds over the extracted collision grid to `(x,z)`, routing
+  around walls/obstacles and pressing any gate on the way (the stage-flag door
+  system). Followers swarm P1 as always. Done when P1 is within reach of `(x,z)`;
+  then the bot resumes autonomous-to-exit. A new `id` supersedes immediately.
+- **press** — force the stage `flag` for the current area (the verified
+  door-unlock), e.g. open a specific gate the operator points at.
+- **attack** — prioritise the enemy at `ptr` (or nearest to `x,z`).
+- **clear** (or no file / stale scope) — no operator directive: P1 runs the
+  autonomous critical-path progression, heading for the area's forward
+  teleporter/portal (the exit), never idling.
+
+Validity: a directive is ignored unless it parses and (when given) its
+`episode`/`floor`/`room` match the live state — a stale directive from another
+area never acts (falls back to autonomous). The bot echoes the active directive
+and its outcome in `stats["map_directive"]`.
+
+## Autonomous (no directive) = navigate to the exit
+
+With no valid directive P1 continues the deterministic progression: clear/unlock
+the room's forward gate, then head for the next unvisited forward room and
+ultimately the area's warp/teleporter that leaves the level (toward the boss).
+This is the idle self-driving behaviour; an operator directive overrides it and,
+once done/cleared, P1 resumes heading for the exit.
 
 ---
 
-## 2. The map feed: `GET /api/pso/map/<sid>`
+# Map agent side (server feed + client) — built 2026-11-02
 
-Read-only. Aggregates (in priority order): the live `telemetry.stats.pso_map` block the nav agent
-emits (§3), the persisted crystal surface/objects (§4), and an optional bounded stage-flag read.
-Degrades gracefully — any missing layer is simply omitted. Model shape:
+The bot half above (extraction, `pso-directive.json` polling, `stats["map_directive"]`) is in
+`pso_map.py` + `pso_coop.py`. The viewer half is `gbox/pso_map_feed.py` (server) and
+`clients/web/viz/pso-map.js` (the 2D map in the session side column). Both converge on the formats
+above — this section records exactly what the server serves and how the client steers.
+
+## Server: `gbox/pso_map_feed.py`
+
+Finds the live run's campaign root (`<config.runtime>/autoplay/pso-coop/<card_id>/` — the dir whose
+`pso-directive.json` / `pso-knowledge.json` / `pso-maps/` was written most recently) and exposes:
+
+- `GET /api/pso/map/<sid>` — the live **map model** the client renders. Read-only, bounded.
+- `GET /api/sessions/<sid>/pso-directive` — the current `pso-directive.json` (or `null`).
+- `POST /api/sessions/<sid>/pso-directive` — the operator's click. Stamps a fresh `id` + `ts`,
+  **validates with `pso_map.parse_directive`** (so the file is exactly what the bot consumes), and
+  atomically writes `<root>/pso-directive.json`. 503 when there is no live PSO run; 422 on a bad
+  directive. This is the only write; everything else is read-only.
+
+### Map model (`GET /api/pso/map/<sid>` response)
 
 ```jsonc
 {
-  "schema": "gbox.pso.map/1",
-  "sid": "...", "seq": 123, "live": true, "age_s": 0.4, "title": "Phantasy Star Online ...",
-  "episode": 1, "floor": 1, "room": 10, "fingerprint": "d5fd7034...",
-  "units": "pso",
-  "bounds": [minx, minz, maxx, maxz],       // world extent of the rendered area (from the surface)
-  "surface": { ...see §4.surface... } | null,
-  "rooms":    [ { "id":"r_10", "room":10, "center":[x,z], "fingerprint":"..." } ],
-  "switches": [ { "id":"sw_5_12", "x":..,"z":..,"flag_index":12, "pressed":true|false|null, "opens":"door_5_1" } ],
-  "doors":    [ { "id":"door_5_1", "x":..,"z":..,"type":"TObjDoor", "flag_index":13, "open":true|false|null, "to_room":11 } ],
-  "warps":    [ { "id":"warp_5_1", "x":..,"z":..,"kind":"area_warp", "to":"floor_2" } ],
-  "exit":     { "x":..,"z":..,"kind":"teleporter" } | null,
-  "enemies":  [ { "id":"ene_5_3", "x":..,"z":..,"cls":"TObjEneBm3", "class":"Booma", "alive":true, "hp":120 } ],
-  "players":  [ { "slot":1, "role":"leader", "x":..,"z":..,"y":..,"hp":33, "heading":82.1, "room":10 },
-                { "slot":2, "role":"swarm",  "x":..,"z":..,"hp":38, "room":10 } ],
-  "path":     [ [x,z], [x,z], ... ],        // P1's current A* path (from the nav agent)
-  "target":   { "x":..,"z":..,"kind":"goto" } | null,
-  "objective": "head to TObjLazerFenceNorm",
-  "learned_areas": [ { "fingerprint":"...", "episode":1, "floor":1, "room":10,
-                       "has_surface":true, "switches":3, "doors":1 } ],
-  "stage_flags": { "floor":1, "group_hex":"00 80 ...", "read":true } | null,
+  "schema": "gbox.pso.map/1", "sid": "...", "seq": 123, "live": true, "age_s": 0.4,
+  "title": "Phantasy Star Online ...", "units": "pso",
+  "episode": 1, "floor": 1, "room": 10, "fingerprint": "<room_key>", "size": 12.0,
+  "bounds": [min_x, min_z, max_x, max_z],        // surface bounds (else fitted from the players)
+  "cells": [[cx, cz], ...],                      // the bot's walkable grid cells (world = c*size)
+  "gates": [ { "class": "TObjDoorKey", "x":..,"z":.., "room":10, "flag":7, "kind":"switch",
+               "set": false } ],                 // "set" = the live stage-flag bit (pressed/open)
+  "warps": [ { "class":"TObjAreaWarpForest", "x":..,"z":.., "room":10 } ],
+  "players": [ { "slot":1, "role":"leader", "x":..,"z":.., "hp":33, "heading":82.1, "room":10 },
+               { "slot":2, "role":"swarm",  "x":..,"z":.., "hp":38, "room":10 } ],
+  "enemies": [],                                 // reserved: {ptr,x,z,cls,class,alive,hp} when the bot publishes them
+  "map_directive": { "op":"goto", "state":"navigating", "x":..,"z":.. } | null,  // echoes stats["map_directive"]
+  "objective": "TObjLazerFenceNorm",             // stats["forward_fallback_target"]
+  "learned_areas": [ { "fingerprint":"...", "episode":1,"floor":1,"room":10, "cell_count":42,
+                       "bounds":[...], "gates":2, "warps":1 } ],   // the crystal's surface index (browse)
+  "stage_flags": { "floor":1, "read":true, "group_hex":"00 04 ..." } | null,
   "generated": 1793652200.1
 }
 ```
 
-The client polls this (~1–2 Hz) and re-renders. `seq` lets it skip unchanged frames.
+Layers merged, with graceful degradation (any missing layer is omitted):
+1. telemetry (`gbox.screensaver.telemetry_get`): `episode`/`floor`, `map_surface_fingerprint` (which
+   `pso-maps/<fp>.json` to read), `map_directive`, `forward_fallback_target`, and the live player
+   poses from `steering_evidence_json` (P1 leader, P2+ swarm);
+2. the current area's surface file `<root>/pso-maps/<fingerprint>.json` (cells + size + bounds +
+   gates + warps);
+3. the crystal `<root>/pso-knowledge.json` → `learned_areas` (every surface summary ever recorded);
+4. a bounded, cached live stage-flag read (read_memory RPC) that fills each gate's `set` bit
+   (`STAGE_FLAG_BASE 0x80515CC8`, group = floor, MSB-first — the `pso_coop_gates.py` layout).
 
----
+Even with only telemetry (no surface yet) the model already carries the players, floor, room and
+objective, so the client shows them immediately and the surface/gates fill in once the bot publishes.
 
-## 3. nav agent → feed: the live `pso_map` telemetry block  (please emit this)
+## Client: `clients/web/viz/pso-map.js` (`GBoxPsoMap`)
 
-Add a `pso_map` dict to the autoplay telemetry `stats` each tick (it rides the existing
-`POST /api/autoplay/telemetry/<sid>`; nothing new to wire). The feed serves it as the live layer.
-Everything is RAM-derived and already in hand on the worker:
+A dock section ("PSO map") in the session side column, gated to PSO titles (like "PSO controls"),
+mounted/detached beside the Mercenaries tactical map. It polls `GET /api/pso/map/<sid>` (~1.5 Hz
+while open, backing off when the endpoint is not up yet) and draws, in **world (x,z)**:
 
-```jsonc
-"pso_map": {
-  "schema": "gbox.pso.map/1",
-  "area": { "episode":1, "floor":1, "room":10, "fingerprint":"d5fd7034..." },
-  "surface_ref": "d5fd7034...",             // which crystal surface applies (usually = fingerprint)
-  "surface": { ...optional inline; see §4.surface... },   // omit if already persisted to the crystal
-  "players": [ { "slot":1, "role":"leader", "x":..,"z":..,"y":..,"hp":33, "heading":82.1, "room":10 },
-               { "slot":2, "role":"swarm",  "x":..,"z":..,"hp":38, "room":10 } ],
-  "enemies": [ { "id":"ene_5_3", "x":..,"z":..,"cls":"TObjEneBm3", "class":"Booma", "alive":true, "hp":120 } ],
-  "objects": [ { "id":"sw_5_12",  "kind":"switch", "x":..,"z":..,"flag_index":12, "state":"pressed", "opens":"door_5_1" },
-               { "id":"door_5_1", "kind":"door",   "x":..,"z":..,"type":"TObjDoor", "flag_index":13, "state":"locked", "to_room":11 },
-               { "id":"warp_5_1", "kind":"warp",   "x":..,"z":..,"warp_kind":"area_warp", "to":"floor_2" },
-               { "id":"exit_5",   "kind":"exit",   "x":..,"z":..,"warp_kind":"teleporter" } ],
-  "path":   [ [x,z], [x,z], ... ],          // P1's current A* path toward its target/exit
-  "target": { "x":..,"z":..,"kind":"goto" }, // what P1 is currently heading for (order or autonomous)
-  "objective": "head to TObjLazerFenceNorm"
-}
-```
+- the walkable surface as the floor (each `cells` cell is a world rect `c*size .. (c+1)*size`); the
+  surrounding void reads as walls/obstacles — the real navigable space;
+- gates: switches as circles, doors as squares; **green** when `set` (pressed/open), amber/red when
+  not, grey when unknown;
+- warps/teleporters as diamonds; players as arrows (P1 the bold leader, P2+ the swarm);
+- P1's active GOTO as a dashed line from P1 to the `map_directive` target + a crosshair.
 
-If you cannot emit the block yet, the feed still synthesizes players from
-`stats.steering_evidence_json` (it reads each player's latest `after` pose), and takes `episode`,
-`floor`, `forward_room` and `forward_fallback_target` from the existing stats — so the map shows
-players + room + objective from day one. Enemies/switches/doors and the surface appear as soon as
-either the `pso_map` block or the crystal (§4) carries them.
+Click-to-command (writes `pso-directive.json` via the POST above):
 
-`state` strings: switches `pressed|unpressed`; doors `open|locked`; use `null`/omit when unknown.
+- **double-click an open spot** → `{op:"goto", x, z, room, episode, floor}` (the click pixel →
+  world via the same `unproject` the camera uses; scope fields let the bot reject a stale click);
+- **click a gate/switch** → `{op:"press", flag, ...scope}` (force that stage-flag: open the gate);
+- **click an enemy** (when enemies are published) → `{op:"attack", ptr, ...scope}`;
+- **"Resume autonomous" button** → `{op:"clear"}` (P1 goes back to heading for the exit teleporter).
 
----
-
-## 4. The crystal (`pso-knowledge.json`): the growing full-map DB
-
-Path: `<config.runtime>/autoplay/pso-coop/<card_identity>/pso-knowledge.json`
-(`KnowledgeStore`, keyed by room **fingerprint** = `pso_coop_nav.room_key`). Today each record holds
-the forward-gate recipe (`gate`, `forward_flags`, `floor`, `room`, `base`). Please extend each
-record (via the existing `KnowledgeStore.remember(fingerprint, **info)`) with the **walkable surface
-and static objects** so the feed can render learned areas even when they are not live, and so the
-operator can browse the whole explored map:
-
-```jsonc
-// pso-knowledge.json  ->  rooms[<fingerprint>]  += :
-{
-  // ...existing gate/forward_flags fields stay as-is...
-  "surface": {
-    "origin": [x0, z0],      // world coords of grid cell (col=0,row=0) corner
-    "cell": 50.0,            // world units per grid cell (square)
-    "cols": 64, "rows": 64,  // grid size
-    "walk_b64": "<base64>",  // cols*rows bits, row-major, MSB-first, 1 = walkable; OR:
-    "cells": [[x,z], ...],   // fallback: sampled walkable world points (point cloud)
-    "bounds": [minx, minz, maxx, maxz]
-  },
-  "switches": [ { "id":"sw_5_12", "x":..,"z":..,"flag_index":12, "opens":"door_5_1" } ],
-  "doors":    [ { "id":"door_5_1", "x":..,"z":..,"type":"TObjDoor", "flag_index":13, "to_room":11 } ],
-  "warps":    [ { "id":"warp_5_1", "x":..,"z":..,"kind":"area_warp", "to":"floor_2" } ],
-  "exit":     { "x":..,"z":..,"kind":"teleporter" }
-}
-```
-
-`walk_b64` is preferred (compact, scales); `cells` is an acceptable fallback. The feed reads whatever
-is present. Static object positions live here; their **live** open/pressed state comes from the
-`pso_map` block (§3) or the stage-flag read (§5).
-
----
-
-## 5. Stage-flag read (feed side, optional overlay)
-
-The feed can resolve door/switch open|pressed live by reading the verified 3OE2 stage-flag array
-directly (read-only `read_memory` RPC, not admission-gated), using the flag layout reverse-engineered
-in `pso_coop_gates.py`:
-
-- `STAGE_FLAG_BASE = 0x80515CC8`, 18 groups × 32 bytes; `group = floor` (0..17).
-- flag `index` (0..255): byte = `base + group*32 + index//8`, mask = `0x80 >> (index%8)` (MSB-first).
-
-The feed reads the 32-byte group for the live floor (one bounded read, cached ~1 s) and, for any
-switch/door whose `flag_index` is known from the crystal/`pso_map`, sets `pressed`/`open` from the
-bit. When the RPC channel is unavailable it is simply skipped and live state falls back to the
-`pso_map` block. This never writes memory.
-
----
-
-## 6. Coordinate transform (map ↔ world)
-
-The renderer works entirely in **world (x,z)**. Pixel↔world is an affine mapping derived from the
-view camera (centre, radius, rotation) exactly as the Mercenaries tactical map does
-(`project` / `unproject`). The initial camera is fitted to `bounds` (the surface extent). So a click
-at canvas pixel `(px,py)` becomes world `(x,z) = unproject(view, px, py)` and is sent verbatim as the
-`goto` target — no separate calibration is needed as long as the feed's `bounds`/positions and the
-nav agent's A* operate in the **same world units** the player/object structs use. They do.
+Zoom (wheel) / pan (drag) reuse the tactical map's world↔pixel transform; it fits the area on the
+first frame and re-fits when the area (`fingerprint`) changes. Client changes are F5-applicable; the
+feed + directive endpoints need a `gbox.service` restart to go live — until then the client degrades
+(keeps polling, shows "Waiting for the PSO map feed…").
