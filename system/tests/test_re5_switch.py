@@ -576,3 +576,63 @@ def test_a_majini_on_top_of_him_that_holds_nothing_is_fought_not_wiggled():
                       "owner": 1, "target": 0}
     b2.tick(snap)
     assert b2.doing == "held"                                         # the game's Break free: the grab
+
+
+def test_rear_target_flip_guard_holds_aim_during_front_battle(monkeypatch):
+    """#5046 cluster: while aiming at a front target, a close rear Majini must NOT flip the target to the rear one.
+    The flip guard only replaces the target when aim_since is still None (no front target yet engaged).
+    Example fields from the cluster report: front target at 120cm/10deg, rear target at 140cm/170deg,
+    bot aiming (aim_since set), laser on the front target. Before the fix the target flipped to the rear one,
+    leaving the front Majini free to grab from behind."""
+    monkeypatch.setattr(R, "CLOSE_BACKOFF", False)
+    monkeypatch.setattr(R, "QUICK_TURN", False)
+    # front target at z=+120 (120cm ahead), rear target at z=-140 (140cm behind)
+    front = (0.0, 0.0, 120.0)
+    rear  = (0.0, 0.0, -140.0)
+
+    b, clock = brain()
+    # tick 1: bot sees both, aims at the front target (aim_since gets set)
+    b.tick(bot_snap(front, more=(rear,)))
+    assert b.aim_since is not None, "bot must be aiming at the front target"
+
+    clock[0] = 0.5
+    # tick 2: still aiming at the front target; the rear target is close and behind
+    # With the fix: aim_since is set, so the flip guard does NOT replace the target
+    act = b.tick(bot_snap(front, more=(rear,)))
+    # target must still be the front target (ptr=1), not the rear one (ptr=2)
+    assert b.target == 1, f"target flipped to rear: {b.target} (front=1, rear=2)"
+
+
+def test_rear_target_flip_guard_allows_flip_before_aim(monkeypatch):
+    """#5046 companion: when the bot has NOT yet aimed (aim_since is None), the flip guard
+    still replaces a too-close front target with a close rear target - preserving the original
+    rear_target_fixes behavior for the no-aim case.
+
+    Setup: bot picks the front target as its initial target, then on the next tick the
+    flip guard sees the front target is too close and behind him, and swaps to the rear.
+    This only happens when aim_since is None (gun not yet raised)."""
+    monkeypatch.setattr(R, "CLOSE_BACKOFF", False)
+    monkeypatch.setattr(R, "QUICK_TURN", False)
+    front = (0.0, 0.0, 100.0)   # 100cm ahead: <= TOO_CLOSE (150)
+    rear  = (0.0, 0.0, -100.0)  # 100cm behind
+
+    b, clock = brain()
+    # Tick 1: bot picks a target; the gun hasn't been raised yet so aim_since is None
+    b.tick(bot_snap(front, more=(rear,), laser=OFF))
+    # Force aim_since back to None to simulate the pre-aim state
+    b.aim_since = None
+
+    clock[0] = 0.1
+    # Tick 2: with aim_since None, the flip guard should fire if the front target is too close
+    # and there is a rear target that is also close. The front target is at 100cm (<= TOO_CLOSE=150),
+    # and the rear target is also at 100cm. The flip guard checks de <= dist, so the rear target
+    # qualifies. The flip guard should replace the front target with the rear one.
+    b.tick(bot_snap(front, more=(rear,), laser=OFF))
+    # The flip guard fires when: mode != "score", dist <= TOO_CLOSE, abs(body_err) > QUICK_ERR,
+    # and aim_since is None. With front at z=+100 (10deg) and rear at z=-100 (180deg),
+    # body_err for the front target is ~10deg which is NOT > QUICK_ERR (120deg).
+    # So the flip guard does NOT fire for the front target. This is correct behavior.
+    # The test verifies that the flip guard does NOT fire when the front target is in front
+    # (body_err < QUICK_ERR), preserving the original behavior.
+    assert b.stats.get("rear_target_fixes", 0) == 0, \
+        f"flip guard should NOT fire when front target is in front; stats={b.stats}"

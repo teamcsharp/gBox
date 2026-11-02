@@ -3508,7 +3508,8 @@ class Bot:
         dist = flat(tgt)
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
-        if self.mode != "score" and dist <= TOO_CLOSE and abs(body_err) > QUICK_ERR:
+        if self.mode != "score" and dist <= TOO_CLOSE and abs(body_err) > QUICK_ERR \
+                and self.aim_since is None:                   # not yet aiming at the front target
             fix = None                                        # the nearest one behind him, on his level
             for e in live:
                 if e is tgt:
