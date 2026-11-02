@@ -765,6 +765,7 @@ FORWARD_FALLBACK_CLASSES = FORWARD_SWITCH_CLASSES | FORWARD_GATE_CLASSES
 FALLBACK_STALL_S = 6.0        # abandon a forward affordance that stops getting closer
 FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many units
 SWITCH_PRESS_S = 1.5          # dwell/press a panel this long, then rotate to the door it gates
+SWITCH_FINE_DIST = 30.0       # within this of a switch, approach in short pulses so we land to press it
 FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # A transient host focus/active-window condition (the adapter cannot send input
@@ -793,6 +794,7 @@ class Controller:
         self.margin_attempts = {}
         self.fallback = {}      # (episode,floor,geometry) -> geometry-free forward approach book
         self.forward_interact = {}  # slot -> standing on a switch/panel this tick (press A, don't move)
+        self.forward_kind = {}      # slot -> 'press' | 'approach_switch' | 'walk_through'
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
 
     def _steering_publish(self):
@@ -969,17 +971,23 @@ class Controller:
     def forward_fallback(self, state, slot, player, now):
         """Geometry-free forward progress toward the room's exit affordance.
 
-        When the verified field grid is not yet proven (geometry_verified is not
-        True) the whole FieldObjectives path is dead and the planner rarely yields
-        a goal, so the buddies would stand still. Instead advance them toward the
-        nearest forward affordance in their room - a floor switch to stand on,
-        else the door/barrier it gates. P1 leads to the nearest switch/door; P2
-        follows P1's committed choice or closes the gap. A per-slot approach is
-        abandoned (cooled down) once it stops getting closer, rotating to the next
-        candidate rather than pushing a wall forever. Movement itself still routes
-        through nav.route, which is permissive when no collision grid exists."""
+        Advance the pair toward the room's forward affordance - a floor switch /
+        door panel to press, else the door/fence/barrier it gates (aimed just
+        past, so they commit THROUGH it). A per-slot approach is abandoned (cooled
+        down) once it stops getting closer, rotating to the next candidate rather
+        than pushing a wall forever. Movement routes through nav.route, permissive
+        when no grid exists; drive_forward steers straight if it yields none.
+
+        Co-op split: when a room holds two or more panels (the Forest-1 'open two
+        door panels' puzzle), P2 claims a DIFFERENT panel than P1 so both panels
+        are held at once; with a single switch, or none, P2 follows P1's choice.
+        Sets self.forward_kind[slot] so drive_forward presses a reached panel,
+        approaches a far panel in fine pulses (land, do not orbit), and drives
+        through a door with gusto."""
         finite = lambda row: all(type(row.get(k)) in (int, float) and math.isfinite(row[k])
                                  for k in ('x', 'z'))
+        self.forward_interact[slot] = False
+        self.forward_kind[slot] = None
         if not finite(player):
             return None
         room = player.get('room')
@@ -992,19 +1000,25 @@ class Controller:
                 self.fallback.pop(next(iter(self.fallback)))
         cooldown = book['cooldown']
         from . import pso_coop_gates as gates
-        self.forward_interact[slot] = False
 
+        # P2 claims the OTHER panel in a two-panel room; else follows P1 (to P1's
+        # panel, or to the door once both panels are done) or just closes the gap.
+        exclude = ()
         if slot == 2:
             leader = book['slots'].get(1)
-            buddy = state['players'][1]
-            if leader and leader.get('room') == room:
-                return leader['x'], leader['z']
-            if finite(buddy) and buddy.get('room') == room and math.hypot(buddy['x'] - px, buddy['z'] - pz) > 40:
-                return buddy['x'], buddy['z']
+            multi_panel = gates.count_switches(state.get('entities', ()), room) >= 2
+            if leader and leader.get('cls') in gates.SWITCH_CLASSES and multi_panel:
+                exclude = (leader['gkey'],)              # split: avoid P1's panel
+            else:
+                buddy = state['players'][1]
+                if leader and leader.get('room') == room:
+                    return leader['x'], leader['z']
+                if finite(buddy) and buddy.get('room') == room and math.hypot(buddy['x'] - px, buddy['z'] - pz) > 40:
+                    return buddy['x'], buddy['z']
 
         for _ in range(8):
             rows = gates.forward_candidates(state.get('entities', ()), room, px, pz,
-                                            cooldown=cooldown, now=now, prefer_room=True)
+                                            cooldown=cooldown, now=now, prefer_room=True, exclude=exclude)
             if not rows:
                 book['slots'].pop(slot, None)
                 return None
@@ -1019,10 +1033,10 @@ class Controller:
                 cooldown[gkey] = now + 30
                 book['slots'].pop(slot, None)
                 continue
-            track.update(room=room, x=entity['x'], z=entity['z'], cls=cls)
+            track.update(room=room, x=entity['x'], z=entity['z'], cls=cls, gkey=gkey)
             # A panel/switch within reach is pressed (stand on it + the controller
             # taps A). After a short dwell treat it as pressed and rotate to the
-            # door it gates, so two panels both get opened before the door.
+            # door it gates, so both panels get opened before the door.
             on_switch = is_switch == 0 and dist <= FALLBACK_REACH
             if on_switch:
                 track.setdefault('pressed_at', now)
@@ -1031,14 +1045,15 @@ class Controller:
                     book['slots'].pop(slot, None)
                     continue
             self.forward_interact[slot] = on_switch
+            kind = ('press' if on_switch else 'approach_switch' if is_switch == 0 else 'walk_through')
+            self.forward_kind[slot] = kind
             if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
                 self.inputs.stats['forward_fallback_target'] = cls
                 self.inputs.stats['forward_fallback_dist'] = round(dist, 1)
-                self.inputs.stats['forward_fallback_action'] = (
-                    'press_switch' if on_switch else 'approach_switch' if is_switch == 0 else 'walk_through')
+                self.inputs.stats['forward_fallback_action'] = kind
             if is_switch == 0:
                 return entity['x'], entity['z']
-            # A door/fence/barrier: aim just beyond it so P1 commits through.
+            # A door/fence/barrier: aim just beyond it so the actor commits through.
             return gates.through_point(px, pz, entity['x'], entity['z'])
         book['slots'].pop(slot, None)
         return None
@@ -1063,9 +1078,14 @@ class Controller:
             return True
         route = nav.route((player["x"], player["z"]), dest)
         waypoint = route[1] if route and len(route) > 1 else dest
-        commands.append((slot, movement_keys(player, waypoint), .40))
+        # Approach a near panel in SHORT pulses so the actor lands on it (and the
+        # next tick presses it) instead of orbiting the small target; drive a door
+        # through with a committed, gusto-length hold.
+        approaching_switch = (self.forward_kind.get(slot) == 'approach_switch'
+                              and math.hypot(dest[0] - player["x"], dest[1] - player["z"]) <= SWITCH_FINE_DIST)
+        commands.append((slot, movement_keys(player, waypoint), .10 if approaching_switch else .40))
         moves[slot] = (player, waypoint, nav, False)
-        steering[slot] = (player, waypoint, 'forward_gusto')
+        steering[slot] = (player, waypoint, 'forward_fine' if approaching_switch else 'forward_gusto')
         return True
 
     def _forward_dwell_telemetry(self, state, now, engaged):
