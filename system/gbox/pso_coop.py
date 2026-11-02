@@ -1121,12 +1121,13 @@ class Controller:
         if now < rec["until"]:
             return rec["keys"], True                          # mid-escape: hold the back-off heading
         if now - rec["since"] >= WEDGE_STALL_S:
-            # Wedged. Rotate the approach vector (reverse, then strafe the two
-            # ways, then a diagonal) so a corner cannot pin the buddy forever.
+            # Wedged. STRAFE first (slip around the corner) and only then reverse,
+            # so a doorway seam does not become a back-and-forth limit cycle across
+            # the room boundary; cycle both strafes, a diagonal, then a short reverse.
             rec["phase"] = (rec["phase"] + 1) % 4
             bearing = math.atan2(waypoint[0] - player["x"], waypoint[1] - player["z"])
-            angle = bearing + (math.pi, math.pi / 2, -math.pi / 2, math.pi * 0.75)[rec["phase"] - 1]
-            escape = (player["x"] + math.sin(angle) * 30., player["z"] + math.cos(angle) * 30.)
+            angle = bearing + (math.pi / 2, -math.pi / 2, math.pi * 0.75, math.pi)[rec["phase"] - 1]
+            escape = (player["x"] + math.sin(angle) * 18., player["z"] + math.cos(angle) * 18.)
             rec.update(keys=movement_keys(player, escape), until=now + WEDGE_ESCAPE_S, since=now, anchor=here)
             stats = getattr(self.inputs, "stats", None)
             if isinstance(stats, dict):
