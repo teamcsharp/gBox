@@ -31,25 +31,34 @@ RE6_UNLOCK_REASON = ('A fresh RE6 Switch save forces the Prologue and never open
                      'the title opens the main menu.')
 
 
+RE4_TITLE_ID = '010099A00BC1E000'
+RE4_GAME_ID = hashlib.sha1(b'quickswap-switch:Resident Evil 4/Resident Evil 4 [010099A00BC1E000].nsp').hexdigest()[:16]
+RE4_DRIVER = 'gbox.mercs.titles.re4_switch'
+RE4_REASON = ('Switch RE4 Mercenaries runs on Citron NEO with the re4_switch driver: RAM map pending live measurement '
+              '(player, enemies, timer, kills, menus); the driver skeleton is in place, awaiting the operator\'s '
+              'game addition for boot verification and RAM mapping.')
+RE4_UNLOCK_REASON = 'RE4 Switch Mercenaries is available from a fresh save (no unlock needed).'
+
 EDITIONS = {'re5': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE5_TITLE_ID},
-            're6': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE6_TITLE_ID}}
+            're6': {'platform': 'switch', 'mode': 'no_mercy', 'title_id': RE6_TITLE_ID},
+            're4': {'platform': 'switch', 'mode': 'mercenaries', 'title_id': RE4_TITLE_ID}}
 
 
 def normalize_preferences(value):
-    """{title: edition}: only the reviewed Switch No Mercy editions of RE5 and RE6, each exactly as EDITIONS says."""
+    """{title: edition}: only the reviewed Switch editions of RE4, RE5 and RE6, each exactly as EDITIONS says."""
     if not isinstance(value, dict) or set(value) - set(EDITIONS):
-        raise ValueError('MercMode edition preferences support only RE5 and RE6 (Switch, No Mercy) currently')
+        raise ValueError('MercMode edition preferences support only RE4, RE5 and RE6 (Switch) currently')
     out = {}
     for title, selected in value.items():
         if selected != EDITIONS[title]:
             raise ValueError(f"{title.upper()} edition preference must select Switch {EDITIONS[title]['title_id']} "
-                             "No Mercy")
+                             f"{EDITIONS[title]['mode']}")
         out[title] = dict(EDITIONS[title])
     return out
 
 
 def preferred_spec(title, native_spec, settings):
-    """The selected edition stays visible and never falls back silently to the native (PS3 / Xbox 360) one."""
+    """The selected edition stays visible and never falls back silently to the native (GameCube / PS3 / Xbox 360) one."""
     selected = (settings.get('preferred_editions') or {}).get(title)
     if not selected:
         return native_spec
@@ -59,6 +68,11 @@ def preferred_spec(title, native_spec, settings):
                 'map_id': RE6_TITLE_ID, 'game_ids': (RE6_GAME_ID,), 'playable': True,
                 'modes': ['no_mercy'], 'preferred_mode': 'no_mercy', 'stages': 10, 'characters': 4,
                 'driver': RE6_DRIVER, 'notes': RE6_REASON}
+    if title == 're4':
+        return {'name': 'Resident Evil 4 (Switch, Mercenaries)', 'platform': 'switch',
+                'map_id': RE4_TITLE_ID, 'game_ids': (RE4_GAME_ID,), 'playable': False,
+                'modes': ['mercenaries'], 'preferred_mode': 'mercenaries', 'stages': 4, 'characters': 5,
+                'driver': RE4_DRIVER, 'notes': RE4_REASON}
     return {'name': 'Resident Evil 5 (Switch, No Mercy)', 'platform': 'switch',
             'map_id': RE5_TITLE_ID, 'game_ids': (RE5_GAME_ID,), 'playable': True,
             'modes': ['no_mercy'], 'preferred_mode': 'no_mercy', 'stages': 8, 'characters': 10,
@@ -70,7 +84,7 @@ def _serial(game) -> str:
 
 
 def _edition(game) -> str | None:
-    """'re5' / 're6' for the pinned Switch base games (by title id, else by title when no id is known), else None.
+    """'re5' / 're6' / 're4' for the pinned Switch base games (by title id, else by title when no id is known), else None.
     RE6's update NSP (its own title id and catalog entry) is content for the base game, never an edition."""
     if str(game.get('platform') or '').casefold() != 'switch':
         return None
@@ -79,12 +93,16 @@ def _edition(game) -> str | None:
         return 're5'
     if serial == RE6_TITLE_ID:
         return 're6'
+    if serial == RE4_TITLE_ID:
+        return 're4'
     title = re.split(r'[\[(]', str(game.get('title') or ''), maxsplit=1)[0].strip().casefold()
     if re.fullmatch(r'(?:resident\s+evil|biohazard)\s*5', title):
         return 're5'
     if (re.fullmatch(r'(?:resident\s+evil|biohazard)\s*6', title) and not serial
             and game.get('game_id') != RE6_UPDATE_GAME_ID):
         return 're6'
+    if re.fullmatch(r'(?:resident\s+evil|biohazard)\s*4', title):
+        return 're4'
     return None
 
 
@@ -109,6 +127,16 @@ def capabilities(game):
                              'research': 'docs/research/re6-switch-ram.md',
                              'unlock_live_acceptance': 'private Citron NEO session on the Spark, 2026-10-26',
                              'runtime_verified_in_gbox': False, 'checked_date': '2026-10-26'}}
+    if edition == 're4':
+        return {'edition': 're4', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
+                'backends': {'windows': 'yuzu', 'linux': 'citron', 'linux_fallback': 'eden'},
+                'requested_mode': 'mercenaries', 'modes_in_release': ['mercenaries'],
+                'no_mercy_in_release': False, 'full_playback_verified': False,
+                'autoplay': {'available': False, 'driver': RE4_DRIVER, 'backend': 'linux', 'reason': RE4_REASON},
+                'unlock_on_load': {'available': False, 'needed': False, 'reason': RE4_UNLOCK_REASON},
+                'evidence': {'title_id': RE4_TITLE_ID,
+                             'ram_map': 'profiles/gamedata/010099A00BC1E000-ram.json',
+                             'runtime_verified_in_gbox': False, 'checked_date': '2026-10-27'}}
     return {'edition': 're5', 'platform': 'switch', 'backend': 'yuzu', 'serial': serial or None,
             'backends': {'windows': 'yuzu', 'linux': 'citron', 'linux_fallback': 'eden'},   # gbox.adapters.YuzuAdapter /
             # CitronLinuxAdapter (multi-core, canonical since 2026-10-26) / SwitchLinuxAdapter (Eden, single-core)
@@ -135,6 +163,13 @@ def unlock_profile(game):
                 'blockers': ['Applied by Eden sessions on the Linux node (guest memory through /proc/<pid>/mem); '
                              'Yuzu on Windows has no memory access, so it stays manual there.',
                              'Live acceptance ran the same module against Citron NEO, not yet a gBox Eden session.']}
+    if info['edition'] == 're4':
+        return {'status': 'not_needed', 'profile': None, 'verified': False,
+                'game_id': game.get('game_id'), 'platform': 'switch',
+                'scope': ['The Mercenaries'],
+                'exclusions': [], 'reason': RE4_UNLOCK_REASON, 'capabilities': info, 'evidence': info['evidence'],
+                'blockers': ['RE4 Switch Mercenaries RAM map is not measured yet; no autoplay driver until then.'],
+                'save_effect': 'No save or game-memory writes are applied by this profile.'}
     return {'status': 'not_needed', 'profile': None, 'verified': False,
             'game_id': game.get('game_id'), 'platform': 'switch',
             'scope': ['The Mercenaries: No Mercy', 'Mercenaries characters, costumes and stages'],
