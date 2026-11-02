@@ -9,6 +9,26 @@ from .pso_license_menu import observe
 from .pso_menu_observer import observe as observe_boot, next_key
 
 
+def known_menu_command(observation, players=2, *, finish_save=False):
+    """Propose one deterministic action only for independently observed menus.
+
+    This proposal grants no authority: MenuProgress.review still requires two
+    matching fresh proofs, saved-buddy ordering, requested episode/difficulty,
+    native transport/finish state, and the unchanged-menu attempt bound.
+    """
+    if not observation.get('recognized') or players != 2:
+        return None
+    menu = observation.get('menu')
+    if menu in ('press_start', 'main', 'mode', 'ingame_start', 'quit_confirm', 'after_save'):
+        key = next_key(observation, players, finish_save=finish_save is True)
+        return (1, [key], .4 if menu == 'press_start' else .08) if key else None
+    if menu in ('saved_p1', 'saved_p2', 'verify_saved', 'game_options', 'transporter_forest'):
+        player = observation.get('player')
+        if type(player) is int and player in (1, 2):
+            return player, ['a'], .08
+    return None
+
+
 class MenuProgress:
     LIMIT = 6
 
@@ -25,6 +45,7 @@ class MenuProgress:
         self._cancel_frame = None
         self._exit_samples = 0
         self._exit_frame = None
+        self._saved_selected = set()
         self.observation = {}
 
     @property
@@ -68,7 +89,7 @@ class MenuProgress:
         return self._controls_paused
 
     def review(self, plan, commands, identity, *, frame=None, fresh_frame=None, native_gameplay=False,
-               finish_save=False):
+               finish_save=False, target_episode=None, target_difficulty=None):
         observed = observe(frame)
         current = observe(fresh_frame)
         known = observed['recognized']
@@ -113,10 +134,47 @@ class MenuProgress:
             else:
                 chosen = [(1, ['a'], .08)]
         elif boot_known:
-            signature = lambda value: (value.get('menu'), value.get('selected'), value.get('option_index'))
+            signature = lambda value: (value.get('menu'), value.get('selected'), value.get('option_index'),
+                                       value.get('player'), value.get('observed_episode'), value.get('observed_difficulty'))
             current = fresh_boot
             if not boot.get('recognized') or not current.get('recognized') or signature(boot) != signature(current):
                 reason = 'Boot menu or selection changed; plan again from a fresh frame'
+            elif current.get('menu') == 'press_start':
+                if chosen and (chosen[0][0] != 1 or chosen[0][1] not in (['start'], ['a'])):
+                    reason = 'Observed title prompt requires one separate player-one Start'
+                else:
+                    chosen = [(1, [next_key(current, self.players)], .4)]
+                    self._saved_selected.clear()
+                    self._license_up = None
+            elif current.get('menu') in ('saved_p1', 'saved_p2', 'verify_saved', 'game_options'):
+                owner = current.get('player')
+                if chosen and (chosen[0][0] != owner or len(chosen[0][1]) != 1):
+                    reason = 'Saved campaign menu requires one action from its independently observed player'
+                elif current['menu'] == 'saved_p2' and 1 not in self._saved_selected:
+                    reason = 'Verify the saved player-one selection before selecting player two'
+                elif current['menu'] == 'verify_saved' and self._saved_selected != {1, 2}:
+                    reason = 'Both saved buddy identities must be independently selected before ready confirmation'
+                elif current['menu'] == 'game_options' and not (
+                        type(target_episode) is int and target_episode in (1, 2) and
+                        type(target_difficulty) is int and target_difficulty in range(4) and
+                        current.get('observed_episode') == target_episode and
+                        current.get('observed_difficulty') == target_difficulty):
+                    reason = 'Observed episode and difficulty must match the trusted requested campaign settings'
+                else:
+                    chosen = [(owner, ['a'], .08)]
+                    if current['menu'] == 'saved_p1':
+                        self._saved_selected = {1}
+                    elif current['menu'] == 'saved_p2':
+                        self._saved_selected.add(2)
+            elif current.get('menu') == 'transporter_forest':
+                area = tuple(identity[:3]) if isinstance(identity, (tuple, list)) and len(identity) >= 3 else None
+                if (self.players != 2 or not native_gameplay or area != (14, 1, 0) or
+                        type(target_episode) is not int or target_episode != 1 or finish_save is True):
+                    reason = 'Forest entry requires verified two-player Episode I town play and the trusted Episode I goal'
+                elif chosen and (chosen[0][0] != 2 or chosen[0][1] != ['a']):
+                    reason = 'Observed Forest destination requires a separate player-two A confirmation'
+                else:
+                    chosen = [(2, ['a'], .08)]
             elif current.get('menu') in ('ingame_start', 'quit_confirm', 'after_save'):
                 safe = next_key(current, self.players, finish_save=finish_save is True)
                 if chosen and (chosen[0][0] != current.get('player') or len(chosen[0][1]) != 1):
@@ -125,6 +183,8 @@ class MenuProgress:
                     reason = 'After-save navigation requires the native campaign completion state'
                 else:
                     chosen = [(1, [safe], .08)]
+                    if current['menu'] == 'after_save':
+                        self._saved_selected.clear()
                     if safe == 'b':
                         self._cancel_frame = current.get('frame_sha256')
                         self._exit_samples = 0
@@ -140,6 +200,8 @@ class MenuProgress:
                     reason = 'Proposed menu action does not match the independently observed offline setup step'
                 else:
                     chosen = [(1, [safe], .08)]
+                    if current.get('menu') in ('main', 'mode'):
+                        self._saved_selected.clear()
                     self._license_up = None  # Independently proven departure from the license dialog.
         elif self._license_up is not None and self._license_up[0] == identity:
             reason = 'License selection is unreadable after UP; withhold input until independently observed'

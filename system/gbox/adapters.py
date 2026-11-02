@@ -2776,14 +2776,17 @@ D-Pad/Right = `H`
         self._xdo('keydown', 'Shift_L', 'keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8', 'keyup', 'Shift_L')
         return {"slot": 8}
 
-    def _invalidate_pso_timing(self) -> None:
+    def _invalidate_pso_timing(self, *, mapping: bool = False) -> None:
         # A same-room restore can retain player pointers and a plausible clock
         # delta. Invalidate before input, including an uncertain hotkey result.
+        if mapping:
+            from .pso_coop_mapping import invalidate
+            invalidate(self)
         self._pso_timing_epoch = getattr(self, '_pso_timing_epoch', 0) + 1
         self._autoplay_speed_observed = None
 
     def load_state(self, slot: int | None = None) -> dict:
-        self._invalidate_pso_timing()
+        self._invalidate_pso_timing(mapping=True)
         return super().load_state()
 
     def pause(self) -> dict:
@@ -2798,7 +2801,7 @@ D-Pad/Right = `H`
         return result
 
     def checkpoint_load(self) -> dict:
-        self._invalidate_pso_timing()
+        self._invalidate_pso_timing(mapping=True)
         self._xdo('keydown', 'F8', 'sleep', '0.1', 'keyup', 'F8')
         return {"slot": 8}
 
@@ -3184,14 +3187,14 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"slot": 1, "path": str(f), "bytes": f.stat().st_size, "verified": True}
 
     def load_state(self, slot: int | None = None) -> dict:
-        self._invalidate_pso_timing()
+        self._invalidate_pso_timing(mapping=True)
         self._hotkey("Load State/Load State Slot 1")
         return {"slot": 1}
 
     def reset(self) -> dict:
         """The console's reset button (Dolphin's Reset hotkey on this Dolphin's lane): the game restarts in place, same
         disc, same mod, same window; the session and its view stay."""
-        self._invalidate_pso_timing()
+        self._invalidate_pso_timing(mapping=True)
         if self.ff_on:                                     # a reset leaves fast-forward off
             win_send_keys(self.proc.pid, [{"key": self.lane, "down": False}])
             self.ff_on = False
@@ -3214,7 +3217,7 @@ D-Pad/Right = `Pad E` | `DInput/0/Keyboard Mouse:H`
         return {"slot": 8}
 
     def checkpoint_load(self) -> dict:
-        self._invalidate_pso_timing()
+        self._invalidate_pso_timing(mapping=True)
         self._hotkey("Load State/Load State Slot 8")
         return {"slot": 8}
 

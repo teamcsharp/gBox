@@ -429,12 +429,17 @@ class Planner:
     def __call__(self, frame, context):
         deadline = time.monotonic() + 35
         prompt = getattr(self, 'prompt', PROMPT) + '\n' + json.dumps(context)
+        schema = getattr(self, 'response_schema', None)
+        if schema is not None:
+            if not isinstance(schema, dict):
+                raise ValueError('PSO planner response schema must be an object')
+            prompt += '\nResponse JSON schema: ' + json.dumps(schema)
         encoded = base64.b64encode(frame).decode()
         if self.provider(deadline):
             settings, options, _ = self.native_settings(deadline)
             res = self.api.post(self.native_url + '/api/chat', timeout=self.timeout(deadline, 35), json={
                 'model': self.model, 'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
-                'stream': False, 'format': 'json', **settings,
+                'stream': False, 'format': schema if schema is not None else 'json', **settings,
                 'options': {'temperature': 0.1, 'num_predict': 1800, **options}})
             res.raise_for_status()
             raw = res.json()['message']['content']

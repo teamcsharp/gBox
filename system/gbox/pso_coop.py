@@ -22,11 +22,17 @@ import httpx
 from . import pso_campaign as solo
 from .pso_coop_nav import Maps, room_key
 from .pso_coop_native import context as native_context, SpeedSampler
-from .pso_coop_menu import MenuProgress
+from .pso_coop_menu import MenuProgress, known_menu_command
+from .pso_coop_progress import Checkpoint, card_binding
+from .pso_coop_recovery import TransientRecovery, continuous_requested
+from . import pso_coop_mapping as mapping_continuity
+from .pso_coop_combat import WeaponRanges, Engagements, FALLBACK, geometry as attack_geometry
 from .pso_gc_live import PLAYER, VT_UPDATE
 from .registry import Unsupported
 
 CAMPAIGN = "pso-coop-episodes-1-2"
+# Controller tokens are constrained at generation and independently checked before input.
+PLAN_SCHEMA = {'type': 'object', 'additionalProperties': False, 'properties': {'thought': {'type': 'string', 'maxLength': 800}, 'screen': {'type': 'string', 'enum': ['gameplay', 'menu', 'loading', 'credits', 'death', 'unknown']}, 'needs_operator': {'type': 'boolean'}, 'difficulty_locked': {'type': 'boolean'}, 'menu_title': {'type': 'string'}, 'selected_option': {'type': 'string'}, 'intended_option': {'type': 'string'}, 'selection_evidence': {'type': 'string'}, 'actions': {'type': 'array', 'maxItems': 4, 'items': {'type': 'object', 'additionalProperties': False, 'properties': {'player': {'type': 'integer', 'enum': [1, 2]}, 'keys': {'type': 'array', 'maxItems': 3, 'items': {'type': 'string', 'enum': ['a', 'b', 'x', 'y', 'l', 'r', 'start', 'dup', 'ddown', 'dleft', 'dright', 'lup', 'ldown', 'lleft', 'lright']}}, 'secs': {'type': 'number', 'minimum': 0, 'maximum': 0.6}}, 'required': ['player', 'keys', 'secs']}}, 'goals': {'type': 'array', 'maxItems': 2, 'items': {'type': 'object', 'additionalProperties': False, 'properties': {'player': {'type': 'integer', 'enum': [1, 2]}, 'x': {'type': 'number'}, 'z': {'type': 'number'}, 'room': {'type': 'integer'}, 'reason': {'type': 'string'}}, 'required': ['player', 'x', 'z', 'room', 'reason']}}}, 'required': ['thought', 'screen', 'needs_operator', 'actions', 'goals']}
 DIFFICULTIES = ("Normal", "Hard", "Very Hard", "Ultimate")
 CLASSES = ("HUmar", "HUnewearl", "HUcast", "HUcaseal", "RAmar", "RAmarl", "RAcast", "RAcaseal", "FOmar", "FOmarl", "FOnewm", "FOnewearl")
 PROMPT = """Control two buddies in OFFLINE MULTI MODE in GameCube PSO Episode I & II Plus.
@@ -113,6 +119,37 @@ player. When goals suffice return actions:[]; the controller will move both budd
 GAMEPLAY_PROMPT += solo.RECORDING_PROMPT
 
 
+FIELD_PROMPT = """Control the two EXISTING buddies in the CURRENT verified field area.
+Native episode, floor and each player's room/position below are the current truth.
+The top view is Player 1; the bottom view is Player 2. Continue forward together
+through the current field rooms toward observed exits, switches and enemies.
+Do not revisit the spawn/return portal without an explicit current objective.
+An empty nearby enemy list does not mean this room or area is complete.
+
+Keep each native entity's exact class and entity_id paired. Never rename a supply
+container as a portal or infer an exit from its identifier. Class and coordinates
+alone do not establish a traversable route, open door or switch state. When no
+actual exit is observed, inspect the visible forward path with short movement,
+then reobserve; do not repeatedly approach the same nearby supply box.
+Native combat handles fresh enemies. For an observed useful landmark, return its
+exact x,z,room as a goal only in that player's current room and within 300 units.
+Native steering handles remembered obstacles. Do not invent distant coordinates.
+
+Use lup/ldown/lleft/lright for short character movement and dup/ddown/dleft/dright
+for menus. Never place move_to, entity IDs, coordinates or prose in keys.
+Every action requires player, keys and secs. Both existing saved buddies remain
+in the current run; do not open setup, quit or claim completion from an empty room.
+If a menu is actually visible, report screen=menu with menu_title, selected_option,
+intended_option and selection_evidence. Its independent guard must approve input.
+Never combine menu navigation and confirmation. If uncertain return no action.
+Return only JSON with thought, screen (gameplay|menu|loading|death|unknown),
+needs_operator, actions [{player:1|2,keys:[a|b|x|y|l|r|start|dup|ddown|dleft|dright|lup|ldown|lleft|lright],secs:0..0.4}],
+and goals [{player:1|2,x:number,z:number,room:integer,reason:string}]. At most one
+goal and one action per player; return actions:[] when native goals suffice.
+"""
+FIELD_PROMPT += solo.RECORDING_PROMPT
+
+
 def planner_input(context):
     """Keep verified gameplay separate from boot instructions and irrelevant RAM rows."""
     state = context.get('native_state') or {}
@@ -125,7 +162,7 @@ def planner_input(context):
         return {key: entity[key] for key in fields if key in entity}
     landmarks = []
     for entity in state.get('entities', []):
-        if entity.get('kind') != 'object' or not all(type(entity.get(key)) in (int, float) and
+        if entity.get('kind') not in ('object', 'gate') or not all(type(entity.get(key)) in (int, float) and
                 math.isfinite(entity[key]) for key in ('x', 'y', 'z')):
             continue
         nearby = any(entity.get('room') == player.get('room') and
@@ -134,7 +171,11 @@ def planner_input(context):
                      for player in players.values())
         if nearby:
             landmarks.append(summary(entity))
-    landmarks.sort(key=lambda e: (e.get('class') != 'TObjCityDoor_Warp', e.get('entity_id', 0)))
+    field = type(state.get('floor')) is int and state['floor'] > 0
+    if field:
+        landmarks.sort(key=lambda e: e.get('entity_id', 0))
+    else:
+        landmarks.sort(key=lambda e: (e.get('class') != 'TObjCityDoor_Warp', e.get('entity_id', 0)))
     enemies = [summary(e) for e in state.get('entities', []) if e.get('kind') == 'enemy' and e.get('hp', 0) > 0]
     compact = {key: context[key] for key in ('characters', 'existing_buddies', 'next', 'target_episode',
                'target_difficulty', 'campaign_state', 'visited_floors', 'missing_floors', 'current_goals',
@@ -143,6 +184,10 @@ def planner_input(context):
                    native_players={player: summary(entity) for player, entity in players.items()},
                    nearby_native_landmarks=landmarks[:32], native_enemies_alive=len(enemies),
                    nearby_native_enemies=enemies[:24], initialization_authorized=False)
+    if field:
+        location = {'episode': compact['episode'], 'floor': compact['floor'],
+                    'players': compact['native_players']}
+        return ('CURRENT VERIFIED FIELD: ' + json.dumps(location) + '\n' + FIELD_PROMPT), compact
     return GAMEPLAY_PROMPT, compact
 
 
@@ -246,19 +291,92 @@ class Reader(solo.Reader):
 
 
 class Progress(solo.Progress):
-    def __init__(self):
+    def __init__(self, *, allow_training=True):
         super().__init__()
         self.difficulty, self.difficulty_cycles = 0, 0
         self.difficulty_verified = False
         self.route_episodes, self.route_cycles, self.route_difficulty_cycles = 0, 0, 0
         self.defeat_since, self.town_since, self.defeat_proof = None, None, None
         self.pending_receipts = []
+        self._allow_training = allow_training
+        self._training_progress = None
+        self._training_difficulty = None
+        self.selected_difficulty = None
+        self.selected_difficulty_verified = False
+        self.training_episodes = 0
+        self.training_native_episode_routes = 0
+
+    def _reset_attempt(self):
+        """A difficulty change cannot join two different runs into one receipt."""
+        self.visited.clear()
+        self.started_at_entry = self.awaiting_entry = self.boss_zero = self.left_free_play = False
+        self.boss_alive.clear()
+        self.credit_samples = []
+        self.defeat_since = self.town_since = self.defeat_proof = None
+        self.state = "attempting_episode"
+
+    def _training_receipt(self, receipt):
+        original = receipt["outcome"]
+        result = dict(receipt, outcome="training_" + original,
+                      requested_episode=self.target, requested_difficulty=self.difficulty,
+                      requested_difficulty_name=DIFFICULTIES[self.difficulty],
+                      requested_campaign_progress=False, completion_verified=False,
+                      full_campaign_verified=False, highest_unlocked_verified=False,
+                      fallback_evidence="native_verified_selected_lower_difficulty")
+        self.training_episodes += int(original == "episode_complete")
+        self.training_native_episode_routes += int(original == "episode_route_complete")
+        self.receipts.append(result)
+        self.receipts = self.receipts[-32:]
+        return result
+
+    def _sync_training(self):
+        training = self._training_progress
+        self.awaiting_entry, self.boss_zero = training.awaiting_entry, training.boss_zero
+        # These are control/menu hints only. The requested run's completion
+        # counters, episode and difficulty remain on this parent ledger.
+        self.state = "training_lower_difficulty"
+        self.difficulty_verified = False
+        while training.pending_receipts:
+            self.pending_receipts.append(self._training_receipt(training.pending_receipts.pop(0)))
 
     def observe(self, state, now=None):
         now = time.monotonic() if now is None else now
         if not state.get("verified"):
+            self.selected_difficulty_verified = False
+            if self._training_progress is not None:
+                self._training_progress.observe(state, now)
+                self._sync_training()
             return super().observe(state)
-        self.difficulty_verified = bool(state.get("difficulty_verified") and state.get("difficulty") == self.difficulty)
+        actual = state.get("difficulty")
+        self.selected_difficulty_verified = bool(state.get("phase") == 14 and
+            state.get("difficulty_verified") is True and type(actual) is int and 0 <= actual < 4 and
+            set(state.get("players", {})) == {1, 2} and state.get("episode") in (1, 2))
+        self.selected_difficulty = actual if self.selected_difficulty_verified else None
+        if (self._allow_training and self.selected_difficulty_verified and actual < self.difficulty):
+            if self._training_progress is None and self.awaiting_entry and not self.left_free_play:
+                # The old game's town still reports its previous difficulty
+                # immediately after completion. It is not a new fallback choice.
+                self.difficulty_verified = False
+                return
+            if self._training_progress is None or self._training_difficulty != actual:
+                self._reset_attempt()
+                self._training_progress = Progress(allow_training=False)
+                self._training_progress.target = state.get("episode", self.target)
+                self._training_difficulty = actual
+            training = self._training_progress
+            # Repeating a lower difficulty never advances the pending requested
+            # difficulty. Only the game's guarded current selection admits it.
+            training.difficulty = actual
+            training.observe(state, now)
+            self._sync_training()
+            return
+        if self._training_progress is not None:
+            if not self.selected_difficulty_verified:
+                self.difficulty_verified = False
+                return
+            self._training_progress = self._training_difficulty = None
+            self._reset_attempt()
+        self.difficulty_verified = bool(self.selected_difficulty_verified and actual == self.difficulty)
         if not self.difficulty_verified or state.get("difficulty") != self.difficulty or len(state.get("players", {})) != 2:
             return
         super().observe(state)
@@ -312,6 +430,10 @@ class Progress(solo.Progress):
         self.defeat_since, self.town_since, self.defeat_proof = None, None, None
 
     def ending(self, screen, frame_sha, now):
+        if self._training_progress is not None:
+            receipt = self._training_progress.ending(screen, frame_sha, now)
+            self._sync_training()
+            return self._training_receipt(receipt) if receipt else None
         if not self.difficulty_verified:
             return None
         completed = self.episodes
@@ -326,13 +448,29 @@ class Progress(solo.Progress):
         return receipt
 
     def status(self):
-        return super().status() | {"campaign": CAMPAIGN, "players": 2,
+        result = super().status() | {"campaign": CAMPAIGN, "players": 2,
             "target_difficulty": DIFFICULTIES[self.difficulty], "difficulty_verified": self.difficulty_verified,
             "completed_all_difficulty_cycles": self.difficulty_cycles,
             "completed_native_episode_routes": self.route_episodes,
             "completed_native_episode_pairs": self.route_cycles,
             "completed_native_all_difficulty_route_cycles": self.route_difficulty_cycles,
             "completion_verified": bool(self.difficulty_cycles)}
+        result.update(selected_difficulty=self.selected_difficulty,
+                      selected_difficulty_verified=self.selected_difficulty_verified,
+                      requested_episode=self.target, requested_difficulty=DIFFICULTIES[self.difficulty],
+                      training_lower_difficulty=self._training_progress is not None,
+                      completed_training_episodes=self.training_episodes,
+                      completed_training_native_episode_routes=self.training_native_episode_routes,
+                      highest_unlocked_verified=False)
+        if self._training_progress is not None:
+            active = self._training_progress.status()
+            result.update({key: active[key] for key in ("target_episode", "visited_floors", "missing_floors",
+                                                       "final_boss_zero_observed")})
+            result.update(target_difficulty=DIFFICULTIES[self._training_difficulty],
+                          campaign_state="training_lower_difficulty",
+                          fallback_evidence="native_verified_selected_lower_difficulty",
+                          next_difficulty_goal="Retry the requested difficulty only after independently observing its availability; otherwise keep these saved buddies at their verified selected difficulty")
+        return result
 
 
 class InputDeferred(OSError):
@@ -467,6 +605,10 @@ class Inputs:
             raise error
 
 
+class MappingPending(Unsupported):
+    """An otherwise valid town pad probe saw no movement yet."""
+
+
 def mapping_probe(reader, inputs, state):
     """A short, isolated movement proves each pad owns only its intended actor."""
     if state.get("floor") != 0 or any(e.get("kind") == "enemy" and e.get("hp", 0) > 0 for e in state.get("entities", [])):
@@ -484,6 +626,9 @@ def mapping_probe(reader, inputs, state):
             if (not after.get("verified") or (before.get("episode"), before.get("floor")) !=
                     (after.get("episode"), after.get("floor"))):
                 raise Unsupported("PSO changed areas during controller verification")
+            if (set(after.get("players", {})) != {1, 2} or
+                    any(after["players"][slot].get("ptr") != before["players"][slot].get("ptr") for slot in (1, 2))):
+                raise Unsupported("PSO player identities changed during controller verification")
             distances = {slot: math.hypot(after["players"][slot]["x"] - before["players"][slot]["x"],
                                          after["players"][slot]["z"] - before["players"][slot]["z"]) for slot in (1, 2)}
             if distances[3 - player] > 1.5:
@@ -494,7 +639,7 @@ def mapping_probe(reader, inputs, state):
                 matched = True
                 break
         if not matched:
-            raise Unsupported(f"PSO controller {player} produced no measurable movement")
+            raise MappingPending(f"PSO controller {player} produced no measurable movement")
     return receipts
 
 
@@ -516,10 +661,45 @@ class Controller:
         self.damage, self.kills, self.attacks, self.blocked = 0, 0, 0, 0
         self.cooldown = {}
         self.approaches = {}
+        self.weapon_ranges = WeaponRanges(getattr(reader, 'ad', None))
+        self.engagements = Engagements()
+        self.combat_status = {}
+        from .pso_coop_town import TownRoute
+        self.town = TownRoute(getattr(reader, "ad", None))
+        self.town_enabled = False
+
+    def tick_town(self, state):
+        identity = self.town.bind(state)
+        if identity is None:
+            return False
+        # A held route must release all inputs, including camera recentering.
+        if not self.town.plan(state, time.monotonic()):
+            return False
+        self.inputs.hold([(slot, ["l"], .08) for slot in (1, 2)])
+        solo.wait(.20 / self.inputs.speed(), self.inputs.stopped)
+        fresh = self.reader.snapshot()
+        if self.town.bind(fresh) != identity:
+            return False
+        waypoints = self.town.plan(fresh, time.monotonic())
+        commands = [(slot, movement_keys(fresh["players"][slot], point), .08)
+                    for slot, point in waypoints.items()]
+        if not commands:
+            return False
+        for slot, point in waypoints.items():
+            self.town.target(slot, point)
+        self.inputs.hold(commands)
+        for slot in waypoints:
+            self.town.moved(slot)
+        # Re-read on the next tick; no persistent room-wall learning is made
+        # from these door approaches or from a cross-room transition.
+        return True
 
     def tick(self, state):
         if not state.get("verified") or len(state.get("players", {})) != 2:
             return False
+        if (self.town_enabled and state.get("phase") == 14 and state.get("episode") == 1
+                and state.get("floor") == 0):
+            return self.tick_town(state)
         now = time.monotonic()
         enemies = [e for e in state["entities"] if e.get("kind") == "enemy" and e.get("hp", 0) > 0]
         for e in state["entities"]:
@@ -531,7 +711,8 @@ class Controller:
                 self.damage += previous - e["hp"]
                 self.kills += int(e["hp"] == 0)
             self.enemy_hp[key] = e["hp"]
-        commands, moves = [], {}
+        commands, moves, attack_rows = [], {}, {}
+        envelopes = {slot: self.weapon_ranges.for_player(state, slot) if enemies else FALLBACK for slot in (1, 2)}
         # Recenter independently. PSO's L camera reset makes pad-relative forward
         # correspond to the actor's native heading. Re-read before choosing input.
         self.inputs.hold([(slot, ["l"], .08) for slot in (1, 2)])
@@ -550,20 +731,47 @@ class Controller:
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
             destination = None
             if target:
-                dist = math.hypot(target["x"] - player["x"], target["z"] - player["z"])
-                heading = math.degrees(math.atan2(target["x"] - player["x"], target["z"] - player["z"]))
+                envelope = envelopes[slot]
+                if envelope.get('verified') and envelope.get('player_ptr') != player['ptr']:
+                    envelope = FALLBACK
+                dist, angle, vertical_ok = attack_geometry(player, target, envelope)
+                row = self.engagements.observe(state, slot, target, envelope, now)
+                recovery, recovery_goal = self.engagements.recovery(row, player, target, envelope, now)
+                self.combat_status[slot] = dict(range=envelope, target=target['class'],
+                    distance=round(dist, 2), heading_error=round(angle, 2), vertical_ok=vertical_ok,
+                    unchanged_hp_attempts=row['attempts'], recovery=recovery,
+                    damage_attribution='shared_target_hp_only')
                 if player["hp"] < player["hp_max"] * .35:
                     destination = player["x"] + (player["x"] - target["x"]), player["z"] + (player["z"] - target["z"])
-                elif dist <= 27 and abs(delta(heading, player["heading_deg"])) <= 20:
+                elif recovery == 'defer' or (not vertical_ok and dist < 4):
+                    self.cooldown[(slot, target['ptr'])] = now + 8
+                    self.engagements.rows.pop(slot, None)
+                    continue
+                elif recovery_goal is not None:
+                    destination = recovery_goal
+                elif dist <= envelope['horizontal'] and vertical_ok and abs(angle) <= envelope['horizontal_half_angle']:
                     if now - self.last_attack.get(slot, 0) >= .52 / self.inputs.speed():
                         commands.append((slot, ["a"], .12))
+                        attack_rows[slot] = row
                     continue
-                elif dist <= 27:
-                    commands.append((slot, movement_keys(player, (target["x"], target["z"])), .12))
+                elif dist <= envelope['horizontal'] and vertical_ok:
+                    if row['aim_angle'] is None or abs(angle) < row['aim_angle'] - 2:
+                        row['aim_angle'], row['aim_at'] = abs(angle), now
+                    elif now - row['aim_at'] > 4:
+                        self.cooldown[(slot, target['ptr'])] = now + 8
+                        self.engagements.rows.pop(slot, None)
+                        continue
+                    # Reobserve after a small steering pulse. Rounding a small
+                    # error into the forward octant cannot align a narrow gun cone.
+                    commands.append((slot, ['lleft' if angle > 0 else 'lright'],
+                                     max(.02, min(.12, abs(angle) / 450))))
+                    moves[slot] = (player, (target['x'], target['z']), self.maps.get(state, player), False)
                     continue
                 else:
                     destination = target["x"], target["z"]
             else:
+                self.engagements.rows.pop(slot, None)
+                self.combat_status.pop(slot, None)
                 goal = self.goals.get(slot)
                 if goal and goal["identity"] == room_key(state, player)[0]:
                     destination = goal["x"], goal["z"]
@@ -578,7 +786,8 @@ class Controller:
             if destination is None:
                 continue
             identity = (slot, state.get("episode"), state.get("floor"), player.get("room"),
-                        target["ptr"] if target else (round(destination[0]), round(destination[1])))
+                        (target["ptr"], row['recoveries'] if recovery_goal is not None else 0)
+                        if target else (round(destination[0]), round(destination[1])))
             distance = math.hypot(destination[0] - player["x"], destination[1] - player["z"])
             approach = self.approaches.get(identity)
             if approach is None or distance < approach[0] - 3:
@@ -613,6 +822,7 @@ class Controller:
             if keys == ["a"]:
                 self.last_attack[slot] = now
                 self.attacks += 1
+                attack_rows[slot]['attempts'] += 1
         solo.wait(.08 / self.inputs.speed(), self.inputs.stopped)
         after = self.reader.snapshot()
         for slot, (before, intended, nav, quiet) in moves.items():
@@ -656,6 +866,8 @@ def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     if paused:
         controller.goals.clear()
         controller.approaches.clear()
+        if hasattr(controller, 'engagements'):
+            controller.engagements.rows.clear()
         inputs.release()
         stats["action"] = "waiting_for_observed_menu"
     return paused
@@ -668,24 +880,50 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     reader, inputs = Reader(ad), Inputs(ad, stopped, send_primary=send,
         polite=bool((getattr(driver, "demo", False) or getattr(driver, "screensaver", None))
                     and not getattr(driver, "owns_keyboard", False)), stats=stats)
-    ledger = getattr(ad, "_pso_coop_progress", None) or Progress()
-    ad._pso_coop_progress = ledger
     authorization = getattr(ad, "_pso_coop_new_card", {}) or {}
     card_identity = hashlib.sha256(str(authorization.get("path", session_id)).encode()).hexdigest()[:20]
     root = Path(ad.config.runtime) / "autoplay" / "pso-coop" / card_identity
     root.mkdir(parents=True, exist_ok=True)
     characters = getattr(ad, "_pso_coop_characters", None) or saved_preferences(root / "character-preferences.json")
     ad._pso_coop_characters = characters
+    binding = card_binding(authorization, getattr(ad, "memory_card_context", {}) or {})
+    checkpoint = Checkpoint(root / "progress.json", card_identity, characters, card_path=binding)
+    # A new controller reobserves routes, bosses and menus even on the same adapter.
+    ledger = Progress()
+    restored = checkpoint.restore(ledger)
+    ad._pso_coop_progress = ledger
+    stats["progress_restored"] = restored
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
     speed_sampler = SpeedSampler(ad, session_id, stopped)
     planner = solo.Planner(driver, ad.config)
     planner.prompt = PROMPT
+    planner.response_schema = PLAN_SCHEMA
     recorded = solo.recording_context(style, game)
     stats["recorded_input_evidence"] = recorded
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pso-coop-planner")
     pending, planned_identity, planned_frame, last_plan_at, errors = None, None, None, 0., 0
     menu, planner_errors = MenuProgress(players=2), 0
+    planner_retry_at = 0.
+    native_retry_identity = None
+    mapping_attempts = 0
+    def invalidate_plan():
+        nonlocal pending, planned_identity, planned_frame, last_plan_at, planner_retry_at, native_retry_identity
+        speed_sampler.invalidate()
+        controller.goals.clear()
+        controller.approaches.clear()
+        planned_identity = planned_frame = None
+        last_plan_at = 0.
+        planner_retry_at = 0.
+        native_retry_identity = None
+        stats["native_control_during_recovery"] = False
+        if pending is not None and pending.cancel():
+            pending = None
+        # Keep any running future until it finishes so its HTTP client is not
+        # closed underneath it. Its result cannot authorize a later input.
+        # MenuProgress retains unknown-menu bounds and its paused-controls guard.
+    recovery = TransientRecovery(enabled=lambda: continuous_requested(driver, session_id),
+        stopped=stopped, release=inputs.release, invalidate=invalidate_plan, wait=solo.wait, stats=stats)
     mapped = False
     ad._pso_verified_player_slots = set()
     seen_buddies = bool(getattr(ad, "_pso_coop_buddies_observed", False))
@@ -694,6 +932,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     try:
         while not stopped():
             try:
+                stats["native_control_during_recovery"] = False
                 inputs.check_speed()
                 if getattr(ad, "paused", False):
                     solo.wait(.2, stopped)
@@ -704,6 +943,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 seen_buddies = identity_context["existing_buddies"]
                 ad._pso_coop_buddies_observed = seen_buddies
                 ledger.observe(state)
+                checkpoint.save(ledger)
+                controller.town_enabled = ledger.target == 1 and not ledger.awaiting_entry
                 while ledger.pending_receipts:
                     receipt = ledger.pending_receipts.pop(0)
                     with (root / "finishes.jsonl").open("a", encoding="utf-8") as output:
@@ -713,28 +954,103 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 stats.update(ledger.status(), episode=state.get("episode"), floor=state.get("floor"),
                              native_players=state.get("players", {}), requested_speed=inputs.speed(),
                              observed_enemy_damage=controller.damage, observed_kills=controller.kills,
-                             attack_inputs=controller.attacks, remembered_blocked_edges=controller.blocked)
+                             attack_inputs=controller.attacks, remembered_blocked_edges=controller.blocked,
+                             combat=controller.combat_status, town_navigation=controller.town.status,
+                             no_damage_repositions=controller.engagements.recoveries,
+                             no_damage_deferrals=controller.engagements.deferred)
                 if state.get("travelling"):
                     speed_sampler.invalidate()
                     stats["action"] = "waiting_for_area_loader"
                     solo.wait(.15, stopped)
                     continue
-                menu_paused = observe_menu_controls(menu, ad.get_frame(), state, controller, inputs, stats)
-                if state.get("verified") and not mapped and not menu_paused:
-                    stats["controller_mapping"] = mapping_probe(reader, inputs, state)
+                menu_frame = ad.get_frame()
+                menu_paused = observe_menu_controls(menu, menu_frame, state, controller, inputs, stats)
+                proposed = known_menu_command(menu.observation, finish_save=ledger.awaiting_entry is True)
+                if menu_paused and proposed is not None and not recovery.waiting:
+                    # These exact observed menus need no model guess or network
+                    # round trip. The existing guard remains the sole authority.
+                    selected, reason = menu.review({'screen': 'menu'}, [proposed], state_identity(state),
+                        frame=menu_frame, fresh_frame=ad.get_frame(),
+                        native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
+                        finish_save=ledger.awaiting_entry is True,
+                        target_episode=ledger.target, target_difficulty=ledger.difficulty)
+                    invalidate_plan()
+                    stats.update(menu_repeated_attempts=menu.repeats, menu_input_withheld=reason,
+                        menu_independent_selection=menu.previous.get('independent_selection'),
+                        planned_input_player=selected[0][0] if selected else 0,
+                        planned_input_keys=','.join(selected[0][1]) if selected else '',
+                        action='observed_menu_step' if selected else 'waiting_for_observed_menu')
+                    if menu.stalled:
+                        stats.update(ok=False, campaign_state='needs_operator', stopped_reason=reason)
+                        break
+                    for command in selected[:1]:
+                        inputs.hold([command])
+                        menu.previous['input_delivery_verified'] = True
+                    # Let selection/transition animation settle, with Stop and
+                    # takeover interruptible. Reobserve before every next input.
+                    solo.wait(.6 if selected else .2, stopped)
+                    continue
+                if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
+                    retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
+                    if retained is not None:
+                        stats["controller_mapping"] = retained['probe']
+                        state = retained['state']
+                        stats['controller_mapping_source'] = 'same_live_adapter_revalidated'
+                    else:
+                        try:
+                            stats["controller_mapping"] = mapping_continuity.prove(
+                                ad, reader, inputs, state, session_id, game or {}, stopped, mapping_probe)
+                        except MappingPending as exc:
+                            if not continuous_requested(driver, session_id):
+                                raise
+                            invalidate_plan()
+                            inputs.release()
+                            ad._pso_verified_player_slots = set()
+                            mapping_attempts += 1
+                            delay = min(5, 2 ** min(mapping_attempts - 1, 3))
+                            stats.update(controller_mapping_verified=False, mapping_attempts=mapping_attempts,
+                                mapping_retry_backoff_s=delay, mapping_last_error=str(exc),
+                                action="waiting_for_spawn_ready")
+                            solo.wait(delay, lambda: stopped() or not continuous_requested(driver, session_id))
+                            if stopped() or not continuous_requested(driver, session_id):
+                                break
+                            continue
+                        stats['controller_mapping_source'] = 'two_pad_movement_probe'
+                    if stopped():
+                        raise InterruptedError('PSO stopped before activating controller mapping')
                     mapped = True
                     ad._pso_verified_player_slots = {0, 1}
-                    stats["controller_mapping_verified"] = True
+                    mapping_attempts = 0
+                    stats.update(controller_mapping_verified=True, mapping_retry_backoff_s=0, mapping_last_error="")
                     state = reader.snapshot()
                 if state.get("phase") != 14:
                     mapped = False
-                    ad._pso_verified_player_slots = set()
+                    mapping_continuity.invalidate(ad)
+                elif mapped:
+                    mapping_continuity.observe(ad, state, session_id, game or {}, stopped)
+                if (recovery.waiting and mapped and not menu_paused and
+                        continuous_requested(driver, session_id)):
+                    identity = state_identity(state)
+                    if native_retry_identity != identity:
+                        # Fresh RAM alone cannot restore input authority. Recheck
+                        # the sealed proof against this exact live process/card/
+                        # pad configuration, without another movement probe.
+                        native_retry_identity = None
+                        retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
+                        if retained is not None and state_identity(retained['state']) == identity:
+                            state = retained['state']
+                            native_retry_identity = identity
                 stats["achieved_speed_observation"] = speed_sampler.observe(state)
                 if speed_sampler.failure:
                     stats["speed_sampling_error"] = speed_sampler.failure
                 if pending is not None and pending.done():
                     completed, pending = pending, None  # a failed future must not be read again forever
+                    if planned_identity is None:
+                        stats["action"] = "discarded_stale_plan"
+                        last_plan_at = 0.
+                        continue
                     stats['planner_latency_s'] = round(time.monotonic() - last_plan_at, 3)
+                    plan = None
                     try:
                         plan = completed.result()
                         selected = actions(plan)
@@ -744,6 +1060,22 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                      planner_state='failed_observation',
                                      planner_last_error=f'{type(exc).__name__}: {exc}'[:400],
                                      planner_failures=stats.get('planner_failures', 0) + 1)
+                        if isinstance(exc, ValueError) and continuous_requested(driver, session_id):
+                            # Invalid model output has no input authority. Keep
+                            # independently verified native control available;
+                            # clear old goals and ask again at a bounded rate.
+                            invalidate_plan()
+                            inputs.release()
+                            delay = min(30, 8 * 2 ** min(planner_errors - 1, 2))
+                            planner_retry_at = time.monotonic() + delay
+                            stats.update(planner_state="discarded_invalid_plan",
+                                planner_invalid_responses=stats.get("planner_invalid_responses", 0) + 1,
+                                planner_invalid_sample=repr(plan.get("actions") if isinstance(plan, dict) else plan)[:800],
+                                planner_retry_backoff_s=delay, action="discarded_invalid_plan")
+                            solo.wait(.05, stopped)
+                            continue
+                        if recovery.pause(exc, "planner"):
+                            continue
                         if planner_errors >= 5:
                             stats.update(ok=False, campaign_state='needs_operator',
                                          stopped_reason='Five planner observations failed; inputs released')
@@ -751,7 +1083,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         solo.wait(min(planner_errors, 3), stopped)
                         continue
                     planner_errors = 0
-                    stats.update(planner_consecutive_errors=0, planner_last_error='', planner_state='observed',
+                    stats.update(planner_consecutive_errors=0, planner_last_error='', planner_retry_backoff_s=0, planner_state='observed',
                                  planner_actions=len(selected), planner_responses=stats.get('planner_responses', 0) + 1)
                     stats.update(thought=str(plan.get("thought", ""))[:400], screen=plan.get("screen", "unknown"),
                                  difficulty_locked=bool(plan.get("difficulty_locked")))
@@ -759,10 +1091,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         stats.update(ok=False, campaign_state="needs_operator", stopped_reason=stats["thought"])
                         break
                     if state_identity(state) == planned_identity:
+                        recovery.observed()
+                        stats["native_control_during_recovery"] = False
                         digest = hashlib.sha256(planned_frame).hexdigest()
                         if plan.get("screen") == "credits" and ledger.boss_zero:
                             (root / (digest + ".png")).write_bytes(planned_frame)
                         receipt = ledger.ending(plan.get("screen"), digest, time.time())
+                        checkpoint.save(ledger)
                         if receipt:
                             with (root / "finishes.jsonl").open("a", encoding="utf-8") as output:
                                 output.write(json.dumps(receipt) + "\n")
@@ -775,10 +1110,17 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                             # cannot inject stale movement into a currently busy fight.
                             combat = state.get("verified") and any(e.get("kind") == "enemy" and e.get("hp", 0) > 0 for e in state.get("entities", []))
                             if menu_paused or not combat or any(p.get("hp", 0) < p.get("hp_max", 1) * .35 for p in state.get("players", {}).values()):
+                                # The grounded town route owns movement in this one scene.
+                                # A model may still operate independently observed menus.
+                                if (controller.town_enabled and not menu_paused and
+                                        state.get("phase") == 14 and state.get("episode") == 1 and
+                                        state.get("floor") == 0 and plan.get("screen") == "gameplay"):
+                                    selected = []
                                 selected, reason = menu.review(plan, selected, state_identity(state),
                                     frame=planned_frame, fresh_frame=ad.get_frame(),
                                     native_gameplay=bool(state.get('verified') and state.get('phase') == 14),
-                                    finish_save=ledger.awaiting_entry is True)
+                                    finish_save=ledger.awaiting_entry is True,
+                                    target_episode=ledger.target, target_difficulty=ledger.difficulty)
                                 stats.update(menu_repeated_attempts=menu.repeats, menu_input_withheld=reason,
                                              menu_independent_selection=menu.previous.get('independent_selection'),
                                              menu_selected_option=menu.previous.get('selected_option', ''),
@@ -796,7 +1138,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                         menu.previous['input_delivery_verified'] = True
                     else:
                         stats["action"] = "discarded_stale_plan"
-                if pending is None and time.monotonic() - last_plan_at > (2.1 if ledger.boss_zero else 8):
+                if (pending is None and time.monotonic() >= planner_retry_at and
+                        time.monotonic() - last_plan_at > (2.1 if ledger.boss_zero else 8)):
                     context = {**ledger.status(), **buddy_context(characters, state, authorization, session_id,
                                    seen=seen_buddies, awaiting_entry=ledger.awaiting_entry),
                                "native_state": state, "controller_mapping_verified": mapped,
@@ -811,11 +1154,16 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     stats.update(planner_requests=stats.get('planner_requests', 0) + 1,
                                  planner_state='waiting', input_polite=inputs.polite,
                                  second_pad_polite_supported=inputs.has_polite)
-                if mapped and state.get("verified"):
+                native_retry_ready = (native_retry_identity == state_identity(state) and
+                                      continuous_requested(driver, session_id))
+                if mapped and state.get("verified") and (not recovery.waiting or native_retry_ready):
                     # Reobserve after any planner input; Start/menu overlays leave
                     # native phase 14 unchanged and must never receive steering/L.
                     menu_paused = observe_menu_controls(menu, ad.get_frame(), state, controller, inputs, stats)
                     if not menu_paused:
+                        if recovery.waiting:
+                            stats.update(recovery_state="native_control_available_planner_retrying",
+                                         native_control_during_recovery=True)
                         stats["action"] = "coordinated_native_combat_or_navigation"
                         controller.tick(state)
                 errors = 0
@@ -844,6 +1192,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 speed_sampler.invalidate()
                 errors += 1
                 stats.update(last_error=str(exc), consecutive_errors=errors)
+                if recovery.pause(exc, "observation"):
+                    continue
                 if errors >= 5:
                     stats.update(ok=False, stopped_reason="Five consecutive observations failed; controller inputs released")
                     break
