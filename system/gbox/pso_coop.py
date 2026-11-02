@@ -1230,25 +1230,21 @@ class Controller:
             self.force_forward_unlock(state, 1, p1, now)
 
     def _forward_dwell_telemetry(self, state, now, engaged):
-        """Scalar fail-safe telemetry: how long P1 has held one room with no forward
-        translation. The telemetry endpoint drops nested dicts, so these stay flat.
-        forward_stuck crossing FALLBACK_STUCK_S is the operator's cue that the
-        physical switch/door path has not progressed (see report: a RAM door-unlock
-        fail-safe needs the TObjDoor open-flag offset reverse-engineered first)."""
+        """Scalar fail-safe telemetry: how long P1 has held one ROOM without the
+        room advancing. Measured by room id, NOT by standing still - a bot that
+        wanders a room pressing panels is still making no forward progress, and
+        must trip the fail-safe. Resets only when the room actually changes (real
+        progress). The telemetry endpoint drops nested dicts, so these stay flat.
+        forward_stuck crossing FALLBACK_STUCK_S drives force_forward_unlock."""
         stats = getattr(self.inputs, 'stats', None)
         if not isinstance(stats, dict):
             return
         p1 = state.get('players', {}).get(1) or {}
         room = p1.get('room')
         key = (state.get('episode'), state.get('floor'), room)
-        here = (p1.get('x'), p1.get('z'))
-        moved = lambda a, b: (all(type(v) in (int, float) and math.isfinite(v) for v in (*a, *b))
-                              and math.hypot(a[0] - b[0], a[1] - b[1]) > 6)
         rec = self.room_dwell.get('_cur')
         if rec is None or rec['key'] != key:
-            rec = self.room_dwell['_cur'] = {'key': key, 'since': now, 'anchor': here}
-        elif moved(here, rec['anchor']):
-            rec.update(since=now, anchor=here)
+            rec = self.room_dwell['_cur'] = {'key': key, 'since': now}
         dwell = now - rec['since']
         stats['forward_room'] = room
         stats['forward_time_in_room_s'] = round(dwell, 1)

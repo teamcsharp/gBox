@@ -525,17 +525,20 @@ def test_combat_engages_enemy_in_reach_despite_room_id_mismatch(monkeypatch, tmp
     assert controller.attacks == 2
 
 
-def test_forward_stuck_flag_fires_after_threshold_and_resets_on_translation():
-    """The scalar fail-safe telemetry flags a room held with no forward translation
-    (operator cue that the physical switch/door path has not progressed)."""
+def test_forward_stuck_flag_fires_after_threshold_and_resets_on_room_change():
+    """The scalar fail-safe telemetry flags a ROOM held with no forward PROGRESS
+    (operator cue that the switch/door path has not advanced). It is room-based,
+    not stillness-based: wandering the room does not reset it; only the room id
+    actually changing (real progress) does."""
     stats = {}
     controller = C.Controller(SimpleNamespace(), SimpleNamespace(stats=stats), None)
     observed = _field_state()
     controller._forward_dwell_telemetry(observed, 1000., False)
     assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
+    observed["players"][1]["x"] = 300.                          # P1 wandered far within the room
     controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 1, False)
-    assert stats["forward_stuck"] is True                       # held one spot past the threshold
-    observed["players"][1]["x"] = 300.                          # P1 translated far: progress
+    assert stats["forward_stuck"] is True                       # still stuck: same room, no progress
+    observed["players"][1]["room"] = observed["players"][1]["room"] + 1   # room advanced: progress
     controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 2, True)
     assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
 
@@ -748,6 +751,21 @@ def _flag_ad(floor=1):
             mem[a + i] = b
         writes.append((a, bytes(data)))
     return SimpleNamespace(read_memory=read, write_memory=write), writes, mem
+
+
+def test_forward_stuck_counts_time_in_room_not_time_standing_still(tmp_path):
+    """The stuck timer measures time in the same ROOM (no forward progress), not
+    time standing still - a bot wandering a room pressing panels is still stuck."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room(_room10_flag_entities())
+    ctrl._forward_dwell_telemetry(st, now=100., engaged=True)
+    assert ctrl.inputs.stats["forward_stuck"] is False and ctrl.inputs.stats["forward_room"] == 10
+    st["players"][1]["x"] = 999.                          # wandered far, but still room 10
+    ctrl._forward_dwell_telemetry(st, now=100. + C.FALLBACK_STUCK_S + 1, engaged=True)
+    assert ctrl.inputs.stats["forward_stuck"] is True     # stuck despite moving
+    st["players"][1]["room"] = 11                         # real progress: room advanced
+    ctrl._forward_dwell_telemetry(st, now=100. + C.FALLBACK_STUCK_S + 2, engaged=True)
+    assert ctrl.inputs.stats["forward_stuck"] is False and ctrl.inputs.stats["forward_room"] == 11
 
 
 def test_force_unlock_sets_exactly_the_rooms_gate_flags(monkeypatch, tmp_path):
