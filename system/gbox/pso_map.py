@@ -29,8 +29,11 @@ def extract_surface(state, player, *, max_cells=20000):
         return None
     # The walkable grid the player actually navigates is the Provider's per-player
     # projection (geometry_players[slot]); the top-level collision_grid is only set
-    # by the optional campaign context reader. Prefer whichever is populated.
-    grid = state.get('collision_grid') or geometry_view(state, player).get('collision_grid') or {}
+    # by the optional campaign context reader and can be present-but-floorless, so
+    # pick whichever grid actually HAS floor cells (Provider grid preferred).
+    grid = state.get('collision_grid') or {}
+    if not (isinstance(grid.get('floor'), (list, tuple)) and grid.get('floor')):
+        grid = geometry_view(state, player).get('collision_grid') or {}
     floor = grid.get('floor')
     size = grid.get('size')
     if not isinstance(floor, (list, tuple)) or not floor or type(size) not in (int, float) or size <= 0:
