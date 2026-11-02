@@ -189,6 +189,15 @@ TRIGGER_PRIOR = {             # live 2026-10-26, MercMode on the Spark (its RAM 
 URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing this soon this close: any shot into his
                                                  # body leaves (BODY_LO..BODY_HI, aimed at the chest), not only the head
                                                  # band - 27 % of today's hits landed while he was still aiming at the head
+# Proactive interrupt fire (operator 2026-11-02, ticket #7444: "I need Leon more proactive with dispatching these
+# opponents who are in the process of trying to dispatch him. He needs to get them before they get him." Live: Leon ran
+# at an enemy 9354 away - 9.3 m, far past ENGAGE - while a Ganado winding up a swing stood in his face, the gun held
+# while he turned). A Ganado this close (world units: swing / grab reach is 1200, a rush 2000) and this far off Leon's
+# facing (radians) that is winding up an attack (re4_threats ATTACKS / the motion's EV_HIT / EV_SWING bits) is the
+# target before any distant one, aimed at the whole body, and the gun stays UP to fire into him - never dropped to a
+# body-turn while his swing comes down (past AIM_KEEP_ERR the body turn is otherwise the faster aim, but not with a hit
+# landing point-blank).
+INTERRUPT_R, INTERRUPT_CONE = 2000.0, 0.7
 # "You Are Dead": No, not Continue Yes (operator 2026-10-26 16:40: "why does the character never change in RE4?"): Yes
 # replays the stage with the same character - the in-round tick answered it before the menus' own No could - so every
 # death kept him. No goes back through Select Player, where the menus draw another character and the round its own gun.
@@ -1395,7 +1404,10 @@ class Bot:
                 self.r_since = None                                    # (the gun up already: it stays up to SHOOT_KEEP)
                 return self._run_to(p, (tx, tgt["pos"][1], tz), now)
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
-        if abs(err) > (AIM_KEEP_ERR if aiming else TURN_TOL):          # (up: it stays up and aim-turns unless he is
+        interrupt = (not tgt.get("thrown") and dist < INTERRUPT_R and abs(err) < INTERRUPT_CONE
+                     and (tgt.get("urgent") or self._winding(tgt) or dist < CROWD_R))   # point-blank, winding up in front
+        keep_err = max(AIM_KEEP_ERR, INTERRUPT_CONE) if (aiming and interrupt) else AIM_KEEP_ERR
+        if abs(err) > (keep_err if aiming else TURN_TOL):             # (up: it stays up and aim-turns unless he is
             self.r_since = None                                         # far round - lowering it to turn and raising
             self.rapid["since"] = None
             self.stats["combat"] = f"{tag}turning to slot {tgt['slot']} d {dist:.0f} yaw {math.degrees(err):+.0f} (gun down)"
@@ -1441,7 +1453,9 @@ class Bot:
         self._look_ctx["line"] = (line, now)                              # the line the trigger was pulled on (the look)
         self.stats["shots_s"] = round(self.stats["shots_s"] + 0.05, 2)
         self.stats["combat"] = f"{tag}on slot {tgt['slot']} d {dist:.0f} yaw {deg:+.1f} FIRE"
-        self.stats["fire_gate"] = "on him"
+        self.stats["fire_gate"] = "on him (interrupt)" if interrupt else "on him"
+        if interrupt and not self.trigger["down"]:                       # a fresh press interrupting a point-blank wind-up
+            self.stats["interrupt_fires"] = self.stats.get("interrupt_fires", 0) + 1
         was_down = self.trigger["down"]
         keys = self._pull(now, tgt)
         if tag and "a" in keys and not was_down:                         # a fresh trigger press at a boss
@@ -1782,6 +1796,16 @@ class Bot:
         px, _, pz = p["pos"]
         return abs(wrap(heading(t.pos[0] - px, t.pos[2] - pz) - p["rot"])) <= within
 
+    @staticmethod
+    def _winding(e) -> bool:
+        """The target is in an attack wind-up: its Ganado routine is acting an attack (re4_threats ATTACKS), or its
+        motion's hit / swing event bits are on (EV_HIT / EV_SWING). The signal to open fire and interrupt it before the
+        swing lands (ticket #7444); e is _fight's target dict, which carries the enemy's RAM fields (r, ev)."""
+        r = e.get("r") or ()
+        if len(r) >= 2 and r[0] == threats_ram.R_ACT and r[1] in threats_ram.ATTACKS:
+            return True
+        return bool(e.get("ev", 0) & (threats_ram.EV_HIT | threats_ram.EV_SWING))
+
     def prompt_ok(self, button, s, now=None) -> bool:
         """Press the prompt the game shows now? Not an action button (a KICK, a TAKE: a second of Leon busy) while
         another Ganado's attack lands within PROMPT_GUARD_S (live 2026-10-20: a KICK mid-swing got Leon hit); a
@@ -1994,7 +2018,10 @@ class Bot:
                 self.r_since, self.trigger["down"] = None, False
                 return self._run_out(p, now)
         live = [t for t in threats if self.skip.get(t.slot, float("-inf")) < now or t.kind not in ("near", "down")]
-        urgent = [t for t in live if t.kind not in ("near", "down") and t.eta < URGENT_S]
+        # an attack landing within URGENT_S, or one winding up point-blank in Leon's front cone whatever its eta (a slow
+        # wind-up read far ahead still has to be answered before he runs off at a distant enemy - ticket #7444)
+        urgent = [t for t in live if t.kind not in ("near", "down")
+                  and (t.eta < URGENT_S or (t.dist < INTERRUPT_R and self._facing(p, t, INTERRUPT_CONE)))]
         # a stage boss in sight is the target before any ordinary Ganado (operator 2026-10-26: "high level threats
         # that have to be dispatched") - unless an ordinary attack lands sooner than a shot at him can leave
         boss_t = self._boss_target(p, live)
@@ -2017,7 +2044,8 @@ class Bot:
             t = self._locked(t, live, s)                           # the aim stays on its target unless t is about
             lead = min(ready, t.eta) if t.kind == "thrown" else 0.0   # to hit (quick turn: slower than the shot; a hit
             tgt = self._as_target(t, lead)                         # staggers him)
-            if t.kind in threats_ram.MELEE and t.eta < URGENT_BODY_S and t.dist < URGENT_BODY_R:
+            if t.kind in threats_ram.MELEE and ((t.eta < URGENT_BODY_S and t.dist < URGENT_BODY_R)
+                                                 or (t.dist < INTERRUPT_R and self._facing(p, t, INTERRUPT_CONE))):
                 tgt["urgent"] = True                               # his swing lands first: any shot into his body
             return self._fight(p, tgt, now, s)
         close = [t for t in live if t.kind == "near" and t.dist < CROWD_R]
