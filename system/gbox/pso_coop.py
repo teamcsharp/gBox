@@ -1730,16 +1730,15 @@ class Controller:
                 # hijack the non-field goal path (that would skip wall learning).
                 exploring = field_owned and field_dep in ('explore', 'unknown_geometry',
                     'no_verified_regroup_route', 'buddy_unavailable', 'buddy_regroup')
-                # P1 LEADS decisively and never idles: whenever it has no real field
-                # route (waiting on its buddy, exploring, or no destination) it drives
-                # forward itself - independent of the buddy's room - so a stuck leader
-                # in another room still gets the wall-wedge recovery instead of waiting.
-                # Also: once a room's gate flags are FORCED open, P1 must WALK THROUGH
-                # the door (drive_forward's skip-switches + overshoot) rather than let
-                # the field planner stop at the gate approach and mill the hub.
-                forced_here = (state.get('episode'), state.get('floor'), player.get('room'),
-                               state.get('geometry_identity')) in self.forced_rooms
-                lead = slot == 1 and (destination is None or exploring or forced_here)
+                # P1 is the SOLE navigator and drives forward itself whenever it is
+                # not in combat and has no explicit accepted goal - the forward-only
+                # progression (learned door links, force-unlock, walk-THROUGH) is
+                # what actually advances room-to-room (reached rooms 11/14), so it
+                # must own P1's movement even once the grid populates, rather than
+                # defer to the field planner which stops at a gate approach and mills
+                # the hub. Populating the grid is still valuable for the map + GOTO
+                # A*; it just must not take over P1's autonomous progression.
+                lead = slot == 1 and goal is None
                 if target is None and (lead or (exploring and same_room)
                                        or (destination is None and (not field_owned or same_room))):
                     if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
