@@ -1824,6 +1824,21 @@ def test_the_gun_stays_up_to_fire_into_a_point_blank_attacker_not_dropped_to_tur
     assert "r" not in act2["hold"] and bot2.stats["fire_gate"] == "turning: hold"
 
 
+def test_a_point_blank_standing_enemy_is_fired_into_without_waiting_for_the_head_pitch():
+    """Operator 2026-11-02 (#7444/#7421): "He shouldn't look at a single enemy and not be firing on them." A standing
+    Ganado right in his face is fired into whatever the aim pitch - his body fills the screen - rather than holding
+    while the aim settles onto the head band."""
+    now = [0.0]
+    m = world([((0, 0, 700), True)], room=0x400)                            # point-blank, dead ahead, winding up
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_SWING)
+    facing(m, 0.0)
+    set_pitch(m, 0.0)                                                        # the aim level (not raised onto the head)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    acts = run(bot, m, now, 0.0, 6)
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 1
+    assert bot.stats["evades"] == 0                                          # in front: shot, never run from
+
+
 def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
     # gbox.pad_takeover: the operator picks up the pad - the bot yields and resumes from a clean hand
     now = [0.0]
