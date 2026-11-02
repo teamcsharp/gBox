@@ -314,6 +314,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/watch-analytics.js"></script>
 <script src="/viz/autoplay-coach.js"></script>
 <script src="/viz/tactical-map.js"></script>
+<script src="/viz/pso-map.js"></script>
 <script src="/viz/mercs-reviewer.js"></script>
 <script src="/viz/mercmode.js"></script>
 <script src="/viz/bot-demo.js"></script>
@@ -789,6 +790,7 @@ const SELFIE_MODELS = { ctl:null, state:{} };
 const COACH = { ctl: null, pip: null, pipSid: null };                    // the Sessions header's "Coach the autoplay" box (viz/autoplay-coach.js)
 const RAMI = { ctl: null };                     // the Sessions header's RAM inspector button + panel (viz/ram-inspector.js)
 const TMAP = { ctl: null };                     // the session's Tactical map section: a Mercenaries round from above (viz/tactical-map.js)
+const PSOMAP = { ctl: null };                   // the session's PSO map section: the level top-down from RAM, click to command (viz/pso-map.js)
 const BCAST = { ctl: null, panel: null };       // the Sessions header's On air button + the list's Broadcast bar (viz/broadcast.js)
 $("#tabs").innerHTML = Object.keys(tabs).map(t => `<button data-t="${t}">${t}</button>`).join("");
 $("#tabs").onclick = e => e.target.dataset.t && (e.target.dataset.t === "Sessions" ? showList() : show(e.target.dataset.t));
@@ -822,6 +824,7 @@ async function show(t, ...args) {
   COACH.ctl?.dispose(); COACH.ctl = null;       // a note still capturing resumes its status when the header is back
   window.GBoxRamInspector?.detach(); RAMI.ctl = null;   // reopens with the session's header when it was open there
   window.GBoxTacticalMap?.detach(); TMAP.ctl = null;    // its polling stops with the view
+  window.GBoxPsoMap?.detach(); PSOMAP.ctl = null;       // the PSO map's polling stops with the view
   BCAST.ctl?.stop(); BCAST.ctl = null; BCAST.panel?.stop(); BCAST.panel = null;
   if (cur === "Builds") BUILDSV.ctl?.stop(); // save its position before replacing the page
   if (EXAM.sid && !(t === "Sessions" && args[0] === EXAM.sid && args[1] === "examine")) examineLeave();
@@ -1906,6 +1909,7 @@ async function sessionsView(sid, mode) {
       <div id="dock-main" class="dock" data-zone="main"></div></div>
       <div class="sidecol">${smartSearchHTML()}<div id="dock-top" class="dock" data-zone="top">
         ${window.GBoxTacticalMap ? GBoxTacticalMap.html(sid) : ""}
+        ${GBoxPSO.isPSO(s.title) && window.GBoxPsoMap ? GBoxPsoMap.html(sid) : ""}
         ${GBoxPSO.isPSO(s.title) ? '<details open data-dock="pso" class="sect"><summary draggable="true">PSO controls</summary><div id="pso-controls"></div></details>' : ''}
         <details open data-dock="pad" class="sect"><summary draggable="true">Controller <span class="mut">live · click to press · right-click to map</span></summary>
           <div id="padglyph" title="Your controller live · click a button to press it · right-click a button or stick to map it to a control on your pad"></div>
@@ -2396,6 +2400,7 @@ sessionsView.after = (sid, mode) => {
   } }) || null;
   TMAP.ctl = window.GBoxTacticalMap?.mount(document, { sid, api,
     portrait: (title, cls) => `/api/mercs/portraits/${encodeURIComponent(title)}/${encodeURIComponent(cls)}.jpg?${tq()}` }) || null;  // a Mercenaries round from above (shows with frames)
+  PSOMAP.ctl = window.GBoxPsoMap?.mount(document, { sid, api }) || null;      // the PSO level top-down from RAM, click to command (shows with frames)
   RAMI.ctl = window.GBoxRamInspector?.mount(head, { sid, api,                // the game's RAM by name, events, hex, search
     url: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}` }) || null;
   BCAST.ctl = window.GBoxBroadcast?.mount(head, { sid, api }) || null;        // On air: this game on the broadcast program

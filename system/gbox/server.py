@@ -5324,6 +5324,10 @@ def create_app(config: Config) -> FastAPI:
     re_inventory_api.routes(app, store, config, auth, submit=submit, JobRequest=JobRequest,
                             peek=lambda sid, a, n, actor: session_rpc(sid, Rpc(op="read_memory", args={"address": a, "length": n}), actor))
 
+    from . import pso_map                          # PSO interactive 2D map feed + map directives (docs/pso-map-directives.md)
+    pso_map.install(app, store, config, auth,
+                    peek=lambda sid, a, n, actor: session_rpc(sid, Rpc(op="read_memory", args={"address": a, "length": n}), actor))
+
     @app.post("/api/sessions/{sid}/detail")
     def session_detail(sid: str, info: dict, actor=Depends(auth)):
         """A worker reports a changed process (e.g. RPCS3 relaunched into a save state) so the app re-docks the window."""
