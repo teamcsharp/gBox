@@ -704,6 +704,23 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
+def test_wall_wedge_recovery_backs_a_stalled_buddy_off_and_clears_on_progress(tmp_path):
+    """A buddy pinned on geometry (a goal but no translation) backs off and tries
+    another octant; one that is making progress is left to approach normally."""
+    ctrl = _controller(tmp_path)
+    p = {"x": 0., "z": 0., "heading_deg": 0.}
+    wp = (0., 100.)                                                  # straight ahead (+z) -> ['lup']
+    assert ctrl._unwedge(1, p, wp, now=100.) == (["lup"], False)      # just arrived: approach
+    assert ctrl._unwedge(1, p, wp, now=101.) == (["lup"], False)      # still inside the stall window
+    keys, escaping = ctrl._unwedge(1, p, wp, now=100. + C.WEDGE_STALL_S)
+    assert escaping is True and keys != ["lup"]                       # wedged: back off, not into the wall
+    held, _ = ctrl._unwedge(1, p, wp, now=100. + C.WEDGE_STALL_S + 0.1)
+    assert held == keys                                              # hold the escape heading briefly
+    moved = {"x": 0., "z": 50., "heading_deg": 0.}                   # translated: progress
+    assert ctrl._unwedge(1, moved, wp, now=100. + C.WEDGE_STALL_S + 5) == (["lup"], False)
+    assert ctrl.inputs.stats["wedge_recovery"]["slot"] == 1
+
+
 def test_movement_path_is_input_only_and_writes_no_memory(tmp_path):
     """The normal drive-forward path is input-only; the only memory write is the
     separate, guarded force_forward_unlock fail-safe (tested below)."""
