@@ -3192,3 +3192,22 @@ def test_a_grabbed_front_hit_in_the_crowd_is_handled_by_fighting_not_a_quick_tur
     assert bot2.stats.get("quick_turns", 0) == 0
     assert bot2.doing == "crowd"
 
+
+def test_down_fight_kicks_at_cc_kick_gap_not_melee_gap_for_a_grab_in_front():
+    # request #5050 (cluster grabbed_front, down+held examples): a zombie at arm's length in front while down.
+    # Before the fix the down kick was rate-limited at MELEE_GAP_S (0.7 s) — the grab finishes in that gap.
+    # After the fix the kick pace is CC_KICK_GAP_S (0.4 s), matching crowd control's kick cadence.
+    near = (0.0, 0.0, 100.0, 700)   # 1 m ahead: within MELEE_R
+    bot, clock, snap, _writes = lock_brain((near, (0.0, 0.0, 600.0, 700)),
+                                            laser=((0.0, R.CHEST_H, 100.0), (20.0, 60.0, 30.0), 0.86))
+    snap["player"].update(hp=1, action="cPlAction_pl_act_dying_loop")
+    snap["kills"] = 20
+    # Run 1 s (20 ticks at 0.05 s each). With CC_KICK_GAP_S=0.4 we expect ~2 kicks; with the old
+    # MELEE_GAP_S=0.7 we would get ~1.
+    acts = run(bot, snap, clock, 20)
+    kicks = [a for a in acts if a == {"tap": "zr"}]
+    assert len(kicks) >= 2, f"expected >=2 kicks in 1 s at CC_KICK_GAP_S pace, got {len(kicks)}"
+    assert bot.stats["melee"] >= 2
+    # The kick cadence is CC_KICK_GAP_S, not MELEE_GAP_S:
+    assert R.CC_KICK_GAP_S < R.MELEE_GAP_S
+

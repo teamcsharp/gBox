@@ -3199,7 +3199,12 @@ class Bot:
             return self._go("down", "down_rise", {"hold": ("lup",)}, "down, nobody near: rising")
         e = near[0]
         d = math.dist(me, e["pos"])
-        if d < MELEE_R and now - self.melee_at >= MELEE_GAP_S:
+        # The grabbed_front cluster's remaining hits: down and held, a zombie at arm's length in front, the kick is
+        # rate-limited (MELEE_GAP_S) and the lock-fire aim takes its time - the grab finishes in that gap. The held
+        # prompt gate suppresses the held/raise action for an enemy in front while free, but the down branch bypasses
+        # it: down_fight runs before _decide's gates. Kick at crowd control's pace (CC_KICK_GAP_S, faster than
+        # MELEE_GAP_S) so the one in front is beaten to the grab instead of the lock-fire.
+        if d < MELEE_R and now - self.melee_at >= CC_KICK_GAP_S:
             self.melee_at = now
             self.stats["melee"] += 1
             return self._go("down", "down_kick", {"tap": "zr"}, f"down: a kick at the one at {d:.0f} cm")
