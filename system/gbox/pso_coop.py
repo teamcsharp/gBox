@@ -755,6 +755,18 @@ RECENTER_TURN_DEG = 45      # an actor turning this far since its last reset get
 # never binds a name across the non-reloadable pso_coop_setup boundary.
 DEFAULT_AUTOPLAY_SPEED = 2
 
+# Geometry-free forward progress (operator 2026-11-02: buddies must MOVE toward the
+# exit, never idle, even before the verified collision grid proves geometry_verified).
+# A switch is stood on first, then the door/barrier it gates. These live in this
+# hot-reloadable module so no name crosses the non-reloadable setup boundary.
+FORWARD_SWITCH_CLASSES = frozenset({'TLazerFenceSw', 'TObjDoorKey'})
+FORWARD_GATE_CLASSES = frozenset({'TObjDoor', 'TOBarrierEnergy01', 'TObjLazerFenceNorm'})
+FORWARD_FALLBACK_CLASSES = FORWARD_SWITCH_CLASSES | FORWARD_GATE_CLASSES
+FALLBACK_STALL_S = 6.0        # abandon a forward affordance that stops getting closer
+FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many units
+FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
+COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
+
 
 class Controller:
     def __init__(self, reader, inputs, maps):
@@ -773,6 +785,8 @@ class Controller:
         from .pso_coop_frontier import FieldObjectives
         self.field = FieldObjectives()
         self.margin_attempts = {}
+        self.fallback = {}      # (episode,floor,geometry) -> geometry-free forward approach book
+        self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
 
     def _steering_publish(self):
         """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
@@ -945,6 +959,106 @@ class Controller:
         # from these door approaches or from a cross-room transition.
         return True
 
+    def forward_fallback(self, state, slot, player, now):
+        """Geometry-free forward progress toward the room's exit affordance.
+
+        When the verified field grid is not yet proven (geometry_verified is not
+        True) the whole FieldObjectives path is dead and the planner rarely yields
+        a goal, so the buddies would stand still. Instead advance them toward the
+        nearest forward affordance in their room - a floor switch to stand on,
+        else the door/barrier it gates. P1 leads to the nearest switch/door; P2
+        follows P1's committed choice or closes the gap. A per-slot approach is
+        abandoned (cooled down) once it stops getting closer, rotating to the next
+        candidate rather than pushing a wall forever. Movement itself still routes
+        through nav.route, which is permissive when no collision grid exists."""
+        finite = lambda row: all(type(row.get(k)) in (int, float) and math.isfinite(row[k])
+                                 for k in ('x', 'z'))
+        if not finite(player):
+            return None
+        room = player.get('room')
+        px, pz = player['x'], player['z']
+        identity = (state.get('episode'), state.get('floor'), state.get('geometry_identity'))
+        book = self.fallback.get(identity)
+        if book is None or book.get('_room') != room:
+            book = self.fallback[identity] = {'_room': room, 'cooldown': {}, 'slots': {}}
+            if len(self.fallback) > 16:
+                self.fallback.pop(next(iter(self.fallback)))
+        cooldown = book['cooldown']
+
+        def candidates(same_room):
+            rows = []
+            for e in state.get('entities', ())[:512]:
+                if e.get('class') not in FORWARD_FALLBACK_CLASSES or not finite(e):
+                    continue
+                if same_room and e.get('room') != room:
+                    continue
+                gkey = (str(e.get('class')), round(e['x'], 1), round(e['z'], 1))
+                if cooldown.get(gkey, 0) > now:
+                    continue
+                is_switch = 0 if e.get('class') in FORWARD_SWITCH_CLASSES else 1
+                rows.append((is_switch, math.hypot(e['x'] - px, e['z'] - pz), gkey, e))
+            rows.sort(key=lambda r: (r[0], r[1]))
+            return rows
+
+        if slot == 2:
+            leader = book['slots'].get(1)
+            buddy = state['players'][1]
+            if leader and leader.get('room') == room:
+                return leader['x'], leader['z']
+            if finite(buddy) and buddy.get('room') == room and math.hypot(buddy['x'] - px, buddy['z'] - pz) > 40:
+                return buddy['x'], buddy['z']
+
+        for _ in range(8):
+            rows = candidates(True) or candidates(False)
+            if not rows:
+                book['slots'].pop(slot, None)
+                return None
+            _, dist, gkey, entity = rows[0]
+            track = book['slots'].get(slot)
+            if track is None or track.get('gkey') != gkey:
+                track = book['slots'][slot] = {'gkey': gkey, 'best': dist, 'since': now}
+            elif dist < track['best'] - 2:
+                track.update(best=dist, since=now)
+            elif now - track['since'] > FALLBACK_STALL_S and dist > FALLBACK_REACH:
+                cooldown[gkey] = now + 30
+                book['slots'].pop(slot, None)
+                continue
+            track.update(room=room, x=entity['x'], z=entity['z'], cls=str(entity.get('class')))
+            if slot == 1:
+                stats = getattr(self.inputs, 'stats', None)
+                if isinstance(stats, dict):
+                    stats['forward_fallback_target'] = str(entity.get('class'))
+                    stats['forward_fallback_dist'] = round(dist, 1)
+            return entity['x'], entity['z']
+        book['slots'].pop(slot, None)
+        return None
+
+    def _forward_dwell_telemetry(self, state, now, engaged):
+        """Scalar fail-safe telemetry: how long P1 has held one room with no forward
+        translation. The telemetry endpoint drops nested dicts, so these stay flat.
+        forward_stuck crossing FALLBACK_STUCK_S is the operator's cue that the
+        physical switch/door path has not progressed (see report: a RAM door-unlock
+        fail-safe needs the TObjDoor open-flag offset reverse-engineered first)."""
+        stats = getattr(self.inputs, 'stats', None)
+        if not isinstance(stats, dict):
+            return
+        p1 = state.get('players', {}).get(1) or {}
+        room = p1.get('room')
+        key = (state.get('episode'), state.get('floor'), room)
+        here = (p1.get('x'), p1.get('z'))
+        moved = lambda a, b: (all(type(v) in (int, float) and math.isfinite(v) for v in (*a, *b))
+                              and math.hypot(a[0] - b[0], a[1] - b[1]) > 6)
+        rec = self.room_dwell.get('_cur')
+        if rec is None or rec['key'] != key:
+            rec = self.room_dwell['_cur'] = {'key': key, 'since': now, 'anchor': here}
+        elif moved(here, rec['anchor']):
+            rec.update(since=now, anchor=here)
+        dwell = now - rec['since']
+        stats['forward_room'] = room
+        stats['forward_time_in_room_s'] = round(dwell, 1)
+        stats['forward_stuck'] = dwell >= FALLBACK_STUCK_S
+        stats['forward_fallback_engaged'] = bool(engaged)
+
     def tick(self, state):
         if not state.get("verified") or len(state.get("players", {})) != 2:
             return False
@@ -964,7 +1078,7 @@ class Controller:
                 self.kills += int(e["hp"] == 0)
             self.enemy_hp[key] = e["hp"]
         commands, moves, attack_rows, margin_slots = [], {}, {}, []
-        steering = {}
+        steering, fallback_slots = {}, []
         envelopes = {slot: self.weapon_ranges.for_player(state, slot) if enemies else FALLBACK for slot in (1, 2)}
         # Recenter only on drift (see recenter()); after a reset the world moved
         # on during the hold, so choose input from a fresh read.
@@ -987,6 +1101,12 @@ class Controller:
                                            player_ptr=player.get('ptr'))
             nearby = sorted((e for e in enemies if e.get("room") == player.get("room")),
                             key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
+            if not nearby and enemies:
+                # Room ids can lag the live actor; still engage an enemy that is
+                # physically within reach. The weapon envelope still gates the shot.
+                nearby = sorted((e for e in enemies
+                                 if math.hypot(e["x"] - player["x"], e["z"] - player["z"]) <= COMBAT_NEARBY_RADIUS),
+                                key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
             nav = self.maps.get(state, player)
             field_owned = bool(state.get("floor", 0) > 0 and state.get("geometry_verified"))
@@ -1070,6 +1190,12 @@ class Controller:
                 buddy = state["players"][3 - slot]
                 if not field_owned and destination is None and slot == 2 and buddy.get("room") == player.get("room") and math.hypot(buddy["x"] - player["x"], buddy["z"] - player["z"]) > 65:
                     destination = buddy["x"], buddy["z"]
+                # Last resort: without a verified grid, still advance toward the
+                # room's forward switch/door instead of standing still.
+                if not field_owned and destination is None:
+                    destination = self.forward_fallback(state, slot, player, now)
+                    if destination is not None:
+                        fallback_slots.append(slot)
             if destination is None:
                 continue
             if field_owned and nav.floor is None:
@@ -1113,6 +1239,7 @@ class Controller:
             commands.append((slot, movement_keys(player, waypoint), duration))
             moves[slot] = (player, waypoint, nav, not nearby)
             steering[slot] = (player, waypoint, 'native_route')
+        self._forward_dwell_telemetry(state, now, bool(fallback_slots))
         if self.field.revision != field_revision:
             # First route selection can perform several bounded searches.
             # Cache the objective, then reobserve before movement or attack.

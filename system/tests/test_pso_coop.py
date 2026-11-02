@@ -449,3 +449,90 @@ def test_default_speed_pause_cannot_teach_walls_and_resume_restores_learning(tmp
     for _ in range(2):
         nav.observe((6, 6), (6, 6), (6, 18), reliable=inputs.wall_learning_safe())
     assert nav.blocked and nav.path.exists()
+
+
+def _field_state(room=10, p1=(30., 0.), p2=(60., 0.)):
+    """A verified gameplay floor with NO geometry_verified: field_owned is False, so
+    the buddies depend on the geometry-free forward fallback to keep advancing."""
+    s = state(floor=1)
+    s["players"][1].update(room=room, x=p1[0], z=p1[1])
+    s["players"][2].update(room=room, x=p2[0], z=p2[1])
+    s["entities"] = list(s["players"].values())
+    return s
+
+
+def _gate(cls, x, z, room=10, eid=9000):
+    return {"kind": "gate", "class": cls, "ptr": f"80DB{eid:04X}", "entity_id": eid,
+            "room": room, "x": float(x), "y": 0., "z": float(z), "heading_deg": 0.}
+
+
+def test_buddies_advance_toward_room_switch_when_geometry_unverified(monkeypatch, tmp_path):
+    """Operator 2026-11-02 top pain: with no verified grid the buddies must still MOVE
+    toward the room's switch/door instead of idling. P1 leads to the nearer switch; P2
+    follows the same committed affordance."""
+    observed = _field_state()
+    observed["entities"] += [_gate("TLazerFenceSw", 30., 80., eid=16501),
+                             _gate("TObjDoor", 30., 160., eid=16502)]
+    sent, stats = [], {}
+    inputs = SimpleNamespace(hold=lambda c: sent.append(c), speed=lambda: 1,
+                             stopped=lambda: False, stats=stats)
+    controller = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed)), inputs, C.Maps(tmp_path))
+    monkeypatch.setattr(P, "wait", lambda *_: None)
+    assert controller.tick(observed)
+    moves = [c for batch in sent for c in batch if c[1] not in (["l"], ["a"])]
+    moved = {c[0] for c in moves}
+    assert moved == {1, 2}                                   # both buddies received movement
+    assert all("lup" in c[1] for c in moves)                # +z is straight ahead of heading 0
+    assert stats["forward_fallback_target"] == "TLazerFenceSw"   # switch is reached before the door
+    assert stats["forward_fallback_engaged"] is True
+    assert stats["forward_room"] == 10 and stats["forward_stuck"] is False
+
+
+def test_forward_fallback_rotates_off_a_gate_that_stops_progressing():
+    """A blocked affordance is abandoned after the stall window and the next candidate
+    is tried, so the pair never pushes one wall forever."""
+    observed = _field_state()
+    observed["entities"] += [_gate("TLazerFenceSw", 30., 80., eid=16501),
+                             _gate("TObjDoor", 30., 160., eid=16502)]
+    maps = C.Maps.__new__(C.Maps)   # not needed by forward_fallback
+    controller = C.Controller(SimpleNamespace(), SimpleNamespace(stats={}), None)
+    player = observed["players"][1]
+    assert controller.forward_fallback(observed, 1, player, 100.) == (30., 80.)   # switch first
+    assert controller.forward_fallback(observed, 1, player, 101.) == (30., 80.)   # still trying
+    # No progress past the stall window: the switch is cooled down, the door is next.
+    assert controller.forward_fallback(observed, 1, player, 108.) == (30., 160.)
+    book = controller.fallback[(1, 1, None)]
+    assert any(k[0] == "TLazerFenceSw" for k in book["cooldown"])
+
+
+def test_combat_engages_enemy_in_reach_despite_room_id_mismatch(monkeypatch, tmp_path):
+    """Room ids can lag the live actor; an enemy physically within reach is still
+    attacked even when its room field does not match the player's."""
+    observed = state(floor=1)
+    for player in observed["players"].values():
+        player["room"] = 10
+        observed["entities"].append({"kind": "enemy", "ptr": player["ptr"] + "E", "class": "TObjEneBeast",
+                                     "room": 999, "x": player["x"], "z": 8., "hp": 100, "hp_max": 100})
+    observed["entities"] = list(observed["players"].values()) + observed["entities"][2:]
+    sent = []
+    inputs = SimpleNamespace(hold=lambda c: sent.append(c), speed=lambda: 1, stopped=lambda: False)
+    controller = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed)), inputs, C.Maps(tmp_path))
+    monkeypatch.setattr(P, "wait", lambda *_: None)
+    assert controller.tick(observed)
+    assert sent[-1] == [(1, ["a"], .12), (2, ["a"], .12)]
+    assert controller.attacks == 2
+
+
+def test_forward_stuck_flag_fires_after_threshold_and_resets_on_translation():
+    """The scalar fail-safe telemetry flags a room held with no forward translation
+    (operator cue that the physical switch/door path has not progressed)."""
+    stats = {}
+    controller = C.Controller(SimpleNamespace(), SimpleNamespace(stats=stats), None)
+    observed = _field_state()
+    controller._forward_dwell_telemetry(observed, 1000., False)
+    assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
+    controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 1, False)
+    assert stats["forward_stuck"] is True                       # held one spot past the threshold
+    observed["players"][1]["x"] = 300.                          # P1 translated far: progress
+    controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 2, True)
+    assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
