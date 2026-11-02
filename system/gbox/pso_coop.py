@@ -1103,9 +1103,18 @@ class Controller:
             elif dist < track['best'] - 2:
                 track.update(best=dist, since=now)
             elif now - track['since'] > FALLBACK_STALL_S and dist > FALLBACK_REACH:
-                cooldown[gkey] = now + 30
-                book['slots'].pop(slot, None)
-                continue
+                # A FRONTIER door (a door never traversed yet, so its far side is a
+                # potentially NEW room) must not be abandoned just because it is
+                # slow to reach - abandoning it lets P1 retreat through the known
+                # backward connector and oscillate forever. Keep committing to it
+                # (drive_forward's wedge recovery works the approach); only cool
+                # switches and already-known (traversed) doors.
+                frontier_door = is_switch == 1 and gkey not in self.door_links
+                if not frontier_door:
+                    cooldown[gkey] = now + 30
+                    book['slots'].pop(slot, None)
+                    continue
+                track['since'] = now        # keep pursuing the frontier door
             track.update(room=room, x=entity['x'], z=entity['z'], cls=cls, gkey=gkey)
             # A panel/switch within reach is pressed (stand on it + the controller
             # taps A). After a short dwell treat it as pressed and rotate to the
