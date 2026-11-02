@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import random
+import sqlite3
 from .mercs import warm_boot
 import threading
 import time
@@ -1813,6 +1814,14 @@ def install(app, store, config, auth, submit, workers, archive):
             from .autoplay_resume import note_handoff
             note_handoff(store, sid, body.source_autoplay_job_id)
         telemetry_put(sid, body.model_dump())
+        review = getattr(app.state, 'pso_review', None)
+        if review is not None and isinstance(body.stats.get('pso_review'), dict):
+            try:
+                review.ingest(sid, body.stats['pso_review'], store.get('session', sid),
+                              body.source_autoplay_job_id or '')
+            except (ValueError, TypeError, OSError, sqlite3.Error) as error:
+                # A failed recorder must not reject the bot's normal telemetry.
+                review.error = 'PSO review recording unavailable: ' + str(error)[:180]
         return {"ok": True}
 
     @app.get("/api/autoplay/telemetry/{sid}")

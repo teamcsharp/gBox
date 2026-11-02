@@ -57,10 +57,21 @@ def reason(store, worker, job=None):
     p = selected(store, worker)
     if not p['enabled']:
         return 'Idle Ollama assistance is disabled on this PC.'
-    blocked = guarded_reason(store, worker)
+    analysis = is_analysis_job(job or {})
+    if analysis:
+        from .game_analysis import model_reason
+        blocked = model_reason(store, worker, job)
+    else:
+        blocked = guarded_reason(store, worker)
     if blocked:
         return blocked
-    if worker.get('active_jobs', 0) > (1 if job else 0):
+    if analysis:
+        # A running autoplay controller may coexist; other compute must finish.
+        busy = [j for j in store.jobs(states=('running',)) if j.get('worker_id') == worker['id']
+                and j.get('id') != job.get('id') and j.get('tool') != 'autoplay']
+        if busy:
+            return 'Waiting for other compute on the selected analysis worker.'
+    if not analysis and worker.get('active_jobs', 0) > (1 if job and job.get('state') == 'running' else 0):
         return 'Waiting for the worker to finish its current job.'
     inv = worker.get('ollama') or {}
     if not inv.get('available') or time.time() - inv.get('sampled_at', 0) > 360:
@@ -87,6 +98,10 @@ def is_job(job):
     return job.get('tool') == 'ollama_assist' and (job.get('input') or {}).get('op', 'analyze') == 'analyze'
 
 
+def is_analysis_job(job):
+    return is_job(job) and bool((job.get('input') or {}).get('analysis_run_id'))
+
+
 def authorization(ctx):
     if not ctx.server:
         raise ToolUnavailable('Idle assistance requires the control plane')
@@ -97,7 +112,10 @@ def authorization(ctx):
     if data.get('reason'):
         raise ToolUnavailable(data['reason'])
     # Server policy is authoritative; input cannot override model or budgets.
-    return policy(data['policy'])
+    p = policy(data['policy'])
+    if data.get('allow_during_gameplay') is True:
+        p['allow_during_gameplay'] = True
+    return p
 
 
 def analyze(inp, ctx):
@@ -108,7 +126,7 @@ def analyze(inp, ctx):
         from .worker import user_idle_seconds
         import os
         def check():
-            if os.name == 'nt':
+            if os.name == 'nt' and not p.get('allow_during_gameplay'):
                 idle = user_idle_seconds()
                 if idle is None or idle < 300:
                     raise ToolUnavailable('Operator returned; idle analysis yielded')
@@ -167,6 +185,7 @@ class AssistIn(BaseModel):
     op: str = 'analyze'
     prompt: str = Field('', max_length=32768)
     purpose: str = Field('decompilation review', max_length=200)
+    analysis_run_id: str = Field('', max_length=64)
 
     @model_validator(mode='after')
     def valid_operation(self):
@@ -181,7 +200,7 @@ class AssistOut(BaseModel):
     result: dict
 
 
-@tool('ollama_assist', '1.0', AssistIn, AssistOut, capabilities=['llm', 'reverse-engineering'],
+@tool('ollama_assist', '1.1', AssistIn, AssistOut, capabilities=['llm', 'reverse-engineering'],
       permissions=[P.READ, P.NETWORK], timeout_s=150, artifacts=['ollama-analysis.json'])
 def assist(inp, ctx):
     """status: discover opted-in idle Ollama PCs and installed models. analyze: one small function/evidence review
@@ -229,5 +248,16 @@ def install(app, store, auth):
         # enforce gaming ownership, live telemetry and the shared load budget.
         from .background_testing import guarded_reason
         p = selected(store, w)
-        blocked = 'Idle assistance disabled' if not p['enabled'] else guarded_reason(store, w, require_gpu=False)
-        return {'policy': p, 'reason': blocked}
+        allow_active = False
+        if is_analysis_job(job):
+            from .game_analysis import model_reason
+            blocked = model_reason(store, w, job, continuing=True)
+            run = store.get('game_analysis', job['input']['analysis_run_id']) or {}
+            allow_active = run.get('allow_during_gameplay') is True
+            if not blocked and (w.get('resources') or {}).get('memory_available_bytes', 0) < p['reserve_gib'] * 2**30:
+                blocked = 'Analysis yielded to preserve the configured free-memory reserve.'
+        else:
+            blocked = guarded_reason(store, w, require_gpu=False)
+        if not p['enabled']:
+            blocked = 'Idle assistance disabled'
+        return {'policy': p, 'reason': blocked, 'allow_during_gameplay': allow_active and not blocked}

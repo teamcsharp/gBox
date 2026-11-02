@@ -895,6 +895,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats["progress_restored"] = restored
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
+    # Recording reads this controller's existing snapshot and never owns input.
+    from .pso_run_review import Sampler
+    try:
+        review_sampler = Sampler(session_id, (game or {}).get('game_id', ''))
+    except (TypeError, ValueError) as error:
+        review_sampler = None
+        stats['pso_review_error'] = str(error)[:180]
     speed_sampler = SpeedSampler(ad, session_id, stopped)
     planner = solo.Planner(driver, ad.config)
     planner.prompt = PROMPT
@@ -958,6 +965,12 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                              combat=controller.combat_status, town_navigation=controller.town.status,
                              no_damage_repositions=controller.engagements.recoveries,
                              no_damage_deferrals=controller.engagements.deferred)
+                if review_sampler is not None:
+                    try:
+                        review_sampler.offer(state, controller, stats)
+                    except Exception as error:
+                        # Observability failure cannot stop combat, navigation or menu guards.
+                        stats['pso_review_error'] = type(error).__name__ + ': ' + str(error)[:160]
                 if state.get("travelling"):
                     speed_sampler.invalidate()
                     stats["action"] = "waiting_for_area_loader"
