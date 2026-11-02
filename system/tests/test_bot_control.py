@@ -290,6 +290,61 @@ def test_a_stop_that_lands_while_f5_works_wins(tmp_path):
 
 # --- F3 ---
 
+def test_prod_recovers_a_fresh_but_stuck_bot_without_relaunching_game(tmp_path):
+    store = make_store(tmp_path)
+    control(store, continuous=True)
+    telemetry(age=1)
+    reads = iter([True, False])
+    rig = Rig(store, lambda tool, inp: {'result': {'running': next(reads)}} if inp['op'] == 'status'
+              else {'result': {'stopped': True} if inp['op'] == 'stop' else {'started': 'playbook: mercs_bot'}})
+    out = rig.finished(rig.ctl.ensure(SID, 'operator', prod=True))
+    assert out['state'] == 'succeeded'
+    assert out['output']['message'].startswith('Prod restarted the autobot')
+    assert [op for _, op, _, _ in rig.ops()] == ['status', 'stop', 'status', 'start']
+    assert all(j['input']['session_id'] == SID and j['tool'] == 'autoplay' for j in rig.jobs)
+    assert rig.jobs[-1]['input']['reset'] is False
+
+
+@pytest.mark.parametrize('why', ['stop', 'takeover', 'warm', 'no_bot'])
+def test_prod_preserves_operator_control_and_parked_games(tmp_path, why):
+    store = make_store(tmp_path)
+    if why != 'no_bot':
+        control(store, continuous=True)
+    if why == 'stop':
+        control(store, op='stop', ident='operator-stop', at=20)
+    elif why == 'takeover':
+        store.put('autoplay_handoff', SID, {'source_job_id': 'start', 'at': 30})
+    elif why == 'warm':
+        store.put('slabel', SID, {'warm': True})
+    rig = Rig(store)
+    out = rig.finished(rig.ctl.ensure(SID, 'operator', prod=True))
+    assert out['output']['action'] == 'none' and rig.jobs == []
+    assert rig.forced == [], 'Prod changes no saved settings on a guarded session'
+
+
+def test_prod_never_follows_an_expired_menu_to_another_session(tmp_path):
+    store = make_store(tmp_path)
+    store.put('session', 'w1-old', {'session_id': 'w1-old', 'game_id': 're5', 'state': 'ended', 'replaced_by': SID})
+    control(store, continuous=True)
+    rig = Rig(store)
+    with pytest.raises(HTTPException, match='Select its current stream'):
+        rig.ctl.ensure('w1-old', 'operator', prod=True)
+    assert rig.jobs == [] and rig.forced == []
+
+
+def test_prod_stops_before_any_mutation_if_controller_takes_over_during_status(tmp_path):
+    store = make_store(tmp_path)
+    control(store, continuous=True)
+    telemetry(age=1)
+    def answer(tool, inp):
+        assert inp['op'] == 'status'
+        store.put('autoplay_handoff', SID, {'source_job_id': 'start', 'at': 30})
+        return {'result': {'running': True}}
+    rig = Rig(store, answer)
+    out = rig.finished(rig.ctl.ensure(SID, 'operator', prod=True))
+    assert out['output']['action'] == 'none'
+    assert [op for _, op, _, _ in rig.ops()] == ['status']
+
 def test_f3_starts_continuous_autoplay_on_the_shown_session_as_the_operator(tmp_path):
     store = make_store(tmp_path)
     rig = Rig(store)
@@ -377,4 +432,9 @@ def test_the_routes_record_the_operator_and_refuse_automation(app):
         assert ensure.status_code == 200 and ensure.json()['output']['action'] == 'none'
         assert client.post(f'/api/sessions/{SID}/autoplay/ensure', json={},
                            headers={'x-gbox-actor': 'agent'}).status_code == 409
+        assert client.post(f'/api/sessions/{SID}/autoplay/ensure', json={'prod': True},
+                           headers={'x-gbox-actor': 'agent'}).status_code == 409
+        prod = client.post(f'/api/sessions/{SID}/autoplay/ensure', json={'prod': True})
+        assert prod.status_code == 200 and prod.json()['input']['prod'] is True
+        assert prod.json()['output']['action'] == 'none'
         assert client.post('/api/sessions/nope-x/autoplay', json={}).status_code == 404

@@ -3174,11 +3174,23 @@ def _fire_x(RM, gun, default):
     return (getattr(RM, "FIRE_X", None) or {}).get(gun, default)
 
 
+def _operator_choice_active(RM, ad):
+    """A bot reload may retain the older, worker-lifetime mods module."""
+    check = getattr(RM, "operator_choice_active", None)
+    if callable(check):
+        return bool(check(ad))
+    # Preserve an explicit live lease until expiry when its newer identity
+    # checker is unavailable; a missing helper must not stop the entire bot.
+    choice = getattr(ad, "_merc_primary_weapon", None) or {}
+    until = choice.get("lock_until", 0)
+    return isinstance(until, (int, float)) and until > time.monotonic()
+
+
 def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[str]:
     """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in. With stats:
     stats["round_loadout"] records the draw for the round it arms (LoadoutCheck verifies it in that round)."""
     from . import re_mods_tool as RM
-    if RM.operator_choice_active(ad):
+    if _operator_choice_active(RM, ad):
         return []  # the verified explicit selection owns these three minutes
     try:
         r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1], **({"equip_now": True} if equip_now else {}))

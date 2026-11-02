@@ -56,6 +56,7 @@ class ToggleIn(BaseModel):
 
 class EnsureIn(BaseModel):
     reason: str = 'F5'
+    prod: bool = False          # operator requested recovery even when reports remain fresh
 
 
 class ReloadIn(BaseModel):
@@ -168,6 +169,8 @@ def message(out: dict) -> str:
     title = out.get('title') or 'this game'
     where = f" ({out['worker']})" if out.get('worker') else ''
     action = out.get('action')
+    if action == 'restarted' and out.get('prod'):
+        return f'Prod restarted the autobot on {title}{where}.'
     if action == 'started' and out.get('kind'):
         return f'Autobot back in control of {title}{where}.'
     if action == 'started':
@@ -308,9 +311,17 @@ class BotControl:
                 'worker': self.worker(sid).get('name') or sid.split('-', 1)[0]}
 
     # --- F5 ---
-    def ensure(self, sid: str, actor: str, reason: str = 'F5', origin: dict | None = None) -> dict:
-        sid, sess = follow(self.store, sid)
-        if self.prefs is not None and sess.get('state') == 'running':
+    def ensure(self, sid: str, actor: str, reason: str = 'F5', origin: dict | None = None, *, prod: bool = False) -> dict:
+        if prod:
+            sess = self.store.get('session', sid)
+            if not sess:
+                raise HTTPException(404, 'Unknown game session.')
+            if sess.get('state') != 'running':
+                raise HTTPException(409, 'That game has ended. Select its current stream before prodding the bot.')
+            reason = 'Prod'
+        else:
+            sid, sess = follow(self.store, sid)
+        if not prod and self.prefs is not None and sess.get('state') == 'running':
             try:
                 self.prefs.force(sid)                    # the game's saved menu settings go back on as well
             except Exception as exc:                     # noqa: BLE001 - settings never block the bot
@@ -320,30 +331,34 @@ class BotControl:
             if existing:
                 return existing
             decision = self.decide(sid, actor)
-            rec = self.record(ENSURE_TOOL, sid, sess, actor, origin, {'reason': reason[:40], 'kind': decision['kind']})
+            rec = self.record(ENSURE_TOOL, sid, sess, actor, origin,
+                              {'reason': reason[:40], 'kind': decision['kind'], **({'prod': True} if prod else {})})
         base = self.base(sid, sess) | {'kind': decision['kind'], 'reason': decision['reason']}
         if not decision['kind']:
             self.finish(rec['id'], 'succeeded', base | {'action': 'pending' if decision.get('pending') else 'none'},
                         None, actor, 'autoplay.ensure')
             return self.store.get('job', rec['id'])
-        return self.background(rec, lambda say: self.ensure_steps(sid, sess, decision, actor, reason, say),
+        return self.background(rec, lambda say: self.ensure_steps(sid, sess, decision, actor, reason, say, prod=prod),
                                actor, 'autoplay.ensure')
 
-    def ensure_steps(self, sid, sess, decision, actor, reason, say) -> dict:
+    def ensure_steps(self, sid, sess, decision, actor, reason, say, *, prod: bool = False) -> dict:
         from . import screensaver
         base = self.base(sid, sess) | {'kind': decision['kind'], 'reason': decision['reason']}
         origin = {'via': f'{reason} recovery', 'session_id': sid, 'requested_by': actor}
         live = liveness(screensaver.telemetry_last(sid, self.clock()))
-        if live == 'driving':
+        if live == 'driving' and not prod:
             return base | {'action': 'driving'}
         say(15, f"Asking {base['worker']} whether the autobot runs")
         running = self.status(sid, actor, origin)
         restarted, own_stop = False, ''
-        if running and live == 'unknown':
+        if running and live == 'unknown' and not prod:
             return base | {'action': 'driving', 'detail': 'The PC reports the autobot running; its live report follows.'}
         if running:
-            say(35, 'The autobot stopped reporting: stopping it')
-            own_stop = self.stop_for(sid, decision, actor, origin)
+            current = self.decide(sid, actor)
+            if not current['kind'] or current.get('pending'):
+                return base | {'action': 'none', 'reason': current['reason']}
+            say(35, 'Prod: restarting this autobot' if prod else 'The autobot stopped reporting: stopping it')
+            own_stop = self.stop_for(sid, current, actor, origin)
             if not self.settled(sid, actor, origin):
                 raise HTTPException(409, 'The stuck autobot did not stop within 20 s; press F5 again in a moment.')
             restarted = True
@@ -351,7 +366,10 @@ class BotControl:
         if not current['kind'] or current.get('pending'):
             return base | {'action': 'none', 'reason': current['reason']}
         say(65, 'Starting the autobot again')
-        return base | {'action': 'restarted' if restarted else 'started', **self.start_for(sid, current, actor, reason, origin)}
+        result = base | {'action': 'restarted' if restarted else 'started', **self.start_for(sid, current, actor, reason, origin)}
+        if prod and restarted:
+            result['prod'] = True
+        return result
 
     def stop_for(self, sid, decision, actor, origin) -> str:
         from . import screensaver
@@ -492,7 +510,7 @@ def install(app, store, auth, *, submit, workers, wid, automated, origin_dep, se
         """F5: keep the autobot of a bot session driving (never starts one on the operator's own game)."""
         if automated(actor, origin):
             raise HTTPException(409, 'F5 recovery is an operator request; automation keeps its own bots running.')
-        return ctl.ensure(sid, actor, body.reason or 'F5', origin)
+        return ctl.ensure(sid, actor, body.reason or 'F5', origin, prod=body.prod)
 
     @app.post('/api/sessions/{sid}/autoplay')
     def autoplay_toggle(sid: str, body: ToggleIn, actor=Depends(auth), origin=Depends(origin_dep)):

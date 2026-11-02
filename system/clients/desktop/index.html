@@ -3946,6 +3946,10 @@ async function pipStreamData() {
   return pipStreamRead.promise;
 }
 const pipSelection = GBoxPipStreamPicker.create({storage:localStorage, origin:() => S?.apiUrl, read:pipStreamData,
+  broadcast:async sid => {
+    await compactApi('/api/broadcast/program', {session_id:sid}, 'POST');
+    toast(sid === 'auto' ? 'Broadcast follows the active game.' : 'Selected stream is now broadcast through gBox to Pine Box.');
+  },
   show:async (row, current) => {
     clientViewNavigation++; compactContinuity.cancel();
     await pipShow(row.session_id, {current});
@@ -4538,7 +4542,7 @@ function pipMenu(x, y) {
   const opening = m.opening = {origin:S?.apiUrl};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
+  const items = [["prod", "Prod bot (recover this session)"], ["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"], ["autoplay-replay", "▶ Replay my recorded run from boot (restarts the game)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
@@ -4570,7 +4574,7 @@ function pipMenu(x, y) {
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
   m.streamPicker = GBoxPipStreamPicker.mount(m.querySelector('[data-pip-stream-picker]'), {
     read:pipStreamData, current:() => COMPACT.on ? COMPACT.sid : EMB.sid, title:sessionTitle,
-    select:(sid, valid) => pipSelection.select(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
+    select:(sid, valid) => pipSelection.select(sid, valid), broadcast:(sid, valid) => pipSelection.broadcast(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
     preview:async sid => `${opening.origin}/api/sessions/${encodeURIComponent(sid)}/frame.jpg?token=${encodeURIComponent(await gbox.token())}&t=${Date.now()}`,
     resized:() => { if (m.opening === opening) fitMenu(m, x, y, 8, 40); }
   });
@@ -4739,7 +4743,17 @@ async function savePipPref(settings) {
     if (game) await compactApi(`/api/game-prefs/${encodeURIComponent(game)}/pip`, { settings }, 'PUT');
   } catch (error) { toast('⚠ The save slot is not kept for this game: ' + GBoxPipMedia.readable(error)); }
 }
+async function prodBot() {
+  const source = S?.apiUrl;
+  if (EMB.authority && EMB.authority !== source) throw Error('Reconnect to this game before prodding its bot.');
+  const sid = (COMPACT.on && globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || ''))
+    || await shownSessionSoon();
+  if (!sid) throw Error('No game is shown here.');
+  if (S?.apiUrl !== source) throw Error('The connection changed. Open the game menu again.');
+  return botEnsure(sid, 'Prod', {raise:true, prod:true});
+}
 async function gameAction(a) {
+  if(a==='prod'){try{await prodBot();}catch(error){toast(error.message);}return;}
   if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
   if(a==='mercmode-stay'){
     try{
@@ -5122,18 +5136,22 @@ const shownSessionSoon = (options, ms = 1500) => Promise.race([shownSession(opti
 // client reload F5 may do: the request id waits in sessionStorage.
 const BOT_ENSURE_KEY = 'gbox.f5.bot', BOT_ENSURE = { at: new Map(), following: null };
 // raise: the F5 dialog shows a failed check in its autobot step too
-async function botEnsure(sid, reason = 'F5', { raise = false } = {}) {
+async function botEnsure(sid, reason = 'F5', { raise = false, prod = false } = {}) {
   if (typeof sid !== 'string' || !sid.includes('-')) return null;
-  if (Date.now() - (BOT_ENSURE.at.get(sid) || 0) < 15000) return null;      // F5 and its reconnect flow: one request
-  BOT_ENSURE.at.set(sid, Date.now());
+  const key = prod ? 'Prod:' + sid : sid;
+  if (Date.now() - (BOT_ENSURE.at.get(key) || 0) < 15000) {
+    if (prod) toast('The bot recovery was already requested. Give it a moment to finish.');
+    return null;
+  }
+  BOT_ENSURE.at.set(key, Date.now());
   try {
-    const job = await compactApi(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason });
+    const job = await compactApi(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason, ...(prod ? {prod:true} : {}) });
     if (!job?.id) return null;
     try { sessionStorage.setItem(BOT_ENSURE_KEY, JSON.stringify({ id: job.id, at: Date.now() })); } catch {}
     followBotEnsure(job);
     return job;
   } catch (error) {
-    toast('⚠ F5: the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000);
+    toast(reason + ': the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000);
     if (raise) throw Error(GBoxPipMedia.readable(error));
     return null;
   }
@@ -5144,7 +5162,7 @@ async function followBotEnsure(job) {
   try {
     const done = await GBoxPipMedia.settle(compactApi, job, { limit: 180000, what: 'The autobot check' });
     const out = done.output || {};
-    if (out.action && out.action !== 'none') toast('🤖 ' + (out.message || 'Autobot checked.'), 7000);
+    if (out.action) toast('🤖 ' + (out.message || 'Autobot checked.'), 7000);
     compactMedia?.poll();
   } catch (error) { toast('⚠ Autobot: ' + GBoxPipMedia.readable(error), 9000); }
   finally {
