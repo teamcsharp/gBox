@@ -54,7 +54,8 @@ def test_two_controller_hold_releases_both_when_stop_arrives(monkeypatch):
         return {"sent": len(events_in)}
     inputs = C.Inputs(SimpleNamespace(send_input_player=send, autoplay_speed=4), lambda: stop["value"])
     monkeypatch.setattr(P.time, "sleep", lambda _: pytest.fail("Stopped holds must not sleep"))
-    inputs.hold([(1, ["lup"], .4), (2, ["a"], .12)])
+    with pytest.raises(InterruptedError):
+        inputs.hold([(1, ["lup"], .4), (2, ["a"], .12)])
     assert {(p, e[0]["key"]) for p, e in events if e[0]["down"]} == {(1, "lup"), (2, "a")}
     assert all(any(p == slot and not e[0]["down"] for p, e in events) for slot in (1, 2))
 
@@ -201,7 +202,7 @@ def test_native_combat_attacks_with_both_pads_without_waiting_for_planner(monkey
     observed = state(floor=1)
     for player in observed["players"].values():
         observed["entities"].append({"kind": "enemy", "ptr": player["ptr"] + "E", "class": "TObjEneBeast",
-                                     "room": player["room"], "x": player["x"], "z": 20., "hp": 100, "hp_max": 100})
+                                     "room": player["room"], "x": player["x"], "z": 8., "hp": 100, "hp_max": 100})
     sent = []
     inputs = SimpleNamespace(hold=lambda commands: sent.append(commands), speed=lambda: 1, stopped=lambda: False)
     controller = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed)), inputs, C.Maps(tmp_path))
