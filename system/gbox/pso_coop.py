@@ -779,7 +779,7 @@ SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the 
 SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
 SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
 BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
-DOOR_RETRAVERSE_COOLDOWN_S = 45.0  # after P1 walks through a door, don't re-cross it (stops hub ping-pong)
+DOOR_RETRAVERSE_COOLDOWN_S = 10.0  # brief anti-rebounce on a just-crossed door (not a forward block)
 # A transient host focus/active-window condition (the adapter cannot send input
 # because the game window is not in front) must NEVER end the run - PSO has to keep
 # playing. The loop pauses this long, tries to raise the game window, then retries.
@@ -811,9 +811,12 @@ class Controller:
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
-        self.door_cooldown = {}     # P1 cross-room: gkey -> until; a just-traversed door is not re-crossed
+        self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
         self._p1_room = None        # P1's last room, to detect a traversal
-        self._p1_door = None        # the door gkey P1 was pursuing (cooled once it leads to a room change)
+        self._p1_door = None        # the door gkey P1 was pursuing (links its two rooms once it crosses)
+        self.door_links = {}        # learned gkey -> set(rooms it connects); feeds forward-only room choice
+        self.p1_visited = set()     # rooms P1 has entered this run (prefer UNVISITED, never backtrack to spawn)
+        self._backtrack = frozenset()  # door gkeys whose far side is already visited (deprioritized)
         self.map_root = None        # campaign runtime root for published surfaces (set in play())
         self.directive_path = None  # operator map directive file the viewer/API writes (set in play())
         self._directive = None      # the parsed, active operator directive (GOTO/PRESS/ATTACK)
@@ -1027,20 +1030,25 @@ class Controller:
         cooldown = book['cooldown']
         entry = book.get('entry')
         from . import pso_coop_gates as gates
-        # Cross-room anti-ping-pong (P1): when P1 changes room it has traversed the
-        # door it was pursuing - cool that connector so P1 explores onward instead
-        # of immediately re-crossing it. Persists across the per-room book rebind.
+        # Forward-only room choice (P1): learn which rooms each door connects as P1
+        # crosses it, remember visited rooms, and prefer doors to UNVISITED rooms so
+        # P1 advances along the critical path and never backtracks to the spawn hub.
+        # A brief cooldown on the just-crossed door only damps an instant rebounce.
         if slot == 1:
+            self.p1_visited.add(room)
             if self._p1_room != room:
                 if self._p1_door is not None:
+                    self.door_links.setdefault(self._p1_door, set()).update({self._p1_room, room})
                     self.door_cooldown[self._p1_door] = now + DOOR_RETRAVERSE_COOLDOWN_S
                 self._p1_room = room
                 self._p1_door = None
             self.door_cooldown = {k: v for k, v in self.door_cooldown.items() if v > now}
-            # Merge the cross-room cooldown INTO the live book dict so in-loop stall
-            # writes still take effect (a snapshot would freeze mid-selection).
             for k, v in self.door_cooldown.items():
                 cooldown[k] = max(cooldown.get(k, 0), v)
+            # Doors whose far side (the room that is not the current one) is already
+            # visited are backtracks - deprioritized below when a forward door exists.
+            self._backtrack = frozenset(g for g, rooms in self.door_links.items()
+                                        if (rooms - {room}) and (rooms - {room}) <= self.p1_visited)
 
         # P2 claims the OTHER panel in a two-panel room; else follows P1 (to P1's
         # panel, or to the door once both panels are done) or just closes the gap.
@@ -1068,9 +1076,11 @@ class Controller:
             # Anti-backtrack: P1 leads toward the boss, not back through the door it
             # just entered. Drop entry-adjacent DOORS when a forward option remains
             # (never drop a switch/panel, and never strand a single-exit room).
-            if slot == 1 and entry and len(rows) > 1:
-                forward = [r for r in rows if r[0] == 0
-                           or math.hypot(r[3]['x'] - entry[0], r[3]['z'] - entry[1]) > BACKTRACK_RADIUS]
+            if slot == 1 and len(rows) > 1:
+                # Prefer doors that do NOT lead back to a visited room, and are not
+                # the door we just entered through. Switches always kept.
+                forward = [r for r in rows if r[0] == 0 or (r[2] not in self._backtrack and
+                           (not entry or math.hypot(r[3]['x'] - entry[0], r[3]['z'] - entry[1]) > BACKTRACK_RADIUS))]
                 if forward:
                     rows = forward
             if not rows:
