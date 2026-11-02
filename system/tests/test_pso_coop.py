@@ -499,8 +499,10 @@ def test_forward_fallback_rotates_off_a_gate_that_stops_progressing():
     player = observed["players"][1]
     assert controller.forward_fallback(observed, 1, player, 100.) == (30., 80.)   # switch first
     assert controller.forward_fallback(observed, 1, player, 101.) == (30., 80.)   # still trying
-    # No progress past the stall window: the switch is cooled down, the door is next.
-    assert controller.forward_fallback(observed, 1, player, 108.) == (30., 160.)
+    # No progress past the stall window: the switch is cooled down, the door is next
+    # and the pair is aimed just BEYOND it so they commit through (not stop short).
+    through = controller.forward_fallback(observed, 1, player, 108.)
+    assert through[0] == 30. and through[1] > 160. and controller.forward_interact[1] is False
     book = controller.fallback[(1, 1, None)]
     assert any(k[0] == "TLazerFenceSw" for k in book["cooldown"])
 
@@ -599,3 +601,103 @@ def test_play_still_propagates_a_non_focus_runtime_error(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="genuinely unexpected"):
         C.play(ad, lambda events: ad.send_input_player(events, 1), lambda: False,
                stats={}, driver=SimpleNamespace(), session_id="test")
+
+
+# --- Forward door/room progression (operator 2026-11-02: open and pass through
+# --- EVERY door with gusto). See system/docs/pso-progression.md.
+
+def _coop_room(entities, p1=(0., 0.), p2=(3., 0.), room=10):
+    """A verified 2P field state with the given gate/switch entities in `room`."""
+    players = {1: {"ptr": "80D01000", "class": "TObjPlayer", "entity_id": 0, "kind": "player",
+                   "controller": 1, "x": p1[0], "y": 0., "z": p1[1], "room": room,
+                   "heading_deg": 0., "hp": 40, "hp_max": 40},
+               2: {"ptr": "80D02000", "class": "TObjPlayer", "entity_id": 1, "kind": "player",
+                   "controller": 2, "x": p2[0], "y": 0., "z": p2[1], "room": room,
+                   "heading_deg": 0., "hp": 40, "hp_max": 40}}
+    ents = list(players.values()) + [dict(e, kind="gate") for e in entities]
+    return {"verified": True, "phase": 14, "episode": 1, "floor": 1, "players": players,
+            "player": players[1], "entities": ents, "difficulty": 0, "difficulty_verified": True,
+            "geometry_identity": "g"}
+
+
+def _controller(tmp_path, ad=None):
+    inputs = SimpleNamespace(stats={}, speed=lambda: 1, stopped=lambda: False, hold=lambda c: None, ad=ad)
+    return C.Controller(SimpleNamespace(ad=ad), inputs, C.Maps(tmp_path))
+
+
+def test_switch_room_presses_the_panel_then_rotates_to_the_door(tmp_path):
+    """SWITCH door: P1 presses the nearest panel, and after a short dwell rotates
+    to the door it gates (the Forest-1 room 10 'open two door panels' case)."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10},
+                     {"class": "TObjDoor", "x": 100., "z": 0., "room": 10}])
+    p1 = st["players"][1]
+    dest = ctrl.forward_fallback(st, 1, p1, now=100.0)
+    assert dest == (5., 0.) and ctrl.forward_interact[1] is True          # standing on panel -> press A
+    assert ctrl.forward_fallback(st, 1, p1, now=100.7)[0] == 5.           # still inside the press window
+    advanced = ctrl.forward_fallback(st, 1, p1, now=100.0 + C.SWITCH_PRESS_S + 0.1)
+    assert ctrl.forward_interact[1] is False and advanced[0] > 100.       # panel pressed; now walk THROUGH the door
+
+
+def test_walkthrough_door_targets_a_point_beyond_the_threshold(tmp_path):
+    """OPEN door: aim past the door so the actor commits across, not short of it."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10}])
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=50.0)
+    assert dest[0] > 100. and ctrl.forward_interact[1] is False
+    assert ctrl.inputs.stats["forward_fallback_action"] == "walk_through"
+
+
+def test_room_clear_fence_is_a_walk_through_once_the_room_is_empty(tmp_path):
+    """ROOM-CLEAR laser fence with no live enemy present: treat it as a door to
+    cross (combat owns clearing; an empty room's fence is walked through)."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjLazerFenceNorm", "x": 80., "z": 0., "room": 10}])
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=50.0)
+    assert dest[0] > 80. and ctrl.forward_interact[1] is False
+
+
+def test_drive_forward_taps_a_on_a_panel_and_moves_toward_a_door(tmp_path):
+    ctrl = _controller(tmp_path)
+    on_panel = _coop_room([{"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10}])
+    cmds, moves, steer, fb = [], {}, {}, []
+    assert ctrl.drive_forward(on_panel, 1, on_panel["players"][1], 100.0, cmds, moves, steer, fb)
+    assert cmds == [(1, ["a"], .12)] and fb == [1] and not moves      # press, do not walk off the panel
+    far_door = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10}])
+    cmds, moves, steer, fb = [], {}, {}, []
+    assert ctrl.drive_forward(far_door, 1, far_door["players"][1], 100.0, cmds, moves, steer, fb)
+    assert cmds and cmds[0][0] == 1 and cmds[0][1] != ["a"] and 1 in moves   # decisive movement toward the door
+
+
+def test_drive_forward_steers_straight_when_no_grid_route_exists(tmp_path):
+    """A gate off the (small spawn) collision grid must still get a committed push,
+    not a dropped command - the live room-10 freeze was timid frontier hops."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10}])
+    nav = ctrl.maps.get(st, st["players"][1])
+    nav.floor = {(0, 0)}            # a one-cell grid: the far door is NOT reachable on it
+    cmds, moves, steer, fb = [], {}, {}, []
+    assert ctrl.drive_forward(st, 1, st["players"][1], 100.0, cmds, moves, steer, fb)
+    assert cmds and cmds[0][0] == 1 and cmds[0][2] == .40      # still a committed forward hold
+
+
+def test_buddy_two_follows_the_leaders_committed_choice(tmp_path):
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10}], p2=(60., 0.))
+    ctrl.forward_fallback(st, 1, st["players"][1], now=100.0)      # P1 commits to the panel
+    follow = ctrl.forward_fallback(st, 2, st["players"][2], now=100.0)
+    assert follow == (5., 0.) and ctrl.forward_interact[2] is False     # P2 heads to where P1 went
+
+
+def test_forward_progression_never_blind_writes_memory(tmp_path):
+    """STEP 3 forced-unlock is DEFERRED: the shipped logic opens no door by RAM
+    write (no verified open-flag offset), so it must touch no memory."""
+    writes = []
+    ad = SimpleNamespace(write_memory=lambda *a, **k: writes.append(a),
+                         read_memory=lambda *a, **k: pytest.fail("forward progression is input-only"))
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10},
+                     {"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10}])
+    cmds, moves, steer, fb = [], {}, {}, []
+    ctrl.drive_forward(st, 1, st["players"][1], 100.0, cmds, moves, steer, fb)
+    assert writes == [] and "forced_door_unlock" not in ctrl.inputs.stats
