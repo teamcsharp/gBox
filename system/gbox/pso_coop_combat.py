@@ -58,8 +58,9 @@ class WeaponRanges:
     native-call failure latches this reader, so it never repeats an uncertain
     publication. Actor/area/equipment changes invalidate cached identities.
     """
-    def __init__(self, ad, *, table=None, factory=GC, clock=time.monotonic):
+    def __init__(self, ad, *, table=None, factory=GC, clock=time.monotonic, recovery=None):
         self.ad, self.factory, self.clock = ad, factory, clock
+        self.recovery = recovery
         self.cache, self.attempted, self.failure, self.table = {}, {}, None, table
         if table is None:
             try:
@@ -113,7 +114,7 @@ class WeaponRanges:
             # Effects stacking can leave several equipped flags. Do not choose
             # one arbitrarily even though only one animation is drawn.
             if len(rows) != 1:
-                return fallback
+                return dict(fallback, reason='No weapon equipped' if not rows else 'Multiple equipped weapon effects are ambiguous')
             row = rows[0]
             uncertain = True
             obj = gc.item_object(row['id'])
@@ -132,14 +133,195 @@ class WeaponRanges:
                 code=row['code'], item_id=row['id'], base=dict(base), player_ptr=player['ptr'],
                 hit_verified=False, dynamic_override_verified=False)
             self.cache[slot] = (identity, now, envelope)
+            if self.recovery is not None:
+                self.recovery.remember(state, slot, row)
             return dict(envelope)
         except (OSError, RuntimeError, ValueError, KeyError, Unsupported, struct.error) as exc:
             self.cache.pop(slot, None)
             if uncertain:
                 self.failure = 'Native weapon observation failed; no automatic retry: ' + str(exc)
+                if self.recovery is not None:
+                    self.recovery.block(self.failure)
             return dict(fallback, reason=str(exc))
         finally:
             lock.release()
+
+
+class EquipmentRecovery:
+    """One normal equip of the exact prior weapon after an observed death.
+
+    Evidence is private to this bot run. No item selection, creation, stat patch,
+    revive, hook implementation, background thread or retry of uncertain calls.
+    The caller must observe every native state and admit tick only after its
+    current menu guard permits native control; a tick that reads/equips returns
+    True so the caller reobserves before using any old combat plan.
+    """
+    def __init__(self, ad, sid, driver, stopped, *, factory=None, clock=time.monotonic):
+        self.ad, self.sid, self.driver, self.stopped = ad, sid, driver, stopped
+        self.process = getattr(ad, 'proc', None)
+        self.clock, self.factory = clock, factory
+        self.known, self.pending, self.due = {}, {}, {}
+        self.failure = None
+        self.status = {'state': 'observing', 'players': {}}
+
+    def authorized(self):
+        from .tools import SESSIONS, AUTOPLAY
+        from .models import Permission
+        from . import pad_takeover
+        ad = self.ad
+        session, run = SESSIONS.get(self.sid), AUTOPLAY.get(self.sid) or {}
+        auth = getattr(ad, '_pso_coop_new_card', {}) or {}
+        return bool(not self.stopped() and self.process is not None and
+            getattr(ad, 'proc', None) is self.process and self.process.poll() is None and
+            session and session[0] is ad and run.get('driver') is self.driver and
+            not getattr(self.driver, 'stopped', False) and not run.get('took_over') and
+            not pad_takeover.active(self.sid) and auth.get('isolated') is True and
+            auth.get('session_id') == self.sid and getattr(ad, 'coop_players', None) == 2 and
+            set(getattr(ad, '_pso_verified_player_slots', ())) == {0, 1} and
+            Permission.MEMORY_WRITE in getattr(getattr(ad, 'config', None), 'granted_permissions', ()) and
+            not any(getattr(ad, flag, False) for flag in
+                ('paused', 'paused_tids', '_pso_timing_paused', '_autoplay_speed_changing')))
+
+    def _identity(self, state, slot):
+        p = state.get('players', {}).get(slot) or {}
+        if (state.get('verified') is not True or state.get('phase') != 14 or state.get('travelling') or
+                set(state.get('players', {})) != {1, 2} or not isinstance(p.get('ptr'), str) or
+                type(p.get('hp')) is not int or p['hp'] < 0):
+            return None
+        return (getattr(self.ad, '_pso_mapping_epoch', 0), p['ptr'], state.get('episode'),
+                state.get('floor'), state.get('difficulty'))
+
+    def clear(self, reason):
+        self.known.clear(); self.pending.clear(); self.due.clear()
+        self.status.update(state=reason)
+
+    def block(self, reason):
+        self.failure = str(reason)
+        self.clear('blocked_uncertain_native_outcome')
+        self.status['reason'] = self.failure
+
+    def remember(self, state, slot, row):
+        """Only WeaponRanges' completed unique active-object proof calls this."""
+        if not self.authorized() or self.failure:
+            return
+        identity = self._identity(state, slot)
+        if identity is None or state['players'][slot]['hp'] <= 0:
+            return
+        try:
+            raw = bytes.fromhex(row['data'])
+            valid = (len(raw) == 20 and raw[0] == 0 and row['equipped'] is True and
+                     type(row['id']) is int and struct.unpack_from('>I', raw, 12)[0] == row['id'] and
+                     raw[:3].hex() == row['code'])
+        except (ValueError, TypeError, KeyError, struct.error):
+            return
+        if valid:
+            self.known[slot] = (identity, {k: row[k] for k in ('id', 'code', 'data')})
+            self.pending.pop(slot, None)
+            self.status['players'][str(slot)] = dict(state='weapon_attested', item_id=row['id'], code=row['code'])
+
+    def observe(self, state):
+        if not self.authorized():
+            self.clear('ownership_unavailable')
+            return
+        for slot in (1, 2):
+            identity = self._identity(state, slot)
+            known = self.known.get(slot)
+            if not known or identity is None or identity != known[0]:
+                self.known.pop(slot, None); self.pending.pop(slot, None)
+                continue
+            if state['players'][slot]['hp'] == 0:
+                self.pending[slot] = known
+                self.status['players'][str(slot)] = dict(state='waiting_for_native_revival', item_id=known[1]['id'])
+
+    def tick(self, state, *, menu_allowed=False):
+        self.observe(state)
+        if self.failure or not menu_allowed or not self.pending:
+            return False
+        from .pso_controls import session_lock
+        from .pso_gc_extras import Extras
+        class Deferred(Exception):
+            pass
+        for slot, known in list(self.pending.items()):
+            if state['players'][slot]['hp'] <= 0 or self.clock() < self.due.get(slot, 0):
+                continue
+            self.due[slot] = self.clock() + 2.
+            session = session_lock(self.sid)
+            if not session.acquire(blocking=False):
+                self.status.update(state='session_command_busy'); return False
+            lock = dispatcher_lock(self.ad)
+            if not lock.acquire(blocking=False):
+                session.release(); self.status.update(state='native_dispatcher_busy'); return False
+            uncertain, worked = False, False
+            try:
+                native = (self.factory or Extras)(self.ad, player_index=slot-1, pin_player=True)
+                expected = int(state['players'][slot]['ptr'], 16)
+                epoch = getattr(self.ad, '_pso_timing_epoch', 0)
+                def context():
+                    if (not self.authorized() or self._identity(state, slot) != known[0] or
+                            getattr(self.ad, '_pso_timing_epoch', 0) != epoch):
+                        raise Deferred('Ownership or timing changed before native equipment work')
+                    if (native.check() != expected or native.u32(EPISODE)+1 != state['episode'] or
+                            native.u32(FLOOR) != state['floor'] or native.u32(DIFFICULTY) != state['difficulty'] or
+                            native.u32(TRAVELLING) or native.u16(expected+0x32c) <= 0):
+                        raise Deferred('Native player/area/life changed before equipment work')
+                original = native.call
+                def checked_call(*args, **kwargs):
+                    nonlocal uncertain, worked
+                    context()
+                    uncertain = worked = True
+                    result = original(*args, **kwargs)
+                    uncertain = False
+                    return result
+                native.call = checked_call
+                context()
+                rows = native.inventory()
+                context()
+                equipped = [r for r in rows if r.get('equipped') and str(r.get('code', '')).startswith('00')]
+                if equipped:
+                    self.pending.pop(slot, None)
+                    self.status['players'][str(slot)] = dict(state='existing_weapon_preserved')
+                    return True
+                matches = [r for r in rows if all(r.get(k) == v for k, v in known[1].items())]
+                if len(matches) != 1:
+                    self.pending.pop(slot, None); self.known.pop(slot, None)
+                    self.status['players'][str(slot)] = dict(state='prior_item_missing_or_changed')
+                    return True
+                context()
+                accepted = native.equip_id(known[1]['id'])
+                context()
+                after = native.inventory()
+                context()
+                active = [r for r in after if r.get('equipped') and str(r.get('code', '')).startswith('00')]
+                verified = accepted is True and len(active) == 1 and all(active[0].get(k) == v for k,v in known[1].items())
+                if verified:
+                    obj = native.item_object(known[1]['id'])
+                    context()
+                    verified = obj in struct.unpack('>13I', native.read(expected+0xD04, 13*4))
+                    context()
+                self.pending.pop(slot, None)
+                self.status['players'][str(slot)] = dict(state='restored' if verified else 'equip_not_verified',
+                    item_id=known[1]['id'], code=known[1]['code'], verified=verified,
+                    source='existing_native_equip_and_inventory_active_object_readback')
+                if not verified:
+                    self.known.pop(slot, None)
+                return True
+            except Deferred as exc:
+                self.clear(str(exc))
+                # A rejected fresh native context invalidates the caller's old
+                # movement snapshot even when no native call was published.
+                return True
+            except (OSError, RuntimeError, ValueError, KeyError, Unsupported, struct.error) as exc:
+                if uncertain:
+                    self.failure = 'Native equipment outcome uncertain; no automatic retry: ' + str(exc)
+                    self.status.update(state='blocked_uncertain_native_outcome', reason=self.failure)
+                else:
+                    self.status.update(state='equipment_recovery_refused', reason=str(exc))
+                self.pending.pop(slot, None); self.known.pop(slot, None)
+                # Guard/read failures also require a fresh native/menu snapshot.
+                return True
+            finally:
+                lock.release(); session.release()
+        return False
 
 
 def geometry(player, target, envelope):

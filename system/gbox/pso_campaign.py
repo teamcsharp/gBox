@@ -441,6 +441,16 @@ class Planner:
                 'model': self.model, 'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
                 'stream': False, 'format': schema if schema is not None else 'json', **settings,
                 'options': {'temperature': 0.1, 'num_predict': 1800, **options}})
+            if res.is_error:
+                try:
+                    detail = res.json().get('error', '')
+                except (ValueError, AttributeError):
+                    detail = ''
+                # Keep provider failures actionable without retaining its whole
+                # response, prompt, image, or headers in live telemetry.
+                detail = ' '.join(str(detail).split())[:500]
+                raise httpx.HTTPStatusError(f'PSO route planner HTTP {res.status_code}: {detail or "provider rejected request"}',
+                                            request=res.request, response=res)
             res.raise_for_status()
             raw = res.json()['message']['content']
         else:

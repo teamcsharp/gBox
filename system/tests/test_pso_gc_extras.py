@@ -1,3 +1,4 @@
+from pathlib import Path
 import struct
 from types import SimpleNamespace
 
@@ -84,7 +85,7 @@ def test_rewind_does_not_delete_generated_ids_from_a_different_state_branch():
 def test_known_legacy_state_moves_code_without_overwriting_warm_entry(survival,unhooked):
  ram=memory();m=E.Extras(ram)
  version=b'GBPSOGC2' if survival else b'GBPSOGC1'
- old=G.dispatcher(survival,G.OLD_HEADER,G.OLD_SURVIVAL)
+ old=(Path(__file__).parent / ('dispatcher-v2.bin' if survival else 'dispatcher-v1.bin')).read_bytes()
  ram.put(G.OLD_CAVE,old);ram.put(G.OLD_HEADER,version+struct.pack('>II',G.ORIGINAL_UPDATE,G.VT_UPDATE))
  ram.word(G.VT_UPDATE,G.ORIGINAL_UPDATE if unhooked else G.OLD_CAVE);ram.word(G.OLD_NEXT,G.ID_BASE+42)
  ram.word(G.OLD_SURVIVAL,int(survival))
@@ -99,7 +100,7 @@ def test_known_legacy_state_moves_code_without_overwriting_warm_entry(survival,u
 @pytest.mark.parametrize('damage',['code','header','pending','vtable'])
 def test_legacy_migration_refuses_unknown_or_pending_hooks_without_writes(damage):
  ram=memory();m=E.Extras(ram)
- ram.put(G.OLD_CAVE,G.dispatcher(False,G.OLD_HEADER,G.OLD_SURVIVAL))
+ ram.put(G.OLD_CAVE,(Path(__file__).parent / 'dispatcher-v1.bin').read_bytes())
  ram.put(G.OLD_HEADER,b'GBPSOGC1'+struct.pack('>II',G.ORIGINAL_UPDATE,G.VT_UPDATE));ram.word(G.VT_UPDATE,G.OLD_CAVE)
  if damage=='code':ram.put(G.OLD_CAVE,b'xxxx')
  if damage=='header':ram.put(G.OLD_HEADER,b'unknown!')

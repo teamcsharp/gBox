@@ -67,7 +67,8 @@ def dispatcher(survival=True,header=None,survival_address=None):
         emit(d(15,12,0,(PHASE+0x8000)>>16),d(32,0,12,PHASE&0xffff),d(11,0,0,14));branch(0x40820000,'commands')
         emit(d(15,12,0,(PLAYER+0x8000)>>16),d(32,0,12,PLAYER&0xffff),0x7c001840);branch(0x40820000,'commands')
         emit(d(40,0,3,0x32c),d(11,0,0,0));branch(0x40820000,'commands')
-        emit(d(14,0,0,3),d(44,0,3,0x324))  # native Scape Doll revival kind
+        # Preserve actor+0x324: it selects the player update/input path.
+        # Mode 3 skips movement input; the stock REVIVE caller does not change it.
         emit(d(15,12,0,0x801b),d(24,12,12,0x4340),0x7d8903a6,0x4e800421)
     labels['commands']=len(code)
     emit(d(15,30,0,QUEUE>>16),d(24,30,30,QUEUE&0xffff),d(14,31,0,QMAX))
@@ -158,8 +159,12 @@ class GC:
     def hook(self):
         self.check()
         head=self.read(HEADER,16)
-        metadata=b'GBPSOGC3'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE)
+        metadata=b'GBPSOGC4'+struct.pack('>II',ORIGINAL_UPDATE,VT_UPDATE)
         owned=head==metadata and self.read(CAVE,len(CODE))==CODE
+        # An unhooked V3 may still have earlier V1/V2 metadata in OLD_CAVE.
+        # That does not authorize replacing its warmed current-CAVE entry.
+        if head[:8] == b'GBPSOGC3':
+            raise Unsupported('Older PSO revival dispatcher requires a fresh emulator session; save and quit normally before relaunching')
         if self.u32(VT_UPDATE)==CAVE:
             if not owned:
                 raise Unsupported('The PSO native dispatcher does not match this build')

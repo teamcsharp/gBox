@@ -36,6 +36,42 @@ def test_native_container_remains_container_and_empty_room_is_not_complete(tmp_p
     assert not sampler.offer(state(),c,stats)
 
 
+def test_native_gate_condition_is_bounded_and_does_not_claim_passability(tmp_path):
+    sampler,c,stats,now=fixture(tmp_path);s=state()
+    s['entities']=[dict(s['entities'][0],entity_id=n,class_='unused',x=550.+n,
+        door_requirements={'source':'3OE2:8015DAE4','code_verified':True,
+            'mode':1,'native_state':2,'enable_bit':True,'predicate':'unconditional_enable',
+            'predicate_verified':True,'predicate_scope':'native mode branch; global overrides unknown',
+            'passability_verified':True}) for n in range(12)]
+    sampler.offer(s,c,stats)
+    evidence=stats['pso_review']['door_requirements']
+    assert evidence['state']=='partial' and evidence['entries_omitted']==4
+    assert len(evidence['entries'])==8
+    assert all(row['requirements']['passability_verified'] is False for row in evidence['entries'])
+    assert evidence['entries'][0]['requirements']['predicate_scope'].startswith('native mode branch')
+    now[0]=1;s['travelling']=True;sampler.offer(s,c,stats)
+    assert stats['pso_review']['door_requirements']['entries']==[]
+    now[0]=2;s['travelling']=False
+    for row in s['entities']:row['door_requirements']['code_verified']=False
+    sampler.offer(s,c,stats)
+    assert stats['pso_review']['door_requirements']['state']=='unverified'
+
+
+def test_navigation_objective_must_match_current_geometry_and_player_room(tmp_path):
+    sampler,c,stats,now=fixture(tmp_path);s=state();s['geometry_identity']='forest-1-layout'
+    c.field=SimpleNamespace(status={'state':'routing','geometry_identity':'forest-1-layout',
+        'players':{'1':{'room':16,'dependency':'combat','outcome':'active','enemy_count':3,
+                       'goal':{'x':20.,'z':30.},'predicate':'unknown'},
+                   '2':{'room':15,'dependency':'explore','outcome':'active'}}})
+    sampler.offer(s,c,stats);nav=stats['pso_review']['navigation']
+    assert set(nav['players'])=={'1'} and nav['players']['1']['enemy_count']==3
+    assert nav['room_clear_verified'] is False
+    assert stats['pso_review']['goals']==[{'player':1,'x':20.,'z':30.,'room':16,
+        'reason':'combat','source':'field_controller','route_verified':False}]
+    now[0]=1;s['geometry_identity']='replacement-layout';sampler.offer(s,c,stats)
+    assert stats['pso_review']['navigation']=={'state':'unavailable','players':{}}
+
+
 def test_room_changes_and_damage_are_observed_without_completion_credit(tmp_path):
     sampler,c,stats,now=fixture(tmp_path)
     sampler.offer(state(),c,stats)
@@ -100,6 +136,22 @@ def test_per_player_collision_layers_are_not_borrowed_from_the_other_buddy(tmp_p
     assert [r['geometry_layer'] for r in rows]==['bridge','ground']
     assert [r['floor'] for r in rows]==[[[45,46]],[[46,46]]]
     assert all(r['geometry_identity']=='forest' for r in rows)
+
+
+def test_walkable_outlines_keep_holes_and_never_draw_crop_edges(tmp_path):
+    floor={(x,z) for x in range(30) for z in range(30)}-{(15,15)}
+    outlines=R.walkable_boundaries(floor)
+    assert len(outlines)==8  # Four outer boundaries plus the four edges of the hole.
+    assert [[15,15],[16,15]] in outlines
+    assert [[0,0],[30,0]] in outlines
+    sampler,c,stats,now=fixture(tmp_path);s=state()
+    s.update(geometry_identity='full-layer',geometry_layer='ground',
+             collision_grid={'size':12.,'floor':sorted(floor),'walls':[]})
+    c.maps.get(s,s['players'][1]);sampler.offer(s,c,stats)
+    row=stats['pso_review']['maps'][0]
+    assert len(row['floor'])==240 and row['geometry_truncated'] is True
+    assert sorted(row['boundaries'])==outlines
+    assert row['boundaries_truncated'] is False
 
 
 def test_duplicate_bridge_delivery_does_not_refresh_stale_frame(tmp_path):

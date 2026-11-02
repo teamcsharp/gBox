@@ -46,11 +46,102 @@ def actor(row):
     return out
 
 
+def door_evidence(state, players):
+    """Retain bounded native predicates without declaring a route passable."""
+    entries = []
+    if state.get('verified') is True and not state.get('travelling'):
+        for entity in state.get('entities', [])[:512]:
+            evidence = entity.get('door_requirements')
+            row = actor(entity)
+            if not row or not isinstance(evidence, dict) or evidence.get('code_verified') is not True:
+                continue
+            if not all(isinstance(evidence.get(k), str) and evidence[k] for k in ('source', 'predicate')):
+                continue
+            row['requirements'] = {k: evidence[k][:120] for k in ('source', 'predicate')}
+            row['requirements'].update(code_verified=True, passability_verified=False)
+            for key in ('predicate_scope', 'accessor'):
+                if isinstance(evidence.get(key), str):
+                    row['requirements'][key] = evidence[key][:160]
+            for key in ('predicate_verified', 'enemy_or_switch_test_in_this_predicate'):
+                if type(evidence.get(key)) is bool:
+                    row['requirements'][key] = evidence[key]
+            for key in ('mode', 'native_state', 'flag_index'):
+                if type(evidence.get(key)) is int and 0 <= evidence[key] <= 65535:
+                    row['requirements'][key] = evidence[key]
+            if type(evidence.get('enable_bit')) is bool:
+                row['requirements']['enable_bit'] = evidence['enable_bit']
+            entries.append(row)
+    entries.sort(key=lambda e: min((math.hypot(e['x']-p['x'], e['z']-p['z'])
+                                   for p in players.values()), default=0))
+    return {'state': 'partial' if entries else 'unverified', 'entries': entries[:8],
+            'entries_omitted': max(0, len(entries)-8),
+            'reason': ('Native conditions observed; traversal and remaining prerequisites are unverified'
+                       if entries else 'No verified door predicate observed')}
+
+
+def field_evidence(state, controller, players):
+    source = getattr(getattr(controller, 'field', None), 'status', {})
+    if (not isinstance(source, dict) or state.get('verified') is not True or state.get('travelling')
+            or not state.get('geometry_identity') or source.get('geometry_identity') != state['geometry_identity']):
+        return {'state': 'unavailable', 'players': {}}
+    output = {'state': str(source.get('state', 'unknown'))[:80], 'players': {},
+              'geometry_identity': state['geometry_identity'], 'room_clear_verified': False}
+    for slot, player in players.items():
+        row = source.get('players', {}).get(slot)
+        if not isinstance(row, dict) or row.get('room') != player.get('room'):
+            continue
+        result = {'room': row['room']}
+        for key in ('predicate', 'dependency', 'outcome'):
+            if isinstance(row.get(key), str):
+                result[key] = row[key][:120]
+        if type(row.get('enemy_count')) is int and 0 <= row['enemy_count'] <= 4096:
+            result['enemy_count'] = row['enemy_count']
+        if isinstance(row.get('goal'), dict) and all(number(row['goal'].get(k)) for k in ('x', 'z')):
+            result['goal'] = {k: round(row['goal'][k], 3) for k in ('x', 'z')}
+        if isinstance(row.get('exit'), dict) and (exit_actor := actor(row['exit'])) is not None:
+            result['exit'] = exit_actor
+        output['players'][slot] = result
+    return output
+
+
 def _cells(rows, maximum=160, origin=None):
     clean = [tuple(c) for c in rows if isinstance(c, (list, tuple)) and len(c) == 2
              and all(type(v) is int and abs(v) <= 100000 for v in c)]
     return [list(c) for c in sorted(clean, key=(lambda c:((c[0]-origin[0])**2+(c[1]-origin[1])**2,c))
                                    if origin is not None else None)[:maximum]]
+
+
+def walkable_boundaries(floor):
+    """Exact axis-aligned edges of the full raster, before display truncation.
+
+    These delimit measured walkable cells; they are not all physical walls.
+    Merging collinear edges reduces payload without joining across gaps.
+    """
+    if len(floor) > 120000:
+        raise ValueError('Collision boundary cell budget')
+    horizontal, vertical = {}, {}
+    for x, z in floor:
+        for neighbor, groups, fixed, varying in (
+                ((x,z-1),horizontal,z,x), ((x,z+1),horizontal,z+1,x),
+                ((x-1,z),vertical,x,z), ((x+1,z),vertical,x+1,z)):
+            if neighbor not in floor:
+                groups.setdefault(fixed,[]).append(varying)
+    edges=[]
+    for groups, horizontal_axis in ((horizontal,True),(vertical,False)):
+        for fixed, values in groups.items():
+            values=sorted(set(values));start=previous=values[0]
+            for value in values[1:]+[None]:
+                if value is not None and value==previous+1:
+                    previous=value;continue
+                edges.append([[start,fixed],[previous+1,fixed]] if horizontal_axis
+                             else [[fixed,start],[fixed,previous+1]])
+                start=previous=value
+    return sorted(edges)
+
+
+def _edge_distance(edge, origin):
+    a,b=edge;x,z=origin
+    return (x-min(max(x,min(a[0],b[0])),max(a[0],b[0])))**2+(z-min(max(z,min(a[1],b[1])),max(a[1],b[1])))**2
 
 
 class Sampler:
@@ -68,6 +159,7 @@ class Sampler:
         self.run, self.started, self.seq = uuid.uuid4().hex, clock(), 0
         self.previous, self.events, self.event_seq = None, [], 0
         self.stationary, self.stall_at = {}, {}
+        self.boundaries = {}
 
     def _event(self, kind, message, elapsed, **data):
         self.event_seq += 1
@@ -84,6 +176,7 @@ class Sampler:
             self.run, self.started, self.seq = uuid.uuid4().hex, now, 0
             self.events, self.event_seq, self.previous = [], 0, None
             self.stationary.clear(); self.stall_at.clear()
+            self.boundaries.clear()
         self.seq += 1
         elapsed = now - self.started
         verified = state.get("verified") is True and not state.get("travelling")
@@ -109,7 +202,8 @@ class Sampler:
                  "thought": str(stats.get("thought", ""))[:500],
                  "completion_verified": stats.get("completion_verified") is True,
                  "room_clear_verified": False,
-                 "door_requirements": {"state": "unverified", "reason": "No verified door predicate provider attached"},
+                 "door_requirements": door_evidence(state, players),
+                 "navigation": field_evidence(state, controller, players),
                  "counters": {k: stats[k] for k in ("observed_enemy_damage", "observed_kills", "attack_inputs",
                     "remembered_blocked_edges", "completed_native_episode_routes", "completed_native_episode_pairs")
                     if number(stats.get(k))}}
@@ -118,7 +212,13 @@ class Sampler:
             key, persistent = navigation.room_key(state, p)
             view = getattr(navigation, 'geometry_view', lambda state, player: state)(state, p)
             goal = getattr(controller, "goals", {}).get(int(slot))
-            if (isinstance(goal, dict) and goal.get("identity") == key
+            native_goal = frame['navigation'].get('players', {}).get(slot, {}).get('goal')
+            if native_goal:
+                objective = frame['navigation']['players'][slot]
+                frame['goals'].append({'player': int(slot), **native_goal, 'room': p.get('room'),
+                    'reason': objective.get('dependency', 'Native field objective'),
+                    'source': 'field_controller', 'route_verified': False})
+            elif (isinstance(goal, dict) and goal.get("identity") == key
                     and all(number(goal.get(k)) for k in ("x", "z"))):
                 frame["goals"].append({"player": int(slot), "x": goal['x'], "z": goal['z'],
                     "room": p.get('room'), "reason": str(goal.get('reason', ''))[:160],
@@ -137,9 +237,17 @@ class Sampler:
                 row['observations_truncated'] = len(nav.walked) > 160 or len(nav.blocked) > 80
                 if (view.get("geometry_identity") and view.get("geometry_layer") is not None
                         and nav.floor is not None):
+                    boundary_key=(view['geometry_identity'],str(view['geometry_layer']),nav.size)
+                    if boundary_key not in self.boundaries:
+                        if len(self.boundaries)>=8:
+                            self.boundaries.clear()
+                        self.boundaries[boundary_key]=walkable_boundaries(nav.floor)
+                    boundaries=self.boundaries[boundary_key]
                     row.update(geometry_available=True, geometry_reason="Verified native collision grid",
                                geometry_identity=view['geometry_identity'], geometry_layer=view['geometry_layer'],
                                floor=_cells(nav.floor, 240, origin), walls=_cells(nav.walls, 160, origin),
+                               boundaries=sorted(boundaries,key=lambda edge:(_edge_distance(edge,origin),edge))[:96],
+                               boundaries_truncated=len(boundaries)>96,
                                geometry_truncated=len(nav.floor)>240 or len(nav.walls)>160)
             frame['maps'].append(row)
         self._changes(frame, now)
@@ -151,10 +259,11 @@ class Sampler:
                 frame['entities_omitted'] = len(entities)-len(frame['entities'])
             else:
                 for row in frame['maps']:
-                    for key in ('walked', 'blocked', 'floor', 'walls'):
-                        row[key] = row[key][:len(row[key])//2]
+                    for key in ('walked', 'blocked', 'floor', 'walls', 'boundaries'):
+                        row[key] = row.get(key, [])[:len(row.get(key, []))//2]
                     row['observations_truncated'] = row['geometry_truncated'] = True
-                if not any(row['walked'] or row['blocked'] or row['floor'] or row['walls'] for row in frame['maps']):
+                    row['boundaries_truncated'] = True
+                if not any(row['walked'] or row['blocked'] or row['floor'] or row['walls'] or row.get('boundaries') for row in frame['maps']):
                     raise ValueError('PSO review frame cannot fit its bounded telemetry block')
         self.previous = frame
         stats['pso_review'] = frame
