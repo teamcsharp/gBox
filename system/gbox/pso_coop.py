@@ -20,7 +20,7 @@ import time
 import httpx
 
 from . import pso_campaign as solo
-from .pso_coop_nav import Maps, room_key
+from .pso_coop_nav import Maps, room_key, geometry_view
 from .pso_coop_native import context as native_context, SpeedSampler
 from .pso_coop_menu import MenuProgress, known_menu_command
 from .pso_coop_progress import Checkpoint, card_binding
@@ -1403,19 +1403,27 @@ class Controller:
         fold a summary into the knowledge crystal (the growing map DB) and stats."""
         if self.map_root is None:
             return
+        stats = getattr(self.inputs, "stats", None)
+        def skip(reason):
+            if isinstance(stats, dict):
+                stats["map_surface_skip"] = reason
         p1 = state.get("players", {}).get(1)
-        if not p1 or state.get("geometry_verified") is not True:
-            return
+        if not p1:
+            return skip("no_p1")
+        if state.get("geometry_verified") is not True:
+            return skip("geometry_unverified")
         from . import pso_map
         fingerprint = room_key(state, p1)[0]
-        stats = getattr(self.inputs, "stats", None)
         if fingerprint in self._published:
             if isinstance(stats, dict):
                 stats["map_surface_fingerprint"] = fingerprint
             return
         surface = pso_map.extract_surface(state, p1)
         if not surface:
-            return
+            gv = geometry_view(state, p1)
+            return skip("no_grid:gp=%s,layer=%s,grid=%s" % (
+                1 in (state.get("geometry_players") or {}), gv.get("geometry_layer") is not None,
+                bool((gv.get("collision_grid") or {}).get("floor"))))
         try:
             maps_dir = self.map_root / "pso-maps"
             maps_dir.mkdir(parents=True, exist_ok=True)
