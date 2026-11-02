@@ -4872,6 +4872,38 @@ def create_app(config: Config) -> FastAPI:
         store.audit(actor, "hermes.local_only", "", {"local_only": body.local_only})
         return hermes_local.set_local_only(body.local_only)
 
+    @app.get("/api/hermes/dashboard")
+    def hermes_dashboard(limit: int = 24, actor=Depends(auth)):
+        """Read-only aggregated feed for the Spark2 task dashboard (PiP → "Spark2 tasks").
+
+        One bounded call, so the popup never N+1s: the recent Hermes runs (each with its
+        model/provider, tokens, progress, request_ids and inbox tickets), the provider load
+        per route (which node — sparkDeux — is serving), the local GPU route, the Spark helper,
+        and the operator's queue priority. Unlike /api/tasks this triggers no machine-inventory
+        jobs, so the dashboard can poll it ~1 Hz. Per-run tool traces and correspondence stay on
+        /api/tasks/hermes/<run_id>, /api/tasks/resolutions/<rid> and /api/requests/<rid>.
+        """
+        from . import hermes_local, hermes_providers, hermes_work_queue
+        runs = hermes_runs(max(1, min(int(limit or 24), 100)))
+        out: dict = {"generated": time.time(), "runs": runs}
+        try:
+            out["providers"] = hermes_providers.summary("today")
+        except Exception:                              # the Providers view is optional; never break the feed
+            out["providers"] = None
+        try:
+            out["local"] = hermes_local.status() | {"proxy": app.state.local_llm.status()}
+        except Exception:
+            out["local"] = None
+        try:
+            out["grunt"] = grunt.status()
+        except Exception:
+            out["grunt"] = None
+        try:
+            out["queue"] = {"priority": hermes_work_queue.get_priority()}
+        except Exception:
+            out["queue"] = None
+        return out
+
     @app.get("/api/tasks/resolutions/{rid}")
     def tasks_resolution(rid: str, actor=Depends(auth)):
         report = _req(rid)

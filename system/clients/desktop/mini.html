@@ -136,6 +136,10 @@
       button.onclick=()=>{const current=gboxStreamWatchdog.sessionOf(v.src);gbox.mercsOpen({origin:new URL(v.src).origin,sid:current,mode}).catch(error=>console.warn('Mercenaries viewer:',error.message));closeModifiers();};
       modifierMenu.append(button);
     }
+    // The Spark2 task window: the live Hermes pipeline dashboard (pie/bubble analytics + an animated task tray).
+    const tasks=document.createElement('button');tasks.type='button';tasks.style.display='block';tasks.textContent='Spark2 tasks ↗';
+    tasks.onclick=()=>{gbox.tasksOpen?.({origin:new URL(v.src).origin}).catch(error=>console.warn('Task window:',error.message));closeModifiers();};
+    modifierMenu.append(tasks);
     const stay=document.createElement('button');stay.type='button';stay.style.display='block';stay.textContent='Stay in this game (autobot) · turn MercMode off';
     stay.onclick=async()=>{
       stay.disabled=true;
