@@ -94,6 +94,7 @@ def test_refracts_meta_sign_in_record_counts_only_when_owned_and_from_meta(tmp_p
 def test_prepare_refuses_before_any_setup_or_download(tmp_path, monkeypatch):
     monkeypatch.setattr(refract, "HOST_OS", "windows")
     monkeypatch.setattr(refract.platform, "node", lambda: "QUESTPC")
+    monkeypatch.setattr(refract.platform, "machine", lambda: "x86_64")
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     from gbox import storage_policy
     monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: "Q:")
@@ -131,14 +132,19 @@ def test_quest_games_route_to_refract_on_windows_only(tmp_path, monkeypatch):
 def test_only_the_listed_worker_off_the_system_drive_sets_quest_games_up(tmp_path, monkeypatch):
     from gbox import storage_policy
     monkeypatch.setattr(refract, "HOST_OS", "windows")
+    monkeypatch.setattr(refract.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: "Q:")
     cfg = quest_config(tmp_path)
     assert refract.check_node(cfg, "questpc") == tmp_path / "refract"
     with pytest.raises(ToolUnavailable, match="set up only on QUESTPC"):
         refract.check_node(cfg, "JAYBUILTFINALE")
-    monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: Path(tmp_path).drive.upper())
+    # Use a Windows-style path so drive letters exist for the system-drive check.
+    win_tmp = Path("C:/") / tmp_path.relative_to("/") if str(tmp_path).startswith("/") else tmp_path
+    cfg_win = quest_config(tmp_path)
+    cfg_win.quest.root["windows"] = str(win_tmp / "refract")
+    monkeypatch.setattr(storage_policy, "system_drive", lambda *a, **k: "C:")
     with pytest.raises(storage_policy.SystemDriveRefused, match="off this PC's system drive"):
-        refract.check_node(cfg, "QUESTPC")
+        refract.check_node(cfg_win, "QUESTPC")
     monkeypatch.setattr(refract, "HOST_OS", "linux")
     with pytest.raises(ToolUnavailable, match="Windows x64"):
         refract.check_node(cfg, "QUESTPC")
@@ -358,7 +364,8 @@ def test_a_setup_that_ate_the_job_time_never_boots_the_game_past_the_job(fake_se
     assert FakeProc.started == [] and refract.NOT_A_FAILURE_RX.search(str(e.value))
 
 
-def test_a_failed_setup_leaves_its_logs_for_the_launch_failure_report(tmp_path):
+def test_a_failed_setup_leaves_its_logs_for_the_launch_failure_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(refract, "HOST_OS", "windows")
     cfg = quest_config(tmp_path)
     logs = refract.Layout(refract.root(cfg)).logs
     logs.mkdir(parents=True)
