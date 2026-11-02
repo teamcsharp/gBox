@@ -46,6 +46,7 @@ def actor(row):
     return out
 
 
+<<<<<<< HEAD
 def door_evidence(state, players):
     """Retain bounded native predicates without declaring a route passable."""
     entries = []
@@ -104,6 +105,8 @@ def field_evidence(state, controller, players):
     return output
 
 
+=======
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
 def _cells(rows, maximum=160, origin=None):
     clean = [tuple(c) for c in rows if isinstance(c, (list, tuple)) and len(c) == 2
              and all(type(v) is int and abs(v) <= 100000 for v in c)]
@@ -111,6 +114,7 @@ def _cells(rows, maximum=160, origin=None):
                                    if origin is not None else None)[:maximum]]
 
 
+<<<<<<< HEAD
 def walkable_boundaries(floor):
     """Exact axis-aligned edges of the full raster, before display truncation.
 
@@ -144,6 +148,8 @@ def _edge_distance(edge, origin):
     return (x-min(max(x,min(a[0],b[0])),max(a[0],b[0])))**2+(z-min(max(z,min(a[1],b[1])),max(a[1],b[1])))**2
 
 
+=======
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
 class Sampler:
     """One immutable frame/second; events retain the last 32 observed changes.
 
@@ -159,7 +165,10 @@ class Sampler:
         self.run, self.started, self.seq = uuid.uuid4().hex, clock(), 0
         self.previous, self.events, self.event_seq = None, [], 0
         self.stationary, self.stall_at = {}, {}
+<<<<<<< HEAD
         self.boundaries = {}
+=======
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
 
     def _event(self, kind, message, elapsed, **data):
         self.event_seq += 1
@@ -176,7 +185,10 @@ class Sampler:
             self.run, self.started, self.seq = uuid.uuid4().hex, now, 0
             self.events, self.event_seq, self.previous = [], 0, None
             self.stationary.clear(); self.stall_at.clear()
+<<<<<<< HEAD
             self.boundaries.clear()
+=======
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
         self.seq += 1
         elapsed = now - self.started
         verified = state.get("verified") is True and not state.get("travelling")
@@ -202,8 +214,12 @@ class Sampler:
                  "thought": str(stats.get("thought", ""))[:500],
                  "completion_verified": stats.get("completion_verified") is True,
                  "room_clear_verified": False,
+<<<<<<< HEAD
                  "door_requirements": door_evidence(state, players),
                  "navigation": field_evidence(state, controller, players),
+=======
+                 "door_requirements": {"state": "unverified", "reason": "No verified door predicate provider attached"},
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
                  "counters": {k: stats[k] for k in ("observed_enemy_damage", "observed_kills", "attack_inputs",
                     "remembered_blocked_edges", "completed_native_episode_routes", "completed_native_episode_pairs")
                     if number(stats.get(k))}}
@@ -212,6 +228,7 @@ class Sampler:
             key, persistent = navigation.room_key(state, p)
             view = getattr(navigation, 'geometry_view', lambda state, player: state)(state, p)
             goal = getattr(controller, "goals", {}).get(int(slot))
+<<<<<<< HEAD
             native_goal = frame['navigation'].get('players', {}).get(slot, {}).get('goal')
             if native_goal:
                 objective = frame['navigation']['players'][slot]
@@ -219,6 +236,9 @@ class Sampler:
                     'reason': objective.get('dependency', 'Native field objective'),
                     'source': 'field_controller', 'route_verified': False})
             elif (isinstance(goal, dict) and goal.get("identity") == key
+=======
+            if (isinstance(goal, dict) and goal.get("identity") == key
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
                     and all(number(goal.get(k)) for k in ("x", "z"))):
                 frame["goals"].append({"player": int(slot), "x": goal['x'], "z": goal['z'],
                     "room": p.get('room'), "reason": str(goal.get('reason', ''))[:160],
@@ -237,6 +257,7 @@ class Sampler:
                 row['observations_truncated'] = len(nav.walked) > 160 or len(nav.blocked) > 80
                 if (view.get("geometry_identity") and view.get("geometry_layer") is not None
                         and nav.floor is not None):
+<<<<<<< HEAD
                     boundary_key=(view['geometry_identity'],str(view['geometry_layer']),nav.size)
                     if boundary_key not in self.boundaries:
                         if len(self.boundaries)>=8:
@@ -248,6 +269,11 @@ class Sampler:
                                floor=_cells(nav.floor, 240, origin), walls=_cells(nav.walls, 160, origin),
                                boundaries=sorted(boundaries,key=lambda edge:(_edge_distance(edge,origin),edge))[:96],
                                boundaries_truncated=len(boundaries)>96,
+=======
+                    row.update(geometry_available=True, geometry_reason="Verified native collision grid",
+                               geometry_identity=view['geometry_identity'], geometry_layer=view['geometry_layer'],
+                               floor=_cells(nav.floor, 240, origin), walls=_cells(nav.walls, 160, origin),
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
                                geometry_truncated=len(nav.floor)>240 or len(nav.walls)>160)
             frame['maps'].append(row)
         self._changes(frame, now)
@@ -259,11 +285,18 @@ class Sampler:
                 frame['entities_omitted'] = len(entities)-len(frame['entities'])
             else:
                 for row in frame['maps']:
+<<<<<<< HEAD
                     for key in ('walked', 'blocked', 'floor', 'walls', 'boundaries'):
                         row[key] = row.get(key, [])[:len(row.get(key, []))//2]
                     row['observations_truncated'] = row['geometry_truncated'] = True
                     row['boundaries_truncated'] = True
                 if not any(row['walked'] or row['blocked'] or row['floor'] or row['walls'] or row.get('boundaries') for row in frame['maps']):
+=======
+                    for key in ('walked', 'blocked', 'floor', 'walls'):
+                        row[key] = row[key][:len(row[key])//2]
+                    row['observations_truncated'] = row['geometry_truncated'] = True
+                if not any(row['walked'] or row['blocked'] or row['floor'] or row['walls'] for row in frame['maps']):
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
                     raise ValueError('PSO review frame cannot fit its bounded telemetry block')
         self.previous = frame
         stats['pso_review'] = frame

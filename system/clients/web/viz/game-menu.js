@@ -312,7 +312,8 @@
   }
   const SECTIONS = {
     head: st => `<h4>${ESC(st.title)}</h4>`,
-    actions: () => `<button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
+    actions: () => `<button class="act" data-analysis type="button" style="width:100%;margin-bottom:8px">Analysis: evidence, console and crystals</button>
+    <button class="act" data-models type="button" style="width:100%;margin-bottom:8px">Models · view, assign, export</button>
     <button class="act" data-assets type="button" style="width:100%;margin-bottom:8px">Extract game assets...</button>
     <button class="act" data-cover type="button" style="width:100%;margin-bottom:8px">Attach game cover (online)</button>
     <button class="act" data-cast type="button" style="width:100%;margin-bottom:8px" title="Every character of this game replaced by another game's cast (or a group: Wrestlers…), one mod">Replace entire cast with…</button>`,
@@ -459,6 +460,7 @@
     el.onclick = async ev => {
       if (!current()) return;
       const at = s => ev.target.closest && ev.target.closest(s);
+      if (at("[data-analysis]")) { close(); if(io.analysis)io.analysis(gid,title,st.boot?.disc||""); return; }
       if (at("[data-models]")) { close(); io.models(gid, title); return; }
       if (at("[data-assets]")) { close(); if (io.assets) io.assets(gid, title); else io.models(gid, title); return; }
       if (at("[data-cover]")) { io.cover(gid, card, at("[data-cover]")); return; }

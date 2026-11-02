@@ -298,6 +298,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/cast-mapper.js"></script>
 <script src="/viz/cast-swap.js"></script>
 <script src="/viz/pso-controls.js"></script>
+<script src="/viz/pso-reviewer.js"></script>
 <script src="/viz/pso-face-editor.js"></script>
 <script src="/viz/face-warp-editor.js"></script>
 <script src="/viz/native-face-editor.js"></script>
@@ -349,6 +350,7 @@ if (new URLSearchParams(location.search).has("embedded")) {
 <script src="/viz/game-model-library.js"></script>
 <script src="/viz/retarget-editor.js"></script>
 <script src="/viz/pick-whip.js"></script>
+<script src="/viz/game-analysis.js"></script>
 <script src="/viz/gpu-game-surface.js"></script>
 <script src="/viz/ghost-runs.js"></script>
 <script src="/viz/library-home-detail.js"></script>
@@ -3240,7 +3242,11 @@ document.body.insertAdjacentHTML("beforeend", '<div id="gmenu" role="menu"></div
 dragAnywhere($("#gmenu"));
 // #1562: the menu opens in the frame of the right-click from what the page already has (clients/web/viz/game-menu.js:
 // cached character library + this game's cached mods; sections waiting on the server say "loading…" and fill in)
-const gameMenuIO = () => ({ el: $("#gmenu"), api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, worker: window.GBOX_LOCAL?.worker || "",
+// Analysis owns an exact target; selecting a different session freezes its live overlay.
+const GAME_ANALYSIS_IO = { api, assetUrl: p => `${p}${p.includes('?') ? '&' : '?'}${tq()}`,
+  valid: target => !target.session_id || target.session_id === active?.sid };
+function openGameAnalysis(target) { return GBoxGameAnalysis.open(GAME_ANALYSIS_IO, target); }
+const gameMenuIO = () => ({ analysis: (gid, title, build) => openGameAnalysis({game_id:gid,build:build||''}), el: $("#gmenu"), api, img: u => `${u}${u.includes("?") ? "&" : "?"}${tq()}`, worker: window.GBOX_LOCAL?.worker || "",
   assets: (gid,title) => GBoxGameAssets.open({gid,title,api,worker:window.GBOX_LOCAL?.worker||"",media:u=>`${u}${u.includes("?")?"&":"?"}${tq()}`,
     models:(id,name)=>show("GameModels",id,name),onJob:job=>window.GBOX_PROCESS_POPUP?.sync([job])}),
   boot: { get: bootGet, set: bootSet }, keep: { get: modKeepGet, set: modKeep }, badge: bootBadge,
@@ -4761,6 +4767,7 @@ if (!new URLSearchParams(location.search).has('embedded')) {
 // Hover outlines + labels the character; the menu replaces it (pick_replace live -> build), copies it, sends it to
 // Blender, opens the retarget editor, identifies it (pick_identify), shows it in Assets. The game pauses while it is open.
 window.PWW = GBoxPickWhip.mountOverlay(document, {
+  analysis: o => openGameAnalysis({session_id:o.sid}),
   api, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y), fit: el => GBoxToastStack.fit(el, { header: "header" }),   // the mini console
   sid: () => active?.sid || "", gid: () => document.querySelector("#wb[data-gid]")?.dataset.gid || "",
   toast: t => { const el = $("#sopres"); if (el) el.textContent = t; },

@@ -1185,6 +1185,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats["progress_restored"] = restored
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
+<<<<<<< HEAD
     equipment = EquipmentRecovery(ad, session_id, driver, stopped)
     controller.weapon_ranges.recovery = equipment
     review_sampler = None
@@ -1193,6 +1194,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
         review_sampler = Sampler(session_id, (game or {}).get("game_id", ""))
     except Exception as exc:
         stats["pso_review_error"] = str(exc)[:240]
+=======
+    # Recording reads this controller's existing snapshot and never owns input.
+    from .pso_run_review import Sampler
+    try:
+        review_sampler = Sampler(session_id, (game or {}).get('game_id', ''))
+    except (TypeError, ValueError) as error:
+        review_sampler = None
+        stats['pso_review_error'] = str(error)[:180]
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
     speed_sampler = SpeedSampler(ad, session_id, stopped)
     planner = solo.Planner(driver, ad.config)
     planner.prompt = PROMPT
@@ -1261,12 +1271,21 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                              field_navigation=getattr(getattr(controller, "field", None), "status", {}),
                              no_damage_repositions=controller.engagements.recoveries,
                              no_damage_deferrals=controller.engagements.deferred)
+<<<<<<< HEAD
                 stats["door_requirements"] = state.get("door_requirements", {})
                 try:
                     if review_sampler is not None:
                         review_sampler.offer(state, controller, stats)
                 except Exception as exc:
                     stats["pso_review_error"] = str(exc)[:240]
+=======
+                if review_sampler is not None:
+                    try:
+                        review_sampler.offer(state, controller, stats)
+                    except Exception as error:
+                        # Observability failure cannot stop combat, navigation or menu guards.
+                        stats['pso_review_error'] = type(error).__name__ + ': ' + str(error)[:160]
+>>>>>>> 7f4c5f81b1a175f038884b9b143f73906b0ed65f
                 if state.get("travelling"):
                     speed_sampler.invalidate()
                     stats["action"] = "waiting_for_area_loader"

@@ -126,6 +126,7 @@
       <div class="pso-row" style="justify-content:space-between;flex-wrap:nowrap;align-items:flex-start"><p class="mut" data-profile style="flex:1;min-width:0;margin:6px 0">Checking the running game's version…</p>
         <button type="button" class="act" data-rehook title="Troubleshoot and reconnect PSO controls without restarting the game" aria-label="Reconnect PSO controls" style="flex:none">&#8635;</button></div>
       <div data-rehook-report role="status" aria-live="polite"></div>
+      <button type="button" class="act" data-run-review>Map and run reviewer</button>
       <fieldset data-buddy-weapons><legend>Buddy weapons</legend>
         ${[0,1].map(index=>`<div class="pso-buddy" data-buddy="${index}">
           <label><strong>Player ${index+1}</strong> weapon
@@ -630,6 +631,10 @@
       } catch (e) { if (fresh()) {q('[data-profile]').textContent='PSO controls not connected';say(e.message || "Could not check this game's live controls. Use Reconnect PSO controls.");} }
       finally { if (fresh()) { loading = false; checking = false; enabled(); if(ready && cap)await refreshBuddyWeapons(cap); } }
     }
+    q('[data-run-review]').onclick = ()=>{
+      if (typeof GBoxPSOReview === 'undefined') return say('Reload the app to load the PSO run reviewer.');
+      GBoxPSOReview.open(io, session);
+    };
     q('[data-rehook]').onclick = async()=>{
       if(!current() || busy || recovering)return;
       selectedPlayer=0;++loadId;loading=false;checking=true;recovering=true;cap=null;bossesReady=false;enabled();

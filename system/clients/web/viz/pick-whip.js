@@ -928,7 +928,7 @@
     const lbl = () => labelOf(st.preview, st.ident, st.named);
     const head = () => { const l = lbl(); return `${labelHTML(l)}<div class="mut">${l.via ? "via " + ESC(l.via) : "looking…"}${l.ram ? " · RAM " + ESC(l.ram) : ""}${l.id ? " · id " + ESC(l.id) : ""}</div>`; };
     const s = settings();
-    const items = () => menuItems({ label: lbl(), asset: st.asset, canBlender: !!io.blenderCopy, canFace: !!io.faceEdit && (!io.canFace || io.canFace(o.sid)), extra: ["-",
+    const items = () => menuItems({ label: lbl(), asset: st.asset, canBlender: !!io.blenderCopy, canFace: !!io.faceEdit && (!io.canFace || io.canFace(o.sid)), extra: [...(io.analysis ? [{id:"analysis",text:"Analysis: evidence, console and crystals"}] : []), "-",
       { id: "pause", icon: "⏸", text: `Pause while picking: ${settings().pause ? "on" : "off"}` },
       { id: "cloud", icon: "☁", text: `Cloud naming: ${settings().cloud ? "allowed" : "off (local only)"}` }].concat(o.extra || []) });
     const con = o.con || createConsole(doc, { drag: io.drag, fit: io.fit });
@@ -981,6 +981,7 @@
     }
 
     async function onPick(id) {
+      if(id === "analysis" && io.analysis){dismiss("analysis");return io.analysis({sid:o.sid,gid:o.gid});}
       const l = lbl(), who = l.known ? l.name : "the character";
       if (id === "report") {                                 // the pop-up first (its frame capture starts now), then the menu goes
         const r = reportPopup(doc, io, { sid: o.sid, at: o.at, aspect: o.aspect, x: o.x, y: o.y, view: o.view || "game",
