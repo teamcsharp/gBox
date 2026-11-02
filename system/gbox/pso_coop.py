@@ -22,6 +22,7 @@ import httpx
 from . import pso_campaign as solo
 from .pso_coop_nav import Maps, room_key
 from .pso_coop_native import context as native_context, SpeedSampler
+from .pso_coop_setup import DEFAULT_AUTOPLAY_SPEED
 from .pso_coop_menu import MenuProgress, known_menu_command
 from .pso_coop_progress import Checkpoint, card_binding
 from .pso_coop_recovery import TransientRecovery, continuous_requested
@@ -1189,6 +1190,23 @@ def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     return paused
 
 
+def apply_default_speed(ad, stats):
+    """Step the emulator to the default run speed once per launch, after the pads verify.
+
+    Operator 2026-11-02: the buddies play at 2x so a run reaches each teleporter in
+    reasonable time. One-shot (``_pso_coop_speed_defaulted``), so the operator's own
+    later speed choice is never overridden; a failed step is recorded, never raised."""
+    if (getattr(ad, "_pso_coop_speed_defaulted", False)
+            or getattr(ad, "autoplay_speed", 1) >= DEFAULT_AUTOPLAY_SPEED
+            or not callable(getattr(ad, "set_autoplay_speed", None))):
+        return
+    ad._pso_coop_speed_defaulted = True
+    try:
+        stats["default_speed"] = ad.set_autoplay_speed(DEFAULT_AUTOPLAY_SPEED)
+    except Exception as exc:                       # noqa: BLE001 - speed is best-effort, never blocks play
+        stats["default_speed_error"] = str(exc)[:200]
+
+
 def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id="", upload=None, style=None):
     if driver is None:
         raise ValueError("PSO co-op requires an autoplay driver")
@@ -1360,6 +1378,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     ad._pso_verified_player_slots = {0, 1}
                     mapping_attempts = 0
                     stats.update(controller_mapping_verified=True, mapping_retry_backoff_s=0, mapping_last_error="")
+                    apply_default_speed(ad, stats)
                     state = reader.snapshot()
                 if access_policy.step(state, mapped=mapped, menu_paused=menu_paused, waiting=recovery.waiting):
                     # Reobserve flags, actors and menu after any native access work.
