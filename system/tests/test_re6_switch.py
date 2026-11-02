@@ -3157,3 +3157,38 @@ def test_a_grab_heuristic_does_not_trip_when_health_is_stable():
     snap["player"]["hp"] = 900                                          # no fall: still 900
     acts = run(bot, snap, clock, 4)
     assert bot.doing != "break_free"                                    # the fight path runs, not the escape
+
+
+def test_a_grabbed_front_hit_in_the_crowd_is_handled_by_fighting_not_a_quick_turn():
+    # request #5050 (incident c8cce6d924694d60): the bot was doing cc_turn when a front grab landed (HP 900→0).
+    # The quick turn toward the behind-threat exposed his flanks mid-turn; the front grabber finished him.
+    # Two gates prevent this:
+    #   1. The 60-degree front check: an enemy within QT_BEHIND_R at < 60 deg from facing blocks the behind
+    #      quick turn — the bot fights in place (kick / quick shot) instead of committing to a turn.
+    #   2. The HIT_TURN_BLOCK_S gate: within 0.8 s of a blow with 2+ enemies in CC_R, the behind quick turn
+    #      is blocked even if the grabber is at a diagonal angle (> 60 deg).
+    # Gate 1 — front grabber at arm's length blocks the behind quick turn:
+    enemies = (
+        (0.0, 0.0, 50.0, 700),    # front grabber: 50 cm ahead (within CC_R)
+        (0.0, 0.0, -300.0, 700),  # behind enemy: 300 cm behind (would trigger behind-quick-turn)
+    )
+    bot, clock, snap = brain(round_guest(enemies=enemies))
+    acts = run(bot, snap, clock, 1)
+    assert "ldown" not in (acts[0].get("hold") or ())                    # no quick turn
+    assert bot.stats.get("quick_turns", 0) == 0
+    assert bot.doing == "crowd"                                          # fights in place
+    assert bot.stats.get("cc_kicks", 0) == 1 or bot.stats.get("cc_quick_shots", 0) == 1
+    # Gate 2 — HIT_TURN_BLOCK_S: a recent blow with 2+ enemies in CC_R blocks the behind quick turn,
+    # even when the grabber is at a diagonal (> 60 deg from facing):
+    enemies_diag = (
+        (100.0, 0.0, 100.0, 700),   # grabber at ~45 deg: beyond the 60-deg front check
+        (80.0, 0.0, 120.0, 700),    # second enemy in CC_R
+        (0.0, 0.0, -300.0, 700),    # behind enemy: 300 cm behind
+    )
+    bot2, clock2, snap2 = brain(round_guest(enemies=enemies_diag))
+    bot2._hit_at = clock2[0]                                            # the blow just landed
+    acts2 = run(bot2, snap2, clock2, 1)
+    assert "ldown" not in (acts2[0].get("hold") or ())                   # no quick turn
+    assert bot2.stats.get("quick_turns", 0) == 0
+    assert bot2.doing == "crowd"
+
