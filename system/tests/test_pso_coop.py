@@ -232,6 +232,31 @@ def test_camera_recenter_only_on_staleness_or_a_real_turn(monkeypatch, tmp_path)
     assert pressed() == [2]
 
 
+def test_default_speed_steps_to_2x_once_and_never_overrides_the_operator():
+    """Operator 2026-11-02: buddies default to 2x; the one-shot never fights a later choice."""
+    calls = []
+    ad = SimpleNamespace(autoplay_speed=1, set_autoplay_speed=lambda m: calls.append(m) or {"requested": m})
+    stats = {}
+    C.apply_default_speed(ad, stats)
+    assert calls == [C.DEFAULT_AUTOPLAY_SPEED] and ad._pso_coop_speed_defaulted
+    assert stats["default_speed"]["requested"] == C.DEFAULT_AUTOPLAY_SPEED
+    C.apply_default_speed(ad, stats)                      # one-shot: no second step
+    assert calls == [C.DEFAULT_AUTOPLAY_SPEED]
+    # The operator since set 4x by hand; a fresh launch must not pull it back to 2x.
+    ad2 = SimpleNamespace(autoplay_speed=4, set_autoplay_speed=lambda m: calls.append(m))
+    C.apply_default_speed(ad2, {})
+    assert calls == [C.DEFAULT_AUTOPLAY_SPEED]
+
+
+def test_default_speed_never_blocks_play_on_a_failed_step():
+    def boom(_):
+        raise RuntimeError("speed input was interrupted")
+    ad = SimpleNamespace(autoplay_speed=1, set_autoplay_speed=boom)
+    stats = {}
+    C.apply_default_speed(ad, stats)                      # swallowed, recorded
+    assert "interrupted" in stats["default_speed_error"] and ad._pso_coop_speed_defaulted
+
+
 def test_pad_probe_never_moves_characters_in_enemy_area():
     observed = state(floor=1)
     with pytest.raises(Unsupported, match="Pioneer 2"):
