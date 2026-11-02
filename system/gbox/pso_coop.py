@@ -1683,7 +1683,12 @@ class Controller:
                 # route (waiting on its buddy, exploring, or no destination) it drives
                 # forward itself - independent of the buddy's room - so a stuck leader
                 # in another room still gets the wall-wedge recovery instead of waiting.
-                lead = slot == 1 and (destination is None or exploring)
+                # Also: once a room's gate flags are FORCED open, P1 must WALK THROUGH
+                # the door (drive_forward's skip-switches + overshoot) rather than let
+                # the field planner stop at the gate approach and mill the hub.
+                forced_here = (state.get('episode'), state.get('floor'), player.get('room'),
+                               state.get('geometry_identity')) in self.forced_rooms
+                lead = slot == 1 and (destination is None or exploring or forced_here)
                 if target is None and (lead or (exploring and same_room)
                                        or (destination is None and (not field_owned or same_room))):
                     if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
