@@ -766,6 +766,9 @@ FALLBACK_STALL_S = 6.0        # abandon a forward affordance that stops getting 
 FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many units
 SWITCH_PRESS_S = 1.5          # dwell/press a panel this long, then rotate to the door it gates
 SWITCH_FINE_DIST = 30.0       # within this of a switch, approach in short pulses so we land to press it
+WEDGE_STALL_S = 4.0           # a buddy that barely translates toward its goal this long is wall-wedged
+WEDGE_ESCAPE_S = 0.8          # hold the back-off/strafe escape heading this long before re-committing
+WEDGE_MOVE = 6.0              # progress threshold: translating more than this clears the wedge
 FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # A transient host focus/active-window condition (the adapter cannot send input
@@ -798,6 +801,7 @@ class Controller:
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
+        self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
 
     def _steering_publish(self):
         """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
@@ -1092,10 +1096,43 @@ class Controller:
         # through with a committed, gusto-length hold.
         approaching_switch = (self.forward_kind.get(slot) == 'approach_switch'
                               and math.hypot(dest[0] - player["x"], dest[1] - player["z"]) <= SWITCH_FINE_DIST)
-        commands.append((slot, movement_keys(player, waypoint), .10 if approaching_switch else .40))
+        keys, escaping = self._unwedge(slot, player, waypoint, now)
+        commands.append((slot, keys, .40 if escaping else (.10 if approaching_switch else .40)))
         moves[slot] = (player, waypoint, nav, False)
-        steering[slot] = (player, waypoint, 'forward_fine' if approaching_switch else 'forward_gusto')
+        steering[slot] = (player, waypoint, 'forward_unwedge' if escaping else
+                          'forward_fine' if approaching_switch else 'forward_gusto')
         return True
+
+    def _unwedge(self, slot, player, waypoint, now):
+        """Per-slot translation-stall (wall-wedge) recovery, distinct from the
+        room-change stuck timer: when a buddy HAS a movement goal but barely
+        translates for WEDGE_STALL_S (pinned on geometry, not merely stopping
+        short), back it off the wall and try a different approach octant, then
+        re-commit. A buddy that is making progress toward its goal is untouched.
+        Returns (keys, escaping)."""
+        here = (player["x"], player["z"])
+        gkey = (round(waypoint[0]), round(waypoint[1]))
+        rec = self.wedge.get(slot)
+        if rec is None or rec["goal"] != gkey:
+            rec = self.wedge[slot] = {"goal": gkey, "anchor": here, "since": now, "phase": 0, "until": 0.}
+        if math.hypot(here[0] - rec["anchor"][0], here[1] - rec["anchor"][1]) > WEDGE_MOVE:
+            rec.update(anchor=here, since=now, until=0.)      # translating: progress, clear any escape
+            return movement_keys(player, waypoint), False
+        if now < rec["until"]:
+            return rec["keys"], True                          # mid-escape: hold the back-off heading
+        if now - rec["since"] >= WEDGE_STALL_S:
+            # Wedged. Rotate the approach vector (reverse, then strafe the two
+            # ways, then a diagonal) so a corner cannot pin the buddy forever.
+            rec["phase"] = (rec["phase"] + 1) % 4
+            bearing = math.atan2(waypoint[0] - player["x"], waypoint[1] - player["z"])
+            angle = bearing + (math.pi, math.pi / 2, -math.pi / 2, math.pi * 0.75)[rec["phase"] - 1]
+            escape = (player["x"] + math.sin(angle) * 30., player["z"] + math.cos(angle) * 30.)
+            rec.update(keys=movement_keys(player, escape), until=now + WEDGE_ESCAPE_S, since=now, anchor=here)
+            stats = getattr(self.inputs, "stats", None)
+            if isinstance(stats, dict):
+                stats["wedge_recovery"] = {"slot": slot, "phase": rec["phase"], "at": [round(here[0]), round(here[1])]}
+            return rec["keys"], True
+        return movement_keys(player, waypoint), False
 
     def _force_log(self, room, reason):
         stats = getattr(self.inputs, 'stats', None)
