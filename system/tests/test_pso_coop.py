@@ -536,3 +536,23 @@ def test_forward_stuck_flag_fires_after_threshold_and_resets_on_translation():
     observed["players"][1]["x"] = 300.                          # P1 translated far: progress
     controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 2, True)
     assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
+
+
+def test_buddies_advance_when_geometry_verified_but_no_collision_grid(monkeypatch, tmp_path):
+    """Live deadlock (i9, Ep1 Fl1): geometry_verified is True (field_owned) yet the
+    buddies have no usable collision grid, so FieldObjectives yields nothing and the
+    old code idled both (P1 waiting on P2's missing layer, P2 stuck in margin
+    recovery). They must still advance toward the room's forward switch/door."""
+    observed = _field_state()
+    observed["geometry_verified"] = True            # field_owned True, but no geometry_players
+    observed["entities"] += [_gate("TLazerFenceSw", 30., 90., eid=16501),
+                             _gate("TObjDoor", 30., 200., eid=16502)]
+    sent = []
+    inputs = SimpleNamespace(hold=lambda c: sent.append(c), speed=lambda: 1,
+                             stopped=lambda: False, stats={})
+    controller = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed)), inputs, C.Maps(tmp_path))
+    monkeypatch.setattr(P, "wait", lambda *_: None)
+    assert controller.tick(observed)
+    moved = {c[0] for batch in sent for c in batch if c[1] not in (["l"], ["a"])}
+    assert moved == {1, 2}                           # neither buddy idles in the deadlock
+    assert all("lup" in c[1] for batch in sent for c in batch if c[1] not in (["l"], ["a"]))
