@@ -556,3 +556,46 @@ def test_buddies_advance_when_geometry_verified_but_no_collision_grid(monkeypatc
     moved = {c[0] for batch in sent for c in batch if c[1] not in (["l"], ["a"])}
     assert moved == {1, 2}                           # neither buddy idles in the deadlock
     assert all("lup" in c[1] for batch in sent for c in batch if c[1] not in (["l"], ["a"]))
+
+
+def test_play_survives_transient_window_focus_loss_and_ends_only_on_stop(monkeypatch, tmp_path):
+    """Operator rule: PSO must always be playing. A host focus/active-window
+    RuntimeError (adapters.py: 'must be active to send emulator input') must PAUSE
+    the run - release inputs, count the wait, raise the window, retry - and NEVER
+    end the loop. Only stopped() ends it."""
+    calls, waits = {"n": 0}, []
+    def snapshot():
+        calls["n"] += 1
+        raise RuntimeError("gBox or the emulator must be active to send emulator input safely")
+    def stopped():
+        return calls["n"] >= 3                         # end only after surviving 3 focus errors
+    ad = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), autoplay_speed=1,
+                         _autoplay_speed_known=True,
+                         send_input_player=lambda events, player: {"sent": len(events)})
+    stats = {}
+    monkeypatch.setattr(C, "Reader", lambda _: SimpleNamespace(snapshot=snapshot))
+    monkeypatch.setattr(P, "Planner", lambda *_: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(P, "wait", lambda seconds, _stopped=None: waits.append(seconds))
+    result = C.play(ad, lambda events: ad.send_input_player(events, 1), stopped,
+                    stats=stats, driver=SimpleNamespace(), session_id="test")
+    assert calls["n"] == 3                              # the loop kept going past every focus error
+    assert stats["input_wait"] == 3                     # each counted and made visible
+    assert stats["input_wait_active"] is True
+    assert waits.count(C.FOCUS_WAIT_BACKOFF_S) == 3     # it paused and backed off, did not exit
+    assert result["stopped"] is True                    # it ended ONLY because stopped() went true
+
+
+def test_play_still_propagates_a_non_focus_runtime_error(monkeypatch, tmp_path):
+    """A RuntimeError that is NOT the transient focus condition is still fatal -
+    the resilience catch must not swallow real crashes."""
+    def snapshot():
+        raise RuntimeError("some genuinely unexpected failure")
+    ad = SimpleNamespace(config=SimpleNamespace(runtime=tmp_path), autoplay_speed=1,
+                         _autoplay_speed_known=True,
+                         send_input_player=lambda events, player: {"sent": len(events)})
+    monkeypatch.setattr(C, "Reader", lambda _: SimpleNamespace(snapshot=snapshot))
+    monkeypatch.setattr(P, "Planner", lambda *_: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(P, "wait", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="genuinely unexpected"):
+        C.play(ad, lambda events: ad.send_input_player(events, 1), lambda: False,
+               stats={}, driver=SimpleNamespace(), session_id="test")

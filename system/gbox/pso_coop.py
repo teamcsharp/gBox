@@ -766,6 +766,11 @@ FALLBACK_STALL_S = 6.0        # abandon a forward affordance that stops getting 
 FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many units
 FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
+# A transient host focus/active-window condition (the adapter cannot send input
+# because the game window is not in front) must NEVER end the run - PSO has to keep
+# playing. The loop pauses this long, tries to raise the game window, then retries.
+FOCUS_WAIT_BACKOFF_S = 0.5
+FOCUS_WAIT_MARK = "must be active to send emulator input"
 
 
 class Controller:
@@ -1695,7 +1700,33 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         stats["action"] = "coordinated_native_combat_or_navigation"
                         controller.tick(state)
                 errors = 0
+                stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
+            except RuntimeError as exc:
+                # The host could not deliver input because the game window is not
+                # in the foreground (adapters.py: "must be active to send emulator
+                # input"). On a headless/hostile desktop (phantom input, wallpaper
+                # engines stealing focus) this must be a transient PAUSE, never the
+                # end of the run: release inputs, try to raise the game window, back
+                # off, and continue so the buddies resume the instant focus returns.
+                if FOCUS_WAIT_MARK not in str(exc):
+                    raise
+                speed_sampler.invalidate()
+                inputs.release()
+                controller.approaches.clear()
+                planned_identity = None
+                stats["input_wait_active"] = True
+                stats["input_wait"] = stats.get("input_wait", 0) + 1
+                stats["input_wait_s"] = round(stats.get("input_wait_s", 0.0) + FOCUS_WAIT_BACKOFF_S, 2)
+                stats.update(action="waiting_for_window_focus", input_wait_reason=str(exc)[:160])
+                try:
+                    from .adapters import win_bring_to_front
+                    proc = getattr(ad, "proc", None)
+                    if proc is not None and getattr(proc, "pid", None):
+                        stats["input_wait_refocus"] = bool(win_bring_to_front(proc.pid))
+                except Exception as refocus_exc:
+                    stats["input_wait_refocus_error"] = str(refocus_exc)[:120]
+                solo.wait(FOCUS_WAIT_BACKOFF_S, stopped)
             except SpeedUnknown as exc:
                 speed_sampler.invalidate()
                 stats.update(ok=False, campaign_state="needs_relaunch", stopped_reason=str(exc))
