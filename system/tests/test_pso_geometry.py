@@ -140,10 +140,14 @@ def test_trigger_volume_not_a_solid_wall():
     assert RoomMap(**a.project(player())['collision_grid']).route((22.5,22.5),(82.5,22.5))
 
 
-def test_falling_and_edge_player_return_no_projection():
+def test_falling_player_returns_none_but_an_edge_player_still_resolves():
+    # A falling / wrong-height player projects nothing; but a player ON the mesh at
+    # the clearance-trimmed EDGE (a doorway/wall seam) must still resolve the grid -
+    # dropping it there was the intermittent-grid root in the Forest spawn hub.
     a = G.Atlas(plane())
     assert a.project(player(y=15)) is None
-    assert a.project(player(x=2.5)) is None
+    edge = a.project(player(x=2.5))
+    assert edge is not None and edge['collision_grid']['floor']
 
 
 def test_cached_projection_reused_only_on_same_height():

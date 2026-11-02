@@ -779,7 +779,7 @@ SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the 
 SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
 SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
 BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
-DOOR_RETRAVERSE_COOLDOWN_S = 20.0  # after P1 walks through a door, don't re-cross it (stops hub ping-pong)
+DOOR_RETRAVERSE_COOLDOWN_S = 45.0  # after P1 walks through a door, don't re-cross it (stops hub ping-pong)
 # A transient host focus/active-window condition (the adapter cannot send input
 # because the game window is not in front) must NEVER end the run - PSO has to keep
 # playing. The loop pauses this long, tries to raise the game window, then retries.
