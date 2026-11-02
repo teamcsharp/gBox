@@ -870,6 +870,20 @@ class Provider:
         local_revision = self.local.revision
         for slot, player in players.items():
             view = self.atlas.project(player)
+            if not view and floor > 0:
+                # project() may return None where the SAME surface is nonetheless
+                # recoverable (its own per-instance negative cache, or a seed it
+                # cannot pick a canonical layer for), while MarginViews - with a
+                # separate cache - resolves a single walkable surface here. Publish
+                # that proven safe grid so geometry_players populates (gp non-empty)
+                # and in-area A* / the map surface work, not just path recovery.
+                mview = self.margin._view(player)
+                if mview and mview.get('safe'):
+                    rows = [[*c, round(h, 4)] for c, h in sorted(mview['safe'].items())]
+                    view = {'geometry_layer': mview['geometry_layer'], '_heights': mview['safe'],
+                            '_selected': mview['safe'], 'collision_grid': {'size': self.atlas.size,
+                            'floor': [r[:2] for r in rows], 'walls': [], 'heights': rows,
+                            'max_step': .75, 'max_slope': .75}}
             if view:
                 views[slot] = {k: v for k, v in view.items() if not k.startswith('_')}
                 views[slot]['geometry_identity'] = self.layout_identity
