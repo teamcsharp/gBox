@@ -796,6 +796,8 @@ class Controller:
         self.forward_interact = {}  # slot -> standing on a switch/panel this tick (press A, don't move)
         self.forward_kind = {}      # slot -> 'press' | 'approach_switch' | 'walk_through'
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
+        self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
+        self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
 
     def _steering_publish(self):
         """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
@@ -1088,6 +1090,145 @@ class Controller:
         steering[slot] = (player, waypoint, 'forward_fine' if approaching_switch else 'forward_gusto')
         return True
 
+    def _force_log(self, room, reason):
+        stats = getattr(self.inputs, 'stats', None)
+        if isinstance(stats, dict):
+            stats['forced_door_unlock_skipped'] = {'room': room, 'reason': reason}
+
+    def _live_forward_flags(self, state, player, room):
+        """Collect the stage-flag indices that gate this room's forward progress,
+        reading each object's flag index live from +0xC8 (low 16): every panel /
+        switch in the room, plus the single NEAREST energy barrier (the immediate
+        forward gate). Targeted - never every barrier on the floor."""
+        from . import pso_coop_gates as gates
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        read = ad.read_memory
+        px, pz = player.get('x'), player.get('z')
+        decorated, barriers = [], []
+        for e in state.get('entities', ())[:512]:
+            cls = str(e.get('class', ''))
+            is_switch = cls in gates.SWITCH_CLASSES and e.get('room') == room
+            if not (is_switch or cls == 'TOBarrierEnergy01'):
+                continue
+            try:
+                idx = struct.unpack('>I', read(int(e['ptr'], 16) + 0xC8, 4))[0] & 0xffff
+            except (ValueError, KeyError, TypeError, struct.error, OSError):
+                continue
+            row = dict(e, flag_index=idx)
+            if is_switch:
+                decorated.append(row)
+            elif all(type(v) in (int, float) for v in (px, pz, e.get('x'), e.get('z'))):
+                barriers.append((math.hypot(e['x'] - px, e['z'] - pz), row))
+        if barriers:
+            decorated.append(min(barriers, key=lambda b: b[0])[1])
+        return gates.forward_gate_flag_indices(decorated, room)
+
+    def _recalled_flags(self, state, player):
+        """A validated, persisted forced-unlock recipe for this exact room
+        template, or None (then the live path derives and records it)."""
+        if self.knowledge is None:
+            return None
+        from .pso_knowledge import recalled_forward_flags
+        fingerprint = room_key(state, player)[0]
+        return recalled_forward_flags(self.knowledge, fingerprint, state.get('floor'))
+
+    def _remember_gate(self, state, player, flags):
+        if self.knowledge is None:
+            return
+        from . import pso_coop_gates as gates
+        fingerprint, persistent = room_key(state, player)
+        if not persistent:        # a bare session-local room number must not persist
+            return
+        self.knowledge.remember(fingerprint, episode=state.get('episode'), floor=state.get('floor'),
+            room=player.get('room'), gate='forced_flags', forward_flags=sorted(set(flags)),
+            base=hex(gates.STAGE_FLAG_BASE))
+
+    def force_forward_unlock(self, state, slot, player, now):
+        """Operator's GUARANTEED fail-safe: a room stuck with no forward progress
+        is opened no matter what, by SETTING the native stage flags that gate its
+        forward door directly in the verified 3OE2 flag array (the per-object
+        native_state is recomputed from these each frame, so the flags are the
+        source of truth). Guarded hard: exact build signature over the accessor +
+        r13 setup, group read-back == floor, every flag in range, the binding
+        unchanged across read->compute->write, and one shot per room. Records the
+        recipe for instant recall next visit. Returns the flags set, or None."""
+        from . import pso_coop_gates as gates
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if ad is None or not callable(getattr(ad, 'write_memory', None)) or not callable(getattr(ad, 'read_memory', None)):
+            return None
+        if (state.get('verified') is not True or state.get('phase') != 14
+                or type(state.get('floor')) is not int or not 1 <= state['floor'] <= 17
+                or set(state.get('players', {})) != {1, 2} or not player):
+            return None
+        room, floor, read = player.get('room'), state['floor'], ad.read_memory
+        key = (state.get('episode'), floor, room, state.get('geometry_identity'))
+        if key in self.forced_rooms:
+            return None
+        if not gates.stage_flag_code_ok(read):
+            self._force_log(room, 'build_signature_mismatch')
+            return None
+        try:
+            group = struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0]
+        except (struct.error, OSError):
+            return None
+        if group != floor:
+            self._force_log(room, f'group_ptr_{group}_ne_floor_{floor}')
+            return None
+        recalled = self._recalled_flags(state, player)
+        flags = recalled if recalled is not None else self._live_forward_flags(state, player, room)
+        if not flags:
+            self._force_log(room, 'no_forward_flags')
+            return None
+        loci = []
+        for idx in flags:
+            locus = gates.stage_flag_locus(group, idx)
+            if locus is None:
+                self._force_log(room, f'flag_out_of_range_{idx}')
+                return None
+            loci.append((idx, locus[0], locus[1]))
+        # Revision guard: the exact build + the group must still hold at write time.
+        if not gates.stage_flag_code_ok(read) or struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0] != floor:
+            self._force_log(room, 'binding_changed')
+            return None
+        written = []
+        for idx, addr, mask in loci:
+            try:
+                current = read(addr, 1)[0]
+            except (IndexError, OSError):
+                continue
+            if current & mask:
+                continue
+            ad.write_memory(addr, bytes([current | mask]))
+            written.append(idx)
+        self.forced_rooms.add(key)
+        stats = getattr(self.inputs, 'stats', None)
+        if isinstance(stats, dict):
+            stats['forced_door_unlock'] = {'room': room, 'floor': floor, 'group': group,
+                'flags': sorted(flags), 'written': sorted(written),
+                'base': hex(gates.STAGE_FLAG_BASE), 'recalled': recalled is not None}
+        self._remember_gate(state, player, flags)
+        return sorted(flags)
+
+    def maybe_force_unlock(self, state, now):
+        """Drive the fail-safe for P1's room: fire on a RECALLED template at once
+        (we already know its flags), else only after FALLBACK_STUCK_S of no
+        forward progress. Never while the room still has live enemies (that is a
+        room-clear gate combat owns), and once per room per run."""
+        if not (state.get('verified') and state.get('phase') == 14 and state.get('floor', 0) > 0
+                and set(state.get('players', {})) == {1, 2}):
+            return
+        p1 = state['players'].get(1)
+        if not p1 or p1.get('hp', 0) <= 0:
+            return
+        room = p1.get('room')
+        if any(e.get('kind') == 'enemy' and e.get('hp', 0) > 0 and e.get('room') == room
+               for e in state.get('entities', ())):
+            return
+        rec = self.room_dwell.get('_cur')
+        dwell = now - rec['since'] if rec and rec.get('key') == (state.get('episode'), state.get('floor'), room) else 0.
+        if self._recalled_flags(state, p1) is not None or dwell >= FALLBACK_STUCK_S:
+            self.force_forward_unlock(state, 1, p1, now)
+
     def _forward_dwell_telemetry(self, state, now, engaged):
         """Scalar fail-safe telemetry: how long P1 has held one room with no forward
         translation. The telemetry endpoint drops nested dicts, so these stay flat.
@@ -1123,6 +1264,10 @@ class Controller:
         from .pso_coop_frontier import same_room_threats
         now = time.monotonic()
         enemies = [e for e in state["entities"] if e.get("kind") == "enemy" and e.get("hp", 0) > 0]
+        # Operator's guaranteed fail-safe: a stuck (or recognized) room's forward
+        # gate is opened by setting its verified native stage flags - progression
+        # never stalls. Done before movement so the same tick can walk through.
+        self.maybe_force_unlock(state, now)
         for e in state["entities"]:
             if e.get("kind") != "enemy" or not isinstance(e.get("hp"), int):
                 continue
@@ -1435,6 +1580,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats["progress_restored"] = restored
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
+    from .pso_knowledge import KnowledgeStore
+    controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
     equipment = EquipmentRecovery(ad, session_id, driver, stopped)
     controller.weapon_ranges.recovery = equipment
     review_sampler = None
