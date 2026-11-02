@@ -1005,3 +1005,31 @@ def test_knowledge_persists_the_gate_recipe_and_recalls_it_instantly(monkeypatch
     fresh.room_dwell["_cur"] = {"key": (1, 1, 10), "since": 1000., "anchor": (0., 0.)}
     fresh.maybe_force_unlock(st, now=1000.)            # dwell 0, but recalled -> fires now
     assert mem2[0x80515CE8] == 0x03 and mem2[0x80515CE9] == 0x20
+
+
+def test_p1_crossing_records_a_directed_edge_and_a_later_run_recalls_it(tmp_path):
+    """The convergence crystal: P1 crossing a door records a directed edge
+    (from_room -> door -> to_room) and the run's exploration order; a later run
+    over the same area recalls the graph + critical path, so a room OWNS its
+    outbound door from the first step and the route compounds across runs."""
+    from gbox.pso_knowledge import KnowledgeStore, area_fingerprint
+    area = area_fingerprint(1, 1, "g")
+    ctrl = _controller(tmp_path)
+    ctrl.knowledge = KnowledgeStore(tmp_path / "pso-knowledge.json")
+    # Run 1: P1 commits to room 10's forward door, then is seen in room 11.
+    st10 = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10}], room=10)
+    ctrl.forward_fallback(st10, 1, st10["players"][1], now=50.0)
+    assert ctrl._p1_door == ("TObjDoor", 100.0, 0.0)             # pursuing room 10's door
+    st11 = _coop_room([{"class": "TObjDoor", "x": 200., "z": 0., "room": 11}], room=11)
+    ctrl.forward_fallback(st11, 1, st11["players"][1], now=51.0)  # crossed -> edge + path recorded
+    assert ctrl.knowledge.area_edges(area) == {10: {"('TObjDoor', 100.0, 0.0)": 11}}
+    assert ctrl.knowledge.critical_path(area) == [10, 11]
+    # Run 2: a fresh controller on the SAME crystal recalls the graph + path on
+    # area entry (before any crossing this run).
+    run2 = _controller(tmp_path)
+    run2.knowledge = KnowledgeStore(tmp_path / "pso-knowledge.json")
+    fresh10 = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10}], room=10)
+    run2.forward_fallback(fresh10, 1, fresh10["players"][1], now=10.0)
+    assert run2._area_graph == {10: {"('TObjDoor', 100.0, 0.0)": 11}}
+    assert run2._crit_path == [10, 11]
+    assert run2._path_next(10) == 11 and run2._path_next(11) is None
