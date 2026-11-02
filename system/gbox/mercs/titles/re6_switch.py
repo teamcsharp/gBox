@@ -3533,6 +3533,15 @@ class Bot:
         #5052) - the kick and the rise at 1 health are what the fall/knockdown/dying chain's deaths are made of."""
         me = p["pos"]
         if self.down_dying:
+            # #5052: dying at 1 HP, a tablet instead of just staying down — the 8 down_dying_stay
+            # hits (2 deaths) came from the bot doing nothing at 1 HP while an enemy at 1 m finished it.
+            # DYING_TABLETS is off (RE6 took no tablet while dying in the 2026-10-27 live run), but the
+            # _dying path presses R every DYING_GAP_S while the case holds one; if the game takes it the
+            # bot heals to 300+ and survives.  A tablet press is the smallest possible action while down
+            # and cannot trigger the felling that the getting-up deaths are made of.
+            dying = self._dying(p, now)
+            if dying is not None:
+                return dying
             self._gun_down()
             return self._go("down", "down_dying_stay", {"hold": ()}, "down at 1 health: staying down, no fight")
         # Down at low health: stay down, no rise, no kick, no fire (#5052). The getting-up deaths and the

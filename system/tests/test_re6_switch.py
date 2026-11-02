@@ -2514,7 +2514,10 @@ def test_a_tablet_at_sixty_percent_while_he_is_free_whoever_is_near():
     assert run(bot, snap, clock, 1)[0] != {"tap": "r"} and bot.stats["tablets"] == 0
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     snap["player"]["action"] = "cPlAction_pl_act_dying_loop"
-    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # dying: RE6 takes none (DYING_TABLETS off)
+    assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # #5052: dying at 1 HP, a tablet
+    bot, clock, snap = brain(round_guest(hp=1, tablets=0, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    snap["player"]["action"] = "cPlAction_pl_act_dying_loop"
+    assert run(bot, snap, clock, 1)[0] != {"tap": "r"}                       # no tablets: none
     bot, clock, snap = brain(round_guest(hp=1, enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
     snap["player"]["action"] = "cPlAction_pl_act_weapon_ready_loop"
     assert run(bot, snap, clock, 1)[0] == {"tap": "r"}                       # up again at 1 health: a tablet at once
