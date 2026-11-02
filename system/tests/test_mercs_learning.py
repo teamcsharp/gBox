@@ -298,7 +298,7 @@ def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
     with pytest.raises(ValueError):
-        incident_replay.bot('BLUS30491')
+        incident_replay.bot('NONEXISTENT123')
 
 
 def test_re6_switch_bomb_wait_fights_close_enemies():
