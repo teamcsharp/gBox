@@ -188,6 +188,7 @@ def _observe_wide(image, result):
     title_options = matches('options_title')
     start_names = ('start_item', 'start_customize', 'start_status', 'start_options', 'start_quit')
     start_scores = [max(_text(image, 'w_' + name), _text(image, 'w_' + name, dark=True)) for name in start_names]
+    p2_start = [_text(image, 'w_p2_start_' + name, dark=name=='item') for name in ('item','customize','technique','status','options','quit')]
     hud_visible = bool(max(_text(image, 'w_hud_p1'), _text(image, 'w_hud_p1_town')) >= .85 and
                        _text(image, 'w_hud_p2') >= .85)
     quit_title = matches('quit_question')
@@ -198,10 +199,22 @@ def _observe_wide(image, result):
     forest_panel = all(float((np.asarray(image.crop(box)).max(2) < 95).mean()) >= minimum
         for box, minimum in (((337, 318, 623, 323), .9), ((337, 350, 623, 355), .9),
                              ((334, 323, 339, 350), .85), ((620, 323, 625, 350), .85)))
+    # Independently captured expanded P2 list after area availability changed.
+    # Only its first selected destination is authorized; other rows remain
+    # observations and do not grant navigation or arbitrary-area confirmation.
+    expanded_labels = matches('expanded_forest2', 'expanded_cave1', 'expanded_cave2',
+                              'expanded_cave3', 'expanded_mine1', 'expanded_mine2', threshold=.85)
+    expanded_panel = all(float((np.asarray(image.crop(box)).max(2) < 95).mean()) >= minimum
+        for box, minimum in (((337, 318, 623, 323), .9), ((337, 486, 623, 490), .9),
+                             ((334, 323, 338, 487), .9), ((623, 323, 626, 487), .75)))
     result['menu_visible'] = bool(title_start or title_main or title_mode or title_character or title_ready or
-                                  title_options or forest_label or quit_title or after_title or sum(score >= .72 for score in start_scores) >= 4)
+                                  title_options or forest_label or expanded_labels or quit_title or after_title or sum(score >= .72 for score in start_scores) >= 4 or sum(score >= .8 for score in p2_start) >= 5)
     if (forest_label and forest_panel and hud_visible and
             _selected(image, [(340, 328, 620, 342)], minimum=.45) == 0):
+        record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
+    elif (forest_label and expanded_labels and expanded_panel and hud_visible and
+            _selected(image, [(340, y, 620, y + 12) for y in (328, 350, 373, 395, 418, 440, 463)],
+                      minimum=.45, maximum_other=.07) == 0):
         record('transporter_forest', 'FOREST 1', 0, player=2, observed_episode=1, destination_floor=1)
 
     # Preserve the old sampled text and the independently captured current
@@ -261,6 +274,9 @@ def _observe_wide(image, result):
         if index is not None:
             record('ingame_start', ('Item Pack', 'Customize', 'Status', 'Options', 'Quit Game')[index], index)
 
+    if min(p2_start) >= .8 and _selected(image, [(179,y,279,y+10) for y in (328,346,364,382,400,418)], minimum=.4, maximum_other=.12) == 0:
+        record('ingame_p2_cancel', 'Item Pack', 0, player=2)
+
     if len(found) == 1:
         result.update(found[0], recognized=True,
                       reason='Observed English labels, saved identity where applicable, and unique selection matched')
@@ -277,6 +293,8 @@ def next_key(observation, players=1, *, finish_save=False):
     menu, index = observation['menu'], observation['option_index']
     if menu == 'press_start':
         return 'start'
+    if menu == 'ingame_p2_cancel':
+        return 'b'
     if menu == 'ingame_start':
         return ('a' if index == 4 else 'ddown') if finish_save else 'b'
     if menu == 'quit_confirm':
@@ -564,3 +582,9 @@ _TEXT.update({'w_title_wordmark': {'box': (239, 180, 746, 219), 'shape': (39, 50
 
 # Current main-menu label variants from immutable actual captures.
 _TEXT.update({'w_online_live': {'box': (413, 347, 551, 369), 'shape': (22, 138), 'data': 'c-n=Kze>YU6o<c?gys(6HiJWk+NAgbDK2*iE$E8`T}28m9fV#DScg1}k8q`87wI$H=nK@XL$O|{yJt8Y&Y$o6_`xv>hJRHCnlju_*)(Epk#XFT=$cIWQ2|Q4cJiVRt$3-FKZz;zyMC}tsQQf|6(&;S4Ks3+3uj4iooMe&!oe-gJY|8NbA9Rri|w}?MsjM^6uH(G?zO%&0kg1g8Es0)l}a5R^0h@STK{j=c#VYUeGufIDPrqv1j4EbcDZ{Z-|JEk<SuNYviKR9@DL}|G<#~Hr0~*Wk4z~-2CN?OnH{ka&)CqETf^FL=E3sHZ`FgU=#4u=o!x|)fu7{H`|uR0NZ-zDm>=Cc@x7yo|Hm(7fKa9'}, 'w_offline_live': {'box': (409, 382, 560, 406), 'shape': (24, 151), 'data': 'c-oy%J5Iwu5Pj>lye=Z!>4LDZBQB8AMNop^06D^jf)cr;K=GnTaf8GKkhlirfF(*!K(VQybm_vf8B3(2Vv47kH=j2%z#pdUfbtuYUqXB)?K24qJ8T5uCIS2q5#T5vj)N%hxk?8N5uHFxq@Kr|28|fjCWh3KZnIQEVkrGW21TK%^QDI%MiK5mFjM_D5q7z45pS?bswbqX3+96ERfAaz7v&3<xXZE&;~>Yn;Zb4D(Byf^=^WJ%CA`0=Ed{J)MQNek1*MStS2IE+Nj{oI)fPsJzN+}hX%FT3McEV}rgoU&yn~0RPil|v4GoZjdjqU@XBLuh%$k>D?j7OH)dtGolr{Y;{))>1Fjg)fTj|OB;jP&<jx2cI^x;6Q_|3fD;MVxJ{Qw_nT3P'}, 'w_online_live_other': {'box': (413, 347, 551, 369), 'shape': (22, 138), 'data': 'c-oCnF%H5o3_O#l?GTlW2vtxv#*CeyQh5MRfFCe+%+tb8`h<>*TwGwrL+o76=X0=u#u2BS3V=XBkc4dpo)J|^v|4EBTEHSrK&khp=COkB;Mv0N(kN~V(gKTGQpO<?1&&1-AD+pNxS<zT_sQAZapn-OGdk4}m+~xzvtBg@3LbJ{jB3Nb=uDqdQl{M@n%QEXx<KvqL~j8XiR=M--9xgA2Yyju;B%w8Q3oT;pZ#Q3O4~GFc5i&te{vMPF=2DbUY389>tbxgAMpmY(I4{'}, 'w_offline_live_other': {'box': (409, 382, 560, 406), 'shape': (24, 151), 'data': 'c-oziJx;_h5QU$UC~*-jE>kR$;RGoukTC2$R)G_2i3G*)BWSq+SFsQW$q}|hC_?*Yv_V@?F~y7Lv)}VLz#rAT+2`i~9pAramyf>j;(&ThQXD#3uUgxBVS2U<RB0&=)QG(4t<j@b=(t&8jBKh3MIE2fb8~^51n}qN$<uY(E}b|o!lbdmvb&Ytaq^|A5n+grhE`jOPl|J@484w&PV{aOo6|J{@fR|<>GDA%Cw<Lbvni2*Cz)RrKH7mMj`dsD2uTs^c8@ZmptSt04YO~|#i>4LZ*ilC8!4Qh5&u{@qMtqgtQ{k{E2{'}})
+
+# Six independently captured lower-view HUnewearl labels; cancellation only.
+_TEXT.update({'w_p2_start_item': {'box': (188, 325, 269, 344), 'shape': (19, 81), 'data': 'c${NkzyypSg8cylg92j%i1mYkL4e^9kj2cyz`((f2vX9_z`(*__~5~3hJ)>lO$-tre*AApINtnFfT!S0T7to`#2GW#1e}cp<R2I|R4{Yc&+OnoP;tP5u|>Y;2phwn1UZI7JZwqK3`qw342f*ahKvo05-be{hd<6}I3U^fC_$p&!x4uB{=*L?SU|23Ky{)0e;9ZG0M~IfyZ'}, 'w_p2_start_customize': {'box': (188, 344, 270, 361), 'shape': (17, 82), 'data': 'c${NkfC0t_aONKfmB7G|3>1fO1QNgkK)}PmAR{5emcYQw%%I5M&)@zh{o#WK4mZUnLrDpVGYU+C4GujnZaj)S3@sJ{j)H<s{D&D7*;@o$ToRi<9N=(JWDyjUIM5)GB*5VaRH$IU{^5*~gpr`&9R348<oTP~TU^{9KHy+rXmDr{U_b!?vacb_'}, 'w_p2_start_technique': {'box': (188, 362, 270, 379), 'shape': (17, 82), 'data': 'c${NkfC2so3=9rn7V{ql1_1^p5L1GIfdwMX#=yV`VKFuwDDYupFkxV4NT{%rZ$Bi@;ru|tn4?WuqUVr62OEbQBZrfcKuZ#1^G60JfsPhM`2z`m90XdF6gk{KNGJ%fC~|Z-2{y3tuz?l!BrrB_I0006#+bLkp~6mpK}nwf@Bs!MkPDa`8Wf-o6aZoXo$Mei'}, 'w_p2_start_status': {'box': (198, 380, 261, 397), 'shape': (17, 63), 'data': 'c${NkfPx1QiWy4tBr-69XaOe%W)Q8w$HvaU*uan=Cnu-a-@x!eB26M$kb$8>fk)w(0t17DLxp2c1yFtChh_;21_nhoMK%Ko28lyFPCN+)43=$@ZJfsv80`4u`Q_Ui7|;L!zP%H{'}, 'w_p2_start_options': {'box': (195, 398, 263, 415), 'shape': (17, 68), 'data': 'c${NkfC7Ff&G>_XK>@@tJiyQZqM3LYIKVOq&W;DzxEUMRSnTB#Km4#^NJutp66`sqz{aM?p(N3gz>wf1(WKDf3{;`mp~TT5!=P|T04U&)z|5n_p)AqD#9-ZQa7dWLErIca9iQTd78{`PK*#~INdaO%0GT-%;s'}, 'w_p2_start_quit': {'box': (188, 416, 270, 433), 'shape': (17, 82), 'data': 'c${NkfC0t_K!P32{KLS(!2AKkGHhUwVC(_0Bor9f7!H6~EIbU12MibvK4WHN7U(G8VE9pg@PUJik_3~CvgCv_0)iZE4DAg^+!R?@oD>@r5<Uv@ACwp9NZ{c3<C6R#xkX8WnaNO4qCp}Ns4%hPh?@fQo;1Y<nZt&Hy$$v99Tv<F{<t_kU~pt&VKCriWKdv0008E5Ca3'}})
+
+# Static labels from the exact expanded P2 destination fixture; no full frame.
+_TEXT.update({'w_expanded_forest2': {'box': (420, 346, 540, 369), 'shape': (23, 120), 'data': 'c$}5cI|{=v3<lueaY>evX4DXHj}XY>tyeMR0v$W`K_OEQ)sVG^FysOrJD5<}F>TjqkoXXiK)|}##JmTHi=5RkE9Vam=RoMGAo0k6F0$z)$(%VdGaOr4{n0Q5SKNQRGK)BC+MZyUWuP~$SN6oLQ@1A6Or5wTgw0J_RaPR<B<9QAg-w_EjMS4P(SNB%=8I_~i<{WFH}kUcQ6JSkBAW'}, 'w_expanded_cave1': {'box': (420, 369, 540, 392), 'shape': (23, 120), 'data': 'c${NkAPw+02yn2}H!vQ6aAglzNbn>uFhjWp2^Ks&4sfmlgv$WsCMeYKNFcZl3^{E0xX0KG>Kl-_OsHID10=<a|CtkzEHXsnHZwjza19a}k+~L+85<8Iz`62=85<5DEMg-zV9)^o$51G}'}, 'w_expanded_cave2': {'box': (420, 392, 540, 414), 'shape': (22, 120), 'data': 'c$|&TF%AMD5Czar*q{Z8mUOr`z>bomkl0%60Zew(i;-wN2Pd$$QxI56{l#Qn^=E(|;dy96EY!iOVJ7}6w9!iG!BwI0i4LOD?@n@^C<`5qgK~gcC^Bv1U2HutH9mxy34S3rX%CH0ZX6g@j&JT=xi$ChuPk<&@k>!@59}N|^^H-Ou&Uf#7*T)l|9k*K!6O#'}, 'w_expanded_cave3': {'box': (420, 414, 540, 436), 'shape': (22, 120), 'data': 'c${NkAPw+02yn2}H!yyHaAglzNbn>uFhjWp2^Ks&4h+l^5N-m5%Ld~r)bL0+Ffc*64h%VLKrRCs*8;{p#%568!0-XiWk%;B>1F)SoPgja7#?SS0JN6}#%*Rq;u<6~gSk+}7LOSl4<x|dEPt4>;XwTXn2(r<4jBMN1S4h'}, 'w_expanded_mine1': {'box': (420, 436, 540, 459), 'shape': (23, 120), 'data': 'c${NkAQ7<1F);jNV1n`_*z7F?|1q$`xcod8f(;D(P_7I=kBuM$gFGsi8Nszf;>yYMm?3ked5nQZp>Y4fxx&Ug#uFQmxrP%FdWApp7<@!<1s`K@3z4{oQMdw!<qQmuAh?I@83YjiB_03(+`bnh'}, 'w_expanded_mine2': {'box': (420, 459, 540, 482), 'shape': (23, 120), 'data': 'c${NkAPq>c*$W8%V_-i3<+96J2sSYAKY()ic`O7O7-SM4Tp4~I8z5Jr0F?`sm6PYO19BN)TxlM25cdI`YYeoA5o(dRF__ET0O1N7^B7KKU|@&3O87I6;YS7rHYiu{Gmim~%LC&+26JVQxP?Gxz_^Ej+y*#T;E=t6;XelX2P6gzIsgFl$sG{'}})

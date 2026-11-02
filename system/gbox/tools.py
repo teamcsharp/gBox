@@ -2925,10 +2925,14 @@ def _autoplay(inp: AutoplayIn, ctx: Ctx):
             raise ValueError('Launch PSO with pso_coop=true before starting the two-player campaign')
         d.pso_vision_model = inp.pso_vision_model
         ready = pso_campaign.preflight(ad, d)    # exact disc and available route model before publishing a bot start
-        if inp.screensaver:
-            _front(ad)
-        elif d.demo:
-            _demo_front(ad)  # same idle-PC focus setup as other playbooks, before the campaign's early return
+        from . import pad_takeover
+        if not pad_takeover.active(inp.session_id):
+            if inp.screensaver or d.owns_keyboard:
+                # A PC explicitly dedicated to this bot needs its game focused
+                # even immediately after the operator starts autoplay in gBox.
+                _front(ad)
+            elif d.demo:
+                _demo_front(ad)
         return {"result": _start_playbook(pso_campaign, inp, d, ad, time.time(), ctx, g, game_id) | {"planner": ready}}
     native_team_required = False
     if g.get('game_id') in ('e7ca89bbeb67360d', '0871eee3b68cdea3', '52d15709be0fda1a', '115f9cdbba115432'):
@@ -3100,21 +3104,22 @@ def _bot_send(run, ad, d):
     return pad_takeover.Gate(run["sid"], send)
 
 
-TELEMETRY_BLOCKS = ("look",)           # JSON blocks posted with the scalar stats: stats["look"] (gbox.mercs.bot_look: the
-TELEMETRY_BLOCK_MAX = 40 * 1024        # bot's last shots and decisions, "look at the bot"), each under this many bytes (the
-                                       # server takes 64 KB of stats: screensaver.TELEMETRY_STATS_MAX_BYTES)
+TELEMETRY_BLOCKS = ("pso_review", "look")
+TELEMETRY_BLOCK_MAX = 40 * 1024        # Combined blocks leave room for scalar stats in the server's 64 KB limit.
 
 
 def _telemetry_blocks(live: dict) -> dict:
     """The allowed JSON blocks of a run's live stats that encode (finite, JSON) within TELEMETRY_BLOCK_MAX."""
-    out = {}
+    out, used = {}, 0
     for k in TELEMETRY_BLOCKS:
         v = live.get(k)
         if not isinstance(v, dict):
             continue
         try:
-            if len(json.dumps(v, allow_nan=False, separators=(",", ":")).encode("utf-8")) <= TELEMETRY_BLOCK_MAX:
+            size = len(json.dumps(v, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+            if used + size <= TELEMETRY_BLOCK_MAX:
                 out[k] = v
+                used += size
         except (TypeError, ValueError, OverflowError, RecursionError):
             pass
     return out
@@ -3652,6 +3657,11 @@ class _ReloadHost:
         mission = str(run.get("mission") or "")
         name = run.get("playbook_module") or (f"{__package__}.{mission.split(': ', 1)[1]}"
                                               if mission.startswith("playbook: ") else "")
+        if (name == 'gbox.pso_campaign' and
+                getattr(run.get('inp'), 'campaign', '') == 'pso-coop-episodes-1-2'):
+            # The stable campaign wrapper imports the co-op loop per run.
+            # Reloading that wrapper would replace shared transport/native users.
+            name = 'gbox.pso_coop'
         return name if run.get("mode") == "playbook" and name and hot_reload.allowed(name) else None
 
     def bots(self) -> list:
@@ -3696,6 +3706,11 @@ class _ReloadHost:
             ad, g = SESSIONS[sid]
         except KeyError:
             return None
+        run = AUTOPLAY.get(sid) or {}
+        if self.playbook_of(run) == 'gbox.pso_coop':
+            from . import pso_campaign
+            return ('gbox.pso_coop' if getattr(ad, 'coop_players', 0) == 2 and
+                    pso_campaign.matches(ad, g) else None)
         return getattr(_playbook(ad, g), "__name__", None)
 
     def start(self, sid, run, since) -> dict:

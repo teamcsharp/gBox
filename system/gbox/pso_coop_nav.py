@@ -12,6 +12,16 @@ import math
 from pathlib import Path
 
 
+def geometry_view(state, player):
+    """Select the measured player layer; never borrow the other buddy's grid."""
+    if "geometry_players" not in state:
+        return state
+    slot = player.get("controller")
+    if slot not in (1, 2):
+        slot = next((k for k, row in state.get("players", {}).items() if row.get("ptr") == player.get("ptr")), None)
+    return state["geometry_players"].get(slot, {})
+
+
 def room_key(state, player):
     """Never reuse a room number alone across PSO's randomized map variants."""
     room = player.get("room")
@@ -20,23 +30,28 @@ def room_key(state, player):
                        for e in state.get("entities", [])
                        if e.get("room") == room and e.get("kind") in ("gate", "object")
                        and all(isinstance(e.get(k), (float, int)) and math.isfinite(e[k]) for k in ("x", "z")))
-    geometry = state.get("geometry_identity")
+    view = geometry_view(state, player)
+    geometry = view.get("geometry_identity")
     # Empty rooms with no verified geometry are session-local: persisting a bare
     # room number would transfer a wall into an unrelated randomized layout.
     identity = {"build": "3OE2", "episode": state.get("episode"), "floor": state.get("floor"),
                 "difficulty": state.get("difficulty", "unknown"), "room": room,
-                "layer": state.get("geometry_layer", ("height-band-4", math.floor(player.get("y", 0) / 4))),
-                "geometry": geometry, "landmarks": landmarks}
+                "layer": view.get("geometry_layer", ("height-band-4", math.floor(player.get("y", 0) / 4))),
+                "geometry": geometry, "landmarks": landmarks if not geometry else []}
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest(), bool(geometry or landmarks)
 
 
 class RoomMap:
-    def __init__(self, path=None, size=12.0, floor=None, walls=None):
+    def __init__(self, path=None, size=12.0, floor=None, walls=None, heights=None, max_step=.75, max_slope=.75):
         self.path = Path(path) if path else None
         self.size = size
         self.walked, self.blocked, self.failures = set(), set(), {}
         self.floor = {self._valid_cell(c) for c in floor} if floor is not None else None
         self.walls = {self._valid_cell(c) for c in (walls or [])}
+        self.heights = {self._valid_cell(row[:2]): float(row[2]) for row in (heights or [])}
+        self.max_step, self.max_slope = max_step, max_slope
+        if any(not math.isfinite(y) for y in self.heights.values()):
+            raise ValueError("Invalid collision height")
         if self.path and self.path.is_file():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -65,10 +80,14 @@ class RoomMap:
             return False
         if (a, b) in self.blocked:
             return False
+        if self.heights and (a not in self.heights or b not in self.heights or
+                abs(self.heights[a] - self.heights[b]) > self.max_step + self.max_slope * self.size * math.dist(a, b)):
+            return False
         dx, dz = b[0] - a[0], b[1] - a[1]
         # A diagonal may not clip either side of a known corner.
         if dx and dz:
-            return self.allowed(a, (b[0], a[1])) and self.allowed(a, (a[0], b[1]))
+            sides = ((b[0], a[1]), (a[0], b[1]))
+            return all(self.allowed(a, side) and self.allowed(side, b) for side in sides)
         return True
 
     def route(self, start, goal, limit=6000):
@@ -150,9 +169,11 @@ class Maps:
             # A flattened whole-level grid must not block a bridge using the wall
             # below it. Only consume a grid whose native provider identifies its
             # current floor layer; otherwise use height-bounded observations.
-            geometry = (state.get("collision_grid") or {}) if state.get("geometry_layer") is not None else {}
+            view = geometry_view(state, player)
+            geometry = (view.get("collision_grid") or {}) if view.get("geometry_layer") is not None else {}
             self.maps[key] = RoomMap(self.root / (key + ".json") if persistent else None,
-                                     size=geometry.get("size", 12.0), floor=geometry.get("floor"), walls=geometry.get("walls"))
+                                     size=geometry.get("size", 12.0), floor=geometry.get("floor"), walls=geometry.get("walls"),
+                                     heights=geometry.get("heights"), max_step=geometry.get("max_step", .75), max_slope=geometry.get("max_slope", .75))
         return self.maps[key]
 
     def save(self):

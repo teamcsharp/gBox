@@ -19,6 +19,8 @@ def known_menu_command(observation, players=2, *, finish_save=False):
     if not observation.get('recognized') or players != 2:
         return None
     menu = observation.get('menu')
+    if menu == 'ingame_p2_cancel' and not finish_save:
+        return 2, ['b'], .08
     if menu in ('press_start', 'main', 'mode', 'ingame_start', 'quit_confirm', 'after_save'):
         key = next_key(observation, players, finish_save=finish_save is True)
         return (1, [key], .4 if menu == 'press_start' else .08) if key else None
@@ -175,6 +177,16 @@ class MenuProgress:
                     reason = 'Observed Forest destination requires a separate player-two A confirmation'
                 else:
                     chosen = [(2, ['a'], .08)]
+            elif current.get('menu') == 'ingame_p2_cancel':
+                if self.players != 2 or not native_gameplay or finish_save is True:
+                    reason = 'Observed player-two field panel only permits normal cancellation'
+                elif chosen and (chosen[0][0] != 2 or chosen[0][1] != ['b']):
+                    reason = 'Observed lower-view panel requires one separate player-two B'
+                else:
+                    chosen = [(2, ['b'], .08)]
+                    self._cancel_frame = current.get('frame_sha256')
+                    self._exit_samples = 0
+                    self._exit_frame = None
             elif current.get('menu') in ('ingame_start', 'quit_confirm', 'after_save'):
                 safe = next_key(current, self.players, finish_save=finish_save is True)
                 if chosen and (chosen[0][0] != current.get('player') or len(chosen[0][1]) != 1):

@@ -14,6 +14,7 @@ import math
 import marshal
 import os
 from pathlib import Path
+from types import FunctionType
 
 from .registry import Unsupported
 
@@ -31,11 +32,24 @@ class Attestation:
     probe: tuple
 
 
-def invalidate(ad):
+def _diagnostic(ad, status, reason=''):
+    ad._pso_mapping_diagnostic = {'controller_receipt_status': status,
+        'controller_receipt_reason': str(reason)[:240]}
+
+
+def diagnostics(ad):
+    """Evidence status only; never a source of active controller permission."""
+    return {**getattr(ad, '_pso_mapping_diagnostic', {'controller_receipt_status': 'absent'}),
+            'controller_receipt_retained': _receipt(ad) is not None,
+            'controller_mapping_epoch': getattr(ad, '_pso_mapping_epoch', 0)}
+
+
+def invalidate(ad, reason='reset_or_state_restore'):
     """Reset/restore invalidates evidence before its first native input."""
     setattr(ad, ATTRIBUTE, None)
     ad._pso_verified_player_slots = set()
     ad._pso_mapping_epoch = getattr(ad, '_pso_mapping_epoch', 0) + 1
+    _diagnostic(ad, 'invalidated', reason)
 
 
 def _path(value):
@@ -59,10 +73,37 @@ def _process(ad):
 
 def _routing(ad):
     from . import pso_coop_setup
+    from .desktop_input_lease import InputLease
     digest = hashlib.sha256(json.dumps({'pad2': pso_coop_setup.PAD2, 'pad2_windows': pso_coop_setup.PAD2_WIN,
         'p1_aliases': pso_coop_setup.P1_ALIASES, 'adapter_keys': getattr(ad, 'keys', {})}, sort_keys=True).encode())
-    for fn in (pso_coop_setup.input_rows, ad.send_input, ad.send_input_player):
+    functions = [pso_coop_setup.input_rows]
+    lease = getattr(ad, '_desktop_input_lease', None)
+    scoped = None
+    if lease is not None:
+        scoped = ad.send_input_player
+        if (type(lease) is not InputLease or ad.send_input is not lease
+                or lease.send is not lease.__wrapped__ or not isinstance(scoped, FunctionType)):
+            raise ValueError('The desktop input lease routing changed')
+        closure = dict(zip(scoped.__code__.co_freevars, (cell.cell_contents for cell in scoped.__closure__ or ())))
+        if closure.get('lease') is not lease or closure.get('scoped') is not getattr(scoped, '__wrapped__', None):
+            raise ValueError('The scoped controller wrapper is not the attached desktop input lease')
+        # Retain both the exact lease identity and its underlying input code.
+        # Never generically unwrap an unknown callable and silently ignore it.
+        digest.update(str(id(lease)).encode())
+        functions += [InputLease.__call__, InputLease.identity, InputLease._effective,
+                      lease.normalize, lease.axis, lease.__wrapped__, scoped, scoped.__wrapped__]
+    else:
+        functions += [ad.send_input, ad.send_input_player]
+    for fn in functions:
+        if getattr(fn, '__wrapped__', None) is not None and fn is not scoped:
+            raise ValueError('Unsupported input wrapper in controller routing')
+        owner = getattr(fn, '__self__', None)
+        if owner is not None:
+            digest.update(str(id(owner)).encode())
         fn = getattr(fn, '__func__', fn)
+        if not isinstance(fn, FunctionType):
+            raise ValueError('Unsupported input callable in controller routing')
+        digest.update(str(id(fn)).encode())
         digest.update(marshal.dumps(fn.__code__))
     return digest.hexdigest()
 
@@ -149,13 +190,21 @@ def _receipt(ad):
 def prove(ad, reader, inputs, state, sid, game, stopped, probe):
     """Only an actual successful two-pad movement probe can create evidence."""
     setattr(ad, ATTRIBUTE, None)
+    _diagnostic(ad, 'checking')
     try:
         before = _environment(ad, sid, game)
-    except Exception:
+    except Exception as exc:
         before = None  # Normal safe-town mapping can still work without a reusable attestation.
+        _diagnostic(ad, 'unavailable', f'{type(exc).__name__}: {exc}')
     if stopped():
+        _diagnostic(ad, 'stopped', 'Stopped before the two-pad probe')
         raise InterruptedError('PSO stopped before mapping')
-    rows = probe(reader, inputs, state)
+    try:
+        rows = probe(reader, inputs, state)
+    except Exception as exc:
+        if before is not None:
+            _diagnostic(ad, 'probe_failed', f'{type(exc).__name__}: {exc}')
+        raise
     if stopped() or before is None:
         return rows
     try:
@@ -172,8 +221,9 @@ def prove(ad, reader, inputs, state, sid, game, stopped, probe):
                 raise ValueError('The probe did not attest both current native players')
         if not stopped():
             setattr(ad, ATTRIBUTE, Attestation(_SEAL, ad, ad.proc, before, players, tuple(dict(r) for r in rows)))
+            _diagnostic(ad, 'retained', 'Both controllers physically verified on this live adapter')
     except Exception as exc:
-        invalidate(ad)
+        invalidate(ad, f'probe_verification: {type(exc).__name__}: {exc}')
         raise Unsupported('PSO mapping proof changed during verification; inputs remain released') from exc
     return rows
 
@@ -182,19 +232,25 @@ def restore(ad, reader, sid, game, stopped):
     """Revalidate without sending input; None leaves the existing safe-town probe mandatory."""
     proof = _receipt(ad)
     if proof is None or stopped():
+        if getattr(ad, ATTRIBUTE, None) is not None and proof is None:
+            _diagnostic(ad, 'rejected', 'The attestation no longer belongs to this adapter and process')
         return None
     try:
-        if _environment(ad, sid, game) != proof.environment:
-            raise ValueError('PSO process, card or controller configuration changed')
+        current = _environment(ad, sid, game)
+        if current != proof.environment:
+            changed = ', '.join(sorted(key for key in current if current[key] != proof.environment.get(key)))
+            raise ValueError('PSO mapping bindings changed: ' + changed)
         fresh = reader.snapshot()
         if (_players(fresh) != proof.players or _environment(ad, sid, game) != proof.environment
                 or _receipt(ad) is not proof):
             raise ValueError('PSO actors changed outside the mapped live controller')
         if stopped():
             return None
+        _diagnostic(ad, 'revalidated', 'Same live adapter, native players and controller bindings')
         return {'state': fresh, 'probe': [dict(row) for row in proof.probe]}
-    except Exception:
+    except Exception as exc:
         setattr(ad, ATTRIBUTE, None)
+        _diagnostic(ad, 'rejected', f'{type(exc).__name__}: {exc}')
         return None
 
 
@@ -210,7 +266,7 @@ def observe(ad, state, sid, game, stopped):
         if _environment(ad, sid, game) != proof.environment:
             raise ValueError('Mapping bindings changed while the native actors were recreated')
     except Exception as exc:
-        invalidate(ad)
+        invalidate(ad, f'actor_refresh: {type(exc).__name__}: {exc}')
         raise Unsupported('PSO mapping continuity changed; verify the controllers again in Pioneer 2') from exc
     if not stopped():
         proof.players = players

@@ -74,7 +74,7 @@ class Extras(GC):
  def revive(self):
   p=self.check()
   if self.u16(p+0x32c):return {'verified':True,'message':'Your character is already alive.'}
-  self.write(p+0x324,struct.pack('>H',3)) # the same revival kind used by a consumed Scape Doll
+  # Native REVIVE preserves the player's control mode; mode 3 suppresses movement input.
   self.call([(REVIVE,p)])
   hp=self.u16(p+0x32c)
   return {'verified':hp>0,'hp':hp,'tp':self.u16(p+0x32e),'message':'Native revival applied.' if hp else 'Revival did not restore HP.'}

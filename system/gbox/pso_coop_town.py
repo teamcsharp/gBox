@@ -14,6 +14,8 @@ from .registry import Unsupported
 REL = 'Scene/map_city00_00c.rel'
 REL_SHA = '6d5f5d5d0ff9c18958d1ab577e5be9e6f83c66808537b085ca4c9d2cd97535ec'
 SIZE = 2.5
+TRIANGLES_SHA = '03d26c27a128ecc58de161843c86b55878f6e512a0badbdfcb06bdd2de13da26'
+GEOMETRY_ID = hashlib.sha256(f'3OE2|1|0|{TRIANGLES_SHA}'.encode()).hexdigest()
 PLATFORM = (360.003, 25.998)
 # Observed native constellation, including the platform's otherwise ambiguous
 # TObject. Sentinel room 65535 is accepted only for this exact scene match.
@@ -117,6 +119,9 @@ class Corridor:
         return tuple((v+.5)*SIZE for v in cell)
 
     def clear(self, start, end, excluded=()):
+        return self._clear(start, end, self.safe, excluded)
+
+    def _clear(self, start, end, floor, excluded=()):
         if not _finite([*start,*end]):
             return False
         distance=math.dist(start,end)
@@ -138,9 +143,44 @@ class Corridor:
             x,z=(start[n]+(end[n]-start[n])*u for n in (0,1))
             cells={(math.floor((x+dx)/SIZE),math.floor((z+dz)/SIZE))
                    for dx in (-1e-7,1e-7) for dz in (-1e-7,1e-7)}
-            if any(c not in self.safe or c in excluded for c in cells):
+            if any(c not in floor or c in excluded for c in cells):
                 return False
         return True
+
+    def recover(self, start, excluded=()):
+        """Shortest bounded grid path from known base floor into static margin.
+
+        This exact town base rejects raised/overlapping floors and solid-wall
+        cells. It does not establish actor clearance or dynamic passability.
+        """
+        if not _finite(start):
+            return None
+        first = self.cell(start)
+        if (first not in self.base or first in self.safe or first in excluded or
+                not self._clear(start, self.center(first), self.base, excluded)):
+            return None
+        initial = math.dist(start, self.center(first))
+        queue = [(initial, first)]
+        cost, previous = {first: initial}, {first: None}
+        while queue and len(previous) <= 128:
+            distance, cell = heapq.heappop(queue)
+            if distance != cost[cell] or distance > 12:
+                continue
+            if cell in self.safe:
+                chain = []
+                while cell is not None:
+                    chain.append(self.center(cell)); cell = previous[cell]
+                return [start, *reversed(chain)]
+            for dx, dz in ((1,0),(-1,0),(0,1),(0,-1)):
+                nxt = cell[0] + dx, cell[1] + dz
+                score = distance + SIZE
+                if (score > 12 or nxt not in self.base or nxt in excluded or
+                        score >= cost.get(nxt, math.inf) or
+                        not self._clear(self.center(cell), self.center(nxt), self.base, excluded)):
+                    continue
+                cost[nxt] = score; previous[nxt] = cell
+                heapq.heappush(queue, (score, nxt))
+        return None
 
     def route(self, start, end=PLATFORM, excluded=()):
         if not _finite([*start,*end]):
@@ -218,7 +258,8 @@ class TownRoute:
         for slot,p in state['players'].items():
             pos=(p['x'],p['z'])
             row=self.rows.setdefault(slot,dict(attempts=0,stalls=0,wait_until=0.,halted=False,
-                excluded={},last=None,last_target=None,best=math.inf,no_progress=0,halt_position=None))
+                excluded={},last=None,last_target=None,best=math.inf,no_progress=0,halt_position=None,
+                recovering=False,margin_attempts=0))
             if row['halted'] and math.dist(pos,row['halt_position'])>=5:
                 # A separately observed position change (e.g. operator help)
                 # permits a fresh bounded attempt; time alone never unlatches.
@@ -229,11 +270,30 @@ class TownRoute:
             if now<row['wait_until']:
                 reports[slot]='waiting_for_door_reobservation';continue
             row['excluded']={c:until for c,until in row['excluded'].items() if until>now}
+            row['recovering']=False
             route=self.corridor.route(pos,excluded=row['excluded'])
             if not route:
-                # Do not snap outside the known corridor or fall back to a
-                # straight line. Static failure issues no movement at all.
-                reports[slot]='held_no_clear_route';continue
+                # Only this exact loaded city mesh can authorize leaving the
+                # conservative margin. No unknown floor/height is projected.
+                proven = (state.get('geometry_verified') is True and
+                    state.get('geometry_identity') == GEOMETRY_ID and
+                    state.get('geometry_source', {}).get('triangles_sha256') == TRIANGLES_SHA)
+                recovery = self.corridor.recover(pos, row['excluded']) if proven else None
+                if not recovery or not self.corridor.route(recovery[-1], excluded=row['excluded']):
+                    reports[slot]='held_no_clear_route';continue
+                if row['margin_attempts'] >= 8:
+                    row.update(halted=True,halt_position=pos)
+                    reports[slot]='held_margin_recovery_limit';continue
+                waypoint = recovery[1]
+                for point in recovery[2:]:
+                    if math.dist(pos,point)>6 or not self.corridor._clear(pos,point,self.corridor.base,row['excluded']):break
+                    waypoint=point
+                if math.dist(pos,waypoint)<.5:
+                    reports[slot]='held_connector_too_short';continue
+                row['recovering']=True
+                commands[slot]=waypoint
+                reports[slot]='recovering_static_margin_clearance_unknown';continue
+            row['margin_attempts']=0
             if math.dist(pos,PLATFORM)<=4:
                 reports[slot]='at_platform_waiting_for_observed_menu';continue
             remaining=sum(math.dist(a,b) for a,b in zip(route,route[1:]))
@@ -259,12 +319,17 @@ class TownRoute:
         self.status=dict(state='routing' if commands else 'held',players=reports,
             geometry_sha256=REL_SHA,static_margin=SIZE,dynamic_doors_verified=False,
             actor_radius_verified=False,arrival_verified=False,
+            clearance_unknown_players=[slot for slot,row in self.rows.items() if row.get('recovering')],
             note='Only the independent destination-menu observer can confirm arrival/entry')
         return commands
 
     def moved(self,slot):
         # Called only after the ordinary input hold completed successfully.
         row=self.rows[slot];row['attempts']+=1;row['no_progress']+=1
+        if row.get('recovering'):row['margin_attempts']+=1
+
+    def pulse_seconds(self,slot):
+        return .04 if self.rows[slot].get('recovering') else .08
 
     def target(self,slot,point):
         self.rows[slot]['last_target']=point
