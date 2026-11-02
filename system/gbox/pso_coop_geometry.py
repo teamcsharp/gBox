@@ -707,8 +707,12 @@ class LocalConnectors:
             if distance!=costs[cell] or distance>12:
                 continue
             point=self.center(cell);coarse=self.atlas.cell({'x':point[0],'z':point[1]})
-            goal=view['goals'].get(coarse,False)
-            if goal is False:
+            # Ineligible overlap points cannot be endpoints. Do not spend a
+            # normal-projection slot or cache their coarse cell as a failure:
+            # a later point in that same cell may leave the overlap.
+            eligible=not getattr(self,'endpoint_ok',None) or self.endpoint_ok(point,base[cell])
+            goal=view['goals'].get(coarse,False) if eligible else None
+            if eligible and goal is False:
                 # A normal target still passes the original Atlas projection.
                 if tested>=12:
                     goal=None
@@ -716,8 +720,7 @@ class LocalConnectors:
                     tested+=1
                     goal=self.atlas.project({'x':point[0],'y':base[cell],'z':point[1]})
                     view['goals'][coarse]=goal
-            if (goal and coarse in goal['_heights'] and abs(goal['_heights'][coarse]-base[cell])<=.75
-                    and (not getattr(self,'endpoint_ok',None) or self.endpoint_ok(point,base[cell]))):
+            if goal and coarse in goal['_heights'] and abs(goal['_heights'][coarse]-base[cell])<=.75:
                 chain=[];cursor=cell
                 while cursor is not None:
                     chain.append(cursor);cursor=previous[cursor]

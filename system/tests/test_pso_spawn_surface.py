@@ -8,7 +8,7 @@ import pytest
 from gbox import pso_coop_geometry as G
 from test_pso_geometry import plane, player, fixture_memory, state
 
-ROOT = original_test_path('spawn-surface-connector-v2/test_spawn_surface.py').resolve().parent
+ROOT = original_test_path('spawn-surface-connector-v3/test_spawn_surface.py').resolve().parent
 
 
 @pytest.fixture(scope='module')
@@ -20,7 +20,8 @@ def forest():
 POSITIONS = [dict(ptr='80DA8830', x=550.008, y=32.928, z=-15.904),
              dict(ptr='80DA62A0', x=531.607, y=32.122, z=-28.214),
              dict(ptr='80DA8830', x=548.877, y=32.774, z=-22.134),
-             dict(ptr='80DA62A0', x=531.718, y=33.387, z=-22.392)]
+             dict(ptr='80DA62A0', x=531.718, y=33.387, z=-22.392),
+             dict(ptr='80DA8830', x=513.428, y=31.377, z=-44.747)]
 
 
 def check_proof(atlas, p, proof):
@@ -185,6 +186,58 @@ def test_surface_work_exhaustion_fails_closed_and_is_cached(monkeypatch):
     assert local._native_surface(p,'bounded') is None
     revision=local.revision
     assert local._native_surface(p,'bounded') is None and local.revision==revision
+
+
+def test_ineligible_endpoints_do_not_consume_twelve_projection_slots(monkeypatch):
+    atlas=G.Atlas(plane(x1=60,z1=60));local=G.LocalConnectors(atlas)
+    p=player(x=22.25,z=22.5);rejected=set();calls=[];original=atlas.project
+    def eligible(point,height):
+        if point[1]<31:
+            rejected.add(atlas.cell(dict(x=point[0],z=point[1])));return False
+        return True
+    def project(point):
+        calls.append(point);assert point['z']>=31
+        return original(point)
+    local.endpoint_ok=eligible;monkeypatch.setattr(atlas,'project',project)
+    proof=local.recover(p,'bounded')
+    assert proof and len(rejected)>=12 and len(calls)==1
+    assert proof['path_length']<=12
+
+
+def test_thirteen_or_more_eligible_cells_still_get_only_twelve_projection_probes(monkeypatch):
+    atlas=G.Atlas(plane(x1=60,z1=60));local=G.LocalConnectors(atlas)
+    eligible_cells=set();calls=[]
+    def eligible(point,height):
+        eligible_cells.add(atlas.cell(dict(x=point[0],z=point[1])));return True
+    local.endpoint_ok=eligible
+    monkeypatch.setattr(atlas,'project',lambda point:calls.append(point))
+    assert local.recover(player(x=22.25,z=22.5),'bounded') is None
+    assert len(eligible_cells)>12 and len(calls)==12
+
+
+def test_ineligible_point_does_not_poison_later_eligible_point_in_same_cell(monkeypatch):
+    atlas=G.Atlas(plane(x1=60,z1=60));local=G.LocalConnectors(atlas)
+    p=player(x=22.25,z=22.5);calls=[];original=atlas.project
+    local.endpoint_ok=lambda point,height:point[0]>=23.25
+    def project(point):calls.append(point);return original(point)
+    monkeypatch.setattr(atlas,'project',project)
+    proof=local.recover(p,'same-cell')
+    assert proof and len(calls)==1 and atlas.cell(calls[0])==atlas.cell(p)
+
+
+def test_latest_p2_bent_path_reaches_provider_and_fresh_observation(forest):
+    provider,_,_,s=provider_at_spawn(forest)
+    s['players'][1].update(ptr='80DA62A0',x=525.117,y=34.628,z=-18.204)
+    s['players'][2].update(POSITIONS[4])
+    first=provider.snapshot(s)
+    assert first['geometry_verified'] and first['geometry_refreshed']
+    assert 1 in first['geometry_players'] and 2 not in first['geometry_players']
+    proof=first['geometry_recovery_players'][2]
+    check_proof(provider.atlas,s['players'][2],proof)
+    assert len(proof['path'])>=3 and proof['surface_work']<=G.LocalConnectors.SURFACE_WORK_LIMIT
+    second=provider.snapshot(s)
+    assert second['geometry_verified'] and not second['geometry_refreshed']
+    assert second['geometry_recovery_players']==first['geometry_recovery_players']
 
 
 def test_changed_native_binding_during_overlap_work_discards_proof(forest,monkeypatch):
