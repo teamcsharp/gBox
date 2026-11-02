@@ -3370,6 +3370,14 @@ class Bot:
             return None
         if not critical and now - self.heal_at < HEAL_RETRY_S:
             return None
+        # #5072 (iter 5): a wound-up melee inside WINDUP_FIRE_R is a swing already on him -- the wind-up
+        # reflex (quick turn) gets the stick first.  Starting the equip cycle now would hold the gun down
+        # into the swing's range, which is how the cluster's kills happened; the heal is re-taken on the
+        # next tick once the turn is done (the equip is cheap and the crowd never defers it at this line).
+        py = p["pos"][1]
+        if any(math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2]) <= WINDUP_FIRE_R
+               and abs(e["pos"][1] - py) <= LEVEL_DY and self._winding(e) for e in live):
+            return None
         item = next((s for s in inv if s["id"] in HEAL_IDS and s["rounds"] > 0 and s["grid"] in QUICK), None)
         # #5072: the heal is a quick slot, so the item is known before the crowd check; with no heal in the
         # quick slots there is nothing this rule can use (the critical retreat below still applies).
