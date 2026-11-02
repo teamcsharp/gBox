@@ -728,6 +728,48 @@ def test_leader_does_not_backtrack_through_the_door_it_just_entered(tmp_path):
     assert dest[0] > 300.                                                     # drives through the FORWARD door
 
 
+def test_goto_directive_routes_p1_then_clears_on_arrival(tmp_path):
+    """RTS GOTO: a parsed in-scope goto makes P1's destination the clicked point;
+    once P1 is within reach it is marked done (resume autonomous)."""
+    ctrl = _controller(tmp_path)
+    ctrl._directive = {"op": "goto", "id": "click1", "x": 100., "z": 0., "episode": 1, "floor": 1}
+    st = _coop_room([], p1=(0., 0.))
+    assert ctrl.goto_destination(st, st["players"][1], now=1.) == (100., 0.)   # navigate to the click
+    st["players"][1].update(x=98., z=0.)                                       # arrived (within reach)
+    assert ctrl.goto_destination(st, st["players"][1], now=2.) is None         # reached -> done
+    assert ctrl._directive_done == "click1"
+    assert ctrl.goto_destination(st, st["players"][1], now=3.) is None         # not re-pursued
+    # A stale-area directive never steers P1.
+    ctrl._directive = {"op": "goto", "id": "c2", "x": 5., "z": 5., "floor": 9}
+    assert ctrl.goto_destination(st, st["players"][1], now=4.) is None
+
+
+def test_autonomous_heads_to_the_exit_warp_when_no_gates_remain(tmp_path):
+    """Idle->exit: with no switch/door left, P1 drives to the area's warp/
+    teleporter (the level exit) so it keeps progressing toward the boss."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjAreaWarpForest", "x": 200., "z": 0., "room": 10}], p1=(0., 0.))
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=1.)
+    assert dest is not None and dest[0] > 200.                                 # aimed through the exit warp
+    assert ctrl.inputs.stats["forward_fallback_action"] == "exit_warp"
+
+
+def test_publish_surface_writes_the_map_file_and_records_it_in_the_crystal(tmp_path):
+    from gbox.pso_knowledge import KnowledgeStore
+    from gbox.pso_coop_nav import room_key
+    ctrl = _controller(tmp_path)
+    ctrl.map_root = tmp_path
+    ctrl.knowledge = KnowledgeStore(tmp_path / "pso-knowledge.json")
+    st = _coop_room([{"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10, "flag_index": 7}], p1=(0., 0.))
+    st.update(geometry_verified=True, geometry_identity="area1",
+              collision_grid={"size": 12.0, "floor": [[0, 0], [1, 0], [0, 1]], "walls": [],
+                              "heights": [[0, 0, 0.0]], "max_step": .75, "max_slope": .75})
+    ctrl.publish_surface(st)
+    fp = room_key(st, st["players"][1])[0]
+    assert (tmp_path / "pso-maps" / (fp + ".json")).is_file()                  # surface published for the viewer
+    assert ctrl.knowledge.recall(fp)["surface"]["cell_count"] == 3            # summary folded into the crystal
+
+
 def test_swarm_follower_closes_defends_and_never_navigates(tmp_path):
     """P2+ are pure swarm-followers: close the gap to P1 when far, hold in the
     follow band, engage any enemy near P1 - and never feed field nav / wall
