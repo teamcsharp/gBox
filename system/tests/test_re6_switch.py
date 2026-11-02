@@ -989,6 +989,40 @@ def test_flanking_enemy_at_99deg_gets_crowd_control_not_aimed_fire():
         f"flanking enemy at 99 deg not caught by crowd control: act={bot.stats['act']}"
 
 
+def test_flanking_enemy_at_110deg_gets_fast_quick_turn():
+    """#5047 (fc45a6229fe006d0): an enemy at 110 deg off-facing (between CC_CONE 100° and
+    CC_FLANK_CONE 130°) within CC_R. The slow cc_turn pan is too late — the bot must use
+    the fast quick-turn to face the flanking threat before it grabs from behind."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((150.0 * math.sin(math.radians(110)), 0.0, 150.0 * math.cos(math.radians(110)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    # The flanking enemy beyond CC_CONE should trigger the fast quick-turn, not the slow cc_turn
+    assert bot.stats["act"] == "quick_turn", \
+        f"flanking enemy at 110 deg should get fast quick_turn, got: act={bot.stats['act']}"
+    assert bot.stats.get("quick_turns_flank", 0) >= 1, \
+        "quick_turns_flank stat not incremented for flanking quick-turn"
+
+
+def test_flanking_enemy_at_137deg_gets_fast_quick_turn():
+    """#5047 (fc45a6229fe006d0): an enemy at 137 deg off-facing (at the CC_FLANK_CONE edge)
+    within CC_R. Must get the fast quick-turn, not the slow cc_turn. At 137 deg the
+    'one behind him' path fires first (existing behavior); the flanking path in
+    _crowd_control is the fallback for angles the behind-path misses."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((180.0 * math.sin(math.radians(137)), 0.0, 180.0 * math.cos(math.radians(137)), 700),),
+        cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 3)
+    # At 137 deg the 'one behind him' path catches it (existing quick_turn_behind behavior)
+    assert bot.stats["act"] in ("quick_turn", "quick_turn_settle"), \
+        f"flanking enemy at 137 deg should get fast quick_turn, got: act={bot.stats['act']}"
+    # Either path increments a quick_turn counter — the important thing is it's fast, not cc_turn
+    assert bot.stats.get("quick_turns_behind", 0) + bot.stats.get("quick_turns_flank", 0) >= 1, \
+        "no quick_turn counter incremented for 137 deg flanking enemy"
+
+
 def test_enemy_at_150deg_gets_quick_turn_not_crowd_control():
     """Regression: an enemy at 150 deg off-facing is outside CC_FLANK_CONE (130 deg).
     The bot should use quick_turn (existing behavior) rather than crowd control."""

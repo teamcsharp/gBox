@@ -4368,7 +4368,17 @@ class Bot:
                             {z.get("ptr", z.get("slot")): z.get("hp") or 0 for z in live if flat(z) <= CC_R})
             return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
-        if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
+        if abs(err) > CC_ATTACK_CONE:
+            # Flanking enemy beyond CC_ATTACK_CONE: if it's also beyond CC_CONE (i.e. only caught
+            # by CC_FLANK_CONE), the slow camera pan is too late — the one has already closed.
+            # Use the fast quick-turn instead (damage cluster fc45a6229fe006d0: grabbed-from-behind
+            # incidents while cc_turn panned too slowly for flanking threats at 100-137 deg).
+            if abs(err) > CC_CONE and not (self.bomb_phase in ("walk", "wait") and self.bomb_at is not None):
+                self.stats["quick_turns"] += 1
+                self.stats["quick_turns_flank"] = self.stats.get("quick_turns_flank", 0) + 1
+                self.quick = 2
+                return self._go("quick_turn", "quick_turn", {"hold": ("ldown",)},
+                                f"one {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): the quick turn")
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
         step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)
