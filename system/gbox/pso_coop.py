@@ -1079,7 +1079,6 @@ class Controller:
             self.enemy_hp[key] = e["hp"]
         commands, moves, attack_rows, margin_slots = [], {}, {}, []
         steering, fallback_slots = {}, []
-        dbg = {}
         envelopes = {slot: self.weapon_ranges.for_player(state, slot) if enemies else FALLBACK for slot in (1, 2)}
         # Recenter only on drift (see recenter()); after a reset the world moved
         # on during the hold, so choose input from a fresh read.
@@ -1111,10 +1110,6 @@ class Controller:
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
             nav = self.maps.get(state, player)
             field_owned = bool(state.get("floor", 0) > 0 and state.get("geometry_verified"))
-            dbg[f'{slot}_tgt'] = bool(target); dbg[f'{slot}_fo'] = field_owned
-            dbg[f'{slot}_navfloor'] = nav.floor is not None
-            dbg[f'{slot}_gates'] = sum(1 for e in state.get('entities', ())
-                                       if e.get('class') in FORWARD_FALLBACK_CLASSES and e.get('room') == player.get('room'))
             field_destination = self.field.destination(state, slot, nav, now) if field_owned else None
             if nav.floor is not None:
                 self.margin_attempts.pop(slot,None)
@@ -1132,7 +1127,6 @@ class Controller:
                     # the room's forward switch/door / the leader. nav.route is
                     # permissive when floor is None; movement stays short-pulsed.
                     dest = self.forward_fallback(state, slot, player, now)
-                    dbg[f'{slot}_nogrid_fb'] = dest is not None
                     if dest is not None:
                         route = nav.route((player["x"], player["z"]), dest)
                         wp = route[1] if route and len(route) > 1 else dest
@@ -1211,9 +1205,6 @@ class Controller:
                 buddy = state["players"][3 - slot]
                 if not field_owned and destination is None and slot == 2 and buddy.get("room") == player.get("room") and math.hypot(buddy["x"] - player["x"], buddy["z"] - player["z"]) > 65:
                     destination = buddy["x"], buddy["z"]
-                # Last resort: without a verified grid, still advance toward the
-                # room's forward switch/door instead of standing still.
-                dbg[f'{slot}_goal'] = bool(goal); dbg[f'{slot}_destpre'] = destination is not None
                 # Advance toward the room's forward switch/door instead of idling
                 # when nothing else produced a destination: either geometry is
                 # unverified (not field_owned), or the field objective is None
@@ -1222,11 +1213,9 @@ class Controller:
                 if destination is None and target is None and (not field_owned
                         or state["players"][3 - slot].get("room") == player.get("room")):
                     destination = self.forward_fallback(state, slot, player, now)
-                    dbg[f'{slot}_fbret'] = destination is not None
                     if destination is not None:
                         fallback_slots.append(slot)
             if destination is None:
-                dbg[f'{slot}_end'] = 'dest_none'
                 continue
             if field_owned and nav.floor is None:
                 # Local observed defense above may attack/aim in range. Never
@@ -1251,7 +1240,6 @@ class Controller:
                 # a switch/route; this does not turn combat stagger into a wall.
                 if target:
                     self.cooldown[(slot, target["ptr"])] = now + 8
-                dbg[f'{slot}_end'] = 'approach_stall'
                 self.goals.pop(slot, None)
                 self.approaches.pop(identity, None)
                 continue
@@ -1262,10 +1250,8 @@ class Controller:
                      if field_owned and slot not in fallback_slots else
                      nav.route((player["x"], player["z"]), destination))
             if not route:
-                dbg[f'{slot}_end'] = 'route_fail'; dbg[f'{slot}_blocked'] = len(getattr(nav, 'blocked', ()))
                 self.goals.pop(slot, None)
                 continue
-            dbg[f'{slot}_end'] = 'moved'
             waypoint = route[1] if len(route) > 1 else destination
             # Five-unit collision cells need short observed pulses; a long
             # hold can cross a corner beyond the verified adjacent edge.
@@ -1273,10 +1259,6 @@ class Controller:
             commands.append((slot, movement_keys(player, waypoint), duration))
             moves[slot] = (player, waypoint, nav, not nearby)
             steering[slot] = (player, waypoint, 'native_route')
-        _stats = getattr(self.inputs, 'stats', None)
-        if isinstance(_stats, dict):
-            for _k, _v in dbg.items():
-                _stats['dbg_' + _k] = _v
         self._forward_dwell_telemetry(state, now, bool(fallback_slots))
         if self.field.revision != field_revision:
             # First route selection can perform several bounded searches.
