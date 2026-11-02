@@ -1417,14 +1417,19 @@ class Controller:
         def skip(reason):
             if isinstance(stats, dict):
                 stats["map_surface_skip"] = reason
-        p1 = state.get("players", {}).get(1)
-        if not p1:
-            return skip("no_p1")
         if state.get("geometry_verified") is not True:
             gpk = sorted(str(k) for k in (state.get("geometry_players") or {}))
             rpk = sorted(str(k) for k in (state.get("geometry_recovery_players") or {}))
             return skip("geometry_unverified:gp=%s,recov=%s,gid=%s" % (
                 gpk, rpk, bool(state.get("geometry_identity"))))
+        # The collision surface is area-wide, so publish it from whichever player
+        # currently PROJECTS a grid (prefer P1), not only P1 - P1 is often on a
+        # recovery cell while P2 projects, and either gives the same area surface.
+        gp = state.get("geometry_players") or {}
+        p1 = next((state["players"][s] for s in (1, 2)
+                   if s in gp and state.get("players", {}).get(s)), state.get("players", {}).get(1))
+        if not p1:
+            return skip("no_player")
         fingerprint = room_key(state, p1)[0]
         if fingerprint in self._published:
             if isinstance(stats, dict):
