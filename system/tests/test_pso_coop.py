@@ -212,6 +212,26 @@ def test_native_combat_attacks_with_both_pads_without_waiting_for_planner(monkey
     assert controller.attacks == 2 and controller.kills == 0
 
 
+def test_camera_recenter_only_on_staleness_or_a_real_turn(monkeypatch, tmp_path):
+    """Operator 2026-11-02: no constant reframing — an L reset per pad only when its
+    alignment is stale (RECENTER_S) or its actor turned since the last reset."""
+    observed = state(floor=1)
+    sent = []
+    inputs = SimpleNamespace(hold=lambda commands: sent.append(commands), speed=lambda: 1, stopped=lambda: False)
+    controller = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed)), inputs, C.Maps(tmp_path))
+    monkeypatch.setattr(P, "wait", lambda *_: None)
+    pressed = lambda: [c[0] for batch in sent for c in batch if "l" in c[1]]
+    controller.tick(copy.deepcopy(observed))
+    assert set(pressed()) == {1, 2}            # the first tick aligns both pads once
+    sent.clear()
+    controller.tick(copy.deepcopy(observed))   # unchanged headings inside the window: no reframing
+    assert pressed() == []
+    observed["players"][2]["heading_deg"] = 90.
+    sent.clear()
+    controller.tick(copy.deepcopy(observed))   # only the pad whose actor turned realigns
+    assert pressed() == [2]
+
+
 def test_pad_probe_never_moves_characters_in_enemy_area():
     observed = state(floor=1)
     with pytest.raises(Unsupported, match="Pioneer 2"):
