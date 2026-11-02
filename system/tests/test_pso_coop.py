@@ -689,6 +689,18 @@ def test_buddy_two_follows_the_leaders_committed_choice(tmp_path):
     assert follow == (5., 0.) and ctrl.forward_interact[2] is False     # P2 heads to where P1 went
 
 
+def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
+    """Forest-1 'open two door panels': the buddies take DIFFERENT panels (two
+    simultaneous holds), not both the nearest one."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoorKey", "x": 20., "z": 0., "room": 10},
+                     {"class": "TObjDoorKey", "x": 200., "z": 0., "room": 10}],
+                    p1=(0., 0.), p2=(180., 0.))
+    p1_dest = ctrl.forward_fallback(st, 1, st["players"][1], now=100.0)   # P1 -> nearest panel
+    p2_dest = ctrl.forward_fallback(st, 2, st["players"][2], now=100.0)   # P2 -> the OTHER panel
+    assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
+
+
 def test_forward_progression_never_blind_writes_memory(tmp_path):
     """STEP 3 forced-unlock is DEFERRED: the shipped logic opens no door by RAM
     write (no verified open-flag offset), so it must touch no memory."""

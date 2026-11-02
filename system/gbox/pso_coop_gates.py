@@ -26,16 +26,18 @@ def _finite(entity, keys=('x', 'z')):
     return all(type(entity.get(k)) in (int, float) and math.isfinite(entity[k]) for k in keys)
 
 
-def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer_room=True):
+def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer_room=True, exclude=None):
     """Ordered forward affordances for a cleared room (pure, read-only).
 
     Switches/panels (is_switch=0) sort before doors (is_switch=1) so the gate is
     opened before it is crossed; nearest-first within a class. A gkey-cooled
-    affordance (already pressed, or abandoned as stalled) is skipped. When the
-    player's own room holds nothing forward, fall back to the whole floor so the
-    pair always has an exit to drive toward. Returns rows
-    (is_switch, distance, gkey, entity, kind)."""
+    affordance (already pressed, or abandoned as stalled) is skipped, as is any
+    gkey in `exclude` (a panel the buddy already claimed, so a two-player room's
+    two panels are split rather than both chased). When the player's own room
+    holds nothing forward, fall back to the whole floor so the pair always has an
+    exit to drive toward. Returns rows (is_switch, distance, gkey, entity, kind)."""
     cooldown = cooldown or {}
+    exclude = exclude or ()
 
     def collect(same_room):
         rows = []
@@ -46,7 +48,7 @@ def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer
             if same_room and entity.get('room') != room:
                 continue
             gkey = (cls, round(entity['x'], 1), round(entity['z'], 1))
-            if cooldown.get(gkey, 0) > now:
+            if cooldown.get(gkey, 0) > now or gkey in exclude:
                 continue
             is_switch = 0 if cls in SWITCH_CLASSES else 1
             rows.append((is_switch, math.hypot(entity['x'] - px, entity['z'] - pz),
@@ -55,6 +57,12 @@ def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer
         return rows
 
     return (collect(True) if prefer_room else []) or collect(False)
+
+
+def count_switches(entities, room):
+    """How many switch/panel affordances the room holds (two-panel detection)."""
+    return sum(1 for e in list(entities)[:512] if str(e.get('class', '')) in SWITCH_CLASSES
+               and _finite(e) and e.get('room') == room)
 
 
 def through_point(px, pz, gx, gz, overshoot=16.0):
