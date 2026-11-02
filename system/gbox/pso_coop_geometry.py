@@ -278,6 +278,17 @@ class Atlas:
         for view in self.views:
             if start in view['_heights'] and abs(view['_heights'][start] - height) <= .25:
                 return view
+        # A buddy standing at the very EDGE of an already-mapped surface (a
+        # doorway, a wall seam) seeds one cell outside the clearance-trimmed safe
+        # grid, which would otherwise fail and drop the whole grid every time a
+        # buddy hugs a wall - the intermittent-grid root in the spawn hub. It is
+        # still on that same verified surface, so reuse the cached view it adjoins
+        # on this layer (A* routes from an edge seed into the floor fine).
+        for view in self.views:
+            if any((start[0] + dx, start[1] + dz) in view['_heights'] and
+                   abs(view['_heights'][(start[0] + dx, start[1] + dz)] - height) <= .5
+                   for dx, dz in DIRECTIONS):
+                return view
         key = (start, height)
         if key in self.failed_projections:
             return None
