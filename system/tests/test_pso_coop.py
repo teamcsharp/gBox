@@ -467,10 +467,10 @@ def _gate(cls, x, z, room=10, eid=9000):
 
 
 def test_buddies_advance_toward_room_switch_when_geometry_unverified(monkeypatch, tmp_path):
-    """Operator 2026-11-02 top pain: with no verified grid the buddies must still MOVE
-    toward the room's switch/door instead of idling. P1 leads to the nearer switch; P2
-    follows the same committed affordance."""
-    observed = _field_state()
+    """Party model: P1 (sole navigator) leads to the nearer switch; P2 is a swarm
+    follower - with no threat it just closes the gap to P1 (placed behind, beyond
+    the follow radius), never navigating on its own."""
+    observed = _field_state(p2=(30., -60.))                 # P2 behind P1, outside the follow band
     observed["entities"] += [_gate("TLazerFenceSw", 30., 80., eid=16501),
                              _gate("TObjDoor", 30., 160., eid=16502)]
     sent, stats = [], {}
@@ -481,9 +481,9 @@ def test_buddies_advance_toward_room_switch_when_geometry_unverified(monkeypatch
     assert controller.tick(observed)
     moves = [c for batch in sent for c in batch if c[1] not in (["l"], ["a"])]
     moved = {c[0] for c in moves}
-    assert moved == {1, 2}                                   # both buddies received movement
-    assert all("lup" in c[1] for c in moves)                # +z is straight ahead of heading 0
-    assert stats["forward_fallback_target"] == "TLazerFenceSw"   # switch is reached before the door
+    assert moved == {1, 2}                                   # P1 leads forward; P2 closes toward P1
+    assert all("lup" in c[1] for c in moves)                # both head +z (P1 to switch, P2 up to P1)
+    assert stats["forward_fallback_target"] == "TLazerFenceSw"   # P1 reaches the switch before the door
     assert stats["forward_fallback_engaged"] is True
     assert stats["forward_room"] == 10 and stats["forward_stuck"] is False
 
@@ -544,11 +544,12 @@ def test_forward_stuck_flag_fires_after_threshold_and_resets_on_room_change():
 
 
 def test_buddies_advance_when_geometry_verified_but_no_collision_grid(monkeypatch, tmp_path):
-    """Live deadlock (i9, Ep1 Fl1): geometry_verified is True (field_owned) yet the
-    buddies have no usable collision grid, so FieldObjectives yields nothing and the
-    old code idled both (P1 waiting on P2's missing layer, P2 stuck in margin
-    recovery). They must still advance toward the room's forward switch/door."""
-    observed = _field_state()
+    """Live deadlock (i9, Ep1 Fl1): geometry_verified is True (field_owned) yet
+    there is no usable collision grid, so FieldObjectives yields nothing and the
+    old code idled P1 (waiting on P2's missing layer). Now P1 is the sole
+    navigator and still advances to the room's switch/door; P2 is a geometry-free
+    swarm follower (placed behind, it just closes the gap) - never the stall."""
+    observed = _field_state(p2=(30., -60.))         # P2 behind P1, outside the follow band
     observed["geometry_verified"] = True            # field_owned True, but no geometry_players
     observed["entities"] += [_gate("TLazerFenceSw", 30., 90., eid=16501),
                              _gate("TObjDoor", 30., 200., eid=16502)]
@@ -559,7 +560,7 @@ def test_buddies_advance_when_geometry_verified_but_no_collision_grid(monkeypatc
     monkeypatch.setattr(P, "wait", lambda *_: None)
     assert controller.tick(observed)
     moved = {c[0] for batch in sent for c in batch if c[1] not in (["l"], ["a"])}
-    assert moved == {1, 2}                           # neither buddy idles in the deadlock
+    assert moved == {1, 2}                           # P1 navigates forward; P2 closes to P1 (no deadlock)
     assert all("lup" in c[1] for batch in sent for c in batch if c[1] not in (["l"], ["a"]))
 
 
@@ -702,6 +703,39 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     p1_dest = ctrl.forward_fallback(st, 1, st["players"][1], now=100.0)   # P1 -> nearest panel
     p2_dest = ctrl.forward_fallback(st, 2, st["players"][2], now=100.0)   # P2 -> the OTHER panel
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
+
+
+def test_leader_does_not_backtrack_through_the_door_it_just_entered(tmp_path):
+    """P1 heads for the boss, not back the way it came: entering a room by one
+    door, it picks the FORWARD door, not the entry-adjacent one - so it stops
+    ping-ponging a connected-room hub."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 5., "z": 0., "room": 10},     # back-door, by the entry
+                     {"class": "TObjDoor", "x": 300., "z": 0., "room": 10}])  # forward door, far
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=100.)           # entry recorded at (0,0)
+    assert dest[0] > 300.                                                     # drives through the FORWARD door
+
+
+def test_swarm_follower_closes_defends_and_never_navigates(tmp_path):
+    """P2+ are pure swarm-followers: close the gap to P1 when far, hold in the
+    follow band, engage any enemy near P1 - and never feed field nav / wall
+    learning (no moves[]), so a follower can never stall the party."""
+    ctrl = _controller(tmp_path)
+    far = _coop_room([], p1=(0., 0.), p2=(0., -80.))
+    cmds, moves, steer = [], {}, {}
+    ctrl.swarm_follow(far, 2, far["players"][2], 100., [], C.FALLBACK, cmds, moves, steer, {})
+    assert cmds and cmds[0][0] == 2 and "lup" in cmds[0][1] and not moves   # closes toward P1, no field nav
+    band = _coop_room([], p1=(0., 0.), p2=(0., -25.))
+    cmds = []
+    ctrl.swarm_follow(band, 2, band["players"][2], 100., [], C.FALLBACK, cmds, {}, {}, {})
+    assert cmds == []                                                       # in the band: holds station
+    near = _coop_room([], p1=(0., 0.), p2=(0., 5.))
+    enemy = {"kind": "enemy", "class": "TObjEneMoja", "ptr": "80DEAD00", "room": 10,
+             "x": 0., "z": 9., "hp": 100, "hp_max": 100}
+    near["entities"].append(enemy)
+    cmds, attack_rows = [], {}
+    ctrl.swarm_follow(near, 2, near["players"][2], 100., [enemy], C.FALLBACK, cmds, {}, {}, attack_rows)
+    assert cmds and cmds[0][1] == ["a"] and attack_rows.get(2)             # attack-dog engages the enemy near P1
 
 
 def test_leader_drives_forward_even_when_the_buddy_is_in_another_room(monkeypatch, tmp_path):

@@ -771,6 +771,14 @@ WEDGE_ESCAPE_S = 0.8          # hold the back-off/strafe escape heading this lon
 WEDGE_MOVE = 6.0              # progress threshold: translating more than this clears the wedge
 FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
+# Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
+# every door and completes the game, never waiting. P2 (and P3/P4) are dumb
+# swarm-followers: orbit P1 and defend him, with NO independent navigation (that
+# was the waiting_for_buddy deadlock root). These bound the follow/defend swarm.
+SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the gap (geometry-free)
+SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
+SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
+BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
 # A transient host focus/active-window condition (the adapter cannot send input
 # because the game window is not in front) must NEVER end the run - PSO has to keep
 # playing. The loop pauses this long, tries to raise the game window, then retries.
@@ -1001,10 +1009,13 @@ class Controller:
         identity = (state.get('episode'), state.get('floor'), state.get('geometry_identity'))
         book = self.fallback.get(identity)
         if book is None or book.get('_room') != room:
-            book = self.fallback[identity] = {'_room': room, 'cooldown': {}, 'slots': {}}
+            # 'entry' is P1's position on entering this room - the door it came
+            # through, used to avoid immediately backtracking out of a hub.
+            book = self.fallback[identity] = {'_room': room, 'cooldown': {}, 'slots': {}, 'entry': (px, pz)}
             if len(self.fallback) > 16:
                 self.fallback.pop(next(iter(self.fallback)))
         cooldown = book['cooldown']
+        entry = book.get('entry')
         from . import pso_coop_gates as gates
 
         # P2 claims the OTHER panel in a two-panel room; else follows P1 (to P1's
@@ -1030,6 +1041,14 @@ class Controller:
             rows = gates.forward_candidates(state.get('entities', ()), room, px, pz,
                                             cooldown=cooldown, now=now, prefer_room=True,
                                             exclude=exclude, skip_switches=forced)
+            # Anti-backtrack: P1 leads toward the boss, not back through the door it
+            # just entered. Drop entry-adjacent DOORS when a forward option remains
+            # (never drop a switch/panel, and never strand a single-exit room).
+            if slot == 1 and entry and len(rows) > 1:
+                forward = [r for r in rows if r[0] == 0
+                           or math.hypot(r[3]['x'] - entry[0], r[3]['z'] - entry[1]) > BACKTRACK_RADIUS]
+                if forward:
+                    rows = forward
             if not rows:
                 book['slots'].pop(slot, None)
                 return None
@@ -1134,6 +1153,59 @@ class Controller:
                 stats["wedge_recovery"] = {"slot": slot, "phase": rec["phase"], "at": [round(here[0]), round(here[1])]}
             return rec["keys"], True
         return movement_keys(player, waypoint), False
+
+    def swarm_follow(self, state, slot, player, now, enemies, envelope, commands, moves, steering, attack_rows):
+        """A non-leader (P2..P4): orbit and defend P1 - never navigates on its own.
+
+        The whole party's navigation intelligence lives in P1; followers are a
+        simple attack-dog swarm. Dropping followers' independent routing / own
+        geometry is what removes the waiting_for_buddy deadlock. Behaviour: if an
+        enemy is within reach of the follower OR near the leader, engage it; else
+        keep station on the leader (close the gap if far, step off if crowding),
+        geometry-free. Generic over slot, so P3/P4 swarm the same way."""
+        leader = state["players"].get(1)
+        px, pz = player["x"], player["z"]
+        self.combat_status[slot] = dict(range=envelope, target=None, room=player.get("room"),
+                                        player_ptr=player.get("ptr"), role="swarm_follow")
+
+        def relevant(e):
+            if e.get("hp", 0) <= 0:
+                return False
+            if math.hypot(e["x"] - px, e["z"] - pz) <= COMBAT_NEARBY_RADIUS:
+                return True
+            return bool(leader) and math.hypot(e["x"] - leader["x"], e["z"] - leader["z"]) <= SWARM_DEFEND_RADIUS
+
+        threats = sorted((e for e in enemies if relevant(e)),
+                         key=lambda e: math.hypot(e["x"] - px, e["z"] - pz))
+        target = next((e for e in threats if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+        if target is not None:
+            dist, angle, vertical_ok = attack_geometry(player, target, envelope)
+            self.combat_status[slot].update(target=target.get("class"), distance=round(dist, 2),
+                                            heading_error=round(angle, 2), role="swarm_defend")
+            if dist <= envelope["horizontal"] and vertical_ok and abs(angle) <= envelope["horizontal_half_angle"]:
+                if now - self.last_attack.get(slot, 0) >= .52 / self.inputs.speed():
+                    commands.append((slot, ["a"], .12))
+                    attack_rows[slot] = {"attempts": 0}
+                return
+            if dist <= envelope["horizontal"] and vertical_ok:
+                commands.append((slot, ["lleft" if angle > 0 else "lright"], max(.02, min(.12, abs(angle) / 450))))
+                steering[slot] = (player, (target["x"], target["z"]), "swarm_aim")
+                return
+            commands.append((slot, movement_keys(player, (target["x"], target["z"])), .20))
+            steering[slot] = (player, (target["x"], target["z"]), "swarm_approach")
+            return
+        # No threat: keep station on the leader. Geometry-free - a follower needs
+        # no collision grid, so it can never be the thing that stalls the party.
+        if not leader or leader.get("hp", 0) <= 0:
+            return
+        gap = math.hypot(leader["x"] - px, leader["z"] - pz)
+        if gap > SWARM_FOLLOW_RADIUS:
+            commands.append((slot, movement_keys(player, (leader["x"], leader["z"])), .40))
+            steering[slot] = (player, (leader["x"], leader["z"]), "swarm_close")
+        elif gap < SWARM_SPREAD:
+            off = (px + (px - leader["x"] or SWARM_SPREAD), pz + (pz - leader["z"]))
+            commands.append((slot, movement_keys(player, off), .12))
+            steering[slot] = (player, off, "swarm_spread")
 
     def _force_log(self, room, reason):
         stats = getattr(self.inputs, 'stats', None)
@@ -1338,6 +1410,13 @@ class Controller:
             envelope = envelopes[slot]
             if envelope.get('verified') and envelope.get('player_ptr') != player['ptr']:
                 envelope = FALLBACK
+            if slot != 1:
+                # P2 (and later P3/P4) are pure swarm-followers: orbit and defend
+                # P1, with NO independent navigation. P1 is the single navigating
+                # brain and never waits on a follower - this ends the deadlock.
+                self.swarm_follow(state, slot, player, now, enemies, envelope,
+                                  commands, moves, steering, attack_rows)
+                continue
             self.combat_status[slot] = dict(range=envelope,target=None,room=player.get('room'),
                                            player_ptr=player.get('ptr'))
             nearby = sorted((e for e in enemies if e.get("room") == player.get("room")),
