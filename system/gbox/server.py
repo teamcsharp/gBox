@@ -283,6 +283,8 @@ def create_app(config: Config) -> FastAPI:
     # --- Phantasy Star Online item catalog (from the disc) + item thumbnails (PSO wiki) for the item sidebar ---
     from . import pso_api
     pso_api.routes(app, config, auth)
+    from . import pso_run_review
+    pso_run_review.install(app, config, auth, store)
     from . import memory_cards
     memory_cards.routes(app,store,config,auth)
 
@@ -2788,7 +2790,7 @@ def create_app(config: Config) -> FastAPI:
                     from . import background_testing
                     from . import ollama_assist
                     if ollama_assist.is_job(j):
-                        reason = ollama_assist.reason(store, w)
+                        reason = ollama_assist.reason(store, w, j)
                         if reason:
                             store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': reason}})
                             continue
@@ -2812,6 +2814,9 @@ def create_app(config: Config) -> FastAPI:
                             excluded=set() if mercmode.operator_dispatch(store,w['name']) else background_testing.excluded(store)
                             reason=background_testing.admission_reason(w,excluded,101,
                                 allow_active=True,require_gpu=False)
+                        elif ollama_assist.is_analysis_job(j):
+                            from .game_analysis import model_reason
+                            reason = model_reason(store, w, j)
                         elif (j.get('origin') or {}).get('inspection_run'):
                             from .inspection_builds import claim_reason
                             reason = claim_reason(store, w, j)
@@ -4829,6 +4834,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import ollama_assist
     ollama_assist.install(app, store, auth)
+    from . import game_analysis
+    game_analysis.install(app, store, auth, submit=lambda req, actor: submit(JobRequest(**req), actor))
     from . import gameplay_memory
     gameplay_memory.install(app, store, config, auth)
     from . import gameplay_demo

@@ -3100,21 +3100,22 @@ def _bot_send(run, ad, d):
     return pad_takeover.Gate(run["sid"], send)
 
 
-TELEMETRY_BLOCKS = ("look",)           # JSON blocks posted with the scalar stats: stats["look"] (gbox.mercs.bot_look: the
-TELEMETRY_BLOCK_MAX = 40 * 1024        # bot's last shots and decisions, "look at the bot"), each under this many bytes (the
-                                       # server takes 64 KB of stats: screensaver.TELEMETRY_STATS_MAX_BYTES)
+TELEMETRY_BLOCKS = ("pso_review", "look")
+TELEMETRY_BLOCK_MAX = 40 * 1024        # Combined blocks leave room for scalar stats in the server's 64 KB limit.
 
 
 def _telemetry_blocks(live: dict) -> dict:
     """The allowed JSON blocks of a run's live stats that encode (finite, JSON) within TELEMETRY_BLOCK_MAX."""
-    out = {}
+    out, used = {}, 0
     for k in TELEMETRY_BLOCKS:
         v = live.get(k)
         if not isinstance(v, dict):
             continue
         try:
-            if len(json.dumps(v, allow_nan=False, separators=(",", ":")).encode("utf-8")) <= TELEMETRY_BLOCK_MAX:
+            size = len(json.dumps(v, allow_nan=False, separators=(",", ":")).encode("utf-8"))
+            if used + size <= TELEMETRY_BLOCK_MAX:
                 out[k] = v
+                used += size
         except (TypeError, ValueError, OverflowError, RecursionError):
             pass
     return out

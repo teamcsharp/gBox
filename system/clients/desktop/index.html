@@ -1242,6 +1242,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/cast-mapper.js"></script>
 <script src="../web/viz/cast-swap.js"></script>
 <script src="../web/viz/pso-controls.js"></script>
+<script src="../web/viz/pso-reviewer.js"></script>
 <script src="../web/viz/live-controls.js"></script>
 <script src="../web/viz/build-actions.js"></script>
 <script src="../web/viz/game-menu.js"></script>
@@ -1256,6 +1257,7 @@ window.taskVizCreate = canvas => {
 <script src="../web/viz/photo-skin.js"></script>
 <script src="../web/viz/retarget-editor.js"></script>
 <script src="../web/viz/pick-whip.js"></script>
+<script src="../web/viz/game-analysis.js"></script>
 <script src="../web/viz/pso-face-editor.js"></script>
 <script src="../web/viz/face-warp-editor.js"></script>
 <script src="../web/viz/native-face-editor.js"></script>
@@ -1302,7 +1304,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.merc-round-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact > :not(.pso-review-window):not(.game-analysis):not(.ga-toggle):not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.merc-round-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   body.gbox-compact #taskpanel { top:36px; right:8px; width:calc(100vw - 16px); height:calc(100vh - 44px); max-height:none; }
   body.gbox-compact #taskpanel .th { flex-wrap:wrap; padding:6px; }
   body.gbox-compact #reqform { position:fixed; inset:36px 8px 8px; z-index:80; overflow:auto; background:var(--bg); }
@@ -3710,8 +3712,8 @@ function gameOutputPlace(){
 }
 addEventListener('pagehide',()=>GAME_OUTPUT.dispose(),{once:true});
 // shell panels and the embedded view's menus that are cut out of a docked native game window so they show above it
-const EMB_HOLES = "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), .piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
-const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, #pad-takeover, [role=dialog], [role=menu], [aria-modal=true]";
+const EMB_HOLES = ".game-analysis:not([hidden]), .ga-toggle:not([hidden]), .pso-review-window, #ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), .piprz, #worker-offline.on, #gbox-toasts, #chatpanel.on, #ctlpop.on, #items.on, #pipmenu, #rebuild-panel, #strip.on, #trouble.on, #eyepip, #svcpanel.on, #auditpanel.on, #chatsug, #live.on, #orb.on, #chatbar .sugg, #modelmenu.on, #whipmenu.on, #taskpanel.on, #tkv-media.on, #taskviz.on, #reinv.on, #ovbar.on, #ovchars.on, #busysteps.on, #pwmenu, #pwcon, #pwreport";
+const EMB_GUEST_MENUS = "#gmenu, #carmenu, #traypop, #gbox-toasts, #pwmenu, #pwcon, #pwreport, #re6dlg, #lbox, #ssres, #loader, #pad-takeover, [role=dialog], [role=menu], [aria-modal=true], .game-analysis:not([hidden]), .ga-toggle:not([hidden]), .pso-review-window";
 // installed once per embedded-view document: its menus opening/closing ask the shell for a sync in the next frame
 const EMB_GUEST_WATCH = `if (!window.__gboxMenuWatch) { const popupMutation = ${GBoxEmbedGeometry.popupMutation}; let frame = 0;
   window.__gboxMenuWatch = new MutationObserver(records => {
@@ -3801,7 +3803,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), #compact-controls.shown, .merc-weapon-menu, .merc-round-menu, .flash-shortcut-menu, .ring-kind-menu, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? ".game-analysis:not([hidden]), .ga-toggle:not([hidden]), .pso-review-window, #ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), #compact-controls.shown, .merc-weapon-menu, .merc-round-menu, .flash-shortcut-menu, .ring-kind-menu, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -4549,6 +4551,7 @@ function pipMenu(x, y) {
                  ["pwrclick", `⌖ Right-click a character: character menu (${GBoxPickWhip.settings().rclick ? "on" : "off"})`],
                  ["pwpause", `⏸ Pause the game while picking (${GBoxPickWhip.settings().pause ? "on" : "off"})`],
                  ["ask", "❓ Ask a question…"], ["-"],
+                 ["analysis", "Analysis: evidence, console and crystals"],
                  ["tasks", "Tasks: active work and new requests"],
                  ["mercs-map", "🗺 Mercenaries live map ↗"], ["mercs-review", "📊 Mercenaries run reviewer ↗"], ["mercmode", ""],
                  ["fixgame", "⟳ Report & fix (relaunch this game)"],
@@ -4628,7 +4631,7 @@ async function pipMercMode(m, opening, open = false) {
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
-  if (!COMPACT.on || event.target.closest?.('#pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-round-replay], [data-stage-preferences], .merc-round-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;
+  if (!COMPACT.on || event.target.closest?.('.game-analysis, .ga-toggle, .pso-review-window, #pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-round-replay], [data-stage-preferences], .merc-round-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;
   event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
 }, true);
 addEventListener('pagehide', closePipMenu);
@@ -4752,8 +4755,21 @@ async function prodBot() {
   if (S?.apiUrl !== source) throw Error('The connection changed. Open the game menu again.');
   return botEnsure(sid, 'Prod', {raise:true, prod:true});
 }
+// Analysis uses the same service authority and exact displayed session as game controls.
+let GAME_ANALYSIS_IO = null;
+function openGameAnalysis(target) {
+  const origin = S.apiUrl;
+  if (EMB.authority && target.session_id && EMB.authority !== origin) throw Error('Reconnect to this game service before Analysis.');
+  if (!GAME_ANALYSIS_IO || GAME_ANALYSIS_IO.origin !== origin) GAME_ANALYSIS_IO = {
+    origin, api: async (path,body,method) => { if(S.apiUrl!==origin)throw Error('Analysis service changed.'); const r=await gbox.api(path,body,method);if(!r.ok)throw Error(r.error||'Analysis request failed');return r.data; },
+    assetUrl: p => `${origin}${p}${p.includes('?')?'&':'?'}token=${encodeURIComponent(S.tok||'')}`,
+    valid: t => S.apiUrl===origin && (!t.session_id || t.session_id===(COMPACT.on?COMPACT.sid:EMB.sid))
+  };
+  return GBoxGameAnalysis.open(GAME_ANALYSIS_IO,target);
+}
 async function gameAction(a) {
   if(a==='prod'){try{await prodBot();}catch(error){toast(error.message);}return;}
+  if(a==='analysis'){try{return openGameAnalysis({session_id:COMPACT.on?COMPACT.sid:EMB.sid});}catch(error){toast(error.message);}return;}
   if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
   if(a==='mercmode-stay'){
     try{
@@ -5425,6 +5441,7 @@ async function pwIO() {
   return { api: pwApi, toast, drag: dragAnywhere, place: (el, x, y) => fitMenu(el, x, y, 8, 40),
     img: c => `${S.apiUrl}${c.preview_url || `/api/characters/${encodeURIComponent(c.slug)}/preview`}?token=${tok}`,
     clipboard: t => navigator.clipboard.writeText(t), assets: pwAssets, chatModel: pwModel, crop: pwCrop, blenderCopy: pwBlenderCopy,
+    analysis: o => openGameAnalysis({session_id:o.sid}),
     session: pwSession, frame: pwFrame, onReported: () => { try { refreshInbox(); } catch {} },
     canFace: () => /phantasy\s*star\s*online.*episode/i.test(EMB.title||""),
     faceEdit: async o => {
