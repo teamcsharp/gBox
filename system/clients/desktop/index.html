@@ -4584,6 +4584,12 @@ function pipMenu(x, y) {
   m.streamPicker = GBoxPipStreamPicker.mount(m.querySelector('[data-pip-stream-picker]'), {
     read:pipStreamData, current:() => COMPACT.on ? COMPACT.sid : EMB.sid, title:sessionTitle,
     select:(sid, valid) => pipSelection.select(sid, valid), broadcast:(sid, valid) => pipSelection.broadcast(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
+    close:async (sid, row) => {                                 // right-click an entry → close that game (operator stop; frees the worker, e.g. for MercMode)
+      if (!confirm(`Close ${row ? sessionTitle(row) : 'this game'}? The game stops now and any unsaved progress is lost.`)) return false;
+      const r = await gbox.api('/api/jobs', { tool:'session_op', agent_use:false, require_worker: sid.split('-')[0], input:{ session_id: sid, op:'stop_game', args:{} } });
+      if (!r.ok) throw Error(r.error || 'Could not stop the game');
+      return true;
+    },
     preview:async sid => `${opening.origin}/api/sessions/${encodeURIComponent(sid)}/frame.jpg?token=${encodeURIComponent(await gbox.token())}&t=${Date.now()}`,
     resized:() => { if (m.opening === opening) fitMenu(m, x, y, 8, 40); }
   });

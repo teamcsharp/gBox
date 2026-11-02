@@ -181,7 +181,59 @@
     root.innerHTML = '<p class="pip-stream-empty" role="status">Loading streams…</p>';
     const valid = () => !stopped && io.valid?.() !== false;
     const message = value => { if (valid()) root.querySelector('.pip-stream-status').textContent = value; };
+    // Right-click a stream entry to close that game. The stop itself is the operator's own action,
+    // provided by the host as io.close(sid, row) (it confirms, then stops the session); this component
+    // only draws the menu. Closing a game here is how the operator frees a worker (e.g. for MercMode).
+    let menuEl = null;
+    function onAway(event) { if (!menuEl || !menuEl.contains(event.target)) dismissMenu(); }
+    function onKey(event) { if (event.key === 'Escape') dismissMenu(); }
+    function dismissMenu() {
+      if (menuEl) { menuEl.remove(); menuEl = null; }
+      document.removeEventListener('pointerdown', onAway, true);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function contextMenu(event) {
+      const card = event.target.closest?.('[data-stream-sid]');
+      if (!card || !valid() || typeof io.close !== 'function') return;
+      const row = entries.find(e => e.row.session_id === card.dataset.streamSid)?.row;
+      if (!row) return;
+      event.preventDefault(); event.stopPropagation();
+      dismissMenu();
+      const label = io.title ? io.title(row) : (row.title || row.game_title || row.game_id || 'Game');
+      menuEl = document.createElement('div');
+      menuEl.className = 'pip-stream-menu'; menuEl.setAttribute('role', 'menu');
+      menuEl.style.cssText = 'position:fixed;z-index:90;min-width:176px;max-width:280px;padding:5px;' +
+        'background:#1b1f2a;border:1px solid #3a4152;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.55);';
+      const head = document.createElement('div');
+      head.textContent = (name(row) || identity(row).workerId || 'Instance') + ' · ' + label;
+      head.style.cssText = 'padding:4px 8px 6px;font-size:11px;color:#9aa3b4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;';
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.textContent = 'Close this game';
+      btn.style.cssText = 'display:block;width:100%;text-align:left;padding:7px 8px;border:0;border-radius:6px;' +
+        'background:transparent;color:#ff9a9a;cursor:pointer;font:inherit;';
+      btn.addEventListener('mouseenter', () => { btn.style.background = '#33323a'; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
+      btn.addEventListener('click', async ev => {
+        ev.stopPropagation(); dismissMenu();
+        if (busy) return;
+        busy = true; message('Closing ' + (name(row) || 'game') + '…');
+        try {
+          const done = await io.close(row.session_id, row);
+          await refresh();
+          message(done === false ? 'Switching views keeps every game running.' : 'Closed. The slot is free now.');
+          setTimeout(() => { if (valid()) refresh(); }, 1500);
+        } catch (error) { await refresh(); message('Could not close: ' + error.message); }
+        finally { busy = false; }
+      });
+      menuEl.appendChild(head); menuEl.appendChild(btn); root.appendChild(menuEl);
+      const rect = menuEl.getBoundingClientRect();
+      menuEl.style.left = Math.max(6, Math.min(event.clientX, innerWidth - rect.width - 6)) + 'px';
+      menuEl.style.top = Math.max(6, Math.min(event.clientY, innerHeight - rect.height - 6)) + 'px';
+      document.addEventListener('pointerdown', onAway, true);
+      document.addEventListener('keydown', onKey, true);
+    }
     async function refresh() {
+      dismissMenu();
       try {
         const data = await io.read(); if (!valid()) return;
         entries = candidates(data.rows, data.hosts);
@@ -223,8 +275,10 @@
       finally { busy = false; }
     }
     root.addEventListener('click', click);
+    root.addEventListener('contextmenu', contextMenu);
     const ready = refresh();
-    return {ready, stop() { stopped = true; preview?.stop(); root.removeEventListener('click',click);
+    return {ready, stop() { stopped = true; preview?.stop(); dismissMenu(); root.removeEventListener('click',click);
+      root.removeEventListener('contextmenu',contextMenu);
       root.querySelectorAll('[data-stream-preview]').forEach(img => img.removeAttribute('src')); }};
   }
   return {KEY, identity, sameInstance, status, candidates, resolve, cycle, create, previews, previewImage, html, mount};
