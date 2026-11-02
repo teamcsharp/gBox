@@ -401,8 +401,8 @@ def test_bot_backs_off_one_in_front_only(monkeypatch):
     assert b.stats["backoffs"] == 0 and b.stats["quick_turns"] == 1
 
 
-@pytest.mark.parametrize("snap,kind,pattern", [(bot_snap(motion=106), "holds", R.WIGGLE),
-                                               (bot_snap(motion=113), "holds", R.WIGGLE),
+@pytest.mark.parametrize("snap,kind,pattern", [(bot_snap(enemy=(0.0, 0.0, 10.0), motion=106), "holds", R.WIGGLE),
+                                               (bot_snap(enemy=(0.0, 0.0, 10.0), motion=113), "holds", R.WIGGLE),
                                                (bot_snap((0.0, 0.0, 8.0), motion=None), "holds", R.WIGGLE),
                                                (bot_snap(hp=1), "dying", R.MASH),
                                                (bot_snap(hp=1, motion=106), "dying", R.WIGGLE)])

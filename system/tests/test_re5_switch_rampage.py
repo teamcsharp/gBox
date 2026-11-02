@@ -256,3 +256,35 @@ def test_replay_incident_idle_among_foes_shows_firing_not_escaping():
     assert stats.get("rampage_s", 0) > 0, f"rampage_s={stats.get('rampage_s')}"
     # The bot was not idle among foes: it was firing
     assert stats.get("idle_in_5m_s", 0) == 0, f"idle_in_5m_s={stats.get('idle_in_5m_s')}"
+
+def test_held_motion_ne_far_still_fires():
+    """The held-motion guard (#5181): motion in MOTION_HELD with the nearest enemy
+    beyond HELD_R must NOT trigger the held state — the bot fires instead of wiggling."""
+    import json
+    import copy
+    from pathlib import Path
+    from gbox.mercs import incident_replay as IR
+    from gbox.mercs.titles.re5_switch import MOTION_HELD, HELD_R
+
+    fx = json.loads((Path(__file__).parent / "fixtures" / "mercs_incidents"
+                     / "re5_switch_idle_among_foes.json").read_text())
+    # 3 enemies within 5 m, nearest at ~3.7 m — beyond HELD_R (25 cm)
+    fx["snapshot"]["laser"] = None
+
+    # For every motion in MOTION_HELD, the bot must fire, not wiggle
+    for motion in sorted(MOTION_HELD):
+        fx2 = copy.deepcopy(fx)
+        fx2["snapshot"]["player"]["motion"] = motion
+        result = IR.replay(fx2, ticks=10, dt=0.1)
+        doings = {t["doing"] for t in result["ticks"]}
+        assert "held" not in doings, f"motion={motion}: bot entered held state despite nearest enemy > HELD_R"
+        assert "fire" in doings, f"motion={motion}: bot did not fire: doings={doings}"
+        assert result["stats"].get("idle_in_5m_s", 0) == 0, f"motion={motion}: idle among foes"
+
+    # Control: with the nearest enemy within HELD_R, the held state still triggers
+    fx3 = copy.deepcopy(fx)
+    fx3["snapshot"]["player"]["motion"] = 100
+    fx3["snapshot"]["laser"] = None
+    fx3["snapshot"]["enemies"][0]["pos"] = [10.0, 0.0, 0.0]  # 10 cm, within HELD_R
+    result = IR.replay(fx3, ticks=5, dt=0.1)
+    assert result["ticks"][0]["doing"] == "held", "held state did not trigger at close range"

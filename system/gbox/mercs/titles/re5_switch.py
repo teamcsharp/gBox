@@ -3114,7 +3114,7 @@ class Bot:
         # swarmed ("RE5 swarmed with the gun LOWERED = 20 deaths" in 24 h). HELD_R stands in only without a motion byte;
         # the stuck rule (the sticks pressed, no move) only with nobody within RAMPAGE_R (geometry, not a crowd).
         grab_prompt = ((snap.get("prompt") or {}).get("label") == re5_switch_prompt.LABEL_BREAK_FREE)
-        held = motion in MOTION_HELD or grab_prompt or (motion is None and near < HELD_R) or p.get("hp") == DYING_HP
+        held = (motion in MOTION_HELD and near < HELD_R) or grab_prompt or (motion is None and near < HELD_R) or p.get("hp") == DYING_HP
         if motion in MOTION_HELD and not self._was_held:
             self._grab_at = now                          # a grab began (hits_after_windup)
         self._was_held = motion in MOTION_HELD
