@@ -293,9 +293,45 @@ def test_re5_switch_crowd_heals_under_50hp_with_enemies_near():
         f["snapshot"]["player"]["hp"] = f["hp_before"]
         r = incident_replay.replay(f, ticks=8)
         d = [t["doing"] for t in r["ticks"]]
-        assert "heal" in d, f"fixture {i} ({f['hp_before']} HP) did not heal: {d}"
+        # A wound-up melee inside WINDUP_FIRE_R takes the stick first (the quick turn); the heal starts once
+        # the swing is gone -- starting the equip mid-swing is how the cluster's kills happened.
+        if any(e.get("motion") in (80, 81, 91, 60) or (e.get("act") or 0) & 64
+               for e in f["snapshot"]["enemies"] if (e.get("hp") or 0) > 0
+               and math.hypot(e["pos"][0] - f["snapshot"]["player"]["pos"][0],
+                              e["pos"][2] - f["snapshot"]["player"]["pos"][2]) <= 250):
+            assert "quick_turn" in d, f"fixture {i} ({f['hp_before']} HP) did not turn for the wind-up: {d}"
+        else:
+            assert "heal" in d, f"fixture {i} ({f['hp_before']} HP) did not heal: {d}"
         assert f["hp_before"] / f["hp_max"] <= HEAL_AT, \
             f"fixture {i} hp {f['hp_before'] / f['hp_max']:.0%} not at/below HEAL_AT ({HEAL_AT:.0%})"
+
+
+def test_heal_not_started_while_a_windup_melee_is_in_range():
+    """#5072 (iter 5): the heal is not *started* while a melee is winding up inside WINDUP_FIRE_R.
+
+    Fixture re5_switch_crowd_lowhp_4 records the exact incident: 258 HP, one enemy 2.3 m away with
+    motion 80 (a swing winding up).  The bot must take the quick turn for the swing, not start the
+    equip cycle mid-swing; the heal is taken on the next ticks once the swing is gone.
+    """
+    import math as _math
+    f = json.loads((FIXTURES / "re5_switch_crowd_lowhp_4.json").read_text())
+    f["snapshot"]["player"]["hp"] = f["hp_before"]
+    r = incident_replay.replay(f, ticks=8)
+    d = [t["doing"] for t in r["ticks"]]
+    assert "heal" not in d, f"bot started the heal into the wind-up: {d}"
+    assert "quick_turn" in d, f"bot never turned for the swing: {d}"
+
+    # the same snapshot with the enemy no longer winding up: the heal starts
+    f2 = json.loads((FIXTURES / "re5_switch_crowd_lowhp_4.json").read_text())
+    f2["snapshot"]["player"]["hp"] = f2["hp_before"]
+    for e in f2["snapshot"]["enemies"]:
+        if (e.get("hp") or 0) > 0 and _math.hypot(
+                e["pos"][0] - f2["snapshot"]["player"]["pos"][0],
+                e["pos"][2] - f2["snapshot"]["player"]["pos"][2]) <= 250:
+            e["motion"] = 0
+    r2 = incident_replay.replay(f2, ticks=6)
+    d2 = [t["doing"] for t in r2["ticks"]]
+    assert "heal" in d2, f"bot did not heal once the swing was gone: {d2}"
 
 
 def test_heal_defer_threshold_is_crowd_not_critical():
@@ -310,8 +346,9 @@ def test_heal_defer_threshold_is_crowd_not_critical():
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
+    # 'BLUS30491' is the replayable PS3 title (re5_ps3); an unknown title is rejected
     with pytest.raises(ValueError):
-        incident_replay.bot('BLUS30491')
+        incident_replay.bot('BLUS_NOT_A_TITLE')
 
 
 def test_re6_switch_bomb_wait_fights_close_enemies():
