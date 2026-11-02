@@ -278,24 +278,26 @@ class Atlas:
         for view in self.views:
             if start in view['_heights'] and abs(view['_heights'][start] - height) <= .25:
                 return view
-        # A buddy standing at the very EDGE of an already-mapped surface (a
-        # doorway, a wall seam) seeds one cell outside the clearance-trimmed safe
-        # grid, which would otherwise fail and drop the whole grid every time a
-        # buddy hugs a wall - the intermittent-grid root in the spawn hub. It is
-        # still on that same verified surface, so reuse the cached view it adjoins
-        # on this layer (A* routes from an edge seed into the floor fine).
+        # A buddy standing at the EDGE of an already-mapped surface (a doorway, a
+        # wall seam) seeds in the connected region but outside the clearance-trimmed
+        # safe grid - the intermittent-grid root in the spawn hub. It is still on
+        # that same verified surface, so serve the cached view for ANY seed in its
+        # full connected region (not just the trimmed floor): A* routes from an edge
+        # seed into the floor fine, and this needs no fresh whole-map raster.
         for view in self.views:
-            if any((start[0] + dx, start[1] + dz) in view['_heights'] and
-                   abs(view['_heights'][(start[0] + dx, start[1] + dz)] - height) <= .5
-                   for dx, dz in DIRECTIONS):
+            sel = view.get('_selected')
+            if sel and start in sel and abs(sel[start] - height) <= .5:
                 return view
         key = (start, height)
         if key in self.failed_projections:
             return None
-        # Reject an unsafe seed before a whole-map traversal; a buddy standing
-        # against a wall must not trigger an expensive failed raster every tick.
-        if not all(any(self.compatible(start, height, (start[0]+dx,start[1]+dz), h)
-                       for h in self.heights.get((start[0]+dx,start[1]+dz), [])) for dx,dz in DIRECTIONS):
+        # Reject only a truly off-mesh seed before a whole-map traversal; a buddy
+        # against a wall/doorway (an edge seed with a few compatible neighbours) is
+        # still on the surface and must be allowed to raster it, so require only a
+        # minority of neighbours compatible, not all eight.
+        if sum(1 for dx, dz in DIRECTIONS
+               if any(self.compatible(start, height, (start[0]+dx, start[1]+dz), h)
+                      for h in self.heights.get((start[0]+dx, start[1]+dz), []))) < 3:
             return None
         self.work_revision += 1
         selected = self._connected(start, height)
@@ -311,11 +313,16 @@ class Atlas:
             (cell[0] + dx, cell[1] + dz) in selected and
             self.compatible(cell, h, (cell[0] + dx, cell[1] + dz), selected[(cell[0] + dx, cell[1] + dz)])
             for dx, dz in DIRECTIONS)}
-        if start not in safe:
+        # The player may seed on the surface's trimmed edge; require only that the
+        # surface HAS a safe interior to route on, not that the seed survived the
+        # trim. `_selected` (the full connected region) lets later edge seeds reuse
+        # this view without a fresh raster (above), so the grid stays resolved while
+        # a buddy hugs a wall / stands in a doorway.
+        if not safe:
             return self._failed_projection(key)
         rows = [[*cell, round(h, 4)] for cell, h in sorted(safe.items())]
         layer = _hash(json.dumps(rows, separators=(',', ':')).encode())
-        view = {'geometry_layer': layer, '_heights': safe,
+        view = {'geometry_layer': layer, '_heights': safe, '_selected': selected,
                 'collision_grid': {'size': self.size, 'floor': [row[:2] for row in rows], 'walls': [],
                                    'heights': rows, 'max_step': .75, 'max_slope': .75}}
         self.views.append(view)
