@@ -206,11 +206,30 @@ test('auth changes invalidate old requests even for the same session', async () 
   assert.equal(h.dog.state(el).ended, false); assert.equal(el.a['data-stream-state'], 'connecting');
 });
 
+// The first reconnect is instant on the LAN (operator #7419: no more 1 s freeze before it even tries); only repeated
+// failures back off, and a retained decoded image never resets that backoff to the fast first attempt.
 test('a retained decoded image does not reset retry backoff', async () => {
   const h = harness({ health: async () => { throw new Error('offline'); }, misses: 1 }), el = h.img('/api/sessions/w-s/mjpeg'); h.doc.imgs.push(el);
-  await h.dog.checkHealth(el); h.run(1000); h.dog.sweep(); await h.dog.checkHealth(el); await h.flush();
-  h.run(2999); assert.match(el.a.src, /reconnect=1$/); h.run(3000); assert.match(el.a.src, /reconnect=2$/);
-  h.dog.sweep(); await h.dog.checkHealth(el); await h.flush(); h.run(6999); assert.match(el.a.src, /reconnect=2$/); h.run(7000); assert.match(el.a.src, /reconnect=3$/);
+  await h.dog.checkHealth(el); h.run(0); assert.match(el.a.src, /reconnect=1$/, 'the first reconnect does not wait');
+  h.dog.sweep(); await h.dog.checkHealth(el); await h.flush();
+  h.run(499); assert.match(el.a.src, /reconnect=1$/); h.run(500); assert.match(el.a.src, /reconnect=2$/);
+  h.dog.sweep(); await h.dog.checkHealth(el); await h.flush();
+  h.run(1499); assert.match(el.a.src, /reconnect=2$/); h.run(1500); assert.match(el.a.src, /reconnect=3$/);
+});
+
+// operator #7419, JAYBUILTFINALE: "gbox is always snapping back after 3 seconds of play ... the connection
+// disconnects so much that it is unenjoyable. I need it solid and smooth ... as long as the local intranet is up."
+// A dropped MJPEG connection on the LAN must re-establish within the same tick (no 1 s picture freeze before the
+// retry even starts), so a blip is an invisible blink rather than a visible stop-and-jump.
+test('a LAN connection drop re-establishes instantly without a freeze (#7419)', async () => {
+  const h = harness(), el = h.img('/api/sessions/w-s/mjpeg?token=x'); h.doc.imgs.push(el);
+  await h.dog.checkHealth(el); assert.equal(el.a['data-stream-state'], 'connected');
+  el.naturalWidth = 0; h.dog.onError({ target: el });        // the connection dropped: picture is gone
+  assert.equal(el.a['data-stream-state'], 'reconnecting');
+  h.run(1); assert.match(el.a.src, /reconnect=1$/, 'reconnected on the next tick, not after a 1 s delay');
+  el.naturalWidth = 640; el.picture = 'live again'; h.dog.onLoad({ target: el }); await h.dog.checkHealth(el);
+  assert.equal(el.a['data-stream-state'], 'connected');
+  const recovered = el.a.src; h.run(60000); assert.equal(el.a.src, recovered, 'a recovered stream is left alone');
 });
 
 test('no first frame or offline worker retries with visible status', async () => {

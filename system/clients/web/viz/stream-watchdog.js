@@ -175,7 +175,12 @@
       // frame while showing reconnecting", operator 2026-10-29).
       refreshPoster(el);
       const generation = s.retryGeneration;
-      const delay = Math.min(maxDelay, 1000 * 2 ** Math.min(s.attempt, 4));
+      // Sunshine/Moonlight-grade recovery on the LAN (operator #7419: "snapping back after 3 seconds ... the connection
+      // disconnects so much ... I need it solid and smooth"): the first attempt re-establishes immediately instead of
+      // freezing the picture for a full second before even trying, so a single blip on the intranet is an invisible
+      // sub-100 ms blink, not a visible stop-and-jump. Only repeated failures (a genuinely broken link) back off, from
+      // half a second and doubling, so a down source is still not hammered.
+      const delay = s.attempt === 0 ? 0 : Math.min(maxDelay, 500 * 2 ** Math.min(s.attempt - 1, 4));
       s.retryTimer = setTimer(() => {
         if (!current(el, s) || s.ended) return;
         const replace = poster => {
