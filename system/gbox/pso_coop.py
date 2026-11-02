@@ -1421,7 +1421,10 @@ class Controller:
         if not p1:
             return skip("no_p1")
         if state.get("geometry_verified") is not True:
-            return skip("geometry_unverified")
+            gpk = sorted(str(k) for k in (state.get("geometry_players") or {}))
+            rpk = sorted(str(k) for k in (state.get("geometry_recovery_players") or {}))
+            return skip("geometry_unverified:gp=%s,recov=%s,gid=%s" % (
+                gpk, rpk, bool(state.get("geometry_identity"))))
         fingerprint = room_key(state, p1)[0]
         if fingerprint in self._published:
             if isinstance(stats, dict):
@@ -1436,9 +1439,10 @@ class Controller:
             grid = geometry_view(state, p1).get("collision_grid") or {}
         floor, size = grid.get("floor"), grid.get("size")
         if not isinstance(floor, (list, tuple)) or not floor or type(size) not in (int, float) or size <= 0:
-            return skip("no_grid:gp=%s,layer=%s,grid=%s" % (
-                1 in (state.get("geometry_players") or {}),
-                geometry_view(state, p1).get("geometry_layer") is not None, bool(floor)))
+            gpk = sorted(str(k) for k in (state.get("geometry_players") or {}))
+            rpk = sorted(str(k) for k in (state.get("geometry_recovery_players") or {}))
+            return skip("no_grid:gp=%s,recov=%s,ctxgrid=%s,ptr=%s" % (
+                gpk, rpk, bool(state.get("collision_grid")), p1.get("ptr")))
         cells = [[int(c[0]), int(c[1])] for c in floor[:20000]
                  if isinstance(c, (list, tuple)) and len(c) == 2]
         xs, zs = [c[0] for c in cells], [c[1] for c in cells]
