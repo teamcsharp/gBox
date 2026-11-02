@@ -171,6 +171,10 @@ class Atlas:
     one canonically seeded height at each cell. It never connects the two levels.
     A new projection is built if the player's measured height leaves that view.
     """
+    # Bump when project()'s seed/trim logic changes, so a hot reload heals the
+    # negative cache it inherits on a long-lived instance (see _failed_projection).
+    _FAIL_VERSION = 2
+
     def __init__(self, triangles, size=5.0):
         triangles = self.triangles = tuple(triangles)
         self.size, self.heights, self.views = size, {}, []
@@ -258,7 +262,9 @@ class Atlas:
         # The Atlas belongs to one exact loaded collision fingerprint. Failed
         # canonical/layer projections stay unknown, but must not cause another
         # whole-map traversal and fresh-observation loop on every native tick.
-        self.failed_projections[key] = None
+        # Stamp the projection-logic version so a hot reload that improves the
+        # logic heals its own stale negatives once, without re-raster loops.
+        self.failed_projections[key] = self._FAIL_VERSION
         if len(self.failed_projections) > 128:
             self.failed_projections.pop(next(iter(self.failed_projections)))
         return None
@@ -289,8 +295,16 @@ class Atlas:
             if sel and start in sel and abs(sel[start] - height) <= .5:
                 return view
         key = (start, height)
-        if key in self.failed_projections:
-            return None
+        cached = self.failed_projections.get(key)
+        if cached is not None:
+            # A failure cached by the CURRENT projection logic stands - do not
+            # re-raster it every tick. But a failure cached by OLDER logic (it
+            # survives a hot reload on this long-lived Atlas instance, e.g. the
+            # pre-fix edge-seed rejections that stranded the Forest hub) is stale:
+            # drop it and retry once so the edge-seed fix can resolve it.
+            if cached == self._FAIL_VERSION:
+                return None
+            del self.failed_projections[key]
         # Reject only a truly off-mesh seed before a whole-map traversal; a buddy
         # against a wall/doorway (an edge seed with a few compatible neighbours) is
         # still on the surface and must be allowed to raster it, so require only a
