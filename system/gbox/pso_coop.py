@@ -1190,8 +1190,15 @@ class Controller:
         P1 is in. On entering a NEW area, recall its learned graph and critical
         path from the crystal so a later run starts from compounded knowledge. On
         ADVANCING to a deeper floor (the area exit was reached), promote the
-        previous area's exploration into a trimmed critical path later runs beeline."""
-        from .pso_knowledge import area_fingerprint
+        previous area's exploration into a trimmed critical path later runs beeline.
+
+        Degrades to a no-op if a hot-reload brought a new pso_coop in next to a
+        still-old pso_knowledge (the graph/path API not yet live): the loop keeps
+        running on the frontier heuristic until a restart loads the full crystal."""
+        try:
+            from .pso_knowledge import area_fingerprint
+        except ImportError:
+            return
         fp = area_fingerprint(state.get('episode'), state.get('floor'), state.get('geometry_identity'))
         if fp == self._area:
             return
