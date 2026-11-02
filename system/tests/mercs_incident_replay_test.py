@@ -20,43 +20,40 @@ def _load():
     return json.loads(FIXTURE.read_text())
 
 
-def test_replay_crowd_gun_down_asserts_crowd_hold():
-    """After the tablet press the bot must hold the gun down (crowd_hold / cc_backouts),
-    not re-raise into the flanking cluster. The fixture shows 4+ enemies within 2 m
-    with the camera pointing away — the exact signature that caused the cluster."""
+def test_replay_crowd_gun_down_asserts_no_tablet_in_crowd():
+    """With the #5051 crowd==0 guard, the bot must NOT press a tablet in a crowd.
+    The fixture shows 4+ enemies within 2 m — the exact signature that caused the
+    crowd_gun_down cluster. The gun stays up and firing instead of lowering for a
+    tablet, eliminating the gun-down window that caused the deaths."""
     result = incident_replay.replay(_load(), ticks=40)
     bot = result["bot"]
     acts = [t for t in result["ticks"]]
 
-    # 1. The tablet was pressed (health 488/900, 4+ within 300 cm)
-    assert any(t.get("doing") == "tablet" for t in acts), "bot must press a tablet"
-
-    # 2. tablet_hold_until must be set: the gun-down hold fires when
-    #    sum(1 for e in live if flat(e) <= CC_CROWD_R) >= CC_BACK_N
-    #    CC_CROWD_R = 400.0, CC_BACK_N = 3; the fixture has 6 enemies at
-    #    72-228 cm, so the hold must fire.
-    assert bot.tablet_hold_until > 0.0, (
-        f"tablet_hold_until must be set by the crowd-tablet guard, got {bot.tablet_hold_until}"
+    # 1. The bot must NOT press a tablet in this crowd scenario
+    #    (4+ enemies within 300 cm → crowd >= 2 > 0 → crowd==0 guard blocks it)
+    tablet_presses = [t for t in acts if t.get("doing") == "tablet"]
+    assert tablet_presses == [], (
+        f"bot must NOT press a tablet in a crowd (crowd==0 guard), "
+        f"but got {len(tablet_presses)} tablet ticks: {tablet_presses}"
     )
 
-    # 3. cc_backouts must have incremented: the crowd_hold decision path
-    #    (line ~2814) fires when now < tablet_hold_until.
-    assert bot.stats.get("cc_backouts", 0) > 0, (
-        f"cc_backouts must be > 0 (gun held down during crowd), got {bot.stats.get('cc_backouts')}"
+    # 2. tablet_hold_until must remain unset (no tablet press → no crowd hold)
+    assert bot.tablet_hold_until <= 0.0, (
+        f"tablet_hold_until must not be set (no tablet in crowd), got {bot.tablet_hold_until}"
     )
 
-    # 4. No tick after the tablet press may show a bare zl (gun raised alone).
-    #    Quick-shot holds are (zl, zr) — allowed; bare zl is a re-raise.
-    tablet_ticks = [i for i, t in enumerate(acts) if t.get("doing") == "tablet"]
-    after_tablet = acts[tablet_ticks[0] + 1:] if tablet_ticks else []
-    bare_zl = [
-        t for t in after_tablet
-        if "zl" in set(t.get("act", {}).get("hold", ()))
-        and set(t.get("act", {}).get("hold", ())) != {"zl", "zr"}
-        and set(t.get("act", {}).get("hold", ())) != {"ldown", "zl", "zr"}
-    ]
-    assert bare_zl == [], (
-        f"gun must stay down after tablet in crowd, got bare zl: {bare_zl}"
+    # 3. The gun stays up: the bot should be firing/aiming (zl present),
+    #    not bare zl alone. Raise (zl+ldown) and aim (ldown+zl) are valid
+    #    gun-up states — the gun is raised and tracking, not a tablet-lowering
+    #    re-raise. Only a lone zl with no other context would be a problem.
+    #    With the crowd==0 guard, the bot never lowers for a tablet in a crowd,
+    #    so the critical check is that NO tablet press occurred (checked above).
+    #    Here we just confirm the gun is up (zl present) in at least one tick,
+    #    proving the bot is in a fighting posture, not a healing one.
+    zl_ticks = [t for t in acts if "zl" in set(t.get("act", {}).get("hold", ()))]
+    assert len(zl_ticks) > 0, (
+        f"gun must be up (zl present) at some point, proving the bot is fighting "
+        f"not healing, but no zl ticks found"
     )
 
 
