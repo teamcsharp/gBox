@@ -939,6 +939,60 @@ def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
     assert act == {"hold": ("ldown",)} and bot.quick == 2 and bot.stats["quick_turns"] == 1
 
 
+def test_no_quick_turn_low_hp_enemy_within_windup(monkeypatch):
+    """Incident (damage cluster #5052: quick_turn deaths at 900->1, 522->1, 400->1, 275->1, 250->1, 124->1):
+    low HP (<= SURVIVAL_HP), one melee attacker within WINDUP_R behind - the body-spin away is the opening
+    for the full-HP-cliff hit. The quick turn keeps the full QUICK_GAP_S settle (not the fast QT_TURN_GAP_S)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot.quick_at = clock[0] - R.QUICK_GAP_S - 0.5                 # past the full settle: the turn is due
+    act = run(bot, snap, clock, 1)[0]
+    assert act == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1   # the turn fires
+    # now wait QT_TURN_GAP_S (0.25 s) - at the fast gap a second turn would fire; at the full gap it must not
+    acts = run(bot, snap, clock, 5)
+    assert all(a.get("hold") != ("ldown",) for a in acts)   # no second quick turn within QT_TURN_GAP_S
+    assert bot.stats.get("quick_turns") == 1                # still one: the fast gap did not fire
+
+
+def test_quick_turn_low_hp_far_enemy_keeps_the_quick_gap():
+    """Same low HP, but the lone behind enemy is outside WINDUP_R - the fast QT_TURN_GAP_S turn still fires."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), hp=700, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 1)
+    assert acts[0] == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1   # the fast turn fires at full HP
+
+
+def test_cc_turn_low_hp_no_camera_swing(monkeypatch):
+    """Incident (damage cluster #5052: flanking melee deaths at low HP): one enemy flanking within CC_R
+    but outside the CC cone, low HP - the camera swing (cc_turn) is the opening for the cliff hit.
+    The bot holds put (turn_hold) instead of swinging the camera to him."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((-180.0, 0.0, -100.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)
+    cc_turns = [a for a in acts if a.get("hold") == bot._turn(R.wrap(
+        R.heading(-180.0, -100.0) - 0.0))]
+    cc_kicks = [a for a in acts if "zr" in a.get("hold", ()) or a.get("tap") == "zr"]
+    # the bot must NOT swing the camera and must hold put (turn_hold: no keys)
+    assert not cc_turns, f"camera swung away: {cc_turns}"
+    assert not cc_kicks, f"kick fired: {cc_kicks}"
+    assert bot.doing == "turn" and bot.stats.get("act") == "turn_hold", \
+        f"expected turn_hold but got doing={bot.doing} act={bot.stats.get('act')}"
+
+
+def test_cc_turn_high_hp_swing_still_fires():
+    """Sanity: same flanking geometry at full HP - the cc_turn camera swing still fires."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((-180.0, 0.0, -100.0, 700),), hp=900, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, 20)
+    cc_turns = [a for a in acts if bot.doing == "crowd" and bot.stats.get("cc_quick_shots", 0) == 0
+                and a.get("hold") == bot._turn(R.wrap(R.heading(-180.0, -100.0) - 0.0))]
+    # the bot should swing the camera to the flanking enemy (cc_turn)
+    assert any(a.get("hold") == bot._turn(R.wrap(R.heading(-180.0, -100.0) - 0.0)) for a in acts), \
+        f"expected cc_turn camera swing, got: {acts[:5]}"
+
+
 def test_no_zl_and_zr_with_an_item_in_hand_unless_it_is_a_throw():
     bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 180.0, 700),), cam_yaw=0.0))   # a quick shot's distance
     bot.held = lambda p, now: False
@@ -1291,9 +1345,9 @@ def test_a_lock_that_does_not_stick_puts_the_camera_keys_back():
 
 
 def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead():
-    near = (0.0, 0.0, 500.0, 700)
+    near = (0.0, 0.0, 600.0, 700)
     bot, clock, snap, writes = lock_brain((near, (0.0, 0.0, 800.0, 700)),
-                                          laser=((0.0, R.CHEST_H, 500.0), (20.0, 60.0, 30.0), 0.86))
+                                          laser=((0.0, R.CHEST_H, 600.0), (20.0, 60.0, 30.0), 0.86))
     snap["player"].update(hp=400, action="cPlAction_pl_act_dying_loop")
     snap["kills"] = 20
     acts = run(bot, snap, clock, 6)
@@ -1321,6 +1375,54 @@ def test_down_he_locks_onto_the_nearest_and_fires_then_rises_when_they_are_dead(
     snap["player"]["hp"] = 0
     run(bot, snap, clock, 1)
     assert bot.stats["dying_deaths"] == 1
+
+
+def test_down_melee_range_no_kick_no_rise(monkeypatch):
+    """Incident (damage cluster #5052: cc_kick 7, down_rise 2, bonus_run 2 - the getting-up deaths):
+    down at medium HP (400/900, above SURVIVAL_HP) with one enemy within MELEE_R - the old code kicked
+    and then rose, leaving the bot exposed to a full-HP-cliff hit. Now: the bot holds (down_hold, no
+    keys) until the enemy is out of melee range or dead, then rises (down_rise)."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 120.0, 700),), hp=400, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"]["action"] = "cPlAction_pl_act_dying_loop"
+    acts = run(bot, snap, clock, 10)
+    for a in acts:
+        assert a == {"hold": ()}, f"expected empty hold (down_hold), got {a}"
+        assert bot.stats.get("act") == "down_hold"
+    assert not any(a.get("tap") == "zr" for a in acts), "kick must not fire"
+    assert not any("lup" in a.get("hold", ()) for a in acts), "must not rise"
+    # enemy moves out of melee range but still within DOWN_FIGHT_R: the bot fires, not rises
+    snap["enemies"][0]["pos"] = (0.0, 0.0, 600.0)
+    acts = run(bot, snap, clock, 3)
+    assert bot.stats.get("act") in ("down_aim", "down_fire"), \
+        f"expected down_aim/down_fire when enemy at range, got {bot.stats.get('act')}"
+
+
+def test_down_melee_range_rises_when_enemy_is_dead(monkeypatch):
+    """Same geometry, but the enemy dies while the bot is holding - the bot rises (nobody near)."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 120.0, 700),), hp=400, tablets=0, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    snap["player"]["action"] = "cPlAction_pl_act_dying_loop"
+    run(bot, snap, clock, 3)
+    assert bot.stats.get("act") == "down_hold"
+    snap["enemies"][0]["hp"] = 0
+    acts = run(bot, snap, clock, 2)
+    assert any("lup" in a.get("hold", ()) for a in acts), "must rise when the enemy dies"
+
+
+def test_down_fires_at_range_beyond_melee(monkeypatch):
+    """Sanity: down at medium HP with an enemy at 700 cm (beyond WINDUP_R, within DOWN_FIGHT_R) -
+    the bot still aims and fires (down_aim / down_fire), not holds."""
+    bot, clock, snap, writes = lock_brain(
+        ((0.0, 0.0, 700.0, 700),),
+        laser=((0.0, R.CHEST_H, 700.0), (20.0, 60.0, 30.0), 0.86))
+    snap["player"].update(hp=400, action="cPlAction_pl_act_dying_loop")
+    acts = run(bot, snap, clock, 6)
+    assert bot.stats.get("act") in ("down_fire", "down_aim"), \
+        f"expected down_fire/down_aim, got {bot.stats.get('act')}"
+    assert bot.stats.get("down_hold") is None, "must not hold at range beyond melee"
 
 
 def test_health_falling_with_nobody_near_marks_a_hazard_and_he_moves_out_of_it():
