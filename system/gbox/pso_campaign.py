@@ -20,6 +20,7 @@ import httpx
 from .autoplay import Driver
 from .pso_gc_live import GC, PHASE, FLOOR, PLAYER
 from .registry import Unsupported
+from .pso_coop_menu import MenuProgress
 
 CAMPAIGN = "pso-episodes-1-2"
 COOP_CAMPAIGN = "pso-coop-episodes-1-2"
@@ -32,7 +33,7 @@ FINAL_FLOORS = {1: 14, 2: 13}
 REQUIRED_FLOORS = {1: set(range(1, 15)), 2: set(range(1, 16))}
 GAME_IDS = {"436e0bb84d5337d1", "7a3692dc0cbc9b82", "6b55435e3c565370"}
 BUTTONS = {"a", "b", "x", "y", "l", "r", "start", "up", "down", "left", "right",
-           "lup", "ldown", "lleft", "lright"}
+           "lup", "ldown", "lleft", "lright", "dup", "ddown", "dleft", "dright"}
 PROMPT = """You control Phantasy Star Online Episode I & II Plus on GameCube.
 Complete offline Episode I and Episode II on Normal, then repeat using the same
 existing character. The requested episode and observed native state are below.
@@ -46,7 +47,9 @@ Heal with inventory items or techniques when HP is low. Do not assume B is heal:
 read the palette. Equip useful acquired equipment. Return from death normally.
 Menus/door puzzles are your job; native combat handles nearby ordinary enemies.
 Choose at most 4 short input actions then reassess. Use lup/ldown/lleft/lright for
-the analog stick, up/down/left/right for menus, a/b/x/y/l/r/start for buttons.
+the analog stick (up/down/left/right are also analog aliases). Use
+dup/ddown/dleft/dright for the D-pad in in-game menus; use a/b/x/y/l/r/start
+for buttons. Boot menus may also respond to the analog stick.
 Label credits ONLY if ending credits or an unmistakable episode ending are visible;
 an empty room, a dead regular enemy, a loading screen or boss form change is not
 completion. The controller independently requires native boss and route evidence.
@@ -334,7 +337,7 @@ class LocalDriver(Driver):
 def vision_settings(driver, config):
     """Use the configured vision endpoint; resolve the default on a remote worker."""
     agent = getattr(config, "agent", {}) or {}
-    model = agent.get("vision_model") or "qwen2.5vl:7b"
+    model = getattr(driver, 'pso_vision_model', '') or agent.get("vision_model") or "qwen2.5vl:7b"
     configured = agent.get("vision_url") or agent.get("llm_url")
     if configured and (agent.get("vision_url") or urlparse(configured).hostname not in ("localhost", "127.0.0.1", "::1")):
         return configured.rstrip("/"), model
@@ -355,9 +358,68 @@ class Planner:
     def __init__(self, driver, config=None):
         endpoint, self.model = vision_settings(driver, config)
         self.api = httpx.Client(base_url=endpoint, timeout=httpx.Timeout(35, connect=5))
+        self.native_url = endpoint[:-3] if endpoint.endswith('/v1') else endpoint
+        self.ollama = None
+
+    @staticmethod
+    def timeout(deadline, maximum):
+        available = min(maximum, deadline - time.monotonic())
+        if available <= 0:
+            raise TimeoutError('PSO planner elapsed-time budget exhausted')
+        return available
+
+    def provider(self, deadline):
+        if getattr(self, 'ollama', None) is None:
+            endpoint = str(self.api.base_url).rstrip('/')
+            self.native_url = endpoint[:-3] if endpoint.endswith('/v1') else endpoint
+            try:
+                response = self.api.get(self.native_url + '/api/version', timeout=self.timeout(deadline, 4))
+                data = response.json()
+                self.ollama = response.status_code == 200 and isinstance(data, dict) and isinstance(data.get('version'), str)
+            except (httpx.HTTPError, ValueError, AttributeError):
+                self.ollama = False
+        return self.ollama
+
+    def native_settings(self, deadline):
+        # Metadata only: no alternate model, inferred context or forced reload.
+        response = self.api.post(self.native_url + '/api/show', json={'model': self.model},
+                                 timeout=self.timeout(deadline, 4))
+        if response.status_code == 404:
+            raise Unsupported(f'PSO route planner model {self.model!r} is not available')
+        response.raise_for_status()
+        data = response.json()
+        capabilities = data.get('capabilities') if isinstance(data, dict) else None
+        if not isinstance(capabilities, list) or 'vision' not in capabilities:
+            raise Unsupported(f'PSO route planner model {self.model!r} does not advertise vision capability')
+        settings, options, resident = {}, {}, False
+        thinking = data.get('thinking')
+        values = thinking.get('values') if isinstance(thinking, dict) else None
+        if isinstance(values, list) and any(value is False for value in values):
+            settings['think'] = False
+        try:
+            response = self.api.get(self.native_url + '/api/ps', timeout=self.timeout(deadline, 4))
+            response.raise_for_status()
+            data = response.json()
+            models = data.get('models') if isinstance(data, dict) else None
+            matches = [row for row in models if isinstance(row, dict) and
+                       self.model in (row.get('name'), row.get('model'))] if isinstance(models, list) else []
+            if len(matches) == 1:
+                resident = True
+                context = matches[0].get('context_length')
+                if type(context) is int and 512 <= context <= 1_048_576:
+                    options['num_ctx'] = context
+        except (httpx.HTTPError, ValueError):
+            pass  # Optional running-model metadata may be unavailable.
+        return settings, options, resident
 
     def preflight(self):
-        res = self.api.get("/models", timeout=8)
+        deadline = time.monotonic() + 12
+        if self.provider(deadline):
+            settings, options, resident = self.native_settings(deadline)
+            return {'model': self.model, 'endpoint': self.native_url, 'protocol': 'ollama',
+                    'vision_capability_verified': True, 'resident': resident,
+                    'context_length': options.get('num_ctx'), 'think': settings.get('think')}
+        res = self.api.get("/models", timeout=self.timeout(deadline, 8))
         res.raise_for_status()
         available = {str(row.get("id")) for row in res.json().get("data", [])}
         if self.model not in available:
@@ -365,11 +427,24 @@ class Planner:
         return {"model": self.model, "endpoint": str(self.api.base_url)}
 
     def __call__(self, frame, context):
-        res = self.api.post("/chat/completions", json={"model": self.model, "temperature": 0.1,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": getattr(self, "prompt", PROMPT) + "\n" + json.dumps(context)},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(frame).decode()}}]}]})
-        res.raise_for_status()
-        raw = res.json()["choices"][0]["message"]["content"]
+        deadline = time.monotonic() + 35
+        prompt = getattr(self, 'prompt', PROMPT) + '\n' + json.dumps(context)
+        encoded = base64.b64encode(frame).decode()
+        if self.provider(deadline):
+            settings, options, _ = self.native_settings(deadline)
+            res = self.api.post(self.native_url + '/api/chat', timeout=self.timeout(deadline, 35), json={
+                'model': self.model, 'messages': [{'role': 'user', 'content': prompt, 'images': [encoded]}],
+                'stream': False, 'format': 'json', **settings,
+                'options': {'temperature': 0.1, 'num_predict': 1800, **options}})
+            res.raise_for_status()
+            raw = res.json()['message']['content']
+        else:
+            res = self.api.post("/chat/completions", timeout=self.timeout(deadline, 35), json={"model": self.model, "temperature": 0.1,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}}]}]})
+            res.raise_for_status()
+            raw = res.json()["choices"][0]["message"]["content"]
+        self.timeout(deadline, 1)  # A late response cannot authorize an input.
         return json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
 
     def close(self):
@@ -407,6 +482,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     evidence.mkdir(parents=True, exist_ok=True)
     errors, last_plan, last_plan_at, last_progress, last_signature = 0, [], 0.0, time.monotonic(), None
     gate_attempts = {}
+    menu = MenuProgress()
     stats.update(ledger.status(), note="Experimental campaign attempt; no full completion is claimed without receipts.")
     try:
         while not stopped():
@@ -463,6 +539,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                            "missing_floors": stats["missing_floors"],
                            "progress_age_s": stats["progress_age_s"], "recent_plans": last_plan,
                            "recorded_input_evidence": recorded,
+                           "previous_menu_attempt": menu.previous,
                            "next": "Save normally and select the requested episode with this character" if ledger.awaiting_entry else "Complete the requested episode, visiting its areas and bosses"}
                 stats["action"] = "planning_route_or_menu"
                 plan = planner(frame, context)
@@ -499,10 +576,21 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if plan.get("screen") == "credits" and ledger.boss_zero:
                     wait(2.1, stopped)
                     continue
-                for keys, secs in selected:
+                reviewed, reason = menu.review(plan, [(1, keys, secs) for keys, secs in selected],
+                    (fresh.get('episode'), fresh.get('floor'), fresh.get('phase')),
+                    frame=frame, fresh_frame=ad.get_frame(),
+                    native_gameplay=bool(fresh.get('verified') and fresh.get('phase') == 14))
+                stats.update(menu_repeated_attempts=menu.repeats, menu_input_withheld=reason,
+                             menu_independent_selection=menu.previous.get('independent_selection'))
+                if menu.stalled:
+                    stats.update(ok=False, campaign_state='needs_operator', stopped_reason=reason)
+                    break
+                for _, keys, secs in reviewed:
                     if stopped():
                         break
                     fighter.hold(keys, secs)
+                    if menu.previous:
+                        menu.previous["input_delivery_verified"] = True
                     wait(0.15, stopped)
                 last_plan = (last_plan + [stats["thought"]])[-5:]
                 errors = 0

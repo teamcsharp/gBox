@@ -206,6 +206,9 @@ class DolphinProcMem(Debugger):
     def write(self, address, data: bytes):
         with self.lock:
             import ctypes
+            # ctypes accepts bytes for a native pointer, but not mutable buffers.
+            # Snapshot the buffer before checking its byte length or publishing it.
+            data = memoryview(data).tobytes()
             host, n = self._host(address, len(data)), ctypes.c_size_t()
             if not self.k.WriteProcessMemory(ctypes.c_void_p(self.h), ctypes.c_void_p(host), data, len(data), ctypes.byref(n)) or n.value != len(data):
                 raise Unavailable(f"Dolphin memory write failed at {address:#x}")
