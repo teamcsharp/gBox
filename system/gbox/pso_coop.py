@@ -1412,18 +1412,45 @@ class Controller:
             return skip("no_p1")
         if state.get("geometry_verified") is not True:
             return skip("geometry_unverified")
-        from . import pso_map
         fingerprint = room_key(state, p1)[0]
         if fingerprint in self._published:
             if isinstance(stats, dict):
                 stats["map_surface_fingerprint"] = fingerprint
             return
-        surface = pso_map.extract_surface(state, p1)
-        if not surface:
-            gv = geometry_view(state, p1)
+        # Extract inline (not via pso_map) so this fix reloads with pso_coop - the
+        # pso_map module is not in hot_reload BOT_MODULES and keeps its first-loaded
+        # version. Prefer whichever grid actually has floor cells (the per-player
+        # Provider projection, not a present-but-floorless context grid).
+        grid = state.get("collision_grid") or {}
+        if not (isinstance(grid.get("floor"), (list, tuple)) and grid.get("floor")):
+            grid = geometry_view(state, p1).get("collision_grid") or {}
+        floor, size = grid.get("floor"), grid.get("size")
+        if not isinstance(floor, (list, tuple)) or not floor or type(size) not in (int, float) or size <= 0:
             return skip("no_grid:gp=%s,layer=%s,grid=%s" % (
-                1 in (state.get("geometry_players") or {}), gv.get("geometry_layer") is not None,
-                bool((gv.get("collision_grid") or {}).get("floor"))))
+                1 in (state.get("geometry_players") or {}),
+                geometry_view(state, p1).get("geometry_layer") is not None, bool(floor)))
+        cells = [[int(c[0]), int(c[1])] for c in floor[:20000]
+                 if isinstance(c, (list, tuple)) and len(c) == 2]
+        xs, zs = [c[0] for c in cells], [c[1] for c in cells]
+        room = p1.get("room")
+        fin = lambda e: all(type(e.get(k)) in (int, float) and math.isfinite(e[k]) for k in ("x", "z"))
+        gates_out, warps = [], []
+        for e in list(state.get("entities", ()))[:512]:
+            cls = str(e.get("class", ""))
+            if not fin(e):
+                continue
+            if cls in ("TObjDoor", "TObjLazerFenceNorm", "TOBarrierEnergy01", "TLazerFenceSw", "TObjDoorKey"):
+                gates_out.append({"class": cls, "x": round(e["x"], 1), "z": round(e["z"], 1), "room": e.get("room"),
+                                  "kind": "switch" if cls in ("TLazerFenceSw", "TObjDoorKey") else "gate"})
+            elif any(k in cls for k in ("Warp", "Teleport")):
+                warps.append({"class": cls, "x": round(e["x"], 1), "z": round(e["z"], 1), "room": e.get("room")})
+        surface = {"version": 1, "fingerprint": fingerprint, "episode": state.get("episode"),
+                   "floor": state.get("floor"), "room": room, "geometry_identity": state.get("geometry_identity"),
+                   "size": float(size), "bounds": {"min_x": min(xs) * size, "min_z": min(zs) * size,
+                   "max_x": (max(xs) + 1) * size, "max_z": (max(zs) + 1) * size}, "cells": cells,
+                   "cell_count": len(cells), "gates": gates_out[:64], "warps": warps[:16],
+                   "players": {str(s): [round(p["x"], 1), round(p["z"], 1)]
+                               for s, p in state.get("players", {}).items() if fin(p)}}
         try:
             maps_dir = self.map_root / "pso-maps"
             maps_dir.mkdir(parents=True, exist_ok=True)
@@ -1434,10 +1461,12 @@ class Controller:
         except OSError:
             return
         self._published.add(fingerprint)
-        summary = pso_map.surface_summary(surface)
+        summary = {"fingerprint": fingerprint, "episode": surface["episode"], "floor": surface["floor"],
+                   "room": room, "size": surface["size"], "cell_count": len(cells),
+                   "bounds": surface["bounds"], "gates": len(gates_out), "warps": len(warps)}
         if self.knowledge is not None and room_key(state, p1)[1]:
             self.knowledge.remember(fingerprint, episode=state.get("episode"), floor=state.get("floor"),
-                                    room=p1.get("room"), surface=summary)
+                                    room=room, surface=summary)
         if isinstance(stats, dict):
             stats["map_surface_published"] = summary
             stats["map_surface_fingerprint"] = fingerprint
