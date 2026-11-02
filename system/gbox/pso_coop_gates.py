@@ -65,6 +65,67 @@ def count_switches(entities, room):
                and _finite(e) and e.get('room') == room)
 
 
+# --- Verified native stage-flag array (3OE2) ---------------------------------
+# Reverse-engineered 2026-11-02 from the barrier's flag accessor 0x80229220:
+#   get/set/clear(group, index) address ONE array. group = extsh(*(r13-0x4640)),
+#   and r13 = 0x805DA600 (lis 0x805D; ori 0xA600 at 0x8000C188), so the group
+#   pointer is 0x805D5FC0 - which gates.py's _binding already reads as `floor`.
+#   The set routine (0x80229318, `or`) and clear (0x80229258, `andc`) both do:
+#     base = 0x80510000 + 0x5CC8 = 0x80515CC8; n = index + 1;
+#     byte = base + group*32 + (n>>3 adjusted); bit = MSB-first within the byte.
+#   Net layout: 18 groups (one per floor 0..17) x 32 bytes; flag `index` (0..255)
+#   is byte (group*32 + index//8), mask (0x80 >> index%8). Writing the per-object
+#   native_state (+0xAC) is futile - it is recomputed each frame FROM this flag.
+STAGE_FLAG_BASE = 0x80515CC8
+STAGE_FLAG_GROUP_PTR = 0x805D5FC0        # == current floor (the accessor's group index)
+STAGE_GROUP_SIZE = 32
+STAGE_FLAG_GROUPS = 18
+# Build signature: the set+clear routines (contain the base literal + bit math).
+STAGE_FLAG_CODE = (0x80229258, 0x150,
+                   '97a3b1513e7078442c2c0021acc9e65514f39f1e013956eafaf7b7d6640a3804')
+STAGE_FLAG_R13 = (0x8000C184, '6042fd003da0805d61ada6004e800020')   # pins r13 = 0x805DA600
+
+
+def stage_flag_locus(group, index):
+    """Byte address + OR mask for stage flag `index` in `group` (MSB-first bit
+    array, 32 bytes/group). None if either is outside the verified range."""
+    if type(group) is not int or type(index) is not int:
+        return None
+    if not (0 <= group < STAGE_FLAG_GROUPS and 0 <= index <= 255):
+        return None
+    return STAGE_FLAG_BASE + group * STAGE_GROUP_SIZE + index // 8, 0x80 >> (index % 8)
+
+
+def stage_flag_code_ok(read):
+    """True only on the exact 3OE2 build: the accessor and the r13 setup match."""
+    try:
+        addr, length, digest = STAGE_FLAG_CODE
+        if hashlib.sha256(read(addr, length)).hexdigest() != digest:
+            return False
+        r13_addr, r13_hex = STAGE_FLAG_R13
+        return read(r13_addr, len(r13_hex) // 2).hex() == r13_hex
+    except Exception:
+        return False
+
+
+def forward_gate_flag_indices(entities, room, limit=16):
+    """Stage-flag indices that gate `room`'s forward progress: every switch/panel
+    in the room, plus the nearest energy barrier (its +0xC8 low16 flag index).
+    Reads flag_index decorated onto each entity by the controller (object +0xC8).
+    Pure; returns a sorted de-duplicated list bounded to `limit`."""
+    flags = set()
+    for entity in list(entities)[:512]:
+        cls = str(entity.get('class', ''))
+        idx = entity.get('flag_index')
+        if type(idx) is not int or not 0 <= idx <= 255:
+            continue
+        if cls in SWITCH_CLASSES and entity.get('room') == room:
+            flags.add(idx)
+        elif cls == 'TOBarrierEnergy01':
+            flags.add(idx)
+    return sorted(flags)[:limit]
+
+
 def through_point(px, pz, gx, gz, overshoot=16.0):
     """A target just BEYOND the gate along the player->gate vector, so the actor
     commits across the threshold with gusto instead of stopping short of it."""

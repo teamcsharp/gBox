@@ -701,15 +701,141 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
-def test_forward_progression_never_blind_writes_memory(tmp_path):
-    """STEP 3 forced-unlock is DEFERRED: the shipped logic opens no door by RAM
-    write (no verified open-flag offset), so it must touch no memory."""
+def test_movement_path_is_input_only_and_writes_no_memory(tmp_path):
+    """The normal drive-forward path is input-only; the only memory write is the
+    separate, guarded force_forward_unlock fail-safe (tested below)."""
     writes = []
     ad = SimpleNamespace(write_memory=lambda *a, **k: writes.append(a),
-                         read_memory=lambda *a, **k: pytest.fail("forward progression is input-only"))
+                         read_memory=lambda *a, **k: pytest.fail("the movement path is input-only"))
     ctrl = _controller(tmp_path, ad=ad)
     st = _coop_room([{"class": "TObjDoor", "x": 100., "z": 0., "room": 10},
                      {"class": "TObjDoorKey", "x": 5., "z": 0., "room": 10}])
     cmds, moves, steer, fb = [], {}, {}, []
     ctrl.drive_forward(st, 1, st["players"][1], 100.0, cmds, moves, steer, fb)
     assert writes == [] and "forced_door_unlock" not in ctrl.inputs.stats
+
+
+# --- Forced stage-flag unlock (operator's GUARANTEED fail-safe) ---------------
+
+def _room10_flag_entities():
+    """Forest-1 room 10: two TObjDoorKey panels (flags 7, 6) + the room-11 energy
+    barrier (flag 10), each with a ptr whose +0xC8 holds its flag index."""
+    return [{"class": "TObjDoorKey", "ptr": "80DB7560", "x": -127., "z": 71., "room": 10, "flag": 7},
+            {"class": "TObjDoorKey", "ptr": "80DB76F0", "x": -95., "z": 214., "room": 10, "flag": 6},
+            {"class": "TOBarrierEnergy01", "ptr": "80DB8CD0", "x": 221., "z": 492., "room": 11, "flag": 10}]
+
+
+def _flag_ad(floor=1):
+    """A fake GC adapter exposing the verified stage-flag array (base 0x80515CC8)
+    and each gate object's +0xC8 flag index; records writes."""
+    import gbox.pso_coop_gates as G
+    mem, writes = {}, []
+    c8 = {}
+    for e in _room10_flag_entities():
+        c8[int(e["ptr"], 16) + 0xC8] = e["flag"]
+    def read(addr, n):
+        a = int(addr)
+        if a == G.STAGE_FLAG_GROUP_PTR:
+            return struct.pack(">I", floor)
+        if a in c8:
+            return struct.pack(">I", c8[a])
+        if G.STAGE_FLAG_BASE <= a < G.STAGE_FLAG_BASE + G.STAGE_FLAG_GROUPS * G.STAGE_GROUP_SIZE:
+            return bytes(mem.get(a + i, 0) for i in range(n))
+        return bytes(n)
+    def write(addr, data):
+        a = int(addr)
+        for i, b in enumerate(data):
+            mem[a + i] = b
+        writes.append((a, bytes(data)))
+    return SimpleNamespace(read_memory=read, write_memory=write), writes, mem
+
+
+def test_force_unlock_sets_exactly_the_rooms_gate_flags(monkeypatch, tmp_path):
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)   # unit-test the write, not the on-disk build hash
+    ad, writes, mem = _flag_ad(floor=1)
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())
+    result = ctrl.force_forward_unlock(st, 1, st["players"][1], now=1000.)
+    assert result == [6, 7, 10]
+    # group 1 (floor 1): base 0x80515CC8 + 32 -> byte 0x80515CE8 holds flags 6|7, +1 holds flag 10
+    assert mem[0x80515CE8] == 0x03 and mem[0x80515CE9] == 0x20
+    fdu = ctrl.inputs.stats["forced_door_unlock"]
+    assert fdu["flags"] == [6, 7, 10] and fdu["group"] == 1 and fdu["base"] == "0x80515cc8"
+    # one shot per room: a second call does nothing new
+    writes.clear()
+    assert ctrl.force_forward_unlock(st, 1, st["players"][1], now=1001.) is None and writes == []
+
+
+def test_force_unlock_refuses_on_wrong_build_signature(tmp_path):
+    """A wrong accessor/r13 signature (here: all-zero reads) must NOT write - a
+    wrong base would corrupt the game, so the guard fails closed."""
+    ad, writes, mem = _flag_ad(floor=1)
+    ad.read_memory = lambda a, n: bytes(n)            # zero everything -> signature mismatch
+    writes2 = []
+    ad.write_memory = lambda a, d: writes2.append((a, d))
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())
+    assert ctrl.force_forward_unlock(st, 1, st["players"][1], now=1000.) is None
+    assert writes2 == [] and ctrl.inputs.stats["forced_door_unlock_skipped"]["reason"] == "build_signature_mismatch"
+
+
+def test_force_unlock_refuses_when_group_ptr_is_not_the_floor(monkeypatch, tmp_path):
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
+    ad, writes, mem = _flag_ad(floor=5)               # array group ptr says floor 5...
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())           # ...but the state is floor 1
+    assert ctrl.force_forward_unlock(st, 1, st["players"][1], now=1000.) is None and writes == []
+
+
+def test_maybe_force_unlock_is_gated_by_the_stuck_timer(monkeypatch, tmp_path):
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
+    ad, writes, mem = _flag_ad(floor=1)
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())
+    key = (st["episode"] if "episode" in st else 1, 1, 10)
+    # Just arrived: no dwell, no recall -> no forced write.
+    ctrl.room_dwell["_cur"] = {"key": (1, 1, 10), "since": 1000., "anchor": (0., 0.)}
+    ctrl.maybe_force_unlock(st, now=1000.)
+    assert writes == []
+    # Past the stuck threshold -> the fail-safe fires.
+    ctrl.maybe_force_unlock(st, now=1000. + C.FALLBACK_STUCK_S + 1)
+    assert mem[0x80515CE8] == 0x03 and mem[0x80515CE9] == 0x20
+
+
+def test_room_clear_gate_is_never_force_unlocked_with_enemies_present(monkeypatch, tmp_path):
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
+    ad, writes, mem = _flag_ad(floor=1)
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room(_room10_flag_entities())
+    st["entities"].append({"kind": "enemy", "class": "TObjEneMoja", "room": 10, "x": 0., "z": 10., "hp": 50})
+    ctrl.room_dwell["_cur"] = {"key": (1, 1, 10), "since": 0., "anchor": (0., 0.)}
+    ctrl.maybe_force_unlock(st, now=10_000.)           # long past the timer, but a live enemy is here
+    assert writes == []
+
+
+def test_knowledge_persists_the_gate_recipe_and_recalls_it_instantly(monkeypatch, tmp_path):
+    from gbox.pso_knowledge import KnowledgeStore
+    import gbox.pso_coop_gates as G
+    monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
+    ad, writes, mem = _flag_ad(floor=1)
+    ctrl = _controller(tmp_path, ad=ad)
+    ctrl.knowledge = KnowledgeStore(tmp_path / "pso-knowledge.json")
+    st = _coop_room(_room10_flag_entities())
+    assert ctrl.force_forward_unlock(st, 1, st["players"][1], now=1000.) == [6, 7, 10]
+    # The recipe is on disk, keyed by the room fingerprint.
+    reloaded = KnowledgeStore(tmp_path / "pso-knowledge.json")
+    from gbox.pso_coop_nav import room_key
+    fp = room_key(st, st["players"][1])[0]
+    assert reloaded.recall(fp)["forward_flags"] == [6, 7, 10]
+    # A FRESH controller recalls it and force-unlocks immediately, before any stuck timer.
+    ad2, writes2, mem2 = _flag_ad(floor=1)
+    fresh = _controller(tmp_path, ad=ad2)
+    fresh.knowledge = reloaded
+    assert fresh._recalled_flags(st, st["players"][1]) == [6, 7, 10]
+    fresh.room_dwell["_cur"] = {"key": (1, 1, 10), "since": 1000., "anchor": (0., 0.)}
+    fresh.maybe_force_unlock(st, now=1000.)            # dwell 0, but recalled -> fires now
+    assert mem2[0x80515CE8] == 0x03 and mem2[0x80515CE9] == 0x20
