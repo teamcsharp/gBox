@@ -22,7 +22,6 @@ import httpx
 from . import pso_campaign as solo
 from .pso_coop_nav import Maps, room_key
 from .pso_coop_native import context as native_context, SpeedSampler
-from .pso_coop_setup import DEFAULT_AUTOPLAY_SPEED
 from .pso_coop_menu import MenuProgress, known_menu_command
 from .pso_coop_progress import Checkpoint, card_binding
 from .pso_coop_recovery import TransientRecovery, continuous_requested
@@ -751,6 +750,10 @@ def movement_keys(player, destination):
 
 RECENTER_S = 2.0            # a pad's L reset is at most this frequent while its actor walks straight
 RECENTER_TURN_DEG = 45      # an actor turning this far since its last reset gets one immediately
+# Operator 2026-11-02: buddies play at 2x by default so a run reaches each teleporter in
+# reasonable time. Defined here, in a hot-reloadable bot module, so apply_default_speed()
+# never binds a name across the non-reloadable pso_coop_setup boundary.
+DEFAULT_AUTOPLAY_SPEED = 2
 
 
 class Controller:

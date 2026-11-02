@@ -8,10 +8,6 @@ import threading
 from pathlib import Path
 
 SPEEDS = (1, 2, 4, 8, 10)
-# Operator 2026-11-02: PSO buddies play at 2x by default so a run reaches each
-# teleporter in reasonable time; the play loop requests this once per launch,
-# after the pads verify, and leaves the operator's later speed choices alone.
-DEFAULT_AUTOPLAY_SPEED = 2
 # Linux keeps its established private-display map. Windows also shares gBox's
 # global desktop shortcuts, so its private P2 map must avoid all function keys.
 PAD2 = {"up": "F2", "down": "F3", "left": "F4", "right": "F5",
