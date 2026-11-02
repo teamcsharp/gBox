@@ -198,6 +198,13 @@ URGENT_BODY_S, URGENT_BODY_R = 1.0, 1500.0       # a swing / grab / rush landing
 # body-turn while his swing comes down (past AIM_KEEP_ERR the body turn is otherwise the faster aim, but not with a hit
 # landing point-blank).
 INTERRUPT_R, INTERRUPT_CONE = 2000.0, 0.7
+# Fire on sight (operator 2026-11-02, #7444: "I want him unloading on these zombies on sight no matter what ... There's
+# no scenario in which they should be running into these zombies and allowing them to live"): once the gun is up on a
+# live enemy, it STAYS up and fires across this whole forward arc (radians, ~57 deg) instead of being dropped to a
+# body-turn - he never passes a living enemy gun-down. Only a target further round than this gets the fast body-turn to
+# bring it into the arc first (a 30 deg/s aim-turn is slower than the 170 deg/s body-turn past here, so acquisition
+# stays quick), then the gun comes up and he unloads. The exact body aim (fire_tol) is unchanged: no spray, no wall shots.
+ENGAGE_CONE = 1.0
 # "You Are Dead": No, not Continue Yes (operator 2026-10-26 16:40: "why does the character never change in RE4?"): Yes
 # replays the stage with the same character - the in-round tick answered it before the menus' own No could - so every
 # death kept him. No goes back through Select Player, where the menus draw another character and the round its own gun.
@@ -1406,7 +1413,9 @@ class Bot:
         aiming = self.r_since is not None                               # the gun is up (or coming up) already
         interrupt = (not tgt.get("thrown") and dist < INTERRUPT_R and abs(err) < INTERRUPT_CONE
                      and (tgt.get("urgent") or self._winding(tgt) or dist < CROWD_R))   # point-blank, winding up in front
-        keep_err = max(AIM_KEEP_ERR, INTERRUPT_CONE) if (aiming and interrupt) else AIM_KEEP_ERR
+        # fire on sight (#7444): the gun stays UP on any live enemy across the whole ENGAGE_CONE forward arc and fires -
+        # it is never dropped to body-turn while an enemy he faces lives; only a target further round gets the fast turn.
+        keep_err = max(AIM_KEEP_ERR, ENGAGE_CONE, INTERRUPT_CONE if interrupt else 0.0)
         if abs(err) > (keep_err if aiming else TURN_TOL):             # (up: it stays up and aim-turns unless he is
             self.r_since = None                                         # far round - lowering it to turn and raising
             self.rapid["since"] = None
@@ -2917,7 +2926,9 @@ class Bot:
                 self._commit("fight", f"slot {near['slot']} in view {dist / 1000:.1f} m away", now, force=True)
                 return self._fight(p, near, now, s)
             return None
-        hot = fight_ok and (dist < BONUS_BREAK_R or (self.r_since is not None and near["slot"] == self.lock))
+        # fire on sight (#7444): any live enemy in view within ENGAGE keeps the fight - clearing them comes before any
+        # time bonus / combo hunt; he never breaks off to a bonus while one he can reach still lives
+        hot = fight_ok
         if mode == "bonus":
             danger = self._danger(p, s, BONUS_SAFE_R, now)
             if not danger and fight_ok and 0 < (near.get("hp_max") or 0) <= SMALL_HP and dist < fight_r:

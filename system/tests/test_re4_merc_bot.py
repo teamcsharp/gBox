@@ -1810,18 +1810,36 @@ def test_the_gun_stays_up_to_fire_into_a_point_blank_attacker_not_dropped_to_tur
     assert bot.r_since is not None
     facing(m, 0.58)                                                          # now 0.58 rad off: past AIM_KEEP_ERR (0.55)
     act = run(bot, m, now, 0.3, 1)[0]
-    assert "r" in act["hold"]                                                # ... yet inside INTERRUPT_CONE: gun stays up
+    assert "r" in act["hold"]                                                # ... yet inside the arc: gun stays up
     assert bot.stats["fire_gate"] != "turning: hold" and bot.stats["evades"] == 0
-    # the same angle at a walker that far off, no wind-up: the gun is dropped to body-turn as before (a regression guard)
+    # only a target FURTHER round than the fire-on-sight arc (ENGAGE_CONE) gets the fast body-turn first (a regression
+    # guard: acquisition of a wide-angle enemy is still the quick gun-down turn, not a slow aim-turn)
     now2 = [0.0]
     m2 = world([((0, 0, 900), True)], room=0x400)
     act_state(m2, 1, (1, 0x03, 0, 0))
     facing(m2, 0.0)
     bot2 = B.Bot(m2, clock=lambda: now2[0], nav=False)
     run(bot2, m2, now2, 0.0, 3)
-    facing(m2, 0.58)
+    facing(m2, B.ENGAGE_CONE + 0.3)                                          # beyond the arc: dropped to body-turn
     act2 = run(bot2, m2, now2, 0.3, 1)[0]
     assert "r" not in act2["hold"] and bot2.stats["fire_gate"] == "turning: hold"
+
+
+def test_fire_on_sight_keeps_the_gun_up_across_the_forward_arc_not_just_the_tight_keep_err():
+    """Operator 2026-11-02 (#7444): "unloading on these zombies on sight no matter what ... no scenario in which they
+    should be running into these zombies and allowing them to live." A plain walker well past the old AIM_KEEP_ERR but
+    inside ENGAGE_CONE keeps the gun UP and aims to fire, instead of being passed gun-down."""
+    now = [0.0]
+    m = world([((0, 0, 1200), True)], room=0x400)                           # a walker in front, in range
+    act_state(m, 1, (1, 0x03, 0, 0))                                        # not winding up: pure fire-on-sight
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0, 3)                                                # gun up on him
+    assert bot.r_since is not None
+    off = (B.AIM_KEEP_ERR + B.ENGAGE_CONE) / 2                              # ~0.78 rad: past old keep_err, inside the arc
+    facing(m, off)
+    act = run(bot, m, now, 0.3, 1)[0]
+    assert "r" in act["hold"] and bot.stats["fire_gate"] != "turning: hold"  # gun stays up, aiming to fire (not gun-down)
 
 
 def test_a_point_blank_standing_enemy_is_fired_into_without_waiting_for_the_head_pitch():
