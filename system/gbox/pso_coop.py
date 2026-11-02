@@ -769,7 +769,7 @@ SWITCH_FINE_DIST = 30.0       # within this of a switch, approach in short pulse
 WEDGE_STALL_S = 4.0           # a buddy that barely translates toward its goal this long is wall-wedged
 WEDGE_ESCAPE_S = 0.8          # hold the back-off/strafe escape heading this long before re-committing
 WEDGE_MOVE = 6.0              # progress threshold: translating more than this clears the wedge
-FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
+FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
