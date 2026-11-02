@@ -26,16 +26,18 @@ def _finite(entity, keys=('x', 'z')):
     return all(type(entity.get(k)) in (int, float) and math.isfinite(entity[k]) for k in keys)
 
 
-def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer_room=True, exclude=None):
+def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer_room=True, exclude=None, skip_switches=False):
     """Ordered forward affordances for a cleared room (pure, read-only).
 
     Switches/panels (is_switch=0) sort before doors (is_switch=1) so the gate is
     opened before it is crossed; nearest-first within a class. A gkey-cooled
     affordance (already pressed, or abandoned as stalled) is skipped, as is any
     gkey in `exclude` (a panel the buddy already claimed, so a two-player room's
-    two panels are split rather than both chased). When the player's own room
-    holds nothing forward, fall back to the whole floor so the pair always has an
-    exit to drive toward. Returns rows (is_switch, distance, gkey, entity, kind)."""
+    two panels are split rather than both chased). `skip_switches` drops the
+    panels entirely - used once the room's gate flags are already set (pressing a
+    done panel is pointless; the job is now to walk THROUGH the open door). When
+    the player's own room holds nothing forward, fall back to the whole floor so
+    the pair always has an exit. Returns rows (is_switch, distance, gkey, entity, kind)."""
     cooldown = cooldown or {}
     exclude = exclude or ()
 
@@ -44,6 +46,8 @@ def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer
         for entity in list(entities)[:512]:
             cls = str(entity.get('class', ''))
             if cls not in FORWARD_CLASSES or not _finite(entity):
+                continue
+            if skip_switches and cls in SWITCH_CLASSES:
                 continue
             if same_room and entity.get('room') != room:
                 continue
