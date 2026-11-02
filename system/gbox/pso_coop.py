@@ -1522,29 +1522,29 @@ class Controller:
                for e in state.get('entities', ())):
             return
         rec = self.room_dwell.get('_cur')
-        dwell = now - rec['since'] if rec and rec.get('key') == (state.get('episode'), state.get('floor'), room) else 0.
+        dwell = now - rec['since'] if rec else 0.
         if self._recalled_flags(state, p1) is not None or dwell >= FALLBACK_STUCK_S:
             self.force_forward_unlock(state, 1, p1, now)
 
     def _forward_dwell_telemetry(self, state, now, engaged):
-        """Scalar fail-safe telemetry: how long P1 has held one ROOM without the
-        room advancing. Measured by room id, NOT by standing still - a bot that
-        wanders a room pressing panels is still making no forward progress, and
-        must trip the fail-safe. Resets only when the room actually changes (real
-        progress). The telemetry endpoint drops nested dicts, so these stay flat.
+        """Scalar fail-safe telemetry: how long since P1 reached a NEW (unvisited)
+        room. Measured by the visited-room COUNT, not the current room id - so a
+        hub mill (bouncing between already-visited rooms like 5<->10) does NOT keep
+        resetting the timer; it accumulates until the fail-safe opens the forward
+        gate to a genuinely new room. Resets only on real forward progress.
         forward_stuck crossing FALLBACK_STUCK_S drives force_forward_unlock."""
         stats = getattr(self.inputs, 'stats', None)
         if not isinstance(stats, dict):
             return
         p1 = state.get('players', {}).get(1) or {}
-        room = p1.get('room')
-        key = (state.get('episode'), state.get('floor'), room)
+        nvisited = len(self.p1_visited)
         rec = self.room_dwell.get('_cur')
-        if rec is None or rec['key'] != key:
-            rec = self.room_dwell['_cur'] = {'key': key, 'since': now}
+        if rec is None or rec.get('nvisited') != nvisited:
+            rec = self.room_dwell['_cur'] = {'nvisited': nvisited, 'since': now}
         dwell = now - rec['since']
-        stats['forward_room'] = room
-        stats['forward_time_in_room_s'] = round(dwell, 1)
+        stats['forward_room'] = p1.get('room')
+        stats['forward_rooms_visited'] = nvisited
+        stats['forward_time_since_new_room_s'] = round(dwell, 1)
         stats['forward_stuck'] = dwell >= FALLBACK_STUCK_S
         stats['forward_fallback_engaged'] = bool(engaged)
 

@@ -525,22 +525,22 @@ def test_combat_engages_enemy_in_reach_despite_room_id_mismatch(monkeypatch, tmp
     assert controller.attacks == 2
 
 
-def test_forward_stuck_flag_fires_after_threshold_and_resets_on_room_change():
-    """The scalar fail-safe telemetry flags a ROOM held with no forward PROGRESS
-    (operator cue that the switch/door path has not advanced). It is room-based,
-    not stillness-based: wandering the room does not reset it; only the room id
-    actually changing (real progress) does."""
+def test_forward_stuck_fires_until_a_new_room_is_reached_not_on_hub_bounce():
+    """The fail-safe timer measures time since P1 reached a NEW (unvisited) room,
+    by the visited-room COUNT - so bouncing between already-visited hub rooms does
+    not keep resetting it; only reaching a genuinely new room does."""
     stats = {}
     controller = C.Controller(SimpleNamespace(), SimpleNamespace(stats=stats), None)
     observed = _field_state()
+    controller.p1_visited = {5, 10}                             # hub rooms already visited
     controller._forward_dwell_telemetry(observed, 1000., False)
-    assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
-    observed["players"][1]["x"] = 300.                          # P1 wandered far within the room
+    assert stats["forward_stuck"] is False and stats["forward_time_since_new_room_s"] == 0.0
+    # Bouncing 5<->10 does not grow the visited set -> the timer accumulates.
     controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 1, False)
-    assert stats["forward_stuck"] is True                       # still stuck: same room, no progress
-    observed["players"][1]["room"] = observed["players"][1]["room"] + 1   # room advanced: progress
+    assert stats["forward_stuck"] is True                       # stuck: no NEW room reached
+    controller.p1_visited = {5, 10, 11}                         # a genuinely new room: real progress
     controller._forward_dwell_telemetry(observed, 1000. + C.FALLBACK_STUCK_S + 2, True)
-    assert stats["forward_stuck"] is False and stats["forward_time_in_room_s"] == 0.0
+    assert stats["forward_stuck"] is False and stats["forward_time_since_new_room_s"] == 0.0
 
 
 def test_buddies_advance_when_geometry_verified_but_no_collision_grid(monkeypatch, tmp_path):
@@ -888,19 +888,20 @@ def _flag_ad(floor=1):
     return SimpleNamespace(read_memory=read, write_memory=write), writes, mem
 
 
-def test_forward_stuck_counts_time_in_room_not_time_standing_still(tmp_path):
-    """The stuck timer measures time in the same ROOM (no forward progress), not
-    time standing still - a bot wandering a room pressing panels is still stuck."""
+def test_forward_stuck_counts_time_since_new_room_not_hub_bounce(tmp_path):
+    """The stuck timer accumulates while no NEW room is reached (hub bounce), and
+    only a genuinely new visited room resets it - not standing still, not bouncing
+    between already-visited rooms."""
     ctrl = _controller(tmp_path)
     st = _coop_room(_room10_flag_entities())
+    ctrl.p1_visited = {5, 10}
     ctrl._forward_dwell_telemetry(st, now=100., engaged=True)
-    assert ctrl.inputs.stats["forward_stuck"] is False and ctrl.inputs.stats["forward_room"] == 10
-    st["players"][1]["x"] = 999.                          # wandered far, but still room 10
+    assert ctrl.inputs.stats["forward_stuck"] is False
     ctrl._forward_dwell_telemetry(st, now=100. + C.FALLBACK_STUCK_S + 1, engaged=True)
-    assert ctrl.inputs.stats["forward_stuck"] is True     # stuck despite moving
-    st["players"][1]["room"] = 11                         # real progress: room advanced
+    assert ctrl.inputs.stats["forward_stuck"] is True     # no new room reached -> stuck
+    ctrl.p1_visited = {5, 10, 11}                          # real progress: a new room
     ctrl._forward_dwell_telemetry(st, now=100. + C.FALLBACK_STUCK_S + 2, engaged=True)
-    assert ctrl.inputs.stats["forward_stuck"] is False and ctrl.inputs.stats["forward_room"] == 11
+    assert ctrl.inputs.stats["forward_stuck"] is False
 
 
 def test_force_unlock_sets_exactly_the_rooms_gate_flags(monkeypatch, tmp_path):
