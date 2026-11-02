@@ -1015,6 +1015,8 @@ window.taskVizCreate = canvas => {
 </script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="gbox-pip-sharpen" x="0" y="0" width="100%" height="100%">
+  <feConvolveMatrix order="3" preserveAlpha="true" edgeMode="duplicate" kernelMatrix="0 -0.12 0 -0.12 1.48 -0.12 0 -0.12 0"/></filter></svg>
 <button id="ssh-access-button" type="button" aria-label="SSH controls on this PC"></button>
 <div id="ssh-access-popover" role="dialog" aria-label="SSH access to this PC" hidden></div>
 <div id="titlebar">
@@ -1325,7 +1327,11 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
   .mm-queue-form select { flex:1 1 45%; min-width:0; background:#111; color:#eee; border:1px solid var(--line); border-radius:4px; font-size:12px; }
   #pipmenu .mm-queue-form button { display:inline-block; width:auto; flex:1 1 30%; border:1px solid var(--line); text-align:center; } #pipmenu .pip-mercmode small { display:block; color:var(--mut); }
   body.gbox-compact:has(#compact-stream[data-stream-state="connected"]) .gbox-stream-badge { display:none !important; }
-  #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
+  /* The game picture fills the PiP centred (object-fit:contain here; picture-fit.js replaces the inline left/top/width/height
+     to crop measured bars and centre the picture itself). image-rendering:auto + a mild sharpen keep a low-res capture crisp
+     (operator 2026-11-02: "AA and upscaling so it looks decent") without pixelating the already-clean RE4 feed. */
+  #compact-stream { display:none; position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000;
+    image-rendering:auto; filter:contrast(1.05) saturate(1.05) url(#gbox-pip-sharpen); }
   body.gbox-compact #compact-stream.on { display:block; }
   #compact-controls { display:none; position:fixed; inset:0 0 auto; height:28px; z-index:100;
     align-items:center; gap:8px; padding:2px 8px; background:#101014dc; color:#ddd; font:11px system-ui;

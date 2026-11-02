@@ -13,6 +13,33 @@ test('without bars the frame is simply contained and centred', () => {
   assert.equal(F.fit({ w: 0, h: 0 }, { w: 1, h: 1 }, null), null);
 });
 
+// The invariant the PiP relies on: whatever the content box, fit() centres the PICTURE in the window (never off to one
+// side) and scales it to fill one axis. A PSO-like frame with an asymmetric black band on the left is the key case.
+function centre(win, frame, content, s) {
+  const r = F.fit(win, frame, content);
+  const cx = r.left + (content.x + content.w / 2) * s;   // where the picture's centre lands in the window
+  const cy = r.top + (content.y + content.h / 2) * s;
+  return { r, cx, cy };
+}
+
+test('an asymmetric left band (PSO) still centres the picture and fills, bars pushed off-screen', () => {
+  const win = { w: 629, h: 206 }, frame = { w: 629, h: 206 }, content = { x: 210, y: 0, w: 419, h: 206 };
+  const s = Math.min(win.w / content.w, win.h / content.h);   // = 1 (height-bound)
+  const { r, cx, cy } = centre(win, frame, content, s);
+  assert.equal(Math.round(cx), Math.round(win.w / 2));        // picture centred horizontally, not shoved right
+  assert.equal(Math.round(cy), Math.round(win.h / 2));
+  assert.ok(r.left < 0);                                      // the left band hangs off the left edge, off-screen
+  assert.equal(Math.round(content.h * s), win.h);             // the picture fills the window height
+});
+
+test('symmetric bars give symmetric margins and a centred picture', () => {
+  const win = { w: 800, h: 450 }, frame = { w: 640, h: 480 }, content = { x: 40, y: 60, w: 560, h: 360 };
+  const s = Math.min(win.w / content.w, win.h / content.h);
+  const { cx, cy } = centre(win, frame, content, s);
+  assert.equal(Math.round(cx), win.w / 2);
+  assert.equal(Math.round(cy), win.h / 2);
+});
+
 test('three agreeing letterbox measurements apply a crop; a black frame keeps it; bars gone resets it', async () => {
   const applied = [];
   const measurements = [];
