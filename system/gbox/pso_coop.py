@@ -1450,9 +1450,16 @@ class Controller:
                 same_room = state["players"][3 - slot].get("room") == player.get("room")
                 field_dep = (self.field.status.get('players', {}).get(str(slot), {}).get('dependency')
                              if field_owned else None)
-                exploring = field_dep in (None, 'explore', 'unknown_geometry',
-                                          'no_verified_regroup_route', 'buddy_unavailable')
-                if target is None and ((field_owned and exploring and same_room)
+                # `exploring` only when field_owned - a wrong-build None dep must not
+                # hijack the non-field goal path (that would skip wall learning).
+                exploring = field_owned and field_dep in ('explore', 'unknown_geometry',
+                    'no_verified_regroup_route', 'buddy_unavailable', 'buddy_regroup')
+                # P1 LEADS decisively and never idles: whenever it has no real field
+                # route (waiting on its buddy, exploring, or no destination) it drives
+                # forward itself - independent of the buddy's room - so a stuck leader
+                # in another room still gets the wall-wedge recovery instead of waiting.
+                lead = slot == 1 and (destination is None or exploring)
+                if target is None and (lead or (exploring and same_room)
                                        or (destination is None and (not field_owned or same_room))):
                     if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
                         continue
