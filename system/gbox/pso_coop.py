@@ -779,6 +779,7 @@ SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the 
 SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
 SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
 BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
+DOOR_RETRAVERSE_COOLDOWN_S = 20.0  # after P1 walks through a door, don't re-cross it (stops hub ping-pong)
 # A transient host focus/active-window condition (the adapter cannot send input
 # because the game window is not in front) must NEVER end the run - PSO has to keep
 # playing. The loop pauses this long, tries to raise the game window, then retries.
@@ -810,6 +811,9 @@ class Controller:
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
+        self.door_cooldown = {}     # P1 cross-room: gkey -> until; a just-traversed door is not re-crossed
+        self._p1_room = None        # P1's last room, to detect a traversal
+        self._p1_door = None        # the door gkey P1 was pursuing (cooled once it leads to a room change)
 
     def _steering_publish(self):
         """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
@@ -1017,6 +1021,20 @@ class Controller:
         cooldown = book['cooldown']
         entry = book.get('entry')
         from . import pso_coop_gates as gates
+        # Cross-room anti-ping-pong (P1): when P1 changes room it has traversed the
+        # door it was pursuing - cool that connector so P1 explores onward instead
+        # of immediately re-crossing it. Persists across the per-room book rebind.
+        if slot == 1:
+            if self._p1_room != room:
+                if self._p1_door is not None:
+                    self.door_cooldown[self._p1_door] = now + DOOR_RETRAVERSE_COOLDOWN_S
+                self._p1_room = room
+                self._p1_door = None
+            self.door_cooldown = {k: v for k, v in self.door_cooldown.items() if v > now}
+            # Merge the cross-room cooldown INTO the live book dict so in-loop stall
+            # writes still take effect (a snapshot would freeze mid-selection).
+            for k, v in self.door_cooldown.items():
+                cooldown[k] = max(cooldown.get(k, 0), v)
 
         # P2 claims the OTHER panel in a two-panel room; else follows P1 (to P1's
         # panel, or to the door once both panels are done) or just closes the gap.
@@ -1083,6 +1101,8 @@ class Controller:
                 self.inputs.stats['forward_fallback_action'] = kind
             if is_switch == 0:
                 return entity['x'], entity['z']
+            if slot == 1:
+                self._p1_door = gkey          # cooled if crossing it changes P1's room
             # A door/fence/barrier: aim beyond it so the actor commits through. Once
             # the gate is force-unlocked, aim well past the threshold to carry the
             # buddy across into the next room rather than parking at the doorway.
@@ -1200,7 +1220,10 @@ class Controller:
             return
         gap = math.hypot(leader["x"] - px, leader["z"] - pz)
         if gap > SWARM_FOLLOW_RADIUS:
-            commands.append((slot, movement_keys(player, (leader["x"], leader["z"])), .40))
+            # Geometry-free close, but strafe off a wall if it stops translating so
+            # a follower is never left frozen behind cover (it must stay glued).
+            keys, _ = self._unwedge(slot, player, (leader["x"], leader["z"]), now)
+            commands.append((slot, keys, .40))
             steering[slot] = (player, (leader["x"], leader["z"]), "swarm_close")
         elif gap < SWARM_SPREAD:
             off = (px + (px - leader["x"] or SWARM_SPREAD), pz + (pz - leader["z"]))
@@ -1985,7 +2008,19 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                         menu.previous['input_delivery_verified'] = True
                     else:
                         stats["action"] = "discarded_stale_plan"
-                if (pending is None and time.monotonic() >= planner_retry_at and
+                # Operator 2026-11-02: PSO plays from RAM, not a vision LLM. During
+                # verified field gameplay P1 navigates/unlocks/fights entirely from
+                # the RAM-derived state (field objectives, the stage-flag door
+                # system, the knowledge crystal) and followers swarm - so NO vision
+                # planner is called, which frees the Spark's ollama GPU/CPU (it was
+                # the continuous burn choking RE4). The planner is still used only
+                # for brief visual decisions RAM cannot make: town/menus, character
+                # creation and end-screen (credits) classification.
+                ram_only = bool(state.get("verified") and state.get("phase") == 14
+                                and state.get("floor", 0) > 0 and mapped and not menu_paused)
+                if ram_only:
+                    stats.update(planner_state="ram_only_no_llm", planner_suppressed_field_play=True)
+                if (not ram_only and pending is None and time.monotonic() >= planner_retry_at and
                         time.monotonic() - last_plan_at > (2.1 if ledger.boss_zero else 8)):
                     context = {**ledger.status(), **buddy_context(characters, state, authorization, session_id,
                                    seen=seen_buddies, awaiting_entry=ledger.awaiting_entry),

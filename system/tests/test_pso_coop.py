@@ -705,6 +705,18 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
+def test_traversed_door_is_cooled_so_p1_does_not_immediately_recross(tmp_path):
+    """Cross-room anti-ping-pong: once P1 walks through a door (its room changes),
+    that connector is cooled so P1 heads onward instead of bouncing back."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 300., "z": 0., "room": 10}], p1=(0., 0.))
+    ctrl.forward_fallback(st, 1, st["players"][1], now=100.)           # P1 commits to the door
+    assert ctrl._p1_door == ("TObjDoor", 300.0, 0.0) and ctrl._p1_room == 10
+    st["players"][1].update(room=11, x=300., z=0.)                     # P1 crossed into the next room
+    ctrl.forward_fallback(st, 1, st["players"][1], now=101.)
+    assert ctrl.door_cooldown.get(("TObjDoor", 300.0, 0.0), 0) > 101.  # the used door is now on cooldown
+
+
 def test_leader_does_not_backtrack_through_the_door_it_just_entered(tmp_path):
     """P1 heads for the boss, not back the way it came: entering a room by one
     door, it picks the FORWARD door, not the entry-adjacent one - so it stops
