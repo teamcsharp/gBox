@@ -325,10 +325,11 @@ class RandomSelections:
     BOOT_KEY = 'start'
     wandered = staticmethod(wandered)
 
-    def __init__(self,rng=None,key=None):
+    def __init__(self,rng=None,key=None,controls=None):
         import random
         self.rng=rng or random.Random()
         self.key=key
+        self.controls=controls
         self.player=self.stage=None
         self.previous_player=self.previous_stage=None
         self.where=None
@@ -390,6 +391,11 @@ class RandomSelections:
             self.player=self.stage=None
         if where!='dead':
             self.no_selected=False
+        if self.controls is not None and self.controls.managed:
+            if where == 'select_player':
+                self.player = out['target'] = self.controls.choose_character(range(len(PLAYERS)))
+            elif where == 'select_stage':
+                self.stage = out['target'] = self.controls.choose_stage(range(len(STAGES)))
         self.where=where
         return out
 
@@ -398,7 +404,8 @@ class RandomSelections:
         with the same character, so every death kept him; No goes back through Select Player, where a different one is
         drawn (operator 2026-10-26: "why dont the character change between rounds? Stop picking the same character").
         A round someone asked for (REQUESTS) keeps Continue Yes."""
-        if scr.get('where')=='dead' and not (self.key is not None and (REQUESTS.get(self.key) or ASKED.get(self.key))):
+        if scr.get('where')=='dead' and (self.controls is not None and self.controls.managed
+                or not (self.key is not None and (REQUESTS.get(self.key) or ASKED.get(self.key)))):
             if not self.no_selected:
                 self.no_selected=True
                 return DPAD['right']

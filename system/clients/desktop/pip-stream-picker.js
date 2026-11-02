@@ -94,6 +94,17 @@
       },
       async target() { const p = load(), rev = generation, source = loadedOrigin; if (!p) return null;
         const data = await io.read(); return rev === generation && source === origin(io.origin()) ? resolve(p, data.rows, data.hosts) : null; },
+      async broadcast(sid, valid = () => true) {
+        load();
+        const source = loadedOrigin;
+        if (!source || !io.broadcast || !valid()) return false;
+        const data = await io.read();
+        if (!valid() || source !== origin(io.origin())) return false;
+        const row = sid === 'auto' ? null : data.rows.find(r => r.session_id === sid && status(r, data.hosts) === 'ready');
+        if (sid !== 'auto' && !row) throw Error('That stream is no longer ready. Choose a current game.');
+        await io.broadcast(sid, row);
+        return true;
+      },
       async select(sid, valid = () => true, {dispatch} = {}) {
         load();
         if (dispatch && !canDispatch(dispatch)) return false;
@@ -152,13 +163,15 @@
       }, () => finish('Preview unavailable'));
     });
   }
-  function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game') {
-    return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span></div>' +
+  function html(entries, sid, title = row => row.title || row.game_title || row.game_id || 'Game', broadcast = false) {
+    return '<div class="pip-stream-heading"><strong>Streams</strong><span>View another instance</span>' +
+      (broadcast ? '<button type="button" data-stream-broadcast="auto" title="Let the broadcast follow the active game again">Broadcast: Auto</button>' : '') + '</div>' +
       '<div class="pip-stream-carousel"><button type="button" data-stream-step="-1" aria-label="Previous stream" title="Previous stream">‹</button>' +
       '<div class="pip-stream-cards" role="group" aria-label="Running game streams">' + (entries.length ? entries.map(({row,status:state}) =>
-        `<button type="button" class="pip-stream-card${row.session_id === sid ? ' selected' : ''}" data-stream-sid="${esc(row.session_id)}" aria-pressed="${row.session_id === sid}" ${state === 'ready' ? '' : 'disabled'} title="${esc(name(row))} · ${esc(title(row))} · ${esc(row.session_id)}">` +
+        `<div class="pip-stream-entry"><button type="button" class="pip-stream-card${row.session_id === sid ? ' selected' : ''}" data-stream-sid="${esc(row.session_id)}" aria-pressed="${row.session_id === sid}" ${state === 'ready' ? '' : 'disabled'} title="${esc(name(row))} · ${esc(title(row))} · ${esc(row.session_id)}">` +
         `<span class="pip-stream-picture"><img alt="" data-stream-preview="${esc(row.session_id)}"><span data-stream-state>${esc(labels[state])}</span>${row.session_id === sid ? '<b class="pip-stream-selected">Watching</b>' : ''}</span>` +
-        `<strong>${esc(name(row) || identity(row).workerId || 'Instance')}</strong><span>${esc(title(row))}</span></button>`).join('') :
+        `<strong>${esc(name(row) || identity(row).workerId || 'Instance')}</strong><span>${esc(title(row))}</span></button>` +
+        (broadcast ? `<button type="button" class="pip-stream-broadcast" data-stream-broadcast="${esc(row.session_id)}" ${state === 'ready' ? '' : 'disabled'} aria-label="Broadcast ${esc(title(row))} on ${esc(name(row))}">Broadcast</button>` : '') + '</div>').join('') :
         '<p class="pip-stream-empty">No active streams. Waiting for a game to be ready.</p>') + '</div>' +
       '<button type="button" data-stream-step="1" aria-label="Next stream" title="Next stream">›</button></div>' +
       '<p class="pip-stream-status" role="status">Switching views keeps every game running.</p>';
@@ -172,7 +185,7 @@
       try {
         const data = await io.read(); if (!valid()) return;
         entries = candidates(data.rows, data.hosts);
-        root.innerHTML = html(entries, io.current(), io.title);
+        root.innerHTML = html(entries, io.current(), io.title, !!io.broadcast);
         root.querySelectorAll('[data-stream-step]').forEach(button => { button.disabled = entries.filter(e => e.status === 'ready').length < 2; });
         root.querySelector('.selected')?.scrollIntoView?.({block:'nearest',inline:'nearest'});
         io.resized?.();
@@ -189,9 +202,18 @@
       } catch (error) { if (valid()) root.textContent = 'Streams unavailable: ' + error.message; }
     }
     async function click(event) {
-      const button = event.target.closest?.('[data-stream-sid], [data-stream-step]');
+      const button = event.target.closest?.('[data-stream-sid], [data-stream-step], [data-stream-broadcast]');
       if (!button || !valid() || busy || button.disabled) return;
       event.stopPropagation();
+      if (button.dataset.streamBroadcast) {
+        busy = true; button.disabled = true; message('Switching broadcast...');
+        try {
+          const changed = await io.broadcast(button.dataset.streamBroadcast, valid);
+          if (changed) message(button.dataset.streamBroadcast === 'auto' ? 'Broadcast follows the active game.' : 'This stream is now broadcast through gBox to Pine Box.');
+        } catch (error) { message(error.message); }
+        finally { busy = false; if (valid()) button.disabled = false; }
+        return;
+      }
       const row = button.dataset.streamSid ? entries.find(e => e.row.session_id === button.dataset.streamSid)?.row :
         cycle(entries.filter(e => e.status === 'ready').map(e => e.row), io.current(), Number(button.dataset.streamStep));
       if (!row) return;

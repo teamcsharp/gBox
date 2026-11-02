@@ -6,6 +6,57 @@ const vm = require('node:vm');
 const row = (sid, worker='Spark', extra={}) => ({session_id:sid,worker:'w-'+worker,state:'running',worker_online:true,detail:{worker_name:worker},title:'Resident Evil 5',...extra});
 const a=row('spark-one'), b=row('i9-one','i9'), c=row('spark-two','Spark',{started:20,title:'Resident Evil 6'});
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
+
+test('broadcast targets the exact ready stream without changing the viewed instance',async()=>{
+  const x=rig(),broadcast=[];x.io.broadcast=async(sid,r)=>broadcast.push([sid,r]);
+  await x.ctl.select(a.session_id);
+  assert.equal(await x.ctl.broadcast(b.session_id),true);
+  assert.deepEqual(broadcast,[[b.session_id,b]]);
+  assert.equal(x.ctl.preference.sid,a.session_id);assert.deepEqual(x.shown,[a.session_id]);
+  assert.equal(await x.ctl.broadcast('auto'),true);assert.deepEqual(broadcast.at(-1),['auto',null]);
+});
+
+test('broadcast rejects ended, warm and offline streams after a fresh lookup',async()=>{
+  for(const changed of [{state:'ended'},{warm:true},{worker_online:false}]){
+    const x=rig();x.io.broadcast=async()=>assert.fail('no broadcast');x.setData({rows:[{...b,...changed}],hosts:[]});
+    await assert.rejects(x.ctl.broadcast(b.session_id),/no longer ready/);
+  }
+});
+
+test('a stale broadcast menu or changed connection cannot publish an earlier choice',async()=>{
+  for(const change of ['closed','origin']){
+    const x=rig(),held=deferred();let open=true;x.io.read=()=>held.promise;x.io.broadcast=async()=>assert.fail('no broadcast');
+    const task=x.ctl.broadcast(b.session_id,()=>open);
+    if(change==='closed')open=false;else x.setOrigin('http://other:8765');
+    held.resolve({rows:[b],hosts:[]});assert.equal(await task,false);
+  }
+});
+
+test('a refused broadcast reports the error and preserves the selected stream',async()=>{
+  const x=rig();await x.ctl.select(a.session_id);x.io.broadcast=async()=>{throw Error('session ended');};
+  await assert.rejects(x.ctl.broadcast(b.session_id),/session ended/);assert.equal(x.ctl.preference.sid,a.session_id);
+});
+
+test('broadcast actions are separate buttons, disabled offline, and escape titles',()=>{
+  const html=P.html(P.candidates([a,{...b,worker_online:false,title:'<b>PSO</b>'}]),a.session_id,undefined,true);
+  assert.match(html,/data-stream-broadcast="auto"/);
+  assert.match(html,/data-stream-broadcast="i9-one" disabled/);
+  assert.match(html,/aria-label="Broadcast &lt;b&gt;PSO&lt;\/b&gt; on i9"/);
+  assert.equal((html.match(/class="pip-stream-entry"/g)||[]).length,2);
+  assert.match(html,/<\/button><button[^>]*class="pip-stream-broadcast"/);
+});
+
+test('Prod sends the displayed session to guarded recovery and rejects connection changes',async()=>{
+  const html=fs.readFileSync(require.resolve('../clients/desktop/index.html'),'utf8');
+  const src=html.slice(html.indexOf('async function prodBot()'),html.indexOf('async function gameAction(a)'));
+  const calls=[];const ctx=vm.createContext({S:{apiUrl:'http://spark'},EMB:{authority:'http://spark'},COMPACT:{on:true},
+    gboxStreamWatchdog:{sessionOf:()=>b.session_id},$:()=>({getAttribute:()=>'/stream'}),
+    shownSessionSoon:async()=>a.session_id,botEnsure:async(...args)=>calls.push(args)});
+  vm.runInContext(src,ctx);await ctx.prodBot();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[[b.session_id,'Prod',{raise:true,prod:true}]]);
+  ctx.COMPACT.on=false;ctx.shownSessionSoon=async()=>{ctx.S.apiUrl='http://other';return a.session_id;};
+  await assert.rejects(ctx.prodBot(),/connection changed/);assert.equal(calls.length,1);
+});
 function rig() {
   const values=new Map(),shown=[];let source='http://spark:8765',data={rows:[a,b,c],hosts:[]};
   const io={origin:()=>source,storage:{getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)},read:async()=>data,

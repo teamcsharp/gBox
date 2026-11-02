@@ -901,6 +901,11 @@ class Screensaver:
         row = self._warm(w, running, now).get(pick['title'])
         if not row or row.get('state') == 'releasing':
             return None
+        from .mercs.round_controls import warm_stage_allowed
+        if row.get('state') == 'ready' and not warm_stage_allowed(self.store, w['name'], pick['title'], row.get('prepared')):
+            self._warm_stop(w, row, 'the icon panel excludes this prepared stage')
+            mercmode.take_warm(self.store, w['name'], pick['title'])
+            return None
         if row.get('pause_job') and (self.store.get('job', row['pause_job']) or {}).get('state') != 'succeeded':
             # its pause has not landed yet (a resume now could be undone by it): wait a little, then give up on it
             if now - row.get('at', now) < 120:

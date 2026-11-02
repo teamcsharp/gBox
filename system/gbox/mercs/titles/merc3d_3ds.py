@@ -102,6 +102,11 @@ RELOAD_KEEP = ("PICK",)
 # was. A level not open yet keeps him on the last open one until it opens. PROGRESSION False: the old random draw.
 PROGRESSION = True
 PROGRESS_FILE = Path(__file__).resolve().parents[3] / "gbox-data" / "mercs" / "merc3d-progress.json"
+# Human 1-3, 2-3 and 3-5 unlock the next set in the firsthand TAS route:
+# https://tasvideos.org/Forum/Topics/23732 . 4-5 is the route's final LV4
+# mission before LV5 (candidate, not a decoded native Rank-Up flag).
+# Native MS_OPEN/MS_TABS still decide what is available; these never unlock it.
+RANK_UP_TABS = {0: 2, 1: 2, 2: 4, 3: 4}
 
 
 class _Pick:
@@ -138,6 +143,7 @@ class _Pick:
 
     def reset(self) -> None:
         self.level = self.tab = None
+        self.progression_reason = None
         self.mission_done = self.chara_done = False
         self.main_key, self.main_presses, self.main_confirmations = None, 0, 0
 
@@ -151,10 +157,11 @@ class _Pick:
                 and mission_id == (level << 8 | tab) and 0 <= tab < tabs:
             self.active = (level, tab, tabs)
             if PROGRESSION:
-                # A locked target may have selected an earlier open level.
-                # Persist the actual mission so failure/relaunch retries it.
-                self.cursor[:2] = [level, tab]
-                self._save()
+                # Keep the desired next level while retrying its unlock mission.
+                # Overwriting it with the clamped level loses the unlock goal.
+                if level >= self.cursor[0]:
+                    self.cursor[:2] = [level, tab]
+                    self._save()
         self.reset()
 
     def ended(self, mission_id, completed: bool) -> None:
@@ -162,9 +169,10 @@ class _Pick:
         self.active = None
         if PROGRESSION and completed and active is not None \
                 and type(mission_id) is int and mission_id == (active[0] << 8 | active[1]):
-            self.cursor[:2] = list(active[:2])
-            self.tabs_seen = active[2]
-            self._advance()
+            if active[0] >= self.cursor[0]:
+                self.cursor[:2] = list(active[:2])
+                self.tabs_seen = active[2]
+                self._advance()
         self.reset()
 
     def _advance(self) -> None:
@@ -179,18 +187,34 @@ class _Pick:
         self._save()
 
     def level_for(self, open_levels: int) -> int:
-        if self.level is None or not 0 <= self.level < max(1, open_levels):
-            if PROGRESSION:
-                self.level = min(self.cursor[0], max(1, min(open_levels, LEVELS)) - 1)
-            else:
-                self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
+        self.observe_open(open_levels)
+        if PROGRESSION:
+            target = min(self.cursor[0], max(1, min(open_levels, LEVELS)) - 1)
+            if self.level != target:
+                self.level, self.tab = target, None
+        elif self.level is None or not 0 <= self.level < max(1, open_levels):
+            self.level = self.rng.randrange(max(1, min(open_levels, LEVELS)))
         return self.level
+
+    def observe_open(self, open_levels: int) -> None:
+        before = getattr(self, 'open_seen', None)
+        self.unlock_growth = before is not None and open_levels > before
+        self.open_seen = open_levels
 
     def tab_for(self, tabs: int) -> int:
         self.tabs_seen = tabs
         if self.tab is None or not 0 <= self.tab < tabs:
             if PROGRESSION:
-                self.tab = min(self.cursor[1], tabs - 1) if self.level == self.cursor[0] else 0
+                if self.level < self.cursor[0]:
+                    rank_up = RANK_UP_TABS.get(self.level)
+                    self.tab = rank_up if rank_up is not None and rank_up < tabs else tabs - 1
+                    self.progression_reason = ('Next level is still locked; retry the available Rank-Up mission '
+                        'for B rank or better. Native rank is not decoded.' if rank_up == self.tab else
+                        'Next level is locked and the expected Rank-Up tab is unavailable; retry the last observed tab.')
+                    if self.level == 3:
+                        self.progression_reason += ' LV4 final-tab role is guide-inferred; verify actual unlock growth.'
+                else:
+                    self.tab = min(self.cursor[1], tabs - 1) if self.level == self.cursor[0] else 0
             else:
                 self.tab = self.rng.randrange(tabs)
         return self.tab
@@ -343,6 +367,13 @@ def snapshot(m) -> dict:
             snap.update({k: mi[k] for k in ("timer", "score", "combo", "combo_timer", "elapsed")},
                         mission_id=mi["mission_id"], chara_id=mi["chara_id"], combo_score=mi["combo_score"],
                         stage=mission_identity(mi["mission_id"]))
+        # Read-only native outcome evidence. Do not invoke screen() here: menu
+        # selection and its progression cursor belong to the normal menu path.
+        stack = areas(m)
+        if stack:
+            state, _, _ = flow_state(m, stack[-1][0])
+            snap.update(native_flow=state, native_objective_end=state == 'cMerceStageEndState',
+                        native_failed=state in ('cMerceStageFailedState', 'cMerceStageYouAreDeadState'))
     except (ValueError, OSError, RuntimeError, struct.error):
         pass
     return snap
@@ -419,10 +450,13 @@ def _select(m, area: int, where: str) -> dict:
             return out
         out.update(level=level, open_levels=open_, levels=levels)
         if 0 < tabs <= 10 and 0 <= tab < tabs:          # a level is open: its missions as tabs
+            PICK.observe_open(open_)
             PICK.level = level                       # also when boot/resume begins inside this level's tabs
             out.update(inside=True, cursor=tab, target=PICK.tab_for(tabs), tabs=tabs)
         else:
             out.update(inside=False, cursor=level, target=PICK.level_for(open_))
+        out.update(progression_reason=PICK.progression_reason,
+                   unlock_growth_observed=getattr(PICK, 'unlock_growth', False), rank_verified=False)
     else:
         out["cursor"] = _u32(m, gui + CS_CURSOR)
     return out
@@ -533,14 +567,20 @@ class Merc3D(Driver):
 
     def brain(self, m, stats: dict, clock, learn_dir=None, nav=None):
         from .merc3d_bot import Bot
+        from .merc3d_strategy import runtime
         self.stats = stats
-        return Bot(stats=stats, clock=clock)
+        return Bot(stats=stats, clock=clock, strategy=runtime(m, clock))
 
     def progress(self, snap: dict) -> dict:
         return {"timer": snap.get("timer"), "combo": snap.get("combo"), "score": snap.get("score"),
                 "kills": snap.get("kills"), "elapsed": snap.get("elapsed"),
                 "mission_id": snap.get("mission_id"), "chara_id": snap.get("chara_id"),
-                "stage": self.learning_stage(snap)}
+                "stage": self.learning_stage(snap),
+                "objective_ended": snap.get('native_objective_end', False),
+                "mission_failed": snap.get('native_failed', False),
+                "clear_rank_verified": False,
+                "level_strategy": (self.stats or {}).get('level_strategy'),
+                "level_objective": (self.stats or {}).get('level_objective')}
 
     def learning_stage(self, snap: dict) -> str | None:
         return getattr(snap.get("stage"), "key", None)

@@ -206,7 +206,11 @@ def cycle() -> StageCycle:
     return _CYCLE["c"]
 
 
-def stage_target() -> int:
+def stage_target(m=None) -> int:
+    from ..round_controls import for_memory
+    control = for_memory(m)
+    if control is not None and control.managed:
+        return control.choose_stage(range(len(STAGE_NAMES)))
     if "stage" in SELECTION or not CYCLE:
         return int(SELECTION.get("stage", STAGE_TARGET))
     return cycle().pick()[0]
@@ -259,7 +263,11 @@ def own_laser(m, p: int, index: int) -> dict | None:
     return {"from": frm, "at": at, "up": bool(up)}
 
 
-def player_target() -> int:
+def player_target(m=None) -> int:
+    from ..round_controls import for_memory
+    control = for_memory(m)
+    if control is not None and control.managed:
+        return control.choose_character(range(len(CHARACTERS)))
     if "character" in SELECTION or not CYCLE:
         return int(SELECTION.get("character", PLAYER_TARGET))
     return cycle().pick()[1]
@@ -1289,9 +1297,9 @@ def screen(m, merc=None) -> dict:
     where, cursor, target = "unknown", None, None
     try:
         if "uIdStartUp22" in ui:
-            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), player_target()
+            where, cursor, target = "select_player", _i32(m, ui["uIdStartUp22"] + PLAYER_CURSOR), player_target(m)
         elif "uIdStartUp21" in ui:
-            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), stage_target()
+            where, cursor, target = "select_stage", _i32(m, ui["uIdStartUp21"] + MENU_CURSOR), stage_target(m)
         elif "uIdStartUp29" in ui:
             u = ui["uIdStartUp29"]
             if _i32(m, u + MENU_SUB) == 1:
@@ -3721,7 +3729,9 @@ class Bot:
         if motion in MOTION_HELD and not self._was_held:
             self._grab_at = now                          # a grab began (hits_after_windup)
         self._was_held = motion in MOTION_HELD
-        stuck = self.held(p, now) and (motion is None or near > RAMPAGE_R)
+        # A known non-grab motion leaves blocked movement to the wall governor.
+        # Treating an empty corridor as a grab interrupts every recovery step.
+        stuck = self.held(p, now) and motion is None
         if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
             if held:                                         # held, or dying: break free / recover (RAM says so)
                 if not self.in_hold:
@@ -4737,7 +4747,11 @@ class RE5Switch(Driver):
         snap = self.snapshot(m) if snap is None else snap
         where = own_screen(snap)
         if where == "playing":
-            self._cycle_started()
+            from ..round_controls import for_memory
+            control = for_memory(m)
+            if control is not None:
+                control.confirmed_round()
+            self._cycle_started(m)
             now, t = self.clock(), snap.get("timer")
             if t != self._timer[0]:
                 self._timer = (t, now)
@@ -4746,7 +4760,7 @@ class RE5Switch(Driver):
         self._mods(m, snap, where == "playing")
         return where
 
-    def _cycle_started(self) -> None:
+    def _cycle_started(self, m=None) -> None:
         """A round is up on what the selects confirmed: the stage cycle counts it; the round's stats name it."""
         if not CYCLE or "c" not in _CYCLE:
             return

@@ -3012,7 +3012,9 @@ class Bot:
         did not move the cursor answers Yes."""
         asked = re4_menus is not None and self.menu_key is not None and (
             re4_menus.REQUESTS.get(self.menu_key) or getattr(re4_menus, "ASKED", {}).get(self.menu_key))
-        if not DEATH_NEW_CHARACTER or asked:
+        from .mercs.round_controls import for_memory
+        control = for_memory(self.m)
+        if (not DEATH_NEW_CHARACTER or asked) and not (control is not None and control.managed):
             self.stats["continue_answer"] = "yes: an asked-for round" if asked else "yes"
             return {"tap": "a"}
         if not self.dead_no:
@@ -3172,11 +3174,23 @@ def _fire_x(RM, gun, default):
     return (getattr(RM, "FIRE_X", None) or {}).get(gun, default)
 
 
+def _operator_choice_active(RM, ad):
+    """A bot reload may retain the older, worker-lifetime mods module."""
+    check = getattr(RM, "operator_choice_active", None)
+    if callable(check):
+        return bool(check(ad))
+    # Preserve an explicit live lease until expiry when its newer identity
+    # checker is unavailable; a missing helper must not stop the entire bot.
+    choice = getattr(ad, "_merc_primary_weapon", None) or {}
+    until = choice.get("lock_until", 0)
+    return isinstance(until, (int, float)) and until > time.monotonic()
+
+
 def apply_round(ad, equip_now: bool = False, stats: dict | None = None) -> list[str]:
     """The per-round random loadout (re_mods random_loadout); the failure as a list, empty when it went in. With stats:
     stats["round_loadout"] records the draw for the round it arms (LoadoutCheck verifies it in that round)."""
     from . import re_mods_tool as RM
-    if RM.operator_choice_active(ad):
+    if _operator_choice_active(RM, ad):
         return []  # the verified explicit selection owns these three minutes
     try:
         r = RM.run(ad, ROUND_OP[0], **ROUND_OP[1], **({"equip_now": True} if equip_now else {}))
@@ -3393,7 +3407,8 @@ class _Menus:
         # a random character and stage every round (operator 2026-10-24: "it keeps picking the same character"),
         # unless a launch explicitly asks for the game's own default; a MercMode launch can carry the DJ's pick
         merc = ((game or {}).get('launch') or {}).get('mercmode')
-        selected = re4_menus.RandomSelections(key=id(ad)) if re4_menus is not None and merc is not False else re4_menus
+        selected = re4_menus.RandomSelections(key=id(ad), controls=getattr(ad, '_merc_round_controls', None)) \
+            if re4_menus is not None and merc is not False else re4_menus
         pick = merc.get('selection') if isinstance(merc, dict) else None
         if re4_menus is not None and isinstance(pick, dict) and pick.get('title') == 're4':
             try:
@@ -3558,6 +3573,12 @@ class InstantRounds:
         DJ's round keeps Continue Yes (Bot._continue_answer): the same stage and character again, from the library when
         it holds them (an instant Continue), else (None) the bot answers the native Continue Yes."""
         self.retrying_asked = False
+        control = getattr(self.ad, '_merc_round_controls', None)
+        if control is not None and control.managed:
+            # Native menus enforce the operator's exact pool and a changed character.
+            # A cached round must not silently bypass a newly excluded stage.
+            self.stats['instant_last'] = 'icon panel selection: using native character and stage menus'
+            return None, self.stats['instant_last']
         why = self.lib.tripped()
         if why:
             self.stats["instant_rounds"] = why
@@ -3811,6 +3832,8 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
     only when RAM fails or can't tell (operator 2026-10-20: "Vision analysis to me should be the last level that we
     have to fall back to"). stats["prompt_source"] says which one answered last."""
     m = m or memory(ad)
+    from .mercs.round_controls import attach, hold_boundary
+    control = attach(ad, 'G4BE08', session_id)
     if ad is not None and getattr(m, "adapter", None) is None:
         m.adapter = ad                                 # verified writes (the stalemate clock cut) use the owning adapter
     bot, held = Bot(m, clock=clock, learn_dir=learn_dir or learn_dir_for(ad),
@@ -3940,7 +3963,7 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 'game_routine':terminal.get('game_routine'),'room':s.get('room')}
             if recorder is not None:recorder.finish(now,'completed' if terminal['where']=='results' else 'died',bot.stats)
             boundary_sent=True
-            if round_boundary is not None:
+            if round_boundary is not None and not hold_boundary(m, bot.stats):
                 round_boundary({'round_id':boundary_id,'at':now,'map_id':'G4BE08',
                     'role':'solo_p1','source':'native_terminal_reader','mode':'mercenaries',
                     'stage':str(s.get('room')),'character':bot.stats.get('character'),'witness':witness},bot.stats)
@@ -4048,6 +4071,10 @@ def play(ad, send, stopped, sleep=time.sleep, m=None, tick_s: float = 0.05, stat
                 menus.round_up(keep_asked=not sel)     # no selects visited: the stage again (Continue Yes), same round's
                 if via == "menus" and instant is not None and bot.stats.get("operator_control") is not True:
                     instant.maybe_capture(s, sel, hold)   # its first frame, before any press: into the library
+            if control is not None and re4_menus is not None and round_combo:
+                room, who = round_combo
+                if room in re4_menus.STAGE_ROOMS and who in re4_menus.PLAYERS:
+                    control.observed(re4_menus.STAGE_ROOMS.index(room), re4_menus.PLAYERS.index(who))
         elif boundary_sent and room_on and s.get('player') and s.get('hp',0)>0 \
                 and (s.get('timer') or 0) > (terminal_clock or 0) + RETRY_JUMP_S:
             # A retry can recreate the player without a sampled menu gap: an attempt of its own, with its own route map

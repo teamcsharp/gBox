@@ -1302,7 +1302,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
 <script src="../web/viz/stream-watchdog.js"></script>
 <style id="compact-game-style">
   body.gbox-compact { background:#000; overflow:hidden; }
-  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
+  body.gbox-compact > :not(#gpu-game):not(.gbox-game-overlay):not(.gbox-stream-badge):not(#compact-stream):not(#compact-controls):not(#ssh-access-button):not(#ssh-access-popover):not(#compact-media):not(#compact-transition):not(#rebuild-panel):not(#pipmenu):not(.coach-menu):not(.coach-sub):not(.merc-weapon-menu):not(.merc-round-menu):not(.flash-shortcut-menu):not(.ring-kind-menu):not(#pad-takeover):not(#reconnect.f5):not(#bot-logic-tab):not(#bot-logic-panel):not(#taskpanel):not(#reqform):not(#task-evidence):not(#taskviz):not(#tkv-media):not(#gbox-toasts):not(script):not(style) { display:none !important; }   /* #pad-takeover: "You have control" while your pad drives the PiP's game */   /* .coach-menu / .coach-sub: the bot command dropdown and its tuning panel (operator 2026-10-26, #5300) */   /* #bot-logic-tab / #bot-logic-panel: the bot logic sidebar (2026-10-28: its arrow never showed) */
   body.gbox-compact #taskpanel { top:36px; right:8px; width:calc(100vw - 16px); height:calc(100vh - 44px); max-height:none; }
   body.gbox-compact #taskpanel .th { flex-wrap:wrap; padding:6px; }
   body.gbox-compact #reqform { position:fixed; inset:36px 8px 8px; z-index:80; overflow:auto; background:var(--bg); }
@@ -1327,7 +1327,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
   body.gbox-compact #compact-stream.on { display:block; }
   #compact-controls { display:none; position:fixed; inset:0 0 auto; height:28px; z-index:100;
     align-items:center; gap:8px; padding:2px 8px; background:#101014dc; color:#ddd; font:11px system-ui;
-    -webkit-app-region:drag; opacity:0; pointer-events:none; }
+    -webkit-app-region:drag; opacity:0; pointer-events:none; overflow-x:auto; scrollbar-width:none; }
   body.gbox-compact #compact-controls { display:flex; }
   body.gbox-compact #compact-controls.shown { opacity:1; pointer-events:auto; }
   #compact-controls>.compact-title { flex:0 1 22%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
@@ -1339,7 +1339,7 @@ window.GBOX_STREAM_FETCH_HEALTH = async src => {
   #compact-controls .coach-st:empty { display:none; }
   #compact-controls .coach-st[data-state=error] { color:#ffadad; }
   @media(max-width:420px) { #compact-controls>.compact-title { display:none; } #compact-controls .coach-st { max-width:75px; } }
-  #compact-controls button { -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
+  #compact-controls button { flex:0 0 auto; -webkit-app-region:no-drag; border:1px solid #666; border-radius:3px; background:#18181d; color:#fff; cursor:pointer; }
 </style>
 <script>
 const $ = s => document.querySelector(s), esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
@@ -3801,7 +3801,7 @@ async function embedTick() {
       .map(el => { const r = el.getBoundingClientRect(); return { x:r.left, y:r.top, w:r.width, h:r.height, viewport: { w:innerWidth, h:innerHeight } }; })
       .filter(r => r.w > 0 && r.h > 0); })()`).catch(() => []) : [];
     const webOrigin = wv?.getBoundingClientRect();
-    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), #compact-controls.shown, .merc-weapon-menu, .flash-shortcut-menu, .ring-kind-menu, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
+    const holes = rect ? [...document.querySelectorAll(COMPACT.on ? "#ssh-access-button:not([hidden]), #ssh-access-popover:not([hidden]), #compact-controls.shown, .merc-weapon-menu, .merc-round-menu, .flash-shortcut-menu, .ring-kind-menu, #pad-takeover:not([hidden]), #taskpanel.on, #reqform, #task-evidence.on, #taskviz.on, #tkv-media.on" : EMB_HOLES), ...(COMPACT.on ? [] : popups())]                                             // + any other floating menu / popover / toast (recording menu...)
       .filter(el => el.offsetParent !== null || getComputedStyle(el).position === "fixed" && getComputedStyle(el).display !== "none")
       .map(el => el.getBoundingClientRect()).concat(webMenus.map(b => GBoxEmbedGeometry.guestRect(b, webOrigin, b.viewport)).filter(Boolean)
         .map(b => ({ left:b.x, top:b.y, right:b.x+b.w, bottom:b.y+b.h, width:b.w, height:b.h })))
@@ -3946,6 +3946,10 @@ async function pipStreamData() {
   return pipStreamRead.promise;
 }
 const pipSelection = GBoxPipStreamPicker.create({storage:localStorage, origin:() => S?.apiUrl, read:pipStreamData,
+  broadcast:async sid => {
+    await compactApi('/api/broadcast/program', {session_id:sid}, 'POST');
+    toast(sid === 'auto' ? 'Broadcast follows the active game.' : 'Selected stream is now broadcast through gBox to Pine Box.');
+  },
   show:async (row, current) => {
     clientViewNavigation++; compactContinuity.cancel();
     await pipShow(row.session_id, {current});
@@ -4005,7 +4009,8 @@ const compactController = GBoxCompactGame.create({
     let stream = $('#compact-stream'), controls = $('#compact-controls');
     if (state.on && !controls) {
       controls = document.createElement('div'); controls.id = 'compact-controls';
-      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-primary-weapon aria-label="Choose primary weapon"></button><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-grenade-ring aria-label="Grenade ring" title="Grenade ring: native blasts around the player. Right-click, or the type button beside it, to choose the grenade."><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button><button type="button" data-grenade-ring-kind class="ring-kind" title="Choose the grenade type for the ring">Flash</button><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
+      controls.setAttribute('role','toolbar');controls.setAttribute('aria-label','Icon panel');
+      controls.innerHTML = '<span class="compact-title"></span><span data-compact-coach></span><button type="button" data-round-replay aria-label="Replay stage next round"></button><button type="button" data-stage-preferences aria-label="Stage choices"></button><button type="button" data-primary-weapon aria-label="Choose primary weapon"></button><button type="button" data-flash aria-label="Emergency flashbang" title="Emergency flashbang: detonate a flash at the player\'s position NOW - rapid-clickable, every click another flash"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" style="vertical-align:-3px"><path d="M7.5 5.5h3l.5 1.5a4 4 0 1 1-4 0z" fill="currentColor"/><path d="M8 5.5V4h2v1.5M10 4l2.2-1.3" stroke="currentColor" stroke-width="1.2" fill="none"/><path d="M13 6.5l2-.7M13.3 8.6l2 .5M12.4 4.5l1.3-1.6" stroke="#ffd166" stroke-width="1.3"/></svg></button><button type="button" data-grenade-ring aria-label="Grenade ring" title="Grenade ring: native blasts around the player. Right-click, or the type button beside it, to choose the grenade."><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-3px"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="3.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="20.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="12" cy="20.5" r="1.4" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></button><button type="button" data-grenade-ring-kind class="ring-kind" title="Choose the grenade type for the ring">Flash</button><button type="button" data-flawed title="This is flawed: file a report with this moment (frame, save state, RAM) and make the bot change course now">⚠ Flawed</button><button type="button" data-full title="Restore GBox (or double-click the game)">Full app</button>';
       controls.querySelector('[data-full]').onclick = () => compactRestore().catch(error => toast(error.message)); document.body.append(controls);
       // the flawed-moment button (operator 2026-10-28: "when i click the icon, i basically want to tell it that the way it's
       // handling the situation is flawed and to place a report for it. Sometimes they are running in a corner. Sometimes
@@ -4024,6 +4029,10 @@ const compactController = GBoxCompactGame.create({
       controls.interventions = GBoxStreamInterventions.create({api:async (path,body) => {
         const r=await gbox.api(path,body); if(!r.ok)throw Error(r.error||'Intervention unavailable'); return r.data;
       }, notify:(text,row)=>(row.op==='equip_primary'?controls.weaponControl:row.op==='grenade_ring'?controls.ringControl:controls.flashControl)?.receipt(text,row)});
+      controls.iconPanel=GBoxStreamInterventions.bindIconPanel(controls.querySelector('[data-round-replay]'),{
+        api:compactApi,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on,menuButton:controls.querySelector('[data-stage-preferences]'),
+        onOpen:open=>{compactHover(open);embedSoon();}
+      });
       controls.flashControl=GBoxStreamInterventions.bindFlash(controls.querySelector('[data-flash]'),{
         flash:controls.interventions.flash,sid:()=>COMPACT.sid,enabled:()=>COMPACT.on
       });
@@ -4039,7 +4048,7 @@ const compactController = GBoxCompactGame.create({
       controls.addEventListener('pointerenter', () => compactHover(true));
       controls.addEventListener('pointerleave', () => compactHover(false));
     }
-    if (controls) { controls.querySelector('.compact-title').textContent = compactTitle; controls.weaponControl?.update(); }
+    if (controls) { controls.querySelector('.compact-title').textContent = compactTitle; controls.weaponControl?.update(); controls.iconPanel?.update(); }
     compactCoach.update(state, controls?.querySelector('[data-compact-coach]'));
     if (state.on && !state.local) {
       if (!stream) { stream = document.createElement('img'); stream.id = 'compact-stream'; stream.alt = 'Live emulation session'; stream.dataset.streamFollow = 'game'; document.body.append(stream); }
@@ -4394,7 +4403,7 @@ function padTakeoverPipRender() {
 }
 setInterval(padTakeoverPipRender, 250);
 function compactHover(show) {
-  show = show || compactCoach.pinned() || !!document.querySelector('.merc-weapon-menu');
+  show = show || compactCoach.pinned() || !!document.querySelector('.merc-weapon-menu, .merc-round-menu');
   clearTimeout(compactHoverTimer);
   const apply = () => { $('#compact-controls')?.classList.toggle('shown', COMPACT.on && show); EMB.last = ''; embedTick(); };
   if (show || !COMPACT.on) apply(); else compactHoverTimer = setTimeout(apply, 450);
@@ -4533,7 +4542,7 @@ function pipMenu(x, y) {
   const opening = m.opening = {origin:S?.apiUrl};
   const noStates = capMissing("save_state");                   // #2518: Save / Load need an emulator with save states
   GM.at = [x, y];                                              // Report… files a problem at this spot
-  const items = [["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
+  const items = [["prod", "Prod bot (recover this session)"], ["report", "⚑ Report…"], ["-"], ...(isFull() ? [["main", "⤡ Exit full screen   Alt+Enter"], ["-"]] : []), ["autoplay", GM.auto ? "🤖 Hand control back (stop autoplay)" : "🤖 Take control (autoplay)  F3 · pad: View+A"],
                  ...(GM.auto ? [] : [["autoplay+", "🛡 Take control, invincible (holds HP)"], ["autoplay-replay", "▶ Replay my recorded run from boot (restarts the game)"]]),
                  ["talk", TALK.on ? "🎙 Stop talking" : "🎙 Talk to gBox"], ["orb", ORB.on ? "💬 End conversation" : "💬 Start conversation"],
                  ["vov", VOV.enabled ? "✨ Voice overlay on the game: on" : "✨ Voice overlay on the game: off"],
@@ -4565,7 +4574,7 @@ function pipMenu(x, y) {
   Object.assign(m.style, { display: "block", left: x + "px", top: y + "px" }); fitMenu(m, x, y, 8, 40);
   m.streamPicker = GBoxPipStreamPicker.mount(m.querySelector('[data-pip-stream-picker]'), {
     read:pipStreamData, current:() => COMPACT.on ? COMPACT.sid : EMB.sid, title:sessionTitle,
-    select:(sid, valid) => pipSelection.select(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
+    select:(sid, valid) => pipSelection.select(sid, valid), broadcast:(sid, valid) => pipSelection.broadcast(sid, valid), valid:() => m.opening === opening && S?.apiUrl === opening.origin,
     preview:async sid => `${opening.origin}/api/sessions/${encodeURIComponent(sid)}/frame.jpg?token=${encodeURIComponent(await gbox.token())}&t=${Date.now()}`,
     resized:() => { if (m.opening === opening) fitMenu(m, x, y, 8, 40); }
   });
@@ -4619,7 +4628,7 @@ async function pipMercMode(m, opening, open = false) {
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
 }
 document.addEventListener('contextmenu', event => {
-  if (!COMPACT.on || event.target.closest?.('#pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;
+  if (!COMPACT.on || event.target.closest?.('#pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-round-replay], [data-stage-preferences], .merc-round-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;
   event.preventDefault(); event.stopPropagation(); pipMenu(event.clientX, event.clientY);
 }, true);
 addEventListener('pagehide', closePipMenu);
@@ -4734,7 +4743,17 @@ async function savePipPref(settings) {
     if (game) await compactApi(`/api/game-prefs/${encodeURIComponent(game)}/pip`, { settings }, 'PUT');
   } catch (error) { toast('⚠ The save slot is not kept for this game: ' + GBoxPipMedia.readable(error)); }
 }
+async function prodBot() {
+  const source = S?.apiUrl;
+  if (EMB.authority && EMB.authority !== source) throw Error('Reconnect to this game before prodding its bot.');
+  const sid = (COMPACT.on && globalThis.gboxStreamWatchdog?.sessionOf($('#compact-stream')?.getAttribute?.('src') || ''))
+    || await shownSessionSoon();
+  if (!sid) throw Error('No game is shown here.');
+  if (S?.apiUrl !== source) throw Error('The connection changed. Open the game menu again.');
+  return botEnsure(sid, 'Prod', {raise:true, prod:true});
+}
 async function gameAction(a) {
+  if(a==='prod'){try{await prodBot();}catch(error){toast(error.message);}return;}
   if(a==='fixgame'){try{await fixGame();}catch(error){toast(error.message);}return;}
   if(a==='mercmode-stay'){
     try{
@@ -5117,18 +5136,22 @@ const shownSessionSoon = (options, ms = 1500) => Promise.race([shownSession(opti
 // client reload F5 may do: the request id waits in sessionStorage.
 const BOT_ENSURE_KEY = 'gbox.f5.bot', BOT_ENSURE = { at: new Map(), following: null };
 // raise: the F5 dialog shows a failed check in its autobot step too
-async function botEnsure(sid, reason = 'F5', { raise = false } = {}) {
+async function botEnsure(sid, reason = 'F5', { raise = false, prod = false } = {}) {
   if (typeof sid !== 'string' || !sid.includes('-')) return null;
-  if (Date.now() - (BOT_ENSURE.at.get(sid) || 0) < 15000) return null;      // F5 and its reconnect flow: one request
-  BOT_ENSURE.at.set(sid, Date.now());
+  const key = prod ? 'Prod:' + sid : sid;
+  if (Date.now() - (BOT_ENSURE.at.get(key) || 0) < 15000) {
+    if (prod) toast('The bot recovery was already requested. Give it a moment to finish.');
+    return null;
+  }
+  BOT_ENSURE.at.set(key, Date.now());
   try {
-    const job = await compactApi(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason });
+    const job = await compactApi(`/api/sessions/${encodeURIComponent(sid)}/autoplay/ensure`, { reason, ...(prod ? {prod:true} : {}) });
     if (!job?.id) return null;
     try { sessionStorage.setItem(BOT_ENSURE_KEY, JSON.stringify({ id: job.id, at: Date.now() })); } catch {}
     followBotEnsure(job);
     return job;
   } catch (error) {
-    toast('⚠ F5: the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000);
+    toast(reason + ': the autobot could not be checked: ' + GBoxPipMedia.readable(error), 8000);
     if (raise) throw Error(GBoxPipMedia.readable(error));
     return null;
   }
@@ -5139,7 +5162,7 @@ async function followBotEnsure(job) {
   try {
     const done = await GBoxPipMedia.settle(compactApi, job, { limit: 180000, what: 'The autobot check' });
     const out = done.output || {};
-    if (out.action && out.action !== 'none') toast('🤖 ' + (out.message || 'Autobot checked.'), 7000);
+    if (out.action) toast('🤖 ' + (out.message || 'Autobot checked.'), 7000);
     compactMedia?.poll();
   } catch (error) { toast('⚠ Autobot: ' + GBoxPipMedia.readable(error), 9000); }
   finally {

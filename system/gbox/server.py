@@ -203,6 +203,8 @@ def create_app(config: Config) -> FastAPI:
 
     from . import merc_live_controls
     merc_live_controls.install(app, config)
+    from . import level_strategy_service
+    level_strategy_service.install(app, config, auth)
 
     # --- shell ---
     @app.get("/")
@@ -5211,11 +5213,21 @@ def create_app(config: Config) -> FastAPI:
     def session_rpc(sid: str, req: Rpc, actor=Depends(auth)):
         """Inspector peeks (read_memory / read_rom / info) and CPU debugger ops (debug_*), answered by the worker over the
         session channel. Debugger control (halt/step/breakpoints) changes execution, not memory, and is audited."""
-        if req.op not in ("read_memory", "read_ranges", "query_memory_map", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face") \
+        if req.op not in ("read_memory", "read_ranges", "query_memory_map", "read_rom", "info", "state", "reset", "menu", "pause", "resume", "normal_speed", "pso_controls", "memory_cards", "pso_face", "merc_round_controls") \
                 and not req.op.startswith("debug_"):
             raise HTTPException(422, "read-only, reset, pause/resume and debug_* ops only; edits go through the write_memory job")
         if req.op in ("reset", "pause", "resume", "normal_speed", "debug_halt", "debug_resume", "debug_step", "debug_break", "debug_unbreak"):
             store.audit(actor, f"session.{req.op}", sid, req.args)
+        if req.op == 'merc_round_controls':
+            from .mercs.round_controls import authorize
+            try:
+                authorize(store, config, sid, req.args)
+            except PermissionError as error:
+                raise HTTPException(403, str(error))
+            except (ValueError, TypeError) as error:
+                raise HTTPException(422, str(error))
+            if req.args.get('op', 'status') != 'status':
+                store.audit(actor, 'session.merc_round_controls', sid, req.args)
         if req.op == 'pso_controls':
             from .pso_live import authorize
             try:
@@ -5247,12 +5259,12 @@ def create_app(config: Config) -> FastAPI:
         # speed change for longer. Never retry an unknown native outcome.
         rpc_wait = 45 if req.op == 'pso_controls' and (req.args.get('input') or {}).get('op') == 'autoplay_speed' else 10
         with lv["cond"]:
-            if req.op in ('pso_controls','memory_cards','pso_face'):
+            if req.op in ('pso_controls','memory_cards','pso_face','merc_round_controls'):
                 pso_rpc_pending[rid] = sid
             lv["input"].append(item)
             lv["cond"].notify_all()
             if not lv["cond"].wait_for(lambda: rid in rpc_results, rpc_wait):
-                if req.op in ('pso_controls','memory_cards','pso_face'):
+                if req.op in ('pso_controls','memory_cards','pso_face','merc_round_controls'):
                     pso_rpc_pending.pop(rid, None)
                     try: lv['input'].remove(item)
                     except ValueError: pass
@@ -5261,6 +5273,9 @@ def create_app(config: Config) -> FastAPI:
         res = rpc_results.pop(rid)
         if not res.get("ok"):
             raise HTTPException(422, res.get("error"))
+        if req.op == 'merc_round_controls':
+            from .mercs.round_controls import remember_preferences
+            remember_preferences(store, sid, res['data'])
         return res["data"]
 
     @app.post("/api/sessions/{sid}/rpc/{rid}")

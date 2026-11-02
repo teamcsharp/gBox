@@ -67,6 +67,12 @@ KNOBS: dict[str, list[tuple]] = {
         ("PROMPTS", "Take the game's prompts", "Objectives", "bool", 0, 1, 1, "climbs and QTEs"),
         ("HIT_QS_N", "Quick shots when he is hit (0 off)", "Crowd control", "int", 0, 10, 1,
          "both triggers: the game's quick shot back at whoever hurt him"),
+        ("PERIODIC_QA", "Periodic quick-attack burst", "Crowd control", "bool", 0, 1, 1,
+         "A bounded quick-shot burst at a verified nearby target; prompts and healing take priority"),
+        ("PERIODIC_QA_COUNT", "Quick attacks per periodic burst", "Crowd control", "int", 1, 8, 1,
+         "Maximum input attempts; native quick-attack observations are reported separately"),
+        ("PERIODIC_QA_INTERVAL_S", "Seconds between periodic bursts", "Crowd control", "float", 8, 120, 1,
+         "Waits for a safe loaded gun and measured target contact; never fires at empty space"),
         ("MISS_QA_N", "Misses in a row before quick attacks (0 off)", "Crowd control", "int", 0, 10, 1, ""),
         ("MISS_QA_COUNT", "Quick attacks after those misses", "Crowd control", "int", 1, 10, 1, ""),
         ("FIRE_ZONE_R", "Shoot-first radius (cm)", "Crowd control", "float", 0, 2000, 50,
@@ -176,21 +182,27 @@ def handle(title, values=None, reset=None, path: Path = PATH) -> dict:
     with _lock:
         data = _read(path)
         saved = data.setdefault(t, {})
-        shipped = mod.__dict__.setdefault("_BOT_LOGIC_SHIPPED", {})
+        shipped = dict(mod.__dict__.get("_BOT_LOGIC_SHIPPED", {}))
+        changes = {}
         names = list(knobs) if reset is True else list(reset or [])
         for name in names:
             if name in knobs and hasattr(mod, name):
                 shipped.setdefault(name, getattr(mod, name))
-                setattr(mod, name, shipped[name])
+                changes[name] = shipped[name]
                 saved.pop(name, None)
         for name, value in (values or {}).items():
             if name not in knobs or not hasattr(mod, name):
                 raise ValueError(f"bot_logic: {name!r} is not a live {t} setting")
             shipped.setdefault(name, getattr(mod, name))
             v = _coerce(knobs[name], value)
-            setattr(mod, name, v)
+            changes[name] = v
             saved[name] = v
+        # Validate and persist the whole command before publishing any globals.
+        # A rejected save must not leave an unacknowledged live override behind.
         _write(data, path)
+        for name, value in changes.items():
+            setattr(mod, name, value)
+        mod.__dict__.setdefault("_BOT_LOGIC_SHIPPED", {}).update(shipped)
     return status(t, path)
 
 

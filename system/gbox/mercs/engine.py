@@ -339,7 +339,8 @@ def play_round(prof, m, send, stopped, stats: dict, lessons=None, sleep=time.sle
         # a bot+bot split-screen round (RE5 / RE6 Switch, switch_team) is a team round, published as one: MercMode
         # counts it only for a turn that asked for split screen (mercmode.accept_boundary)
         team_round = session_runtime is not None and session_runtime.config.get('role') == 'bots_p1_p2'
-        if not observe_only and (solo_native_round or team_round) and native_playing_seen and terminal_witness is not None \
+        from .round_controls import hold_boundary
+        if not hold_boundary(m, stats) and not observe_only and (solo_native_round or team_round) and native_playing_seen and terminal_witness is not None \
                 and isinstance(prof.get('map_id'),str) and bool(prof['map_id']) \
                 and reason in ('completed','died') and (session_runtime is None or team_round or
                     session_runtime.config.get('role') == 'solo_p1'):

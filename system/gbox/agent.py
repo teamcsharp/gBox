@@ -501,6 +501,11 @@ def tool_specs() -> list[dict]:
            {"session_id": s, "op": s, "on": b, "value": i, "factor": i, "code": s, "count": i, "equip": b, "name": s,
             "target": s, "rare": b, "codes": {"type": "array", "items": s}, "max_grind": b},
            ["session_id", "op"]),
+        fn("level_strategy", "Research the exact observed game level online, retain cited objectives and a strategy, "
+           "and enable bounded re-research on stalls. Actions execute only through a registered native adapter; "
+           "other games expose research-only plans. Never assume a guide proves completion or an unlock. "
+           "op=research|status|enable|disable; current Mercenaries 3D objectives are supported.",
+           {"session_id": s, "op": s, "goal": s}, ["session_id"]),
         fn("re_mods", "Resident Evil 4 live mods (GameCube; Wii Edition = unlock_all, merc_time, merc_time_bonus, merc_timer_freeze, "
            "unlimited_health, weapon_mod), verified by read-back. MERCENARIES (same op names in every RE with a Mercenaries "
            "mode, see docs/mercenaries.md; RE6 = tool re6, RE4 2023 = tool re4r): unlock_all (every Merc character, stage, extra "
@@ -1408,6 +1413,11 @@ class Agent:
                       worker=session_id.rsplit("-", 1)[0])
         return (j.get("output") or {}).get("result") or {"state": j["state"], "error": j.get("error")}
 
+    def level_strategy(self, session_id, op="research", goal="Complete the current level and verify its result and unlocks."):
+        j = self._job('level_strategy', {'session_id': session_id, 'op': op, 'goal': goal},
+                      worker=session_id.rsplit('-', 1)[0])
+        return (j.get('output') or {}).get('result') or {'state': j['state'], 'error': j.get('error')}
+
     def re_mods(self, session_id, op="status", item="", count=0, target="", on=True, seconds=0, character="", items=None,
                 fire_rate="", damage=None, reset=False, multiplier=None, kind="", force=None, direction="", speed=None):
         inp = {"session_id": session_id, "op": op, "item": item, "count": count, "target": target, "on": on, "seconds": seconds,
@@ -2206,7 +2216,7 @@ def zelda_equip_card(result: dict, session_id: str) -> dict:
 
 
 # agent tool names that map 1:1 onto worker job tools (what a chat control may run directly)
-WORKER_TOOLS = {"re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "mgs_vr", "re5", "gta_live", "sonic_adventure_2"}
+WORKER_TOOLS = {"level_strategy", "re_inventory", "re6", "re4r", "ac_mods", "gta_mods", "zelda", "re_mods", "pso_mods", "zelda_oot", "poke", "pso_inventory", "pso_drops", "freeze_memory", "write_memory", "graphics", "session_op", "autoplay", "script_patch", "cheats", "mod", "stage_warp", "mario_kart", "mgs_vr", "re5", "gta_live", "sonic_adventure_2"}
 
 
 # tools that change the running game: a request that uses one is bookmarked with save states before and after

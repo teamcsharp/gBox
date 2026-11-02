@@ -129,6 +129,7 @@ def mesh_guard(bot, snap, action):
     from . import re6_switch as R
     hold, p, mesh = action.get("hold"), snap.get("player") or {}, snap.get("navmesh")
     if (mesh is None or not hold or {"zl", "zr"} & set(hold) or not p.get("pos") or bot.in_hold or bot.down
+            or bot.stats.get('act') == 'prompt_stick'
             or snap.get("mercenaries_phase") != R.PHASE_PLAYING):
         return action
     yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)

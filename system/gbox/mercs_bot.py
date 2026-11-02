@@ -68,6 +68,7 @@ class Navigator:
         # (RE5 2026-10-26: ~1.1 s a cursor step, 7 steps a round gap on average). Every other wait stays as it was.
         self.cursor = dict(cursor or {})
         self.cursor_only = False                            # the last change RAM showed moved only the cursor
+        self.last_input_confirmed = False
 
     @staticmethod
     def sig(scr: dict):
@@ -136,9 +137,14 @@ class Navigator:
         if now - self.last_at < (self.cursor.get("stable_s", self.SETTLE_S) if fast else self.SETTLE_S):
             return None
         hold = self.DIR_HOLD_S if key.startswith("d") else self.HOLD_S
-        self.send([{"key": key, "down": True}])
+        down_receipt = self.send([{"key": key, "down": True}])
         self.sleep(hold)
-        self.send([{"key": key, "down": False}])
+        up_receipt = self.send([{"key": key, "down": False}])
+        def accepted(receipt):
+            return isinstance(receipt, dict) and receipt.get('sent') == 1 \
+                and not any(receipt.get(k) for k in ('held', 'stopped', 'error', 'blocked')) \
+                and receipt.get('ok') is not False
+        self.last_input_confirmed = accepted(down_receipt) and accepted(up_receipt)
         self.last_key, self.last_at = key, self.clock()
         if self.pressed is not None:
             self.pressed(scr, key)
@@ -175,8 +181,16 @@ class Boot:
                  game=None, hooks=None, jump_at: str = "select_player", round_hooks=None):
         self.menus, self.m, self.ad, self.game, self.clock = menus, m, ad, game, clock
         self.stats = stats if stats is not None else {}
+        def pressed(scr, key):
+            original = getattr(menus, 'pressed', None)
+            if callable(original):
+                original(scr, key)
+            from .mercs.round_controls import for_memory
+            control = for_memory(m)
+            if control is not None and control.title == 're5' and self.nav.last_input_confirmed:
+                control.menu_pressed(scr, key)
         self.nav = Navigator(send, menus.step, sleep=sleep, clock=clock, stats=self.stats,
-                             pressed=getattr(menus, "pressed", None), cursor=getattr(menus, "NAV_CURSOR", None))
+                             pressed=pressed, cursor=getattr(menus, "NAV_CURSOR", None))
         self.hooks, self.jump_at, self.round_hooks = hooks, jump_at, round_hooks
         self.hooked, self.moment_tried, self.at_jump = False, False, False
         self.lost_since, self.still_since, self.progress = None, None, None
@@ -482,6 +496,8 @@ def play(ad, send, stopped, stats: dict | None = None, game=None, sleep=time.sle
     # Keep reads fast while title-specific, verified maintenance writes use the owning adapter.
     if ad is not None:
         m.adapter = ad
+        from .mercs.round_controls import attach
+        attach(ad, prof['map_id'], session_id)
     E = title_engine(prof)
     pick = (((game or {}).get('launch') or {}).get('mercmode') or {})
     pick = pick.get('selection') if isinstance(pick, dict) else None
