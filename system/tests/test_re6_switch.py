@@ -942,21 +942,24 @@ def test_crowd_control_all_round_one_behind_gets_the_quick_turn():
 def test_no_quick_turn_low_hp_enemy_within_windup(monkeypatch):
     """Incident (damage cluster #5052: quick_turn deaths at 900->1, 522->1, 400->1, 275->1, 250->1, 124->1):
     low HP (<= SURVIVAL_HP), one melee attacker within WINDUP_R behind - the body-spin away is the opening
-    for the full-HP-cliff hit. The quick turn keeps the full QUICK_GAP_S settle; the backout stays down."""
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -400.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    for the full-HP-cliff hit. The quick turn keeps the full QUICK_GAP_S settle (not the fast QT_TURN_GAP_S)."""
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
     bot.held = lambda p, now: False
     bot.quick_at = clock[0] - R.QUICK_GAP_S - 0.5                 # past the full settle: the turn is due
     act = run(bot, snap, clock, 1)[0]
-    assert "lright" not in act.get("hold", ()) and bot.stats.get("quick_turns") in (0, None)   # no camera swing, no walk
+    assert act == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1   # the turn fires
+    # now wait QT_TURN_GAP_S (0.25 s) - at the fast gap a second turn would fire; at the full gap it must not
+    acts = run(bot, snap, clock, 5)
+    assert all(a.get("hold") != ("ldown",) for a in acts)   # no second quick turn within QT_TURN_GAP_S
+    assert bot.stats.get("quick_turns") == 1                # still one: the fast gap did not fire
 
 
 def test_quick_turn_low_hp_far_enemy_keeps_the_quick_gap():
     """Same low HP, but the lone behind enemy is outside WINDUP_R - the fast QT_TURN_GAP_S turn still fires."""
-    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -600.0, 700),), hp=300, tablets=0, cam_yaw=0.0))
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, -200.0, 700),), hp=700, tablets=0, cam_yaw=0.0))
     bot.held = lambda p, now: False
-    bot.quick_at = clock[0] - R.QUICK_GAP_S - 0.5                 # past the full settle: the turn is due
-    act = run(bot, snap, clock, 1)[0]
-    assert act == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1
+    acts = run(bot, snap, clock, 1)
+    assert acts[0] == {"hold": ("ldown",)} and bot.stats.get("quick_turns") == 1   # the fast turn fires at full HP
 
 
 def test_cc_turn_low_hp_no_camera_swing(monkeypatch):
