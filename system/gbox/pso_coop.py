@@ -814,6 +814,12 @@ class Controller:
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; a just-traversed door is not re-crossed
         self._p1_room = None        # P1's last room, to detect a traversal
         self._p1_door = None        # the door gkey P1 was pursuing (cooled once it leads to a room change)
+        self.map_root = None        # campaign runtime root for published surfaces (set in play())
+        self.directive_path = None  # operator map directive file the viewer/API writes (set in play())
+        self._directive = None      # the parsed, active operator directive (GOTO/PRESS/ATTACK)
+        self._directive_mtime = 0.  # mtime of the directive file last read
+        self._directive_done = None # id of a GOTO already reached (do not re-pursue)
+        self._published = set()     # area fingerprints whose collision surface is already published
 
     def _steering_publish(self):
         """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
@@ -1069,6 +1075,15 @@ class Controller:
                     rows = forward
             if not rows:
                 book['slots'].pop(slot, None)
+                # No gate/switch left: head for the area's exit warp/teleporter so
+                # P1 keeps progressing out of the level toward the boss (idle->exit).
+                warp = self._nearest_warp(state, room, px, pz)
+                if warp is not None:
+                    self.forward_kind[slot] = 'walk_through'
+                    if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
+                        self.inputs.stats['forward_fallback_target'] = str(warp.get('class'))
+                        self.inputs.stats['forward_fallback_action'] = 'exit_warp'
+                    return gates.through_point(px, pz, warp['x'], warp['z'])
                 return None
             is_switch, dist, gkey, entity, _kind = rows[0]
             cls = str(entity.get('class'))
@@ -1173,6 +1188,18 @@ class Controller:
                 stats["wedge_recovery"] = {"slot": slot, "phase": rec["phase"], "at": [round(here[0]), round(here[1])]}
             return rec["keys"], True
         return movement_keys(player, waypoint), False
+
+    def _nearest_warp(self, state, room, px, pz):
+        """The nearest area warp/teleporter (the level exit), same room first then
+        anywhere on the floor. Warps are not gate objects, so they are the
+        autonomous forward target once a room's gates are done."""
+        finite = lambda e: all(type(e.get(k)) in (int, float) and math.isfinite(e[k]) for k in ('x', 'z'))
+        warps = [e for e in state.get('entities', ())[:512]
+                 if finite(e) and any(k in str(e.get('class', '')) for k in ('Warp', 'Teleport', 'GoalWarp'))]
+        if not warps:
+            return None
+        same = [e for e in warps if e.get('room') == room]
+        return min(same or warps, key=lambda e: math.hypot(e['x'] - px, e['z'] - pz))
 
     def swarm_follow(self, state, slot, player, now, enemies, envelope, commands, moves, steering, attack_rows):
         """A non-leader (P2..P4): orbit and defend P1 - never navigates on its own.
@@ -1349,6 +1376,85 @@ class Controller:
         self._remember_gate(state, player, flags)
         return sorted(flags)
 
+    def load_directive(self, now):
+        """Poll the operator's map-directive file (RTS click) by mtime; parse and
+        keep the current directive. Cheap and failure-tolerant - a missing or bad
+        file simply means no directive (autonomous play). See pso-map-directives.md."""
+        path = self.directive_path
+        if path is None:
+            return
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._directive = None
+            return
+        if mtime == self._directive_mtime:
+            return
+        self._directive_mtime = mtime
+        from . import pso_map
+        try:
+            self._directive = pso_map.parse_directive(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            self._directive = None
+
+    def publish_surface(self, state):
+        """Extract the current area's collision surface and publish it once per
+        area template: write pso-maps/<fingerprint>.json for the map viewer and
+        fold a summary into the knowledge crystal (the growing map DB) and stats."""
+        if self.map_root is None:
+            return
+        p1 = state.get("players", {}).get(1)
+        if not p1 or state.get("geometry_verified") is not True:
+            return
+        from . import pso_map
+        fingerprint = room_key(state, p1)[0]
+        stats = getattr(self.inputs, "stats", None)
+        if fingerprint in self._published:
+            if isinstance(stats, dict):
+                stats["map_surface_fingerprint"] = fingerprint
+            return
+        surface = pso_map.extract_surface(state, p1)
+        if not surface:
+            return
+        try:
+            maps_dir = self.map_root / "pso-maps"
+            maps_dir.mkdir(parents=True, exist_ok=True)
+            path = maps_dir / (fingerprint + ".json")
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(surface, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            return
+        self._published.add(fingerprint)
+        summary = pso_map.surface_summary(surface)
+        if self.knowledge is not None and room_key(state, p1)[1]:
+            self.knowledge.remember(fingerprint, episode=state.get("episode"), floor=state.get("floor"),
+                                    room=p1.get("room"), surface=summary)
+        if isinstance(stats, dict):
+            stats["map_surface_published"] = summary
+            stats["map_surface_fingerprint"] = fingerprint
+
+    def goto_destination(self, state, player, now):
+        """The GOTO target for P1 when the operator has clicked a point on the map
+        (double-click = navigate there). None when there is no in-scope GOTO or it
+        is already reached. P1 A*-routes to it over the collision grid in tick."""
+        from . import pso_map
+        directive = self._directive
+        if not directive or directive.get("op") != "goto" or not pso_map.directive_in_scope(directive, state):
+            return None
+        if directive.get("id") and directive["id"] == self._directive_done:
+            return None
+        point = (directive["x"], directive["z"])
+        stats = getattr(self.inputs, "stats", None)
+        if math.hypot(point[0] - player["x"], point[1] - player["z"]) <= FALLBACK_REACH:
+            self._directive_done = directive.get("id") or "reached"
+            if isinstance(stats, dict):
+                stats["map_directive"] = {"op": "goto", "state": "reached", "x": point[0], "z": point[1]}
+            return None
+        if isinstance(stats, dict):
+            stats["map_directive"] = {"op": "goto", "state": "navigating", "x": point[0], "z": point[1]}
+        return point
+
     def maybe_force_unlock(self, state, now):
         """Drive the fail-safe for P1's room: fire on a RECALLED template at once
         (we already know its flags), else only after FALLBACK_STUCK_S of no
@@ -1404,6 +1510,10 @@ class Controller:
         # gate is opened by setting its verified native stage flags - progression
         # never stalls. Done before movement so the same tick can walk through.
         self.maybe_force_unlock(state, now)
+        # RTS map: publish this area's collision surface (once) and read any
+        # operator GOTO/PRESS/ATTACK click. P1 consumes it below; else autonomous.
+        self.publish_surface(state)
+        self.load_directive(now)
         for e in state["entities"]:
             if e.get("kind") != "enemy" or not isinstance(e.get("hp"), int):
                 continue
@@ -1456,6 +1566,18 @@ class Controller:
             field_destination = self.field.destination(state, slot, nav, now) if field_owned else None
             if nav.floor is not None:
                 self.margin_attempts.pop(slot,None)
+            # RTS GOTO: the operator double-clicked a point on the map. P1 A*-routes
+            # there over the collision grid (routing around walls), with wedge
+            # recovery; gates on the way are opened by the force-unlock fail-safe.
+            goto = self.goto_destination(state, player, now) if slot == 1 and target is None else None
+            if goto is not None:
+                route = nav.route((player["x"], player["z"]), goto)
+                waypoint = route[1] if route and len(route) > 1 else goto
+                keys, escaping = self._unwedge(slot, player, waypoint, now)
+                commands.append((slot, keys, .08 if nav.floor is not None else .40))
+                moves[slot] = (player, waypoint, nav, False)
+                steering[slot] = (player, goto, 'map_goto_escape' if escaping else 'map_goto')
+                continue
             if field_owned and nav.floor is None and target is None:
                 waypoint = self.margin_waypoint(state,slot,player)
                 if waypoint is not None:
@@ -1732,6 +1854,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     controller = Controller(reader, inputs, maps)
     from .pso_knowledge import KnowledgeStore
     controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
+    controller.map_root = root                       # published collision surfaces live here
+    controller.directive_path = root / "pso-directive.json"   # operator RTS map clicks
     equipment = EquipmentRecovery(ad, session_id, driver, stopped)
     controller.weapon_ranges.recovery = equipment
     review_sampler = None
