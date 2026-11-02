@@ -195,6 +195,65 @@ def test_writes_the_game_overwrites_stand_the_lock_down_for_the_round(monkeypatc
     assert len(writes) == n                                        # no more writes this round: the stick aims
 
 
+# --- close-range pitch-only: the heading write snaps the view, the pitch write does not -------------------------------
+
+
+def test_close_range_pitch_only_writes_never_touch_the_heading(monkeypatch):
+    """dist < AIM_LOCK_PITCH_ONLY_CM and abs(yaw_err) < AIM_LOCK_PITCH_ONLY_YAW: pitch-only, heading is None."""
+    monkeypatch.setattr(R, "AIM_LOCK", True)
+    writes = []
+    b, clock = bot(writes)
+    foe = at(300, 0)                                               # 3.0 m: inside the pitch-only band
+    b.tick(snap([foe], cam=CAM))
+    clock[0] = 0.3
+    # the dot nearly on the target's bearing: yaw_err ~ 0 (< AIM_LOCK_PITCH_ONLY_YAW)
+    act = b.tick(snap([foe], dot=(0.0, 140.0, 2000.0), cam=CAM))
+    assert b.stats["aim_lock_ticks"] >= 1
+    pitch, head = writes[-1]
+    assert pitch is not None and head is None                      # pitch-only: the player quaternion is untouched
+
+
+def test_close_range_pitch_only_drops_the_stick(monkeypatch):
+    """The pitch-only write still drops the right-stick keys (the RAM write replaced the stick)."""
+    monkeypatch.setattr(R, "AIM_LOCK", True)
+    writes = []
+    b, clock = bot(writes)
+    foe = at(300, 0)
+    b.tick(snap([foe], cam=CAM))
+    clock[0] = 0.3
+    act = b.tick(snap([foe], dot=(0.0, 140.0, 2000.0), cam=CAM))
+    assert not {"rleft", "rright", "rup", "rdown"} & set(act["hold"])
+
+
+def test_beyond_pitch_only_range_the_heading_is_written(monkeypatch):
+    """dist >= AIM_LOCK_PITCH_ONLY_CM: the full lock-on writes heading and pitch as before."""
+    monkeypatch.setattr(R, "AIM_LOCK", True)
+    writes = []
+    b, clock = bot(writes)
+    foe = at(800, 0)                                               # 8.0 m: outside the pitch-only band
+    b.tick(snap([foe], cam=CAM))
+    clock[0] = 0.3
+    act = b.tick(snap([foe], dot=(-500.0, 140.0, 2000.0), cam=CAM))
+    assert b.stats["aim_lock_ticks"] >= 1
+    pitch, head = writes[-1]
+    assert pitch is not None and head is not None                  # the full lock-on: heading + pitch
+
+
+def test_close_range_but_large_yaw_error_still_writes_the_heading(monkeypatch):
+    """Close but abs(yaw_err) >= AIM_LOCK_PITCH_ONLY_YAW: the body still needs the turn, heading is written."""
+    monkeypatch.setattr(R, "AIM_LOCK", True)
+    writes = []
+    b, clock = bot(writes)
+    foe = at(300, 0)                                               # 3.0 m: inside the pitch-only distance band
+    b.tick(snap([foe], cam=CAM))
+    clock[0] = 0.3
+    # the dot 14 deg off the target's bearing: yaw_err > AIM_LOCK_PITCH_ONLY_YAW
+    act = b.tick(snap([foe], dot=(-500.0, 140.0, 2000.0), cam=CAM))
+    assert b.stats["aim_lock_ticks"] >= 1
+    pitch, head = writes[-1]
+    assert head is not None                                        # the heading write turns the body
+
+
 # --- downed / kneeling targets: the aim tracks the real body height --------------------
 
 def test_a_downed_majini_is_aimed_at_the_ground_not_the_air(monkeypatch):

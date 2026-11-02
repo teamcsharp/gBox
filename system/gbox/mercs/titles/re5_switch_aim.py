@@ -105,9 +105,16 @@ def aim_writer(m):
                     return False
             if heading is not None:
                 h = wrap(float(heading))
-                ad.write_memory(st["player"] + P_ROT, struct.pack("<4f", 0.0, math.sin(h / 2), 0.0, math.cos(h / 2)))
-                _qx, qy, _qz, qw = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
-                if abs(wrap(2.0 * math.atan2(qy, qw) - h)) > LOCK_TOL:
+                # Preserve any x/z tilt (slopes, animations); only the y/w yaw components are rewritten.
+                qx, _qy, qz, _qw = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
+                if not (math.isfinite(qx) and math.isfinite(qz)):
+                    return False
+                norm = math.sqrt(qx * qx + qz * qz)
+                if norm > 0.99:                     # a near-pure x/z rotation: not a simple upright player heading
+                    return False
+                ad.write_memory(st["player"] + P_ROT, struct.pack("<4f", qx, math.sin(h / 2), qz, math.cos(h / 2)))
+                _qx2, qy2, _qz2, qw2 = struct.unpack("<4f", ad.read_memory(st["player"] + P_ROT, 16))
+                if abs(wrap(2.0 * math.atan2(qy2, qw2) - h)) > LOCK_TOL:
                     return False
         except ERRORS:
             return False
