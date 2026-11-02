@@ -1562,6 +1562,9 @@ AUTO_QTE_WAIT_S = 0.0                   # with the game's own auto QTE on (re6_s
 HOLD_LOG_N = 12                         # the last holds kept in stats hold_log
 WIGGLE = (("b", "lup"), ("lright", "lup"), ("b", "lright"), ("ldown", "lright"),   # break free: the prompt shows B
           ("b", "ldown"), ("ldown", "lleft"), ("b", "lleft"), ("lleft", "lup"))      # (live), mashed, the stick round
+GRAB_PANIC_ERR = math.radians(90)             # damage cluster fc45a6229fe006d0: held with an enemy >90 deg off facing
+                                              # means the WIGGLE break is facing the wrong way; panic-turn toward the
+                                              # grabber's bearing and break at once (before the held_prompt return)
 DEAD_WAIT_S = 2.5                       # "YOU ARE DEAD - CONTINUE?" takes input ~4 s after the death
 RELOAD_GAP_S = 1.5
 TABLET_HP, TABLET_CLEAR_R, TABLET_GAP_S = 0.6, 150.0, 3.0   # a tablet (R) at 60 % health or less while he is free,
@@ -1753,6 +1756,10 @@ QT_BEHIND_R, QT_BEHIND_ERR = 300.0, math.radians(120)
 QT_TURN_GAP_S = 0.25                     # one behind him alone (none within 60 deg): the quick turn waits this, not
                                          # the full QUICK_GAP_S settle (damage cluster fc45a6229fe006d0: 4 hits per turn
                                          # while the 1.5 s settle let the one behind reach him)
+GRAB_PANIC_ERR = math.radians(90)        # a held/grabbed state with an enemy >90 deg off facing: skip the standard
+                                         # quick_turn gap and turn immediately (damage cluster fc45a6229fe006d0: the
+                                         # held branch keeps the bot still while the one behind finishes the grab; the
+                                         # panic turn overrides the aim before the turn completes)
 # Confirmed-hit fire (operator 15:27: "if the ghidra hook is able to tell them if the shot they are lining up will hit
 # then have them take the shot. I love seeing the long shots"): the laser's ray ending on (or running through) any
 # living zombie fires at once, at any distance; with nobody within ENGAGE_R the gun comes up for one in front out to
@@ -2742,6 +2749,18 @@ class Bot:
                 if shown is not None:
                     self.hold_pressed = True
                     return shown
+                # Grab panic (damage cluster fc45a6229fe006d0): held with an enemy >GRAB_PANIC_ERR off facing
+                # means the WIGGLE stick round is pointing the wrong way; turn toward the grabber's bearing
+                # and break at once instead of waiting for the WIGGLE cycle to face him
+                cam_yaw = (snap.get("camera") or {}).get("yaw", p.get("rot") or 0.0)
+                gbearing = lambda e: wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - cam_yaw)
+                held_behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(gbearing(e)) > GRAB_PANIC_ERR]
+                if held_behind:
+                    self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
+                    self.hold_pressed = True
+                    self._gun_down()
+                    return self._go("held", "grab_panic", {"hold": ("ldown", "b")},
+                                    f"held (action {state}): one {flat(held_behind[0]):.0f} cm behind: panic turn + break")
                 if snap.get("auto_qte") and now - self.hold_since < AUTO_QTE_WAIT_S:
                     self._gun_down()                         # the game's auto QTE: nothing pressed for a while
                     self.still = None
@@ -3062,6 +3081,18 @@ class Bot:
         # A body-relative quick turn then spins that already-correct view away.
         behind = [e for e in live if flat(e) <= QT_BEHIND_R and abs(bearing(e)) > QT_BEHIND_ERR]
         has_front = any(flat(e) <= QT_BEHIND_R and abs(bearing(e)) < math.radians(60) for e in live)
+        # Grab panic: a held state with an enemy >GRAB_PANIC_ERR off facing overrides the standard quick_turn
+        # gap and turns immediately (damage cluster fc45a6229fe006d0: the held branch keeps the bot still while
+        # the one behind finishes the grab; the panic turn fires before the turn completes, breaking the hold)
+        held_state = p.get("state") in (8, 9, 25)   # RE6 held/grabbed RAM states
+        if held_state and behind and not has_front and not self.down:
+            self.stats["grab_panics"] = self.stats.get("grab_panics", 0) + 1
+            self.stats["quick_turns"] += 1
+            self.stats["quick_turns_behind"] = self.stats.get("quick_turns_behind", 0) + 1
+            self.quick = 2
+            self._gun_down()
+            return self._go("quick_turn", "grab_panic", {"hold": ("ldown", "b")},
+                            f"grabbed from behind ({flat(behind[0]):.0f} cm): panic turn + break")
         # one behind him alone (none in front): the quick turn waits QT_TURN_GAP_S, not the full QUICK_GAP_S settle
         # (damage cluster fc45a6229fe006d0: 4 hits per turn while the 1.5 s settle let the one behind reach him);
         # a crowd of four flanking (crowd_4_in_2m) keeps the QUICK_GAP_S: the quick turn must not outrun the

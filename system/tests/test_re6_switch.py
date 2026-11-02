@@ -2309,6 +2309,33 @@ def test_a_hold_read_in_ram_is_shaken_off():
     assert {k for chord in R.WIGGLE for k in chord} == {"lup", "lright", "ldown", "lleft", "b"}   # round, B mashed
 
 
+def test_grab_panic_behind_held_state_turns_toward_grabber():
+    """Held (state=8) with an enemy 180 deg behind (>90 deg off facing): grab panic fires.
+
+    Damage cluster fc45a6229fe006d0: the WIGGLE stick round points the wrong way while the
+    grabber is behind; the panic turn + break fires immediately instead of waiting for the
+    WIGGLE cycle to face him.
+    """
+    # Player faces +z (rot=0); enemy at (0,0,-200) is 200 cm behind (180 deg bearing)
+    bot, clock, snap = brain(round_guest(state=8, enemies=((0.0, 0.0, -200.0, 700),), cam_yaw=0.0))
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.stats["grab_panics"] == 1, f"grab_panics should be 1, got {bot.stats['grab_panics']}"
+    assert act["hold"] == ("ldown", "b"), f"expected ('ldown','b'), got {act['hold']}"
+
+
+def test_grab_panic_no_panic_when_enemy_in_front():
+    """Held (state=8) with an enemy 0 deg in front: no grab panic, WIGGLE break proceeds.
+
+    Damage cluster fc45a6229fe006d0: when the grabber is in front, the WIGGLE stick round
+    already faces him — no panic needed, the standard break cycle handles it.
+    """
+    # Player faces +z (rot=0); enemy at (0,0,200) is 200 cm in front (0 deg bearing)
+    bot, clock, snap = brain(round_guest(state=8, enemies=((0.0, 0.0, 200.0, 700),), cam_yaw=0.0))
+    act = run(bot, snap, clock, 1)[0]
+    assert bot.stats.get("grab_panics", 0) == 0, f"grab_panics should be 0, got {bot.stats.get('grab_panics')}"
+    assert act["hold"] in R.WIGGLE, f"expected WIGGLE, got {act['hold']}"
+
+
 def test_auto_qte_frees_no_grab_so_he_shakes_at_once_with_it_on():
     bot, clock, snap = brain(round_guest(state=8))
     snap["auto_qte"] = True                                  # live 2026-10-27: the option let every bite land
