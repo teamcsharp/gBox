@@ -23,3 +23,18 @@ class OwnedEvidencePath:
     def read_bytes(self): return self._file().read_bytes()
 
 def original_test_path(relative): return OwnedEvidencePath(relative)
+
+
+def owned_dol_read(address, length):
+    """Read an exact owned executable section; never distribute executable bytes."""
+    import hashlib
+    import struct
+    data = original_test_path('../pso-live/PsoV3.dol').read_bytes()
+    assert hashlib.sha256(data).hexdigest() == '1f80fb82b41c05b26b6d0545b1ba9c0aa60b52e6589cf32fbb2ffe644692a61a'
+    for count, offsets, addresses, sizes in ((7, 0, 0x48, 0x90), (11, 0x1c, 0x64, 0xac)):
+        for index in range(count):
+            offset, start, size = (struct.unpack_from('>I', data, field + 4*index)[0]
+                                   for field in (offsets, addresses, sizes))
+            if size and start <= address and address + length <= start + size:
+                return data[offset + address - start:offset + address - start + length]
+    raise ValueError('Owned DOL address outside section')

@@ -1,4 +1,4 @@
-from pso_owned_evidence import original_test_path
+from pso_owned_evidence import original_test_path, owned_dol_read
 import copy
 import hashlib
 import json
@@ -31,7 +31,18 @@ def state():
             'players': {1: player(), 2: player(slot=2)}, 'entities': []}
 
 
-def fixture_memory(triangles):
+SYNTHETIC_FLOOR_CODE = {address: bytes((71, 66, 88, index))
+                        for index, address in enumerate((0x800791BC, 0x8007A448, 0x801B7998))}
+
+
+def synthetic_floor_code(monkeypatch):
+    """Keep provider code-hash behavior testable without owned executable bytes."""
+    monkeypatch.setattr(G, 'PLAYER_FLOOR_CODE', tuple(
+        (address, len(data), hashlib.sha256(data).hexdigest())
+        for address, data in SYNTHETIC_FLOOR_CODE.items()))
+
+
+def fixture_memory(triangles, *, owned_code=False):
     base, entry, mesh, vp = 0x81000000, 0x81000010, 0x81000040, 0x81000100
     vb = b''.join(struct.pack('>3f', *v) for t in triangles for v in t[:3])
     fp = vp + len(vb)
@@ -50,6 +61,9 @@ def fixture_memory(triangles):
     for address, value in zip((0x804FE120,0x805D6060,0x805D5FC0,0x805D49B8), (14,0,1,0)):
         regions[address] = struct.pack('>I', value)
     regions[0x8050EA10] = struct.pack('>2I', 0x80DA1000, 0x80DA2000)
+    for address, size, expected in G.PLAYER_FLOOR_CODE:
+        regions[address] = (owned_dol_read(address, size) if owned_code
+                            else SYNTHETIC_FLOOR_CODE[address])
     class Memory:
         reads = 0
         callback = None
@@ -65,6 +79,7 @@ def fixture_memory(triangles):
 
 
 def allow(monkeypatch, triangles):
+    synthetic_floor_code(monkeypatch)
     h = hashlib.sha256()
     for a,b,c,f,n in triangles:
         h.update(struct.pack('>12fH', *a,*b,*c,*n,f))
@@ -214,10 +229,12 @@ def test_area_change_during_read_rejected(monkeypatch):
     assert not G.Provider(ad).snapshot(state())['geometry_verified']
 
 
-def test_unknown_exact_hash_produces_no_grid():
+def test_unknown_exact_hash_produces_no_grid(monkeypatch):
+    synthetic_floor_code(monkeypatch)
     ad,_,_,_=fixture_memory(plane())
     result=G.Provider(ad).snapshot(state())
     assert not result['geometry_verified'] and 'geometry_players' not in result
+    assert result['geometry_diagnostic'] == 'Loaded collision layout has no exact disc proof'
 
 
 @pytest.mark.parametrize('kind',['out_of_allocation','unterminated','duplicate','face_index'])
@@ -287,3 +304,33 @@ def test_reader_reobserves_positions_and_context_after_new_raster(monkeypatch, k
     else:
         assert result['verified'] is True and result['players'][1]['x']==82.5
         assert result['fresh_context_read']==2
+
+
+@pytest.mark.parametrize('index',range(3))
+def test_synthetic_query_guard_change_fails_closed_without_owned_disc(monkeypatch,index):
+    triangles=plane();allow(monkeypatch,triangles)
+    ad,regions,_,_=fixture_memory(triangles);provider=G.Provider(ad)
+    assert provider.snapshot(state())['geometry_verified']
+    address,_,_=G.PLAYER_FLOOR_CODE[index]
+    regions[address]=b'BAD!'
+    result=provider.snapshot(state())
+    assert result=={'geometry_verified':False,'geometry_diagnostic':'Native player floor query code changed'}
+    assert provider.atlas is None
+
+
+def test_synthetic_query_guard_changes_during_projection_fail_closed(monkeypatch):
+    triangles=plane();allow(monkeypatch,triangles)
+    ad,regions,_,_=fixture_memory(triangles);provider=G.Provider(ad);original=G.Atlas.project
+    def mutate(self,player):
+        result=original(self,player)
+        regions[G.PLAYER_FLOOR_CODE[-1][0]]=b'BAD!'
+        return result
+    monkeypatch.setattr(G.Atlas,'project',mutate)
+    assert not provider.snapshot(state())['geometry_verified'] and provider.atlas is None
+
+
+def test_synthetic_query_guard_missing_read_fails_closed(monkeypatch):
+    triangles=plane();allow(monkeypatch,triangles)
+    ad,regions,_,_=fixture_memory(triangles)
+    del regions[G.PLAYER_FLOOR_CODE[0][0]]
+    assert not G.Provider(ad).snapshot(state())['geometry_verified']

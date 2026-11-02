@@ -1,4 +1,4 @@
-from pso_owned_evidence import original_test_path
+from pso_owned_evidence import original_test_path, owned_dol_read
 import hashlib
 import json
 import math
@@ -41,6 +41,7 @@ def captured_layout(name, base=0x81000000):
     regions[0x80513920+24]=struct.pack('>3I',2,0,3)
     regions[0x805D5FC4]=struct.pack('>2I',2,0)
     for addr,code in G.FLOOR_CODE:regions[addr]=code
+    for addr,size,_ in G.PLAYER_FLOOR_CODE:regions[addr]=owned_dol_read(addr,size)
     class Memory:
         reads=0
         callback=None

@@ -32,7 +32,7 @@ def test_actual_p1_thin_wall_cell_connector_restores_own_canonical_view(actual):
     for i,(first,second) in enumerate(zip(row['path'],row['path'][1:])):
         assert local.clear(first,second,*row['path_heights'][i:i+2],view)
     end=dict(p,x=row['path'][-1][0],z=row['path'][-1][1],y=row['path_heights'][-1])
-    assert a.project(end)['geometry_layer']==row['geometry_layer']=='a2608a43913f2dc59ee91006840962d3fb00f85bb501028651dccc38d4df9607'
+    assert a.project(end)['geometry_layer']==row['geometry_layer']=='3574e623f76944e6786c8c2acc28f6385ffd13f632d95529bd42c4fd5c01d5b9'
     assert a.project(p) is None  # No ordinary-grid promotion of original cell.
     revision=local.revision
     assert local.recover(p,'exact-layout')==row and local.revision==revision
@@ -87,7 +87,7 @@ def test_no_safe_surface_has_bounded_failed_cache():
 
 def actual_provider(actual):
     triangles,native=actual
-    ad,regions,base,table=fixture_memory(triangles)
+    ad,regions,base,table=fixture_memory(triangles, owned_code=True)
     s={k:native[k] for k in ('verified','phase','travelling','episode','floor')}
     s['players']={int(k):dict(v) for k,v in native['players'].items()}
     regions[0x8050EA10]=struct.pack('>2I',*(int(s['players'][k]['ptr'],16) for k in (1,2)))

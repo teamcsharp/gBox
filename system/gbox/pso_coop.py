@@ -765,6 +765,90 @@ class Controller:
         self.field = FieldObjectives()
         self.margin_attempts = {}
 
+    def _steering_publish(self):
+        """Diagnostics only: bounded scalar JSON uses the existing telemetry path."""
+        try:
+            stats = getattr(self.inputs, 'stats', None)
+            if not isinstance(stats, dict):
+                return
+            rows = getattr(self, '_steering_events', [])[-4:]
+            while rows:
+                raw = json.dumps({'schema': 'gbox.pso.steering/1', 'events': rows},
+                                 allow_nan=False, separators=(',', ':'))
+                if len(raw.encode()) <= 6000:
+                    self._steering_events = rows
+                    stats['steering_evidence_json'] = raw
+                    return
+                rows.pop(0)
+        except Exception:
+            pass
+
+    def _steering_begin(self, state, selected, commands):
+        try:
+            if not selected or not isinstance(getattr(self.inputs, 'stats', None), dict):
+                return None
+            pose = lambda p: {k: p.get(k) for k in ('ptr', 'room', 'x', 'y', 'z', 'heading_deg', 'hp')}
+            self._steering_sequence = getattr(self, '_steering_sequence', 0) + 1
+            row = {'sequence': self._steering_sequence, 'state': 'delivery_pending',
+                   'episode': state.get('episode'), 'floor': state.get('floor'),
+                   'geometry_identity': state.get('geometry_identity'),
+                   'hold_call_started_monotonic': time.monotonic(),
+                   'hold_call_started_wall_time': time.time(),
+                   'pre_pose_exact_sample_time_known': False, 'players': {}}
+            for slot, keys, seconds in commands:
+                if slot not in selected:
+                    continue
+                player, waypoint, source = selected[slot]
+                bearing = math.degrees(math.atan2(waypoint[0]-player['x'], waypoint[1]-player['z']))
+                row['players'][str(slot)] = {'before': pose(player), 'waypoint': list(waypoint),
+                    'source': source, 'bearing_deg': bearing,
+                    'relative_bearing_deg': delta(bearing, player['heading_deg']),
+                    'keys': list(keys), 'requested_game_seconds': seconds,
+                    'requested_speed': self.inputs.speed()}
+                view = ((state.get('geometry_players') or {}).get(slot) or
+                        (state.get('geometry_recovery_players') or {}).get(slot) or {})
+                row['players'][str(slot)]['geometry_layer'] = view.get('geometry_layer')
+            json.dumps(row, allow_nan=False)
+            self._steering_events = [*getattr(self, '_steering_events', []), row][-4:]
+            self._steering_publish()
+            return row
+        except Exception:
+            return None
+
+    def _steering_delivered(self, row):
+        try:
+            if row is None:
+                return
+            row['state'] = 'delivery_returned'
+            row['hold_call_returned_monotonic'] = time.monotonic()
+            for slot, player in row['players'].items():
+                player['ack_timing'] = {key: self.inputs.stats.get(f'input_p{slot}_{key}')
+                    for key in ('requested_wall_ms', 'delivery_ms', 'held_ms', 'release_delivery_ms')}
+            row['post_observation_interval_started_monotonic'] = time.monotonic()
+            self._steering_publish()
+        except Exception:
+            pass
+
+    def _steering_finish(self, row, after, outcome):
+        try:
+            if row is None:
+                return
+            row['state'] = outcome
+            row['finished_monotonic'] = time.monotonic()
+            if isinstance(after, dict):
+                row['post_observation_returned_monotonic'] = row['finished_monotonic']
+                row['after_verified'] = after.get('verified') is True
+                row['same_area'] = (after.get('episode'), after.get('floor')) == (row['episode'], row['floor'])
+                row['after_geometry_identity'] = after.get('geometry_identity')
+                for slot, player in row['players'].items():
+                    p = (after.get('players') or {}).get(int(slot))
+                    if p:
+                        player['after'] = {k: p.get(k) for k in ('ptr', 'room', 'x', 'y', 'z', 'heading_deg', 'hp')}
+                        player['same_actor'] = p.get('ptr') == player['before']['ptr']
+            self._steering_publish()
+        except Exception:
+            pass
+
     def margin_waypoint(self, state, slot, player):
         """Consume only the current player's exact, bounded base-floor connector."""
         proof = state.get('geometry_recovery_players', {}).get(slot) or {}
@@ -849,6 +933,7 @@ class Controller:
                 self.kills += int(e["hp"] == 0)
             self.enemy_hp[key] = e["hp"]
         commands, moves, attack_rows, margin_slots = [], {}, {}, []
+        steering = {}
         envelopes = {slot: self.weapon_ranges.for_player(state, slot) if enemies else FALLBACK for slot in (1, 2)}
         # Recenter independently. PSO's L camera reset makes pad-relative forward
         # correspond to the actor's native heading. Re-read before choosing input.
@@ -883,6 +968,7 @@ class Controller:
                 if waypoint is not None:
                     commands.append((slot,movement_keys(player,waypoint),.04))
                     margin_slots.append(slot)
+                    steering[slot] = (player, waypoint, 'margin_recovery')
                 continue
             destination = None
             if target:
@@ -916,6 +1002,7 @@ class Controller:
                     commands.append((slot, ['lleft' if angle > 0 else 'lright'],
                                      .02 if field_owned and nav.floor is None else max(.02, min(.12, abs(angle) / 450))))
                     moves[slot] = (player, (target['x'], target['z']), self.maps.get(state, player), False)
+                    steering[slot] = (player, (target['x'], target['z']), 'local_aim')
                     continue
                 else:
                     if field_owned and nav.floor is None:
@@ -923,6 +1010,7 @@ class Controller:
                         if waypoint is not None:
                             commands.append((slot,movement_keys(player,waypoint),.04))
                             margin_slots.append(slot)
+                            steering[slot] = (player, waypoint, 'margin_recovery')
                         continue
                     destination = (self.field.combat_goal(nav,player,target,envelope) if field_owned else
                                    (target["x"],target["z"]))
@@ -962,6 +1050,7 @@ class Controller:
                 if waypoint is not None:
                     commands.append((slot,movement_keys(player,waypoint),.04))
                     margin_slots.append(slot)
+                    steering[slot] = (player, waypoint, 'margin_recovery')
                 continue
             identity = (slot, state.get("episode"), state.get("floor"), player.get("room"),
                         (target["ptr"], row['recoveries'] if recovery_goal is not None else 0)
@@ -993,6 +1082,7 @@ class Controller:
             duration = .08 if nav.floor is not None else .40
             commands.append((slot, movement_keys(player, waypoint), duration))
             moves[slot] = (player, waypoint, nav, not nearby)
+            steering[slot] = (player, waypoint, 'native_route')
         if self.field.revision != field_revision:
             # First route selection can perform several bounded searches.
             # Cache the objective, then reobserve before movement or attack.
@@ -1003,7 +1093,13 @@ class Controller:
         movement_epoch = getattr(getattr(self.inputs, "ad", None), "_pso_timing_epoch", 0)
         learning_safe = getattr(self.inputs, "wall_learning_safe", lambda: self.inputs.speed() == 1)
         movement_timing_safe = learning_safe()
-        self.inputs.hold(commands)
+        steering_row = self._steering_begin(state, steering, commands)
+        try:
+            self.inputs.hold(commands)
+        except BaseException:
+            self._steering_finish(steering_row, None, 'delivery_interrupted')
+            raise
+        self._steering_delivered(steering_row)
         for slot in margin_slots:
             self.margin_attempts[slot]['attempts'] += 1
         for slot, keys, _ in commands:
@@ -1012,7 +1108,12 @@ class Controller:
                 self.attacks += 1
                 attack_rows[slot]['attempts'] += 1
         solo.wait(.08 / self.inputs.speed(), self.inputs.stopped)
-        after = self.reader.snapshot()
+        try:
+            after = self.reader.snapshot()
+        except BaseException:
+            self._steering_finish(steering_row, None, 'post_observation_failed')
+            raise
+        self._steering_finish(steering_row, after, 'observed')
         for slot, (before, intended, nav, quiet) in moves.items():
             p = after.get("players", {}).get(slot)
             if not p:

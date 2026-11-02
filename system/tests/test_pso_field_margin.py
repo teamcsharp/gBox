@@ -45,7 +45,7 @@ def test_actual_forest_players_reenter_own_normal_margin(forest, slot):
     margin = G.MarginViews(atlas)
     row = margin.recover(p, 'actual-layout')
     assert_path(atlas, margin, row, p)
-    assert row['geometry_layer'] == 'a2608a43913f2dc59ee91006840962d3fb00f85bb501028651dccc38d4df9607'
+    assert row['geometry_layer'] == '3574e623f76944e6786c8c2acc28f6385ffd13f632d95529bd42c4fd5c01d5b9'
     assert row['path'][-1] == ([227.5, 492.5] if slot == '1' else [242.5, 522.5])
 
 

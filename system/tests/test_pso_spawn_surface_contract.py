@@ -1,5 +1,5 @@
 from pso_owned_evidence import original_test_path
-"""Actual Forest overlap proofs must be consumable by the installed controller."""
+"""Historical auxiliary-overlap positions must use the actual normal-floor contract."""
 from pathlib import Path
 from types import SimpleNamespace
 import copy
@@ -23,91 +23,54 @@ def atlas():
     return G.Atlas(json.loads(evidence.read_text())['result']['triangles'])
 
 
-@pytest.mark.parametrize('slot,position', POINTS)
-def test_real_overlap_connector_is_consumed_by_exact_current_core(atlas, slot, position):
-    player = dict(position, hp=33, room=8)
-    proof = G.LocalConnectors(atlas).recover(player, 'exact-layout')
-    assert proof is not None
-    state = dict(verified=True, geometry_verified=True, phase=14, episode=1,
-                 floor=1, travelling=False, geometry_identity='exact-layout',
-                 geometry_recovery_players={slot: proof})
-    control = object.__new__(C.Controller)
-    control.field = SimpleNamespace(status={'players': {}})
-    control.margin_attempts = {}
-    result = control.margin_waypoint(state, slot, player)
-    assert result == (proof['waypoint']['x'], proof['waypoint']['z'])
-    assert control.field.status['players'][str(slot)]['dependency'] == 'margin_recovery'
-    assert atlas.project(player) is None
-    wrong = copy.deepcopy(state)
-    wrong['geometry_recovery_players'][slot]['player_ptr'] = '80DA9990'
-    assert control.margin_waypoint(wrong, slot, player) is None
-
-
-def test_both_current_players_get_provider_proofs_and_one_fresh_reobservation(atlas):
-    memory, regions, _, _ = fixture_memory(atlas.triangles)
-    state = fixture_state()
-    for slot, position in POINTS[1:]:
-        state['players'][slot].update(position, hp=33, room=8)
-    regions[0x8050EA10] = struct.pack('>2I', 0x80DA62A0, 0x80DA8830)
-    provider = G.Provider(memory)
-    first = provider.snapshot(state)
+def normal_context(atlas, positions):
+    memory, regions, _, _ = fixture_memory(atlas.triangles, owned_code=True)
+    st = fixture_state()
+    st['players'][1].update(ptr='80DA62A0',x=530.632,y=34.396,z=-20.274,hp=33,room=8)
+    st['players'][2].update(POINTS[0][1],hp=38,room=8)
+    for slot, position in positions:
+        st['players'][slot].update(position,hp=33,room=8)
+    regions[0x8050EA10] = struct.pack('>2I',0x80DA62A0,0x80DA8830)
+    provider=G.Provider(memory)
+    first=provider.snapshot(st)
     assert first['geometry_verified'] and first['geometry_refreshed']
-    assert set(first['geometry_recovery_players']) == {1, 2}
-    assert first['geometry_players'] == {}
-    second = provider.snapshot(state)
+    assert set(first['geometry_players'])=={1,2} and not first['geometry_recovery_players']
+    second=provider.snapshot(st)
     assert second['geometry_verified'] and not second['geometry_refreshed']
-    assert second['geometry_recovery_players'] == first['geometry_recovery_players']
+    assert second['geometry_players']==first['geometry_players']
+    return dict(st,**second)
 
 
-def test_exact_latest_p1_provider_proof_reaches_installed_controller(atlas):
-    memory, regions, _, _ = fixture_memory(atlas.triangles)
-    state = fixture_state()
-    player = dict(ptr='80DA62A0', x=531.718, y=33.387, z=-22.392, hp=33, room=8)
-    state['players'][1].update(player)
-    state['players'][2].update(POINTS[0][1], hp=38, room=8)
-    regions[0x8050EA10] = struct.pack('>2I', 0x80DA62A0, 0x80DA8830)
-    provider = G.Provider(memory)
-    first = provider.snapshot(state)
-    assert first['geometry_verified'] and first['geometry_refreshed']
-    proof = first['geometry_recovery_players'][1]
-    assert 1 not in first['geometry_players']
-    assert proof['connector_basis'] == 'exact_connected_native_foot_surface'
-    second = provider.snapshot(state)
-    assert not second['geometry_refreshed']
-    control = object.__new__(C.Controller)
-    control.field = SimpleNamespace(status={'players': {}})
-    control.margin_attempts = {}
-    context = dict(state, **second)
-    result = control.margin_waypoint(context, 1, state['players'][1])
-    assert result == (proof['waypoint']['x'], proof['waypoint']['z'])
-    assert control.field.status['players']['1']['dependency'] == 'margin_recovery'
-    wrong = copy.deepcopy(context)
-    wrong['geometry_recovery_players'][1]['player_ptr'] = '80DA9990'
-    assert control.margin_waypoint(wrong, 1, state['players'][1]) is None
+def assert_normal_contract(context,slot,tmp_path):
+    from gbox.pso_coop_nav import Maps
+    player=context['players'][slot]
+    nav=Maps(tmp_path).get(context,player)
+    assert nav.floor and nav.route((player['x'],player['z']),(512.5,-192.5))
+    control=object.__new__(C.Controller)
+    control.field=SimpleNamespace(status={'players':{}})
+    control.margin_attempts={}
+    assert control.margin_waypoint(context,slot,player) is None
+    missing=copy.deepcopy(context)
+    del missing['geometry_players'][slot]
+    assert Maps(tmp_path).get(missing,player).floor is None
 
 
-def test_latest_p2_budgeted_provider_proof_reaches_installed_controller(atlas):
-    memory, regions, _, _ = fixture_memory(atlas.triangles)
-    state = fixture_state()
-    state['players'][1].update(ptr='80DA62A0', x=525.117, y=34.628, z=-18.204, hp=33, room=8)
-    state['players'][2].update(ptr='80DA8830', x=513.428, y=31.377, z=-44.747, hp=38, room=8)
-    regions[0x8050EA10] = struct.pack('>2I', 0x80DA62A0, 0x80DA8830)
-    provider = G.Provider(memory)
-    first = provider.snapshot(state)
-    assert first['geometry_verified'] and first['geometry_refreshed']
-    proof = first['geometry_recovery_players'][2]
-    assert 2 not in first['geometry_players'] and 1 in first['geometry_players']
-    assert proof['connector_basis'] == 'exact_connected_native_foot_surface'
-    assert proof['path_length'] <= 12 and proof['surface_work'] <= 400000
-    second = provider.snapshot(state)
-    assert not second['geometry_refreshed']
-    control = object.__new__(C.Controller)
-    control.field = SimpleNamespace(status={'players': {}})
-    control.margin_attempts = {}
-    context = dict(state, **second)
-    result = control.margin_waypoint(context, 2, state['players'][2])
-    assert result == (proof['waypoint']['x'], proof['waypoint']['z'])
-    assert control.field.status['players']['2']['dependency'] == 'margin_recovery'
-    wrong = copy.deepcopy(context)
-    wrong['geometry_recovery_players'][2]['player_ptr'] = '80DA9990'
-    assert control.margin_waypoint(wrong, 2, state['players'][2]) is None
+@pytest.mark.parametrize('slot,position',POINTS)
+def test_historical_overlap_positions_reach_normal_current_controller(atlas,slot,position,tmp_path):
+    assert_normal_contract(normal_context(atlas,[(slot,position)]),slot,tmp_path)
+
+
+def test_both_historical_held_players_get_normal_provider_and_fresh_observation(atlas,tmp_path):
+    context=normal_context(atlas,POINTS[1:])
+    for slot in (1,2):assert_normal_contract(context,slot,tmp_path)
+
+
+def test_historical_p1_provider_normal_floor_reaches_current_controller(atlas,tmp_path):
+    context=normal_context(atlas,[(1,dict(ptr='80DA62A0',x=531.718,y=33.387,z=-22.392))])
+    assert_normal_contract(context,1,tmp_path)
+
+
+def test_historical_p2_provider_normal_floor_reaches_current_controller(atlas,tmp_path):
+    context=normal_context(atlas,[(1,dict(ptr='80DA62A0',x=525.117,y=34.628,z=-18.204)),
+                                (2,dict(ptr='80DA8830',x=513.428,y=31.377,z=-44.747))])
+    assert_normal_contract(context,2,tmp_path)

@@ -7,6 +7,7 @@ import struct
 import pytest
 from gbox import pso_coop_geometry as G
 from test_pso_geometry import plane, player, fixture_memory, state
+from gbox.pso_coop_nav import RoomMap
 
 ROOT = original_test_path('spawn-surface-connector-v3/test_spawn_surface.py').resolve().parent
 
@@ -42,22 +43,20 @@ def check_proof(atlas, p, proof):
             assert any(G._inside(x,z,*triangle) and abs(G._height(x,z,*triangle)-height)<=.25 for triangle in component)
     end = dict(p,x=proof['path'][-1][0],z=proof['path'][-1][1],y=proof['path_heights'][-1])
     assert atlas.project(end)['geometry_layer'] == proof['geometry_layer']
-    view = {'floors':[r[:3] for r in atlas.triangles if r[4][1]>.6 and not r[3]&G.TRIGGER_FLAG],
+    view = {'floors':[r[:3] for r in atlas.triangles if G._player_floor(r[3],r[4])],
             'walls':[r[:3] for r in atlas.triangles if abs(r[4][1])<=.6 and not r[3]&G.TRIGGER_FLAG]}
     for i,(start,end) in enumerate(zip(proof['path'],proof['path'][1:])):
         assert G.LocalConnectors(atlas).clear(start,end,*proof['path_heights'][i:i+2],view)
 
 
 @pytest.mark.parametrize('p', POSITIONS)
-def test_actual_overlap_positions_recover_on_exact_foot_connected_surface(forest, p):
-    atlas = G.Atlas(forest); local = G.LocalConnectors(atlas)
-    assert atlas.project(p) is None
-    proof = local._native_surface(p, 'exact-layout')
-    check_proof(atlas,p,proof)
-    assert proof['geometry_layer'] == 'a2608a43913f2dc59ee91006840962d3fb00f85bb501028651dccc38d4df9607'
-    assert atlas.project(p) is None
-    revision = local.revision
-    assert local._native_surface(p,'exact-layout') == proof and local.revision == revision
+def test_actual_auxiliary_overlap_positions_use_normal_main_floor(forest, p):
+    atlas = G.Atlas(forest)
+    view = atlas.project(p)
+    assert view and view['geometry_layer'] == '3574e623f76944e6786c8c2acc28f6385ffd13f632d95529bd42c4fd5c01d5b9'
+    assert len(atlas.heights[atlas.cell(p)]) == 1
+    assert RoomMap(**view['collision_grid']).route((p['x'],p['z']),(512.5,-192.5))
+    assert atlas.project(p) is view
 
 
 def overlapping(upper_height=1.2):
@@ -126,7 +125,7 @@ def test_cached_proof_rebinds_actor_and_layout_and_limits_failed_cache():
 
 
 def provider_at_spawn(forest):
-    ad,regions,base,_=fixture_memory(forest);provider=G.Provider(ad);s=state()
+    ad,regions,base,_=fixture_memory(forest, owned_code=True);provider=G.Provider(ad);s=state()
     s['floor']=1
     s['players'][1].update(ptr='80DA62A0',x=530.632,y=34.396,z=-20.274)
     s['players'][2].update(POSITIONS[0])
@@ -135,48 +134,44 @@ def provider_at_spawn(forest):
     return provider,regions,base,s
 
 
-def test_actual_provider_uses_overlap_branch_then_requires_fresh_observation(forest):
+def test_actual_provider_uses_normal_floor_then_requires_fresh_observation(forest):
     provider,_,_,s=provider_at_spawn(forest)
     first=provider.snapshot(s)
     assert first['geometry_verified'] and first['geometry_refreshed']
-    assert 1 in first['geometry_players'] and 2 not in first['geometry_players']
-    check_proof(provider.atlas,s['players'][2],first['geometry_recovery_players'][2])
+    assert set(first['geometry_players']) == {1,2} and not first['geometry_recovery_players']
     second=provider.snapshot(s)
     assert second['geometry_verified'] and not second['geometry_refreshed']
-    assert second['geometry_recovery_players']==first['geometry_recovery_players']
+    assert second['geometry_players']==first['geometry_players']
 
 
-def test_current_both_held_players_recover_through_provider_after_fresh_read(forest):
+def test_historical_both_held_players_use_normal_floor_after_fresh_read(forest):
     provider,_,_,s=provider_at_spawn(forest)
     s['players'][1].update(POSITIONS[1]);s['players'][2].update(POSITIONS[2])
     first=provider.snapshot(s)
     assert first['geometry_verified'] and first['geometry_refreshed']
-    assert first['geometry_players']=={}
-    for slot in (1,2):
-        check_proof(provider.atlas,s['players'][slot],first['geometry_recovery_players'][slot])
+    assert set(first['geometry_players']) == {1,2} and not first['geometry_recovery_players']
     second=provider.snapshot(s)
     assert second['geometry_verified'] and not second['geometry_refreshed']
-    assert second['geometry_recovery_players']==first['geometry_recovery_players']
+    assert second['geometry_players']==first['geometry_players']
 
 
-def test_new_p1_and_nearby_p2_native_feet_recover_without_borrowing_upper_surface(forest):
-    atlas=G.Atlas(forest);local=G.LocalConnectors(atlas)
+def test_historical_p1_and_nearby_p2_use_main_floor_without_auxiliary_surface(forest):
+    atlas=G.Atlas(forest)
     p2=dict(ptr='80DA8830',x=528.615,y=33.368,z=-24.056)
     for p in (POSITIONS[3],p2):
-        proof=local._native_surface(p,'exact')
-        check_proof(atlas,p,proof)
-        assert proof['seed_triangle']==231 and 272 not in proof['surface_triangles']
+        view=atlas.project(p)
+        assert view and len(atlas.heights[atlas.cell(p)]) == 1
+        assert RoomMap(**view['collision_grid']).route((p['x'],p['z']),(512.5,-192.5))
 
 
-def test_new_p1_reaches_provider_recovery_and_reobserves_before_input(forest):
+def test_historical_p1_reaches_normal_provider_and_reobserves_before_input(forest):
     provider,_,_,s=provider_at_spawn(forest);s['players'][1].update(POSITIONS[3])
     first=provider.snapshot(s)
     assert first['geometry_verified'] and first['geometry_refreshed']
-    assert 1 not in first['geometry_players']
-    check_proof(provider.atlas,s['players'][1],first['geometry_recovery_players'][1])
+    assert 1 in first['geometry_players'] and 1 not in first['geometry_recovery_players']
     second=provider.snapshot(s)
     assert second['geometry_verified'] and not second['geometry_refreshed']
-    assert second['geometry_recovery_players']==first['geometry_recovery_players']
+    assert second['geometry_players']==first['geometry_players']
 
 
 def test_surface_work_exhaustion_fails_closed_and_is_cached(monkeypatch):
@@ -225,28 +220,27 @@ def test_ineligible_point_does_not_poison_later_eligible_point_in_same_cell(monk
     assert proof and len(calls)==1 and atlas.cell(calls[0])==atlas.cell(p)
 
 
-def test_latest_p2_bent_path_reaches_provider_and_fresh_observation(forest):
+def test_historical_p2_bent_escape_is_replaced_by_normal_floor_and_fresh_read(forest):
     provider,_,_,s=provider_at_spawn(forest)
     s['players'][1].update(ptr='80DA62A0',x=525.117,y=34.628,z=-18.204)
     s['players'][2].update(POSITIONS[4])
     first=provider.snapshot(s)
     assert first['geometry_verified'] and first['geometry_refreshed']
-    assert 1 in first['geometry_players'] and 2 not in first['geometry_players']
-    proof=first['geometry_recovery_players'][2]
-    check_proof(provider.atlas,s['players'][2],proof)
-    assert len(proof['path'])>=3 and proof['surface_work']<=G.LocalConnectors.SURFACE_WORK_LIMIT
+    assert set(first['geometry_players']) == {1,2} and not first['geometry_recovery_players']
+    view=first['geometry_players'][2]
+    assert RoomMap(**view['collision_grid']).route((s['players'][2]['x'],s['players'][2]['z']),(512.5,-192.5))
     second=provider.snapshot(s)
     assert second['geometry_verified'] and not second['geometry_refreshed']
-    assert second['geometry_recovery_players']==first['geometry_recovery_players']
+    assert second['geometry_players']==first['geometry_players']
 
 
-def test_changed_native_binding_during_overlap_work_discards_proof(forest,monkeypatch):
+def test_changed_native_binding_during_normal_projection_discards_view(forest,monkeypatch):
     provider,regions,_,s=provider_at_spawn(forest)
-    original=G.LocalConnectors._native_surface
-    def drift(self,player,identity):
-        proof=original(self,player,identity)
+    original=G.Atlas.project
+    def drift(self,player):
+        view=original(self,player)
         regions[0x805D49B8]=struct.pack('>I',1)
-        return proof
-    monkeypatch.setattr(G.LocalConnectors,'_native_surface',drift)
+        return view
+    monkeypatch.setattr(G.Atlas,'project',drift)
     result=provider.snapshot(s)
-    assert not result['geometry_verified'] and 'geometry_recovery_players' not in result
+    assert not result['geometry_verified'] and 'geometry_players' not in result

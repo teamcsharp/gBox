@@ -32,6 +32,28 @@ FLOOR_CODE = (
     (0x802077CC, bytes.fromhex('2c0300114081000c386000004e8000201cc3000c3ca080513860000138a539207c05302e7ca5321490040000800500049004000480050008900400084e800020')),
     (0x80207E88, bytes.fromhex('9421fff07c0802a69001001493e1000c7c7f1b782c1f00234081000c3860000048000034481027fd2c030000418200183c60804d57e01838386392707c63002e480000143c60804d57e0183838638fc07c63002e8001001483e1000c7c0803a6382100104e800020')),
 )
+# Exact 3OE2 player updater 801B7998 queries 0x5F. Height query 800791BC
+# separates bits 0x1E into auxiliary results; its main result uses mask 0x41.
+# Only the main result is copied to actor+0x3C. Mixed flags remain eligible
+# whenever either main bit is set; auxiliary bits are not a blanket exclusion.
+PLAYER_FLOOR_MASK = 0x41
+PLAYER_FLOOR_CODE = (
+    (0x800791BC, 964, "8854ac8d52e5aaeb02e0a0e79adad2e83f9ff7deeafa01ddcb763e9435c44538"),
+    (0x8007A448, 252, "b48754f64723d7ac2b70f03926fe9f7987099ac9fc8c42fe9f2e7cb33283253f"),
+    (0x801B7998, 304, "a9566cf9f3023d86c613a503f55d13db78b50cb81875ead39af3e54a6fc1fb5f"),
+)
+
+
+def _player_floor_code(ad):
+    for address, size, expected in PLAYER_FLOOR_CODE:
+        if _hash(_read(ad, address, size)) != expected:
+            raise ValueError("Native player floor query code changed")
+
+
+def _player_floor(flags, normal):
+    return bool(flags & PLAYER_FLOOR_MASK) and not flags & TRIGGER_FLAG and normal[1] > .6
+
+
 ROOTS = (0x805D4E68, 0x805D6000, 0x805D6014, 0x805D5650)
 MAX_BYTES = 262144
 MAX_MESHES = 256
@@ -162,6 +184,8 @@ class Atlas:
             if normal[1] <= .6:
                 if abs(normal[1]) <= .6:
                     walls.append((a, b, c))
+                continue
+            if not _player_floor(flags, normal):
                 continue
             for cell in self._bounds((a, b, c)):
                 work += 1
@@ -511,7 +535,7 @@ class LocalConnectors:
             a,b,c,flags,normal = row
             if flags & TRIGGER_FLAG or not _clip((a,b,c),x0,z0,25):
                 continue
-            if normal[1] > .6:
+            if _player_floor(flags, normal):
                 floors[index] = row
                 if _inside(*start,a,b,c):
                     h = _height(*start,a,b,c)
@@ -575,7 +599,7 @@ class LocalConnectors:
         values = []
         for a,b,c,flags,normal in self.atlas.triangles:
             self._charge()
-            if not flags & TRIGGER_FLAG and normal[1] > .6 and _inside(point[0],point[1],a,b,c):
+            if _player_floor(flags, normal) and _inside(point[0],point[1],a,b,c):
                 h = _height(point[0],point[1],a,b,c)
                 if all(abs(h-v) > .25 for v in values):
                     values.append(h)
@@ -611,7 +635,7 @@ class LocalConnectors:
             zmax = min(high[1], math.floor(max(p[2] for p in (a,b,c))/self.SIZE))
             if xmin>xmax or zmin>zmax:
                 continue
-            if normal[1] > .6:
+            if _player_floor(flags, normal):
                 floors.append((a,b,c))
                 for x in range(xmin,xmax+1):
                     for z in range(zmin,zmax+1):
@@ -778,6 +802,7 @@ class Provider:
         if (episode, floor) not in {(a, b) for a, b, _ in KNOWN}:
             raise ValueError("No verified geometry for this area")
         expected = (14, episode - 1, floor, 0, *(int(players[p]['ptr'], 16) for p in (1, 2)))
+        _player_floor_code(self.ad)
         floor_binding = _forest2_binding(self.ad, episode, floor)
         if _binding(self.ad) != expected:
             raise ValueError("Geometry player/area observation changed")
@@ -827,6 +852,7 @@ class Provider:
         if (_roots(self.ad) != roots or _binding(self.ad) != expected or
                 _forest2_binding(self.ad, episode, floor) != floor_binding):
             raise ValueError("Collision area changed during raster")
+        _player_floor_code(self.ad)
         refreshed = refreshed or self.atlas.work_revision != revision or self.margin.revision != margin_revision or self.local.revision != local_revision
         return {'geometry_verified': True, 'geometry_identity': self.layout_identity,
                 'geometry_loaded_fingerprint': self.identity,
