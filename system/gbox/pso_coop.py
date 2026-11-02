@@ -1006,7 +1006,11 @@ class Controller:
         # P2 claims the OTHER panel in a two-panel room; else follows P1 (to P1's
         # panel, or to the door once both panels are done) or just closes the gap.
         exclude = ()
-        if slot == 2:
+        # Once the room's gate flags are set (fail-safe fired, or a recalled
+        # recipe), the panels are done - stop pressing them and WALK THROUGH the
+        # now-open door. P2 then simply follows P1 to the exit.
+        forced = (state.get('episode'), state.get('floor'), room, state.get('geometry_identity')) in self.forced_rooms
+        if slot == 2 and not forced:
             leader = book['slots'].get(1)
             multi_panel = gates.count_switches(state.get('entities', ()), room) >= 2
             if leader and leader.get('cls') in gates.SWITCH_CLASSES and multi_panel:
@@ -1020,7 +1024,8 @@ class Controller:
 
         for _ in range(8):
             rows = gates.forward_candidates(state.get('entities', ()), room, px, pz,
-                                            cooldown=cooldown, now=now, prefer_room=True, exclude=exclude)
+                                            cooldown=cooldown, now=now, prefer_room=True,
+                                            exclude=exclude, skip_switches=forced)
             if not rows:
                 book['slots'].pop(slot, None)
                 return None
@@ -1055,8 +1060,10 @@ class Controller:
                 self.inputs.stats['forward_fallback_action'] = kind
             if is_switch == 0:
                 return entity['x'], entity['z']
-            # A door/fence/barrier: aim just beyond it so the actor commits through.
-            return gates.through_point(px, pz, entity['x'], entity['z'])
+            # A door/fence/barrier: aim beyond it so the actor commits through. Once
+            # the gate is force-unlocked, aim well past the threshold to carry the
+            # buddy across into the next room rather than parking at the doorway.
+            return gates.through_point(px, pz, entity['x'], entity['z'], overshoot=36.0 if forced else 16.0)
         book['slots'].pop(slot, None)
         return None
 
