@@ -1124,6 +1124,22 @@ class Controller:
                     commands.append((slot,movement_keys(player,waypoint),.04))
                     margin_slots.append(slot)
                     steering[slot] = (player, waypoint, 'margin_recovery')
+                else:
+                    # No own verified collision grid and margin recovery is
+                    # unavailable: a buddy whose collision layer never resolves
+                    # would idle here and deadlock the pair (P1 then waits on it
+                    # forever). Still advance, bounded and geometry-free, toward
+                    # the room's forward switch/door / the leader. nav.route is
+                    # permissive when floor is None; movement stays short-pulsed.
+                    dest = self.forward_fallback(state, slot, player, now)
+                    dbg[f'{slot}_nogrid_fb'] = dest is not None
+                    if dest is not None:
+                        route = nav.route((player["x"], player["z"]), dest)
+                        wp = route[1] if route and len(route) > 1 else dest
+                        commands.append((slot, movement_keys(player, wp), .40))
+                        moves[slot] = (player, wp, nav, True)
+                        steering[slot] = (player, wp, 'forward_fallback_nogrid')
+                        fallback_slots.append(slot)
                 continue
             destination = None
             if target:
@@ -1198,7 +1214,13 @@ class Controller:
                 # Last resort: without a verified grid, still advance toward the
                 # room's forward switch/door instead of standing still.
                 dbg[f'{slot}_goal'] = bool(goal); dbg[f'{slot}_destpre'] = destination is not None
-                if not field_owned and destination is None:
+                # Advance toward the room's forward switch/door instead of idling
+                # when nothing else produced a destination: either geometry is
+                # unverified (not field_owned), or the field objective is None
+                # while both buddies share the room (e.g. P1 pinned on
+                # waiting_for_buddy because P2's collision layer never resolves).
+                if destination is None and target is None and (not field_owned
+                        or state["players"][3 - slot].get("room") == player.get("room")):
                     destination = self.forward_fallback(state, slot, player, now)
                     dbg[f'{slot}_fbret'] = destination is not None
                     if destination is not None:
@@ -1236,7 +1258,8 @@ class Controller:
             if len(self.approaches) > 128:
                 self.approaches.pop(next(iter(self.approaches)))
             nav = self.maps.get(state, player)
-            route = (self.field.route(nav,(player["x"],player["z"]),destination) if field_owned else
+            route = (self.field.route(nav,(player["x"],player["z"]),destination)
+                     if field_owned and slot not in fallback_slots else
                      nav.route((player["x"], player["z"]), destination))
             if not route:
                 dbg[f'{slot}_end'] = 'route_fail'; dbg[f'{slot}_blocked'] = len(getattr(nav, 'blocked', ()))
