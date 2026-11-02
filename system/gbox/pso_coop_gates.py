@@ -1,8 +1,69 @@
-"""Read-only exact-build barrier predicates; enable bits never prove traversal."""
+"""Read-only exact-build barrier predicates; enable bits never prove traversal.
+
+Also the room's forward-progression gate model (pure, reloadable): classify the
+forward affordances in a cleared room so the controller drives P1 onto each
+switch/panel and then through the door it gates, with gusto (operator 2026-11-02:
+open and pass through EVERY door, never dither). These classifiers decide the
+approach ORDER and the walk-through target; they never claim a door is open and
+never read or write memory. Constants live here so no name crosses the
+non-reloadable pso_coop_setup boundary.
+"""
 import hashlib
+import math
 import struct
 
 from .registry import Unsupported
+
+# A floor switch / door panel is stood on or activated first; then the door /
+# fence / energy barrier it gates is walked through. TObjDoorKey is a panel to
+# activate, not a wall to route around (it starts with TObjDoor but gates a door).
+SWITCH_CLASSES = frozenset({'TLazerFenceSw', 'TObjDoorKey'})
+DOOR_CLASSES = frozenset({'TObjDoor', 'TObjLazerFenceNorm', 'TOBarrierEnergy01'})
+FORWARD_CLASSES = SWITCH_CLASSES | DOOR_CLASSES
+
+
+def _finite(entity, keys=('x', 'z')):
+    return all(type(entity.get(k)) in (int, float) and math.isfinite(entity[k]) for k in keys)
+
+
+def forward_candidates(entities, room, px, pz, *, cooldown=None, now=0.0, prefer_room=True):
+    """Ordered forward affordances for a cleared room (pure, read-only).
+
+    Switches/panels (is_switch=0) sort before doors (is_switch=1) so the gate is
+    opened before it is crossed; nearest-first within a class. A gkey-cooled
+    affordance (already pressed, or abandoned as stalled) is skipped. When the
+    player's own room holds nothing forward, fall back to the whole floor so the
+    pair always has an exit to drive toward. Returns rows
+    (is_switch, distance, gkey, entity, kind)."""
+    cooldown = cooldown or {}
+
+    def collect(same_room):
+        rows = []
+        for entity in list(entities)[:512]:
+            cls = str(entity.get('class', ''))
+            if cls not in FORWARD_CLASSES or not _finite(entity):
+                continue
+            if same_room and entity.get('room') != room:
+                continue
+            gkey = (cls, round(entity['x'], 1), round(entity['z'], 1))
+            if cooldown.get(gkey, 0) > now:
+                continue
+            is_switch = 0 if cls in SWITCH_CLASSES else 1
+            rows.append((is_switch, math.hypot(entity['x'] - px, entity['z'] - pz),
+                         gkey, entity, 'switch' if is_switch == 0 else 'door'))
+        rows.sort(key=lambda row: (row[0], row[1]))
+        return rows
+
+    return (collect(True) if prefer_room else []) or collect(False)
+
+
+def through_point(px, pz, gx, gz, overshoot=16.0):
+    """A target just BEYOND the gate along the player->gate vector, so the actor
+    commits across the threshold with gusto instead of stopping short of it."""
+    distance = math.hypot(gx - px, gz - pz)
+    if distance < 1e-3:
+        return gx, gz
+    return gx + (gx - px) / distance * overshoot, gz + (gz - pz) / distance * overshoot
 
 CLASS = 'TOBarrierEnergy01'
 VTABLE = 0x804AFB60

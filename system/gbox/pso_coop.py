@@ -764,6 +764,7 @@ FORWARD_GATE_CLASSES = frozenset({'TObjDoor', 'TOBarrierEnergy01', 'TObjLazerFen
 FORWARD_FALLBACK_CLASSES = FORWARD_SWITCH_CLASSES | FORWARD_GATE_CLASSES
 FALLBACK_STALL_S = 6.0        # abandon a forward affordance that stops getting closer
 FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many units
+SWITCH_PRESS_S = 1.5          # dwell/press a panel this long, then rotate to the door it gates
 FALLBACK_STUCK_S = 120.0      # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # A transient host focus/active-window condition (the adapter cannot send input
@@ -791,6 +792,7 @@ class Controller:
         self.field = FieldObjectives()
         self.margin_attempts = {}
         self.fallback = {}      # (episode,floor,geometry) -> geometry-free forward approach book
+        self.forward_interact = {}  # slot -> standing on a switch/panel this tick (press A, don't move)
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
 
     def _steering_publish(self):
@@ -989,21 +991,8 @@ class Controller:
             if len(self.fallback) > 16:
                 self.fallback.pop(next(iter(self.fallback)))
         cooldown = book['cooldown']
-
-        def candidates(same_room):
-            rows = []
-            for e in state.get('entities', ())[:512]:
-                if e.get('class') not in FORWARD_FALLBACK_CLASSES or not finite(e):
-                    continue
-                if same_room and e.get('room') != room:
-                    continue
-                gkey = (str(e.get('class')), round(e['x'], 1), round(e['z'], 1))
-                if cooldown.get(gkey, 0) > now:
-                    continue
-                is_switch = 0 if e.get('class') in FORWARD_SWITCH_CLASSES else 1
-                rows.append((is_switch, math.hypot(e['x'] - px, e['z'] - pz), gkey, e))
-            rows.sort(key=lambda r: (r[0], r[1]))
-            return rows
+        from . import pso_coop_gates as gates
+        self.forward_interact[slot] = False
 
         if slot == 2:
             leader = book['slots'].get(1)
@@ -1014,11 +1003,13 @@ class Controller:
                 return buddy['x'], buddy['z']
 
         for _ in range(8):
-            rows = candidates(True) or candidates(False)
+            rows = gates.forward_candidates(state.get('entities', ()), room, px, pz,
+                                            cooldown=cooldown, now=now, prefer_room=True)
             if not rows:
                 book['slots'].pop(slot, None)
                 return None
-            _, dist, gkey, entity = rows[0]
+            is_switch, dist, gkey, entity, _kind = rows[0]
+            cls = str(entity.get('class'))
             track = book['slots'].get(slot)
             if track is None or track.get('gkey') != gkey:
                 track = book['slots'][slot] = {'gkey': gkey, 'best': dist, 'since': now}
@@ -1028,15 +1019,54 @@ class Controller:
                 cooldown[gkey] = now + 30
                 book['slots'].pop(slot, None)
                 continue
-            track.update(room=room, x=entity['x'], z=entity['z'], cls=str(entity.get('class')))
-            if slot == 1:
-                stats = getattr(self.inputs, 'stats', None)
-                if isinstance(stats, dict):
-                    stats['forward_fallback_target'] = str(entity.get('class'))
-                    stats['forward_fallback_dist'] = round(dist, 1)
-            return entity['x'], entity['z']
+            track.update(room=room, x=entity['x'], z=entity['z'], cls=cls)
+            # A panel/switch within reach is pressed (stand on it + the controller
+            # taps A). After a short dwell treat it as pressed and rotate to the
+            # door it gates, so two panels both get opened before the door.
+            on_switch = is_switch == 0 and dist <= FALLBACK_REACH
+            if on_switch:
+                track.setdefault('pressed_at', now)
+                if now - track['pressed_at'] > SWITCH_PRESS_S:
+                    cooldown[gkey] = now + 45
+                    book['slots'].pop(slot, None)
+                    continue
+            self.forward_interact[slot] = on_switch
+            if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
+                self.inputs.stats['forward_fallback_target'] = cls
+                self.inputs.stats['forward_fallback_dist'] = round(dist, 1)
+                self.inputs.stats['forward_fallback_action'] = (
+                    'press_switch' if on_switch else 'approach_switch' if is_switch == 0 else 'walk_through')
+            if is_switch == 0:
+                return entity['x'], entity['z']
+            # A door/fence/barrier: aim just beyond it so P1 commits through.
+            return gates.through_point(px, pz, entity['x'], entity['z'])
         book['slots'].pop(slot, None)
         return None
+
+    def drive_forward(self, state, slot, player, now, commands, moves, steering, fallback_slots):
+        """Decisive forward door/switch progression (operator 2026-11-02: gusto).
+
+        Press each panel/switch, then walk THROUGH the door it gates; P1 leads,
+        P2 follows. Movement is committed (a .40 s hold) and geometry-free: it
+        routes on the verified grid when the gate is on it, else steers straight
+        at the forward target so a small spawn grid can never pin the pair. No
+        wall is learned from a forced push. Returns True when it issued input."""
+        dest = self.forward_fallback(state, slot, player, now)
+        if dest is None:
+            return False
+        fallback_slots.append(slot)
+        nav = self.maps.get(state, player)
+        if self.forward_interact.get(slot):
+            # Standing on the panel/switch: tap A to activate it, do not walk off.
+            commands.append((slot, ["a"], .12))
+            steering[slot] = (player, (player["x"], player["z"]), 'forward_switch_press')
+            return True
+        route = nav.route((player["x"], player["z"]), dest)
+        waypoint = route[1] if route and len(route) > 1 else dest
+        commands.append((slot, movement_keys(player, waypoint), .40))
+        moves[slot] = (player, waypoint, nav, False)
+        steering[slot] = (player, waypoint, 'forward_gusto')
+        return True
 
     def _forward_dwell_telemetry(self, state, now, engaged):
         """Scalar fail-safe telemetry: how long P1 has held one room with no forward
@@ -1128,17 +1158,10 @@ class Controller:
                     # No own verified collision grid and margin recovery is
                     # unavailable: a buddy whose collision layer never resolves
                     # would idle here and deadlock the pair (P1 then waits on it
-                    # forever). Still advance, bounded and geometry-free, toward
-                    # the room's forward switch/door / the leader. nav.route is
-                    # permissive when floor is None; movement stays short-pulsed.
-                    dest = self.forward_fallback(state, slot, player, now)
-                    if dest is not None:
-                        route = nav.route((player["x"], player["z"]), dest)
-                        wp = route[1] if route and len(route) > 1 else dest
-                        commands.append((slot, movement_keys(player, wp), .40))
-                        moves[slot] = (player, wp, nav, True)
-                        steering[slot] = (player, wp, 'forward_fallback_nogrid')
-                        fallback_slots.append(slot)
+                    # forever). Still advance decisively toward the room's forward
+                    # switch/door / the leader. nav.route is permissive when floor
+                    # is None, and drive_forward steers straight if it yields none.
+                    self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots)
                 continue
             destination = None
             if target:
@@ -1210,16 +1233,24 @@ class Controller:
                 buddy = state["players"][3 - slot]
                 if not field_owned and destination is None and slot == 2 and buddy.get("room") == player.get("room") and math.hypot(buddy["x"] - player["x"], buddy["z"] - player["z"]) > 65:
                     destination = buddy["x"], buddy["z"]
-                # Advance toward the room's forward switch/door instead of idling
-                # when nothing else produced a destination: either geometry is
-                # unverified (not field_owned), or the field objective is None
-                # while both buddies share the room (e.g. P1 pinned on
-                # waiting_for_buddy because P2's collision layer never resolves).
-                if destination is None and target is None and (not field_owned
-                        or state["players"][3 - slot].get("room") == player.get("room")):
-                    destination = self.forward_fallback(state, slot, player, now)
-                    if destination is not None:
-                        fallback_slots.append(slot)
+                # Decisive forward door/switch progression (operator 2026-11-02:
+                # open and pass through EVERY door with gusto). In an enemy-free
+                # room, when the field planner is only EXPLORING (timid frontier
+                # hops near spawn - the live room-10 freeze), drive to the next
+                # panel/door and commit THROUGH it instead. An explicit accepted
+                # goal, a real gate approach, or combat are left untouched; and
+                # with no grid at all, still advance when nothing else produced a
+                # destination. Falls back to the field objective when no forward
+                # gate remains to drive toward.
+                same_room = state["players"][3 - slot].get("room") == player.get("room")
+                field_dep = (self.field.status.get('players', {}).get(str(slot), {}).get('dependency')
+                             if field_owned else None)
+                exploring = field_dep in (None, 'explore', 'unknown_geometry',
+                                          'no_verified_regroup_route', 'buddy_unavailable')
+                if target is None and ((field_owned and exploring and same_room)
+                                       or (destination is None and (not field_owned or same_room))):
+                    if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
+                        continue
             if destination is None:
                 continue
             if field_owned and nav.floor is None:
