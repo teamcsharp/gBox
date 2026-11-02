@@ -282,3 +282,96 @@ def test_publish_refuses_game_data_and_prepare_installs_the_push_guard(tracked_r
     (shots / 'mvc2_ryu.sprites.png').write_bytes(b'\x89PNG\r\n')
     with pytest.raises(ValueError, match='never published'):
         delivery.publish(task['request_id'], 'Sprites', ['system/docs/mvc2_ryu.sprites.png'], [])
+
+
+def test_paused_prs_push_the_branch_but_never_call_github(tracked_repo, monkeypatch):
+    """Operator 2026-10-31: "make hermes stop making all those prs" (their volume kept the account under GitHub's
+    secondary rate limit). Paused: the tested commit is pushed, no gh call creates or edits a PR."""
+    _, origin, git = tracked_repo
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    (delivery.state_dir() / 'github-prs.json').write_text(json.dumps({'paused': True, 'reason': 'operator'}))
+    real_run = subprocess.run
+    def no_gh(args, **kw):
+        assert args[0] != 'gh', f'GitHub was called while PRs are paused: {args[:3]}'
+        return real_run(args, **kw)
+    monkeypatch.setattr(delivery.subprocess, 'run', no_gh)
+    result = delivery.publish(task['request_id'], 'Fix value', ['system/gbox/value.py'], ['tests/test_value.py'])
+    assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)
+    assert result['pr_state'] == 'paused' and result['pr_number'] is None
+    assert result['url'].endswith('/tree/' + task['branch'])
+
+
+def test_prs_paused_reads_the_switch_live(tracked_repo):
+    assert delivery.prs_paused() is None
+    path = delivery.state_dir() / 'github-prs.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"paused": false}')
+    assert delivery.prs_paused() is None
+    path.write_text('{"paused": true}')
+    assert delivery.prs_paused() == {'paused': True}
+
+
+def _gh_create_stub(task, git, real_run):
+    def fake_gh(args, **kw):
+        if args[0] != 'gh':
+            return real_run(args, **kw)
+        if args[1:3] == ['pr', 'list']:
+            return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+        if args[1:3] == ['pr', 'view']:
+            return SimpleNamespace(returncode=0, stdout=json.dumps(_pull(task, git)), stderr='')
+        return SimpleNamespace(returncode=0, stdout='https://github.com/teamcsharp/gBox/pull/123\n', stderr='')
+    return fake_gh
+
+
+def test_publish_normalises_system_prefixed_and_windows_names(tracked_repo, monkeypatch):
+    """Agents name tests as system/tests/... or with backslashes; publish canonicalises instead of refusing
+    (the 2026-11-02 queue lost a day of finished work to 'Tests must be named files inside system/tests')."""
+    _, origin, git = tracked_repo
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    monkeypatch.setattr(delivery.subprocess, 'run', _gh_create_stub(task, git, subprocess.run))
+    result = delivery.publish(task['request_id'], 'Fix value', ['system\\gbox\\value.py'],
+                              ['./system/tests/test_value.py'])
+    assert result['files'] == ['system/gbox/value.py', 'system/tests/test_value.py']
+    assert '1 passed' in result['checks'][0]
+    assert result['commit'] == git('rev-parse', 'refs/heads/' + task['branch'], cwd=origin)
+
+
+def test_refusals_name_the_offending_entry(tracked_repo):
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    with pytest.raises(ValueError, match=r"'checkpoint\.cfg' was refused"):
+        delivery.publish(task['request_id'], 'Cfg', ['checkpoint.cfg'], [])
+    with pytest.raises(ValueError, match=r"'tests/helper\.py' was refused.*test_<name>"):
+        delivery.publish(task['request_id'], 'Fix', ['system/gbox/value.py'], ['tests/helper.py'])
+
+
+def test_profiles_gamedata_publishes_without_python_tests(tracked_repo, monkeypatch):
+    """RAM maps under system/profiles/ are repository files; Hermes work on them must hand off like source."""
+    _, origin, git = tracked_repo
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    target = Path(task['path']) / 'system/profiles/gamedata'
+    target.mkdir(parents=True)
+    (target / 'G4BE08-ram.json').write_text('{"hp": "0x8071d7c4"}\n')
+    monkeypatch.setattr(delivery.subprocess, 'run', _gh_create_stub(task, git, subprocess.run))
+    result = delivery.publish(task['request_id'], 'RE4 RAM map', ['system/profiles/gamedata/G4BE08-ram.json'], [])
+    assert result['files'] == ['system/profiles/gamedata/G4BE08-ram.json']
+    assert result['pr_number'] == 123
+
+
+def test_node_test_entries_publish_and_syntax_check(tracked_repo, monkeypatch):
+    _, origin, git = tracked_repo
+    from pathlib import Path
+    task = delivery.prepare('abcdef0123456789', 12)
+    (Path(task['workdir']) / 'gbox/value.py').write_text('VALUE = 2\n')
+    (Path(task['workdir']) / 'tests/value.test.cjs').write_text('const assert = require("assert");\nassert.ok(true);\n')
+    monkeypatch.setattr(delivery.subprocess, 'run', _gh_create_stub(task, git, subprocess.run))
+    result = delivery.publish(task['request_id'], 'Fix value', ['system/gbox/value.py'],
+                              ['tests/test_value.py', 'system/tests/value.test.cjs'])
+    assert 'system/tests/value.test.cjs' in result['files']
+    assert '1 passed' in result['checks'][0]
