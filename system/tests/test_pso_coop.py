@@ -705,6 +705,18 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
+def test_frontier_door_is_not_abandoned_after_the_stall_window(tmp_path):
+    """A never-traversed (frontier) door - its far side may be a NEW room - is not
+    cooled away when slow to reach, so P1 keeps committing to it instead of
+    retreating through a known backward connector and oscillating."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 200., "z": 0., "room": 10}], p1=(0., 0.))
+    assert ctrl.forward_fallback(st, 1, st["players"][1], now=100.)[0] > 200.   # targets the frontier door
+    again = ctrl.forward_fallback(st, 1, st["players"][1], now=100. + C.FALLBACK_STALL_S + 2)
+    assert again is not None and again[0] > 200.                               # still committed, not cooled
+    assert ("TObjDoor", 200.0, 0.0) not in ctrl.fallback[(1, 1, "g")]["cooldown"]
+
+
 def test_p1_prefers_the_door_to_an_unvisited_room_not_the_backtrack(tmp_path):
     """Forward-only progression: given a door back to a VISITED room and a door to
     an unvisited/unknown one, P1 drives through the forward (unvisited) door - it
