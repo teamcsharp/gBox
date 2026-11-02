@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'">
+<title>gBox · Spark2 tasks</title>
+<link rel="stylesheet" href="task-window.css">
+</head>
+<body class="viz-root">
+<header>
+  <div class="title">
+    <strong>Spark2 · Hermes tasks</strong>
+    <small id="sub">sparkDeux pipeline</small>
+  </div>
+  <div class="status-wrap">
+    <span id="conn" class="conn connecting" role="status">Connecting…</span>
+    <label class="pin"><input type="checkbox" id="top"> Always on top</label>
+  </div>
+</header>
+
+<section id="tiles" class="tiles" aria-label="Headline analytics"></section>
+
+<main>
+  <section class="charts" aria-label="Task analytics">
+    <div class="chart-head">
+      <h2>Pipeline</h2>
+      <div class="legend" id="legend" aria-label="State legend"></div>
+    </div>
+    <div id="stage-wrap">
+      <canvas id="stage" aria-label="3D task pipeline: a donut of tasks by state and a bubble field of tasks by node, sized by tokens"></canvas>
+      <div id="stage-note" class="muted">Donut: tasks by state · Bubbles: one per task, grouped by node, sized by tokens</div>
+      <div id="hover" class="hover" hidden></div>
+    </div>
+    <div class="nodes" id="nodes" aria-label="Per-node lane use"></div>
+  </section>
+
+  <section class="tray-wrap" aria-label="Task tray">
+    <div class="chart-head">
+      <h2>Tasks <span id="count" class="count"></span></h2>
+      <span class="muted" id="tray-note">newest first · click a card to expand</span>
+    </div>
+    <div id="tray" class="tray"></div>
+    <div id="empty" class="empty muted" hidden>No Hermes runs yet. Waiting for the pipeline…</div>
+  </section>
+</main>
+
+<script src="vendor/three.min.js"></script>
+<script src="task-window.js"></script>
+</body></html>
