@@ -819,6 +819,11 @@ class Controller:
         self.door_links = {}        # learned gkey -> set(rooms it connects); feeds forward-only room choice
         self.p1_visited = set()     # rooms P1 has entered this run (prefer UNVISITED, never backtrack to spawn)
         self._backtrack = frozenset()  # door gkeys whose far side is already visited (deprioritized)
+        self._area = None           # current area fingerprint (episode/floor/geometry) for the adjacency graph
+        self._area_graph = {}       # recalled+live: {from_room -> {str(gkey) -> to_room}}, a room OWNS its doors
+        self._p1_path = []          # ordered unique rooms P1 reached this run (the run's exploration/critical path)
+        self._crit_path = []        # recalled critical path for this area (room sequence that advanced to exit)
+        self._area_floor = None     # floor of the current area, to detect a floor advance (exit reached)
         self.map_root = None        # campaign runtime root for published surfaces (set in play())
         self.directive_path = None  # operator map directive file the viewer/API writes (set in play())
         self._directive = None      # the parsed, active operator directive (GOTO/PRESS/ATTACK)
@@ -1037,11 +1042,26 @@ class Controller:
         # P1 advances along the critical path and never backtracks to the spawn hub.
         # A brief cooldown on the just-crossed door only damps an instant rebounce.
         if slot == 1:
+            self._sync_area(state)
             self.p1_visited.add(room)
+            if room not in self._p1_path:
+                self._p1_path.append(room)
+                # Persist the run's exploration order as the critical-path candidate
+                # so a later run beelines it; _advance_floor() promotes it on exit.
+                if self._area and self.knowledge is not None:
+                    self.knowledge.record_path(self._area, self._p1_path)
             if self._p1_room != room:
                 if self._p1_door is not None:
                     self.door_links.setdefault(self._p1_door, set()).update({self._p1_room, room})
                     self.door_cooldown[self._p1_door] = now + DOOR_RETRAVERSE_COOLDOWN_S
+                    # Record the directed crossing in the crystal and the live graph:
+                    # this room now OWNS this outbound door regardless of the room id
+                    # the connector entity is tagged to, and later runs recall it.
+                    dk = str(self._p1_door)
+                    if type(self._p1_room) is int and type(room) is int:
+                        self._area_graph.setdefault(self._p1_room, {})[dk] = room
+                        if self._area and self.knowledge is not None:
+                            self.knowledge.record_edge(self._area, self._p1_room, dk, room)
                 self._p1_room = room
                 self._p1_door = None
             self.door_cooldown = {k: v for k, v in self.door_cooldown.items() if v > now}
@@ -1085,6 +1105,25 @@ class Controller:
                            (not entry or math.hypot(r[3]['x'] - entry[0], r[3]['z'] - entry[1]) > BACKTRACK_RADIUS))]
                 if forward:
                     rows = forward
+                # Crystal-guided choice: a room OWNS its outbound doors via the
+                # learned adjacency graph. Order doors by (1) the recalled critical
+                # path's next room, (2) a door to an UNVISITED room (frontier),
+                # (3) an unknown door (never crossed = frontier), last the backtracks.
+                nxt = self._path_next(room)
+                graph = self._area_graph.get(room, {})
+
+                def _rank(r):
+                    if r[0] == 0:
+                        return 0                       # switches/panels first, always
+                    dest = graph.get(str(r[2]))
+                    if dest is not None and dest == nxt:
+                        return 1                       # follow the recorded critical path
+                    if dest is None:
+                        return 2                       # unknown door: a frontier to explore
+                    if dest not in self.p1_visited:
+                        return 2                       # known door to an unvisited room
+                    return 5                           # known backtrack to a visited room
+                rows = sorted(rows, key=lambda r: (_rank(r), r[1]))
             if not rows:
                 book['slots'].pop(slot, None)
                 # No gate/switch left: head for the area's exit warp/teleporter so
@@ -1145,6 +1184,68 @@ class Controller:
             return gates.through_point(px, pz, entity['x'], entity['z'], overshoot=36.0 if forced else 16.0)
         book['slots'].pop(slot, None)
         return None
+
+    def _sync_area(self, state):
+        """Keep the live room-adjacency graph + critical path aligned to the area
+        P1 is in. On entering a NEW area, recall its learned graph and critical
+        path from the crystal so a later run starts from compounded knowledge. On
+        ADVANCING to a deeper floor (the area exit was reached), promote the
+        previous area's exploration into a trimmed critical path later runs beeline."""
+        from .pso_knowledge import area_fingerprint
+        fp = area_fingerprint(state.get('episode'), state.get('floor'), state.get('geometry_identity'))
+        if fp == self._area:
+            return
+        prev_area, prev_path, prev_graph, prev_floor = (
+            self._area, self._p1_path, self._area_graph, self._area_floor)
+        floor = state.get('floor')
+        if (prev_area and self.knowledge is not None and type(floor) is int
+                and type(prev_floor) is int and floor > prev_floor and len(prev_path) >= 2):
+            self.knowledge.record_path(prev_area, self._trim_path(prev_graph, prev_path))
+        self._area, self._area_floor = fp, floor
+        self._p1_path, self._area_graph, self._crit_path = [], {}, []
+        if fp and self.knowledge is not None:
+            self._area_graph = {r: dict(d) for r, d in self.knowledge.area_edges(fp).items()}
+            self._crit_path = self.knowledge.critical_path(fp)
+
+    def _path_next(self, room):
+        """The room that followed `room` on the recalled critical path, or None -
+        the target a later run beelines toward from `room`."""
+        p = self._crit_path
+        if room in p:
+            i = p.index(room)
+            if i + 1 < len(p):
+                return p[i + 1]
+        return None
+
+    @staticmethod
+    def _trim_path(graph, path):
+        """Shortest spawn->deepest route through the learned adjacency graph, so the
+        recorded critical path drops the run's dead-ends. Falls back to the raw
+        visit order if the graph cannot connect the endpoints."""
+        if len(path) < 2:
+            return list(path)
+        start, goal = path[0], path[-1]
+        adj = {}
+        for fr, doors in graph.items():
+            for to in doors.values():
+                adj.setdefault(fr, set()).add(to)
+        from collections import deque
+        prev, q = {start: None}, deque([start])
+        while q:
+            u = q.popleft()
+            if u == goal:
+                break
+            for v in adj.get(u, ()):
+                if v not in prev:
+                    prev[v] = u
+                    q.append(v)
+        if goal not in prev:
+            return list(path)
+        out, u = [], goal
+        while u is not None:
+            out.append(u)
+            u = prev[u]
+        return list(reversed(out))
 
     def drive_forward(self, state, slot, player, now, commands, moves, steering, fallback_slots):
         """Decisive forward door/switch progression (operator 2026-11-02: gusto).

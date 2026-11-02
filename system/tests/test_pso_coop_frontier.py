@@ -68,3 +68,39 @@ def test_recalled_forward_flags_validates_floor_and_range():
     assert recalled_forward_flags(s, "unknown", 1) is None      # stale/unknown fingerprint -> fresh
     s.remember("bad", gate="forced_flags", floor=1, forward_flags=[6, 999])
     assert recalled_forward_flags(s, "bad", 1) is None          # out-of-range flag -> reject
+
+
+# --- room-adjacency graph + critical path (compounds across runs) -------------
+
+def test_area_fingerprint_needs_a_verified_geometry_identity():
+    from gbox.pso_knowledge import area_fingerprint
+    assert area_fingerprint(1, 1, "forest1-geo") == area_fingerprint(1, 1, "forest1-geo")
+    assert area_fingerprint(1, 1, "forest1-geo") != area_fingerprint(1, 2, "forest1-geo")
+    assert area_fingerprint(1, 1, None) is None                 # unverified geometry -> no graph key
+    assert area_fingerprint(1, 1, "") is None
+
+
+def test_room_adjacency_edges_persist_and_recall_per_area(tmp_path):
+    from gbox.pso_knowledge import KnowledgeStore, area_fingerprint
+    area = area_fingerprint(1, 1, "forest1")
+    s = KnowledgeStore(tmp_path / "k.json")
+    s.record_edge(area, 10, "('TObjDoor', 100.0, 0.0)", 11)
+    s.record_edge(area, 11, "('TObjDoor', 50.0, 0.0)", 14)
+    s.record_edge(area, 10, "('TObjDoor', 100.0, 0.0)", 11)    # idempotent re-observation
+    s.record_path(area, [10, 11, 14])
+    # Reloaded from disk: a room OWNS its outbound doors, and the critical path is kept.
+    r = KnowledgeStore(tmp_path / "k.json")
+    assert r.area_edges(area) == {10: {"('TObjDoor', 100.0, 0.0)": 11},
+                                  11: {"('TObjDoor', 50.0, 0.0)": 14}}
+    assert r.critical_path(area) == [10, 11, 14]
+    assert r.area_edges(area_fingerprint(1, 2, "forest1")) == {}   # different area -> isolated
+
+
+def test_record_edge_rejects_non_integer_rooms_and_missing_area(tmp_path):
+    from gbox.pso_knowledge import KnowledgeStore, area_fingerprint
+    area = area_fingerprint(1, 1, "forest1")
+    s = KnowledgeStore(tmp_path / "k.json")
+    s.record_edge(None, 10, "d", 11)            # no area key -> dropped
+    s.record_edge(area, 10, "d", None)          # non-int destination -> dropped
+    s.record_edge(area, "10", "d", 11)          # non-int source -> dropped
+    assert s.area_edges(area) == {}
