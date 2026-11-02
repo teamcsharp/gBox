@@ -3905,13 +3905,16 @@ class Bot:
 
     def _prompt(self, p, snap, now) -> dict | None:
         """A shown prompt's button, pressed at once and again every PROMPT_REPEAT_S while it stays. None: no prompt to
-        take this tick."""
+        take this tick. A flanking crowd (4+ within CC_CROWD_R) defers the press: lowering the gun to take a prompt
+        in a surround is the crowd_gun_down trigger (cluster b294c62b554c77fd) — the bot waits for the crowd to
+        thin before pressing, matching the crowd_hold convention used by the other decision paths."""
         shown = getattr(self, "_prompt_shown", None) or []
         if not PROMPTS or not shown:
             return None
         eq = p.get("equipped")
         if (p.get("bomb") or {}).get("out") or (isinstance(eq, int) and eq >= WEAPON_INDEXES) or self.nade is not None:
             return None
+        px, _, pz = p["pos"]
         for q in shown:
             key, live = q.get("key"), self.prompt_live[(q["ab"], q["type"])]
             hp, hp_max = p.get("hp") or 0, p.get("hp_max") or 0
@@ -3919,6 +3922,12 @@ class Bot:
                     and p.get("state") in (0, None) and now - self.tablet_at >= TABLET_RETRY_S)
             if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
                     or now - live["at"] < PROMPT_REPEAT_S):
+                continue
+            # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
+                    and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
+                    and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
+            if n >= CC_BACK_N and not heal:
                 continue
             if heal:
                 self.stats["tablet_prompt_presses"] = self.stats.get("tablet_prompt_presses", 0) + 1
