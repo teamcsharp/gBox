@@ -349,6 +349,8 @@ def reconcile_branches(api, *, branches=None, busy=_busy_requests, now=None, for
                     errors.append(f'{rid}: {type(error).__name__}')
                 reported[rid] = f"blocked:{detail['sha']}"
                 continue
+            if hermes_delivery.prs_paused():
+                continue        # the operator paused Hermes PRs: the branch waits; decided again once they are back on
             try:
                 pull = branches.open_pull(record['branch'], record, detail['pending'])
             except Exception as error:

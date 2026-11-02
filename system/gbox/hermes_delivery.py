@@ -11,8 +11,13 @@ import time
 
 
 REPOSITORY = 'teamcsharp/gBox'
-ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'system/hermes/')
+# Mirrors hermes_payload_guard.HOMES: what publish admits is what the pre-push hook admits. Every
+# admitted file still passes the payload checks (no game data, binaries or stray images).
+ALLOWED = ('system/gbox/', 'system/tests/', 'system/clients/', 'system/docs/', 'system/hermes/',
+           'system/profiles/', 'system/scripts/', 'system/adapters/')
 PR_FIELDS = 'url,number,state,headRefName,headRefOid,baseRefName,isCrossRepository'
+PYTHON_TEST = re.compile(r'tests/test_[\w-]+\.py')
+NODE_TEST = re.compile(r'tests/[\w.-]+\.(cjs|mjs|js)')
 
 
 SIDE_FOLDER_ROOTS = ('gbox-hermes-tasks', 'gbox-hermes-repo')
@@ -219,11 +224,41 @@ def _shared_sources(workspace):
     return references(workspace['path'], state_dir() / 'source-references' / workspace['request_id'])
 
 
+def prs_paused() -> dict | None:
+    """The operator's pause on Hermes pull requests (2026-10-31: "make hermes stop making all those prs"; their volume
+    kept the account under GitHub's secondary rate limit, which blocked every other PR). While
+    hermes-dispatch/github-prs.json says {"paused": true}, a publish commits and pushes its branch but creates and edits
+    no PR, and the outcome reconciler opens no recovery PR. Read on every call: no restart to switch it."""
+    try:
+        state = json.loads((state_dir() / 'github-prs.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    return state if isinstance(state, dict) and state.get('paused') else None
+
+
+def _clean_path(name: str) -> str:
+    """Slashes forward, no leading ./ — the worktree-relative spelling the checks expect."""
+    text = str(name).replace('\\', '/').strip()
+    while text.startswith('./'):
+        text = text[2:]
+    return text
+
+
+def _clean_test(name: str) -> str:
+    """Canonical test spelling: tests/<file> relative to system/, however the caller wrote it."""
+    text = _clean_path(name)
+    if text.startswith('system/'):
+        text = text[len('system/'):]
+    return text
+
+
 def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> dict:
     record = _record_path(request_id)
     with locked(request_id):
         workspace = _normalise_workspace(json.loads(record.read_text()))
         root = _workspace_path(workspace['path']).resolve()
+        files = [_clean_path(name) for name in (files or [])]
+        tests = [_clean_test(name) for name in (tests or [])]
         if not files or len(files) > 40:
             raise ValueError('Specify 1 to 40 changed source files')
         for name in files:
@@ -231,7 +266,17 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
             if (not name.startswith(ALLOWED) or '..' in Path(name).parts or path.is_symlink()
                     or not path.resolve().is_relative_to(root) or not path.is_file()
                     or any(part.startswith('.') for part in Path(name).parts)):
-                raise ValueError('Only explicit source, test and documentation files can be published')
+                why = ('it is not a file in this workspace' if not (root / name).is_file()
+                       else 'files publish from ' + ', '.join(ALLOWED))
+                raise ValueError(f'Only explicit source, test and documentation files can be published: '
+                                 f'{name!r} was refused ({why}). Give worktree-relative paths such as '
+                                 f'"system/gbox/mercs_bot.py"')
+        python_tests = [t for t in tests if PYTHON_TEST.fullmatch(t)]
+        node_tests = [t for t in tests if t not in python_tests and NODE_TEST.fullmatch(t)]
+        for name in set(tests) - set(python_tests) - set(node_tests):
+            raise ValueError(f'Tests must be named files inside system/tests: {name!r} was refused. '
+                             f'Name each as "tests/test_<name>.py" (or "tests/<name>.test.cjs" for a '
+                             f'node check), relative to system/')
         from .hermes_payload_guard import refusals, worktree_inspector
         refused = refusals(files, worktree_inspector(root))
         if refused:
@@ -240,18 +285,20 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
         # The executed regression files are part of the handoff, even when the
         # caller supplied them only in tests rather than repeating them in files.
         files = list(dict.fromkeys(files))
+        for name in tests:
+            path = root / 'system' / name
+            if path.is_symlink() or not path.resolve().is_relative_to(root / 'system') or not path.is_file():
+                raise ValueError(f'Tests must be named files inside system/tests: {name!r} is not a file '
+                                 f'in this workspace (looked at system/{name})')
+            if 'system/' + name not in files:
+                files.append('system/' + name)
         if any(name.endswith('.py') for name in files):
-            if not tests or len(tests) > 10:
-                raise ValueError('Python changes require 1 to 10 focused test files')
-            for name in tests:
-                path = root / 'system' / name
-                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
-                        or not path.resolve().is_relative_to(root / 'system') or not path.is_file()):
-                    raise ValueError('Tests must be named files inside system/tests')
-                if 'system/' + name not in files:
-                    files.append('system/' + name)
-            if len(files) > 40:
-                raise ValueError('Source and focused test files together must fit the 40-file handoff')
+            if not python_tests or len(python_tests) > 10:
+                raise ValueError('Python changes require 1 to 10 focused test files: name each as '
+                                 '"tests/test_<name>.py", relative to system/')
+        if len(files) > 40:
+            raise ValueError('Source and focused test files together must fit the 40-file handoff')
+        if any(name.endswith('.py') for name in files):
             dirty = set(_run(['git', 'diff', 'HEAD', '--name-only', '--',
                               'system/gbox/', 'system/tests/'], root).splitlines())
             dirty.update(_run(['git', 'ls-files', '--others', '--exclude-standard', '--',
@@ -266,21 +313,14 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
         checks = []
         system = root / 'system'
         env = os.environ | {'PYTHONPATH': str(system)}
-        if any(name.endswith('.py') for name in files):
-            if not tests or len(tests) > 10:
-                raise ValueError('Python changes require 1 to 10 focused test files')
-            for name in tests:
-                path = system / name
-                if (not re.fullmatch(r'tests/test_[\w-]+\.py', name) or path.is_symlink()
-                        or not path.resolve().is_relative_to(system) or not path.is_file()):
-                    raise ValueError('Tests must be named files inside system/tests')
+        if python_tests:
             python = Path(__file__).resolve().parents[1] / '.venv-linux-aarch64/bin/python'
             if not python.exists():
                 import sys
                 python = Path(sys.executable)
-            checks.append(_run([str(python), '-m', 'pytest', *tests, '-q'], system, timeout=180, env=env)[-4000:])
+            checks.append(_run([str(python), '-m', 'pytest', *python_tests, '-q'], system, timeout=180, env=env)[-4000:])
         for name in files:
-            if name.endswith('.js'):
+            if name.endswith(('.js', '.cjs', '.mjs')):
                 checks.append(_run(['node', '--check', name], root))
         _run(['git', 'add', '--', *files], root)
         staged = _run(['git', 'diff', '--cached', '--name-only'], root).splitlines()
@@ -295,6 +335,13 @@ def publish(request_id: str, title: str, files: list[str], tests: list[str]) -> 
         commit = _run(['git', 'rev-parse', 'HEAD'], root)
         from . import hermes_device_work
         provenance = hermes_device_work.publication_provenance(request_id)
+        if prs_paused():
+            # The branch is on GitHub for review; no PR is created or edited (an open one follows the push itself).
+            workspace.update(commit=commit, url=f"https://github.com/{REPOSITORY}/tree/{workspace['branch']}",
+                             pr_number=None, pr_state='paused', base_head=_run(['git', 'rev-parse', 'origin/main'], root),
+                             checks=checks, files=files, published_at=time.time(), provenance=provenance)
+            record.write_text(json.dumps(workspace, indent=2))
+            return workspace
         local = any(r['device_id'] not in ('unknown', 'mixed') and not r['device_id'].startswith('provider:')
                     for run in provenance.get('runs', []) for r in run.get('routes', []))
         note = hermes_device_work.pr_note(provenance)
