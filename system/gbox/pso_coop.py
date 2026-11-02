@@ -748,12 +748,17 @@ def movement_keys(player, destination):
             4: ["ldown"], -4: ["ldown"], -1: ["lup", "lright"], -2: ["lright"], -3: ["ldown", "lright"]}[turn]
 
 
+RECENTER_S = 2.0            # a pad's L reset is at most this frequent while its actor walks straight
+RECENTER_TURN_DEG = 45      # an actor turning this far since its last reset gets one immediately
+
+
 class Controller:
     def __init__(self, reader, inputs, maps):
         self.reader, self.inputs, self.maps = reader, inputs, maps
         self.goals, self.last_attack, self.enemy_hp = {}, {}, {}
         self.damage, self.kills, self.attacks, self.blocked = 0, 0, 0, 0
         self.cooldown = {}
+        self.recentered = {}
         self.approaches = {}
         self.weapon_ranges = WeaponRanges(getattr(reader, 'ad', None))
         self.engagements = Engagements()
@@ -888,6 +893,27 @@ class Controller:
                    clearance_verified=False,dynamic_passability_verified=False,attempts=current['attempts'])
         return destination
 
+    def recenter(self, state, now):
+        """L-reset a pad's camera only when pad-space may have drifted from its actor's heading.
+
+        PSO's L reset makes pad-relative forward match the actor's native heading, and the
+        trailing camera keeps that true while the actor walks. Resetting both pads every tick
+        showed as constant reframing and froze movement .20 s per tick (operator 2026-11-02):
+        reset a pad only when its last reset is stale or its actor has turned since. Returns
+        True when any pad was reset, so the caller re-reads the moved-on world."""
+        due = []
+        for slot, player in state.get("players", {}).items():
+            heading = player.get("heading_deg")
+            last = self.recentered.get(slot)
+            if (last is None or now - last[0] >= RECENTER_S or heading is None
+                    or abs(delta(heading, last[1])) >= RECENTER_TURN_DEG):
+                due.append(slot)
+                self.recentered[slot] = (now, heading if heading is not None else 0.0)
+        if due:
+            self.inputs.hold([(slot, ["l"], .08) for slot in due])
+            solo.wait(.20 / self.inputs.speed(), self.inputs.stopped)
+        return bool(due)
+
     def tick_town(self, state):
         identity = self.town.bind(state)
         if identity is None:
@@ -895,11 +921,12 @@ class Controller:
         # A held route must release all inputs, including camera recentering.
         if not self.town.plan(state, time.monotonic()):
             return False
-        self.inputs.hold([(slot, ["l"], .08) for slot in (1, 2)])
-        solo.wait(.20 / self.inputs.speed(), self.inputs.stopped)
-        fresh = self.reader.snapshot()
-        if self.town.bind(fresh) != identity:
-            return False
+        if self.recenter(state, time.monotonic()):
+            fresh = self.reader.snapshot()
+            if self.town.bind(fresh) != identity:
+                return False
+        else:
+            fresh = state
         waypoints = self.town.plan(fresh, time.monotonic())
         commands = [(slot, movement_keys(fresh["players"][slot], point), self.town.pulse_seconds(slot))
                     for slot, point in waypoints.items()]
@@ -935,16 +962,15 @@ class Controller:
         commands, moves, attack_rows, margin_slots = [], {}, {}, []
         steering = {}
         envelopes = {slot: self.weapon_ranges.for_player(state, slot) if enemies else FALLBACK for slot in (1, 2)}
-        # Recenter independently. PSO's L camera reset makes pad-relative forward
-        # correspond to the actor's native heading. Re-read before choosing input.
-        self.inputs.hold([(slot, ["l"], .08) for slot in (1, 2)])
-        solo.wait(.20 / self.inputs.speed(), self.inputs.stopped)
-        fresh = self.reader.snapshot()
-        if (not fresh.get("verified") or (fresh.get("episode"), fresh.get("floor")) !=
-                (state.get("episode"), state.get("floor"))):
-            return False
-        state = fresh
-        enemies = [e for e in state["entities"] if e.get("kind") == "enemy" and e.get("hp", 0) > 0]
+        # Recenter only on drift (see recenter()); after a reset the world moved
+        # on during the hold, so choose input from a fresh read.
+        if self.recenter(state, now):
+            fresh = self.reader.snapshot()
+            if (not fresh.get("verified") or (fresh.get("episode"), fresh.get("floor")) !=
+                    (state.get("episode"), state.get("floor"))):
+                return False
+            state = fresh
+            enemies = [e for e in state["entities"] if e.get("kind") == "enemy" and e.get("hp", 0) > 0]
         field_revision = self.field.revision
         for slot, player in state["players"].items():
             self.combat_status.pop(slot,None)
