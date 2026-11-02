@@ -705,6 +705,21 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
+def test_p1_prefers_the_door_to_an_unvisited_room_not_the_backtrack(tmp_path):
+    """Forward-only progression: given a door back to a VISITED room and a door to
+    an unvisited/unknown one, P1 drives through the forward (unvisited) door - it
+    does not backtrack toward the spawn hub."""
+    ctrl = _controller(tmp_path)
+    back = {"class": "TObjDoor", "x": -100., "z": 0., "room": 10}   # learned: connects 10<->5 (both visited)
+    fwd = {"class": "TObjDoor", "x": 100., "z": 0., "room": 10}     # forward / unknown destination
+    st = _coop_room([back, fwd], p1=(0., 0.))
+    ctrl.door_links[("TObjDoor", -100.0, 0.0)] = {5, 10}
+    ctrl.p1_visited = {5, 10}
+    ctrl._p1_room = 10
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=100.)
+    assert dest[0] > 100.                                          # commits through the forward door
+
+
 def test_traversed_door_is_cooled_so_p1_does_not_immediately_recross(tmp_path):
     """Cross-room anti-ping-pong: once P1 walks through a door (its room changes),
     that connector is cooled so P1 heads onward instead of bouncing back."""
