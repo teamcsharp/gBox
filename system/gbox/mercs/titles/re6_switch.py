@@ -1587,7 +1587,7 @@ DYING_TABLETS, DYING_HP, DYING_GAP_S = False, 1, 1.0   # off: RE6 takes no table
 # Not reaching 1 health in a crowd: with CROWD_TABLET_N within CROWD_TABLET_R a tablet already at CROWD_TABLET_HP; in
 # crowd control with CC_BACK_N within CC_BACK_R the kicks and quick shots carry the stick back (stats cc_backouts).
 CROWD_TABLET_N, CROWD_TABLET_R, CROWD_TABLET_HP = 4, 300.0, 0.85
-CROWD_BACK_S = 2.5                        # crowd_4_in_2m: while a flanking cluster is still within the backout's reach
+CROWD_BACK_S = 4.0                        # crowd_4_in_2m: while a flanking cluster is still within the backout's reach
 TABLET_LOWER_S = 0.3                    # R only this long after ZL was last held
 # Eat enough, never more (operator 2026-10-28: "he's not eating enough health capsules to heal himself. Make sure that
 # they eat enough health capsules to regain their health when they eat them, but not any more than that"): a tablet is

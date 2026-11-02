@@ -3543,3 +3543,33 @@ def test_crowd4_tablet_still_works_when_no_cluster_is_in_the_backout():
     # (the tablet fired, which means the tablet branch ran -- over-suppression is the bug, not the tablet window)
     assert bot.stats.get("tablet_presses", 0) >= 1 or tablet_presses >= 1, \
         "tablet did not fire with no cluster in the backout (over-suppressed)"
+
+
+# --- crowd_4_in_2m: the extended CROWD_BACK_S window keeps the tablet suppressed longer ---------------------------
+# Live data (GET /api/mercs/damage-clusters?game=115f9cdbba115432, cluster crowd_4_in_2m, 5 hits):
+#   3 of 5 examples have decision="raise" with enemies at 0.0 m from the front, the bot holding zl.
+#   The bot returns to raise/engage within ~2.5 s of the backout, re-entering the cluster before it thins.
+#   Extending CROWD_BACK_S to 4.0 s keeps the tablet suppressed through the full raise→engage→re-backout
+#   cycle, so the bot clears the flanking cluster before re-raising the gun.
+
+def test_crowd_back_s_window_is_extended_to_four_seconds():
+    """#5049 (crowd_4_in_2m): CROWD_BACK_S must be >= 4.0 s to cover the raise→engage cycle that
+    re-enters the flanking cluster at 0.0 m (3 of 5 live examples, decision=raise, held=zl)."""
+    from gbox.mercs.titles import re6_switch as R
+    assert R.CROWD_BACK_S >= 4.0, \
+        f"CROWD_BACK_S={R.CROWD_BACK_S} < 4.0 s: the raise→engage cycle re-enters the cluster before it thins"
+
+
+def test_tablet_still_suppressed_during_extended_crowd_back_window():
+    """#5049 (crowd_4_in_2m): with a flanking cluster of four within 2 m and low HP, the tablet is
+    suppressed for the full CROWD_BACK_S window (4 s) even though HP is below the threshold. The
+    tablet resumes the moment the cluster thins below four."""
+    bot, clock, snap = brain(round_guest(hp=400, tablets=7, enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot._cc_since = clock[0]  # crowd control just started
+    acts = run(bot, snap, clock, 40)
+    tablet_taps = [a for a in acts if a.get("tap") == "r"]
+    # within the 4 s window (40 ticks = 4 s at 10 Hz), the tablet is suppressed
+    # (the flanking cluster of four is still within CC_CROWD_R and _cc_since is fresh)
+    assert not tablet_taps or len(tablet_taps) <= 1, \
+        f"tablet fired {len(tablet_taps)} times during the CROWD_BACK_S window with a 4-enemy cluster: {acts}"
