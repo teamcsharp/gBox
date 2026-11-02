@@ -1777,6 +1777,53 @@ def test_a_hurt_ganado_on_the_ground_is_aimed_low_and_never_shot_over_from_the_p
 
 
 
+def test_a_point_blank_winding_up_ganado_is_shot_before_a_distant_one():
+    """Operator 2026-11-02 (#7444): "I need Leon more proactive with dispatching these opponents who are in the process
+    of trying to dispatch him. He needs to get them before they get him." Live he ran at a walker 9354 away while a
+    Ganado winding up a swing stood in his face. The point-blank wind-up is the target, the gun goes up at it, and the
+    shots land on it - he never runs off at the distant one."""
+    now = [0.0]
+    m = world([((0, 0, 1000), True), ((0, 0, 9354), True)], room=0x400)      # a swinger in his face, a walker 9.3 m off
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_SWING)              # the near one winding up a swing
+    act_state(m, 2, (1, 0x03, 0, 0))                                         # the distant one only walking
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    first = run(bot, m, now, 0.0)[0]
+    assert "r" in first["hold"] and not (first["hold"] & {"up", "b"})        # gun up at slot 1, not running at the far one
+    assert bot.aim["slot"] == 1
+    acts = run(bot, m, now, B.PITCH_AFTER + 0.05, 3)                         # the aim pose up: fire
+    assert any("a" in a.get("hold", set()) for a in acts) and bot.target_slot == 1
+    assert bot.stats["fire_gate"] == "on him (interrupt)" and bot.stats["interrupt_fires"] >= 1
+    assert "going after the nearest enemy" not in (bot.stats.get("directive_status") or "")
+
+
+def test_the_gun_stays_up_to_fire_into_a_point_blank_attacker_not_dropped_to_turn():
+    """The "fire_gate: turning: hold" the operator saw: past AIM_KEEP_ERR Leon drops the gun to body-turn. For a
+    point-blank Ganado winding up in his front cone the gun stays up and fires into him instead (#7444) - the swing is
+    interrupted, not waited out while the gun comes back up."""
+    now = [0.0]
+    m = world([((0, 0, 900), True)], room=0x400)                             # right in his face, winding up
+    act_state(m, 1, (1, 0x26, 1, 0), ev=B.threats_ram.EV_SWING)
+    facing(m, 0.0)
+    bot = B.Bot(m, clock=lambda: now[0], nav=False)
+    run(bot, m, now, 0.0, 3)                                                 # gun up on him in front
+    assert bot.r_since is not None
+    facing(m, 0.58)                                                          # now 0.58 rad off: past AIM_KEEP_ERR (0.55)
+    act = run(bot, m, now, 0.3, 1)[0]
+    assert "r" in act["hold"]                                                # ... yet inside INTERRUPT_CONE: gun stays up
+    assert bot.stats["fire_gate"] != "turning: hold" and bot.stats["evades"] == 0
+    # the same angle at a walker that far off, no wind-up: the gun is dropped to body-turn as before (a regression guard)
+    now2 = [0.0]
+    m2 = world([((0, 0, 900), True)], room=0x400)
+    act_state(m2, 1, (1, 0x03, 0, 0))
+    facing(m2, 0.0)
+    bot2 = B.Bot(m2, clock=lambda: now2[0], nav=False)
+    run(bot2, m2, now2, 0.0, 3)
+    facing(m2, 0.58)
+    act2 = run(bot2, m2, now2, 0.3, 1)[0]
+    assert "r" not in act2["hold"] and bot2.stats["fire_gate"] == "turning: hold"
+
+
 def test_while_the_operator_has_the_pad_leon_holds_nothing_and_learns_nothing():
     # gbox.pad_takeover: the operator picks up the pad - the bot yields and resumes from a clean hand
     now = [0.0]
