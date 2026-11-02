@@ -704,6 +704,21 @@ def test_two_panel_room_is_split_so_both_panels_are_held_at_once(tmp_path):
     assert p1_dest == (20., 0.) and p2_dest == (200., 0.) and p1_dest != p2_dest
 
 
+def test_leader_drives_forward_even_when_the_buddy_is_in_another_room(monkeypatch, tmp_path):
+    """P1 leads decisively and never idles: with P2 off in another room (the live
+    case where P2 ran ahead and P1 sat wedged), P1 still receives forward input."""
+    observed = _coop_room([{"class": "TObjDoorKey", "x": -120., "z": 70., "room": 10}])
+    observed["players"][2]["room"] = 99                     # buddy far away in another room
+    sent = []
+    inputs = SimpleNamespace(hold=lambda c: sent.append(c), speed=lambda: 1, stopped=lambda: False,
+                             stats={}, ad=None)
+    ctrl = C.Controller(SimpleNamespace(snapshot=lambda: copy.deepcopy(observed), ad=None), inputs, C.Maps(tmp_path))
+    monkeypatch.setattr(P, "wait", lambda *_: None)
+    ctrl.tick(observed)
+    p1_moves = [c for batch in sent for c in batch if c[0] == 1 and c[1] not in (["l"], ["a"])]
+    assert p1_moves                                         # P1 led forward instead of waiting on the buddy
+
+
 def test_wall_wedge_recovery_backs_a_stalled_buddy_off_and_clears_on_progress(tmp_path):
     """A buddy pinned on geometry (a goal but no translation) backs off and tries
     another octant; one that is making progress is left to approach normally."""
