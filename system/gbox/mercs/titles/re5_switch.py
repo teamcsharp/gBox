@@ -3729,7 +3729,9 @@ class Bot:
         if motion in MOTION_HELD and not self._was_held:
             self._grab_at = now                          # a grab began (hits_after_windup)
         self._was_held = motion in MOTION_HELD
-        stuck = self.held(p, now) and (motion is None or near > RAMPAGE_R)
+        # A known non-grab motion leaves blocked movement to the wall governor.
+        # Treating an empty corridor as a grab interrupts every recovery step.
+        stuck = self.held(p, now) and motion is None
         if held or now < self.break_until or (motion is None and self.grabbed(p, near, now)) or stuck:
             if held:                                         # held, or dying: break free / recover (RAM says so)
                 if not self.in_hold:
