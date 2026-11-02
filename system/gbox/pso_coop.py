@@ -779,7 +779,9 @@ SWARM_FOLLOW_RADIUS = 45.0    # a follower beyond this of the leader closes the 
 SWARM_DEFEND_RADIUS = 90.0    # a follower engages any enemy within this of the leader (attack-dog)
 SWARM_SPREAD = 14.0           # keep at least this off the leader so followers do not stack on him
 BACKTRACK_RADIUS = 45.0       # P1 won't re-pick the door it just entered through when another exit exists
-DOOR_RETRAVERSE_COOLDOWN_S = 10.0  # brief anti-rebounce on a just-crossed door (not a forward block)
+DOOR_RETRAVERSE_COOLDOWN_S = 30.0  # hold a just-crossed door shut so P1 explores the NEW room's forward
+# door instead of re-crossing back; frontier (never-traversed) doors are exempt from cooling, so this only
+# damps the backward connector P1 just came through, never genuine forward progress.
 # A transient host focus/active-window condition (the adapter cannot send input
 # because the game window is not in front) must NEVER end the run - PSO has to keep
 # playing. The loop pauses this long, tries to raise the game window, then retries.
