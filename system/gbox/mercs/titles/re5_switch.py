@@ -3961,10 +3961,13 @@ class Bot:
             return {"hold": ()}
         reach = RUSH_R if self.mode == "rush" else HUNT_R
         if self.mode in ("hunt", "rush") and near > reach and self.aim_since is None:   # hunt / rush: close in on the nearest
-            err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
-            self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
-            self._gun_down()
-            return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
+            # #5078 walk-in-crowd: 4+ on his level within 2 m — the gun stays up; the crowd fire keeps blasting
+            crowd_n = sum(1 for e in live if flat(e) <= CROWD_HELD_R and abs(e["pos"][1] - py) <= LEVEL_DY)
+            if not (CROWD_HELD_FIGHT and crowd_n >= CROWD_HELD_N):
+                err = wrap(heading(near_e["pos"][0] - px, near_e["pos"][2] - pz) - p["rot"])
+                self.doing, self.why = "walk", f"{self.mode}: the nearest {near / 100:.1f} m"
+                self._gun_down()
+                return {"hold": ("lup",) + self._turn(err, TURN_TOL)}
         self._track_approach(p, live, now)
         self._threat_now = self._threat_near(p, live)
         crowded = NEAR_FOCUS and any(flat(e) <= RAMPAGE_R and abs(e["pos"][1] - py) <= LEVEL_DY for e in live)
@@ -4014,9 +4017,12 @@ class Bot:
         body_err = wrap(heading(foot[0] - px, foot[2] - pz) - p["rot"])
         self.stats["target_dist"] = round(dist)
         if dist > ENGAGE_R:                                  # nobody in range: walk to him
-            self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
-            self._gun_down()
-            return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
+            # #5078 walk-in-crowd: 4+ on his level within 2 m — the gun stays up; the crowd fire keeps blasting
+            crowd_n = sum(1 for e in live if flat(e) <= CROWD_HELD_R and abs(e["pos"][1] - py) <= LEVEL_DY)
+            if not (CROWD_HELD_FIGHT and crowd_n >= CROWD_HELD_N):
+                self.doing, self.why = "walk", f"nearest target {dist / 100:.1f} m"
+                self._gun_down()
+                return {"hold": ("lup",) + self._turn(body_err, TURN_TOL)}
         motion = p.get("motion")
         if self.aim_since is None:
             if now < self.backoff_until:                     # a back-off under way (a crowd's burst ended it): finish it

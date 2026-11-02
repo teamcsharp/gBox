@@ -275,6 +275,25 @@ def test_crowd_held_wiggle_fixture_fights_instead_of_wiggling():
         f'never fought (no raise/aim/fire after leaving the held branch): {doings}'
 
 
+def test_crowd_walk_fixture_keeps_the_gun_up_while_walking():
+    """#5078 walk-in-crowd: 5 within 2 m, not held — the bot was walking with the gun down (bot_decide 'walk', 166 hits).
+
+    The batch's examples show the bot walking through a crowd (4+ within 2 m) with the gun down, taking hits while it
+    could have been firing. The fix: when CROWD_HELD_N+ are on his level within CROWD_HELD_R, the walk-with-gun-down
+    paths in _decide are skipped — the gun stays up and the crowd fire (rampage) keeps blasting. Pre-patch this fixture
+    walked 'lup' with the gun down; post-patch the gun stays up (zl) and the bot fights (rampage/aim/fire).
+    """
+    fx = json.loads((FIXTURES / 're5_switch_crowd_walk.json').read_text())
+    result = incident_replay.replay(fx, ticks=15)
+    keys = incident_replay.keys(result)
+    doings = [t['doing'] for t in result['ticks']]
+    # The gun stays up while the bot is in a crowd — no walk-with-gun-down
+    assert 'lup' not in keys, f'walked with the gun down in a crowd: {doings}'
+    assert 'zl' in keys, f'gun never raised (fell out of the fight): {doings}'
+    assert 'raise' in doings or 'aim' in doings or 'fire' in doings or 'rampage' in doings, \
+        f'never fought (no raise/aim/fire/rampage): {doings}'
+
+
 def test_a_fixture_needs_its_schema_and_a_replayable_title():
     with pytest.raises(ValueError):
         incident_replay.replay({'schema': 'other'})
