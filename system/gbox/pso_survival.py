@@ -43,6 +43,22 @@ BOSS_FLOORS = frozenset({11, 12, 13, 14})
 _guard = threading.Lock()
 
 
+def _ensure_pso_speed_fresh():
+    """pso_speed is NOT a BOT_MODULE, so the worker's hot-reload never refreshes it and a
+    stale cached copy (an older scaffold without probe_tick) sticks. nav importlib.reloads
+    THIS module (pso_survival) on every bot-reload, so reload pso_speed here too -> its
+    phase-(a) attack-state probe runs the current code live, no service restart needed."""
+    try:
+        import importlib
+        from . import pso_speed
+        importlib.reload(pso_speed)
+    except Exception:
+        pass
+
+
+_ensure_pso_speed_fresh()
+
+
 def _log_path():
     # Persist under the deployment's gbox-data (same home mercs/pso knowledge uses).
     try:
