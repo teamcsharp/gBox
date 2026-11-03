@@ -807,8 +807,9 @@ COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id
 # then dodges the next tick - so it fights WHILE moving. These bound the behaviour.
 DODGE_DANGER_RADIUS = 58.0    # consider a regular enemy a threat to dodge within this
 DODGE_BOSS_RADIUS = 130.0     # bosses telegraph big attacks - react from much farther out
-DODGE_HOT_RADIUS = 36.0       # a regular enemy closer than this -> prioritise repositioning
-DODGE_BOSS_HOT = 95.0         # a boss closer than this -> prioritise repositioning
+DODGE_HOT_RADIUS = 54.0       # a regular enemy closer than this -> prioritise repositioning (operator 11-03: dodge FAR more readily)
+DODGE_BOSS_HOT = 120.0        # a boss closer than this -> prioritise repositioning (bosses hit hard; evade almost always)
+ATTACK_CADENCE_S = 0.34       # min time between attack presses at 1x (operator 11-03: attack FASTER/more often; was .52)
 DODGE_CRITICAL = 20.0         # this close -> blend straight repulsion in (gain spacing, not just strafe)
 DODGE_FACING_CONE = 55.0      # enemy heading within this of its bearing-to-player = aimed at the bot
 DODGE_STEP = 30.0             # how far ahead the strafe waypoint is placed (telemetry/steering)
@@ -1761,7 +1762,7 @@ class Controller:
             self.combat_status[slot].update(target=target.get("class"), distance=round(dist, 2),
                                             heading_error=round(angle, 2), role="swarm_defend")
             if dist <= envelope["horizontal"] and vertical_ok and abs(angle) <= envelope["horizontal_half_angle"]:
-                if now - self.last_attack.get(slot, 0) >= .52 / self.inputs.speed():
+                if now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / self.inputs.speed():
                     commands.append((slot, ["a"], .12))
                     attack_rows[slot] = {"attempts": 0}
                 return
@@ -2378,8 +2379,10 @@ class Controller:
             if type(eh) in (int, float) and d > 1:
                 bearing = math.degrees(math.atan2(px - ex, pz - ez))
                 aimed = abs(delta(bearing, eh)) <= DODGE_FACING_CONE
+            # Operator 11-03 (dodge far more readily): hot when the enemy is close, a boss
+            # in range, OR aiming at the bot ANYWHERE in its danger radius ("taking fire").
             hot = (d <= DODGE_HOT_RADIUS * (1.0 + pen) or (boss and d <= DODGE_BOSS_HOT)
-                   or (aimed and d <= radius * 0.8))
+                   or aimed)
             w = (1.0 / max(d, 6.0)) * (2.4 if boss else 1.0) * (1.7 if aimed else 1.0)
             threats.append((ex, ez, d, w, aimed, boss, hot))
         if not threats:
@@ -2456,6 +2459,41 @@ class Controller:
                 'x': float(wp['x']), 'z': float(wp['z']),
                 'y': float(wp.get('y') if type(wp.get('y')) in (int, float) else (player.get('y') or 0.)),
                 'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
+
+    def survival_tick(self, state):
+        """NEVER-DIE (operator 11-03: P2 died and stayed dead). The survival write-side
+        (pso_survival: infinite Scape Dolls + instant revive + death log) lives in
+        pso_master_build, which the running worker CANNOT hot-reload (not a BOT_MODULE in
+        the loaded hot_reload) - so it was never actually live. pso_coop IS hot-reloadable,
+        so we drive the SAME write-side here for BOTH players every tick; a plain bot-reload
+        (no worker restart) brings never-die live. Fully fail-soft: it must NEVER raise into
+        the loop, and it keeps the death log my DeathMemory consumer reads populated."""
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if ad is None:
+            return
+        st = getattr(self.inputs, 'stats', None)
+        try:
+            from . import pso_survival
+        except Exception as exc:                       # module absent -> cannot help; never raise
+            if isinstance(st, dict):
+                st['survival_import_error'] = str(exc)[:120]
+            return
+        for player_index in (0, 1):                    # 0 = P1, 1 = P2
+            suffix = 'p1' if player_index == 0 else 'p2'
+            try:
+                rep = pso_survival.apply_survival(ad, player_index)
+            except Exception as exc:                   # fail-soft per player; keep playing
+                if isinstance(st, dict):
+                    st['survival_error_%s' % suffix] = str(exc)[:120]
+                continue
+            if isinstance(st, dict) and isinstance(rep, dict):
+                st['survival_ok_%s' % suffix] = int(bool(rep.get('ok')))
+                if rep.get('scapedoll') is not None:
+                    st['mb_scapedoll_%s' % suffix] = rep['scapedoll']
+                st['mb_scapedoll_ok_%s' % suffix] = int(bool(rep.get('scapedoll_ok')))
+                if type(rep.get('revives')) in (int, float):
+                    st['mb_revives_%s' % suffix] = rep['revives']
+                st['mb_downed_%s' % suffix] = int(bool(rep.get('downed')))
 
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
@@ -2641,6 +2679,9 @@ class Controller:
     def tick(self, state):
         if not state.get("verified") or len(state.get("players", {})) != 2:
             return False
+        # NEVER-DIE first, every tick, for BOTH players (operator: P2 must never stay
+        # dead). Driven from pso_coop because pso_master_build's copy can't hot-reload.
+        self.survival_tick(state)
         if (self.town_enabled and state.get("phase") == 14 and state.get("episode") == 1
                 and state.get("floor") == 0):
             return self.tick_town(state)
@@ -2876,7 +2917,7 @@ class Controller:
                 elif recovery_goal is not None:
                     destination = recovery_goal
                 elif dist <= envelope['horizontal'] and vertical_ok and abs(angle) <= envelope['horizontal_half_angle']:
-                    if now - self.last_attack.get(slot, 0) >= .52 / self.inputs.speed():
+                    if now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / self.inputs.speed():
                         commands.append((slot, ["a"], .12))
                         attack_rows[slot] = row
                     continue

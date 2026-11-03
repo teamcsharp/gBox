@@ -1445,6 +1445,32 @@ def test_weak_menu_visible_on_a_field_floor_does_not_freeze_play(monkeypatch):
     assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 0)) is True
 
 
+def test_survival_tick_keeps_both_players_unkillable_and_mirrors_flat_keys(tmp_path, monkeypatch):
+    """NEVER-DIE: pso_coop drives pso_survival.apply_survival directly (because
+    pso_master_build can't hot-reload) for BOTH players every tick, fail-soft, and
+    mirrors the survival report to flat mb_* / survival_ok keys."""
+    from gbox import pso_survival
+    seen = []
+    def fake(ad, player_index, m=None, p=None, inv_rows=None):
+        seen.append(player_index)
+        return {"ok": True, "scapedoll": 20, "scapedoll_ok": True,
+                "revives": player_index + 1, "downed": player_index == 1}
+    monkeypatch.setattr(pso_survival, "apply_survival", fake)
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    ctrl.survival_tick(state(floor=7))
+    assert seen == [0, 1]                                              # both players, P1 then P2
+    s = ctrl.inputs.stats
+    assert s["survival_ok_p1"] == 1 and s["survival_ok_p2"] == 1
+    assert s["mb_scapedoll_p1"] == 20 and s["mb_scapedoll_ok_p2"] == 1
+    assert s["mb_revives_p1"] == 1 and s["mb_revives_p2"] == 2
+    assert s["mb_downed_p1"] == 0 and s["mb_downed_p2"] == 1           # P2 was downed -> revive fired
+    # Fail-soft: a raising write-side must NOT propagate into the tick loop.
+    monkeypatch.setattr(pso_survival, "apply_survival",
+                        lambda ad, pi, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    ctrl.survival_tick(state(floor=7))                                 # must not raise
+    assert ctrl.inputs.stats.get("survival_error_p1")
+
+
 def test_boss_target_row_prioritises_the_advisor_weak_point(tmp_path):
     """BOSS DEFEAT wiring: when the advisor is active the combat loop targets the boss
     weak point (an enemy-shaped row the aim/fire pipeline uses); off-boss it is None so
