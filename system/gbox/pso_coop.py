@@ -1741,12 +1741,20 @@ class Controller:
         return best
 
     def _next_door_toward(self, from_room, to_room):
-        """BFS the learned area graph for a room path from_room -> to_room; return the
-        door_str on the FIRST edge (from_room -> its next room toward the goal), or None.
-        Lets P2 route door-by-door to the switch's room through the exact doors P1's
-        crossings recorded, instead of straight-driving into a boundary wall."""
+        """BFS the learned area graph (treated UNDIRECTED - a door P1 crossed one way is
+        traversable the other) for a room path from_room -> to_room, returning the
+        door_str on the FIRST edge, or None. Routes P2 room-by-room through the exact
+        doors P1's crossings recorded (seeding from P1's real traversal) even when P1
+        recorded only the forward direction - instead of straight-driving into a wall."""
         graph = self._area_graph
-        if from_room is None or from_room == to_room or from_room not in graph:
+        if from_room is None or from_room == to_room:
+            return None
+        adj = {}
+        for a, doors in graph.items():
+            for dstr, b in doors.items():
+                adj.setdefault(a, []).append((b, dstr))
+                adj.setdefault(b, []).append((a, dstr))     # doors are bidirectional
+        if from_room not in adj:
             return None
         from collections import deque
         prev = {from_room: (None, None)}
@@ -1755,7 +1763,7 @@ class Controller:
             r = q.popleft()
             if r == to_room:
                 break
-            for dstr, nr in graph.get(r, {}).items():
+            for nr, dstr in adj.get(r, []):
                 if nr not in prev:
                     prev[nr] = (r, dstr)
                     q.append(nr)
@@ -1769,13 +1777,15 @@ class Controller:
         return first_door
 
     def _live_gate_for(self, state, room, door_str):
-        """The live gate entity in `room` whose gkey matches door_str, or None."""
+        """The live gate entity whose gkey matches door_str (in ANY room - a connector
+        door's single room-id tag is unreliable, which is why a room OWNS its doors via
+        the graph; the door's physical coords are what P2 drives to), or None."""
         for e in state.get('entities', ())[:512]:
             try:
                 gk = (str(e.get('class')), round(float(e['x']), 1), round(float(e['z']), 1))
             except (KeyError, TypeError, ValueError):
                 continue
-            if e.get('room') == room and str(gk) == door_str:
+            if str(gk) == door_str:
                 return e
         return None
 
