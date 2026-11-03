@@ -3347,6 +3347,18 @@ class Controller:
             # deferred until the area is fully explored. P2 swarm-follows P1. Combat preempts
             # (target set), so this only fires in a cleared room with rooms still to explore.
             if slot == 1 and target is None and self._frontier:
+                _se = getattr(self.inputs, "stats", None)
+                if isinstance(_se, dict):
+                    _se["explore_frontier"] = len(self._frontier)
+                # FLIP THE SWITCH AT A DOOR (operator: "scan the ram and switches"). Delegate
+                # FIRST to drive_forward, which detects the room's floor-panel/laser-fence
+                # SWITCH (TLazerFenceSw / TObjDoorKey), WALKS to it and PRESSES A, then walks
+                # THROUGH the door it gates (the stage-flag force-unlock in maybe_force_unlock
+                # opens it), and already prefers UNVISITED rooms. So doors get unlocked instead
+                # of the bot standing at them. Only if it finds NO forward affordance here do we
+                # route straight toward the nearest frontier room to cross to unexplored areas.
+                if self.drive_forward(state, slot, player, now, commands, moves, steering, fallback_slots):
+                    continue
                 fw = self._frontier_waypoint(state, player)
                 if fw is not None:
                     nav = self.maps.get(state, player)
@@ -3361,9 +3373,7 @@ class Controller:
                     commands.append((slot, keys, .18))
                     moves[slot] = (player, waypoint, nav, False)
                     steering[slot] = (player, fw, "explore_unwedge" if escaping else "explore_frontier")
-                    _se = getattr(self.inputs, "stats", None)
                     if isinstance(_se, dict):
-                        _se["explore_frontier"] = len(self._frontier)
                         _se["explore_frontier_dist"] = round(math.hypot(fw[0] - player["x"], fw[1] - player["z"]), 1)
                     continue
             nav = self.maps.get(state, player)
