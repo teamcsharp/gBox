@@ -82,9 +82,10 @@ WEAKPOINT_SPEC = {
     "Dragon":      dict(aim="head", element=None, hazard="fire_breath_cone|burrow_eruption",
                         pick="main", note="Hit the HEAD when grounded; dodge the fire-breath cone and the "
                                           "underground burrow then eruption."),
-    "De Rol Le":   dict(aim="exposed_body_segment", element=None, hazard="dive",
-                        pick="nearest", note="Platform fight: hit the exposed body segments / main body "
-                                             "when it surfaces; dodge its dives."),
+    "De Rol Le":   dict(aim="exposed_body_segment", element=None, hazard="mines|dive",
+                        pick="surfaced", note="Platform fight: hit the SURFACED body segment / head (the boss "
+                                              "part above the water line); submerged segments and the TBoss2Mine "
+                                              "adds are not the weak point - avoid the mines, dodge dives."),
     "Vol Opt":     dict(aim="monitors_then_core", element=None, hazard="electric_floor",
                         pick="volopt", note="Phase 1 destroy the wall monitors/pillars; Phase 2 hit the "
                                             "core's exposed glowing panel/eye; avoid electrified floor tiles."),
@@ -94,8 +95,8 @@ WEAKPOINT_SPEC = {
                                               "dodge grabs and the AoE.",
                         elements=["zonde", "barta", "foie"]),
     "Barba Ray":   dict(aim="exposed_body_head", element=None, hazard="dive|projectiles",
-                        pick="nearest", note="De-Rol-Le-like: hit the exposed body/head when it surfaces; "
-                                             "dodge dives and projectiles."),
+                        pick="surfaced", note="De-Rol-Le-like: hit the SURFACED body/head (the part above the "
+                                              "water line) when it surfaces; dodge dives and projectiles."),
     "Gol Dragon":  dict(aim="head", element=None, hazard="elemental_breath|burrow_eruption",
                         pick="main", note="Dragon-like: hit the HEAD; dodge the elemental breath."),
     "Gal Gryphon": dict(aim="body_when_close", element=None, hazard="charge_ram|projectiles",
@@ -123,6 +124,16 @@ CONFIRMATION_NOTES = {
                            "helpers parked at (0,0,0) with hp_max=0 - EXCLUDED from aiming by _targetable(). Boss "
                            "class scheme = 'TBoss<episode><Name>' CONFIRMED; all start with 'TBoss' so the "
                            "profile's enemy kind catches them.",
+    "live_capture_derolle": "LIVE 2026-11-03 (Ep1 floor 12): class scheme is 'TBoss<index><Name>' (boss ORDER, "
+                            "not episode - De Rol Le = TBoss2Xxx even in Ep1). Entities: 1x 'TBoss2DeRolLe' head "
+                            "(obj 0x80DAF210, vtable 0x804824D0, HP 20000/20000 at +0x32C/+0x2B8, pos y~+7 = "
+                            "surfaced, action_state 4), 10x 'TBoss2Joint' body segments (vtable 0x80482AB0, HP "
+                            "20000 each, parent ptr at +0x3E0 -> the head, positions trailing with y~-9..-30 = "
+                            "submerged), and 8x 'TBoss2Mine' mine ADDS (vtable captured, HP 330, filtered out via "
+                            "ADD_CLASS_SUBSTR). The advisor now aims the greatest-y boss part (the surfaced "
+                            "segment/head) and excludes the mines. Which object holds the AUTHORITATIVE HP (they "
+                            "all read 20000) and the exact surface/submerge phase flag are being pinned by the "
+                            "build agent from the TBoss2DeRolLe/TBoss2Joint update fns.",
     "dragon_disasm": "CONFIRMED by build-agent ELF disasm of the Dragon update fn 0x8002985C: action-state at "
                      "obj+0x326 (u16, TObject-standard: +0x324 control mode, +0x326 action id); states {21,22} are "
                      "the grounded-attack / fire-breath / eruption window (the update sets flag 0x0800 at +0x30 "
@@ -169,6 +180,11 @@ def _read_u16(read, address):
 # Dragon (the Ep2 Dragon-type) is assumed to share them (heuristic until its own live capture).
 ACTION_STATE_OFF = 0x326
 SPECIAL_ACTION_STATES = {"Dragon": {21, 22}, "Gol Dragon": {21, 22}}
+
+# Per-boss ADD / hazard entity classes that are NOT the weak point (the bot should avoid/clear
+# them, not aim at them). Matched as case-sensitive substrings of the live class name. Confirmed
+# live: De Rol Le spawns 'TBoss2Mine' mine adds. Others fill in as each boss is captured.
+ADD_CLASS_SUBSTR = {"De Rol Le": ("Mine",), "Barba Ray": ("Mine",)}
 
 
 def _extractor(ad):
@@ -309,6 +325,16 @@ def _analyze_generic(name, bosses, player, difficulty):
                 action=f"aim_{spec['aim']}", hazard=spec["hazard"], confidence="heuristic")
 
 
+def _analyze_surfaced(name, bosses, player, difficulty):
+    # De Rol Le / Barba Ray: the exposed, damageable part is the body segment/head ABOVE the water
+    # line. Live De Rol Le: the head sits at y~+7 while the submerged body joints are at y~-9..-30,
+    # so the greatest-y boss part is the surfaced weak point (mine adds already filtered out).
+    spec = WEAKPOINT_SPEC[name]
+    target = max(bosses, key=lambda b: b["pos"]["y"])
+    return dict(phase=spec["aim"], target=target, element=spec["element"],
+                action=f"aim_{spec['aim']}", hazard=spec["hazard"], confidence="heuristic")
+
+
 def _analyze_volopt(name, bosses, player, difficulty):
     # Phase 1 = several wall monitors/pillars present -> shoot the nearest living monitor.
     # Phase 2 = the core cube is what remains -> aim its exposed glowing panel (its body pos).
@@ -345,7 +371,8 @@ def _analyze_olga(name, bosses, player, difficulty):
                 action="aim_exposed_core", hazard="adds|aoe", confidence="heuristic")
 
 
-_ANALYZERS = {"volopt": _analyze_volopt, "darkfalz": _analyze_darkfalz, "olga": _analyze_olga}
+_ANALYZERS = {"surfaced": _analyze_surfaced, "volopt": _analyze_volopt,
+              "darkfalz": _analyze_darkfalz, "olga": _analyze_olga}
 
 
 # --------------------------------------------------------------------------- public API
@@ -353,7 +380,7 @@ def _inactive(reason=None):
     out = {"active": False, "boss": None, "phase": None, "weakpoint_pos": None, "weakpoint": None,
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
            "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
-           "boss_hp_frac": None,
+           "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -414,15 +441,22 @@ def boss_target(ad):
         # On a boss floor the enemy-kind entities ARE the boss + its sub-parts/adds. We do NOT
         # filter by HP (the boss HP offset is unverified, so a garbage-0 read must not drop a
         # live boss) - every enemy-kind entity with a finite position is an aim candidate.
-        bosses = []
+        add_subs = ADD_CLASS_SUBSTR.get(name, ())
+        bosses, adds = [], []
         for e in ents:
             if e.get("kind") != "enemy":
                 continue
             pos = _pos(e)
             if pos is None or not _targetable(e, pos):
                 continue
-            bosses.append({"entity": e, "pos": pos})
+            cls = str(e.get("class", ""))
+            if add_subs and any(s in cls for s in add_subs):
+                adds.append({"entity": e, "pos": pos})
+            else:
+                bosses.append({"entity": e, "pos": pos})
 
+        # Presence (-> boss_alive) is driven by the actual BOSS body parts, not the adds, so
+        # lingering mines/adds never keep boss_alive True after the boss itself is gone.
         alive, cleared = _alive_signal(ad, (episode, floor, visit), present=bool(bosses))
         if not bosses:
             # Boss floor with no boss entity this tick: either not spawned yet (alive=True) or
@@ -463,10 +497,12 @@ def boss_target(ad):
                "note": spec["note"], "boss_floor": True, "boss_alive": alive, "boss_cleared": cleared,
                "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
                "action_state": action_state, "boss_special_state": special,
+               "adds": [a["pos"] for a in adds], "add_classes": sorted({a["entity"].get("class") for a in adds}),
                # flat telemetry mirrors
                "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
-               "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state}
+               "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state,
+               "boss_add_count": len(adds)}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -491,5 +527,5 @@ def boss_telemetry(ad):
     adv = boss_target(ad)
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-            "boss_floor", "boss_hp_frac", "boss_action_state")
+            "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count")
     return {k: adv.get(k) for k in keys}

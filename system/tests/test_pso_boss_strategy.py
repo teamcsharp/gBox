@@ -105,14 +105,27 @@ def test_main_body_pick_prefers_largest_hp():
     assert r["weakpoint"]["hp_max"] == 2500 and r["weakpoint_pos"]["x"] == 40.0
 
 
-def test_derolle_nearest_surfaced_segment():
-    # De Rol Le: pick="nearest" -> the segment closest to the player (at origin).
-    ad = build(episode=0, floor=12, enemies=[
-        ("TObjEneDeRolLeBody", 800, 800, (60.0, 0.0, 60.0)),
-        ("TObjEneDeRolLeBody", 800, 800, (8.0, 0.0, 6.0))])
-    r = B.boss_target(ad)
+def test_derolle_targets_surfaced_part_and_excludes_mines():
+    # Live layout: head above the water line (max y), submerged joints (negative y), mine adds.
+    # Aim the surfaced head; exclude the TBoss2Mine adds from the weak point.
+    r = B.boss_target(build(episode=0, floor=12, enemies=[
+        ("TBoss2DeRolLe", 20000, 20000, (175.0, 7.0, 25.0)),     # head, surfaced
+        ("TBoss2Joint", 20000, 20000, (175.0, -13.0, 9.7)),       # submerged body segment
+        ("TBoss2Joint", 20000, 20000, (183.0, -9.0, -71.0)),
+        ("TBoss2Mine", 330, 330, (44.0, 2.0, 35.0))]))            # add -> must be excluded
     assert r["boss"] == "De Rol Le" and r["phase"] == "exposed_body_segment"
-    assert r["weakpoint_pos"]["x"] == 8.0 and r["weakpoint_pos"]["z"] == 6.0
+    assert r["weakpoint"]["class"] == "TBoss2DeRolLe"
+    assert r["weakpoint_pos"] == {"x": 175.0, "z": 25.0, "y": 7.0}
+    assert r["boss_entity_count"] == 3 and r["boss_add_count"] == 1    # 3 body parts, 1 mine filtered
+    assert "mines" in r["hazard"]
+
+
+def test_derolle_picks_the_highest_surfaced_segment():
+    # When a body joint rises above the (submerged) head, THAT segment is the weak point.
+    r = B.boss_target(build(episode=0, floor=12, enemies=[
+        ("TBoss2DeRolLe", 20000, 20000, (175.0, -5.0, 25.0)),     # head submerged
+        ("TBoss2Joint", 20000, 20000, (100.0, 9.0, -20.0))]))      # a segment surfaced higher
+    assert r["weakpoint"]["class"] == "TBoss2Joint" and r["weakpoint_pos"]["y"] == 9.0
 
 
 # --------------------------------------------------------------------------- phased bosses
@@ -317,7 +330,7 @@ def test_boss_telemetry_flat_scalars_only():
     t = B.boss_telemetry(ad)
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
                       "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-                      "boss_floor", "boss_hp_frac", "boss_action_state"}
+                      "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
     assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())
