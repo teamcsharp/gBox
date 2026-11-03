@@ -1213,6 +1213,37 @@ def test_place_p1_across_fence_writes_p1_past_the_fence(tmp_path):
     assert abs(y - 20.0) < 0.01 and x < -420. and abs(z - 485.8) < 0.1   # past the fence, at the fence's y
 
 
+def test_force_fence_collision_off_is_class_verified_and_writes_the_sub_object(tmp_path):
+    """Bounded collision probe: class-VERIFY the fence (object+0x0 -> 'TObjLazerFenceNorm')
+    then write the laser collision sub-object's (+0xA4 -> +0x14) field to 0. Fails closed
+    if the class string doesn't match."""
+    FENCE, CLASS, SUB = 0x80DB1ED0, 0x80445B84, 0x81495B20
+    def rd(a, n):
+        a = int(a)
+        if a == FENCE:
+            return struct.pack(">I", CLASS)
+        if a == CLASS:
+            return (b"TObjLazerFenceNorm" + bytes(max(0, n - 18)))[:n]
+        if a == FENCE + 0xA4:
+            return struct.pack(">I", SUB)
+        if a == SUB + 0x14:
+            return struct.pack(">I", 1)
+        return bytes(n)
+    writes = []
+    ad = SimpleNamespace(read_memory=rd, write_memory=lambda a, d: writes.append((int(a), bytes(d))))
+    ctrl = _controller(tmp_path, ad=ad)
+    ents = [{"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "ptr": hex(FENCE), "kind": "gate"},
+            {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "room": 5, "kind": "gate"}]
+    st = _coop_room(ents, p1=(-420., 485.8), p2=(0., 0.), room=5)
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    addr = ctrl.force_fence_collision_off(st, now=100.)
+    assert addr == SUB + 0x14 and (SUB + 0x14, struct.pack(">I", 0)) in writes and ctrl._fence_coll_before == 1
+    # Fail closed on a class mismatch (all-zero reads -> bad class ptr).
+    ctrl2 = _controller(tmp_path, ad=SimpleNamespace(read_memory=lambda a, n: bytes(n), write_memory=lambda a, d: None))
+    ctrl2._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert ctrl2.force_fence_collision_off(st, now=100.) is None
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
