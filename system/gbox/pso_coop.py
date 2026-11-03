@@ -788,6 +788,10 @@ FENCE_CROSS_OVERSHOOT = 45.0 # P1 aims this far PAST the fence so it commits acr
 P2_PLACE_AFTER_S = 5.0       # P2 can't reach the hold-switch for this long -> RAM-write it onto the switch
 FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it lands in the next room
 P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
+FENCE_GIVEUP_S = 28.0        # ANTI-STALL: attempt a fence hold at most this long, then give up and keep MOVING
+FENCE_RETRY_S = 45.0         # after giving up on a fence, explore/fight this long before re-attempting it
+ADVANCE_STALL_S = 32.0       # PERPETUAL PLAY: no new room for this long (cleared room) -> warp to the next floor
+ADVANCE_WARP_GAP_S = 25.0    # minimum time between native floor warps (don't spam the loader)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -839,6 +843,14 @@ class Controller:
         self._cross_failed = 0      # (B) how many committed crossings gave up (flat telemetry)
         self._fence_obj = None      # two-player hold-fence crossing objective {fence gkey/xz, switch xz/room}
         self._crossed_fences = set()  # fence gkeys P1 has crossed this run (don't re-target)
+        self._fence_cooldown = {}   # ANTI-STALL: fence gkey -> until; gave up on it, explore/fight before retry
+        self._fence_try_fence = None  # the fence gkey the current attempt is on
+        self._fence_try_since = 0.0   # when the current fence attempt started
+        self._fence_try_visited = 0   # visited-room count when the attempt started (to detect real progress)
+        self._fence_giveups = 0       # how many fence attempts gave up (flat telemetry)
+        self._now_ref = 0.0           # latest tick time, so select_fence_objective can honor cooldowns
+        self._last_warp_at = 0.0      # last native floor-advance warp (throttle)
+        self._floor_advances = 0      # how many floor-advance warps fired (flat telemetry)
         self._fence_arm = None      # {gkey, room}: P1 reached the fence; a later room change = crossed it
         self._p2_placed = False     # P2 was RAM-placed onto the hold-switch (flat telemetry)
         self._p2_sw_best = None     # P2's best (smallest) distance to the switch, for the stuck timer
@@ -1741,8 +1753,8 @@ class Controller:
         best = None
         for f in fences:
             fk = ('TObjLazerFenceNorm', round(f['x'], 1), round(f['z'], 1))
-            if fk in self._crossed_fences:
-                continue
+            if fk in self._crossed_fences or self._fence_cooldown.get(fk, 0.0) > self._now_ref:
+                continue                              # crossed, or on anti-stall cooldown (give up, keep moving)
             sw = min(switches, key=lambda s: math.hypot(s['x'] - f['x'], s['z'] - f['z']))
             if math.hypot(sw['x'] - f['x'], sw['z'] - f['z']) > FENCE_PAIR_DIST:
                 continue                              # no hold-switch for this fence
@@ -2029,6 +2041,44 @@ class Controller:
             st['fence_coll_live'] = coll if coll is not None else -1
         return coll == 0
 
+    def advance_on_stall(self, state, now):
+        """PERPETUAL PLAY (operator: never stand still, go area-to-area). When forward
+        progress has STALLED - no NEW room for ADVANCE_STALL_S and the room is clear
+        (nothing to fight) - drive PSO's own native floor transition to the NEXT area
+        via the build agent's verified engine (gbox.pso_fence.advance_floor), so a gate
+        that can't be solved never freezes the party: it warps on and keeps playing,
+        looping the game. Fail-soft (module not shipped / warp refused) and throttled;
+        combat always finishes first. Returns True when a warp was attempted."""
+        if not (state.get('verified') and state.get('phase') == 14 and state.get('floor', 0) > 0
+                and set(state.get('players', {})) == {1, 2}):
+            return False
+        p1 = state['players'].get(1)
+        if not p1 or p1.get('hp', 0) <= 0:
+            return False
+        room = p1.get('room')
+        if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
+               and e.get('room') == room for e in state.get('entities', ())[:512]):
+            return False                                  # fight first; warp only when nothing to fight
+        rec = self.room_dwell.get('_cur')
+        dwell = now - rec['since'] if rec else 0.0
+        if dwell < ADVANCE_STALL_S or now - self._last_warp_at < ADVANCE_WARP_GAP_S:
+            return False
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if ad is None:
+            return False
+        self._last_warp_at = now
+        self._floor_advances += 1
+        try:
+            from .pso_fence import advance_floor
+            result = advance_floor(ad)
+        except Exception as exc:                          # noqa: BLE001 - module absent / warp refused; never block play
+            result = {'error': str(exc)[:160]}
+        st = getattr(self.inputs, 'stats', None)
+        if isinstance(st, dict):
+            st['floor_advances'] = self._floor_advances
+            st['floor_advance'] = result if isinstance(result, dict) else {'ok': bool(result)}
+        return True
+
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
         keep the current directive. Cheap and failure-tolerant - a missing or bad
@@ -2223,6 +2273,11 @@ class Controller:
         # gate is opened by setting its verified native stage flags - progression
         # never stalls. Done before movement so the same tick can walk through.
         self.maybe_force_unlock(state, now)
+        # PERPETUAL PLAY: if progress has stalled at ANY gate in a cleared room, warp to
+        # the next floor (native loader) so the party never stands still - it goes
+        # area-to-area and loops the game. Done before movement so a stalled tick acts.
+        if self.advance_on_stall(state, now):
+            return False
         # RTS map: publish this area's collision surface (once) and read any
         # operator GOTO/PRESS/ATTACK click. P1 consumes it below; else autonomous.
         self.publish_surface(state)
@@ -2231,8 +2286,27 @@ class Controller:
         # un-crossed laser-fence + hold-switch pair, regardless of room-visited status
         # (fix A). Cross-detection: once P1 reaches the fence (armed), a later room
         # change away from it marks that fence crossed so P1 does not re-target it.
+        self._now_ref = now
         p1row = state['players'].get(1)
         self._fence_obj = self.select_fence_objective(state, p1row) if (p1row and p1row.get('hp', 0) > 0) else None
+        # ANTI-STALL (operator: never stand still): a fence attempt is time-bounded. Track
+        # the current attempt; if P1 has not reached a NEW room within FENCE_GIVEUP_S, GIVE
+        # UP - cool that fence down and drop the objective so P1/P2 resume exploring and
+        # fighting (continuous motion) instead of parking at the fence. It is retried after
+        # FENCE_RETRY_S. So the pair cycles attempt -> explore/fight -> re-attempt, forever.
+        if self._fence_obj:
+            fence = self._fence_obj['fence']
+            visited = len(self.p1_visited)
+            if self._fence_try_fence != fence:
+                self._fence_try_fence, self._fence_try_since, self._fence_try_visited = fence, now, visited
+            elif visited > self._fence_try_visited:
+                self._fence_try_since, self._fence_try_visited = now, visited   # progress: reset the timer
+            elif now - self._fence_try_since >= FENCE_GIVEUP_S:
+                self._fence_cooldown[fence] = now + FENCE_RETRY_S
+                self._fence_giveups += 1
+                self._fence_obj = self._fence_try_fence = None
+        else:
+            self._fence_try_fence = None
         if self._fence_obj and p1row:
             fo = self._fence_obj
             fd1 = math.hypot(fo['fx'] - p1row['x'], fo['fz'] - p1row['z'])
@@ -2246,6 +2320,8 @@ class Controller:
         _fstats = getattr(self.inputs, 'stats', None)
         if isinstance(_fstats, dict):
             _fstats['fence_objective'] = int(self._fence_obj is not None)
+            _fstats['fence_giveups'] = self._fence_giveups
+            _fstats['fence_attempt_age_s'] = round(self._now_ref - self._fence_try_since, 1) if self._fence_try_fence else 0.0
             _fstats['p2_placed'] = int(self._p2_placed)
             _fstats['p1_placed'] = int(self._p1_placed)
             _fstats['fence_coll_probe'] = self._fence_coll_skip

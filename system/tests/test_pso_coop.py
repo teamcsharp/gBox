@@ -1276,6 +1276,25 @@ def test_physical_hold_p2_fine_approach_and_p1_crosses_only_when_fence_down(tmp_
     assert steer[1][2] == "fence_cross" and ctrl.inputs.stats.get("fence_coll_live") == 0
 
 
+def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_path):
+    """Perpetual play: a cleared room with no NEW room for ADVANCE_STALL_S triggers a
+    native floor-advance warp (throttled); a room with a live enemy does NOT (fight
+    first). The warp is fail-soft when the engine module isn't present."""
+    ad = SimpleNamespace(read_memory=lambda a, n: bytes(n), write_memory=lambda a, d: None)
+    ctrl = _controller(tmp_path, ad=ad)
+    st = _coop_room([], p1=(0., 0.), p2=(5., 0.), room=10)             # floor 1, cleared
+    ctrl.room_dwell['_cur'] = {'nvisited': 2, 'since': 100.}
+    assert ctrl.advance_on_stall(st, now=110.) is False                # not stalled long enough
+    assert ctrl.advance_on_stall(st, now=100. + C.ADVANCE_STALL_S + 1) is True   # stalled -> warp attempted
+    assert ctrl._floor_advances == 1 and ctrl.inputs.stats.get('floor_advances') == 1
+    assert ctrl.advance_on_stall(st, now=100. + C.ADVANCE_STALL_S + 2) is False  # throttled
+    # A live enemy in P1's room -> fight first, no warp.
+    ctrl._last_warp_at = 0.
+    ctrl.room_dwell['_cur'] = {'nvisited': 2, 'since': 0.}
+    st2 = _coop_room([], room=10)
+    st2["entities"].append({"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 1., "z": 0., "room": 10})
+    assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 5) is False
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
