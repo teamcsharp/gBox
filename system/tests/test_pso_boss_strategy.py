@@ -231,6 +231,19 @@ def test_dragon_action_state_marks_attacking():
     assert r1["boss_phase"] == "head_attacking"
 
 
+def test_boss_vulnerable_gate_from_ctrl_mode():
+    # Damage gate: weak-point +0x324 == 2 -> invulnerable (boss_vulnerable False); != 2 -> vulnerable.
+    ad = build(episode=0, floor=11, enemies=[("TBoss1Dragon", 2500, 2500, (10.0, 0.0, 20.0))])
+    r0 = B.boss_target(ad)
+    assert r0["boss_vulnerable"] is True and r0["ctrl_mode"] == 0   # default ctrl 0 -> damageable
+    dragon_ptr = OBJ_BASE + 0x400
+    for i, b in enumerate(struct.pack(">H", 2)):                    # ctrl-mode 2 = invulnerable
+        ad._mem[dragon_ptr + 0x324 + i] = b
+    r1 = B.boss_target(ad)
+    assert r1["boss_vulnerable"] is False and r1["ctrl_mode"] == 2
+    assert B.boss_telemetry(ad)["boss_vulnerable"] is False
+
+
 def test_only_collision_helpers_is_not_a_live_boss():
     # Only origin collision helpers present (no real body yet) -> no aim target, boss not "seen",
     # so boss_alive stays True (not spawned) and active is False.
@@ -342,7 +355,7 @@ def test_boss_telemetry_flat_scalars_only():
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
                       "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
                       "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
-                      "boss_weakpoint_dist"}
+                      "boss_weakpoint_dist", "boss_vulnerable"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
     assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())

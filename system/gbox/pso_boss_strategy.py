@@ -144,6 +144,14 @@ CONFIRMATION_NOTES = {
                            "advisor aims the nearest monitor/pillar in P1 and the Core in P2. Which object takes "
                            "the lethal phase-2 damage (Core 3000 vs P02 cube 9500) + the P1->P2 transition signal "
                            "are handed to the build agent.",
+    "damage_gate": "CONFIRMED by build-agent ELF trace of the damage-apply routine FUN_80014108: the summed "
+                   "hit damage is subtracted from target HP (leaf 0x8001144c) only when the target's control-mode "
+                   "+0x324 != 2; +0x324 == 2 gates damage OFF upstream of crit/never-miss (predicates "
+                   "0x800141d0..0x80014224). Generic across all enemies. The advisor exposes boss_vulnerable = "
+                   "(weak-point +0x324 != 2) so nav fires only in the damageable window - this explains boss HP "
+                   "staying flat even point-blank while the shell was closed (De Rol Le head) / the boss airborne "
+                   "(Dragon). For De Rol Le, fire the HEAD object specifically (the body/shell segments likely sit "
+                   "permanently at +0x324==2). Live +0x324 confirmation in progress.",
     "dragon_disasm": "CONFIRMED by build-agent ELF disasm of the Dragon update fn 0x8002985C: action-state at "
                      "obj+0x326 (u16, TObject-standard: +0x324 control mode, +0x326 action id); states {21,22} are "
                      "the grounded-attack / fire-breath / eruption window (the update sets flag 0x0800 at +0x30 "
@@ -190,6 +198,16 @@ def _read_u16(read, address):
 # Dragon (the Ep2 Dragon-type) is assumed to share them (heuristic until its own live capture).
 ACTION_STATE_OFF = 0x326
 SPECIAL_ACTION_STATES = {"Dragon": {21, 22}, "Gol Dragon": {21, 22}}
+
+# TObject control-mode at +0x324 (u16). Build-agent ELF trace of the damage-apply routine
+# FUN_80014108: at 0x80014738 the summed hit damage is only subtracted from target HP when the
+# target's +0x324 != 2 (predicates at 0x800141d0..0x80014224). So +0x324 == 2 = INVULNERABLE
+# this tick (damage gated off UPSTREAM of crit/never-miss) - which is why boss HP stayed flat even
+# at point-blank while the shell was closed / the boss airborne. This gate is GENERIC (all enemies
+# route through FUN_80014108). The advisor exposes boss_vulnerable = (weak-point +0x324 != 2) so
+# nav fires only in the damageable window.
+CTRL_MODE_OFF = 0x324
+INVULN_CTRL_MODE = 2
 
 # Per-boss ADD / hazard entity classes that are NOT the weak point (the bot should avoid/clear
 # them, not aim at them). Matched as case-sensitive substrings of the live class name. Confirmed
@@ -400,6 +418,7 @@ def _inactive(reason=None):
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
            "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
            "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0, "boss_weakpoint_dist": None,
+           "boss_vulnerable": None,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -428,6 +447,10 @@ def boss_target(ad):
                           emptied for >= DEAD_GRACE_S (confident defeat), None off a boss floor.
       boss_cleared      : True once boss_alive has latched defeated for this visit.
       boss_hp_frac      : best-effort main-body HP fraction (0..1) or None (HP offset unverified).
+      boss_vulnerable   : the weak point takes damage THIS tick (weak-point +0x324 != 2). False while
+                          the boss is in its invulnerable control-mode (shell closed / airborne) -
+                          crit/never-miss can't help then. None off a boss floor / unknown read.
+                          nav should fire only when boss_vulnerable (or boss_special_state).
       boss_active/boss_name/boss_phase/boss_weakpoint_locked/boss_weakpoint_x/boss_weakpoint_z
       /boss_alive/boss_cleared/boss_floor/boss_hp_frac : FLAT scalar telemetry mirrors.
     `active` means a live weak point is locked NOW. nav's warp gate should key off boss_alive
@@ -497,13 +520,17 @@ def boss_target(ad):
         # Read the boss body's TObject action-state (+0x326). For the Dragon-type bosses, states
         # {21,22} are the grounded-attack / fire-breath / eruption window: mark the phase 'active'
         # so nav presses the attack on the exposed boss AND is ready to dodge the breath/erupt.
-        action_state = None
+        action_state = ctrl_mode = None
         try:
             ptr = int(e["ptr"], 16)
             if 0x80000000 <= ptr < 0x81800000:
                 action_state = _read_u16(read, ptr + ACTION_STATE_OFF)
+                ctrl_mode = _read_u16(read, ptr + CTRL_MODE_OFF)
         except Exception:
-            action_state = None
+            action_state = ctrl_mode = None
+        # Damage gate (build-agent-confirmed): the weak point takes damage only when +0x324 != 2.
+        # Unknown read -> assume vulnerable (never suppress fire on an uncertain read).
+        vulnerable = (ctrl_mode != INVULN_CTRL_MODE) if ctrl_mode is not None else True
         phase = result["phase"]
         special = action_state in SPECIAL_ACTION_STATES.get(name, set())
         if special:
@@ -519,12 +546,13 @@ def boss_target(ad):
                "note": spec["note"], "boss_floor": True, "boss_alive": alive, "boss_cleared": cleared,
                "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
                "action_state": action_state, "boss_special_state": special,
+               "ctrl_mode": ctrl_mode, "boss_vulnerable": vulnerable,
                "adds": [a["pos"] for a in adds], "add_classes": sorted({a["entity"].get("class") for a in adds}),
                # flat telemetry mirrors
                "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
                "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state,
-               "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist}
+               "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist, "boss_vulnerable": vulnerable}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -550,5 +578,5 @@ def boss_telemetry(ad):
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
             "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
-            "boss_weakpoint_dist")
+            "boss_weakpoint_dist", "boss_vulnerable")
     return {k: adv.get(k) for k in keys}
