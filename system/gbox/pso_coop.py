@@ -783,6 +783,7 @@ CROSS_HOLD_S = 4.0           # (B) push straight through a door this long (no we
 BLOCKED_GATE_S = 45.0        # (B) after a failed crossing, don't re-commit to that door for this long (explore elsewhere)
 FENCE_PAIR_DIST = 95.0       # a TObjLazerFenceNorm + a TLazerFenceSw within this = a hold-switch pair (one holds, one passes)
 FENCE_SWITCH_ON = 18.0       # P2 within this of the switch is standing ON it (holding the fence down)
+FENCE_FINE_DIST = 36.0       # P2 this close to the plate -> TIGHT terminal approach (short precise pulses onto it)
 FENCE_CROSS_OVERSHOOT = 45.0 # P1 aims this far PAST the fence so it commits across while P2 holds the switch
 P2_PLACE_AFTER_S = 5.0       # P2 can't reach the hold-switch for this long -> RAM-write it onto the switch
 FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it lands in the next room
@@ -1930,41 +1931,39 @@ class Controller:
         # teleport onto the switch doesn't fire its sensor and a teleport past the fence
         # snaps back. Only the legitimate mechanic works: P2 PHYSICALLY walks onto the
         # switch (collision overlap drops the fence) and P1 PHYSICALLY walks through.
+        # Is the fence ACTUALLY, PHYSICALLY down right now? (reads its live collision field)
+        fence_down = self._fence_is_down(state)
+        fine = False
         if slot == 1:
-            # BOUNDED COLLISION PROBE: P1 is physically AT the fence whose gate flag is
-            # already set (logically open) yet it blocks. After a short dwell, force the
-            # laser's collision field OFF (class-verified, one-shot) and RAM-place P1 past
-            # the fence. If P1 then STICKS past it, the fence's own collision was the
-            # blocker (-> productionize); if it snaps back, the barrier is deeper. This is
-            # the operator-authorized long-shot (b), not the earlier dead placements alone.
-            fdist = math.hypot(obj['fx'] - player['x'], obj['fz'] - player['z'])
-            if fdist <= CROSS_DIST:
-                if not self._p1_cross_at:
-                    self._p1_cross_at = now
-                if now - self._p1_cross_at >= P1_CROSS_PLACE_S:
-                    self.force_fence_collision_off(state, now)      # drop the laser collision (candidate +0x14)
-                    if self.place_p1_across_fence(state, player, now):   # then test the crossing
-                        st = getattr(self.inputs, 'stats', None)
-                        if isinstance(st, dict):
-                            st['p1_role'] = 'fence_collision_probe'
-                        self._p1_cross_at = 0.0
-                        return True
-            else:
-                self._p1_cross_at = 0.0
-            overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
+            # PHYSICAL CROSSING ONLY. The +0x14 collision write and the teleport-across
+            # are proven dead (snap-back), so no RAM write here: P1 WALKS THROUGH the
+            # fence only when it is actually DOWN (P2 physically on the switch fired the
+            # sensor) or P2 is confirmed on it; otherwise it WAITS at the fence (no
+            # overshoot) so it doesn't bounce the raised laser. Frame-sync: the moment
+            # the fence reads down, P1 commits the overshoot and clears before P2 steps off.
+            go = fence_down or p2_on
+            overshoot = FENCE_CROSS_OVERSHOOT if go else 0.0
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
-            label = 'fence_cross' if p2_on else 'fence_wait'
+            label = 'fence_cross' if go else 'fence_wait'
         else:
-            # P2 PHYSICALLY to the switch. In the switch's room -> the switch. Else ROUTE
-            # door-by-door via the crystal graph (undirected) toward the switch's room.
-            # If P2's room is OFF P1's recorded network (graph has no path - P2 stranded
-            # in room 13), first REGROUP: route toward P1's CURRENT room to get back onto
-            # the network, then the next tick's graph route carries it to the switch.
-            # Only if even that has no graph edge do we drive straight at P1's position.
+            # P2 PHYSICALLY onto the switch plate so the collision SENSOR fires. In the
+            # switch's room: drive to the plate, and within FENCE_FINE_DIST switch to a
+            # TIGHT terminal approach (short precise straight pulses, no overshoot and no
+            # wedge-escape fling - that bounced P2 short at ~9u) to actually STAND ON it.
+            # Else ROUTE door-by-door via the crystal graph toward the switch's room; if
+            # P2 is off P1's recorded network, REGROUP toward P1's current room; last
+            # resort drive straight at P1 to rejoin the network.
             sroom = obj.get('sroom')
             p1pos = state.get('players', {}).get(1) or {}
             if player.get('room') == sroom:
-                target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
+                target = (obj['sx'], obj['sz'])
+                sdist = math.hypot(obj['sx'] - player['x'], obj['sz'] - player['z'])
+                if p2_on:
+                    label = 'fence_switch_hold'
+                elif sdist <= FENCE_FINE_DIST:
+                    label, fine = 'fence_switch_fine', True
+                else:
+                    label = 'fence_switch_approach'
             else:
                 door_str = self._next_door_toward(player.get('room'), sroom)
                 regroup = False
@@ -1976,29 +1975,59 @@ class Controller:
                     target = gates.through_point(player['x'], player['z'], ent['x'], ent['z'], FENCE_CROSS_OVERSHOOT)
                     label = 'fence_regroup' if regroup else 'fence_route'
                 elif type(p1pos.get('x')) in (int, float):
-                    # P2's room is entirely off the graph: drive toward P1 to rejoin the network.
                     target, label = (p1pos['x'], p1pos['z']), 'fence_to_p1'
                 else:
-                    target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
-        # COORDINATE-DRIVE: A* cannot path to a target in a disconnected room (P2 stranded
-        # from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT at
-        # the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
-        # cross room boundaries - the same fix that got P1 to the fence.
-        route, exact = nav.toward((player['x'], player['z']), target)
-        if exact and route and len(route) > 1:
-            waypoint = route[1]
+                    target, label = (obj['sx'], obj['sz']), 'fence_switch_approach'
+        if fine:
+            # TIGHT terminal approach: short precise pulses straight at the plate center,
+            # no overshoot/wedge-escape, so P2 lands exactly ON the trigger instead of
+            # bouncing short. Short holds let the next tick correct any overshoot.
+            waypoint, keys, escaping, dur = target, movement_keys(player, target), False, .08
         else:
-            waypoint = target                          # straight at the switch/fence/P1 across rooms
-        keys, escaping = self._unwedge(slot, player, waypoint, now)
-        commands.append((slot, keys, .40))
+            route, exact = nav.toward((player['x'], player['z']), target)
+            waypoint = route[1] if (exact and route and len(route) > 1) else target
+            keys, escaping = self._unwedge(slot, player, waypoint, now)
+            dur = .40
+        commands.append((slot, keys, dur))
         moves[slot] = (player, waypoint, nav, False)
         steering[slot] = (player, waypoint, (label + '_unwedge') if escaping else label)
         if slot == 2:
             st = getattr(self.inputs, 'stats', None)
             if isinstance(st, dict):
                 st['p2_role'] = label
-                st['p2_coord_drive'] = int(not exact)
+                st['p2_fine'] = int(fine)
         return True
+
+    def _fence_is_down(self, state):
+        """Read the current fence objective's LIVE collision descriptor to tell whether
+        the laser has PHYSICALLY dropped. Reads native_state (+0xAC) and the collision
+        sub-object's enable field (+0xA4 -> +0x14); surfaces both as telemetry
+        (fence_native_live / fence_coll_live). Returns True when the collision enable
+        reads 0 (laser down). Read-only; empirically reveals the real collision field
+        when P2 physically triggers the switch (complements the static Ghidra RE)."""
+        obj = self._fence_obj
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if obj is None or ad is None or not callable(getattr(ad, 'read_memory', None)):
+            return False
+        try:
+            faddr = int(obj['fptr'], 16) if isinstance(obj.get('fptr'), str) else int(obj['fptr'])
+        except (TypeError, ValueError, KeyError):
+            return False
+        if not (0x80000000 <= faddr <= 0x81800000 - 0x100):
+            return False
+        read, coll = ad.read_memory, None
+        try:
+            native = struct.unpack('>I', read(faddr + 0xAC, 4))[0]
+            subptr = struct.unpack('>I', read(faddr + 0xA4, 4))[0]
+            if 0x80000000 <= subptr <= 0x81800000 - 0x40:
+                coll = struct.unpack('>I', read(subptr + 0x14, 4))[0]
+        except (struct.error, OSError):
+            return False
+        st = getattr(self.inputs, 'stats', None)
+        if isinstance(st, dict):
+            st['fence_native_live'] = native
+            st['fence_coll_live'] = coll if coll is not None else -1
+        return coll == 0
 
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
