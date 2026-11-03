@@ -530,11 +530,17 @@ class Screensaver:
                 mercmode.pop_queue(self.store, w['name'])        # the DJ's queued round is on its way
         inp = {"game": game, "jump": True, "memory_cards": "operator"} | (
             {"mod": build["name"], "local_build_ok": True} if build else {})    # a stale copy here still demos
+        if merc_pick and self._switch_slot(merc_pick['title'], merc_cfg):
+            # a cold launch of a Switch title: no other Citron/Eden process may be left running (two abort with -6)
+            self._release_other_switch(w, merc_pick['title'], now)
         if warm_ok and not mercmode.memory_reason(w, now):
             # a cold launch of a title with nothing warm keeps the pool's paused games (with too little memory the
-            # worker's one-game rule closes them, without a save: nothing was played in them)
-            keep = [r['session_id'] for r in self._warm(w, self.store.running_sessions(), now).values()
-                    if r.get('session_id') and r.get('state') != 'releasing']
+            # worker's one-game rule closes them, without a save: nothing was played in them). A Switch cold launch
+            # keeps only games on other emulators - any other Switch game was just released above.
+            switch_cold = merc_pick and self._switch_slot(merc_pick['title'], merc_cfg)
+            keep = [r['session_id'] for t, r in self._warm(w, self.store.running_sessions(), now).items()
+                    if r.get('session_id') and r.get('state') != 'releasing'
+                    and not (switch_cold and self._switch_slot(t, merc_cfg))]
             if keep:
                 inp["keep_sessions"] = keep
         job = self.submit(JobRequest(tool="launch_game", input=inp, agent_use=True, low_priority=True,
@@ -727,6 +733,38 @@ class Screensaver:
         its menus as before, so nothing is submitted to it)."""
         from . import mercmode
         return mercmode.PREPARE_FEATURE in (w.get('features') or [])
+
+    def _switch_slot(self, title, cfg):
+        """True when a MercMode title plays on the host's single shared Switch emulator (Citron/Eden). Only one such
+        title may be resident - playing or warm - at a time: a second emulator process aborts the boot (session exit
+        -6, observed on lilspark 2026-11-02), so RE5 and RE6 Switch never co-exist. A switch between two of them is
+        therefore cold (the resident one is stopped first), never a warm preload beside the one still running."""
+        from . import mercmode
+        return bool(title) and mercmode.title_spec(title, cfg).get('platform') == 'switch'
+
+    def _resident_switch_titles(self, w, cfg, playing_title=None, exclude=None):
+        """Switch-slot titles resident on this PC right now (the playing run's title and every warm-pool entry), minus
+        `exclude`. A non-empty set means a new Switch title must not be booted beside them."""
+        from . import mercmode
+        out = set()
+        if playing_title and playing_title != exclude and self._switch_slot(playing_title, cfg):
+            out.add(playing_title)
+        for t in mercmode.warm_pool(self.store, w['name']):
+            if t != exclude and self._switch_slot(t, cfg):
+                out.add(t)
+        return out
+
+    def _release_other_switch(self, w, keep_title, now):
+        """Stop and drop every warm-pool Switch title except keep_title, so exactly one Citron/Eden process runs when
+        keep_title cold-launches (two of them abort with -6)."""
+        from . import mercmode
+        cfg = mercmode.settings(self.store, w['name'])
+        running = self.store.running_sessions()
+        for title, row in list(self._warm(w, running, now).items()):
+            if title != keep_title and self._switch_slot(title, cfg):
+                if self._warm_owned(w, row, running):
+                    self._warm_stop(w, row, f'one Switch emulator only: freeing it for {keep_title}')
+                mercmode.take_warm(self.store, w['name'], title)
 
     def _warm_owned(self, w, row, running):
         """The running session of a pool entry (or of the current run), only when it is exactly this scheduler's own
@@ -1036,6 +1074,12 @@ class Screensaver:
         owned=self._warm_owned(w,run,running)
         if run.get('warm_adoption') and not owned:
             return self._finish(w,run,now,'adopted session ownership changed; game left untouched')
+        nxt_title = (self.store.get(mercmode.NEXT, w['name']) or {}).get('title')
+        if self._switch_slot(run['mercmode']['title'], cfg) and nxt_title != run['mercmode']['title'] \
+                and self._switch_slot(nxt_title, cfg):
+            # the next title needs the same single Citron/Eden emulator: this one cannot stay warm beside it (two
+            # processes abort with -6), so it is stopped to free the slot and the next one cold-launches alone
+            return self._stop(w, run, now, why + f' (freeing the Switch emulator for {nxt_title})')
         if not self._warm_capable(w, cfg) or mercmode.memory_reason(w, now) or not owned:
             return self._stop(w, run, now, why)
         sid = run['session_id']
@@ -1089,6 +1133,17 @@ class Screensaver:
             return None
         if pick.get('selection'):
             mercmode.pop_queue(self.store, w['name'])
+        if self._switch_slot(pick['title'], cfg_merc) \
+                and self._resident_switch_titles(w, cfg_merc, run['mercmode']['title'], exclude=pick['title']):
+            # RE5 and RE6 share the one Citron/Eden Switch emulator: booting a second instance beside the resident
+            # one aborts (-6), so this pick is not warm-preloaded. The promise is kept as a cold switch (NEXT.cold):
+            # at the round boundary the resident Switch title is stopped (_park) and this one cold-launches alone
+            # (_release_other_switch). Accepts the boot delay so RE5 actually rotates (operator: "where is RE5?").
+            self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'),
+                                                      'at': now, 'cold': True,
+                                                      **({'queued': True} if pick.get('selection') else {})})
+            mark(title=pick['title'], cold=True, skipped='another Switch title is resident; switching cold')
+            return f"{pick['name']} plays next (cold switch: the Switch emulator is in use)"
         self.store.put(mercmode.NEXT, w['name'], {'title': pick['title'], 'selection': pick.get('selection'), 'at': now,
                                                   **({'queued': True} if pick.get('selection') else {})})
         running = self.store.running_sessions()
@@ -1357,7 +1412,8 @@ class Screensaver:
                 # stayed long enough: the next title gets its attempts again (a fix may have landed meanwhile)
                 run = {k: v for k, v in run.items() if k not in ('mercmode_stay', 'mercmode_stay_round',
                                                                   'mercmode_warm_attempts', 'mercmode_prelaunch')}
-            if rotate and worker and self._warm_capable(worker, cfg):
+            cold_next = bool((ahead or {}).get('cold'))     # a Switch->Switch cold switch: no warm preload to wait on
+            if rotate and worker and self._warm_capable(worker, cfg) and not cold_next:
                 # the switch waits until the next title is ready - booted, paused on the first frame of its round (a
                 # worker without op=prepare: paused at its menu) - and this title plays another round meanwhile, never a
                 # loading screen or a menu walk (operator 2026-10-24: "they could play a 2nd round of mercenaries and
