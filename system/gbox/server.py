@@ -2454,6 +2454,77 @@ def create_app(config: Config) -> FastAPI:
     def get_idle_worker(tool: str = "launch_game", actor=Depends(auth)):
         return idle_worker(tool)
 
+    # --- live resource headroom for a worker, by name (ids change on restart) ---
+    # The worker's own heartbeat already carries a bounded resource sample
+    # (gbox/worker_resources.py): cpu%, unified memory, GPU utilization. We reshape
+    # that into a glanceable summary; nothing is sampled on the request path, so this is
+    # cheap to poll. cpu_count + load_avg joined the sampler recently, so for a worker
+    # still running older code we fill just those two via one short, cached ssh read.
+    SSH_ALIASES = {"lilspark": "spark"}      # name -> ssh host the Spark can reach (deploy uses `ssh spark`)
+    _ssh_cache: dict = {}                    # host -> (expires_at, {"cores": int|None, "load_avg": [..]|None})
+
+    def _ssh_cores_load(host: str) -> dict:
+        """nproc + /proc/loadavg over ssh, cached 30 s. Best effort: any failure yields {}.
+        Runs in FastAPI's threadpool (sync route) with a hard timeout, so it never stalls the loop."""
+        now = time.time()
+        hit = _ssh_cache.get(host)
+        if hit and hit[0] > now:
+            return hit[1]
+        out: dict = {}
+        try:
+            reply = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", host,
+                 "nproc; cat /proc/loadavg"],
+                capture_output=True, text=True, timeout=6, check=True)
+            lines = [ln.strip() for ln in reply.stdout.splitlines() if ln.strip()]
+            if lines and lines[0].isdigit():
+                out["cores"] = int(lines[0])
+            if len(lines) > 1:
+                parts = lines[1].split()
+                if len(parts) >= 3:
+                    out["load_avg"] = [float(parts[0]), float(parts[1]), float(parts[2])]
+        except (subprocess.SubprocessError, OSError, ValueError):
+            out = {}
+        _ssh_cache[host] = (now + 30, out)
+        return out
+
+    @app.get("/api/workers/{name}/resources")
+    def worker_resource_summary(name: str, actor=Depends(auth)):
+        rows = [w for w in workers() if (w.get("name") or "").lower() == name.lower()]
+        if not rows:
+            raise HTTPException(404, f"No worker named {name!r} has registered")
+        # newest record for the name, preferring an online one (restarts leave stale rows)
+        w = sorted(rows, key=lambda r: (bool(r.get("online")), r.get("last_seen") or 0))[-1]
+        res = w.get("resources") or {}
+        cores = res.get("cpu_count")
+        load = res.get("load_avg") or []
+        # Only reach out to the worker for fields its heartbeat does not yet carry.
+        if w.get("online") and w.get("os") == "linux" and (cores is None or not load):
+            fill = _ssh_cores_load(SSH_ALIASES.get(name.lower(), name))
+            cores = cores if cores is not None else fill.get("cores")
+            load = load or fill.get("load_avg") or []
+        mib = lambda b: round(b / (1024 * 1024)) if isinstance(b, (int, float)) else None
+        total = res.get("memory_total_bytes")
+        avail = res.get("memory_available_bytes")
+        used = total - avail if isinstance(total, (int, float)) and isinstance(avail, (int, float)) else None
+        gpu = (res.get("gpus") or [{}])[0]
+        sampled = res.get("sampled_at")
+        return {
+            "worker": w.get("name"), "worker_id": w.get("id"), "online": bool(w.get("online")),
+            "os": w.get("os"), "sampled_at": sampled,
+            "age_s": round(time.time() - sampled, 1) if isinstance(sampled, (int, float)) else None,
+            "cores": cores,
+            "cpu_pct": res.get("cpu_percent"),
+            "load1": load[0] if len(load) > 0 else None,
+            "load5": load[1] if len(load) > 1 else None,
+            "load15": load[2] if len(load) > 2 else None,
+            "mem_total_mib": mib(total), "mem_used_mib": mib(used), "mem_available_mib": mib(avail),
+            "mem_pct": res.get("memory_percent"),
+            "gpu_util_pct": gpu.get("utilization_percent"),
+            "gpu_mem_total_mib": gpu.get("memory_total_mb"), "gpu_mem_used_mib": gpu.get("memory_used_mb"),
+            "gpu_name": gpu.get("name") or None,
+        }
+
     # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
     class TestingIn(BaseModel):
         available: bool | None = None

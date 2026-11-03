@@ -4502,7 +4502,7 @@ function capMissing(op) {
 }
 function closePipMenu() {
   const m = $("#pipmenu");
-  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.style.display = "none"; m.opening = null; }
+  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.profiler?.stop(); m.profiler = null; m.style.display = "none"; m.opening = null; }
   GM.menu = false; EMB.last = "";
 }
 async function pipModifiers(m, opening) {
@@ -4574,7 +4574,7 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
@@ -4595,6 +4595,7 @@ function pipMenu(x, y) {
   });
   pipModifiers(m, opening);
   pipMercMode(m, opening);
+  m.profiler?.stop(); m.profiler = pipProfiler(m, opening);
   savedSlot().then(slot => {                                   // this game's kept save slot, once known
     const b = m.opening === opening && m.querySelector('[data-a="slot+"]');
     if (b && !b.disabled) b.textContent = `Save slot: ${slot}  ▸ next`;
@@ -4641,6 +4642,55 @@ async function pipMercMode(m, opening, open = false) {
       if (confirm('Play with the bot as Player 2? The title restarts in this session with Player 2 connected (the round in progress is lost).'))
         act('play_with_bot', { session_id: sid, game_id: compactSession?.game_id }); });
   } catch (error) { if (m.opening === opening) slot.innerHTML = `<small>MercMode: ${esc(error.message)}</small>`; }
+}
+// Glanceable live resource profiler for lilspark (the spark running MercMode + the H3 Comfy render): how much
+// headroom is left for H3. Polls GET /api/workers/lilspark/resources every ~3s; stops when the menu closes.
+function pipProfiler(m, opening, worker = 'lilspark') {
+  const box = m.querySelector('[data-pip-profiler]');
+  if (!box) return null;
+  const clamp = v => Math.max(0, Math.min(100, v));
+  const tone = p => p == null ? 'idle' : p < 60 ? 'ok' : p < 85 ? 'warn' : 'hot';   // green / amber / red by load
+  const gb = mib => mib == null ? null : mib / 1024;
+  const n = (v, d = 0) => (v == null ? '—' : v.toFixed(d));
+  const bar = (label, pct, text) => {
+    const p = pct == null ? 0 : clamp(pct);
+    return `<div class="pip-prof-row"><span class="pip-prof-k">${label}</span>`
+      + `<span class="pip-prof-bar"><i class="pip-prof-${tone(pct)}" style="width:${p.toFixed(0)}%"></i></span>`
+      + `<span class="pip-prof-v">${esc(text)}</span></div>`;
+  };
+  const head = note => `<div class="pip-prof-head"><strong>${esc(worker)}</strong><span>${esc(note)}</span></div>`;
+  function render(d) {
+    const rows = [];
+    if (d.mem_total_mib) {                                   // RAM 38 / 122 GB (84 free)
+      const tot = gb(d.mem_total_mib), used = gb(d.mem_used_mib), free = gb(d.mem_available_mib);
+      const pct = d.mem_pct != null ? d.mem_pct : (used != null ? used / tot * 100 : null);
+      rows.push(bar('RAM', pct, `${n(used)} / ${n(tot)} GB${free != null ? ` · ${n(free)} free` : ''}`));
+    } else rows.push(bar('RAM', null, '—'));
+    if (d.cores) {                                           // CPU 6 / 20 cores
+      const usedCores = d.load1 != null ? Math.min(d.load1, d.cores)
+        : (d.cpu_pct != null ? d.cpu_pct / 100 * d.cores : null);
+      const pct = d.cpu_pct != null ? d.cpu_pct : (usedCores != null ? usedCores / d.cores * 100 : null);
+      rows.push(bar('CPU', pct, usedCores != null ? `${n(usedCores, usedCores < 10 ? 1 : 0)} / ${d.cores} cores` : `${d.cores} cores`));
+    } else rows.push(bar('CPU', d.cpu_pct, d.cpu_pct != null ? `${n(d.cpu_pct)}%` : '—'));
+    let gtext = d.gpu_util_pct != null ? `${n(d.gpu_util_pct)}%` : '—';   // GPU 0% (+ VRAM when the card reports it)
+    if (d.gpu_mem_total_mib) gtext += ` · ${n(gb(d.gpu_mem_used_mib))}/${n(gb(d.gpu_mem_total_mib))} GB`;
+    rows.push(bar('GPU', d.gpu_util_pct, gtext));
+    const stale = d.age_s != null && d.age_s > 30;
+    box.innerHTML = head(d.online ? (stale ? `stale (${n(d.age_s)}s)` : 'headroom for H3') : 'offline') + rows.join('');
+  }
+  async function tick() {
+    if (m.opening !== opening) return;
+    try {
+      const r = await gbox.api(`/api/workers/${encodeURIComponent(worker)}/resources`);
+      if (m.opening !== opening) return;
+      if (!r.ok) throw Error(r.error || 'unavailable');
+      render(r.data);
+    } catch (error) { if (m.opening === opening) box.innerHTML = head(error.message); }
+  }
+  box.innerHTML = head('loading…');
+  tick();
+  const id = setInterval(tick, 3000);
+  return { stop() { clearInterval(id); } };
 }
 document.addEventListener('contextmenu', event => {
   if (!COMPACT.on || event.target.closest?.('.game-analysis, .ga-toggle, .pso-review-window, #pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-round-replay], [data-stage-preferences], .merc-round-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;

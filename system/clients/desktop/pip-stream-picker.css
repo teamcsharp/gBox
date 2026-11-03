@@ -28,3 +28,19 @@
 .pip-stream-empty { min-width:130px; padding:10px 0; }
 @media (max-width:420px) { #pipmenu .pip-stream-card { flex-basis:120px; width:120px; } .pip-stream-heading > span { display:none; } }
 @media (max-width:420px) { .pip-stream-entry { flex-basis:120px; width:120px; } }
+
+/* Glanceable live resource profiler for lilspark (MercMode + H3 Comfy headroom). */
+#pipmenu .pip-profiler { width: min(540px, calc(100vw - 34px)); max-width:100%; box-sizing:border-box; padding:7px 8px 6px; border-bottom:1px solid var(--line, #41414a); }
+.pip-prof-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 1px 5px; }
+.pip-prof-head > strong { font-size:12px; }
+.pip-prof-head > span { color:#aaaab8; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pip-prof-row { display:flex; align-items:center; gap:7px; padding:2px 1px; }
+.pip-prof-k { flex:0 0 30px; color:#b9b9c5; font-size:10px; letter-spacing:.04em; }
+.pip-prof-bar { flex:1; min-width:0; height:8px; background:#111116; border-radius:4px; overflow:hidden; }
+.pip-prof-bar > i { display:block; height:100%; border-radius:4px; transition:width .4s ease; }
+.pip-prof-ok { background:#4caf6a; }
+.pip-prof-warn { background:#e0b15a; }
+.pip-prof-hot { background:#e0675a; }
+.pip-prof-idle { background:#3a3a44; }
+.pip-prof-v { flex:0 0 auto; color:#d7d7e0; font-size:10px; min-width:104px; text-align:right; white-space:nowrap; }
+@media (max-width:420px) { .pip-prof-v { min-width:84px; } }

@@ -42,7 +42,13 @@ class Sampler:
 
     def sample(self):
         result = {'sampled_at': time.time(), 'cpu_percent': None, 'memory_percent': None,
-                  'memory_available_bytes': None, 'gpus': [], 'gpu_status': 'unavailable'}
+                  'memory_available_bytes': None, 'gpus': [], 'gpu_status': 'unavailable',
+                  'cpu_count': os.cpu_count(), 'load_avg': None}
+        try:
+            # Run-queue averages (1/5/15 min). Unix only; Windows/headless lacks it.
+            result['load_avg'] = [round(x, 2) for x in os.getloadavg()]
+        except (OSError, AttributeError):
+            pass
         try:
             import psutil
             cpu = psutil.cpu_percent(interval=None)
