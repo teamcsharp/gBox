@@ -1283,17 +1283,26 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     ad = SimpleNamespace(read_memory=lambda a, n: bytes(n), write_memory=lambda a, d: None)
     ctrl = _controller(tmp_path, ad=ad)
     st = _coop_room([], p1=(0., 0.), p2=(5., 0.), room=10)             # floor 1, cleared
+    ctrl._adv_floor = 1                                                # already settled in this area (no floor-change reset)
     ctrl.room_dwell['_cur'] = {'nvisited': 2, 'since': 100.}
     assert ctrl.advance_on_stall(st, now=110.) is False                # not stalled long enough
     assert ctrl.advance_on_stall(st, now=100. + C.ADVANCE_STALL_S + 1) is True   # stalled -> warp attempted
     assert ctrl._floor_advances == 1 and ctrl.inputs.stats.get('floor_advances') == 1
     assert ctrl.advance_on_stall(st, now=100. + C.ADVANCE_STALL_S + 2) is False  # throttled
+    # A fresh floor resets the window (play each area through, don't warp immediately).
+    st_f2 = _coop_room([], p1=(0., 0.), p2=(5., 0.), room=10)
+    st_f2["floor"] = 2
+    ctrl.room_dwell['_cur'] = {'nvisited': 2, 'since': 0.}
+    assert ctrl.advance_on_stall(st_f2, now=100. + C.ADVANCE_STALL_S + 3) is False and ctrl._adv_floor == 2
     # A live enemy in P1's room -> fight first, no warp.
     ctrl._last_warp_at = 0.
+    ctrl._adv_floor = 2
     ctrl.room_dwell['_cur'] = {'nvisited': 2, 'since': 0.}
     st2 = _coop_room([], room=10)
+    st2["floor"] = 2
     st2["entities"].append({"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 1., "z": 0., "room": 10})
     assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 5) is False
+
 
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between

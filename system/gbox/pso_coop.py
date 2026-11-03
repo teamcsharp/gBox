@@ -790,8 +790,10 @@ FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it land
 P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
 FENCE_GIVEUP_S = 28.0        # ANTI-STALL: attempt a fence hold at most this long, then give up and keep MOVING
 FENCE_RETRY_S = 45.0         # after giving up on a fence, explore/fight this long before re-attempting it
-ADVANCE_STALL_S = 32.0       # PERPETUAL PLAY: no new room for this long (cleared room) -> warp to the next floor
-ADVANCE_WARP_GAP_S = 25.0    # minimum time between native floor warps (don't spam the loader)
+ADVANCE_STALL_S = 100.0      # PERPETUAL PLAY: warp to the next floor only after this long with NO new room (a real
+                             # stuck gate). The timer RESETS on every new room reached, so natural progression to the
+                             # area's exit/telepipe is always preferred; the warp is the fallback when truly blocked.
+ADVANCE_WARP_GAP_S = 30.0    # minimum time between native floor warps (don't spam the loader)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -851,6 +853,7 @@ class Controller:
         self._now_ref = 0.0           # latest tick time, so select_fence_objective can honor cooldowns
         self._last_warp_at = 0.0      # last native floor-advance warp (throttle)
         self._floor_advances = 0      # how many floor-advance warps fired (flat telemetry)
+        self._adv_floor = None        # floor the stall timer is anchored to (reset the window on a floor change)
         self._fence_arm = None      # {gkey, room}: P1 reached the fence; a later room change = crossed it
         self._p2_placed = False     # P2 was RAM-placed onto the hold-switch (flat telemetry)
         self._p2_sw_best = None     # P2's best (smallest) distance to the switch, for the stuck timer
@@ -2054,6 +2057,16 @@ class Controller:
             return False
         p1 = state['players'].get(1)
         if not p1 or p1.get('hp', 0) <= 0:
+            return False
+        # A FRESH stall window per area: room ids repeat across floors, so reset the
+        # timer whenever the floor changes (a warp or a natural exit) - each new area
+        # gets the full ADVANCE_STALL_S to be played THROUGH before any warp fires.
+        floor = state.get('floor')
+        if floor != self._adv_floor:
+            self._adv_floor = floor
+            rec = self.room_dwell.get('_cur')
+            if rec:
+                rec['since'] = now
             return False
         room = p1.get('room')
         if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
