@@ -1308,6 +1308,40 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     assert ctrl._hardcap_warps == 1 and ctrl.inputs.stats.get('stall_hardcap_warps') == 1
 
 
+def test_menu_unstick_warps_instead_of_stopping_and_is_throttled(monkeypatch):
+    """INVARIANT: a stuck menu / needs_operator / boss-end dialogue NEVER halts the
+    loop. menu_unstick fires the native floor-warp (bypasses any menu via a RAM load),
+    records the flat proof key menu_stuck_warps, is throttled so it can't hammer the
+    loader, and is fail-soft (a raising engine is swallowed, still counts the attempt,
+    never raises -> the caller continues playing)."""
+    import gbox.pso_fence as F
+    warps = []
+    monkeypatch.setattr(F, "advance_floor", lambda ad: warps.append(ad) or {"ok": True, "floor": 5})
+
+    t = [1000.0]
+    monkeypatch.setattr(C.time, "monotonic", lambda: t[0])
+    ad = SimpleNamespace()
+    stats = {}
+
+    assert C.menu_unstick(ad, stats) is True                     # first call warps
+    assert len(warps) == 1
+    assert stats["menu_stuck_warps"] == 1                         # flat proof key
+    assert stats["menu_stuck_warp_ok"] is True and stats["menu_stuck_warp_floor"] == 5
+    assert stats["action"] == "menu_unstick_warp"
+
+    t[0] += C.MENU_WARP_GAP_S / 2                                 # within the throttle window
+    assert C.menu_unstick(ad, stats) is False and len(warps) == 1 and stats["menu_stuck_warps"] == 1
+
+    t[0] += C.MENU_WARP_GAP_S                                     # past the throttle -> warps again
+    assert C.menu_unstick(ad, stats) is True and len(warps) == 2 and stats["menu_stuck_warps"] == 2
+
+    # Fail-soft: an engine that raises must NOT halt - it still counts and returns True.
+    monkeypatch.setattr(F, "advance_floor", lambda ad: (_ for _ in ()).throw(RuntimeError("boom")))
+    t[0] += C.MENU_WARP_GAP_S
+    assert C.menu_unstick(ad, stats) is True
+    assert stats["menu_stuck_warps"] == 3 and stats["menu_stuck_warp_ok"] is False
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True

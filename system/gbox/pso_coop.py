@@ -2705,6 +2705,35 @@ def apply_default_speed(ad, stats):
 
 
 MASTER_BUILD_TICK_S = 3.0   # throttle for the periodic master-build re-check on the co-op loop
+MENU_WARP_GAP_S = 6.0       # throttle for the never-stop menu-unstick warp (don't hammer the loader)
+MENU_STUCK_S = 18.0         # a menu/dialogue up continuously this long -> warp (backstop if menu.stalled never trips)
+
+
+def menu_unstick(ad, stats):
+    """INVARIANT: the autobot must NEVER terminally stop / hand back to the operator. A
+    menu or boss-end dialogue it can't navigate (campaign's 'N unchanged menu attempts'
+    / needs_operator) must NOT halt the loop - instead fire the native floor-warp
+    (gbox.pso_fence.advance_floor), which RAM-loads the next area and bypasses ANY
+    menu/dialogue, so play resumes forever. Throttled and fail-soft; records
+    menu_stuck_warps. Returns True when a warp was attempted."""
+    now = time.monotonic()
+    if ad is None or now - getattr(ad, '_pso_menu_warp_at', 0.0) < MENU_WARP_GAP_S:
+        return False
+    ad._pso_menu_warp_at = now
+    try:
+        from .pso_fence import advance_floor
+        res = advance_floor(ad)
+    except Exception as exc:                          # noqa: BLE001 - module absent / refused; never halt the loop
+        res = {'ok': False, 'error': str(exc)[:160]}
+    if isinstance(stats, dict):
+        stats['menu_stuck_warps'] = stats.get('menu_stuck_warps', 0) + 1
+        stats['menu_stuck_warp_result'] = res if isinstance(res, dict) else {'ok': bool(res)}
+        # Flat mirrors (the telemetry endpoint keeps only flat/scalar keys).
+        ok = res.get('ok') if isinstance(res, dict) else bool(res)
+        stats['menu_stuck_warp_ok'] = bool(ok)
+        stats['menu_stuck_warp_floor'] = res.get('floor') if isinstance(res, dict) else None
+        stats['action'] = 'menu_unstick_warp'
+    return True
 
 
 def _flatten_master_build(stats, summary):
@@ -2919,6 +2948,22 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     continue
                 menu_frame = ad.get_frame()
                 menu_paused = observe_menu_controls(menu, menu_frame, state, controller, inputs, stats)
+                # Backstop to the never-stop invariant: if a menu/dialogue is up
+                # continuously for MENU_STUCK_S (in case menu.stalled never trips -
+                # e.g. a boss-end dialogue the campaign keeps retrying), warp to the
+                # next route floor so the party never stands frozen at a menu.
+                if menu_paused:
+                    if getattr(ad, '_pso_menu_stuck_since', None) is None:
+                        ad._pso_menu_stuck_since = time.monotonic()
+                    held = time.monotonic() - ad._pso_menu_stuck_since
+                    stats['menu_stuck_held_s'] = round(held, 1)
+                    if held >= MENU_STUCK_S and menu_unstick(ad, stats):
+                        stats['menu_stuck_reason'] = f'menu up {held:.0f}s (backstop)'
+                        invalidate_plan()
+                        solo.wait(.3, stopped)
+                        continue
+                else:
+                    ad._pso_menu_stuck_since = None
                 proposed = known_menu_command(menu.observation, finish_save=ledger.awaiting_entry is True)
                 if menu_paused and proposed is not None and not recovery.waiting:
                     # These exact observed menus need no model guess or network
@@ -2935,8 +2980,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         planned_input_keys=','.join(selected[0][1]) if selected else '',
                         action='observed_menu_step' if selected else 'waiting_for_observed_menu')
                     if menu.stalled:
-                        stats.update(ok=False, campaign_state='needs_operator', stopped_reason=reason)
-                        break
+                        # INVARIANT: never terminally stop at a stuck menu. The campaign
+                        # gives up after N unchanged attempts - instead of halting to the
+                        # operator, warp to the next route floor (a RAM load bypasses ANY
+                        # menu/dialogue) and keep playing. A stuck menu becomes "warp on".
+                        stats.update(menu_stuck_reason=str(reason)[:160])
+                        menu_unstick(ad, stats)
+                        invalidate_plan()
+                        solo.wait(.3, stopped)
+                        continue
                     for command in selected[:1]:
                         inputs.hold([command])
                         menu.previous['input_delivery_verified'] = True
@@ -3041,9 +3093,16 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         if recovery.pause(exc, "planner"):
                             continue
                         if planner_errors >= 5:
-                            stats.update(ok=False, campaign_state='needs_operator',
-                                         stopped_reason='Five planner observations failed; inputs released')
-                            break
+                            # Never hand back to the operator on repeated planner
+                            # failure: release inputs, warp forward, and keep playing
+                            # from RAM instead of halting.
+                            stats.update(menu_stuck_reason='Five planner observations failed; inputs released')
+                            inputs.release()
+                            menu_unstick(ad, stats)
+                            invalidate_plan()
+                            planner_errors = 0
+                            solo.wait(.3, stopped)
+                            continue
                         solo.wait(min(planner_errors, 3), stopped)
                         continue
                     planner_errors = 0
@@ -3052,8 +3111,14 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     stats.update(thought=str(plan.get("thought", ""))[:400], screen=plan.get("screen", "unknown"),
                                  difficulty_locked=bool(plan.get("difficulty_locked")))
                     if plan.get("needs_operator"):
-                        stats.update(ok=False, campaign_state="needs_operator", stopped_reason=stats["thought"])
-                        break
+                        # Never stop on a model "needs operator" verdict (e.g. a
+                        # boss-end 'Return to Pioneer 2?' dialogue): warp to the next
+                        # route floor and keep playing.
+                        stats.update(menu_stuck_reason=str(stats.get("thought", ""))[:160])
+                        menu_unstick(ad, stats)
+                        invalidate_plan()
+                        solo.wait(.3, stopped)
+                        continue
                     if state_identity(state) == planned_identity:
                         recovery.observed()
                         stats["native_control_during_recovery"] = False
@@ -3097,8 +3162,14 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                              planned_input_player=selected[0][0] if selected else 0,
                                              planned_input_keys=','.join(selected[0][1]) if selected else '')
                                 if menu.stalled:
-                                    stats.update(ok=False, campaign_state='needs_operator', stopped_reason=reason)
-                                    break
+                                    # INVARIANT: never terminally stop at a stuck menu.
+                                    # Warp to the next route floor (RAM load bypasses
+                                    # any menu/dialogue) and keep playing forever.
+                                    stats.update(menu_stuck_reason=str(reason)[:160])
+                                    menu_unstick(ad, stats)
+                                    invalidate_plan()
+                                    solo.wait(.3, stopped)
+                                    continue
                                 # Menus are observed after every individual input.
                                 # A confirm must never cascade into an unseen dialog.
                                 for command in selected[:1]:
