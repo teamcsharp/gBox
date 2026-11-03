@@ -91,9 +91,14 @@ def test_parse_plan_prefers_json_string_then_dict_then_scalars():
     assert got["current_room"] == 2 and got["crit_path"] == [2, 5, 12]
     # dict form when no string
     assert F.parse_plan({"pso_plan": plan})["target_room"] == 5
-    # flat scalar mirrors when the rich forms were dropped
-    flat = F.parse_plan({"pso_plan_current_room": 3, "pso_plan_target_room": 7, "pso_plan_crit_len": 4})
+    # flat scalar mirrors when the rich forms were dropped (incl. exploration coverage)
+    flat = F.parse_plan({"pso_plan_current_room": 3, "pso_plan_target_room": 7, "pso_plan_crit_len": 4,
+                         "pso_plan_coverage": 0.5, "pso_plan_frontier": 2, "pso_plan_explored": 0})
     assert flat["current_room"] == 3 and flat["target_room"] == 7 and flat["crit_path"] == []
+    assert flat["coverage"] == 0.5 and flat["frontier"] == 2 and flat["explored"] is False
+    # the rich JSON carries visited / frontier / coverage straight through
+    rich = F.parse_plan({"pso_plan_json": json.dumps({"visited": [2, 5], "frontier": [9], "coverage": 0.66})})
+    assert rich["frontier"] == [9] and rich["coverage"] == 0.66
     # nothing published yet
     assert F.parse_plan({}) is None and F.parse_plan({"pso_plan_json": "not json"}) is None
 

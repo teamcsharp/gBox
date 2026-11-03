@@ -105,6 +105,11 @@ test('planGraph places room nodes at centroids with door edges and the route to 
   const g2 = P.planGraph({ plan: { centroids: { '2': [0, 0], '7': [50, 0] }, path: [2, 7], current_room: 7 } }, v);
   assert.equal(g2.route.length, 2);
   assert.ok(!g2.nodes.some(n => n.goal), 'no goal flagged before a route is learned');
+  // frontier: a node with a door out to a not-yet-entered room is flagged as having an unexplored exit
+  const g3 = P.planGraph({ plan: { centroids: { '2': [0, 0], '5': [100, 0] }, edges: { '5': { d0: 9 } },
+    crit_path: [2, 5], current_room: 5, frontier: [9] } }, v);
+  assert.ok(g3.nodes.find(n => n.room === 5).hasUnexplored, 'room 5 has an unexplored exit to room 9');
+  assert.ok(!g3.nodes.find(n => n.room === 2).hasUnexplored);
 });
 
 test('draw paints motion trails behind the players when given a trail buffer', () => {

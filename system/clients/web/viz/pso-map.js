@@ -145,6 +145,7 @@
     }
     const routePx = [];
     for (const r of route) { const c = pos(r); if (c) routePx.push(project(v, c[0], c[1])); }
+    const frontier = new Set((Array.isArray(plan.frontier) ? plan.frontier : []).filter(Number.isFinite));
     const rooms = new Set();
     for (const k of Object.keys(cen)) { const n = parseInt(k, 10); if (Number.isFinite(n)) rooms.add(n); }
     for (const r of route) rooms.add(r);
@@ -153,8 +154,10 @@
       const c = pos(r); if (!c) continue;
       const [x, y] = project(v, c[0], c[1]);
       const idx = route.indexOf(r);
+      const doors = plan.edges && (plan.edges[r] || plan.edges[String(r)]) || {};
+      const hasUnexplored = Object.values(doors).some(to => frontier.has(to));   // a door out to a not-yet-entered room
       nodes.push({ x, y, room: r, current: r === cur, target: r === tgt, goal: r === goal,
-        visited: curIdx >= 0 && idx >= 0 && idx < curIdx });
+        visited: curIdx >= 0 && idx >= 0 && idx < curIdx, hasUnexplored });
     }
     return { edges, route: routePx, nodes };
   }
@@ -276,6 +279,10 @@
     ctx.lineWidth = 3; ctx.strokeStyle = t.halo; ctx.stroke();
     ctx.fillStyle = fill; ctx.fill();
     if (n.target) { ctx.lineWidth = 2.5; ctx.strokeStyle = t.plan; ctx.beginPath(); ctx.arc(n.x, n.y, r + 3.5, 0, 2 * Math.PI); ctx.stroke(); }
+    if (n.hasUnexplored) {                                            // dashed amber ring = an unexplored exit from this room
+      ctx.save(); ctx.lineWidth = 2; ctx.strokeStyle = t.switchOff; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.arc(n.x, n.y, r + 6, 0, 2 * Math.PI); ctx.stroke(); ctx.restore();
+    }
     ctx.lineWidth = 1; ctx.strokeStyle = t.ink; ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI); ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.fillStyle = (n.current || n.goal) ? "#ffffff" : t.ink;
@@ -358,7 +365,9 @@
     .psomap .pm-room.current{background:#1746c9;color:#fff;border-color:#1746c9;font-weight:700}
     .psomap .pm-room.target{outline:2px solid #1baf7a;outline-offset:1px}
     .psomap .pm-room.goal{background:#13b5c8;color:#07303a;border-color:#13b5c8;font-weight:700}
-    .psomap .pm-arrow,.psomap .pm-note{color:var(--mut,#8a8a96)}`;
+    .psomap .pm-arrow,.psomap .pm-note{color:var(--mut,#8a8a96)}
+    .psomap .pm-cov{padding:0 6px;border-radius:9px;border:1px solid #eda100;color:#eda100;font-weight:600;white-space:nowrap}
+    .psomap .pm-cov.done{border-color:#1baf7a;color:#1baf7a}`;
 
   function html(sid) {
     return `<details data-dock="psomap" class="sect" data-psomap="${ESC(sid)}" open hidden>` +
@@ -460,12 +469,20 @@
       const cur = plan && num(plan.current_room) ? plan.current_room
                 : num(fwd.room) ? fwd.room : (model && num(model.room) ? model.room : null);
       const target = plan && num(plan.target_room) ? plan.target_room : null;
+      // coverage / "fully explored" badge — how much of the reachable area has been mapped + studied
+      let badge = "";
+      if (plan && num(plan.coverage)) {
+        const pct = Math.round(plan.coverage * 100);
+        const nf = Array.isArray(plan.frontier) ? plan.frontier.length : (num(plan.frontier) ? plan.frontier : null);
+        const explored = plan.explored === true || nf === 0;
+        badge = ` <span class="pm-cov${explored ? " done" : ""}">${explored ? "fully explored" : pct + "% mapped" + (nf ? " · " + nf + " unexplored" : "")}</span>`;
+      }
       if (!path.length) {
         const seen = num(fwd.rooms_visited) ? fwd.rooms_visited
                    : (plan && num(plan.rooms_visited) ? plan.rooms_visited : null);
         el.innerHTML = `<span class="pm-note">Exploring${num(model.floor) ? " floor " + model.floor : ""} — building the map` +
           `${seen != null ? " · " + seen + " room" + (seen === 1 ? "" : "s") + " seen" : ""}` +
-          `${num(cur) ? " · in room " + cur : ""} (no learned route yet)</span>`;
+          `${num(cur) ? " · in room " + cur : ""} (no learned route yet)</span>` + badge;
         return;
       }
       const curIdx = path.indexOf(cur), out = [`<span class="pm-note">${usingCrit ? "Plan:" : "Mapped:"}</span>`];
@@ -477,7 +494,7 @@
         out.push(`<span class="${cls.join(" ")}">${usingCrit && i === path.length - 1 ? "&#9873; " : ""}${ESC(r)}</span>`);
         if (i < path.length - 1) out.push(`<span class="pm-arrow">&rsaquo;</span>`);
       });
-      el.innerHTML = out.join("");
+      el.innerHTML = out.join("") + badge;
     }
 
     function fit() {

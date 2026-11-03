@@ -221,7 +221,12 @@ dropped by the telemetry path, so the JSON string is authoritative):
 3. flat scalars `pso_plan_current_room` / `pso_plan_target_room` / `pso_plan_crit_len` / `pso_plan_rooms_visited`.
 
 Shape: `{ area, episode, floor, current_room, target_room, crit_path:[room,...], path:[room,...],
-edges:{"<from>":{"<door>":<to>}}, centroids:{"<room>":[x,z]} }`. `crit_path` is non-empty only on a
+edges:{"<from>":{"<door>":<to>}}, centroids:{"<room>":[x,z]}, visited:[room,...], frontier:[room,...],
+coverage:0..1, explored:bool }` (flat mirrors: `pso_plan_coverage`, `pso_plan_frontier`,
+`pso_plan_explored`). `visited` = rooms entered this run; `frontier` = reachable-but-not-entered rooms
+(the unexplored edge); `coverage` = visited/reachable. The client shows a coverage badge ("N% mapped ·
+K unexplored" / "fully explored") and rings each room node that still has a door out to a frontier
+room (a dashed amber ring = an unexplored exit), so the operator sees how fully the area is mapped. `crit_path` is non-empty only on a
 RECALLED area (2nd+ visit); first visit grows `path` (rooms reached) instead. `centroids` = last-seen
 P1 (x,z) per room, so the client places room nodes spatially. The feed frames the map bounds to include
 the centroids when there is no collision surface, and the client draws the room graph ON the map:

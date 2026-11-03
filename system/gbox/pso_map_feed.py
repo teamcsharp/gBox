@@ -205,9 +205,13 @@ def parse_plan(stats) -> dict | None:
     if isinstance(stats.get("pso_plan"), dict):
         return stats["pso_plan"]
     cur, tgt = stats.get("pso_plan_current_room"), stats.get("pso_plan_target_room")
-    if cur is not None or tgt is not None or stats.get("pso_plan_crit_len") is not None:
+    if cur is not None or tgt is not None or stats.get("pso_plan_crit_len") is not None or stats.get("pso_plan_coverage") is not None:
+        explored = stats.get("pso_plan_explored")
         return {"current_room": cur, "target_room": tgt, "crit_path": [], "path": [],
-                "edges": {}, "centroids": {}, "crit_len": stats.get("pso_plan_crit_len"),
+                "edges": {}, "centroids": {}, "visited": [], "frontier": stats.get("pso_plan_frontier"),
+                "coverage": stats.get("pso_plan_coverage"),
+                "explored": (bool(explored) if explored is not None else None),
+                "crit_len": stats.get("pso_plan_crit_len"),
                 "rooms_visited": stats.get("pso_plan_rooms_visited")}
     return None
 
