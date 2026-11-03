@@ -1052,6 +1052,21 @@ def test_p1_rejects_a_crystal_recalled_dead_end_door_for_an_untraversed_one(tmp_
     assert dest[0] > 120.                                                   # commits through the frontier door, not the nearer dead-end
 
 
+def test_recovery_grid_relaxes_a_partial_floor_but_a_complete_grid_does_not():
+    """Fix (A): a RECOVERY grid (partial floor, no wall data) relaxes floor
+    membership so A* still routes to a target its partial surface doesn't cover,
+    instead of the caller straight-lining into a wall; a COMPLETE projection is
+    never relaxed, so a goal outside its floor stays unreachable (cliff / out-of-
+    bounds safety preserved)."""
+    floor = [[i, 0] for i in range(0, 6)]        # a thin strip of cells (0..5, 0); goal cell (5,5) is NOT on it
+    start, goal = (5., 5.), (55., 55.)           # cells (0,0) -> (5,5)
+    complete = RoomMap(size=10.0, floor=floor, recovery=False)
+    assert complete.route(start, goal) is None   # complete grid: goal off-floor stays unreachable (safe)
+    recovered = RoomMap(size=10.0, floor=floor, recovery=True)
+    path = recovered.route(start, goal)
+    assert path is not None and path[-1] == recovered.center((5, 5))   # recovery grid: relaxed, routes to the target
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
