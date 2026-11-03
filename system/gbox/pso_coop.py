@@ -4315,7 +4315,24 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                             controller.engagements.rows.clear()
                             stats["weapon_reroll_reobserved_inline"] = stats.get("weapon_reroll_reobserved_inline", 0) + 1
                         stats["action"] = "coordinated_native_combat_or_navigation"
-                        controller.tick(state)
+                        # CRASH-RESILIENT TICK: one bad frame (a None entity, a bad fence/boss/
+                        # switch/explore read) must NEVER kill the autoplay loop (it was dying
+                        # silently with no telemetry error). Catch ANY exception from the tick,
+                        # SURFACE it (bot_tick_error + traceback so it's visible, not invisible),
+                        # and keep looping - the next frame retries. Stop/interrupt still ends it.
+                        try:
+                            controller.tick(state)
+                        except (InterruptedError, RuntimeError):
+                            raise      # stop, and the window-focus pause handled by the outer loop
+                        except Exception as tick_exc:                 # noqa: BLE001 - never let one frame kill the loop
+                            import traceback as _tb
+                            stats["bot_tick_error"] = ("%s: %s" % (type(tick_exc).__name__, tick_exc))[:300]
+                            stats["bot_tick_tb"] = _tb.format_exc()[-1600:]
+                            stats["bot_tick_errors"] = stats.get("bot_tick_errors", 0) + 1
+                            try:
+                                inputs.release()
+                            except Exception:
+                                pass
                 errors = 0
                 stats["input_wait_active"] = False
                 solo.wait(.05, stopped)
