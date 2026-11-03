@@ -1445,6 +1445,23 @@ def test_weak_menu_visible_on_a_field_floor_does_not_freeze_play(monkeypatch):
     assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 0)) is True
 
 
+def test_mid_field_reload_trusts_prior_verification_only_mid_run():
+    """RELOAD FIX: a hot-reload into a running mid-FIELD co-op session must skip the
+    Pioneer-2 town pad probe (floor 0 only) that would raise and roll the reload back.
+    mid_field_reload gates that: True only for verified phase-14 play on a real floor
+    with both players settled; a town start (floor 0) stays False so the real probe runs."""
+    assert C.mid_field_reload(state(floor=5)) is True                  # running mid-field -> trust prior verify
+    assert C.mid_field_reload(state(floor=0)) is False                 # town start -> real probe
+    trav = state(floor=5); trav["travelling"] = True
+    assert C.mid_field_reload(trav) is False                           # loading -> wait, don't trust yet
+    not_v = state(floor=5); not_v["verified"] = False
+    assert C.mid_field_reload(not_v) is False
+    phase = state(floor=5); phase["phase"] = 10
+    assert C.mid_field_reload(phase) is False
+    solo = state(floor=5); solo["players"].pop(2)
+    assert C.mid_field_reload(solo) is False                           # needs both players
+
+
 def test_survival_tick_keeps_both_players_unkillable_and_mirrors_flat_keys(tmp_path, monkeypatch):
     """NEVER-DIE: pso_coop drives pso_survival.apply_survival directly (because
     pso_master_build can't hot-reload) for BOTH players every tick, fail-soft, and
