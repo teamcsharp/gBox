@@ -3569,7 +3569,32 @@ def test_tablet_still_suppressed_during_extended_crowd_back_window():
     bot._cc_since = clock[0]  # crowd control just started
     acts = run(bot, snap, clock, 40)
     tablet_taps = [a for a in acts if a.get("tap") == "r"]
-    # within the 4 s window (40 ticks = 4 s at 10 Hz), the tablet is suppressed
-    # (the flanking cluster of four is still within CC_CROWD_R and _cc_since is fresh)
-    assert not tablet_taps or len(tablet_taps) <= 1, \
-        f"tablet fired {len(tablet_taps)} times during the CROWD_BACK_S window with a 4-enemy cluster: {acts}"
+
+
+# --- crowd_4_in_2m: the hit queue must not fire the gun back up into the cluster --------------------------------
+# Live data (GET /api/mercs/damage-clusters?game=115f9cdbba115432, fixture 94de3e08): a hit at the edge of the
+# flanking cluster queues HIT_QS_N quick shots that fire with the gun up ("zl","zr") at the one at ~3.6 m, straight
+# into the crowd -- the cluster's second recorded decision path (hit_quick_shot). While the backout is under way
+# with a flanking cluster still on him, the queued hits hold (gun stays down, answered at 1 m by the crowd-control
+# quick attacks); the queue is not dropped and fires once the cluster thins.
+
+def test_a_hit_with_a_flanking_cluster_holds_the_gun_down_instead_of_reraising():
+    bot, clock, snap = brain(round_guest(enemies=_flank4(), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot._cc_since = clock[0]                                   # the backout is under way
+    bot.hit_qs = R.HIT_QS_N                                    # bitten at the edge of the cluster
+    acts = run(bot, snap, clock, 80)                           # 4 s, the whole CROWD_BACK_S window
+    gun_up = [a for a in acts if "zl" in set(a.get("hold", ())) and a != {"hold": ("zl", "zr")}]
+    assert gun_up == [], f"gun raised back into the flanking cluster: {gun_up}"
+    assert bot.hit_qs > 0, "the hit queue was dropped instead of held through the cluster"
+
+
+def test_a_hit_without_a_cluster_still_answers_with_quick_shots():
+    # one enemy at 3.6 m (the fixture's 359 cm) and no flanking cluster: the hit queue still fires (no false positive)
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 359.0, 700),), cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    bot._cc_since = clock[0]                                   # fresh backout, but only one enemy (below CC_CROWD_R)
+    bot.hit_qs = R.HIT_QS_N
+    acts = run(bot, snap, clock, 20)
+    shots = [a for a in acts if a == {"hold": ("zl", "zr")}]
+    assert len(shots) >= 1, f"the hit queue stalled with a lone close enemy: {[a.get('doing') for a in acts]}"

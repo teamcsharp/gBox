@@ -2695,7 +2695,15 @@ class Bot:
             close_by = [e for e in live if flat(e) <= HIT_QS_R]
             if not close_by:
                 self.hit_qs = 0
-            elif not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S:
+            elif not self.down and p.get("state") in (0, None) \
+                    and now - self.qshot_at >= HIT_QS_GAP_S \
+                    and not (now - self._cc_since < CROWD_BACK_S
+                             and sum(1 for z in live if flat(z) <= CC_CROWD_R) >= CROWD_TABLET_N):
+                # crowd_4_in_2m (fixture 94de3e08, decision hit_quick_shot): a hit at the edge of the
+                # flanking cluster queues quick shots that fire with the gun up (zl,zr) at the one at ~3.6 m,
+                # straight into the crowd. While the backout is under way with a flanking cluster still on him,
+                # the queued hits hold instead (the gun stays down through the cluster, answered at 1 m by the
+                # crowd-control quick attacks): the queue is not dropped, it is answered from the gun-down branch
                 self.hit_qs -= 1
                 self.qshot_at = now
                 self.qshot_release = True
