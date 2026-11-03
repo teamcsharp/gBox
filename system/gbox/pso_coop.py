@@ -767,8 +767,11 @@ FALLBACK_REACH = 9.0          # a switch/door counts as reached within this many
 SWITCH_PRESS_S = 1.5          # dwell/press a panel this long, then rotate to the door it gates
 SWITCH_FINE_DIST = 30.0       # within this of a switch, approach in short pulses so we land to press it
 WEDGE_STALL_S = 4.0           # a buddy that barely translates toward its goal this long is wall-wedged
-WEDGE_ESCAPE_S = 0.8          # hold the back-off/strafe escape heading this long before re-committing
+WEDGE_ESCAPE_S = 1.0          # hold the back-off/strafe escape heading this long before re-committing
 WEDGE_MOVE = 6.0              # progress threshold: translating more than this clears the wedge
+WEDGE_ESCAPE_REACH = 45.0     # first strafe/back-off detour (18 was too small to clear a wall to a far door)
+WEDGE_ESCAPE_GROW = 35.0      # each successive wedged phase widens the detour by this
+WEDGE_ESCAPE_MAX = 180.0      # cap the detour so an escape never flings a buddy across the whole area
 FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
@@ -1309,10 +1312,16 @@ class Controller:
             # Wedged. STRAFE first (slip around the corner) and only then reverse,
             # so a doorway seam does not become a back-and-forth limit cycle across
             # the room boundary; cycle both strafes, a diagonal, then a short reverse.
+            # The detour GROWS with each failed phase (and counts phases across the
+            # cycle) so a small strafe that can't clear a wall escalates to a wide
+            # sweep instead of limit-cycling in place - the operator's acute pain is
+            # the bot SITTING, so a wedged buddy must keep covering real ground.
             rec["phase"] = (rec["phase"] + 1) % 4
+            rec["tries"] = rec.get("tries", 0) + 1
             bearing = math.atan2(waypoint[0] - player["x"], waypoint[1] - player["z"])
             angle = bearing + (math.pi / 2, -math.pi / 2, math.pi * 0.75, math.pi)[rec["phase"] - 1]
-            escape = (player["x"] + math.sin(angle) * 18., player["z"] + math.cos(angle) * 18.)
+            reach = min(WEDGE_ESCAPE_REACH + WEDGE_ESCAPE_GROW * (rec["tries"] - 1), WEDGE_ESCAPE_MAX)
+            escape = (player["x"] + math.sin(angle) * reach, player["z"] + math.cos(angle) * reach)
             rec.update(keys=movement_keys(player, escape), until=now + WEDGE_ESCAPE_S, since=now, anchor=here)
             stats = getattr(self.inputs, "stats", None)
             if isinstance(stats, dict):
