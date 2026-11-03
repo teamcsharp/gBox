@@ -1751,14 +1751,28 @@ class Controller:
             return False
         from . import pso_coop_gates as gates
         nav = self.maps.get(state, player)
+        # Is P2 standing ON the switch (holding the fence open)? P1 only COMMITS through
+        # the fence once it is - otherwise P1 waits AT the fence (aims at it, no overshoot)
+        # so it doesn't bounce the raised fence while P2 is still en route.
+        p2 = state.get('players', {}).get(2) or {}
+        p2_on = (type(p2.get('x')) in (int, float)
+                 and math.hypot(obj['sx'] - p2['x'], obj['sz'] - p2['z']) <= FENCE_SWITCH_ON)
         if slot == 1:
-            target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], FENCE_CROSS_OVERSHOOT)
-            label = 'fence_cross'
+            overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
+            target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
+            label = 'fence_cross' if p2_on else 'fence_wait'
         else:
             target = (obj['sx'], obj['sz'])           # P2 -> stand on the switch and hold it
             label = 'fence_switch_hold'
-        route, _ = nav.toward((player['x'], player['z']), target)
-        waypoint = route[1] if route and len(route) > 1 else (route[0] if route else target)
+        # COORDINATE-DRIVE: A* cannot path to a target in a disconnected room (P2 stranded
+        # 327u from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT
+        # at the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
+        # cross room boundaries - the same fix that got P1 to the fence.
+        route, exact = nav.toward((player['x'], player['z']), target)
+        if exact and route and len(route) > 1:
+            waypoint = route[1]
+        else:
+            waypoint = target                          # straight at the switch/fence across rooms
         keys, escaping = self._unwedge(slot, player, waypoint, now)
         commands.append((slot, keys, .40))
         moves[slot] = (player, waypoint, nav, False)
@@ -1986,6 +2000,11 @@ class Controller:
                 _fstats['fence_dist_p1'] = round(math.hypot(self._fence_obj['fx'] - p1row['x'],
                                                             self._fence_obj['fz'] - p1row['z']), 1)
                 _fstats['fence_switch_room'] = self._fence_obj.get('sroom')
+                _p2 = state['players'].get(2) or {}
+                if type(_p2.get('x')) in (int, float):
+                    _p2d = math.hypot(self._fence_obj['sx'] - _p2['x'], self._fence_obj['sz'] - _p2['z'])
+                    _fstats['p2_switch_dist'] = round(_p2d, 1)
+                    _fstats['p2_on_switch'] = int(_p2d <= FENCE_SWITCH_ON)
         for e in state["entities"]:
             if e.get("kind") != "enemy" or not isinstance(e.get("hp"), int):
                 continue
