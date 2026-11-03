@@ -2089,7 +2089,24 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     stats["progress_restored"] = restored
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
-    from .pso_knowledge import KnowledgeStore
+    # Activate the convergence crystal without a worker-process restart: this worker
+    # started before pso_knowledge entered BOT_MODULES, so a plain bot-reload leaves
+    # the OLD pso_knowledge cached in sys.modules (no area_fingerprint) and _sync_area
+    # no-ops. pso_coop imports it only inside functions, so nothing else holds its
+    # classes; reload it in place here (once per run, only if stale) and build the
+    # store from the fresh module so the live controller uses the new area-graph
+    # KnowledgeStore. The on-disk crystal is preserved (version 1 -> version 2 on the
+    # first crossing). Fail-soft: on any error fall back to whatever is importable.
+    try:
+        import importlib
+        from . import pso_knowledge as _pk
+        if not hasattr(_pk, "area_fingerprint"):
+            _pk = importlib.reload(_pk)
+        KnowledgeStore = _pk.KnowledgeStore
+        stats["pso_knowledge_area_graph"] = hasattr(_pk, "area_fingerprint")
+    except Exception as exc:                       # noqa: BLE001 - never block play on the crystal
+        from .pso_knowledge import KnowledgeStore
+        stats["pso_knowledge_reload_error"] = str(exc)[:160]
     controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
     controller.map_root = root                       # published collision surfaces live here
     controller.directive_path = root / "pso-directive.json"   # operator RTS map clicks
