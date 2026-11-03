@@ -110,8 +110,9 @@ def test_state_is_tracked_per_player_and_apply_all_covers_both():
     assert MB._state(live, 0)["weapon_id"] != MB._state(live, 1)["weapon_id"]
 
 
-def test_notes_document_the_outstanding_re_work():
-    for key in ("never_miss", "crit_rate", "crit_always_todo", "attack_speed_todo"):
+def test_notes_document_shipped_and_outstanding_work():
+    for key in ("never_miss", "crit_always", "crit_rate", "attack_speed_todo"):
         assert key in MB.MASTER_BUILD_NOTES and MB.MASTER_BUILD_NOTES[key]
-    # never-miss now covers both players; the P1-only caveat is gone.
+    # never-miss and crit-always now cover both players; 3x-speed is the only to-do.
     assert "slot 1" in MB.MASTER_BUILD_NOTES["never_miss"]
+    assert "0x8001468C" in MB.MASTER_BUILD_NOTES["crit_always"]

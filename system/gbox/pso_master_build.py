@@ -77,19 +77,17 @@ MASTER_BUILD_NOTES = {
                   "0x80015F00 / 0x80016384 forces every hit by PLAYER slot 0 (P1) and slot 1 "
                   "(P2) to connect, offline free-play only. (The cave stub compares the attacker "
                   "to *(PLAYER) and *(PLAYER+4); confirmed by disassembly against live RAM.)",
-    "crit_rate": "Applied: LCK raised to the crit cap (min(LCK,100)). This is max crit RATE, "
-                 "NOT crit-always.",
-    "crit_always_todo": "TRUE crit-always (every hit a critical) is NOT shipped. RULED OUT of the "
-                        "accuracy path: 0x80015DE8 / 0x800162E0 are the to-hit roll (f31 = hit "
-                        "margin, fcmpu at the patched site -> bge = miss; success sets hit-record "
-                        "bits 0x04000000 at target+0x18 and 0x02/0x01 at attacker+0x2dc) - no x1.5. "
-                        "The on-hit callees 0x80010FCC / 0x80011014 are thin wrappers (ruled out). "
-                        "The crit multiplier lives in a damage-application routine not yet located. "
-                        "Next step: Ghidra xref on PsoV3.dol (SHA 1f80fb82...) for the 1.5f constant "
-                        "(0x3FC00000) and the attacker ATP/LCK read in the melee-damage routine, "
-                        "then force its crit branch (single-instruction nop like the DC bt->nop at "
-                        "0x8C047BC0), fingerprint-guarded. Until then LCK-max gives the best crit "
-                        "RATE safely.",
+    "crit_always": "Applied (verified by static RE + live-RAM cross-check): gbox.pso_crit hooks the "
+                   "melee damage routine FUN_80014108 at its crit branch 0x8001468C with a cave at "
+                   "0x80005000 that forces the x1.5 critical path when the attacker (r28) is PLAYER "
+                   "slot 0 or slot 1 and offline, else replays the stock roll - so the bot's players "
+                   "crit on EVERY melee hit and enemies are unchanged. Reversible, fingerprint-guarded.",
+    "crit_rate": "Also applied as a backstop: LCK raised to the crit cap (min(LCK,100)). Redundant "
+                 "once crit_always is on; it keeps a high natural crit rate if the crit hook refuses.",
+    "crit_followups": "crit_always covers the MELEE damage path (FUN_80014108). A ranged/technique "
+                      "crit path, if separate, is not yet hooked - the same 1.5f (0x3FC00000) + "
+                      "per-hit-record structure in a sibling damage routine would be the lead. For a "
+                      "melee swarm bot this is the primary path.",
     "attack_speed_todo": "3x attack speed NOT applied. GC path mirrors the DC speed wrapper "
                          "(pso_mods_tool.speed_code): run ORIGINAL_UPDATE N-1 extra times while the "
                          "player is in the attack action-state. TWO unknowns: (1) the GC TObjPlayer "
@@ -343,6 +341,12 @@ def _apply_globals(ad, report):
         report["equip_any"] = True
     except Exception as error:
         report.setdefault("errors", {})["equip_any"] = str(error)[:140]
+    try:
+        from . import pso_crit
+        res = pso_crit.set_enabled(ad, "gamecube", True)
+        report["crit_always"] = bool(res.get("crit_always"))
+    except Exception as error:
+        report.setdefault("errors", {})["crit_always"] = str(error)[:140]
 
 
 def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S, reroll_weapon=True):
