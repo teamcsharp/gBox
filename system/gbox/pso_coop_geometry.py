@@ -883,7 +883,7 @@ class Provider:
                     view = {'geometry_layer': mview['geometry_layer'], '_heights': mview['safe'],
                             '_selected': mview['safe'], 'collision_grid': {'size': self.atlas.size,
                             'floor': [r[:2] for r in rows], 'walls': [], 'heights': rows,
-                            'max_step': .75, 'max_slope': .75}}
+                            'max_step': .75, 'max_slope': .75, 'recovery': True}}
             if view:
                 views[slot] = {k: v for k, v in view.items() if not k.startswith('_')}
                 views[slot]['geometry_identity'] = self.layout_identity
