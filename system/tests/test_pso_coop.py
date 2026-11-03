@@ -1035,6 +1035,23 @@ def test_p1_crossing_records_a_directed_edge_and_a_later_run_recalls_it(tmp_path
     assert run2._path_next(10) == 11 and run2._path_next(11) is None
 
 
+def test_p1_rejects_a_crystal_recalled_dead_end_door_for_an_untraversed_one(tmp_path):
+    """The convergence fix: when the crystal recalls a door's destination as an
+    already-VISITED room (a dead-end branch) and another door is untraversed, P1
+    takes the untraversed (frontier) door - it does not commit to the recalled
+    dead-end even when that dead-end door is nearer. This is the 10<->11/14 wall:
+    every recalled edge led back to a visited room, so P1 must explore the frontier."""
+    ctrl = _controller(tmp_path)
+    dead = {"class": "TObjLazerFenceNorm", "x": 40., "z": 0., "room": 10}   # recalled 10->14 (14 visited)
+    frontier = {"class": "TObjDoor", "x": 120., "z": 0., "room": 10}        # never traversed
+    st = _coop_room([dead, frontier], p1=(0., 0.))
+    ctrl.p1_visited = {10, 14}
+    ctrl._p1_room = 10
+    ctrl._area_graph = {10: {"('TObjLazerFenceNorm', 40.0, 0.0)": 14}}      # crystal: dead -> visited 14
+    dest = ctrl.forward_fallback(st, 1, st["players"][1], now=100.)
+    assert dest[0] > 120.                                                   # commits through the frontier door, not the nearer dead-end
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
