@@ -775,6 +775,9 @@ WEDGE_ESCAPE_MAX = 180.0      # cap the detour so an escape never flings a buddy
 FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
 FORCE_DOOR_DIST = 60.0        # P1 this close to the forward door it can't cross -> force-open that door
 FORCE_DOOR_RETRY_S = 20.0     # re-arm a specific door's force-open this often (in case a flag was contested)
+COORD_DRIVE_AFTER_S = 3.0     # (B) after this long unable to A* past a forward door in a cleared room, drive straight at it
+COORD_FORCE_DIST = 110.0      # (B) looser force-open range while coordinate-driving the committed door
+COORD_DRIVE_MAX_S = 40.0      # (B) abandon a single coordinate-drive commit after this (re-pick a forward door)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -819,6 +822,7 @@ class Controller:
         self._forced_doors = {}     # gkey -> until: a SPECIFIC forward door force-opened (per-door, not per-room)
         self._adj_fires = 0         # how many times force_adjacent_door engaged (flat telemetry)
         self._adj_last = {}         # last force_adjacent_door result {room, gkey, written, flags} (flat telemetry)
+        self._coord_target = {}     # (B) committed coordinate-drive forward door {gkey, since}
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1313,24 +1317,46 @@ class Controller:
             st['nav_blocked'] = len(nav.blocked)
             st['nav_target_dist'] = target_dist
             st['nav_recovery_grid'] = int(recov)
-        # At the forward door but can't path PAST it (route_exact False) means the
-        # door is shut onto a different room - force-open THAT specific door's own
-        # stage flag so P1 crosses out of the cluster. Per-door, so it fires even
-        # after the room's one-shot generic fail-safe. Then the committed walk-through
-        # hold below carries P1 over the threshold.
-        if (slot == 1 and self.forward_kind.get(slot) == 'walk_through' and not route_exact
-                and isinstance(self._p1_door, tuple) and len(self._p1_door) == 3
-                and math.hypot(self._p1_door[1] - player["x"], self._p1_door[2] - player["z"]) <= FORCE_DOOR_DIST):
-            self.force_adjacent_door(state, player, self._p1_door, now)
+        # (B) COORDINATE-DRIVE out of a stuck cleared room. A* repeatedly can't reach
+        # the forward exit door (route_exact False - its far side is a disconnected
+        # room) and P1 oscillates in the hub never closing to 60u. So: once P1 has a
+        # forward door selected in a CLEARED room (no combat to do) and A* has failed
+        # to path past it for COORD_DRIVE_AFTER_S, COMMIT to that door and drive STRAIGHT
+        # at its coordinates (bypassing A*'s backward waypoint), force its OWN flag on a
+        # loose approach, and let the committed walk-through + escalating wedge-escape
+        # carry P1 across. Combat still preempts (drive_forward only runs with no target),
+        # and we re-check the room is clear here. Commit is per-door and time-bounded.
+        door = self._p1_door if (isinstance(self._p1_door, tuple) and len(self._p1_door) == 3) else None
+        coord_drive = False
+        if slot == 1 and self.forward_kind.get(slot) == 'walk_through' and door is not None:
+            room_clear = not any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float)
+                                 and e['hp'] > 0 and e.get('room') == player.get('room')
+                                 for e in state.get('entities', ())[:512])
+            lock = self._coord_target
+            if lock.get('gkey') != door or (now - lock.get('since', now)) > COORD_DRIVE_MAX_S:
+                lock = self._coord_target = {'gkey': door, 'since': now}
+            ddist = math.hypot(door[1] - player["x"], door[2] - player["z"])
+            if room_clear and not route_exact and (now - lock['since']) >= COORD_DRIVE_AFTER_S:
+                coord_drive = True
+                waypoint = dest                         # straight at the overshot door target, not A*'s waypoint
+                if ddist <= COORD_FORCE_DIST:
+                    self.force_adjacent_door(state, player, door, now)
+            elif ddist <= FORCE_DOOR_DIST and not route_exact:
+                # Already right at the door: open it immediately (original trigger).
+                self.force_adjacent_door(state, player, door, now)
+            if isinstance(getattr(self.inputs, 'stats', None), dict):
+                self.inputs.stats['coord_drive'] = int(coord_drive)
+                self.inputs.stats['coord_drive_door_dist'] = round(ddist, 1)
         # Approach a near panel in SHORT pulses so the actor lands on it (and the
         # next tick presses it) instead of orbiting the small target; drive a door
         # through with a committed, gusto-length hold.
-        approaching_switch = (self.forward_kind.get(slot) == 'approach_switch'
+        approaching_switch = (not coord_drive and self.forward_kind.get(slot) == 'approach_switch'
                               and math.hypot(dest[0] - player["x"], dest[1] - player["z"]) <= SWITCH_FINE_DIST)
         keys, escaping = self._unwedge(slot, player, waypoint, now)
         commands.append((slot, keys, .40 if escaping else (.10 if approaching_switch else .40)))
         moves[slot] = (player, waypoint, nav, False)
         steering[slot] = (player, waypoint, 'forward_unwedge' if escaping else
+                          'forward_coord_drive' if coord_drive else
                           'forward_fine' if approaching_switch else 'forward_gusto')
         return True
 
