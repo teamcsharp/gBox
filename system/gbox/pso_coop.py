@@ -1599,13 +1599,13 @@ class Controller:
                 continue
         if ent is None:
             return None
+        # ONLY this door's own gating flag - not the room's other flags (that is
+        # force_forward_unlock's one-shot job). Setting unrelated stage flags on every
+        # re-arm across many doors risks corrupting progression, so keep it surgical.
         try:
             idxs = [struct.unpack('>I', read(int(ent['ptr'], 16) + 0xC8, 4))[0] & 0xffff]
         except (ValueError, KeyError, TypeError, struct.error, OSError):
             return None
-        for f in self._live_forward_flags(state, player, room):   # switch / nearest-barrier flags too
-            if f not in idxs:
-                idxs.append(f)
         loci = []
         for idx in idxs:
             locus = gates.stage_flag_locus(group, idx)
