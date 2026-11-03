@@ -282,11 +282,16 @@ def _ensure_gear(m, p, state, report):
 # restricted to guns (Handgun/Rifle/Mechgun/Shot) so shots actually reach. never-miss + crit
 # still only land once nav positions the bot within weapon range (positioning is the nav lane).
 RANGED_WEAPON_CODES = ("000700", "000900", "000800", "000600")   # Rifle, Shot, Mechgun, Handgun
-# On a boss floor force the SHOT (000900) specifically, not a random ranged gun. From the owned
-# ItemPMT: Shot = 110.5u effective reach (ample for a boss the bot closes on) with a 45 deg cone
-# half-angle, versus the Rifle's 10 deg. The wide cone lands hits on a MOVING boss (the Dragon
-# darts around) where a narrow-cone gun whiffs even in range; 110.5u covers all three Ep1 bosses.
+# On a boss floor force a gun (not a random ranged weapon), chosen per floor from the owned ItemPMT
+# effective reaches (base x 0.85) and cone half-angles:
+#   Shot 000900 = 110.5u / 45deg cone  -> default: wide cone lands on close/stationary bosses
+#                                         (De Rol Le head ~29u, Vol Opt monitors ~38u, Dark Falz).
+#   Rifle 000700 = 178.5u / 10deg cone -> Dragon floor only: the Dragon is grounded+vulnerable and
+#                                         ORBITS the arena at ~93-160u; nav holds the center, so the
+#                                         Rifle's 178.5u covers the FULL orbit (the Shot's 110u only
+#                                         reaches the near arc). Narrow cone needs nav to aim-track.
 BOSS_WEAPON_CODE = "000900"
+BOSS_WEAPON_BY_FLOOR = {11: "000700"}            # floor 11 (Ep1 Dragon) -> Rifle; others -> Shot
 _BOSS_FLOORS_BY_EP = {0: frozenset({11, 12, 13, 14}), 1: frozenset({12, 13, 14, 15})}
 
 
@@ -296,6 +301,16 @@ def _boss_floor(m):
         return m.u32(FLOOR) in _BOSS_FLOORS_BY_EP.get(m.u32(EPISODE_FLOOR), frozenset())
     except Exception:
         return False
+
+
+def _boss_weapon_code(m):
+    """The gun to force on the current boss floor: Rifle on the Dragon floor (per-floor override),
+    Shot everywhere else. Fail-soft to the Shot default."""
+    try:
+        from .pso_fence import FLOOR
+        return BOSS_WEAPON_BY_FLOOR.get(m.u32(FLOOR), BOSS_WEAPON_CODE)
+    except Exception:
+        return BOSS_WEAPON_CODE
 
 
 def _reroll_weapon(m, p, state, report, interval):
@@ -322,7 +337,7 @@ def _reroll_weapon(m, p, state, report, interval):
         report["weapon"] = {"id": wid, "code": state.get("weapon_code"), "rerolled": False,
                            "note": "inventory full"}
         return
-    code = BOSS_WEAPON_CODE if boss else random.choice(WEAPON_CODES)
+    code = _boss_weapon_code(m) if boss else random.choice(WEAPON_CODES)
     try:
         made = m.give(code)
     except Exception as error:
