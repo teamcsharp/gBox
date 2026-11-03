@@ -1400,6 +1400,30 @@ def test_boss_combat_fires_at_a_monitor_when_hold_pos_equals_weakpoint(tmp_path)
     cmds, mv, steer, arows = [], {}, {}, {}
     ctrl.boss_combat(state(floor=13), 1, player, env, monitor, 100.0, cmds, mv, steer, [monitor], arows)
     assert any(c[0] == 1 and c[1] == ["a"] for c in cmds) and steer[1][2] == "boss_fire"
+    assert ctrl.inputs.stats["boss_fire_skip"] == "" and ctrl.inputs.stats["boss_firing_line"] == 1
+
+
+def test_boss_fire_skip_breadcrumb_pins_the_gate(tmp_path):
+    """One-read diagnosis: boss_fire_skip names exactly why A isn't pressed - '' when firing,
+    'not_vulnerable' when the game's gate is off, 'closing' when out of reach, 'aiming' off-cone."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    env = dict(C.FALLBACK, horizontal=110., horizontal_half_angle=45., verified=True)
+    mon = {"class": "TObjBossVolOpt", "kind": "enemy", "hp": 500, "hp_max": 500,
+           "x": 0., "z": 38., "y": 0., "ptr": "V1"}
+    s = ctrl.inputs.stats
+    def run(player, boss, adv, now):
+        ctrl._boss_adv = adv
+        ctrl.boss_combat(state(floor=13), 1, player, env, boss, now, [], {}, {}, [boss], {})
+        return s["boss_fire_skip"]
+    aligned = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "80D01000", "hp": 40}
+    base = {"active": True, "boss": "VolOpt", "weakpoint": mon, "hold_pos": {"x": 0., "z": 38.}}
+    assert run(aligned, mon, dict(base, boss_vulnerable=True), 100.0) == ""              # fires
+    assert run(aligned, mon, dict(base, boss_vulnerable=False), 101.0) == "not_vulnerable"
+    far = dict(mon, z=300.)
+    assert run(aligned, far, {"active": True, "boss": "VolOpt", "weakpoint": far,
+                              "hold_pos": {"x": 0., "z": 300.}, "boss_vulnerable": True}, 102.0) == "closing"
+    sideways = {"x": 0., "z": 0., "y": 0., "heading_deg": 180., "ptr": "80D01000", "hp": 40}   # facing away
+    assert run(sideways, mon, dict(base, boss_vulnerable=True), 103.0) == "aiming"
 
 
 def test_boss_combat_closes_the_last_gap_when_gun_reach_is_short(tmp_path):

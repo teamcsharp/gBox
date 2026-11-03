@@ -2585,14 +2585,32 @@ class Controller:
         center_dist = math.hypot(cx - player["x"], cz - player["z"]) if center_hold else aim_dist
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
+
+        def mark(reason):
+            # One-read FIRE-SKIP breadcrumb (slot 1): why we did NOT press A this tick.
+            if slot == 1 and isinstance(st, dict):
+                st["boss_fire_skip"] = reason
+
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(aim_dist, 1)
+            st["boss_weakpoint_dist"] = round(aim_dist, 1)
             st["boss_hold_dist"] = round(center_dist, 1)
             st["boss_hold_covers"] = int(bool(center_hold))
             st["boss_fire_range"] = round(fire_range, 1)
             st["boss_in_range"] = int(in_fire)
             st["boss_vulnerable"] = int(bool(can_fire))
             st["boss_strike_window"] = int(boss_special)
+            st["boss_angle"] = round(angle, 1)
+            st["boss_half_angle"] = round(half, 1)
+            # Player action-state (+0x326) and hit-record count (+0xA8) - the game's own
+            # attack gate; read live so one telemetry pass shows if we're mid-swing / idle.
+            ad = getattr(self.reader, "ad", None) or getattr(self.inputs, "ad", None)
+            try:
+                pa = int(player["ptr"], 16) if isinstance(player.get("ptr"), str) else int(player.get("ptr"))
+                st["boss_p1_action_state"] = struct.unpack(">H", ad.read_memory(pa + 0x326, 2))[0]
+                st["boss_p1_hitrec"] = struct.unpack(">I", ad.read_memory(pa + 0xA8, 4))[0]
+            except Exception:
+                pass
 
         # FIRE whenever the boss is damageable and its weak point is within the gun's reach.
         # When aligned (within the gun cone) + off cadence -> press A. When not aligned, TURN
@@ -2601,18 +2619,27 @@ class Controller:
         # boss_firing_line is set LIVE only on the tick an attack is actually issued.
         if can_fire and in_fire:
             fired = False
-            if abs(angle) <= half and now - self.last_attack.get(slot, 0) >= BOSS_FIRE_CADENCE_S / speed:
+            if abs(angle) > half:
+                commands.append((slot, movement_keys(player, (bx, bz)), .06))   # turn to face
+                steering[slot] = (player, (bx, bz), "boss_aim")
+                mark("aiming")                                                  # in range+vulnerable but off-cone
+            elif now - self.last_attack.get(slot, 0) < BOSS_FIRE_CADENCE_S / speed:
+                commands.append((slot, movement_keys(player, (bx, bz)), .04))   # hold facing between shots
+                steering[slot] = (player, (bx, bz), "boss_hold")
+                mark("off_cadence")
+            else:
                 attack_rows.setdefault(slot, {"attempts": 0})
                 commands.append((slot, ["a"], .12))
                 steering[slot] = (player, (bx, bz), "boss_fire")
                 fired = True
-            else:
-                # face the weak point (turn toward it); short hold so the next tick re-aims.
-                commands.append((slot, movement_keys(player, (bx, bz)), .06))
-                steering[slot] = (player, (bx, bz), "boss_aim")
+                mark("")                                                        # FIRING this tick
             if isinstance(st, dict):
                 st["boss_firing_line"] = int(fired)
             return True
+        if not can_fire:
+            mark("not_vulnerable")
+        elif not in_fire:
+            mark("closing")
         # POSITION. Two cases:
         #  - CIRCLING boss (hold_covers: the orbit centre keeps the weak point in reach):
         #    drive to the centre and STOP there (within BOSS_HOLD_TOL); fire outward as it
@@ -2660,11 +2687,13 @@ class Controller:
                 commands.append((slot, dodge["keys"], dodge["dur"]))
                 steering[slot] = (player, dodge["point"], "boss_evade")
                 self._dodge_telemetry(dodge)
+                mark("dodging")
                 return True
         commands.append((slot, movement_keys(player, (bx, bz)), .06))
         steering[slot] = (player, (bx, bz), "boss_hold_far")
         if isinstance(st, dict):
             st["boss_hold_far"] = 1
+        mark("out_of_range")           # at the stand point but the boss is out of reach (far arc / submerged)
         return True
 
     def _observe_boss(self, state, now):
@@ -2730,6 +2759,7 @@ class Controller:
             # loop, so a stale 1 can't persist onto a non-boss floor - the reading is trustworthy.
             st["boss_firing_line"] = 0
             st["boss_approaching"] = 0
+            st["boss_fire_skip"] = ""
 
     def survival_tick(self, state):
         """NEVER-DIE (operator 11-03: P2 died and stayed dead). The survival write-side
