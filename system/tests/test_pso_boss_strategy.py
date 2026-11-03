@@ -130,19 +130,29 @@ def test_derolle_picks_the_highest_surfaced_segment():
 
 
 # --------------------------------------------------------------------------- phased bosses
-def test_volopt_phase1_monitors_then_phase2_core():
+def test_volopt_phase1_aims_monitors_not_core():
+    # Phase 1: monitors + pillars present AND the core already exists -> still aim the nearest
+    # monitor/pillar, defer the core. The far-parked P02 cube and the root are ignored.
     p1 = B.boss_target(build(episode=0, floor=13, enemies=[
-        ("TObjEneVolOptMonitor", 50, 50, (30.0, 0.0, 1.0)),
-        ("TObjEneVolOptMonitor", 50, 50, (3.0, 0.0, 2.0)),
-        ("TObjEneVolOptPillar", 80, 80, (50.0, 0.0, 9.0))]))
+        ("TBoss3Volopt", 0, 0, (0.0, 0.0, 0.0)),               # root, excluded (origin + no hp)
+        ("TBoss3VoloptMonitor", 420, 420, (0.0, 0.0, -110.0)),
+        ("TBoss3VoloptMonitor", 350, 350, (3.0, 0.0, 2.0)),    # nearest monitor to P1 at origin
+        ("TBoss3VoloptP01", 500, 500, (76.0, 0.0, 0.0)),
+        ("TBoss3VoloptCore", 3000, 3000, (-116.0, 50.0, 66.0)),  # exists but deferred in P1
+        ("TBoss3VoloptP02", 9500, 9500, (0.0, 0.0, -5000.0))]))  # parked cube, deferred
     assert p1["boss"] == "Vol Opt" and p1["phase"] == "phase1_monitors"
     assert p1["action"] == "aim_monitors"
-    assert p1["weakpoint_pos"]["x"] == 3.0            # nearest monitor to the player
-    assert p1["hazard"] == "electric_floor"
+    assert p1["weakpoint"]["class"] == "TBoss3VoloptMonitor" and p1["weakpoint_pos"]["x"] == 3.0
+    assert "electric_floor" in p1["hazard"]
 
+
+def test_volopt_phase2_aims_core_when_monitors_gone():
     p2 = B.boss_target(build(episode=0, floor=13, enemies=[
-        ("TObjEneVolOptCore", 1500, 1500, (0.0, 20.0, 0.0))]))
+        ("TBoss3VoloptCore", 3000, 3000, (-116.0, 50.0, 66.0)),
+        ("TBoss3VoloptP02", 9500, 9500, (0.0, 0.0, -5000.0)),
+        ("TBoss3VoloptHiraisin", 450, 450, (0.0, 50.0, 0.0))]))
     assert p2["phase"] == "phase2_core" and p2["action"] == "aim_core_panel"
+    assert p2["weakpoint"]["class"] == "TBoss3VoloptCore"
 
 
 def test_darkfalz_form_elements():

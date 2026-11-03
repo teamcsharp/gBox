@@ -134,6 +134,16 @@ CONFIRMATION_NOTES = {
                             "segment/head) and excludes the mines. Which object holds the AUTHORITATIVE HP (they "
                             "all read 20000) and the exact surface/submerge phase flag are being pinned by the "
                             "build agent from the TBoss2DeRolLe/TBoss2Joint update fns.",
+    "live_capture_volopt": "LIVE 2026-11-03 (Ep1 floor 13): PHASE 1 targets = 6x 'TBoss3VoloptP01' "
+                           "pillars (vtable 0x80484234, HP 500, hexagon radius ~76) + 24x 'TBoss3VoloptMonitor' "
+                           "wall monitors (vtable 0x80484020, HP 350-420, on the walls radius ~110); PHASE 2 "
+                           "target = 'TBoss3VoloptCore' (vtable 0x80483A10, HP 3000, the exposed glowing panel at "
+                           "y~50). Non-targets: 'TBoss3Volopt' root (vtable 0x804837EC, HP 0, origin), "
+                           "'TBoss3VoloptP02' cube body (vtable 0x80484610, HP 9500, parked at z=-5000 until phase "
+                           "2), 'TBoss3VoloptHiraisin' lightning rod (vtable 0x80483C6C, HP 450, y~50). The "
+                           "advisor aims the nearest monitor/pillar in P1 and the Core in P2. Which object takes "
+                           "the lethal phase-2 damage (Core 3000 vs P02 cube 9500) + the P1->P2 transition signal "
+                           "are handed to the build agent.",
     "dragon_disasm": "CONFIRMED by build-agent ELF disasm of the Dragon update fn 0x8002985C: action-state at "
                      "obj+0x326 (u16, TObject-standard: +0x324 control mode, +0x326 action id); states {21,22} are "
                      "the grounded-attack / fire-breath / eruption window (the update sets flag 0x0800 at +0x30 "
@@ -336,13 +346,22 @@ def _analyze_surfaced(name, bosses, player, difficulty):
 
 
 def _analyze_volopt(name, bosses, player, difficulty):
-    # Phase 1 = several wall monitors/pillars present -> shoot the nearest living monitor.
-    # Phase 2 = the core cube is what remains -> aim its exposed glowing panel (its body pos).
-    if len(bosses) >= 3:
-        return dict(phase="phase1_monitors", target=_pick_nearest(bosses, player), element=None,
-                    action="aim_monitors", hazard="electric_floor", confidence="heuristic")
+    # Live classes (floor 13): TBoss3VoloptMonitor x24 (wall monitors, HP ~350-420) + TBoss3VoloptP01
+    # x6 (pillars, HP 500) are the PHASE-1 targets; TBoss3VoloptCore (HP 3000, the exposed glowing
+    # panel/eye at y~50) is the PHASE-2 target; TBoss3VoloptP02 (cube body) and TBoss3VoloptHiraisin
+    # (lightning rod) are not the weak point. Phase 1 persists while any monitor/pillar is alive.
+    def cls(b):
+        return str(b["entity"].get("class", ""))
+    phase1 = [b for b in bosses if "Monitor" in cls(b) or cls(b).endswith("P01")]
+    if phase1:
+        return dict(phase="phase1_monitors", target=_pick_nearest(phase1, player), element=None,
+                    action="aim_monitors", hazard="electric_floor|lightning", confidence="heuristic")
+    core = [b for b in bosses if "Core" in cls(b)]
+    if core:
+        return dict(phase="phase2_core", target=_pick_nearest(core, player), element=None,
+                    action="aim_core_panel", hazard="electric_floor|lightning", confidence="heuristic")
     return dict(phase="phase2_core", target=_pick_main(bosses, player), element=None,
-                action="aim_core_panel", hazard="electric_floor", confidence="heuristic")
+                action="aim_core_panel", hazard="electric_floor|lightning", confidence="heuristic")
 
 
 def _analyze_darkfalz(name, bosses, player, difficulty):
