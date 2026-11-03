@@ -1033,3 +1033,34 @@ def test_p1_crossing_records_a_directed_edge_and_a_later_run_recalls_it(tmp_path
     assert run2._area_graph == {10: {"('TObjDoor', 100.0, 0.0)": 11}}
     assert run2._crit_path == [10, 11]
     assert run2._path_next(10) == 11 and run2._path_next(11) is None
+
+
+def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
+    """The co-op loop's master-build call: gated to live gameplay, throttled between
+    ticks (but forced at spawn / on room change), reports per-player and returns True
+    only when a weapon re-rolled so the caller reobserves weapon ranges."""
+    import gbox.pso_master_build as MB
+    calls = []
+
+    def stub(ad, **kw):
+        calls.append(kw)
+        return {0: {"ok": True, "lck": 100, "weapon": {"code": "003300", "rerolled": ad._reroll},
+                    "errors": {}},
+                1: {"ok": True, "lck": 100, "weapon": {"code": "001000", "rerolled": False}, "errors": {}}}
+    monkeypatch.setattr(MB, "apply_master_build_all", stub)
+
+    ad = SimpleNamespace(_reroll=True)
+    gameplay = state(floor=1)                       # verified, phase 14, floor 1
+    stats = {}
+    # Not in gameplay -> no call, no reroll.
+    assert C.apply_master_build_tick(ad, state(floor=0), stats) is False and not calls
+    # Spawn (force) in gameplay -> calls, records summary, reports the reroll.
+    assert C.apply_master_build_tick(ad, gameplay, stats, force=True) is True
+    assert len(calls) == 1 and stats["master_build"]["0"]["weapon"] == "003300"
+    # Immediately again, same room, not forced -> throttled (no new call).
+    ad._reroll = False
+    assert C.apply_master_build_tick(ad, gameplay, stats) is False and len(calls) == 1
+    # A room change forces a call through the throttle.
+    moved = state(floor=1)
+    moved["players"][1]["room"] = 11
+    assert C.apply_master_build_tick(ad, moved, stats) is False and len(calls) == 2
