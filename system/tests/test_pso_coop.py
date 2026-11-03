@@ -1119,6 +1119,25 @@ def test_toward_approaches_an_unreachable_goal_to_the_nearest_reachable_cell():
     assert exact2 is False and approach is not None and approach[-1] == m.center((5, 0))  # best-effort to the edge
 
 
+def test_coordinate_drive_engages_when_stuck_on_an_unreachable_forward_door(tmp_path):
+    """Fallback (B): in a CLEARED room, when A* can't path past the forward door
+    (route_exact False) for COORD_DRIVE_AFTER_S, P1 commits to driving STRAIGHT at
+    the door's coordinates (bypassing A*'s backward waypoint) instead of oscillating."""
+    ctrl = _controller(tmp_path)
+    st = _coop_room([{"class": "TObjDoor", "x": 300., "z": 0., "room": 10}], p1=(0., 0.))
+    # A partial floor that excludes the door cell, so A* cannot reach it (route_exact False).
+    st["geometry_players"] = {1: {"geometry_layer": "L", "collision_grid":
+        {"size": 10.0, "floor": [[i, 0] for i in range(0, 6)], "walls": [], "heights": []}}}
+    p1 = st["players"][1]
+    cmds, moves, steer, fb = [], {}, {}, []
+    ctrl.drive_forward(st, 1, p1, 100.0, cmds, moves, steer, fb)           # commit starts; grace not elapsed
+    assert ctrl.inputs.stats.get("coord_drive") == 0
+    cmds, moves, steer, fb = [], {}, {}, []
+    ctrl.drive_forward(st, 1, p1, 100.0 + C.COORD_DRIVE_AFTER_S + 0.1, cmds, moves, steer, fb)
+    assert ctrl.inputs.stats.get("coord_drive") == 1                      # committed: driving straight at the door
+    assert steer[1][2] == "forward_coord_drive"
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
