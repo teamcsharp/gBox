@@ -56,14 +56,19 @@ WEAPON_CODES = (
     "000900",  # Shot        (class 09)
     "000a00",  # Cane        (class 0A)
 )
-FRAME_CODE = "010100"           # frame = 01 01 <index>; index 0 = basic Frame
+FRAME_CODE = "010100"           # frame = 01 01 <index>; index 0 = basic Frame (fallback default)
 FRAME_SLOTS = 4                 # operator spec: 4 unit slots
 # unit = 01 03 <index>; the low-index units are basic additions present on disc.
 UNIT_CODES = ("010300", "010301", "010302", "010303", "010304", "010305",
               "010306", "010307", "010308", "010309")
 UNIT_SLOTS = 4
-MAG_CODE = "020000"             # mag = 02 <form> 00; form 0 = basic Mag
+MAG_CODE = "020000"             # mag = 02 <form> 00; form 0 = basic Mag (fallback default)
 MAG_TOTAL = 200                 # the four-stat total is capped at 200 by mag_set
+# Randomized per run (operator: "randomized weapons and mags / armor / shields / 4 attachments").
+# Low indices are the basic armors/shields/mags present on the disc; a bad code just fails soft.
+FRAME_CODES = tuple("0101%02x" % i for i in range(10))    # armor  = 01 01 <index>
+BARRIER_CODES = tuple("0102%02x" % i for i in range(10))  # shield = 01 02 <index>
+MAG_CODES = tuple("02%02x00" % i for i in range(15))      # mag    = 02 <form> 00 (random form)
 MAG_SYNCHRO = 120               # synchro cap
 MAG_COLORS = 19                 # colour values 0..18
 
@@ -203,19 +208,23 @@ def _equip_native(m, p, item_id):
 
 
 def _ensure_gear(m, p, state, report):
-    """Create (once) and keep equipped: a 4-slot frame, 4 random units, a maxed mag."""
+    """Create (once) and keep equipped a full randomized master build: a random 4-slot frame
+    (armor), a random shield (barrier), 4 random units, and a random maxed mag. Each code is chosen
+    once per run (stored in state, which resets on a new run / actor change) so the set is freshly
+    randomized per run and stable within it."""
     inv = _inv_by_id(m)
 
-    # --- frame with 4 unit slots ---
+    # --- random armor (frame) with 4 unit slots ---
     fid = state.get("frame_id")
+    fcode = state.setdefault("frame_code", random.choice(FRAME_CODES))
     if fid is None or fid not in inv:
         if _free_slots(m) > 0:
             try:
-                fid = _give_frame_with_slots(m, p, FRAME_CODE, FRAME_SLOTS)
+                fid = _give_frame_with_slots(m, p, fcode, FRAME_SLOTS)
             except Exception as error:
                 # fall back to a plain frame so the units still have somewhere to go
                 report["frame_error"] = str(error)[:100]
-                made = m.give(FRAME_CODE)
+                made = m.give(fcode)
                 fid = (made.get("ids") or [None])[0]
             state["frame_id"] = fid
             if fid is not None:
@@ -229,6 +238,27 @@ def _ensure_gear(m, p, state, report):
         slots_byte = bytes.fromhex(row.get("data", ""))[4] if len(row.get("data", "")) >= 10 else None
         report["frame"] = {"id": fid, "code": row["code"], "equipped": row.get("equipped"),
                            "slots_byte": slots_byte}
+
+    # --- random shield (barrier) ---
+    bid = state.get("barrier_id")
+    bcode = state.setdefault("barrier_code", random.choice(BARRIER_CODES))
+    if bid is None or bid not in inv:
+        if _free_slots(m) > 0:
+            try:
+                made = m.give(bcode)
+                ids = made.get("ids") or []
+                if ids:
+                    bid = ids[0]
+                    state["barrier_id"] = bid
+                    try:
+                        m.equip_id(bid)
+                    except Exception:
+                        pass
+            except Exception as error:
+                report["barrier_error"] = str(error)[:100]
+            inv = _inv_by_id(m)
+    if bid is not None and bid in inv:
+        report["barrier"] = {"id": bid, "code": inv[bid]["code"], "equipped": inv[bid].get("equipped")}
 
     # --- four random enhancement units ---
     units = [u for u in state.get("unit_ids", []) if u in inv]
@@ -258,7 +288,7 @@ def _ensure_gear(m, p, state, report):
     if mid is None or mid not in inv:
         if _free_slots(m) > 0:
             try:
-                made = m.give(MAG_CODE)
+                made = m.give(state.setdefault("mag_code", random.choice(MAG_CODES)))
                 ids = made.get("ids") or []
                 if ids:
                     mid = ids[0]
@@ -386,6 +416,17 @@ def _apply_globals(ad, report):
         report["crit_always"] = bool(res.get("crit_always"))
     except Exception as error:
         report.setdefault("errors", {})["crit_always"] = str(error)[:140]
+    # 3x attack speed (phase b): enable the GBPSOGC5 dispatcher swap (nav-signed-off, +0xA8 gate).
+    # Self-verifying with auto-rollback; idempotent (no-op when already on). pso_speed is not a
+    # BOT_MODULE, so reload it here before enabling (same gotcha survival handles per tick).
+    try:
+        import importlib
+        from . import pso_speed
+        pso_speed = importlib.reload(pso_speed)
+        res = pso_speed.set_enabled(ad, "gamecube", True)
+        report["attack_speed_3x"] = bool(res.get("attack_speed_3x"))
+    except Exception as error:
+        report.setdefault("errors", {})["attack_speed_3x"] = str(error)[:140]
     # Forced fence drop is wired but INERT until FENCE_FORCE_DOWN is flipped after a live test.
     try:
         from . import pso_fence

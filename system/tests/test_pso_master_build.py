@@ -42,6 +42,11 @@ def test_item_codes_are_well_formed_three_byte_codes():
     assert all(MB._is_hex3(c) for c in MB.WEAPON_CODES)
     assert all(MB._is_hex3(c) for c in MB.UNIT_CODES)
     assert MB._is_hex3(MB.FRAME_CODE) and MB._is_hex3(MB.MAG_CODE)
+    # Full randomized build: armor / shield / mag code pools are well-formed with the right class.
+    assert all(MB._is_hex3(c) and c.startswith("0101") for c in MB.FRAME_CODES)    # armor
+    assert all(MB._is_hex3(c) and c.startswith("0102") for c in MB.BARRIER_CODES)  # shields
+    assert all(MB._is_hex3(c) and c.startswith("02") for c in MB.MAG_CODES)        # mags
+    assert MB.FRAME_CODES and MB.BARRIER_CODES and MB.MAG_CODES
     # family prefixes match gbox.psoitems: weapon 00, frame 0101, unit 0103, mag 02
     assert all(c.startswith("00") for c in MB.WEAPON_CODES)
     assert MB.FRAME_CODE.startswith("0101")
