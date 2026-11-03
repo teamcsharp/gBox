@@ -1301,7 +1301,11 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     st2 = _coop_room([], room=10)
     st2["floor"] = 2
     st2["entities"].append({"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 1., "z": 0., "room": 10})
-    assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 5) is False
+    assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 5) is False   # below hard cap: fight first
+    # ABSOLUTE anti-freeze: past STALL_HARDCAP_S it warps DESPITE the live enemies.
+    ctrl._last_warp_at = 0.
+    assert ctrl.advance_on_stall(st2, now=C.STALL_HARDCAP_S + 1) is True
+    assert ctrl._hardcap_warps == 1 and ctrl.inputs.stats.get('stall_hardcap_warps') == 1
 
 
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
