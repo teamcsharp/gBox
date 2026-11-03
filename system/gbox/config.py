@@ -274,6 +274,10 @@ class Config(BaseModel):
     steam_root: Path | None = None
     cache_dir: Path | None = None     # default: data_dir/cache
     texture_comfy_url: str = "http://127.0.0.1:8188" # local experimental texture upscaler; no external image API
+    comfy_pause_on_play: bool = False  # [resource] lilspark/GB10: SIGSTOP the local ComfyUI (texture_comfy_url) while a
+                                       # MercMode game renders on this host and SIGCONT it in the gaps, so the single
+                                       # unified-memory GPU gives the game full frame time (gbox/comfy_coordinator.py).
+                                       # POSIX-only and loopback-only; off everywhere until set in that node's gbox.toml.
     texture_cpu_python: str = ""       # optional inference environment with torch, spandrel and Pillow
     texture_cpu_model: str = ""        # installed RGB upscaler; no automatic downloads
     cache_dirs: dict[str, str] = {}   # os -> fast local disk for staged titles (overrides cache_dir per node)

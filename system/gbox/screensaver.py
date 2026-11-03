@@ -294,6 +294,7 @@ class Screensaver:
         self._status_lock = threading.Lock()             # GET /api/mercmode: one computation at a time, shared
         self._status_cache: tuple[float, dict | None] = (0.0, None)
         self.notes: dict[str, str] = {}                  # PC name -> what its last tick did or waits for (MercMode panel)
+        self.comfy = None                                # install(): ComfyCoordinator on a GB10-style shared-GPU host
 
     def games(self, cfg) -> list[dict]:
         """The games a demo may play: the operator's most played, plus (roulette) favorites with demo builds."""
@@ -346,7 +347,24 @@ class Screensaver:
                     out[w["name"]] = reason or self._start(w, host_cfg, now)
                 if w["name"] in out:
                     self.notes[w["name"]] = str(out[w["name"]])[:300]
+        self._sync_comfy()
         return out
+
+    def _sync_comfy(self) -> None:
+        """On a shared-GPU host (lilspark/GB10), pause the local ComfyUI while THIS host's MercMode game renders and
+        resume it in the gaps. Runs every tick and on every MercMode transition (nudge), so the switch is prompt.
+        Scoped to this machine: platform.node() is the worker name the local adapters register (gbox/adapters.py).
+        Fail-soft: never raises into the tick."""
+        comfy = self.comfy
+        if comfy is None:
+            return
+        try:
+            import platform
+            from .comfy_coordinator import game_active
+            run = self.store.get(STATE, platform.node())
+            comfy.sync(game_active(run))
+        except Exception as e:                               # noqa: BLE001 - a comfy hiccup must never stop the schedule
+            print(f"comfy-coordinator: tick sync failed: {type(e).__name__}: {e}", flush=True)
 
     def nudge(self, why: str = '') -> None:
         """Tick now (on the schedule's own thread, install): a scheduler job landed on the worker (the pause, resume,
@@ -1416,6 +1434,8 @@ class Screensaver:
         out['mercmode']=self.mercmode_status()
         if self.builder is not None:
             out["roulette"] = self.builder.status()
+        if self.comfy is not None:
+            out["comfy"] = self.comfy.status()
         return out
 
     def mercmode_status(self, fresh: bool = False) -> dict:
@@ -1642,6 +1662,9 @@ def install(app, store, config, auth, submit, workers, archive):
     saver = Screensaver(store, archive, lambda req, actor, origin: submit(req, actor=actor, origin=origin), workers,
                         builds=builds_for, favorites=favorites)
     saver.config = config
+    if getattr(config, "comfy_pause_on_play", False):
+        from .comfy_coordinator import ComfyCoordinator
+        saver.comfy = ComfyCoordinator(getattr(config, "texture_comfy_url", ""), True)
     app.state.autoplay_screensaver = saver
     from . import roulette
     from .server import JobRequest
@@ -1871,4 +1894,6 @@ def install(app, store, config, auth, submit, workers, archive):
             except Exception as e:                       # the roulette builder never stops the screensaver
                 print(f"autoplay roulette tick failed: {type(e).__name__}: {e}", flush=True)
     app.on_event("startup")(lambda: threading.Thread(target=loop, daemon=True, name="autoplay-screensaver").start())
-    app.on_event("shutdown")(lambda: (stopped.set(), saver.wake.set()))
+    # shutdown: stop the loop AND always leave ComfyUI resumed (never strand it SIGSTOPped).
+    app.on_event("shutdown")(lambda: (stopped.set(), saver.wake.set(),
+                                      saver.comfy.release() if saver.comfy is not None else None))
