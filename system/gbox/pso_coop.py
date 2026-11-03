@@ -2548,9 +2548,7 @@ class Controller:
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
         hold = adv.get("hold_pos") or adv.get("boss_hold_pos")   # boss agent's shipped key is hold_pos
         has_hold = isinstance(hold, dict) and type(hold.get("x")) in (int, float) and type(hold.get("z")) in (int, float)
-        hx, hz = (float(hold["x"]), float(hold["z"])) if has_hold else (bx, bz)   # MOVE/stand target
         aim_dist = math.hypot(bx - player["x"], bz - player["z"])
-        hold_dist = math.hypot(hx - player["x"], hz - player["z"])
         env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
         # Fire within the gun's REAL cone (the Shot's 45deg is forgiving on a moving boss;
         # the narrow rifle needs tight aim - the build layer forces the Shot on boss floors).
@@ -2564,11 +2562,22 @@ class Controller:
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
         fire_range = (env_h * BOSS_FIRE_MARGIN) if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
         in_fire = aim_dist <= fire_range
+        # Stand at hold_pos ONLY when doing so keeps the weak point in reach (circling Dragon:
+        # orbit radius < gun reach). For scattered targets (Vol Opt monitors) the centroid can
+        # be OUT of range of the current weak point and parks the bot firing at nothing - so
+        # fail-safe to closing on the weak point itself. Never idle at a hold point out of reach.
+        mx, mz, hold_covers = bx, bz, False
+        if has_hold:
+            hx0, hz0 = float(hold["x"]), float(hold["z"])
+            if math.hypot(hx0 - bx, hz0 - bz) <= fire_range:
+                mx, mz, hold_covers = hx0, hz0, True
+        move_dist = math.hypot(mx - player["x"], mz - player["z"])
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(aim_dist, 1)
-            st["boss_hold_dist"] = round(hold_dist, 1)
+            st["boss_hold_dist"] = round(move_dist, 1)
+            st["boss_hold_covers"] = int(bool(hold_covers))
             st["boss_fire_range"] = round(fire_range, 1)
             st["boss_in_range"] = int(in_fire)
             st["boss_vulnerable"] = int(bool(can_fire))
@@ -2591,15 +2600,16 @@ class Controller:
             if isinstance(st, dict):
                 st["boss_firing_line"] = 1
             return True
-        # POSITION at the stand point (orbit centre for the Dragon; the weak point otherwise)
-        # - NOT the circling boss's perimeter position. An explicit hold point is always
-        # driven to (it's a reachable arena spot); the weak-point fallback keeps the old
-        # chase bound so a far stationary boss still gets approached, not chased forever.
-        if hold_dist > BOSS_HOLD_TOL and (has_hold or aim_dist <= fire_range + BOSS_CHASE_CAP):
-            keys, escaping = self._unwedge(slot, player, (hx, hz), now)
+        # POSITION toward the move target: the orbit centre ONLY if it keeps the weak point in
+        # reach (circling Dragon), otherwise the weak point itself (scattered Vol Opt monitors /
+        # any boss whose centroid is out of range) - so we always close to where we can fire,
+        # never park out of range. Covering hold points are always driven to; closing on the
+        # weak point keeps the chase bound so a far stationary boss isn't chased forever.
+        if move_dist > BOSS_HOLD_TOL and (hold_covers or aim_dist <= fire_range + BOSS_CHASE_CAP):
+            keys, escaping = self._unwedge(slot, player, (mx, mz), now)
             commands.append((slot, keys, .18))
-            moves[slot] = (player, (hx, hz), self.maps.get(state, player), False)
-            steering[slot] = (player, (hx, hz), "boss_approach_unwedge" if escaping else "boss_approach")
+            moves[slot] = (player, (mx, mz), self.maps.get(state, player), False)
+            steering[slot] = (player, (mx, mz), "boss_approach_unwedge" if escaping else "boss_approach")
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
             return True

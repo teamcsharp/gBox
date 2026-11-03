@@ -1385,16 +1385,35 @@ def test_boss_combat_holds_the_orbit_center_for_a_circling_boss(tmp_path):
     bot MOVES to the stand point (centre), not toward the perimeter boss, and doesn't fire."""
     ctrl = _controller(tmp_path, ad=SimpleNamespace())
     player = {"x": -140., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
-    env = dict(C.FALLBACK, horizontal=100., horizontal_half_angle=45., verified=True)   # reach ~95
+    env = dict(C.FALLBACK, horizontal=200., horizontal_half_angle=10., verified=True)   # rifle reach ~190 covers the orbit
     boss = {"class": "TBossDragon", "kind": "enemy", "hp": 2500, "hp_max": 2500,
             "x": 150., "z": 0., "y": 0.1, "ptr": "B1"}                                   # far arc, 290u off
     ctrl._boss_adv = {"active": True, "boss": "Dragon", "boss_vulnerable": True,
                       "weakpoint": boss, "hold_pos": {"x": 0., "z": 0.}}                 # orbit centre (shipped key)
     cmds, mv, steer, arows = [], {}, {}, {}
     ctrl.boss_combat(state(floor=11), 1, player, env, boss, 100.0, cmds, mv, steer, [boss], arows)
+    # Centre is within rifle reach of the Dragon (150<=190) -> stand at the ORBIT CENTRE.
     assert steer[1][2] in ("boss_approach", "boss_approach_unwedge")
     assert steer[1][1] == (0., 0.)                 # stand target is the ORBIT CENTRE, not the perimeter boss
-    assert not any(c[1] == ["a"] for c in cmds)    # weak point 290u out of ~95u reach -> no void-fire
+    assert not any(c[1] == ["a"] for c in cmds)    # weak point 290u out of ~190u reach right now -> no void-fire
+
+
+def test_boss_combat_closes_on_scattered_target_when_hold_point_is_out_of_reach(tmp_path):
+    """Vol Opt fail-safe: if hold_pos (centroid) is OUT of the gun's reach of the current
+    weak point (scattered monitors), DON'T park at the centroid firing at nothing - close on
+    the weak point itself until in range."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
+    env = dict(C.FALLBACK, horizontal=110., horizontal_half_angle=45., verified=True)   # shot reach ~105
+    monitor = {"class": "TObjBossVolOpt", "kind": "enemy", "hp": 500, "hp_max": 500,
+               "x": 200., "z": 0., "y": 0., "ptr": "V1"}                                 # a far monitor
+    # centroid 140u from the monitor (>105 reach) -> covering False -> close on the monitor.
+    ctrl._boss_adv = {"active": True, "boss": "VolOpt", "boss_vulnerable": True,
+                      "weakpoint": monitor, "hold_pos": {"x": 60., "z": 0.}}
+    cmds, mv, steer, arows = [], {}, {}, {}
+    ctrl.boss_combat(state(floor=13), 1, player, env, monitor, 100.0, cmds, mv, steer, [monitor], arows)
+    assert steer[1][2] in ("boss_approach", "boss_approach_unwedge")
+    assert steer[1][1] == (200., 0.)               # closes on the MONITOR, not the out-of-range centroid
 
 
 def test_combat_dodge_is_none_when_boss_is_out_of_range(tmp_path):
