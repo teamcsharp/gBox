@@ -282,6 +282,11 @@ def _ensure_gear(m, p, state, report):
 # restricted to guns (Handgun/Rifle/Mechgun/Shot) so shots actually reach. never-miss + crit
 # still only land once nav positions the bot within weapon range (positioning is the nav lane).
 RANGED_WEAPON_CODES = ("000700", "000900", "000800", "000600")   # Rifle, Shot, Mechgun, Handgun
+# On a boss floor force the SHOT (000900) specifically, not a random ranged gun. From the owned
+# ItemPMT: Shot = 110.5u effective reach (ample for a boss the bot closes on) with a 45 deg cone
+# half-angle, versus the Rifle's 10 deg. The wide cone lands hits on a MOVING boss (the Dragon
+# darts around) where a narrow-cone gun whiffs even in range; 110.5u covers all three Ep1 bosses.
+BOSS_WEAPON_CODE = "000900"
 _BOSS_FLOORS_BY_EP = {0: frozenset({11, 12, 13, 14}), 1: frozenset({12, 13, 14, 15})}
 
 
@@ -298,7 +303,7 @@ def _reroll_weapon(m, p, state, report, interval):
     boss floor the pool is restricted to ranged weapons so the bot can reach the boss."""
     now = time.monotonic()
     boss = _boss_floor(m)
-    report["boss_ranged"] = boss                     # flat: mb_boss_ranged_p1/p2 (ranged forced on a boss floor)
+    report["boss_ranged"] = boss                     # flat: mb_boss_ranged_p1/p2 (Shot forced on a boss floor)
     inv = _inv_by_id(m)
     wid = state.get("weapon_id")
     due = wid is None or wid not in inv or (now - state.get("weapon_t", 0.0)) >= interval
@@ -317,7 +322,7 @@ def _reroll_weapon(m, p, state, report, interval):
         report["weapon"] = {"id": wid, "code": state.get("weapon_code"), "rerolled": False,
                            "note": "inventory full"}
         return
-    code = random.choice(RANGED_WEAPON_CODES if boss else WEAPON_CODES)
+    code = BOSS_WEAPON_CODE if boss else random.choice(WEAPON_CODES)
     try:
         made = m.give(code)
     except Exception as error:

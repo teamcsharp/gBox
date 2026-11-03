@@ -12,6 +12,9 @@ from test_pso_gc_live import RAM
 def test_boss_floors_use_ranged_weapons():
     assert all(MB._is_hex3(c) for c in MB.RANGED_WEAPON_CODES)
     assert all(c.startswith("00") for c in MB.RANGED_WEAPON_CODES)
+    # Boss floors force the SHOT specifically: 110.5u reach + 45deg cone lands on a moving boss.
+    assert MB.BOSS_WEAPON_CODE == "000900" and MB._is_hex3(MB.BOSS_WEAPON_CODE)
+    assert MB.BOSS_WEAPON_CODE in MB.RANGED_WEAPON_CODES
 
     class M:
         def __init__(self, floor, ep): self.floor, self.ep = floor, ep
