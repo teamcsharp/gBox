@@ -800,7 +800,10 @@ ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't sp
 STALL_HARDCAP_S = 120.0      # ABSOLUTE anti-freeze (non-boss) last resort: no new room for this long -> warp REGARDLESS
                              # of enemies/cleared state (a gate that genuinely can't be crossed must never permafreeze).
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
-BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
+BOSS_SAFETY_S = 600.0        # BOSS DEFEAT: absolute ceiling - hold a boss floor up to this (10 min) while winning; a
+                             # boss we have DAMAGED is held to the kill within it, only a never-damaged boss escapes early
+BOSS_FIRE_CADENCE_S = 0.12   # RAPID boss fire: press the attack as fast as the swing/shot animation allows (vs .34 normal)
+                             # - 3x-speed only accelerates MELEE, so fast ranged fire at the mobile Dragon needs this cadence
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
 BOSS_CHASE_CAP = 220.0       # approach a boss up to (real gun reach + this) before holding; beyond = relocating, don't chase
 BOSS_FIRE_MARGIN = 0.95      # fire within this fraction of the EQUIPPED gun's real reach (build PMT: rifle 178.5u, shot 110.5,
@@ -1074,6 +1077,7 @@ class Controller:
         self._boss_kill_key = None      # (episode, floor) already credited a kill for (no double-count)
         self._boss_floor_key = None     # (episode, floor) the per-visit boss trackers are anchored to
         self._boss_hp_best = None       # lowest boss hp_frac seen this visit (damage-progress signal)
+        self._boss_damaged = False      # we have landed damage this visit (HP dropped / a part died) -> hold to the kill
         self._boss_parts_prev = None    # live boss-part count last tick (a drop = damage progress)
         self._boss_progress_at = 0.0    # last monotonic the boss took damage (hp dropped or a part died)
         self._boss_approach_best = None # closest P1 has gotten to the weak point this visit (closing-progress)
@@ -2353,20 +2357,22 @@ class Controller:
             return False
         # BOSS DEFEAT (operator: KILL the boss, but don't burn 5.5 min on one we can't
         # damage yet). Suppress the warp while a boss is ALIVE *and* we're still making
-        # DAMAGE PROGRESS. Liveness prefers the boss agent's latched boss_alive (handles
-        # inter-phase gaps: True=fight, False=confidently dead), falling back to my entity
-        # scan + grace. While HP/parts are DROPPING, NEVER warp - STAY until the kill
-        # (operator: a winnable boss was warped off at 50% HP by the old BOSS_SAFETY cap,
-        # throwing away the kill). The only escape is the DAMAGE-PROGRESS one: if nothing
-        # has dropped for BOSS_NOPROG_S (can't hurt it), release and let the normal warp
-        # loop us off. So a winnable boss is never warped mid-kill; an un-damageable one
-        # still frees the party after ~BOSS_NOPROG_S.
+        # Liveness prefers the boss agent's latched boss_alive (handles inter-phase gaps:
+        # True=fight, False=confidently dead), falling back to my entity scan + grace, and
+        # ALSO True whenever the advisor reports boss HP remaining (single-body Dragon).
+        # ONCE WE HAVE DAMAGED THE BOSS (_boss_damaged: its HP dropped or a part died), it is
+        # WINNABLE - NEVER warp off it, STAY to the kill up to the BOSS_SAFETY_S ceiling
+        # (operator: the Dragon was warped off at 66%/50% HP, throwing away the kill). A boss
+        # we have NOT yet damaged still gets the BOSS_NOPROG_S escape (can't hurt it -> move
+        # on). So: damaged -> hold to kill; never-damaged -> ~75s then release.
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        hpf = adv.get('boss_hp_frac')
         boss_still_alive = ((adv.get('boss_floor') and adv.get('boss_alive') is not False)
+            or (type(hpf) in (int, float) and hpf > 0)
             or (self._boss_present_now and (self._boss_alive_now
                 or (now - self._boss_alive_at) < BOSS_DEAD_GRACE_S)))
         making_progress = (now - self._boss_progress_at) < BOSS_NOPROG_S
-        if boss_still_alive and making_progress:
+        if boss_still_alive and (self._boss_damaged or making_progress) and dwell < BOSS_SAFETY_S:
             return False
         # ABSOLUTE anti-freeze backstop (NON-NEGOTIABLE): no new room for STALL_HARDCAP_S
         # warps REGARDLESS of enemies / cleared state - unreachable enemies behind a gate
@@ -2595,7 +2601,7 @@ class Controller:
         # boss_firing_line is set LIVE only on the tick an attack is actually issued.
         if can_fire and in_fire:
             fired = False
-            if abs(angle) <= half and now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / speed:
+            if abs(angle) <= half and now - self.last_attack.get(slot, 0) >= BOSS_FIRE_CADENCE_S / speed:
                 attack_rows.setdefault(slot, {"attempts": 0})
                 commands.append((slot, ["a"], .12))
                 steering[slot] = (player, (bx, bz), "boss_fire")
@@ -2688,18 +2694,23 @@ class Controller:
             self._boss_approach_best = None
             self._boss_approach_at = now
             self._boss_seen_alive = False
+            self._boss_damaged = False
         self._boss_present_now = present
         self._boss_alive_now = alive
         if alive:
             self._boss_alive_at = now
             self._boss_seen_alive = True
-            # DAMAGE PROGRESS: hp_frac dropped, or a boss part died -> we ARE hurting it.
-            hp_prog = (type(hp_frac) in (int, float)
-                       and (self._boss_hp_best is None or hp_frac < self._boss_hp_best - 1e-3))
+            # DAMAGE PROGRESS: hp_frac dropped (single-body Dragon), or a boss part died
+            # (multi-body). Either marks us as HAVING DAMAGED the boss -> hold to the kill.
+            hp_prog = (type(hp_frac) in (int, float) and self._boss_hp_best is not None
+                       and hp_frac < self._boss_hp_best - 1e-3)        # a real DROP (not the first read)
             part_prog = self._boss_parts_prev is not None and live_parts < self._boss_parts_prev
             if hp_prog or part_prog:
                 self._boss_progress_at = now
+                self._boss_damaged = True
             if type(hp_frac) in (int, float):
+                # First valid read seeds best; a later lower read (even the very first drop
+                # from 1.0) counts as damage via hp_prog above.
                 self._boss_hp_best = hp_frac if self._boss_hp_best is None else min(self._boss_hp_best, hp_frac)
         self._boss_parts_prev = live_parts if present else None
         if self._boss_kill_key != key and self._boss_seen_alive and (dead_confirmed or adv.get("boss_cleared")):

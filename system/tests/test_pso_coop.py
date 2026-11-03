@@ -1308,31 +1308,39 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     assert ctrl._hardcap_warps == 1 and ctrl.inputs.stats.get('stall_hardcap_warps') == 1
 
 
-def test_boss_hold_suppresses_warp_but_escapes_when_no_damage_progress(tmp_path):
-    """BOSS DEFEAT: on a boss floor the warp is SUPPRESSED while the boss is alive and
-    we're still damaging it (stay + kill), but ESCAPES after BOSS_NOPROG_S if its HP/parts
-    never drop (can't hurt it yet -> warp off and loop back, don't burn 5.5 min)."""
+def test_boss_hold_stays_while_damaged_but_escapes_an_undamageable_boss(tmp_path):
+    """BOSS DEFEAT: once we have DAMAGED a boss (its HP dropped) it is winnable -> NEVER warp
+    off it, stay to the kill up to the BOSS_SAFETY_S ceiling (operator: the Dragon was warped
+    off at 66% HP). A boss we've NEVER damaged still escapes (the normal hardcap) so we move on."""
+    def boss_room():
+        b = {"class": "TBossDragon", "kind": "enemy", "hp": 5000, "hp_max": 5000,
+             "x": 10., "z": 0., "room": 10, "ptr": "C1"}
+        s = _coop_room([], room=10); s["floor"] = 11; s["entities"].append(b)
+        return s
+    # DAMAGED -> held even far past BOSS_NOPROG_S + the hardcap, until the absolute ceiling.
     ctrl = _controller(tmp_path, ad=SimpleNamespace())
-    boss = {"class": "TBossDragon", "kind": "enemy", "hp": 5000, "hp_max": 5000,
-            "x": 10., "z": 0., "room": 10, "ptr": "C1"}
-    st = _coop_room([], room=10); st["floor"] = 11
-    st["entities"].append(boss)
-    ctrl._adv_floor = 11
-    ctrl.room_dwell['_cur'] = {'nvisited': 1, 'since': 0.}
-    ctrl._last_warp_at = 0.
-    # Boss alive, progress timer fresh -> HOLD even far past the non-boss hardcap.
-    ctrl._observe_boss(st, now=15.0)
-    assert ctrl.advance_on_stall(st, now=15.0) is False
-    assert ctrl.advance_on_stall(st, now=80.0) is False                 # still holding (progress recent)
-    # DAMAGE-PROGRESS: a dropping hp_frac keeps the hold past BOSS_NOPROG_S (we're killing it).
-    ctrl._boss_adv = {"boss_floor": True, "boss_alive": True, "boss_hp_frac": 0.4}
-    ctrl._observe_boss(st, now=15.0 + C.BOSS_NOPROG_S + 5)
-    assert ctrl.advance_on_stall(st, now=15.0 + C.BOSS_NOPROG_S + 5) is False
-    # Now HP stalls (no further drop) for BOSS_NOPROG_S -> ESCAPE: hold releases, warp fires.
-    t = 15.0 + C.BOSS_NOPROG_S + 5
-    ctrl._observe_boss(st, now=t + C.BOSS_NOPROG_S + 1)
-    assert ctrl.advance_on_stall(st, now=t + C.BOSS_NOPROG_S + 1) is True
-    assert ctrl._floor_advances >= 1
+    ctrl._adv_floor = 11; ctrl.room_dwell['_cur'] = {'nvisited': 1, 'since': 0.}; ctrl._last_warp_at = 0.
+    st = boss_room()
+    ctrl._boss_adv = {"boss_floor": True, "boss_alive": True, "boss_hp_frac": 0.66}
+    ctrl._observe_boss(st, now=10.0)                                     # first read seeds best (NOT damage)
+    assert ctrl._boss_damaged is False
+    ctrl._boss_adv = {"boss_floor": True, "boss_alive": True, "boss_hp_frac": 0.50}
+    ctrl._observe_boss(st, now=20.0)                                     # HP dropped -> damaged
+    assert ctrl._boss_damaged is True
+    held_now = 20.0 + C.BOSS_NOPROG_S + C.STALL_HARDCAP_S               # well past both escape windows
+    ctrl._observe_boss(st, now=held_now)
+    assert ctrl.advance_on_stall(st, now=held_now) is False             # winnable boss: STAY, do not warp
+    assert ctrl.advance_on_stall(st, now=C.BOSS_SAFETY_S + 1) is True   # ...only the 10-min ceiling warps
+
+    # NEVER damaged (HP flat at 1.0) -> escapes via the normal hardcap so the party moves on.
+    ctrl2 = _controller(tmp_path, ad=SimpleNamespace())
+    ctrl2._adv_floor = 11; ctrl2.room_dwell['_cur'] = {'nvisited': 1, 'since': 0.}; ctrl2._last_warp_at = 0.
+    st2 = boss_room()
+    ctrl2._boss_adv = {"boss_floor": True, "boss_alive": True, "boss_hp_frac": 1.0}
+    ctrl2._observe_boss(st2, now=5.0)
+    ctrl2._observe_boss(st2, now=5.0 + C.STALL_HARDCAP_S + 1)            # no drop, dwell past the hardcap
+    assert ctrl2._boss_damaged is False
+    assert ctrl2.advance_on_stall(st2, now=5.0 + C.STALL_HARDCAP_S + 1) is True
 
 
 def test_follower_boss_fires_in_reach_approaches_mid_and_holds_when_far(tmp_path):
