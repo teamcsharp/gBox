@@ -2586,22 +2586,24 @@ class Controller:
             st["boss_vulnerable"] = int(bool(can_fire))
             st["boss_strike_window"] = int(boss_special)
 
-        # FIRE whenever the boss is damageable and its weak point is within the gun's reach -
-        # opportunistic even en route to the stand point; HOLD the line (face then press A,
-        # a tiny facing nudge between shots), never strafe off it.
+        # FIRE whenever the boss is damageable and its weak point is within the gun's reach.
+        # When aligned (within the gun cone) + off cadence -> press A. When not aligned, TURN
+        # TO FACE by holding the stick AT the weak point (movement_keys faces+converges, which
+        # PSO uses to aim a gun) - not a perpendicular strafe that orbits without ever facing.
+        # boss_firing_line is set LIVE only on the tick an attack is actually issued.
         if can_fire and in_fire:
-            if abs(angle) > half:
-                commands.append((slot, ["lleft" if angle > 0 else "lright"], max(.02, min(.12, abs(angle) / 450))))
-                steering[slot] = (player, (bx, bz), "boss_line")
-            elif now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / speed:
+            fired = False
+            if abs(angle) <= half and now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / speed:
                 attack_rows.setdefault(slot, {"attempts": 0})
                 commands.append((slot, ["a"], .12))
                 steering[slot] = (player, (bx, bz), "boss_fire")
+                fired = True
             else:
-                commands.append((slot, movement_keys(player, (bx, bz)), .04))
-                steering[slot] = (player, (bx, bz), "boss_hold")
+                # face the weak point (turn toward it); short hold so the next tick re-aims.
+                commands.append((slot, movement_keys(player, (bx, bz)), .06))
+                steering[slot] = (player, (bx, bz), "boss_aim")
             if isinstance(st, dict):
-                st["boss_firing_line"] = 1
+                st["boss_firing_line"] = int(fired)
             return True
         # POSITION. Two cases:
         #  - CIRCLING boss (hold_covers: the orbit centre keeps the weak point in reach):
@@ -2710,6 +2712,11 @@ class Controller:
             st["boss_no_progress_s"] = round(now - self._boss_progress_at, 1) if present else 0.0
             if type(hp_frac) in (int, float):
                 st["boss_hp_frac"] = round(hp_frac, 3)
+            # LIVE per-tick boss-combat flags (reset here every tick; boss_combat sets them
+            # only on the tick it actually fires / approaches). This runs before the per-slot
+            # loop, so a stale 1 can't persist onto a non-boss floor - the reading is trustworthy.
+            st["boss_firing_line"] = 0
+            st["boss_approaching"] = 0
 
     def survival_tick(self, state):
         """NEVER-DIE (operator 11-03: P2 died and stayed dead). The survival write-side

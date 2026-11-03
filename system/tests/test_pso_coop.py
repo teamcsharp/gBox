@@ -1352,7 +1352,7 @@ def test_follower_boss_fires_in_reach_approaches_mid_and_holds_when_far(tmp_path
         cmds, mv, steer = [], {}, {}
         ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], env, cmds, mv, steer, {})
         return steer[2][2]
-    assert run(0.) in ("boss_fire", "boss_line", "boss_hold")         # ~75u <=190 reach -> fire the line
+    assert run(0.) in ("boss_fire", "boss_aim")                       # ~75u <=190 reach -> fire / turn to face
     assert run(250.) in ("boss_approach", "boss_approach_unwedge")    # ~325u, reach..reach+chase -> approach
     assert run(400.) == "boss_hold_far"                               # ~475u, too far -> hold, don't chase
 
