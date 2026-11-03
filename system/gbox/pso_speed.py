@@ -98,6 +98,7 @@ def configured():
 # --- phase (a): in-bot attack-state probe (read-only, safe; resolves ATTACK_STATE_OFF/MATCH) ---
 _probe_guard = threading.Lock()
 PROBE_SAMPLE_GOAL = 300          # ticks observed before a gate is considered "locked"
+ATTACK_FRACTION = 0.8            # a value is an "attack" value if >=80% of its samples are while attacking
 
 
 def _derive_gate(ps):
@@ -105,17 +106,27 @@ def _derive_gate(ps):
     but NEVER while idle, with enough samples on both sides, is a confident attack gate."""
     best = None
     # +0x326 is the TObject action-state (confirmed as the Dragon's phase field, and the
-    # DC attack-state analog); it's the primary candidate. +0x2E4 / +0x324 are fallbacks.
+    # DC attack-state analog); primary candidate, +0x2E4 / +0x324 are fallbacks. Use an
+    # attack-FRACTION test (not strict attack-only): a value seen while the hit-record count
+    # is active >= ATTACK_FRACTION of its occurrences is an attack value - this is robust to
+    # the swing's wind-up/recovery frames (which have +0xA8==0 but the same +0x326 value),
+    # which would otherwise land the attack value in the idle bucket and never lock.
     for field, off in (("s326", 0x326), ("s2e4", 0x2E4), ("s324", 0x324)):
         atk, idle = ps.get(f"{field}_atk", {}), ps.get(f"{field}_idle", {})
         if sum(atk.values()) < 30 or sum(idle.values()) < 30:
             continue
-        attack_only = {v for v in atk if v not in idle}
-        if not attack_only:
+        vals = [v for v in set(atk) | set(idle)
+                if atk.get(v, 0) >= 15 and atk.get(v, 0) / (atk.get(v, 0) + idle.get(v, 0)) >= ATTACK_FRACTION]
+        if not vals:
             continue
-        locked = sum(atk[v] for v in attack_only) >= 20 and ps["n"] >= PROBE_SAMPLE_GOAL
-        cand = {"off": off, "values": sorted(attack_only),
-                "desc": f"player+0x{off:X} in {sorted(attack_only)}", "locked": locked}
+        # require at least one value that is predominantly idle too, so a field that is the
+        # same value all the time (e.g. +0x324==1 always) is not mistaken for an attack gate.
+        if not any(idle.get(v, 0) >= 15 and atk.get(v, 0) / (atk.get(v, 0) + idle.get(v, 0)) <= (1 - ATTACK_FRACTION)
+                   for v in set(atk) | set(idle)):
+            continue
+        locked = ps["n"] >= PROBE_SAMPLE_GOAL and sum(atk[v] for v in vals) >= 20
+        cand = {"off": off, "values": sorted(vals),
+                "desc": f"player+0x{off:X} in {sorted(vals)}", "locked": locked}
         if best is None or (cand["locked"] and not best["locked"]):
             best = cand
     return best
