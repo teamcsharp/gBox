@@ -1308,6 +1308,48 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     assert ctrl._hardcap_warps == 1 and ctrl.inputs.stats.get('stall_hardcap_warps') == 1
 
 
+def test_boss_hold_suppresses_warp_but_escapes_when_no_damage_progress(tmp_path):
+    """BOSS DEFEAT: on a boss floor the warp is SUPPRESSED while the boss is alive and
+    we're still damaging it (stay + kill), but ESCAPES after BOSS_NOPROG_S if its HP/parts
+    never drop (can't hurt it yet -> warp off and loop back, don't burn 5.5 min)."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    boss = {"class": "TBossDragon", "kind": "enemy", "hp": 5000, "hp_max": 5000,
+            "x": 10., "z": 0., "room": 10, "ptr": "C1"}
+    st = _coop_room([], room=10); st["floor"] = 11
+    st["entities"].append(boss)
+    ctrl._adv_floor = 11
+    ctrl.room_dwell['_cur'] = {'nvisited': 1, 'since': 0.}
+    ctrl._last_warp_at = 0.
+    # Boss alive, progress timer fresh -> HOLD even far past the non-boss hardcap.
+    ctrl._observe_boss(st, now=15.0)
+    assert ctrl.advance_on_stall(st, now=15.0) is False
+    assert ctrl.advance_on_stall(st, now=80.0) is False                 # still holding (progress recent)
+    # DAMAGE-PROGRESS: a dropping hp_frac keeps the hold past BOSS_NOPROG_S (we're killing it).
+    ctrl._boss_adv = {"boss_floor": True, "boss_alive": True, "boss_hp_frac": 0.4}
+    ctrl._observe_boss(st, now=15.0 + C.BOSS_NOPROG_S + 5)
+    assert ctrl.advance_on_stall(st, now=15.0 + C.BOSS_NOPROG_S + 5) is False
+    # Now HP stalls (no further drop) for BOSS_NOPROG_S -> ESCAPE: hold releases, warp fires.
+    t = 15.0 + C.BOSS_NOPROG_S + 5
+    ctrl._observe_boss(st, now=t + C.BOSS_NOPROG_S + 1)
+    assert ctrl.advance_on_stall(st, now=t + C.BOSS_NOPROG_S + 1) is True
+    assert ctrl._floor_advances >= 1
+
+
+def test_combat_dodge_steers_away_from_boss_mine_adds(tmp_path):
+    """De Rol Le: the advisor surfaces mine adds (adds[]); dodge must steer to the side
+    AWAY from the mines (operator's no-standing-on-mines rule), not onto them."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    st = state(floor=12)
+    p1 = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "80D01000", "hp": 40}
+    env = dict(C.FALLBACK)
+    boss = {"class": "TBoss2DeRolLe", "kind": "enemy", "hp": 9000, "hp_max": 9000,
+            "x": 0., "z": 40., "y": 0., "heading_deg": 180., "ptr": "D1"}
+    # Mines clustered on the +x side -> the dodge should pick -x (lright), away from them.
+    ctrl._boss_adv = {"boss_floor": True, "boss_alive": True,
+                      "adds": [{"x": 30., "z": 0.}, {"x": 26., "z": 6.}]}
+    d = ctrl.combat_dodge(st, 1, p1, [boss], env, boss, now=100.)
+    assert d is not None and d["act"] is True and "lright" in d["keys"]
+
 def test_menu_unstick_warps_instead_of_stopping_and_is_throttled(monkeypatch):
     """INVARIANT: a stuck menu / needs_operator / boss-end dialogue NEVER halts the
     loop. menu_unstick fires the native floor-warp (bypasses any menu via a RAM load),

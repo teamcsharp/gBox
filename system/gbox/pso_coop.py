@@ -798,8 +798,10 @@ ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't sp
 STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for this long -> warp REGARDLESS of enemies/
                              # cleared state. The party must reach a new room or new floor within ~20s, ALWAYS. Non-negotiable.
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
-BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: never warp off a LIVE boss before this (~5.5 min anti-permafreeze last resort)
+BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
+BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
+                             # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # DODGE / combat positioning (operator 2026-11-02: "the bots should be learning to
@@ -819,6 +821,8 @@ DODGE_CRITICAL = 20.0         # this close -> blend straight repulsion in (gain 
 DODGE_FACING_CONE = 55.0      # enemy heading within this of its bearing-to-player = aimed at the bot
 DODGE_STEP = 30.0             # how far ahead the strafe waypoint is placed (telemetry/steering)
 DEATH_BIAS_GAIN = 14.0        # weight of the learned fatal-spot avoidance in the strafe-side choice
+MINE_AVOID_R = 36.0           # steer the dodge away from boss mine adds within this (operator: never stand on mines)
+MINE_AVOID_GAIN = 3.0         # weight of mine avoidance in the strafe-side choice
 # DEATH-DRIVEN LEARNING (operator: "keep track of each and every time they die and
 # file a report for gBox to adjust the logic of their pathfinding and boss
 # management"). The WRITE side (down-and-revive logging) lives in pso_master_build;
@@ -1060,6 +1064,10 @@ class Controller:
         self._boss_alive_at = 0.0       # last monotonic a boss read alive (inter-phase grace)
         self._boss_seen_alive = False   # saw a live boss on the current boss floor (kill-credit guard)
         self._boss_kill_key = None      # (episode, floor) already credited a kill for (no double-count)
+        self._boss_floor_key = None     # (episode, floor) the per-visit boss trackers are anchored to
+        self._boss_hp_best = None       # lowest boss hp_frac seen this visit (damage-progress signal)
+        self._boss_parts_prev = None    # live boss-part count last tick (a drop = damage progress)
+        self._boss_progress_at = 0.0    # last monotonic the boss took damage (hp dropped or a part died)
         self._p1_xz = None              # P1's last position where it had translated (physical-stuck detector)
         self._p1_moved_at = 0.0         # last monotonic P1 translated > WEDGE_MOVE (parked if stale > STUCK_MOVE_S)
         self._stuck_phase = 0           # rotating wander heading index to break a physical park
@@ -2329,15 +2337,20 @@ class Controller:
         dwell = now - rec['since'] if rec else 0.0
         if now - self._last_warp_at < ADVANCE_WARP_GAP_S:
             return False
-        # BOSS DEFEAT (operator: do NOT warp off a boss floor - KILL the boss). While a
-        # boss is alive (or was alive within BOSS_DEAD_GRACE_S, covering brief inter-phase
-        # hp==0), SUPPRESS both the graceful and the hardcap warp so the party stays and
-        # fights. Only a long anti-permafreeze cap (BOSS_SAFETY_S ~ 5.5 min) can warp off
-        # an apparently unkillable boss as a last resort. Once the boss is dead the normal
-        # progression warp is allowed (legit, not a skip).
-        boss_hold = (self._boss_present_now and
-                     (self._boss_alive_now or (now - self._boss_alive_at) < BOSS_DEAD_GRACE_S))
-        if boss_hold and dwell < BOSS_SAFETY_S:
+        # BOSS DEFEAT (operator: KILL the boss, but don't burn 5.5 min on one we can't
+        # damage yet). Suppress the warp while a boss is ALIVE *and* we're still making
+        # DAMAGE PROGRESS. Liveness prefers the boss agent's latched boss_alive (handles
+        # inter-phase gaps: True=fight, False=confidently dead), falling back to my entity
+        # scan + grace. DAMAGE-PROGRESS escape: if HP/parts haven't dropped for BOSS_NOPROG_S
+        # (weak-point not pinned -> can't hurt it), release the hold so the normal warp loops
+        # us off to try again later. BOSS_SAFETY_S stays the absolute cap. Once the boss is
+        # dead, the hold releases and normal progression warps off (legit, not a skip).
+        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        boss_still_alive = ((adv.get('boss_floor') and adv.get('boss_alive') is not False)
+            or (self._boss_present_now and (self._boss_alive_now
+                or (now - self._boss_alive_at) < BOSS_DEAD_GRACE_S)))
+        making_progress = (now - self._boss_progress_at) < BOSS_NOPROG_S
+        if boss_still_alive and making_progress and dwell < BOSS_SAFETY_S:
             return False
         # ABSOLUTE anti-freeze backstop (NON-NEGOTIABLE): no new room for STALL_HARDCAP_S
         # warps REGARDLESS of enemies / cleared state - unreachable enemies behind a gate
@@ -2388,6 +2401,15 @@ class Controller:
             return None
         ep, floor = state.get("episode"), state.get("floor")
         pen = self.death_memory.penalty(ep, floor, px, pz) if self.death_memory else 0.0
+        # BOSS attack window (advisor boss_special_state / phase "<aim>_attacking"): the
+        # fire-breath cone / eruption fires NOW - dodge decisively (bigger step), but still
+        # fire when a shot is lined up (the body is also most exposed in this window).
+        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        boss_special = bool(adv.get("boss_special_state")
+                            or str(adv.get("phase") or "").endswith("_attacking"))
+        # Boss mine adds (De Rol Le): steer AWAY from them (operator: never stand on mines).
+        mine_xz = [(m.get("x"), m.get("z")) for m in (adv.get("adds") or [])
+                   if isinstance(m, dict) and type(m.get("x")) in (int, float) and type(m.get("z")) in (int, float)]
         threats = []
         for e in enemies:
             ex, ez = e.get("x"), e.get("z")
@@ -2421,7 +2443,7 @@ class Controller:
             dist, angle, vok = attack_geometry(player, target, envelope)
             fire_ready = (vok and dist <= envelope.get("horizontal", 0)
                           and abs(angle) <= envelope.get("horizontal_half_angle", 0)
-                          and now - self.last_attack.get(slot, 0) >= .52 / max(self.inputs.speed(), 1e-6))
+                          and now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / max(self.inputs.speed(), 1e-6))
         # Strafe perpendicular to the strongest threat; choose the side that gains the
         # most distance from all threats and aligns with the fatal-spot avoid vector.
         strong = max(threats, key=lambda t: t[3])
@@ -2435,6 +2457,10 @@ class Controller:
             nx, nz = px + ux * 26.0, pz + uz * 26.0
             score = sum((math.hypot(nx - ex, nz - ez) - d) * w for ex, ez, d, w, *_ in threats)
             score += (ux * avoid[0] + uz * avoid[1]) * DEATH_BIAS_GAIN
+            for mx, mz in mine_xz:                       # penalise strafing toward a mine add
+                md = math.hypot(nx - mx, nz - mz)
+                if md < MINE_AVOID_R:
+                    score -= (MINE_AVOID_R - md) * MINE_AVOID_GAIN
             if best is None or score > best[0]:
                 best = (score, ux, uz)
         ux, uz = best[1], best[2]
@@ -2449,11 +2475,13 @@ class Controller:
             ux, uz = ux * 0.5 + rx / rn * 0.7, uz * 0.5 + ry / rn * 0.7
         un = math.hypot(ux, uz) or 1.0
         ux, uz = ux / un, uz / un
-        point = (px + ux * DODGE_STEP, pz + uz * DODGE_STEP)
+        step = DODGE_STEP * (1.7 if boss_special else 1.0)   # evade the telegraphed boss attack decisively
+        point = (px + ux * step, pz + uz * step)
         return {"act": bool(anyhot and not fire_ready), "keys": movement_keys(player, point),
                 "dur": .10, "point": point, "min_dist": round(min_dist, 1),
                 "hot": anyhot, "boss": any(t[5] for t in threats),
-                "aimed": any(t[4] for t in threats), "penalty": round(pen, 3)}
+                "aimed": any(t[4] for t in threats), "penalty": round(pen, 3),
+                "boss_special": boss_special}
 
     def _dodge_telemetry(self, dodge):
         st = getattr(self.inputs, "stats", None)
@@ -2467,6 +2495,7 @@ class Controller:
         st["dodge_boss"] = int(dodge["boss"])
         st["dodge_aimed"] = int(dodge["aimed"])
         st["dodge_death_penalty"] = dodge["penalty"]
+        st["boss_dodge_window"] = int(dodge.get("boss_special", False))
 
     def _boss_target_row(self, player):
         """BOSS DEFEAT: turn the advisor's weak point into an enemy-shaped target row so
@@ -2487,42 +2516,68 @@ class Controller:
                 'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
 
     def _observe_boss(self, state, now):
-        """BOSS DEFEAT: read boss liveness from state entities (class TBoss*/TObjBoss*)
-        so advance_on_stall can SUPPRESS the warp while a boss lives (stay and kill it,
-        don't skip). Conservative: an unreadable boss HP counts as ALIVE so we never warp
-        off a boss we can't measure. Credits bosses_defeated once per (episode,floor) when
-        a boss that was seen alive is now present with all parts at hp<=0 (a confirmed
-        kill - a brief inter-phase hp==0 is covered by BOSS_DEAD_GRACE_S in the warp gate,
-        and the per-floor key prevents double counting multi-phase fights)."""
+        """BOSS DEFEAT: read boss liveness from state entities (class TBoss*/TObjBoss*) so
+        advance_on_stall can SUPPRESS the warp while a boss lives (stay and kill it, don't
+        skip). Conservative: an unreadable boss HP counts as ALIVE so we never warp off a
+        boss we can't measure. ALSO tracks DAMAGE PROGRESS - the lowest boss hp_frac seen
+        and the live boss-part count - so the warp gate can ESCAPE a boss we can't actually
+        damage (weak-point not pinned yet) after BOSS_NOPROG_S instead of burning the full
+        safety cap. Credits bosses_defeated once per (episode,floor) on a confirmed kill."""
         rows = [e for e in state.get("entities", ())[:512]
                 if str(e.get("class", "")).startswith(("TBoss", "TObjBoss"))]
         present = bool(rows)
         alive = any(type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0 for e in rows)
         dead_confirmed = present and all(type(e.get("hp")) in (int, float) and e.get("hp", 0) <= 0 for e in rows)
+        live_parts = sum(1 for e in rows if type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0)
+        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        hp_frac = adv.get("boss_hp_frac")
+        key = (state.get("episode"), state.get("floor"))
+        # Per-visit reset when the boss floor changes (seed the progress timer to now so the
+        # escape window starts fresh on arrival, not from a stale timestamp).
+        if present and key != self._boss_floor_key:
+            self._boss_floor_key = key
+            self._boss_hp_best = None
+            self._boss_parts_prev = None
+            self._boss_progress_at = now
+            self._boss_seen_alive = False
         self._boss_present_now = present
         self._boss_alive_now = alive
         if alive:
             self._boss_alive_at = now
             self._boss_seen_alive = True
-        key = (state.get("episode"), state.get("floor"))
-        if dead_confirmed and self._boss_seen_alive and self._boss_kill_key != key:
+            # DAMAGE PROGRESS: hp_frac dropped, or a boss part died -> we ARE hurting it.
+            hp_prog = (type(hp_frac) in (int, float)
+                       and (self._boss_hp_best is None or hp_frac < self._boss_hp_best - 1e-3))
+            part_prog = self._boss_parts_prev is not None and live_parts < self._boss_parts_prev
+            if hp_prog or part_prog:
+                self._boss_progress_at = now
+            if type(hp_frac) in (int, float):
+                self._boss_hp_best = hp_frac if self._boss_hp_best is None else min(self._boss_hp_best, hp_frac)
+        self._boss_parts_prev = live_parts if present else None
+        if self._boss_kill_key != key and self._boss_seen_alive and (dead_confirmed or adv.get("boss_cleared")):
             self._boss_kill_key = key
             self._bosses_defeated += 1
             self._boss_seen_alive = False
         st = getattr(self.inputs, "stats", None)
         if isinstance(st, dict):
             st["boss_present"] = int(present)
-            st["boss_alive"] = int(alive)
+            st["boss_alive_entity"] = int(alive)       # my entity scan (advisor's latched boss_alive stays authoritative)
             st["bosses_defeated"] = self._bosses_defeated
+            st["boss_no_progress_s"] = round(now - self._boss_progress_at, 1) if present else 0.0
+            if type(hp_frac) in (int, float):
+                st["boss_hp_frac"] = round(hp_frac, 3)
 
     def survival_tick(self, state):
         """NEVER-DIE (operator 11-03: P2 died and stayed dead). The survival write-side
         (pso_survival: infinite Scape Dolls + instant revive + death log) lives in
         pso_master_build, which the running worker CANNOT hot-reload (not a BOT_MODULE in
         the loaded hot_reload) - so it was never actually live. pso_coop IS hot-reloadable,
-        so we drive the SAME write-side here for BOTH players every tick; a plain bot-reload
-        (no worker restart) brings never-die live. Fully fail-soft: it must NEVER raise into
-        the loop, and it keeps the death log my DeathMemory consumer reads populated."""
+        so we drive the SAME write-side here for every PRESENT player every tick; a plain
+        bot-reload (no worker restart) brings never-die live. Generalised to all present
+        slots so players 3/4 (slots 2,3) are unkillable the moment 4-player seating lands
+        (the RAM revive backstop works even before a slot is co-op-verified; native gear
+        for 3/4 waits on ad._pso_verified_player_slots, per the build agent). Fully
+        fail-soft: it must NEVER raise into the loop, and it keeps the death log populated."""
         ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
         if ad is None:
             return
@@ -2533,8 +2588,10 @@ class Controller:
             if isinstance(st, dict):
                 st['survival_import_error'] = str(exc)[:120]
             return
-        for player_index in (0, 1):                    # 0 = P1, 1 = P2
-            suffix = 'p1' if player_index == 0 else 'p2'
+        # Present players -> 0-based survival slots (slot 1 -> index 0 ... slot 4 -> index 3).
+        indices = sorted({s - 1 for s in state.get("players", {}) if type(s) is int and 1 <= s <= 4})
+        for player_index in (indices or [0, 1]):
+            suffix = 'p%d' % (player_index + 1)
             try:
                 rep = pso_survival.apply_survival(ad, player_index)
             except Exception as exc:                   # fail-soft per player; keep playing
@@ -2549,6 +2606,11 @@ class Controller:
                 if type(rep.get('revives')) in (int, float):
                     st['mb_revives_%s' % suffix] = rep['revives']
                 st['mb_downed_%s' % suffix] = int(bool(rep.get('downed')))
+                # Mirror the build agent's 3x-speed attack-state probe (flat scalars, global -
+                # same each call). The coordinator needs speed_probe_locked to green-light phase (b).
+                for _k in ('speed_probe_n', 'speed_probe_atk', 'speed_probe_gate', 'speed_probe_locked'):
+                    if _k in rep:
+                        st[_k] = rep[_k]
 
     def publish_plan(self, state, now):
         """Publish a compact room-graph PLAN for the operator's live 2D map (the map agent
@@ -3464,6 +3526,15 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
         if not hasattr(_ps, "HEAVY_INTERVAL_S"):
             _ps = importlib.reload(_ps)
         stats["pso_survival_throttled"] = hasattr(_ps, "HEAVY_INTERVAL_S")
+        # Belt-and-suspenders: also refresh pso_speed in place (not a BOT_MODULE, so a
+        # stale cached copy without probe_tick otherwise sticks and the 3x-speed attack-
+        # state probe never runs). pso_survival already reloads it; this is redundant-safe.
+        try:
+            from . import pso_speed as _psp
+            importlib.reload(_psp)
+            stats["pso_speed_reloaded"] = True
+        except Exception as exc:                   # noqa: BLE001 - speed probe is best-effort
+            stats["pso_speed_reload_error"] = str(exc)[:160]
     except Exception as exc:                       # noqa: BLE001 - never block play on survival
         stats["pso_survival_reload_error"] = str(exc)[:160]
     controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
