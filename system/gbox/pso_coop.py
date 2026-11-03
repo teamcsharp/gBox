@@ -3667,7 +3667,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     # which also refreshes pso_speed, then the independents, then master_build which may
     # import survival). Each in its own try/except - a helper reload must NEVER kill play().
     # pso_accuracy/pso_crit are RAM caves that re-apply in-bot, so they are intentionally
-    # excluded. pso_knowledge is reloaded above.
+    # excluded. pso_knowledge is reloaded above. (This reload set carries pso_survival's
+    # per-tick MAX-HP survival floor, 6fb6d790, so low-level bots stop getting one-shot.)
     import importlib
     for _name in ("pso_speed", "pso_survival", "pso_fence", "pso_boss_strategy", "pso_master_build"):
         try:
