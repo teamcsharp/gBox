@@ -12,7 +12,7 @@ from gbox.mercs.titles import re5_switch_mines as MN
 
 GUN = {"slot": 3, "id": 0x102, "type": 1, "item": 0x02, "rounds": 50, "cap": 50, "grid": 3, "hand": True}
 BOMB = {"slot": 1, "id": 0x10A, "type": 1, "item": 0x0A, "rounds": 5, "cap": 5, "grid": 1, "hand": False}
-STACK = [{"ptr": 0x5D4C7E4280, "pos": (-3.0, -8.0, -2.0)}, {"ptr": 0x5D4C8DCF80, "pos": (557.0, 158.0, 1409.0)}]
+STACK = [{"ptr": 0x5D4C7E4280, "pos": (-3000.0, -8.0, -2000.0)}, {"ptr": 0x5D4C8DCF80, "pos": (557.0, 158.0, 1409.0)}]
 
 
 def at(dist, deg):
