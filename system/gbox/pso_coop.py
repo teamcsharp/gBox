@@ -784,6 +784,7 @@ BLOCKED_GATE_S = 45.0        # (B) after a failed crossing, don't re-commit to t
 FENCE_PAIR_DIST = 95.0       # a TObjLazerFenceNorm + a TLazerFenceSw within this = a hold-switch pair (one holds, one passes)
 FENCE_SWITCH_ON = 18.0       # P2 within this of the switch is standing ON it (holding the fence down)
 FENCE_CROSS_OVERSHOOT = 45.0 # P1 aims this far PAST the fence so it commits across while P2 holds the switch
+P2_PLACE_AFTER_S = 5.0       # P2 can't reach the hold-switch for this long -> RAM-write it onto the switch
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -836,6 +837,9 @@ class Controller:
         self._fence_obj = None      # two-player hold-fence crossing objective {fence gkey/xz, switch xz/room}
         self._crossed_fences = set()  # fence gkeys P1 has crossed this run (don't re-target)
         self._fence_arm = None      # {gkey, room}: P1 reached the fence; a later room change = crossed it
+        self._p2_placed = False     # P2 was RAM-placed onto the hold-switch (flat telemetry)
+        self._p2_sw_best = None     # P2's best (smallest) distance to the switch, for the stuck timer
+        self._p2_sw_best_at = 0.0   # when P2 last got closer to the switch
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1736,9 +1740,43 @@ class Controller:
                 continue                              # no hold-switch for this fence
             d = math.hypot(f['x'] - px, f['z'] - pz)
             if best is None or d < best['d']:
-                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'],
-                        'sx': sw['x'], 'sz': sw['z'], 'sroom': sw.get('room'), 'd': d}
+                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'], 'sx': sw['x'], 'sz': sw['z'],
+                        'sy': sw.get('y'), 'sroom': sw.get('room'), 'd': d}
         return best
+
+    def place_p2_on_switch(self, state, p2, now):
+        """RAM fallback: when the follower (P2) cannot physically path to the hold-switch
+        across the specific boundary P1 crossed, WRITE P2's actor position directly onto
+        the switch's exact 3D coords so it stands on the switch holding the fence open.
+        Consistent with the bot's other verified RAM writes (force-unlock flags, the
+        crit/never-miss caves, stat writes). Guarded: fence objective active, verified
+        two-player slots, valid P2 actor ptr in MEM1, finite switch coords (incl the
+        switch entity's OWN y), and P2's room clear. Returns True on a write."""
+        obj = self._fence_obj
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if (obj is None or ad is None or not callable(getattr(ad, 'write_memory', None))
+                or state.get('verified') is not True or state.get('phase') != 14
+                or type(state.get('floor')) is not int or not 1 <= state['floor'] <= 17
+                or set(state.get('players', {})) != {1, 2} or not p2 or p2.get('hp', 0) <= 0):
+            return False
+        room = p2.get('room')
+        if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
+               and e.get('room') == room for e in state.get('entities', ())[:512]):
+            return False                                  # room-clear only (combat owns a room with enemies)
+        sx, sy, sz = obj.get('sx'), obj.get('sy'), obj.get('sz')
+        if sy is None:
+            sy = p2.get('y')                              # switch had no y: keep P2's current height
+        if not all(type(v) in (int, float) and math.isfinite(v) for v in (sx, sy, sz)):
+            return False
+        try:
+            addr = int(p2['ptr'], 16) if isinstance(p2.get('ptr'), str) else int(p2['ptr'])
+        except (TypeError, ValueError, KeyError):
+            return False
+        if not (0x80000000 <= addr <= 0x81800000 - 0x44):   # P2's actor must be in MEM1
+            return False
+        ad.write_memory(addr + 0x38, struct.pack('>3f', float(sx), float(sy), float(sz)))  # x/y/z f32
+        self._p2_placed = True
+        return True
 
     def _next_door_toward(self, from_room, to_room):
         """BFS the learned area graph (treated UNDIRECTED - a door P1 crossed one way is
@@ -1806,6 +1844,22 @@ class Controller:
         p2 = state.get('players', {}).get(2) or {}
         p2_on = (type(p2.get('x')) in (int, float)
                  and math.hypot(obj['sx'] - p2['x'], obj['sz'] - p2['z']) <= FENCE_SWITCH_ON)
+        # P2 stuck-timer: if P2 cannot physically get closer to the switch for
+        # P2_PLACE_AFTER_S (wedged at the boundary P1 crossed), RAM-WRITE P2 onto the
+        # switch - the deterministic fallback after 5+ rounds of P2 navigation failing.
+        if slot == 2:
+            if p2_on:
+                self._p2_sw_best = None
+            else:
+                sd = math.hypot(obj['sx'] - player['x'], obj['sz'] - player['z'])
+                if self._p2_sw_best is None or sd < self._p2_sw_best - 5:
+                    self._p2_sw_best, self._p2_sw_best_at = sd, now
+                if now - self._p2_sw_best_at >= P2_PLACE_AFTER_S and self.place_p2_on_switch(state, player, now):
+                    st = getattr(self.inputs, 'stats', None)
+                    if isinstance(st, dict):
+                        st['p2_role'] = 'fence_switch_placed'
+                    self._p2_sw_best = None
+                    return True
         if slot == 1:
             overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
@@ -2069,6 +2123,7 @@ class Controller:
         _fstats = getattr(self.inputs, 'stats', None)
         if isinstance(_fstats, dict):
             _fstats['fence_objective'] = int(self._fence_obj is not None)
+            _fstats['p2_placed'] = int(self._p2_placed)
             if self._fence_obj and p1row:
                 _fstats['fence_dist_p1'] = round(math.hypot(self._fence_obj['fx'] - p1row['x'],
                                                             self._fence_obj['fz'] - p1row['z']), 1)

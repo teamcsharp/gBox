@@ -1171,6 +1171,26 @@ def test_p2_routes_door_by_door_to_the_switch_room(tmp_path):
     assert steer[2][2].startswith("fence_route")      # P2 heads THROUGH the door toward room 5, not at the switch
 
 
+def test_place_p2_on_switch_writes_p2_position_onto_the_switch(tmp_path):
+    """RAM fallback: when P2 can't physically reach the hold-switch, its actor position
+    is written directly onto the switch's exact 3D coords (x/y/z f32 at ptr+0x38, using
+    the switch entity's OWN y) under the verified two-player / room-clear guards."""
+    writes = []
+    ad = SimpleNamespace(read_memory=lambda a, n: bytes(n),
+                         write_memory=lambda a, d: writes.append((int(a), bytes(d))))
+    ctrl = _controller(tmp_path, ad=ad)
+    switch = {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "y": 12.5, "room": 5, "kind": "gate"}
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "kind": "gate"}
+    st = _coop_room([fence, switch], p1=(-420., 485.8), p2=(0., 0.), room=5)
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert ctrl._fence_obj is not None and ctrl._fence_obj["sy"] == 12.5
+    p2 = st["players"][2]
+    assert ctrl.place_p2_on_switch(st, p2, now=100.) is True and ctrl._p2_placed is True
+    addr = int(p2["ptr"], 16) + 0x38
+    wrote = [d for a, d in writes if a == addr]
+    assert wrote and wrote[0] == struct.pack(">3f", -399.7, 12.5, 541.0)   # x/y/z onto the switch
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
