@@ -848,6 +848,29 @@ def test_a_close_enemy_in_front_is_fired_on_by_geometry_without_the_laser():
     assert bot2.stats.get("re6_geometry_fires", 0) == 0
 
 
+def test_a_distant_ledge_or_shooter_threat_gets_a_long_geometry_shot_but_a_far_ground_zombie_does_not():
+    # operator 2026-11-03: "long shots on exposed/distant targets ... ledge snipers / rocket enemies up high ... any
+    # zombie pointing a laser becomes a target". With no laser and no mesh, a precise long shot still fires at an
+    # elevated or a gun-raised threat; an ordinary ground zombie at the same range is NOT blind-fired at.
+    bot, clock, snap = brain(round_guest(enemies=((0.0, 0.0, 1200.0, 700),), cam_yaw=0.0))
+    p = {"pos": (0.0, 0.0, 0.0), "ammo": 7, "weapon_id": 7, "equipped": 0}
+    me = p["pos"]
+    import math as _m
+    def aim_from(e):                                                         # a camera ray straight at the enemy's chest
+        return {"from": (me[0], R.CHEST_H, me[2]), "at": (e["pos"][0], e["pos"][1] + R.CHEST_H, e["pos"][2])}
+    ledge = {"pos": (0.0, 400.0, 1200.0), "hp": 700, "slot": 1, "action": None}        # 12 m off, 4 m up: a ledge threat
+    shooter = {"pos": (0.0, 0.0, 1200.0), "hp": 700, "slot": 2, "action": "cEm1000ActWalkGunR"}  # a gun raised at him
+    ground = {"pos": (0.0, 0.0, 1200.0), "hp": 700, "slot": 3, "action": None}          # an ordinary ground zombie
+    bot._ppos = me
+    bot._snap = snap
+    for e, want in ((ledge, True), (shooter, True), (ground, False)):
+        a = aim_from(e)
+        before = bot.stats.get("re6_longshot_fires", 0)
+        bot._aim(p, e, e["pos"], _m.hypot(e["pos"][0], e["pos"][2]), a["from"], a["at"], "camera", None, [e], (), clock[0])
+        opened = bot.stats.get("re6_longshot_fires", 0) > before   # the long-shot geometry gate fired (tap cadence aside)
+        assert opened is want, f"slot {e['slot']}: long-shot fire={opened} want={want}"
+
+
 def test_the_one_right_in_front_is_the_target_not_a_distant_sniper():
     # operator 2026-11-03: "if someone is right in front of him, point his weapon at them" - a far ranged / sniper
     # threat must not steal the aim from a close enemy in front (regression from the ledge-sniper priority).

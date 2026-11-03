@@ -1608,6 +1608,12 @@ AIM_CONE = FRONT_CONE                   # (the camera turning with the gun down 
 # (enemy reached before any wall). That keeps the no-wall-shot rule by geometry instead of the laser. GEOM_CLOSE_R is
 # below the camera-only guard distances so a far enemy with neither a laser nor a mesh is still not blind-fired at.
 GEOM_FIRE_ERR, GEOM_FIRE_PITCH, GEOM_CLOSE_R = math.radians(8), math.radians(10), 500.0
+# operator 2026-11-03 "long shots on exposed/distant targets ... ledge snipers / rocket enemies up high ... any zombie
+# pointing a laser becomes a target": a precise LONG shot (to LONG_R) at the exposed threats the operator named - one
+# off his level (up high / on a ledge) or a shooter with a gun / laser on him (windup ranged) - fires on a tight cone
+# without the laser or a mesh proof, the NOHIT fire_track self-limiting a walled line. Ordinary ground zombies at range
+# are NOT blind-fired at (they still need the close band or a mesh-proven line), keeping the no-wall-shot rule for them.
+LONGSHOT_FIRE_ERR, LONGSHOT_FIRE_PITCH = math.radians(4), math.radians(6)
 UNAIM_ERR = math.radians(100)           # aiming, the target this far off the line with none in front: gun down, turn
 TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (gun down): pulsed inside TURN_FINE
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
@@ -2225,7 +2231,8 @@ class Bot:
                   # operator 2026-11-03 RE6 combat overhaul: the magnum rapid-fire, the cluster-bomb grenade burst and
                   # the ledge/sniper/rocket threat awareness (flat telemetry)
                   "re6_grenade_bursts", "re6_last_burst_grenades", "re6_threats_tracked", "re6_sniper_targets",
-                  "re6_longshots", "re6_rocket_barrages", "re6_magnum_rps", "re6_geometry_fires"):
+                  "re6_longshots", "re6_rocket_barrages", "re6_magnum_rps", "re6_geometry_fires",
+                  "re6_longshot_fires"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s", "down_s", "hazard_s",
                   "cc_vs_aimed"):
@@ -3591,13 +3598,19 @@ class Bot:
         # on the enemy (tight cone), in range, not line-of-sight-blocked, and the line is clear (close enough that no
         # wall is between them, or the nav mesh proves it). So the bot fires relentlessly at the one in front instead of
         # standing with the gun raised; a shot that takes no health self-limits via the NOHIT_S fire_track below.
-        if (not on and p.get("ammo") != 0 and dist <= ENGAGE_R
-                and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
-                and getattr(self, "lock_redirect_at", None) != now
-                and not self.is_blocked(aim_at, now)
-                and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now))):
-            on, on_e, source = True, aim_at, "geometry"
-            self.stats["re6_geometry_fires"] = self.stats.get("re6_geometry_fires", 0) + 1
+        if (not on and p.get("ammo") != 0 and getattr(self, "lock_redirect_at", None) != now
+                and not self.is_blocked(aim_at, now)):
+            close_geom = (dist <= ENGAGE_R and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
+                          and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now)))
+            # option (b): the long shot at an exposed threat the operator named - elevated / ledge (off his level) or a
+            # shooter aiming at him (windup ranged) - on a tight cone, to LONG_R, no laser / mesh needed
+            long_geom = (dist <= LONG_R and abs(yaw_err) <= LONGSHOT_FIRE_ERR and abs(pitch_err) <= LONGSHOT_FIRE_PITCH
+                         and (abs(aim_at["pos"][1] - p["pos"][1]) > AIM_DY or windup(aim_at, p["pos"]) == "ranged"))
+            if close_geom or long_geom:
+                on, on_e, source = True, aim_at, "geometry"
+                self.stats["re6_geometry_fires"] = self.stats.get("re6_geometry_fires", 0) + 1
+                if long_geom and not close_geom:
+                    self.stats["re6_longshot_fires"] = self.stats.get("re6_longshot_fires", 0) + 1
         auto = p.get("weapon_id") in AUTO_IDS
         cooldown = p.get('fire_cooldown_s')
         ready = auto or cooldown is None or cooldown <= 0
