@@ -800,6 +800,8 @@ STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for 
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
+BOSS_APPROACH_STALL_S = 2.5  # P1 can't get CLOSER to the weak point for this long -> platform/wall boss (De Rol Le):
+                             # stop driving into the edge, hold the best line and FIRE the forced long-range gun
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -1068,6 +1070,8 @@ class Controller:
         self._boss_hp_best = None       # lowest boss hp_frac seen this visit (damage-progress signal)
         self._boss_parts_prev = None    # live boss-part count last tick (a drop = damage progress)
         self._boss_progress_at = 0.0    # last monotonic the boss took damage (hp dropped or a part died)
+        self._boss_approach_best = None # closest P1 has gotten to the weak point this visit (closing-progress)
+        self._boss_approach_at = 0.0    # last monotonic P1 got closer (stalls -> platform/wall: hold the line + fire)
         self._p1_xz = None              # P1's last position where it had translated (physical-stuck detector)
         self._p1_moved_at = 0.0         # last monotonic P1 translated > WEDGE_MOVE (parked if stale > STUCK_MOVE_S)
         self._stuck_phase = 0           # rotating wander heading index to break a physical park
@@ -2539,6 +2543,8 @@ class Controller:
             self._boss_hp_best = None
             self._boss_parts_prev = None
             self._boss_progress_at = now
+            self._boss_approach_best = None
+            self._boss_approach_at = now
             self._boss_seen_alive = False
         self._boss_present_now = present
         self._boss_alive_now = alive
@@ -3021,18 +3027,43 @@ class Controller:
                 # until within the weapon envelope, THEN fall through to aim/fire. Dodge
                 # (below) still handles close-quarters evasion once in range.
                 env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
-                bdist = math.hypot(boss_row["x"] - player["x"], boss_row["z"] - player["z"])
+                bx, bz = boss_row["x"], boss_row["z"]
+                bdist = math.hypot(bx - player["x"], bz - player["z"])
                 _sb = getattr(self.inputs, "stats", None)
                 if slot == 1 and isinstance(_sb, dict):
                     _sb["boss_approach_dist"] = round(bdist, 1)
-                if bdist > max(env_h * 0.85, 14.0):
-                    keys, escaping = self._unwedge(slot, player, (boss_row["x"], boss_row["z"]), now)
+                # Closing-progress: did we get CLOSER? (platform bosses like De Rol Le can't
+                # be walked to - the serpent is across water - so the distance stalls at the
+                # platform edge.)
+                if self._boss_approach_best is None or bdist < self._boss_approach_best - 3.0:
+                    self._boss_approach_best, self._boss_approach_at = bdist, now
+                approach_stalled = (now - self._boss_approach_at) > BOSS_APPROACH_STALL_S
+                if bdist > max(env_h * 0.85, 14.0) and not approach_stalled:
+                    # APPROACHABLE boss: drive straight at the weak point (coordinate-drive +
+                    # wedge-escape, bypassing the A* gate that gives up across an arena) until
+                    # within the gun's reach, THEN fall through to aim/fire.
+                    keys, escaping = self._unwedge(slot, player, (bx, bz), now)
                     commands.append((slot, keys, .18))
-                    moves[slot] = (player, (boss_row["x"], boss_row["z"]), self.maps.get(state, player), False)
-                    steering[slot] = (player, (boss_row["x"], boss_row["z"]),
-                                      "boss_approach_unwedge" if escaping else "boss_approach")
+                    moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
+                    steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
                     if isinstance(_sb, dict):
                         _sb["boss_approaching"] = 1
+                    continue
+                if bdist > max(env_h * 0.85, 14.0) and approach_stalled:
+                    # PLATFORM/WALL boss: can't close further. Hold the BEST LINE and FIRE the
+                    # forced long-range gun (never-miss + crit make it land). Face the weak
+                    # point, then press A on cadence - don't keep driving into the edge.
+                    _, angle, _vok = attack_geometry(player, boss_row, envelope)
+                    half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
+                    if abs(angle) > half:
+                        commands.append((slot, ["lleft" if angle > 0 else "lright"],
+                                         max(.02, min(.12, abs(angle) / 450))))
+                        steering[slot] = (player, (bx, bz), "boss_line")
+                    elif now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / max(self.inputs.speed(), 1e-6):
+                        commands.append((slot, ["a"], .12))
+                        steering[slot] = (player, (bx, bz), "boss_fire_line")
+                    if isinstance(_sb, dict):
+                        _sb["boss_firing_line"] = 1
                     continue
             # DODGE (P1): move out of attacks during battle instead of standing still.
             # When a threat is hot and no clean shot is lined up this tick, strafe out of
