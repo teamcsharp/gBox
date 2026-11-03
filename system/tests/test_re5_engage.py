@@ -37,6 +37,31 @@ def test_a_threat_in_front_comes_before_a_far_one_under_the_dot():
     assert E.pick(P, [far_dotted], dotted=far_dotted)[0] is far_dotted     # nobody nearer in front: the dot's
 
 
+def test_a_close_threat_in_front_comes_before_a_dotted_one_outside_the_front_clear():
+    """Cluster 5127 (2026-11-03): the dot reads a distant Majini while a near one stands in the front clear cone (a
+    head-height aim finds the far one first, and the gun-down swing between them keeps the near front one out of sight -
+    94/162 of the hits were taken during such a swing). Within the front clear the cone, not the dot, picks the target."""
+    front, far_dotted = at(20, 350, 1), at(50, 800, 2)
+    target, why = E.pick(P, [far_dotted, front], dotted=far_dotted)
+    assert target is front and "in front before" in why
+    far_dotted = at(20, 800, 2)
+    assert E.pick(P, [far_dotted, front], dotted=far_dotted)[0] is front    # the dot reads the side one at 8 m
+    assert E.pick(P, [far_dotted], dotted=far_dotted)[0] is far_dotted      # nobody in front: the dot's
+
+
+def test_the_dotted_one_inside_the_front_clear_stays_first():
+    dotted, other_front = at(10, 300, 1), at(-25, 320, 2)
+    assert E.pick(P, [other_front, dotted], dotted=dotted)[0] is dotted     # the dot on a near one: his measured line
+
+
+def test_held_targets_in_front_are_kept_unless_another_is_much_nearer():
+    held, other = at(10, 300, 1), at(25, 290, 2)
+    assert E.pick(P, [held, other], held=1)[0] is held                      # 1.5x keep: no swing between the two in front
+    other = at(25, 150, 2)
+    assert E.pick(P, [held, other], held=1)[0] is other                     # twice as near: the switch
+
+
+
 def test_a_threat_in_front_comes_before_one_at_arms_length_behind_until_he_is_farther_than_front_clear():
     front, behind = at(0, 300, 1), at(180, 60, 2)
     assert E.pick(P, [front, behind])[0] is front                          # the gun never comes down to turn away

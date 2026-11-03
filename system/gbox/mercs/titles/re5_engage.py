@@ -137,11 +137,23 @@ def pick(p: dict, enemies, *, held=None, dotted=None, extra_ok=None):
     dotted = dotted if dotted is not None and living(dotted) else None
     contact_front = [e for e in level if flat(p["pos"], e["pos"]) <= CONTACT_R
                      and abs(bearing(p, e["pos"])) <= FRONT_CONE]
-    if dotted is not None and flat(p["pos"], dotted["pos"]) <= FRONT_CLEAR_R:
+    front_close = [e for e in level if flat(p["pos"], e["pos"]) <= FRONT_CLEAR_R
+                   and abs(bearing(p, e["pos"])) <= FRONT_CONE]
+    if dotted is not None:
         if contact_front and dotted not in contact_front:
             return near(contact_front), "a Majini at arm's length in front before the one under the dot"
-        return dotted, "laser first hit on him"
-    front_close = [e for e in level if flat(p["pos"], e["pos"]) <= FRONT_CLEAR_R and abs(bearing(p, e["pos"])) <= FRONT_CONE]
+        # the dot reads a distant one while a near Majini stands in the front clear cone (2026-11-03, 94/162 hits taken):
+        # a head-height aim finds the far one first, and the gun-down swing between them keeps the near front one out of
+        # sight ("shooting the wrong targets ... ignoring the targets standing right in front"). While a closer one stands
+        # in the cone the cone, not the dot, picks the one to shoot (the dot on a near one is his measured line - kept).
+        if front_close and dotted not in front_close:
+            best = near(front_close)
+            if held_e is not None and held_e in front_close and held_e is not best \
+                    and flat(p["pos"], held_e["pos"]) <= KEEP_RATIO * flat(p["pos"], best["pos"]):
+                best = held_e
+            return best, "the nearest threat in front before the one under the dot"
+        if flat(p["pos"], dotted["pos"]) <= FRONT_CLEAR_R:
+            return dotted, "laser first hit on him"
     if front_close:
         return keep(front_close, near(front_close)), "the nearest threat in front (the gun stays up)"
     contact = [e for e in level if flat(p["pos"], e["pos"]) <= CONTACT_R]
