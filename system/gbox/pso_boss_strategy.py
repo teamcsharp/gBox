@@ -21,17 +21,29 @@ and on a boss floor the live "enemy"-kind entities ARE the boss and its sub-part
 from those entities per the boss's intended strategy - no exact boss class string needed.
 
 Public API (the nav agent wires this into its combat loop):
-    from gbox.pso_boss_strategy import boss_target, boss_telemetry
+    from gbox.pso_boss_strategy import boss_target, boss_alive, boss_telemetry
     adv = boss_target(ad)
     if adv["active"]:
         aim_at(adv["weakpoint_pos"])        # {"x","z","y"} world position
         if adv["element"]: cast(adv["element"])   # "zonde"/"barta"/"foie" or None
         dodge(adv["hazard"])                # a short hazard tag or None
+    # nav's warp gate: suppress the perpetual floor-warp until the boss is DEAD.
+    if adv["boss_floor"] and adv["boss_alive"] is False:
+        allow_warp()                        # boss confidently defeated/cleared
+    # boss_alive True (fighting OR not-yet-spawned) -> keep fighting, do NOT warp.
 
 See WEAKPOINT_SPEC for the verified per-boss weak-point spec, and CONFIRMATION_NOTES
 for what is byte-verified vs. still needs a live boss to pin down.
 """
 import math
+import time
+
+# Seconds the boss floor must show ZERO boss entities (after a boss was seen) before the
+# advisor will call the boss DEFEATED/cleared. Generous so a dive, a submerge, or a phase
+# gap (Vol Opt P1->P2, Dark Falz form swap, De Rol Le surfacing) never reads as death - the
+# DEAD call must be conservative so nav never warps off a still-living boss. HP-offset
+# INDEPENDENT (the boss HP offset is unverified): death = the arena empties and stays empty.
+DEAD_GRACE_S = 8.0
 
 # Canonical 3OE2 globals (reused from the verified control modules so addresses stay in
 # sync). All confirmed by the build agent (ad4e76ee1bfcb3a45) + live reads 2026-11-02/03.
@@ -156,14 +168,6 @@ def _pos(e):
     return None
 
 
-def _alive(e):
-    """Living = HP valid and > 0, OR HP unreadable/invalid for this struct (assume alive)."""
-    hp, mx = e.get("hp"), e.get("hp_max")
-    if isinstance(hp, int) and isinstance(mx, int) and 0 <= hp <= mx and mx > 0:
-        return hp > 0
-    return True                      # HP offset unverified for bosses: never declare a boss dead on a bad read
-
-
 def _hp_fraction(e):
     hp, mx = e.get("hp"), e.get("hp_max")
     if isinstance(hp, int) and isinstance(mx, int) and 0 <= hp <= mx and mx > 0:
@@ -173,6 +177,68 @@ def _hp_fraction(e):
 
 def _planar(a, b):
     return math.hypot(a["x"] - b["x"], a["z"] - b["z"])
+
+
+def _clock(ad):
+    return getattr(ad, "_pso_boss_clock", time.monotonic)
+
+
+def _visit_token(ad, floor):
+    """A counter that increments on every floor change, so each ARRIVAL on a boss floor is a
+    distinct visit. This re-arms the defeat latch when the party loops back to a boss floor it
+    already cleared (keying the alive-state on floor alone would stay latched forever)."""
+    prev = getattr(ad, "_pso_boss_prev_floor", None)
+    tok = getattr(ad, "_pso_boss_visit", 0)
+    if prev != floor:
+        tok += 1
+        try:
+            ad._pso_boss_prev_floor = floor
+            ad._pso_boss_visit = tok
+        except Exception:
+            pass
+    return tok
+
+
+def _alive_signal(ad, floor_key, present):
+    """Conservative, HP-offset-independent 'is the boss still alive?' for nav's warp gate.
+
+    State is tracked per boss-floor VISIT on the adapter (reset when the floor changes).
+    `present` = at least one boss(enemy)-kind entity is in the arena this tick (ANY HP - the
+    boss HP offset is unverified, so entity PRESENCE, not a HP read, drives the DEAD call).
+
+    Returns (alive, cleared):
+      * before any boss entity has appeared on this visit -> alive=True (boss not spawned yet;
+        nav must NOT warp - the boss is coming).
+      * while any boss entity is present -> alive=True.
+      * once the arena has been populated and then shows ZERO boss entities for >= DEAD_GRACE_S
+        -> alive=False, cleared=True, LATCHED for this visit (confident defeat/clear).
+      * a sub-DEAD_GRACE_S gap (dive/submerge/phase swap) stays alive=True.
+    """
+    now = _clock(ad)()
+    try:
+        st = ad._pso_boss_alive_state
+    except Exception:
+        st = None
+    if not isinstance(st, dict) or st.get("key") != floor_key:
+        st = {"key": floor_key, "seen": False, "last_present": None, "defeated": False}
+        try:
+            ad._pso_boss_alive_state = st
+        except Exception:
+            pass
+    if present:
+        st["seen"] = True
+        st["last_present"] = now
+    if st["defeated"]:
+        return False, True
+    if not st["seen"]:
+        return True, False                       # boss has not spawned/appeared yet
+    if present:
+        return True, False
+    gone = now - (st["last_present"] if st["last_present"] is not None else now)
+    if gone >= DEAD_GRACE_S:
+        st["defeated"] = True
+        return False, True
+    return True, False                           # within the grace window: a phase gap, not death
 
 
 # --------------------------------------------------------------------------- weak-point pickers / phase analyzers
@@ -241,7 +307,8 @@ _ANALYZERS = {"volopt": _analyze_volopt, "darkfalz": _analyze_darkfalz, "olga": 
 def _inactive(reason=None):
     out = {"active": False, "boss": None, "phase": None, "weakpoint_pos": None, "weakpoint": None,
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
-           "confidence": None,
+           "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
+           "boss_hp_frac": None,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -264,10 +331,17 @@ def boss_target(ad):
       hazard            : short hazard tag to dodge (may be '|'-joined), or None.
       episode, floor    : the live episode (1/2) and floor id.
       confidence        : 'heuristic' (phase inferred) - see CONFIRMATION_NOTES.
+      boss_floor        : True whenever on a known boss floor (even if active=False / cleared).
+      boss_alive        : CONSERVATIVE 'still fight it' signal for nav's warp gate - True while
+                          the boss is present OR not yet spawned, False only once the arena has
+                          emptied for >= DEAD_GRACE_S (confident defeat), None off a boss floor.
+      boss_cleared      : True once boss_alive has latched defeated for this visit.
+      boss_hp_frac      : best-effort main-body HP fraction (0..1) or None (HP offset unverified).
       boss_active/boss_name/boss_phase/boss_weakpoint_locked/boss_weakpoint_x/boss_weakpoint_z
-                        : FLAT scalar telemetry mirrors.
-    On any uncertainty (not in free-play, travelling, not a boss floor, no live boss entity,
-    or any read error) it returns active=False.
+      /boss_alive/boss_cleared/boss_floor/boss_hp_frac : FLAT scalar telemetry mirrors.
+    `active` means a live weak point is locked NOW. nav's warp gate should key off boss_alive
+    (warp only when boss_alive is False), NOT off active (which drops between phases). On any
+    uncertainty (not in free-play, travelling, not a boss floor, or any read error) active=False.
     """
     try:
         read = ad.read_memory
@@ -279,6 +353,7 @@ def boss_target(ad):
             return _inactive("travelling")
         episode = _read_u32(read, EPISODE) + 1
         floor = _read_u32(read, FLOOR)
+        visit = _visit_token(ad, floor)          # bump on every free-play floor change
         name = BOSS_FLOORS.get((episode, floor))
         if name is None:
             return _inactive("not_a_boss_floor")
@@ -291,22 +366,33 @@ def boss_target(ad):
 
         ents = _extractor(ad).entities()
         player = next((_pos(e) for e in ents if e.get("kind") == "player" and _pos(e)), None)
+        # On a boss floor the enemy-kind entities ARE the boss + its sub-parts/adds. We do NOT
+        # filter by HP (the boss HP offset is unverified, so a garbage-0 read must not drop a
+        # live boss) - every enemy-kind entity with a finite position is an aim candidate.
         bosses = []
         for e in ents:
             if e.get("kind") != "enemy":
                 continue
             pos = _pos(e)
-            if pos is None or not _alive(e):
+            if pos is None:
                 continue
             bosses.append({"entity": e, "pos": pos})
+
+        alive, cleared = _alive_signal(ad, (episode, floor, visit), present=bool(bosses))
         if not bosses:
-            return _inactive("boss_floor_no_live_boss_entity") | {"episode": episode, "floor": floor}
+            # Boss floor with no boss entity this tick: either not spawned yet (alive=True) or
+            # confidently cleared (alive=False). Either way there is no weak point to lock.
+            out = _inactive("boss_floor_no_boss_entity")
+            out.update(episode=episode, floor=floor, boss_floor=True, boss_alive=alive,
+                       boss_cleared=cleared, boss_name=name)
+            return out
 
         spec = WEAKPOINT_SPEC[name]
         analyzer = _ANALYZERS.get(spec["pick"], None)
         result = analyzer(name, bosses, player, difficulty) if analyzer else _analyze_generic(name, bosses, player, difficulty)
         target, pos = result["target"], result["target"]["pos"]
         e = target["entity"]
+        hp_frac = _hp_fraction(e)
         weak = {"ptr": e.get("ptr"), "class": e.get("class"), "hp": e.get("hp"),
                 "hp_max": e.get("hp_max"), "x": pos["x"], "z": pos["z"], "y": pos["y"]}
 
@@ -314,7 +400,8 @@ def boss_target(ad):
                "weakpoint": weak, "element": result["element"], "action": result["action"],
                "hazard": result["hazard"], "episode": episode, "floor": floor,
                "confidence": result["confidence"], "boss_entity_count": len(bosses),
-               "note": spec["note"],
+               "note": spec["note"], "boss_floor": True, "boss_alive": alive, "boss_cleared": cleared,
+               "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
                # flat telemetry mirrors
                "boss_active": True, "boss_name": name, "boss_phase": result["phase"],
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
@@ -326,8 +413,22 @@ def boss_target(ad):
         return _inactive("read_error")
 
 
+def boss_alive(ad):
+    """Convenience: the conservative alive signal only.
+
+    Returns True  -> on a boss floor and the boss should still be fought (present, or not yet
+                     spawned): nav must NOT warp off the floor.
+            False -> on a boss floor and the boss is confidently defeated/cleared: nav may warp.
+            None  -> not on a boss floor / not in free-play / uncertain: nav uses its normal
+                     progression (a None is NOT a cue to warp).
+    """
+    return boss_target(ad).get("boss_alive")
+
+
 def boss_telemetry(ad):
-    """Only the FLAT scalar telemetry keys for the telemetry endpoint."""
+    """Only the FLAT scalar telemetry keys for the telemetry endpoint (all scalars)."""
     adv = boss_target(ad)
-    return {k: adv[k] for k in ("boss_active", "boss_name", "boss_phase",
-                                "boss_weakpoint_locked", "boss_weakpoint_x", "boss_weakpoint_z")}
+    keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
+            "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
+            "boss_floor", "boss_hp_frac")
+    return {k: adv.get(k) for k in keys}

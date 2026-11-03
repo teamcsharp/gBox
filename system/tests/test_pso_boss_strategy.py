@@ -64,7 +64,21 @@ def build(episode=0, floor=11, difficulty=0, phase=14, travelling=0,
     table = b"".join(struct.pack(">I", p) for p in ptrs) + b"\0\0\0\0"
     for i, b in enumerate(table):
         mem[ENTITY_TABLE + i] = b
-    return FakeAd(mem)
+    ad = FakeAd(mem)
+    ad.player_ptr = OBJ_BASE
+    return ad
+
+
+def set_table(ad, ptrs):
+    """Rewrite the live entity table (to simulate the boss arena emptying/filling)."""
+    if ad is None:
+        return
+    # clear the old table region, then write the new null-terminated pointer list
+    for i in range(256 * 4):
+        ad._mem.pop(ENTITY_TABLE + i, None)
+    table = b"".join(struct.pack(">I", p) for p in ptrs) + b"\0\0\0\0"
+    for i, b in enumerate(table):
+        ad._mem[ENTITY_TABLE + i] = b
 
 
 # --------------------------------------------------------------------------- active detection + weak point
@@ -78,6 +92,8 @@ def test_dragon_head_weakpoint():
     assert r["boss_active"] and r["boss_weakpoint_locked"]
     assert r["boss_weakpoint_x"] == 10.0 and r["boss_weakpoint_z"] == 20.0
     assert "fire_breath_cone" in r["hazard"]
+    assert r["boss_floor"] is True and r["boss_alive"] is True and r["boss_cleared"] is False
+    assert r["boss_hp_frac"] == 1.0
 
 
 def test_main_body_pick_prefers_largest_hp():
@@ -154,10 +170,67 @@ def test_invalid_hp_still_counts_as_alive():
     assert r["active"] and r["weakpoint_pos"]["x"] == 7.0
 
 
-def test_dead_boss_excluded():
+def test_zero_hp_entity_still_targeted():
+    # HP offset is unverified, so a 0/garbage HP read must NOT drop a present boss entity:
+    # it stays an aim candidate and the boss is still considered alive (conservative).
     r = B.boss_target(build(episode=0, floor=11, enemies=[("TObjEneDragon", 0, 2000, (7.0, 0.0, 8.0))]))
-    assert r["active"] is False and r["reason"] == "boss_floor_no_live_boss_entity"
-    assert r["floor"] == 11
+    assert r["active"] is True and r["weakpoint_pos"]["x"] == 7.0
+    assert r["boss_alive"] is True and r["boss_cleared"] is False
+
+
+# --------------------------------------------------------------------------- conservative alive signal (nav warp gate)
+def test_boss_not_spawned_yet_stays_alive():
+    # Boss floor, arena not yet populated, boss never seen -> alive True (do NOT warp), no lock.
+    r = B.boss_target(build(episode=0, floor=11, enemies=[]))
+    assert r["active"] is False and r["boss_floor"] is True
+    assert r["boss_alive"] is True and r["boss_cleared"] is False
+    assert r["reason"] == "boss_floor_no_boss_entity" and r["boss_name"] == "Dragon"
+
+
+def test_boss_cleared_only_after_sustained_absence():
+    clock = [1000.0]
+    ad = build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (10.0, 0.0, 20.0))])
+    ad._pso_boss_clock = lambda: clock[0]
+
+    r1 = B.boss_target(ad)                      # boss present -> seen, alive
+    assert r1["active"] is True and r1["boss_alive"] is True
+
+    set_table(ad, [ad.player_ptr])              # arena empties (only the player remains)
+    clock[0] += 2.0                             # a short gap (dive / phase swap)
+    r2 = B.boss_target(ad)
+    assert r2["active"] is False and r2["boss_alive"] is True and r2["boss_cleared"] is False
+
+    clock[0] += B.DEAD_GRACE_S                   # sustained absence beyond the grace window
+    r3 = B.boss_target(ad)
+    assert r3["boss_alive"] is False and r3["boss_cleared"] is True
+    assert r3["active"] is False and r3["boss_floor"] is True
+
+    # the defeat latches for this visit even if a stray entity flickers back
+    set_table(ad, [ad.player_ptr, OBJ_BASE + 0x400])
+    assert B.boss_target(ad)["boss_alive"] is False
+
+
+def test_floor_change_rearms_alive_state():
+    clock = [500.0]
+    ad = build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (10.0, 0.0, 20.0))])
+    ad._pso_boss_clock = lambda: clock[0]
+    B.boss_target(ad)
+    set_table(ad, [ad.player_ptr]); clock[0] += B.DEAD_GRACE_S + 1
+    assert B.boss_target(ad)["boss_cleared"] is True
+    # leave the boss floor and come back next loop -> state resets, boss_alive re-arms
+    for i, b in enumerate(struct.pack(">I", 8)):
+        ad._mem[FLOOR + i] = b                   # floor 8 (non-boss)
+    assert B.boss_target(ad)["active"] is False and B.boss_target(ad)["boss_floor"] is False
+    for i, b in enumerate(struct.pack(">I", 11)):
+        ad._mem[FLOOR + i] = b                   # back to Dragon floor
+    set_table(ad, [ad.player_ptr, OBJ_BASE + 0x400])  # the boss is present again this visit
+    r = B.boss_target(ad)
+    assert r["active"] is True and r["boss_alive"] is True and r["boss_cleared"] is False
+
+
+def test_boss_alive_convenience():
+    assert B.boss_alive(build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (1.0, 0.0, 2.0))])) is True
+    assert B.boss_alive(build(episode=0, floor=3)) is None    # off a boss floor
 
 
 # --------------------------------------------------------------------------- fail-soft / inactive paths
@@ -205,14 +278,17 @@ def test_boss_telemetry_flat_scalars_only():
     ad = build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (10.0, 1.0, 20.0))])
     t = B.boss_telemetry(ad)
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
-                      "boss_weakpoint_x", "boss_weakpoint_z"}
+                      "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
+                      "boss_floor", "boss_hp_frac"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
+    assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())
 
 
 def test_boss_telemetry_inactive():
     t = B.boss_telemetry(build(episode=0, floor=3))
     assert t["boss_active"] is False and t["boss_name"] is None and t["boss_weakpoint_locked"] is False
+    assert t["boss_alive"] is None and t["boss_floor"] is False
 
 
 if __name__ == "__main__":
