@@ -1335,6 +1335,33 @@ def test_boss_hold_suppresses_warp_but_escapes_when_no_damage_progress(tmp_path)
     assert ctrl._floor_advances >= 1
 
 
+def test_follower_closes_distance_to_the_boss_weakpoint(tmp_path):
+    """BOSS DEFEAT - CLOSE THE DISTANCE: the bots were landing zero damage because they
+    stood ~250u from the boss and only aimed. A follower with the boss weak point active
+    and out of range must DRIVE toward it (swarm_approach), not keep station on the leader."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    ctrl._boss_adv = {"active": True, "boss": "DeRolLe",
+                      "weakpoint": {"ptr": "D1", "class": "TBoss2DeRolLe", "hp": 20000, "hp_max": 20000,
+                                    "x": 175., "z": 0., "y": 0.}}
+    st = state(floor=12)
+    st["players"][1].update(x=-75., z=0., room=10)
+    st["players"][2].update(x=-75., z=5., room=10)
+    commands, moves, steering = [], {}, {}
+    ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), commands, moves, steering, {})
+    assert any(c[0] == 2 for c in commands)
+    assert steering.get(2) and steering[2][2] == "swarm_approach"
+    assert steering[2][1][0] > st["players"][2]["x"]                  # heading +x toward the boss at x=175
+
+
+def test_combat_dodge_is_none_when_boss_is_out_of_range(tmp_path):
+    """Dodge must NOT fire (and block the approach) when the boss is far - it only kicks
+    in once the bot has closed to within the boss dodge radius."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    p1 = {"x": -75., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P", "hp": 40}
+    boss = {"class": "TBoss2DeRolLe", "kind": "enemy", "hp": 20000, "x": 175., "z": 0., "y": 0., "ptr": "D1"}
+    assert ctrl.combat_dodge(state(floor=12), 1, p1, [boss], dict(C.FALLBACK), boss, now=100.) is None
+
+
 def test_combat_dodge_steers_away_from_boss_mine_adds(tmp_path):
     """De Rol Le: the advisor surfaces mine adds (adds[]); dodge must steer to the side
     AWAY from the mines (operator's no-standing-on-mines rule), not onto them."""
