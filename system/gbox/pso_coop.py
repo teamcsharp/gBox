@@ -803,6 +803,8 @@ BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a bos
 BOSS_CHASE_CAP = 220.0       # approach a boss up to (real gun reach + this) before holding; beyond = relocating, don't chase
 BOSS_FIRE_RANGE_FALLBACK = 50.0  # fire range when the weapon envelope is UNVERIFIED - close in so the shot can't fall short
                              # (never-miss can't rescue a shot beyond the gun's true reach; the real reach is envelope.horizontal)
+BOSS_FIRE_RANGE_MAX = 60.0   # hard cap on boss fire range: the live verifier proved damage lands at ~38u but NOT ~219u, so
+                             # never fire from beyond this (shots fall short) - CLOSE to it first; widen when the exact PMT is pinned
 BOSS_FIRE_CONE = 25.0        # fire when facing the weak point within this cone (never-miss is forgiving; don't micro-rotate forever)
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
@@ -2550,6 +2552,7 @@ class Controller:
         # Unverified envelope -> close in to BOSS_FIRE_RANGE_FALLBACK so the shot connects.
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
         fire_range = env_h if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
+        fire_range = min(fire_range, BOSS_FIRE_RANGE_MAX)   # the verifier proved shots fall short past ~60u; close in first
         in_fire = bdist <= fire_range
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
