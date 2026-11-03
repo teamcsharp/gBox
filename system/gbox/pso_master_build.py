@@ -297,6 +297,8 @@ def _reroll_weapon(m, p, state, report, interval):
     """Equip a random weapon, re-rolling on an interval (the 'random weapons' cycle). On a
     boss floor the pool is restricted to ranged weapons so the bot can reach the boss."""
     now = time.monotonic()
+    boss = _boss_floor(m)
+    report["boss_ranged"] = boss                     # flat: mb_boss_ranged_p1/p2 (ranged forced on a boss floor)
     inv = _inv_by_id(m)
     wid = state.get("weapon_id")
     due = wid is None or wid not in inv or (now - state.get("weapon_t", 0.0)) >= interval
@@ -315,7 +317,6 @@ def _reroll_weapon(m, p, state, report, interval):
         report["weapon"] = {"id": wid, "code": state.get("weapon_code"), "rerolled": False,
                            "note": "inventory full"}
         return
-    boss = _boss_floor(m)
     code = random.choice(RANGED_WEAPON_CODES if boss else WEAPON_CODES)
     try:
         made = m.give(code)
