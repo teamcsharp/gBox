@@ -4260,11 +4260,27 @@ class Bot:
             if (key is None or (key in PROMPT_SKIP_KEYS and not heal)
                     or (key != 'stick' and now - live["at"] < PROMPT_REPEAT_S)):
                 continue
-            # crowd guard: 4+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up)
+            # crowd guard: 3+ live enemies on his level within CC_CROWD_R → defer the press (gun stays up).
+            # The threshold is 4 without a cone hit (the original guard), but drops to 3 when at least one
+            # enemy is in the CC cone (CC_CONE) — the exact flanking signature of the prompt-path incidents
+            # (cluster b294c62b554c77fd: prompt_stick 159 hits, 3-enemy flankers at 90-120 cm).
+            cam = snap.get("camera")
+            cam_yaw = cam["yaw"] if cam else p.get("rot")
+            def _cone_hit(ex, ez):
+                b = math.atan2(ex - px, ez - pz)
+                err = wrap(b - cam_yaw)
+                return abs(err) <= CC_CONE
             n = sum(1 for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0
                     and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
                     and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R)
-            if n >= CC_BACK_N and not heal:
+            cone_hit = any(
+                _cone_hit(e["pos"][0], e["pos"][2])
+                for e in (snap.get("enemies") or ())
+                if (e.get("hp") or 0) > 0
+                and abs(e["pos"][1] - p["pos"][1]) <= MAX_DY
+                and math.hypot(e["pos"][0] - px, e["pos"][2] - pz) <= CC_CROWD_R
+            )
+            if (n >= (CC_BACK_N - 1 if cone_hit else CC_BACK_N)) and not heal:
                 continue
             if heal:
                 self.stats["tablet_prompt_presses"] = self.stats.get("tablet_prompt_presses", 0) + 1
