@@ -817,6 +817,8 @@ class Controller:
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
         self._forced_doors = {}     # gkey -> until: a SPECIFIC forward door force-opened (per-door, not per-room)
+        self._adj_fires = 0         # how many times force_adjacent_door engaged (flat telemetry)
+        self._adj_last = {}         # last force_adjacent_door result {room, gkey, written, flags} (flat telemetry)
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1625,6 +1627,8 @@ class Controller:
             ad.write_memory(addr, bytes([current | mask]))
             written.append(idx)
         self._forced_doors[gkey] = now + FORCE_DOOR_RETRY_S
+        self._adj_fires += 1
+        self._adj_last = {'room': room, 'gkey': str(gkey), 'written': len(written), 'flags': len(idxs)}
         stats = getattr(self.inputs, 'stats', None)
         if isinstance(stats, dict):
             stats['forced_adjacent_door'] = {'room': room, 'floor': floor, 'group': group,
@@ -1797,6 +1801,19 @@ class Controller:
         stats['forward_time_since_new_room_s'] = round(dwell, 1)
         stats['forward_stuck'] = dwell >= FALLBACK_STUCK_S
         stats['forward_fallback_engaged'] = bool(engaged)
+        # FLAT diagnostics (telemetry drops nested dicts): is the exit ROOM-CLEAR
+        # gated (live enemies in P1's room => combat must clear it) or a flag/quest
+        # gate (0 enemies)? And is force_adjacent_door actually engaging?
+        room = p1.get('room')
+        stats['room_live_enemies'] = sum(
+            1 for e in state.get('entities', ())
+            if e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
+            and e.get('room') == room)
+        stats['forced_adj_door_fires'] = self._adj_fires
+        if self._adj_last:
+            stats['forced_adj_door_written'] = self._adj_last.get('written', 0)
+            stats['forced_adj_door_room'] = self._adj_last.get('room')
+            stats['forced_adj_door_gkey'] = self._adj_last.get('gkey')
 
     def tick(self, state):
         if not state.get("verified") or len(state.get("players", {})) != 2:
