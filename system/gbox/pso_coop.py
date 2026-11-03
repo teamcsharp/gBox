@@ -1087,6 +1087,8 @@ class Controller:
         self._stuck_phase = 0           # rotating wander heading index to break a physical park
         self._room_centroid = {}        # room -> [x,z] last-seen P1 position (spatial node placement for the live map)
         self._plan_pub_at = 0.0         # throttle for the room-graph plan publish
+        self._area_rooms = set()        # the area's REAL room ids (distinct room fields of loaded entities)
+        self._frontier = []             # area rooms P1 has NOT yet entered (explore these before advancing)
         from .pso_coop_town import TownRoute
         self.town = TownRoute(getattr(reader, "ad", None))
         self.town_enabled = False
@@ -2382,6 +2384,11 @@ class Controller:
         if not hardcap:
             if dwell < ADVANCE_STALL_S:
                 return False
+            # FULL EXPLORATION: do NOT advance a cleared area while there are still UNVISITED
+            # rooms in it (frontier). Keep exploring room-to-room; only the absolute hardcap
+            # (genuinely stuck, can't reach the rest) may warp past unexplored rooms.
+            if self._frontier:
+                return False
             room = p1.get('room')
             if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
                    and e.get('room') == room for e in state.get('entities', ())[:512]):
@@ -2827,15 +2834,15 @@ class Controller:
             target = self._path_next(room) if type(room) is int else None
         except Exception:
             target = None
-        # EXPLORATION COVERAGE: visited rooms (this run) + the FRONTIER = rooms the known
-        # edges lead to that P1 hasn't entered yet. Empty frontier => the reachable area is
-        # fully explored (the "fully mapped + studied" signal; also when the area may advance).
+        # EXPLORATION COVERAGE off the area's REAL room set (distinct room ids of loaded
+        # entities, computed in tick), NOT the door-graph (which reads fully-explored on
+        # entry). visited = rooms entered; FRONTIER = the area's rooms not yet entered.
+        # Empty frontier => every real room visited = "fully mapped"; coverage rises 0->1.
         visited = set(self.p1_visited)
-        reachable = {to for doors in self._area_graph.values() for to in doors.values() if type(to) is int}
-        reachable |= visited
-        frontier = sorted(reachable - visited)[:64]
-        covered = len(visited)
-        total = max(len(reachable), covered)
+        reachable = set(self._area_rooms) | visited
+        frontier = [r for r in self._frontier][:64]
+        covered = len(visited & reachable)
+        total = max(len(reachable), 1)
         plan = {"area": self._area, "episode": state.get("episode"), "floor": state.get("floor"),
                 "current_room": room if type(room) is int else None, "target_room": target,
                 "crit_path": [r for r in self._crit_path][:64],
@@ -3071,6 +3078,14 @@ class Controller:
                     st.update({k: v for k, v in bt.items() if not isinstance(v, (dict, list))})
             except Exception:
                 self._boss_adv = None
+        # FULL EXPLORATION: the area's REAL room set = the distinct room ids of the loaded
+        # entities (PSO loads the area's objects/enemies/doors each with their room field),
+        # so the FRONTIER (rooms P1 hasn't entered) is non-empty on arrival and only empties
+        # as rooms are actually visited - not the trivially-maxed door-graph coverage.
+        # advance_on_stall consults self._frontier to EXPLORE before advancing.
+        self._area_rooms = {e.get("room") for e in state.get("entities", ())[:1024]
+                            if type(e.get("room")) is int and 0 <= e.get("room") < 65535}
+        self._frontier = sorted(self._area_rooms - self.p1_visited)
         # BOSS DEFEAT: read boss liveness BEFORE advance_on_stall so the warp is suppressed
         # while a boss lives (stay and kill it, don't warp off the boss floor).
         self._observe_boss(state, now)

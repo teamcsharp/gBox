@@ -1651,6 +1651,8 @@ def test_publish_plan_emits_compact_room_graph_for_the_live_map(tmp_path):
     ctrl._crit_path = [10, 11, 12]
     ctrl._p1_path = [10, 11]
     ctrl.p1_visited = {10, 11}                                          # entered 10,11; 12 still unexplored
+    ctrl._area_rooms = {10, 11, 12}                                     # the area's REAL rooms (set by tick)
+    ctrl._frontier = [12]
     st = state(floor=5)
     st["players"][1].update(room=11, x=5.0, z=7.0)
     ctrl.publish_plan(st, now=100.0)
@@ -1660,17 +1662,18 @@ def test_publish_plan_emits_compact_room_graph_for_the_live_map(tmp_path):
     assert plan["floor"] == 5 and plan["area"] == "ep1_f5_g"
     assert plan["edges"]["10"] == {"g1": 11} and plan["crit_path"] == [10, 11, 12]
     assert plan["centroids"]["11"] == [5.0, 7.0]
-    # EXPLORATION COVERAGE: room 12 is reachable (edge 11->12) but unvisited -> frontier.
+    # EXPLORATION COVERAGE off the REAL room set: 12 exists in the area but is unvisited -> frontier.
     assert plan["visited"] == [10, 11] and plan["frontier"] == [12]
     assert s["pso_plan_frontier"] == 1 and s["pso_plan_explored"] == 0 and 0.0 < s["pso_plan_coverage"] < 1.0
     assert s["pso_plan_current_room"] == 11 and s["pso_plan_target_room"] == 12
-    # Once 12 is entered too, the reachable area is fully explored.
-    ctrl.p1_visited = {10, 11, 12}
-    ctrl.publish_plan(st, now=100.0 + C.PLAN_PUBLISH_S + 0.1)
-    assert ctrl.inputs.stats["pso_plan_explored"] == 1 and ctrl.inputs.stats["pso_plan_frontier"] == 0
-    st["players"][1]["room"] = 12                                      # throttled: no republish within the window
-    ctrl.publish_plan(st, now=100.1)
+    # Throttled: a second call within PLAN_PUBLISH_S doesn't republish.
+    st["players"][1]["room"] = 12
+    ctrl.publish_plan(st, now=100.0 + C.PLAN_PUBLISH_S / 2)
     assert _json.loads(s["pso_plan_json"])["current_room"] == 11
+    # Once 12 is entered too, the real area is fully explored (coverage 1.0, explored).
+    ctrl.p1_visited = {10, 11, 12}; ctrl._frontier = []
+    ctrl.publish_plan(st, now=100.0 + C.PLAN_PUBLISH_S + 1)
+    assert s["pso_plan_explored"] == 1 and s["pso_plan_frontier"] == 0 and s["pso_plan_coverage"] == 1.0
 
 
 def test_mid_field_reload_trusts_prior_verification_only_mid_run():
