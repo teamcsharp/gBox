@@ -800,9 +800,9 @@ STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for 
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
-BOSS_CHASE_CAP = 170.0       # don't CHASE a boss past (fire_range + this) (Dragon flies/teleports; De Rol Le submerges)
-BOSS_FIRE_RANGE = 220.0      # fire the forced long-range gun at a VULNERABLE boss within this (never-miss lands it) -
-                             # the live rifle reach; keep firing through the boss's movement instead of drifting out
+BOSS_CHASE_CAP = 220.0       # approach a boss up to (real gun reach + this) before holding; beyond = relocating, don't chase
+BOSS_FIRE_RANGE_FALLBACK = 50.0  # fire range when the weapon envelope is UNVERIFIED - close in so the shot can't fall short
+                             # (never-miss can't rescue a shot beyond the gun's true reach; the real reach is envelope.horizontal)
 BOSS_FIRE_CONE = 25.0        # fire when facing the weak point within this cone (never-miss is forgiving; don't micro-rotate forever)
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
@@ -2545,12 +2545,17 @@ class Controller:
         vuln = adv.get("boss_vulnerable")
         can_fire = vuln is True or vuln is None        # fire unless the game says invulnerable
         boss_special = bool(adv.get("boss_special_state") or str(adv.get("phase") or "").endswith("_attacking"))
-        fire_range = max(env_h, BOSS_FIRE_RANGE)       # the forced long-range gun's reach
+        # Fire only within the gun's REAL reach (the verified PMT envelope horizontal) - firing
+        # from beyond it falls short and never-miss can't rescue it (the ~220u void-fire bug).
+        # Unverified envelope -> close in to BOSS_FIRE_RANGE_FALLBACK so the shot connects.
+        env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
+        fire_range = env_h if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
         in_fire = bdist <= fire_range
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(bdist, 1)
+            st["boss_fire_range"] = round(fire_range, 1)
             st["boss_in_range"] = int(in_fire)
             st["boss_vulnerable"] = int(bool(can_fire))
             st["boss_strike_window"] = int(boss_special)

@@ -1346,14 +1346,15 @@ def test_follower_boss_fires_in_reach_approaches_mid_and_holds_when_far(tmp_path
                               "x": x, "z": 0., "y": 0.}}
     st = state(floor=12)
     st["players"][2].update(x=-75., z=5., room=10)
+    env = dict(C.FALLBACK, horizontal=200., horizontal_half_angle=30., verified=True)   # verified reach 200
     def run(x):
         ctrl._boss_adv = adv(x)
         cmds, mv, steer = [], {}, {}
-        ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), cmds, mv, steer, {})
+        ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], env, cmds, mv, steer, {})
         return steer[2][2]
-    assert run(30.) in ("boss_fire", "boss_line", "boss_hold")        # ~105u, within reach -> fire the line
-    assert run(200.) in ("boss_approach", "boss_approach_unwedge")    # ~275u, reach..reach+cap -> approach
-    assert run(400.) == "boss_hold_far"                               # ~475u, too far -> hold, don't chase
+    assert run(30.) in ("boss_fire", "boss_line", "boss_hold")        # ~105u <=200 reach -> fire the line
+    assert run(300.) in ("boss_approach", "boss_approach_unwedge")    # ~375u, reach..reach+cap -> approach
+    assert run(700.) == "boss_hold_far"                               # ~775u, too far -> hold, don't chase
 
 
 def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path):
@@ -1362,16 +1363,16 @@ def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path)
     does not fire. Firing seeds attack_rows[slot] so the tick-end accounting won't KeyError."""
     ctrl = _controller(tmp_path, ad=SimpleNamespace())
     player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
-    env = dict(C.FALLBACK); env["horizontal"] = 200.; env["horizontal_half_angle"] = 30.
+    env = dict(C.FALLBACK, horizontal=200., horizontal_half_angle=30., verified=True)   # verified reach 200
     boss = {"class": "TBossDragon", "kind": "enemy", "hp": 2500, "hp_max": 2500,
             "x": 0., "z": 100., "y": 0., "ptr": "B1"}
     ctrl._boss_adv = {"active": True, "boss": "Dragon", "weakpoint": boss}
     cmds, moves, steer, arows = [], {}, {}, {}
     assert ctrl.boss_combat(state(floor=11), 1, player, env, boss, 100.0, cmds, moves, steer, [boss], arows) is True
-    assert any(c[0] == 1 and c[1] == ["a"] for c in cmds)             # in range + aligned -> FIRES
+    assert any(c[0] == 1 and c[1] == ["a"] for c in cmds)             # in range (100<=200) + aligned -> FIRES
     assert 1 in arows                                                  # attack row seeded (no tick-end KeyError)
-    # Far + relocating (beyond the chase cap, no strike window) -> HOLD, do not fire/chase.
-    far = dict(boss, z=400.)
+    # Far + relocating (beyond reach+chase cap, no strike window) -> HOLD, do not fire/chase.
+    far = dict(boss, z=700.)
     ctrl._boss_adv = {"active": True, "boss": "Dragon", "weakpoint": far}
     cmds2, steer2 = [], {}
     ctrl.boss_combat(state(floor=11), 1, player, env, far, 100.0, cmds2, {}, steer2, [far], {})
