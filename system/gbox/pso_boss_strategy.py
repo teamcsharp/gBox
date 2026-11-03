@@ -380,7 +380,7 @@ def _inactive(reason=None):
     out = {"active": False, "boss": None, "phase": None, "weakpoint_pos": None, "weakpoint": None,
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
            "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
-           "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0,
+           "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0, "boss_weakpoint_dist": None,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -489,6 +489,9 @@ def boss_target(ad):
         special = action_state in SPECIAL_ACTION_STATES.get(name, set())
         if special:
             phase = f"{phase}_attacking"
+        # Diagnostic: planar distance from P1 to the weak point. A large value means the bots are
+        # not in weapon range of the boss (a positioning/weapon-reach problem, not an aim problem).
+        wp_dist = round(_planar(pos, player), 1) if player is not None else None
 
         out = {"active": True, "boss": name, "phase": phase, "weakpoint_pos": pos,
                "weakpoint": weak, "element": result["element"], "action": result["action"],
@@ -502,7 +505,7 @@ def boss_target(ad):
                "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
                "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state,
-               "boss_add_count": len(adds)}
+               "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -527,5 +530,6 @@ def boss_telemetry(ad):
     adv = boss_target(ad)
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-            "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count")
+            "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
+            "boss_weakpoint_dist")
     return {k: adv.get(k) for k in keys}

@@ -94,6 +94,7 @@ def test_dragon_head_weakpoint():
     assert "fire_breath_cone" in r["hazard"]
     assert r["boss_floor"] is True and r["boss_alive"] is True and r["boss_cleared"] is False
     assert r["boss_hp_frac"] == 1.0
+    assert r["boss_weakpoint_dist"] == 22.4   # planar dist from P1 at origin to (10,_,20)
 
 
 def test_main_body_pick_prefers_largest_hp():
@@ -330,7 +331,8 @@ def test_boss_telemetry_flat_scalars_only():
     t = B.boss_telemetry(ad)
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
                       "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-                      "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count"}
+                      "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
+                      "boss_weakpoint_dist"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
     assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())
