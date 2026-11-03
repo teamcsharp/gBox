@@ -73,29 +73,34 @@ LCK_CRIT_CAP = 100              # crit rate is min(LCK, 100): raising above is p
 _guard = threading.Lock()
 
 MASTER_BUILD_NOTES = {
-    "never_miss": "Verified: gbox.pso_accuracy native hook at 0x80015F00 / 0x80016384 forces "
-                  "every local-player hit to connect (attacker == PLAYER slot 0).",
-    "never_miss_p2": "The accuracy hook compares the attacker to PLAYER slot 0 only, so it is "
-                     "player-1 only. Player-2 never-miss needs a second compare (slot 1) added "
-                     "to pso_accuracy.code()/SITES.",
+    "never_miss": "Verified for BOTH local players: gbox.pso_accuracy's native hook at "
+                  "0x80015F00 / 0x80016384 forces every hit by PLAYER slot 0 (P1) and slot 1 "
+                  "(P2) to connect, offline free-play only. (The cave stub compares the attacker "
+                  "to *(PLAYER) and *(PLAYER+4); confirmed by disassembly against live RAM.)",
     "crit_rate": "Applied: LCK raised to the crit cap (min(LCK,100)). This is max crit RATE, "
                  "NOT crit-always.",
-    "crit_always_todo": "TRUE crit-always (every hit a critical, x1.5) needs the GC crit-roll "
-                        "branch in PsoV3.dol (SHA 1f80fb82...). The DC equivalent is at "
-                        "0x8C047BC0 (bt->nop: 'rand*500 vs min(LCK,100), then x1.5'). On GC the "
-                        "player-damage calc is in the 0x80015DE8-0x800163BC region already "
-                        "fingerprinted by pso_accuracy; disassemble it, find the conditional that "
-                        "selects the x1.5 multiplier, and force it true for attacker==PLAYER with a "
-                        "cave hook mirroring pso_accuracy (CODE/SITES/METADATA/ownership/flush).",
-    "attack_speed_todo": "3x attack speed not applied. GC path mirrors the DC speed wrapper "
+    "crit_always_todo": "TRUE crit-always (every hit a critical) is NOT shipped. RULED OUT of the "
+                        "accuracy path: 0x80015DE8 / 0x800162E0 are the to-hit roll (f31 = hit "
+                        "margin, fcmpu at the patched site -> bge = miss; success sets hit-record "
+                        "bits 0x04000000 at target+0x18 and 0x02/0x01 at attacker+0x2dc) - no x1.5. "
+                        "The on-hit callees 0x80010FCC / 0x80011014 are thin wrappers (ruled out). "
+                        "The crit multiplier lives in a damage-application routine not yet located. "
+                        "Next step: Ghidra xref on PsoV3.dol (SHA 1f80fb82...) for the 1.5f constant "
+                        "(0x3FC00000) and the attacker ATP/LCK read in the melee-damage routine, "
+                        "then force its crit branch (single-instruction nop like the DC bt->nop at "
+                        "0x8C047BC0), fingerprint-guarded. Until then LCK-max gives the best crit "
+                        "RATE safely.",
+    "attack_speed_todo": "3x attack speed NOT applied. GC path mirrors the DC speed wrapper "
                          "(pso_mods_tool.speed_code): run ORIGINAL_UPDATE N-1 extra times while the "
-                         "player is in the attack action-state. Needs (1) the GC TObjPlayer "
-                         "attack action-state offset (DC used +0x30E), (2) a wrapper cave chained "
-                         "before the stock update. The live dispatcher cave (pso_gc_live.CODE on "
-                         "VT_UPDATE) is shared with nav; extend it or add a second cave with the "
-                         "same ownership guards rather than poking blindly. A cruder whole-game 3x "
-                         "exists via adapter.set_autoplay_speed (native timebase 0x80375F20, "
-                         "choices 1/2/4/8/10) but it speeds nav/everything and nav/timing owns it.",
+                         "player is in the attack action-state. TWO unknowns: (1) the GC TObjPlayer "
+                         "attack-animation-state offset - DC used +0x30E; on GC +0x32c is HP and "
+                         "+0x324 is the control/update-mode selector, NOT the swing state, so the "
+                         "animation-state field must be found by live observation (read the player "
+                         "object attacking vs idle); (2) the wrapper cave. The live dispatcher cave "
+                         "(pso_gc_live.CODE on VT_UPDATE) is SHARED with the nav agent's loop - "
+                         "coordinate with agent a22d56d84e2197ff6 and add a SECOND cave with the "
+                         "same ownership guards, do not clobber the nav dispatcher. Do NOT fall "
+                         "back to the whole-game adapter.set_autoplay_speed - nav owns the timebase.",
     "frame_slots": "The frame is created with slot-count byte = 4 in the game's own 20-byte create "
                    "template (data1[4]); verified by inventory read-back. equip_any is also enabled "
                    "so the four units equip regardless of the slot check as a fallback.",

@@ -34,6 +34,43 @@ GUARDS = {
 
 
 def code():
+    """Force the hit-resolution success path for BOTH local players (PLAYER slot 0
+    and slot 1), and only during the offline free-play phase; every other attacker
+    runs the stock roll. Per site: offline? player 1 or player 2? -> native success."""
+    out = bytearray()
+    for index, (site, attacker, success, original) in enumerate(SITES):
+        address = CAVE + index * 0x40
+        out.extend(bytes(address - CAVE - len(out)))
+        success_word = address + 12 * 4
+        original_word = address + 13 * 4
+        words = [
+            d(15, 12, 0, (PHASE + 0x8000) >> 16),                            # 0  lis   r12,PHASE@ha
+            d(32, 12, 12, PHASE & 0xFFFF),                                   # 1  lwz   r12,PHASE@l(r12)
+            d(11, 0, 12, 14),                                                # 2  cmpwi r12,14 (offline free-play)
+            0x40820000 | ((original_word - (address + 3 * 4)) & 0xFFFC),     # 3  bne   -> stock (online/title)
+            d(15, 12, 0, (PLAYER + 0x8000) >> 16),                           # 4  lis   r12,PLAYER@ha
+            d(32, 12, 12, PLAYER & 0xFFFF),                                  # 5  lwz   r12,*(PLAYER)   (player 1)
+            0x7C006040 | (attacker << 16),                                   # 6  cmplw r<attacker>,r12
+            0x41820000 | ((success_word - (address + 7 * 4)) & 0xFFFC),      # 7  beq   -> success
+            d(15, 12, 0, (PLAYER + 0x8000) >> 16),                           # 8  lis   r12,PLAYER@ha
+            d(32, 12, 12, (PLAYER + 4) & 0xFFFF),                            # 9  lwz   r12,*(PLAYER+4) (player 2)
+            0x7C006040 | (attacker << 16),                                   # 10 cmplw r<attacker>,r12
+            0x40820000 | ((original_word - (address + 11 * 4)) & 0xFFFC),    # 11 bne   -> stock
+            branch(success_word, success),                                   # 12 b     success
+            int.from_bytes(original, 'big'),                                 # 13 (displaced instruction)
+            branch(original_word + 4, site + 4),                             # 14 b     site+4
+        ]
+        out.extend(struct.pack('>15I', *words))
+    return bytes(out)
+
+
+CODE = code()
+
+
+def _code_v1():
+    """The superseded player-1-only (single-slot) stub. Kept so an already-installed
+    GBPSOAH1 hook from an earlier build is recognised as gBox-owned and migrated to
+    the two-slot CODE in place instead of being refused as foreign."""
     out = bytearray()
     for index, (site, attacker, success, original) in enumerate(SITES):
         address = CAVE + index * 0x40
@@ -42,11 +79,11 @@ def code():
             d(15, 12, 0, (PHASE + 0x8000) >> 16),
             d(32, 12, 12, PHASE & 0xFFFF),
             d(11, 0, 12, 14),
-            0x40820018,                    # bne stock (online/title modes)
+            0x40820018,
             d(15, 12, 0, (PLAYER + 0x8000) >> 16),
             d(32, 12, 12, PLAYER & 0xFFFF),
-            0x7C006040 | (attacker << 16),  # cmplw r<attacker>,r12
-            0x40820008,                    # bne stock
+            0x7C006040 | (attacker << 16),
+            0x40820008,
             branch(address + 32, success),
             int.from_bytes(original, 'big'),
             branch(address + 40, site + 4),
@@ -55,7 +92,8 @@ def code():
     return bytes(out)
 
 
-CODE = code()
+# Earlier owned CODE variants the install migrates in place (same METADATA/SITES).
+PRIOR_CODES = (_code_v1(),)
 METADATA = b'GBPSOAH1' + struct.pack('>II', SITES[0][0], SITES[1][0])
 PATCHES = {site: struct.pack('>I', branch(site, CAVE + i * 0x40))
            for i, (site, _, _, _) in enumerate(SITES)}
@@ -88,12 +126,20 @@ class GameCube(GC):
         for site, _, _, original in SITES:
             if self.read(site, 4) not in (original, PATCHES[site]):
                 raise Unsupported('PSO accuracy code is modified by another patch; leave it intact')
-        if any(self.read(site, 4) == PATCHES[site] for site, *_ in SITES) and not self.owned():
+        if any(self.read(site, 4) == PATCHES[site] for site, *_ in SITES) and not self.owned_known():
             raise Unsupported('PSO accuracy hook ownership does not match; leave it intact')
         return p
 
     def owned(self):
+        """The current (two-slot) hook is installed exactly."""
         return self.read(HEADER, 16) == METADATA and self.read(CAVE, len(CODE)) == CODE
+
+    def owned_known(self):
+        """A gBox-owned accuracy hook is installed - the current one or a prior CODE
+        variant this build migrates in place. Same METADATA, a recognised cave body."""
+        if self.read(HEADER, 16) != METADATA:
+            return False
+        return any(self.read(CAVE, len(variant)) == variant for variant in (CODE,) + PRIOR_CODES)
 
     def status(self):
         self.check()
@@ -112,14 +158,17 @@ class GameCube(GC):
         self.check()
         running(self.adapter)
         owned = self.owned()
-        if on and not owned and any(self.read(CAVE, END-CAVE)):
+        # Install when enabling and the current cave body is not already present; this
+        # also migrates a recognised prior variant (owned_known) to the current CODE.
+        install = bool(on) and not owned
+        if install and not self.owned_known() and any(self.read(CAVE, END-CAVE)):
             raise Unsupported('PSO accuracy scratch region is occupied; leave it intact')
         changed = [site for site, _, _, original in SITES
                    if self.read(site, 4) != (PATCHES[site] if on else original)]
-        if not changed:
+        if not changed and not install:
             return self.status()
         self.hook()
-        if on and not owned:
+        if install:
             self.write(CAVE, CODE)
             self.write(HEADER, METADATA)
             self.flush(range(CAVE, CAVE+len(CODE), 32))

@@ -111,5 +111,7 @@ def test_state_is_tracked_per_player_and_apply_all_covers_both():
 
 
 def test_notes_document_the_outstanding_re_work():
-    for key in ("crit_always_todo", "attack_speed_todo", "never_miss_p2"):
+    for key in ("never_miss", "crit_rate", "crit_always_todo", "attack_speed_todo"):
         assert key in MB.MASTER_BUILD_NOTES and MB.MASTER_BUILD_NOTES[key]
+    # never-miss now covers both players; the P1-only caveat is gone.
+    assert "slot 1" in MB.MASTER_BUILD_NOTES["never_miss"]
