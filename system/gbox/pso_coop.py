@@ -781,6 +781,9 @@ COORD_DRIVE_MAX_S = 40.0      # (B) abandon a single coordinate-drive commit aft
 CROSS_DIST = 40.0            # (B) P1 this close to the committed door = ON it: plant and push straight through
 CROSS_HOLD_S = 4.0           # (B) push straight through a door this long (no wedge away-sweep) before giving up on it
 BLOCKED_GATE_S = 45.0        # (B) after a failed crossing, don't re-commit to that door for this long (explore elsewhere)
+FENCE_PAIR_DIST = 95.0       # a TObjLazerFenceNorm + a TLazerFenceSw within this = a hold-switch pair (one holds, one passes)
+FENCE_SWITCH_ON = 18.0       # P2 within this of the switch is standing ON it (holding the fence down)
+FENCE_CROSS_OVERSHOOT = 45.0 # P1 aims this far PAST the fence so it commits across while P2 holds the switch
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -830,6 +833,9 @@ class Controller:
         self._coord_grace = {}      # (B) grace timer on a forward door before committing {gkey, since}
         self._blocked_gates = {}    # (B) gkey -> until: a door that would not open on a committed push (explore elsewhere)
         self._cross_failed = 0      # (B) how many committed crossings gave up (flat telemetry)
+        self._fence_obj = None      # two-player hold-fence crossing objective {fence gkey/xz, switch xz/room}
+        self._crossed_fences = set()  # fence gkeys P1 has crossed this run (don't re-target)
+        self._fence_arm = None      # {gkey, room}: P1 reached the fence; a later room change = crossed it
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1707,6 +1713,58 @@ class Controller:
                 'door': str(gkey), 'flags': sorted(idxs), 'written': sorted(written)}
         return sorted(idxs)
 
+    def select_fence_objective(self, state, p1):
+        """The nearest UN-crossed laser-fence + its hold-switch: a TObjLazerFenceNorm
+        with a TLazerFenceSw within FENCE_PAIR_DIST. This is the Forest hold-puzzle
+        exit, and it is chosen REGARDLESS of room-visited status (fix A) - the fence is
+        the real forward frontier even in a 'visited' room, which is why plain
+        convergence (prefer-unvisited) kept steering P1 away from it. None if no pair."""
+        fin = lambda e: all(type(e.get(k)) in (int, float) and math.isfinite(e[k]) for k in ('x', 'z'))
+        ents = state.get('entities', ())[:512]
+        fences = [e for e in ents if str(e.get('class')) == 'TObjLazerFenceNorm' and fin(e)]
+        switches = [e for e in ents if str(e.get('class')) == 'TLazerFenceSw' and fin(e)]
+        if not fences or not switches or not fin(p1):
+            return None
+        px, pz = p1['x'], p1['z']
+        best = None
+        for f in fences:
+            fk = ('TObjLazerFenceNorm', round(f['x'], 1), round(f['z'], 1))
+            if fk in self._crossed_fences:
+                continue
+            sw = min(switches, key=lambda s: math.hypot(s['x'] - f['x'], s['z'] - f['z']))
+            if math.hypot(sw['x'] - f['x'], sw['z'] - f['z']) > FENCE_PAIR_DIST:
+                continue                              # no hold-switch for this fence
+            d = math.hypot(f['x'] - px, f['z'] - pz)
+            if best is None or d < best['d']:
+                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'],
+                        'sx': sw['x'], 'sz': sw['z'], 'sroom': sw.get('room'), 'd': d}
+        return best
+
+    def fence_role(self, state, slot, player, now, commands, moves, steering):
+        """Two-player hold-fence crossing (the operator's multiplayer goal, now
+        load-bearing). P2 drives onto the switch and HOLDS it down (standing on it);
+        P1 drives THROUGH the paired fence while it is held open. Returns True when it
+        issued this slot's fence input. The caller only invokes this when there is no
+        combat to do, so P2's defense stays intact via the normal swarm path otherwise."""
+        obj = self._fence_obj
+        if obj is None or not player or player.get('hp', 0) <= 0:
+            return False
+        from . import pso_coop_gates as gates
+        nav = self.maps.get(state, player)
+        if slot == 1:
+            target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], FENCE_CROSS_OVERSHOOT)
+            label = 'fence_cross'
+        else:
+            target = (obj['sx'], obj['sz'])           # P2 -> stand on the switch and hold it
+            label = 'fence_switch_hold'
+        route, _ = nav.toward((player['x'], player['z']), target)
+        waypoint = route[1] if route and len(route) > 1 else (route[0] if route else target)
+        keys, escaping = self._unwedge(slot, player, waypoint, now)
+        commands.append((slot, keys, .40))
+        moves[slot] = (player, waypoint, nav, False)
+        steering[slot] = (player, waypoint, (label + '_unwedge') if escaping else label)
+        return True
+
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
         keep the current directive. Cheap and failure-tolerant - a missing or bad
@@ -1905,6 +1963,29 @@ class Controller:
         # operator GOTO/PRESS/ATTACK click. P1 consumes it below; else autonomous.
         self.publish_surface(state)
         self.load_directive(now)
+        # Two-player hold-fence crossing objective (the Forest exit): pick the nearest
+        # un-crossed laser-fence + hold-switch pair, regardless of room-visited status
+        # (fix A). Cross-detection: once P1 reaches the fence (armed), a later room
+        # change away from it marks that fence crossed so P1 does not re-target it.
+        p1row = state['players'].get(1)
+        self._fence_obj = self.select_fence_objective(state, p1row) if (p1row and p1row.get('hp', 0) > 0) else None
+        if self._fence_obj and p1row:
+            fo = self._fence_obj
+            fd1 = math.hypot(fo['fx'] - p1row['x'], fo['fz'] - p1row['z'])
+            p1room = p1row.get('room')
+            if fd1 <= CROSS_DIST:
+                self._fence_arm = {'gkey': fo['fence'], 'room': p1room}
+            elif (self._fence_arm and self._fence_arm['gkey'] == fo['fence']
+                  and p1room != self._fence_arm['room'] and fd1 > CROSS_DIST * 2):
+                self._crossed_fences.add(fo['fence'])     # was on the fence, now elsewhere = crossed it
+                self._fence_arm, self._fence_obj = None, None
+        _fstats = getattr(self.inputs, 'stats', None)
+        if isinstance(_fstats, dict):
+            _fstats['fence_objective'] = int(self._fence_obj is not None)
+            if self._fence_obj and p1row:
+                _fstats['fence_dist_p1'] = round(math.hypot(self._fence_obj['fx'] - p1row['x'],
+                                                            self._fence_obj['fz'] - p1row['z']), 1)
+                _fstats['fence_switch_room'] = self._fence_obj.get('sroom')
         for e in state["entities"]:
             if e.get("kind") != "enemy" or not isinstance(e.get("hp"), int):
                 continue
@@ -1935,6 +2016,16 @@ class Controller:
             if envelope.get('verified') and envelope.get('player_ptr') != player['ptr']:
                 envelope = FALLBACK
             if slot != 1:
+                # Two-player hold-fence crossing: when a fence objective is active and
+                # P2 has no enemy on top of it, P2 BREAKS from swarm to stand on the
+                # switch and HOLD the fence open for P1 (the operator's multiplayer goal,
+                # now load-bearing). Combat/defense still wins if an enemy is close.
+                near_enemy = any(type(e.get('hp')) in (int, float) and e['hp'] > 0
+                                 and math.hypot(e['x'] - player['x'], e['z'] - player['z']) <= COMBAT_NEARBY_RADIUS
+                                 for e in enemies)
+                if self._fence_obj is not None and not near_enemy and self.fence_role(
+                        state, slot, player, now, commands, moves, steering):
+                    continue
                 # P2 (and later P3/P4) are pure swarm-followers: orbit and defend
                 # P1, with NO independent navigation. P1 is the single navigating
                 # brain and never waits on a follower - this ends the deadlock.
@@ -1952,6 +2043,12 @@ class Controller:
                                  if math.hypot(e["x"] - player["x"], e["z"] - player["z"]) <= COMBAT_NEARBY_RADIUS),
                                 key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+            # Two-player hold-fence crossing (P1 side): with no enemy to fight and a
+            # fence objective active, P1 drives THROUGH the fence while P2 holds the
+            # switch - instead of oscillating in the hub. Combat still preempts (target).
+            if target is None and self._fence_obj is not None and self.fence_role(
+                    state, slot, player, now, commands, moves, steering):
+                continue
             nav = self.maps.get(state, player)
             field_owned = bool(state.get("floor", 0) > 0 and state.get("geometry_verified"))
             field_destination = self.field.destination(state, slot, nav, now) if field_owned else None

@@ -1122,6 +1122,29 @@ def test_coordinate_drive_engages_when_stuck_on_an_unreachable_forward_door(tmp_
     assert steer[1][2] == "forward_coord_drive"
 
 
+def test_two_player_hold_fence_crossing_targets_fence_and_switch(tmp_path):
+    """The Forest hold-puzzle exit: a TObjLazerFenceNorm + a TLazerFenceSw within
+    FENCE_PAIR_DIST is selected as the forward objective (regardless of visited room);
+    P1's fence-role drives THROUGH the fence, P2's drives to STAND ON the switch and
+    hold it. A fence P1 already crossed is not re-targeted."""
+    ctrl = _controller(tmp_path)
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "kind": "gate"}
+    switch = {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "room": 5, "kind": "gate"}
+    st = _coop_room([fence, switch], p1=(0., 0.), p2=(10., 0.), room=5)
+    obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert obj is not None and obj["fence"] == ("TObjLazerFenceNorm", -420.0, 485.8)
+    assert round(obj["sx"], 1) == -399.7 and round(obj["sz"], 1) == 541.0
+    ctrl._fence_obj = obj
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer) is True
+    assert steer[1][2].startswith("fence_cross")            # P1 drives through the fence
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 2, st["players"][2], 100.0, cmds, moves, steer) is True
+    assert steer[2][2].startswith("fence_switch")           # P2 drives to hold the switch
+    ctrl._crossed_fences.add(obj["fence"])
+    assert ctrl.select_fence_objective(st, st["players"][1]) is None   # a crossed fence is not re-targeted
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
