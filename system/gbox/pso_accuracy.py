@@ -33,10 +33,51 @@ GUARDS = {
 }
 
 
+N_PLAYER_SLOTS = 4                       # PLAYER is a 4-entry slot array; absent slots are 0 (never match)
+
+
 def code():
-    """Force the hit-resolution success path for BOTH local players (PLAYER slot 0
-    and slot 1), and only during the offline free-play phase; every other attacker
-    runs the stock roll. Per site: offline? player 1 or player 2? -> native success."""
+    """Force the hit-resolution success path for EVERY local player (PLAYER slots 0-3: the
+    host + up to 3 accompanying), offline free-play only; every other attacker runs the stock
+    roll. Per site: offline? loop the 4 slots - attacker == any slot -> native success. Empty
+    co-op slots read 0 and never match. CTR drives the loop (volatile, unused by the hit
+    routine after this site)."""
+    out = bytearray()
+    for index, (site, attacker, success, original) in enumerate(SITES):
+        address = CAVE + index * 0x40
+        out.extend(bytes(address - CAVE - len(out)))
+
+        def A(k):
+            return address + k * 4
+        STOCK, SUCCESS, LOOP = 13, 15, 8
+        w = [
+            d(15, 12, 0, (PHASE + 0x8000) >> 16),                 # 0  lis   r12,PHASE@ha
+            d(32, 12, 12, PHASE & 0xFFFF),                        # 1  lwz   r12,PHASE@l(r12)
+            d(11, 0, 12, 14),                                     # 2  cmpwi r12,14 (offline free-play)
+            0x40820000 | ((A(STOCK) - A(3)) & 0xFFFC),            # 3  bne   -> stock (online/title)
+            d(15, 11, 0, (PLAYER + 0x8000) >> 16),                # 4  lis   r11,PLAYER@ha
+            d(14, 11, 11, PLAYER & 0xFFFF),                       # 5  addi  r11,r11,PLAYER@l   (r11 = PLAYER)
+            d(14, 0, 0, N_PLAYER_SLOTS),                          # 6  li    r0,4
+            0x7C0903A6,                                           # 7  mtctr r0
+            d(32, 12, 11, 0),                                     # 8  loop: lwz r12,0(r11)
+            0x7C006040 | (attacker << 16),                        # 9  cmplw r<attacker>,r12
+            0x41820000 | ((A(SUCCESS) - A(10)) & 0xFFFC),         # 10 beq   -> success
+            d(14, 11, 11, 4),                                     # 11 addi  r11,r11,4
+            0x42000000 | ((A(LOOP) - A(12)) & 0xFFFC),            # 12 bdnz  loop
+            int.from_bytes(original, 'big'),                      # 13 stock: displaced instruction
+            branch(A(14), site + 4),                              # 14 b     site+4
+            branch(A(15), success),                               # 15 success: b success
+        ]
+        out.extend(struct.pack('>16I', *w))
+    return bytes(out)
+
+
+CODE = code()
+
+
+def _code_v2():
+    """Superseded two-slot (player 1+2) stub; kept so a running GBPSOAH1 two-slot hook is
+    recognised as gBox-owned and migrated in place to the 4-slot CODE."""
     out = bytearray()
     for index, (site, attacker, success, original) in enumerate(SITES):
         address = CAVE + index * 0x40
@@ -44,27 +85,24 @@ def code():
         success_word = address + 12 * 4
         original_word = address + 13 * 4
         words = [
-            d(15, 12, 0, (PHASE + 0x8000) >> 16),                            # 0  lis   r12,PHASE@ha
-            d(32, 12, 12, PHASE & 0xFFFF),                                   # 1  lwz   r12,PHASE@l(r12)
-            d(11, 0, 12, 14),                                                # 2  cmpwi r12,14 (offline free-play)
-            0x40820000 | ((original_word - (address + 3 * 4)) & 0xFFFC),     # 3  bne   -> stock (online/title)
-            d(15, 12, 0, (PLAYER + 0x8000) >> 16),                           # 4  lis   r12,PLAYER@ha
-            d(32, 12, 12, PLAYER & 0xFFFF),                                  # 5  lwz   r12,*(PLAYER)   (player 1)
-            0x7C006040 | (attacker << 16),                                   # 6  cmplw r<attacker>,r12
-            0x41820000 | ((success_word - (address + 7 * 4)) & 0xFFFC),      # 7  beq   -> success
-            d(15, 12, 0, (PLAYER + 0x8000) >> 16),                           # 8  lis   r12,PLAYER@ha
-            d(32, 12, 12, (PLAYER + 4) & 0xFFFF),                            # 9  lwz   r12,*(PLAYER+4) (player 2)
-            0x7C006040 | (attacker << 16),                                   # 10 cmplw r<attacker>,r12
-            0x40820000 | ((original_word - (address + 11 * 4)) & 0xFFFC),    # 11 bne   -> stock
-            branch(success_word, success),                                   # 12 b     success
-            int.from_bytes(original, 'big'),                                 # 13 (displaced instruction)
-            branch(original_word + 4, site + 4),                             # 14 b     site+4
+            d(15, 12, 0, (PHASE + 0x8000) >> 16),
+            d(32, 12, 12, PHASE & 0xFFFF),
+            d(11, 0, 12, 14),
+            0x40820000 | ((original_word - (address + 3 * 4)) & 0xFFFC),
+            d(15, 12, 0, (PLAYER + 0x8000) >> 16),
+            d(32, 12, 12, PLAYER & 0xFFFF),
+            0x7C006040 | (attacker << 16),
+            0x41820000 | ((success_word - (address + 7 * 4)) & 0xFFFC),
+            d(15, 12, 0, (PLAYER + 0x8000) >> 16),
+            d(32, 12, 12, (PLAYER + 4) & 0xFFFF),
+            0x7C006040 | (attacker << 16),
+            0x40820000 | ((original_word - (address + 11 * 4)) & 0xFFFC),
+            branch(success_word, success),
+            int.from_bytes(original, 'big'),
+            branch(original_word + 4, site + 4),
         ]
         out.extend(struct.pack('>15I', *words))
     return bytes(out)
-
-
-CODE = code()
 
 
 def _code_v1():
@@ -92,8 +130,8 @@ def _code_v1():
     return bytes(out)
 
 
-# Earlier owned CODE variants the install migrates in place (same METADATA/SITES).
-PRIOR_CODES = (_code_v1(),)
+# Earlier owned CODE variants the install migrates in place (same METADATA/SITES/stride).
+PRIOR_CODES = (_code_v1(), _code_v2())
 METADATA = b'GBPSOAH1' + struct.pack('>II', SITES[0][0], SITES[1][0])
 PATCHES = {site: struct.pack('>I', branch(site, CAVE + i * 0x40))
            for i, (site, _, _, _) in enumerate(SITES)}

@@ -46,37 +46,65 @@ GUARDS = {
 }
 
 
-def code():
-    """Cave entered in place of the crit branch (cr0 holds the stock decision).
+N_PLAYER_SLOTS = 4                                     # PLAYER slot array; absent slots are 0 (never match)
 
-    Preserves cr0; uses cr1/r12 only (both volatile here). When the attacker r28 is a
-    local player and we are offline, force the critical path; otherwise replay the
-    stock branch (via a short bne into two in-range unconditional branches, because
-    0x800146BC is out of conditional-branch range from the cave)."""
+
+def code():
+    """Cave entered in place of the crit branch (cr0 holds the stock decision). Forces the
+    critical path when the attacker r28 is ANY local player (PLAYER slots 0-3: host + up to 3
+    accompanying) and offline; else replays the stock branch. Preserves cr0 (uses cr1/r11/r12
+    only; no CTR, because the damage routine itself uses CTR here). Absent co-op slots read 0
+    and never match. The stock replay is a short bne into two in-range unconditional branches
+    (0x800146BC is out of conditional-branch range from the cave)."""
+    C = CAVE
+    def A(i):
+        return C + i * 4
+    FORCE, NONCRIT_W = 18, 19
+    w = [d(15, 12, 0, (PHASE + 0x8000) >> 16),             # 0  lis   r12,PHASE@ha
+         d(32, 12, 12, PHASE & 0xFFFF),                    # 1  lwz   r12,PHASE@l(r12)
+         d(11, 4, 12, 14),                                 # 2  cmpwi cr1,r12,14
+         0x40860000 | ((A(17) - A(3)) & 0xFFFC),           # 3  bne   cr1,do_orig (not offline)
+         d(15, 11, 0, (PLAYER + 0x8000) >> 16)]            # 4  lis   r11,PLAYER@ha
+    for s in range(N_PLAYER_SLOTS):                        # 5..16: 4 slots x (lwz; cmplw cr1; beq cr1,force)
+        base = 5 + s * 3
+        w.append(d(32, 12, 11, (PLAYER + s * 4) & 0xFFFF))  # lwz   r12,*(PLAYER+s*4)(r11)
+        w.append(0x7C9C6040)                                # cmplw cr1,r28,r12
+        w.append(0x41860000 | ((A(FORCE) - A(base + 2)) & 0xFFFC))  # beq cr1,force_crit
+    w.append(0x40820008)                                   # 17 do_orig: bne cr0,+8 -> noncrit
+    w.append(branch(A(FORCE), CRIT))                       # 18 force_crit: b 0x80014690
+    w.append(branch(A(NONCRIT_W), NONCRIT))                # 19 b 0x800146BC (normal)
+    return struct.pack('>%dI' % len(w), *w)
+
+
+CODE = code()
+
+
+def _code_v1():
+    """Superseded two-slot (player 1+2) crit stub; kept so a running GBPSOCR1 two-slot hook
+    is recognised as gBox-owned and migrated in place to the 4-slot CODE."""
     C = CAVE
     def A(i):
         return C + i * 4
     w = [0] * 15
-    w[0] = d(15, 12, 0, (PHASE + 0x8000) >> 16)        # lis   r12,PHASE@ha
-    w[1] = d(32, 12, 12, PHASE & 0xFFFF)               # lwz   r12,PHASE@l(r12)
-    w[2] = d(11, 4, 12, 14)                            # cmpwi cr1,r12,14
-    w[3] = 0x40860000 | ((A(12) - A(3)) & 0xFFFC)      # bne   cr1,do_orig   (not offline)
-    w[4] = d(15, 12, 0, (PLAYER + 0x8000) >> 16)       # lis   r12,PLAYER@ha
-    w[5] = d(32, 12, 12, PLAYER & 0xFFFF)              # lwz   r12,*(PLAYER)  (player 1)
-    w[6] = 0x7C9C6040                                  # cmplw cr1,r28,r12
-    w[7] = 0x41860000 | ((A(13) - A(7)) & 0xFFFC)      # beq   cr1,force_crit
-    w[8] = d(15, 12, 0, (PLAYER + 0x8000) >> 16)       # lis   r12,PLAYER@ha
-    w[9] = d(32, 12, 12, (PLAYER + 4) & 0xFFFF)        # lwz   r12,*(PLAYER+4)(player 2)
-    w[10] = 0x7C9C6040                                 # cmplw cr1,r28,r12
-    w[11] = 0x41860000 | ((A(13) - A(11)) & 0xFFFC)    # beq   cr1,force_crit
-    w[12] = 0x40820008                                 # do_orig: bne cr0,+8 -> w14 (normal)
-    w[13] = branch(A(13), CRIT)                        # force_crit: b 0x80014690 (critical)
-    w[14] = branch(A(14), NONCRIT)                     # b 0x800146BC (normal)
+    w[0] = d(15, 12, 0, (PHASE + 0x8000) >> 16)
+    w[1] = d(32, 12, 12, PHASE & 0xFFFF)
+    w[2] = d(11, 4, 12, 14)
+    w[3] = 0x40860000 | ((A(12) - A(3)) & 0xFFFC)
+    w[4] = d(15, 12, 0, (PLAYER + 0x8000) >> 16)
+    w[5] = d(32, 12, 12, PLAYER & 0xFFFF)
+    w[6] = 0x7C9C6040
+    w[7] = 0x41860000 | ((A(13) - A(7)) & 0xFFFC)
+    w[8] = d(15, 12, 0, (PLAYER + 0x8000) >> 16)
+    w[9] = d(32, 12, 12, (PLAYER + 4) & 0xFFFF)
+    w[10] = 0x7C9C6040
+    w[11] = 0x41860000 | ((A(13) - A(11)) & 0xFFFC)
+    w[12] = 0x40820008
+    w[13] = branch(A(13), CRIT)
+    w[14] = branch(A(14), NONCRIT)
     return struct.pack('>15I', *w)
 
 
-CODE = code()
-PRIOR_CODES = ()                                       # none yet; migration slot like pso_accuracy
+PRIOR_CODES = (_code_v1(),)                            # migrate a running two-slot crit hook in place
 METADATA = b'GBPSOCR1' + struct.pack('>II', SITE, CRIT)
 PATCH = struct.pack('>I', branch(SITE, CAVE))          # b CAVE, installed at SITE
 

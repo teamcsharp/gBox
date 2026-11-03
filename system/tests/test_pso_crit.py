@@ -61,13 +61,12 @@ def test_crit_is_reversible_idempotent_and_flushes_site_and_cave(monkeypatch):
     assert ram.read_memory(Cr.SITE, 4) == Cr.SITE_ORIGINAL
 
 
-def test_cave_gates_both_player_slots_forces_crit_and_preserves_cr0():
-    # decode the cave body: it must read *(PLAYER) and *(PLAYER+4), branch to the
+def test_cave_gates_all_player_slots_forces_crit_and_preserves_cr0():
+    # decode the cave body: it must read *(PLAYER+0..12) off the r11 base, branch to the
     # critical path 0x80014690, keep a stock path to 0x800146BC, and never touch cr0
     # (all its own compares target cr1, BI field 6/7).
-    slot0 = struct.pack('>I', G.d(32, 12, 12, G.PLAYER & 0xFFFF))
-    slot1 = struct.pack('>I', G.d(32, 12, 12, (G.PLAYER + 4) & 0xFFFF))
-    assert slot0 in Cr.CODE and slot1 in Cr.CODE
+    for s in range(Cr.N_PLAYER_SLOTS):
+        assert struct.pack('>I', G.d(32, 12, 11, (G.PLAYER + s * 4) & 0xFFFF)) in Cr.CODE
     words = struct.unpack('>%dI' % (len(Cr.CODE) // 4), Cr.CODE)
     # every compare the cave does targets cr1, so cr0 (the stock crit decision) is preserved
     for w in words:

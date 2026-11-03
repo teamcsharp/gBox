@@ -185,6 +185,15 @@ def apply_survival(ad, player_index, m=None, p=None, inv_rows=None):
         st = _state(ad)
         pst = st["players"].setdefault(player_index, {})
 
+        # 3x-attack-speed phase (a): run the read-only attack-state probe on THIS hot path
+        # (apply_survival is called every tick from pso_coop, which IS hot-reloadable, so the
+        # probe runs + locks live even though pso_master_build is not reloaded on the worker).
+        try:
+            from . import pso_speed
+            out.update(pso_speed.probe_tick(ad, player_index, g, p))
+        except Exception:
+            pass
+
         # --- every tick: instant revive on a true death; log only the transition into death ---
         if hp == 0:
             if not pst.get("was_dead"):

@@ -113,8 +113,8 @@ def queue_serialized(fn):
 
 class GC:
     def __init__(self,ad,player_index=0,*,pin_player=False):
-        if type(player_index) is not int or player_index not in (0,1):
-            raise ValueError('Choose player 1 or player 2')
+        if type(player_index) is not int or player_index not in (0,1,2,3):
+            raise ValueError('Choose player 1-4 (slot 0-3)')
         self.ad,self.player_index,self._player_binding=ad,player_index,None
         self.pin_player=pin_player
         self.read,self.write=ad.read_memory,ad.write_memory
@@ -134,22 +134,22 @@ class GC:
         if patch not in (bytes.fromhex('881d0000'),bytes.fromhex('38000005')):raise Unsupported('Unexpected GameCube equipment code')
         if self.u32(PHASE)!=0xE:raise Unsupported('GameCube native actions require an active offline free-play session')
         if not player:return
-        slots=self.read(PLAYER,8)
+        slots=self.read(PLAYER,16)                      # up to 4 offline co-op slots
         p=self.ptr(struct.unpack_from('>I',slots,self.player_index*4)[0],0x1200)
         name=self.ptr(self.u32(p),16)
         if self.read(name,11)!=b'TObjPlayer\0':raise Unsupported('The local PSO player is not initialized')
         if self.u32(p+0x18)!=VT_UPDATE-12:raise Unsupported('Unexpected PSO player vtable')
         if self.u16(p+0x1C)!=self.player_index:raise Unsupported('PSO player slot and entity identity disagree')
         if self.player_index:
-            # The second slot is admitted only when the same live actor appears
+            # An accompanying slot (1-3) is admitted only when the same live actor appears
             # in the game's bounded entity table, never by a guessed offset alone.
             entries=struct.unpack('>256I',self.read(ENTITY_TABLE,256*4))
             active=entries[:entries.index(0)] if 0 in entries else entries
             if p==struct.unpack_from('>I',slots,0)[0] or p not in active:
-                raise Unsupported('Player 2 is not a distinct active PSO entity')
+                raise Unsupported('This accompanying player is not a distinct active PSO entity')
             if require_probe and self.player_index not in getattr(self.ad,'_pso_verified_player_slots',()):
-                raise Unsupported('Player 2 needs the co-op controller movement verification in Pioneer 2 before native equipment changes')
-        if self.read(PLAYER,8)!=slots:raise Unsupported('PSO players changed during verification; refresh')
+                raise Unsupported('This accompanying player needs the co-op controller movement verification before native equipment changes')
+        if self.read(PLAYER,16)!=slots:raise Unsupported('PSO players changed during verification; refresh')
         if self.pin_player and self._player_binding is not None and self._player_binding!=p:
             raise Unsupported('The selected PSO player changed; refresh before another equipment action')
         self._player_binding=p

@@ -452,12 +452,23 @@ def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S,
     return report
 
 
-def apply_master_build_all(ad, **kwargs):
-    """Apply the master build to both active players (player 1 then player 2).
+def present_players(ad):
+    """PLAYER slots 0-3 that currently hold a live player pointer (robust to 2/3/4 players)."""
+    try:
+        from .pso_gc_live import GC, PLAYER
+        slots = struct.unpack(">4I", GC(ad).read(PLAYER, 16))
+        present = [i for i, ptr in enumerate(slots) if 0x80000000 <= ptr < 0x81800000]
+        return present or [0, 1]                      # empty read -> safe 2-player default
+    except Exception:
+        return [0, 1]
 
-    Globals are applied on the player-1 pass. Player 2 fails soft if it is not yet
-    the verified co-op slot (needs the Pioneer 2 movement verification)."""
+
+def apply_master_build_all(ad, **kwargs):
+    """Apply the full master build to every present player (slots 0-3: host + up to 3
+    accompanying). Globals (never-miss, crit-always, equip-anything) are applied on the
+    first pass and already gate on all PLAYER slots. An accompanying slot fails soft until
+    it is the verified co-op slot."""
     out = {}
-    for index in (0, 1):
+    for index in present_players(ad):
         out[index] = apply_master_build(ad, player_index=index, **kwargs)
     return out

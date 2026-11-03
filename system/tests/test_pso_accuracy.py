@@ -132,18 +132,21 @@ def test_shared_preference_defaults_to_always_hit_and_retains_explicit_opt_out(t
     assert TestClient(app2).get('/api/pso/preferences').json()['always_hit'] is False
 
 
-def test_hook_forces_both_local_players_slot0_and_slot1(monkeypatch):
+def test_hook_loops_all_player_slots_and_tail_branches_to_success(monkeypatch):
     ram = memory(); m = A.GameCube(ram)
     monkeypatch.setattr(m, 'call', lambda calls: None)
     m.set_enabled(True)
-    # each site's cave stub loads PLAYER (slot 0) AND PLAYER+4 (slot 1) and still
-    # tail-branches to that site's native success address.
-    slot0 = struct.pack('>I', G.d(32, 12, 12, G.PLAYER & 0xFFFF))
-    slot1 = struct.pack('>I', G.d(32, 12, 12, (G.PLAYER + 4) & 0xFFFF))
+    # Each site's stub builds the PLAYER base in r11, loads 0(r11) in a CTR loop over all
+    # 4 slots, and tail-branches to that site's native success address.
+    base = struct.pack('>I', G.d(15, 11, 0, (G.PLAYER + 0x8000) >> 16))     # lis r11,PLAYER@ha
+    loop_load = struct.pack('>I', G.d(32, 12, 11, 0))                       # lwz r12,0(r11)
+    mtctr = struct.pack('>I', 0x7C0903A6)
+    li4 = struct.pack('>I', G.d(14, 0, 0, A.N_PLAYER_SLOTS))               # li r0,4
     for i, (site, _, success, _) in enumerate(A.SITES):
         stub = ram.read_memory(A.CAVE + i * 0x40, 0x40)
-        assert slot0 in stub and slot1 in stub
-        assert struct.pack('>I', A.branch(A.CAVE + i * 0x40 + 48, success)) in stub
+        assert base in stub and loop_load in stub and mtctr in stub and li4 in stub
+        assert any(struct.pack('>I', 0x42000000 | (d & 0xFFFC)) in stub for d in (-0x10 & 0xFFFF,))  # bdnz
+        assert struct.pack('>I', A.branch(A.CAVE + i * 0x40 + 15 * 4, success)) in stub
 
 
 def test_prior_single_slot_hook_is_migrated_in_place_not_refused(monkeypatch):
