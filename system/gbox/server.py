@@ -2897,7 +2897,8 @@ def create_app(config: Config) -> FastAPI:
                         store.audit(actor, 'job.skip', j['id'], {'worker': wid, 'why': why})
                         continue
                     if j["tool"] == "launch_game" and (why := operator_guard.watching_reason(
-                            store, wid, keep=operator_guard.kept_by(j))):
+                            store, wid, keep=operator_guard.kept_by(j),
+                            relaunch_of=operator_guard.launched_game_id(j.get("input")))):
                         store.put('job', j['id'], j | {'admission_wait': {'worker': w['name'], 'reason': why}})
                         continue
                     from .savemgo import claim_reason as savemgo_claim_reason
@@ -3396,9 +3397,12 @@ def create_app(config: Config) -> FastAPI:
             if job.require_worker and not candidates:
                 candidates = [{"id": job.require_worker}]
             kept = operator_guard.kept_by({"input": job.input})
-            available = [w for w in candidates if not operator_guard.watched_sessions(store, w["id"], keep=kept)]
+            relaunched = operator_guard.launched_game_id(job.input)
+            available = [w for w in candidates if not operator_guard.watched_sessions(store, w["id"], keep=kept,
+                                                                                      relaunch_of=relaunched)]
             if candidates and not available:
-                job.state, job.error = JobState.REJECTED, operator_guard.watching_reason(store, candidates[0]["id"], keep=kept)
+                job.state, job.error = JobState.REJECTED, operator_guard.watching_reason(store, candidates[0]["id"],
+                                                                                         keep=kept, relaunch_of=relaunched)
             elif not job.require_worker and available and len(available) < len(candidates):
                 job.require_worker = available[0]["id"]
         if t.name == "launch_game" and job.agent_use and actor != "gbox-agent" and job.state == JobState.QUEUED:
