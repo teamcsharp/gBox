@@ -1089,6 +1089,9 @@ def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     # Spawn (force) in gameplay -> calls, records summary, reports the reroll.
     assert C.apply_master_build_tick(ad, gameplay, stats, force=True) is True
     assert len(calls) == 1 and stats["master_build"]["0"]["weapon"] == "003300"
+    # FLAT scalar mirrors survive the telemetry endpoint (nested dicts are dropped).
+    assert stats["mb_ok_p1"] == 1 and stats["mb_lck_p1"] == 100 and stats["mb_weapon_p1"] == "003300"
+    assert stats["mb_weapon_p2"] == "001000"
     # Immediately again, same room, not forced -> throttled (no new call).
     ad._reroll = False
     assert C.apply_master_build_tick(ad, gameplay, stats) is False and len(calls) == 1

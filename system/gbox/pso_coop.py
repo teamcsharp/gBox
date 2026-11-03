@@ -1285,11 +1285,23 @@ class Controller:
         # means the surface can't connect P1 to the target; route_cells=0 with floor
         # None means an empty grid (open A*) that the learned-wall detour must solve.
         if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
-            self.inputs.stats['nav_diag'] = {
-                'route_cells': len(route) if route else 0,
-                'floor': (len(nav.floor) if nav.floor is not None else None),
-                'heights': len(nav.heights), 'walls': len(nav.walls), 'blocked': len(nav.blocked),
-                'target_dist': round(math.hypot(dest[0] - player["x"], dest[1] - player["z"]), 1)}
+            st = self.inputs.stats
+            route_cells = len(route) if route else 0
+            floor_n = (len(nav.floor) if nav.floor is not None else -1)
+            target_dist = round(math.hypot(dest[0] - player["x"], dest[1] - player["z"]), 1)
+            recov = bool(getattr(nav, 'recovery', False))
+            st['nav_diag'] = {'route_cells': route_cells, 'floor': (None if floor_n < 0 else floor_n),
+                              'heights': len(nav.heights), 'walls': len(nav.walls), 'blocked': len(nav.blocked),
+                              'target_dist': target_dist, 'recovery': recov}
+            # FLAT scalar mirrors (the telemetry endpoint drops nested dicts): the
+            # ground truth for the routing fix. nav_grid_floor=-1 means an open grid
+            # (no floor set); nav_recovery_grid=1 means the relaxable recovery surface.
+            st['nav_route_cells'] = route_cells
+            st['nav_grid_floor'] = floor_n
+            st['nav_grid_walls'] = len(nav.walls)
+            st['nav_blocked'] = len(nav.blocked)
+            st['nav_target_dist'] = target_dist
+            st['nav_recovery_grid'] = int(recov)
         # Approach a near panel in SHORT pulses so the actor lands on it (and the
         # next tick presses it) instead of orbiting the small target; drive a door
         # through with a committed, gusto-length hold.
@@ -2034,6 +2046,29 @@ def apply_default_speed(ad, stats):
 MASTER_BUILD_TICK_S = 3.0   # throttle for the periodic master-build re-check on the co-op loop
 
 
+def _flatten_master_build(stats, summary):
+    """Flat scalar mirrors of the nested master_build summary so the telemetry
+    endpoint (which keeps only flat/scalar keys) surfaces the applied build: p1 =
+    player 0, p2 = player 1 (mb_ok_*, mb_lck_*, mb_weapon_*, mb_mag_maxed_*,
+    mb_units_*, mb_never_miss_*)."""
+    if not isinstance(summary, dict):
+        return
+    for idx, suffix in (("0", "p1"), ("1", "p2")):
+        rep = summary.get(idx)
+        if not isinstance(rep, dict):
+            continue
+        stats[f"mb_ok_{suffix}"] = int(bool(rep.get("ok")))
+        if type(rep.get("lck")) in (int, float):
+            stats[f"mb_lck_{suffix}"] = rep.get("lck")
+        if rep.get("weapon") is not None:
+            stats[f"mb_weapon_{suffix}"] = rep.get("weapon")
+        stats[f"mb_mag_maxed_{suffix}"] = int(bool((rep.get("mag") or {}).get("maxed")))
+        units = rep.get("units")
+        stats[f"mb_units_{suffix}"] = len(units) if isinstance(units, list) else 0
+        if rep.get("never_miss") is not None:
+            stats[f"mb_never_miss_{suffix}"] = int(bool(rep.get("never_miss")))
+
+
 def apply_master_build_tick(ad, state, stats, *, force=False):
     """Apply the operator's master build (gbox.pso_master_build) to BOTH players on
     the co-op loop: never-miss + crit rate + random gear/weapons + 4 units + maxed
@@ -2052,6 +2087,7 @@ def apply_master_build_tick(ad, state, stats, *, force=False):
     prior = getattr(ad, "_pso_master_build_summary", None)
     if prior is not None:
         stats["master_build"] = prior
+        _flatten_master_build(stats, prior)
     prior_error = getattr(ad, "_pso_master_build_error", None)
     if prior_error:
         stats["master_build_error"] = prior_error
@@ -2083,6 +2119,7 @@ def apply_master_build_tick(ad, state, stats, *, force=False):
         ad._pso_master_build_summary = summary
         ad._pso_master_build_error = None
         stats["master_build"] = summary
+        _flatten_master_build(stats, summary)
     except Exception as exc:                       # noqa: BLE001 - module absent pre-ff, or unexpected; never block play
         ad._pso_master_build_error = str(exc)[:160]
         stats["master_build_error"] = ad._pso_master_build_error
