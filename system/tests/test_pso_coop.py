@@ -1152,6 +1152,25 @@ def test_two_player_hold_fence_crossing_targets_fence_and_switch(tmp_path):
     assert ctrl.select_fence_objective(st, st["players"][1]) is None   # a crossed fence is not re-targeted
 
 
+def test_p2_routes_door_by_door_to_the_switch_room(tmp_path):
+    """When P2 isn't yet in the switch's room, it ROUTES through the door from its room
+    toward the switch's room (via the crystal room-graph P1 built) instead of
+    straight-driving into the boundary wall."""
+    ctrl = _controller(tmp_path)
+    door = {"class": "TObjDoor", "x": 100., "z": 0., "room": 10, "kind": "gate"}
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "kind": "gate"}
+    switch = {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "room": 5, "kind": "gate"}
+    st = _coop_room([door, fence, switch], p1=(-420., 485.8), p2=(0., 0.), room=10)
+    st["players"][1]["room"] = 5                      # P1 is already in room 5 at the fence
+    ctrl._area_graph = {10: {"('TObjDoor', 100.0, 0.0)": 5}}   # crystal: room 10 -> this door -> room 5
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert ctrl._fence_obj is not None and ctrl._fence_obj["sroom"] == 5
+    assert ctrl._next_door_toward(10, 5) == "('TObjDoor', 100.0, 0.0)"
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 2, st["players"][2], 100.0, cmds, moves, steer) is True
+    assert steer[2][2].startswith("fence_route")      # P2 heads THROUGH the door toward room 5, not at the switch
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True

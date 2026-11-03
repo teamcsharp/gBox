@@ -1740,6 +1740,45 @@ class Controller:
                         'sx': sw['x'], 'sz': sw['z'], 'sroom': sw.get('room'), 'd': d}
         return best
 
+    def _next_door_toward(self, from_room, to_room):
+        """BFS the learned area graph for a room path from_room -> to_room; return the
+        door_str on the FIRST edge (from_room -> its next room toward the goal), or None.
+        Lets P2 route door-by-door to the switch's room through the exact doors P1's
+        crossings recorded, instead of straight-driving into a boundary wall."""
+        graph = self._area_graph
+        if from_room is None or from_room == to_room or from_room not in graph:
+            return None
+        from collections import deque
+        prev = {from_room: (None, None)}
+        q = deque([from_room])
+        while q:
+            r = q.popleft()
+            if r == to_room:
+                break
+            for dstr, nr in graph.get(r, {}).items():
+                if nr not in prev:
+                    prev[nr] = (r, dstr)
+                    q.append(nr)
+        if to_room not in prev:
+            return None
+        cur, first_door = to_room, None
+        while prev[cur][0] is not None:
+            if prev[cur][0] == from_room:
+                first_door = prev[cur][1]
+            cur = prev[cur][0]
+        return first_door
+
+    def _live_gate_for(self, state, room, door_str):
+        """The live gate entity in `room` whose gkey matches door_str, or None."""
+        for e in state.get('entities', ())[:512]:
+            try:
+                gk = (str(e.get('class')), round(float(e['x']), 1), round(float(e['z']), 1))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if e.get('room') == room and str(gk) == door_str:
+                return e
+        return None
+
     def fence_role(self, state, slot, player, now, commands, moves, steering):
         """Two-player hold-fence crossing (the operator's multiplayer goal, now
         load-bearing). P2 drives onto the switch and HOLDS it down (standing on it);
@@ -1762,16 +1801,27 @@ class Controller:
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
             label = 'fence_cross' if p2_on else 'fence_wait'
         else:
-            # P2 must first be in the switch's ROOM. If it isn't yet but P1 already IS
-            # (P1 found the door across the hub->room-5 boundary), TRAIL P1 to cross the
-            # same boundary, THEN go to the switch. Straight-driving P2 at a switch behind
-            # a wall just wedges; following P1's crossing point is how P2 gets through.
-            p1pos = state.get('players', {}).get(1) or {}
-            if (player.get('room') != obj.get('sroom') and type(p1pos.get('x')) in (int, float)
-                    and p1pos.get('room') == obj.get('sroom')):
-                target, label = (p1pos['x'], p1pos['z']), 'fence_follow_p1'
-            else:
+            # P2 must first be in the switch's ROOM. If it isn't, ROUTE door-by-door
+            # using the crystal room-graph P1 built (not a straight-drive that wedges on
+            # the boundary wall): drive P2 THROUGH the door from its room toward the
+            # switch's room. Once P2 is in the switch's room, go to the switch. If the
+            # graph has no path yet (e.g. P1's crossing edge not recorded), trail P1's
+            # position as a fallback, else aim at the switch.
+            sroom = obj.get('sroom')
+            if player.get('room') == sroom:
                 target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
+            else:
+                door_str = self._next_door_toward(player.get('room'), sroom)
+                ent = self._live_gate_for(state, player.get('room'), door_str) if door_str else None
+                if ent is not None:
+                    target = gates.through_point(player['x'], player['z'], ent['x'], ent['z'], FENCE_CROSS_OVERSHOOT)
+                    label = 'fence_route'
+                else:
+                    p1pos = state.get('players', {}).get(1) or {}
+                    if type(p1pos.get('x')) in (int, float) and p1pos.get('room') == sroom:
+                        target, label = (p1pos['x'], p1pos['z']), 'fence_follow_p1'
+                    else:
+                        target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
         # COORDINATE-DRIVE: A* cannot path to a target in a disconnected room (P2 stranded
         # from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT at
         # the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
