@@ -785,6 +785,8 @@ FENCE_PAIR_DIST = 95.0       # a TObjLazerFenceNorm + a TLazerFenceSw within thi
 FENCE_SWITCH_ON = 18.0       # P2 within this of the switch is standing ON it (holding the fence down)
 FENCE_CROSS_OVERSHOOT = 45.0 # P1 aims this far PAST the fence so it commits across while P2 holds the switch
 P2_PLACE_AFTER_S = 5.0       # P2 can't reach the hold-switch for this long -> RAM-write it onto the switch
+FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it lands in the next room
+P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -840,6 +842,8 @@ class Controller:
         self._p2_placed = False     # P2 was RAM-placed onto the hold-switch (flat telemetry)
         self._p2_sw_best = None     # P2's best (smallest) distance to the switch, for the stuck timer
         self._p2_sw_best_at = 0.0   # when P2 last got closer to the switch
+        self._p1_placed = False     # P1 was RAM-placed PAST the fence (flat telemetry)
+        self._p1_cross_at = 0.0     # when P1 first parked at the fence (gate open) this objective
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1740,9 +1744,41 @@ class Controller:
                 continue                              # no hold-switch for this fence
             d = math.hypot(f['x'] - px, f['z'] - pz)
             if best is None or d < best['d']:
-                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'], 'sx': sw['x'], 'sz': sw['z'],
+                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'], 'fy': f.get('y'), 'sx': sw['x'], 'sz': sw['z'],
                         'sy': sw.get('y'), 'sroom': sw.get('room'), 'd': d}
         return best
+
+    def place_p1_across_fence(self, state, p1, now):
+        """RAM fallback for the LAST step: the fence's gate flag is already set (it is
+        logically open) but P1 cannot physically step through the threshold into the
+        next room (the disconnected-component problem). Write P1's actor position to a
+        point just PAST the fence (along P1's approach, at the fence's own y) so it
+        crosses. Same verified write path/guards as placing P2."""
+        obj = self._fence_obj
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if (obj is None or ad is None or not callable(getattr(ad, 'write_memory', None))
+                or state.get('verified') is not True or state.get('phase') != 14
+                or type(state.get('floor')) is not int or not 1 <= state['floor'] <= 17
+                or set(state.get('players', {})) != {1, 2} or not p1 or p1.get('hp', 0) <= 0):
+            return False
+        if not all(type(p1.get(k)) in (int, float) and math.isfinite(p1[k]) for k in ('x', 'z')):
+            return False
+        from . import pso_coop_gates as gates
+        px, pz = gates.through_point(p1['x'], p1['z'], obj['fx'], obj['fz'], FENCE_PAST_OVERSHOOT)
+        py = obj.get('fy')
+        if not (type(py) in (int, float) and math.isfinite(py)):
+            py = p1.get('y')
+        if not all(type(v) in (int, float) and math.isfinite(v) for v in (px, py, pz)):
+            return False
+        try:
+            addr = int(p1['ptr'], 16) if isinstance(p1.get('ptr'), str) else int(p1['ptr'])
+        except (TypeError, ValueError, KeyError):
+            return False
+        if not (0x80000000 <= addr <= 0x81800000 - 0x44):
+            return False
+        ad.write_memory(addr + 0x38, struct.pack('>3f', float(px), float(py), float(pz)))
+        self._p1_placed = True
+        return True
 
     def place_p2_on_switch(self, state, p2, now):
         """RAM fallback: when the follower (P2) cannot physically path to the hold-switch
@@ -1861,6 +1897,22 @@ class Controller:
                     self._p2_sw_best = None
                     return True
         if slot == 1:
+            fdist = math.hypot(obj['fx'] - player['x'], obj['fz'] - player['z'])
+            if p2_on and fdist <= CROSS_DIST:
+                # P1 is AT the (flag-open) fence with P2 holding the switch. If it still
+                # can't step across the threshold into the next room for P1_CROSS_PLACE_S
+                # (the disconnected-component problem), RAM-write P1 PAST the fence - the
+                # deterministic last step, symmetric to placing P2 on the switch.
+                if not self._p1_cross_at:
+                    self._p1_cross_at = now
+                if now - self._p1_cross_at >= P1_CROSS_PLACE_S and self.place_p1_across_fence(state, player, now):
+                    st = getattr(self.inputs, 'stats', None)
+                    if isinstance(st, dict):
+                        st['p1_role'] = 'fence_cross_placed'
+                    self._p1_cross_at = 0.0
+                    return True
+            else:
+                self._p1_cross_at = 0.0
             overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
             label = 'fence_cross' if p2_on else 'fence_wait'
@@ -2124,6 +2176,7 @@ class Controller:
         if isinstance(_fstats, dict):
             _fstats['fence_objective'] = int(self._fence_obj is not None)
             _fstats['p2_placed'] = int(self._p2_placed)
+            _fstats['p1_placed'] = int(self._p1_placed)
             if self._fence_obj and p1row:
                 _fstats['fence_dist_p1'] = round(math.hypot(self._fence_obj['fx'] - p1row['x'],
                                                             self._fence_obj['fz'] - p1row['z']), 1)
