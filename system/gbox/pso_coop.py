@@ -3511,32 +3511,30 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     except Exception as exc:                       # noqa: BLE001 - never block play on the crystal
         from .pso_knowledge import KnowledgeStore
         stats["pso_knowledge_reload_error"] = str(exc)[:160]
-    # Hot-swap pso_survival the SAME way (operator: characters frozen on screen). This
-    # worker loaded pso_survival (via pso_master_build) BEFORE it was throttled, so the
-    # cached copy still does a native inventory round-trip for BOTH players EVERY tick
-    # (~40 native calls/sec), which STARVES the movement/input command queue - the
-    # characters physically can't move even while the bot drives them. The throttled
-    # build (module-level HEAVY_INTERVAL_S: heavy work ~1/sec, cheap HP-revive every
-    # tick) is on disk but pso_survival is NOT a BOT_MODULE, so a plain bot-reload won't
-    # pick it up. Reload it in place here (once, only if stale) so survival_tick and
-    # DeathMemory use the throttled copy. Fail-soft: never block play.
-    try:
-        import importlib
-        from . import pso_survival as _ps
-        if not hasattr(_ps, "HEAVY_INTERVAL_S"):
-            _ps = importlib.reload(_ps)
-        stats["pso_survival_throttled"] = hasattr(_ps, "HEAVY_INTERVAL_S")
-        # Belt-and-suspenders: also refresh pso_speed in place (not a BOT_MODULE, so a
-        # stale cached copy without probe_tick otherwise sticks and the 3x-speed attack-
-        # state probe never runs). pso_survival already reloads it; this is redundant-safe.
+    # SYSTEMIC DEPLOY FIX: hot-swap EVERY non-BOT_MODULE PSO helper that pso_coop's call
+    # paths use. These are cached at first-import; the build/boss/map agents keep editing
+    # them, but a plain bot-reload only refreshes BOT_MODULES - so their changes SILENTLY
+    # don't deploy (frozen characters from stale pso_survival, dead 3x-speed probe from
+    # stale pso_speed, boss weak-point aim / 4-player build not taking from stale
+    # pso_boss_strategy / pso_master_build). pso_coop calls all of these via FUNCTION-LOCAL
+    # imports, so reloading each in place (updating sys.modules) makes the live loop use the
+    # fresh code with no worker restart. Dependency order first (leaf probe, then survival
+    # which also refreshes pso_speed, then the independents, then master_build which may
+    # import survival). Each in its own try/except - a helper reload must NEVER kill play().
+    # pso_accuracy/pso_crit are RAM caves that re-apply in-bot, so they are intentionally
+    # excluded. pso_knowledge is reloaded above.
+    import importlib
+    for _name in ("pso_speed", "pso_survival", "pso_fence", "pso_boss_strategy", "pso_master_build"):
         try:
-            from . import pso_speed as _psp
-            importlib.reload(_psp)
-            stats["pso_speed_reloaded"] = True
-        except Exception as exc:                   # noqa: BLE001 - speed probe is best-effort
-            stats["pso_speed_reload_error"] = str(exc)[:160]
-    except Exception as exc:                       # noqa: BLE001 - never block play on survival
-        stats["pso_survival_reload_error"] = str(exc)[:160]
+            importlib.reload(importlib.import_module("." + _name, __package__))
+            stats["reload_" + _name] = True
+        except Exception as exc:                   # noqa: BLE001 - never block play on a helper reload
+            stats["reload_" + _name + "_error"] = str(exc)[:160]
+    try:
+        from . import pso_survival as _ps
+        stats["pso_survival_throttled"] = hasattr(_ps, "HEAVY_INTERVAL_S")
+    except Exception:
+        pass
     controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
     controller.map_root = root                       # published collision surfaces live here
     controller.directive_path = root / "pso-directive.json"   # operator RTS map clicks
