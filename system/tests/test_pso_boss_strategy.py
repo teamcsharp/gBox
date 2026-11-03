@@ -1,0 +1,219 @@
+"""Tests for the PSO per-boss weak-point advisor (gbox.pso_boss_strategy).
+
+Fake big-endian GameCube memory (same technique as gbox.semantic._selftest): a sparse
+byte store plus the real `pso-gc-plus-us` profile, so the advisor runs its true entity
+enumeration against synthetic boss arenas. No live session required.
+"""
+import struct
+
+import pytest
+
+from gbox import pso_boss_strategy as B
+from gbox.pso_gc_live import PHASE, FLOOR, ENTITY_TABLE
+from gbox.pso_coop_native import EPISODE, TRAVELLING, DIFFICULTY
+
+OBJ_BASE = 0x80700000      # fake object storage (0x400 apart; struct is 0x340)
+STR_BASE = 0x80600000      # fake class-name string storage
+
+
+class FakeAd:
+    def __init__(self, mem):
+        self._mem = mem
+    def read_memory(self, address, length):
+        return bytes(self._mem.get(address + i, 0) for i in range(length))
+
+
+def _obj(mem, index, class_name, pos, hp=None, hp_max=None, entity_id=0x1001, room=1):
+    ptr = OBJ_BASE + index * 0x400
+    sper = STR_BASE + index * 0x40
+    for i, b in enumerate(class_name.encode() + b"\0"):
+        mem[sper + i] = b
+    blob = bytearray(0x340)
+    struct.pack_into(">I", blob, 0x00, sper)              # class name pointer (TObject type_name)
+    struct.pack_into(">H", blob, 0x1C, entity_id)
+    struct.pack_into(">H", blob, 0x28, room)
+    struct.pack_into(">3f", blob, 0x38, pos[0], pos[1], pos[2])
+    struct.pack_into(">i", blob, 0x60, 0)
+    if hp_max is not None:
+        struct.pack_into(">H", blob, 0x2B8, hp_max)
+    if hp is not None:
+        struct.pack_into(">H", blob, 0x32C, hp)
+    for i, b in enumerate(bytes(blob)):
+        mem[ptr + i] = b
+    return ptr
+
+
+def build(episode=0, floor=11, difficulty=0, phase=14, travelling=0,
+          disc=b"GPOE8P\0\x02", enemies=(), with_player=True):
+    """enemies: list of (class, hp, hp_max, (x,y,z)). Returns a FakeAd."""
+    mem = {}
+    for i, b in enumerate(disc):
+        mem[0x80000000 + i] = b
+    for addr, val in ((PHASE, phase), (TRAVELLING, travelling), (EPISODE, episode),
+                      (FLOOR, floor), (DIFFICULTY, difficulty)):
+        for i, b in enumerate(struct.pack(">I", val)):
+            mem[addr + i] = b
+    ptrs = []
+    idx = 0
+    if with_player:
+        ptrs.append(_obj(mem, idx, "TObjPlayer", (0.0, 0.0, 0.0), hp=100, hp_max=100, entity_id=0))
+        idx += 1
+    for (cls, hp, hp_max, pos) in enemies:
+        ptrs.append(_obj(mem, idx, cls, pos, hp=hp, hp_max=hp_max))
+        idx += 1
+    table = b"".join(struct.pack(">I", p) for p in ptrs) + b"\0\0\0\0"
+    for i, b in enumerate(table):
+        mem[ENTITY_TABLE + i] = b
+    return FakeAd(mem)
+
+
+# --------------------------------------------------------------------------- active detection + weak point
+def test_dragon_head_weakpoint():
+    ad = build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (10.0, 1.0, 20.0))])
+    r = B.boss_target(ad)
+    assert r["active"] and r["boss"] == "Dragon"
+    assert r["phase"] == "head" and r["action"] == "aim_head"
+    assert r["element"] is None
+    assert r["weakpoint_pos"] == {"x": 10.0, "z": 20.0, "y": 1.0}
+    assert r["boss_active"] and r["boss_weakpoint_locked"]
+    assert r["boss_weakpoint_x"] == 10.0 and r["boss_weakpoint_z"] == 20.0
+    assert "fire_breath_cone" in r["hazard"]
+
+
+def test_main_body_pick_prefers_largest_hp():
+    # two segments; _pick_main chooses the larger HP pool (the main body).
+    ad = build(episode=0, floor=11, enemies=[
+        ("TObjEneDragonTail", 300, 300, (5.0, 0.0, 5.0)),
+        ("TObjEneDragon", 2500, 2500, (40.0, 0.0, 40.0))])
+    r = B.boss_target(ad)
+    assert r["weakpoint"]["hp_max"] == 2500 and r["weakpoint_pos"]["x"] == 40.0
+
+
+def test_derolle_nearest_surfaced_segment():
+    # De Rol Le: pick="nearest" -> the segment closest to the player (at origin).
+    ad = build(episode=0, floor=12, enemies=[
+        ("TObjEneDeRolLeBody", 800, 800, (60.0, 0.0, 60.0)),
+        ("TObjEneDeRolLeBody", 800, 800, (8.0, 0.0, 6.0))])
+    r = B.boss_target(ad)
+    assert r["boss"] == "De Rol Le" and r["phase"] == "exposed_body_segment"
+    assert r["weakpoint_pos"]["x"] == 8.0 and r["weakpoint_pos"]["z"] == 6.0
+
+
+# --------------------------------------------------------------------------- phased bosses
+def test_volopt_phase1_monitors_then_phase2_core():
+    p1 = B.boss_target(build(episode=0, floor=13, enemies=[
+        ("TObjEneVolOptMonitor", 50, 50, (30.0, 0.0, 1.0)),
+        ("TObjEneVolOptMonitor", 50, 50, (3.0, 0.0, 2.0)),
+        ("TObjEneVolOptPillar", 80, 80, (50.0, 0.0, 9.0))]))
+    assert p1["boss"] == "Vol Opt" and p1["phase"] == "phase1_monitors"
+    assert p1["action"] == "aim_monitors"
+    assert p1["weakpoint_pos"]["x"] == 3.0            # nearest monitor to the player
+    assert p1["hazard"] == "electric_floor"
+
+    p2 = B.boss_target(build(episode=0, floor=13, enemies=[
+        ("TObjEneVolOptCore", 1500, 1500, (0.0, 20.0, 0.0))]))
+    assert p2["phase"] == "phase2_core" and p2["action"] == "aim_core_panel"
+
+
+def test_darkfalz_form_elements():
+    base = dict(episode=0, floor=14, difficulty=3)
+    f1 = B.boss_target(build(**base, enemies=[("TObjEneDarkFalz", 1000, 1000, (0.0, 0.0, 30.0))]))
+    assert f1["boss"] == "Dark Falz" and f1["phase"] == "form1" and f1["element"] == "zonde"
+    f2 = B.boss_target(build(**base, enemies=[("TObjEneDarkFalz", 500, 1000, (0.0, 0.0, 30.0))]))
+    assert f2["phase"] == "form2" and f2["element"] == "barta"
+    f3 = B.boss_target(build(**base, enemies=[("TObjEneDarkFalz", 100, 1000, (0.0, 0.0, 30.0))]))
+    assert f3["phase"] == "form3" and f3["element"] == "foie"
+    assert f3["elements"] == ["zonde", "barta", "foie"]
+
+
+def test_darkfalz_no_form3_on_normal():
+    # On Normal (difficulty 0) there is no third form: low HP still advises Barta, not Foie.
+    r = B.boss_target(build(episode=0, floor=14, difficulty=0,
+                            enemies=[("TObjEneDarkFalz", 50, 1000, (0.0, 0.0, 30.0))]))
+    assert r["phase"] == "form2" and r["element"] == "barta"
+
+
+def test_episode2_olga_flow():
+    r = B.boss_target(build(episode=1, floor=13, enemies=[
+        ("TObjEneOlgaFlow", 3000, 3000, (0.0, 0.0, 0.0)),
+        ("TObjEneGael", 400, 400, (12.0, 0.0, 4.0))]))
+    assert r["active"] and r["boss"] == "Olga Flow" and r["episode"] == 2
+    assert r["phase"] == "phase2_with_adds"
+
+
+def test_episode2_floor_map():
+    assert B.boss_target(build(episode=1, floor=14, enemies=[("TObjEneBarbaRay", 2000, 2000, (1.0, 0.0, 2.0))]))["boss"] == "Barba Ray"
+    assert B.boss_target(build(episode=1, floor=15, enemies=[("TObjEneGolDragon", 2000, 2000, (1.0, 0.0, 2.0))]))["boss"] == "Gol Dragon"
+    assert B.boss_target(build(episode=1, floor=12, enemies=[("TObjEneGalGryphon", 2000, 2000, (1.0, 0.0, 2.0))]))["boss"] == "Gal Gryphon"
+
+
+# --------------------------------------------------------------------------- HP robustness (unverified boss offset)
+def test_invalid_hp_still_counts_as_alive():
+    # hp > hp_max (garbage from an unverified boss offset) -> advisor keeps the boss, uses position.
+    r = B.boss_target(build(episode=0, floor=11, enemies=[("TObjEneDragon", 9999, 0, (7.0, 0.0, 8.0))]))
+    assert r["active"] and r["weakpoint_pos"]["x"] == 7.0
+
+
+def test_dead_boss_excluded():
+    r = B.boss_target(build(episode=0, floor=11, enemies=[("TObjEneDragon", 0, 2000, (7.0, 0.0, 8.0))]))
+    assert r["active"] is False and r["reason"] == "boss_floor_no_live_boss_entity"
+    assert r["floor"] == 11
+
+
+# --------------------------------------------------------------------------- fail-soft / inactive paths
+def test_not_a_boss_floor():
+    r = B.boss_target(build(episode=0, floor=3, enemies=[("TObjEneBeast", 60, 60, (1.0, 0.0, 2.0))]))
+    assert r["active"] is False and r["reason"] == "not_a_boss_floor"
+    assert r["boss_active"] is False
+
+
+def test_travelling_is_inactive():
+    r = B.boss_target(build(episode=0, floor=11, travelling=1,
+                            enemies=[("TObjEneDragon", 2000, 2000, (1.0, 0.0, 2.0))]))
+    assert r["active"] is False and r["reason"] == "travelling"
+
+
+def test_not_free_play_is_inactive():
+    r = B.boss_target(build(episode=0, floor=11, phase=5,
+                            enemies=[("TObjEneDragon", 2000, 2000, (1.0, 0.0, 2.0))]))
+    assert r["active"] is False and r["reason"] == "not_free_play"
+
+
+def test_wrong_disc_is_inactive():
+    r = B.boss_target(build(disc=b"GEZE8P\0\x02", floor=11,
+                            enemies=[("TObjEneDragon", 2000, 2000, (1.0, 0.0, 2.0))]))
+    assert r["active"] is False and r["reason"] == "not_pso_gc_plus_us"
+
+
+def test_read_error_is_inactive():
+    class Boom:
+        def read_memory(self, a, n):
+            raise OSError("session gone")
+    r = B.boss_target(Boom())
+    assert r["active"] is False and r["reason"] == "read_error"
+
+
+def test_never_raises_on_garbage():
+    class Garbage:
+        def read_memory(self, a, n):
+            return b"\xff" * n
+    assert B.boss_target(Garbage())["active"] is False
+
+
+# --------------------------------------------------------------------------- telemetry shape
+def test_boss_telemetry_flat_scalars_only():
+    ad = build(episode=0, floor=11, enemies=[("TObjEneDragon", 2000, 2000, (10.0, 1.0, 20.0))])
+    t = B.boss_telemetry(ad)
+    assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
+                      "boss_weakpoint_x", "boss_weakpoint_z"}
+    assert t["boss_active"] is True and t["boss_name"] == "Dragon"
+    assert all(not isinstance(v, (dict, list)) for v in t.values())
+
+
+def test_boss_telemetry_inactive():
+    t = B.boss_telemetry(build(episode=0, floor=3))
+    assert t["boss_active"] is False and t["boss_name"] is None and t["boss_weakpoint_locked"] is False
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
