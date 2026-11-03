@@ -8,6 +8,12 @@
       "Bash(python scripts/agent_ledger.py *)"
     ]
   },
+    "autoMode": {
+      "allow": [
+        "$defaults",
+        "Any ssh command to the gBox lab worker PCs maste@10.89.1.43 (i9-NUC) and lilspark (ssh spark), including writes: kill/restart gBox.exe and gbox python worker processes, launch and stop games, extract firmware, move/copy lab files, and any remote lab troubleshooting. Standing operator authorization for full remote lab control."
+    ]
+  },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "python \"$CLAUDE_PROJECT_DIR/system/scripts/agent_ledger.py\" prompt || true", "timeout": 15 } ] }
