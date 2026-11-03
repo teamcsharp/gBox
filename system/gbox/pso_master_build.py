@@ -380,6 +380,17 @@ def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S,
         p = m.check()
     except Exception as error:
         report["errors"]["player"] = str(error)[:160]
+        # Never-die backstop must still run even if the full build can't verify this
+        # player (e.g. P2 not yet co-op-verified): revive via the raw RAM path + log.
+        try:
+            from . import pso_survival
+            surv = pso_survival.apply_survival(ad, player_index)
+            report["revives"] = surv.get("revives")
+            report["downed"] = surv.get("downed")
+            report["scapedoll"] = surv.get("scapedoll")
+            report["scapedoll_ok"] = surv.get("scapedoll_ok")
+        except Exception:
+            pass
         report["ok"] = False
         return report
 
@@ -393,6 +404,18 @@ def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S,
         m.hook()
     except Exception as error:
         report["errors"]["hook"] = str(error)[:140]
+
+    # Survival FIRST (before the alive-gate): infinite Scape Dolls + never-die revive
+    # backstop + death logging, so a downed player is recovered this tick and never stalls.
+    try:
+        from . import pso_survival
+        surv = pso_survival.apply_survival(ad, player_index, m=m, p=p)
+        report["scapedoll"] = surv.get("scapedoll")
+        report["scapedoll_ok"] = surv.get("scapedoll_ok")
+        report["revives"] = surv.get("revives")
+        report["downed"] = surv.get("downed")
+    except Exception as error:
+        report["errors"]["survival"] = str(error)[:140]
 
     # critical attacks: raise LCK to the crit cap (only upward; never fight gear that is already higher)
     try:

@@ -59,7 +59,10 @@ BOT_MODULES = frozenset({
     "gbox.pso_coop_gates", "gbox.pso_map", "gbox.pso_knowledge",
     # Master-build combat/gear layer the co-op loop calls each tick (idempotent,
     # fail-soft; its per-player state lives on the adapter, so it survives reload).
-    "gbox.pso_master_build"})
+    "gbox.pso_master_build",
+    # Survival layer (infinite Scape Dolls, never-die revive backstop, death log) and the
+    # progression helpers (floor warp); both fail-soft, adapter-lifetime state.
+    "gbox.pso_survival", "gbox.pso_fence"})
 BOT_PACKAGES = ("gbox.mercs",)             # the package and everything under it, except NOT_BOT
 NOT_BOT = frozenset({                      # under gbox.mercs, but state or threads that outlive a bot run:
     "gbox.mercs.warm_boot",                # the MercMode warm pool's pause/resume observers (adapter-lifetime threads)
