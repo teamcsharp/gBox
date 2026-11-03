@@ -1762,21 +1762,34 @@ class Controller:
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
             label = 'fence_cross' if p2_on else 'fence_wait'
         else:
-            target = (obj['sx'], obj['sz'])           # P2 -> stand on the switch and hold it
-            label = 'fence_switch_hold'
+            # P2 must first be in the switch's ROOM. If it isn't yet but P1 already IS
+            # (P1 found the door across the hub->room-5 boundary), TRAIL P1 to cross the
+            # same boundary, THEN go to the switch. Straight-driving P2 at a switch behind
+            # a wall just wedges; following P1's crossing point is how P2 gets through.
+            p1pos = state.get('players', {}).get(1) or {}
+            if (player.get('room') != obj.get('sroom') and type(p1pos.get('x')) in (int, float)
+                    and p1pos.get('room') == obj.get('sroom')):
+                target, label = (p1pos['x'], p1pos['z']), 'fence_follow_p1'
+            else:
+                target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
         # COORDINATE-DRIVE: A* cannot path to a target in a disconnected room (P2 stranded
-        # 327u from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT
-        # at the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
+        # from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT at
+        # the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
         # cross room boundaries - the same fix that got P1 to the fence.
         route, exact = nav.toward((player['x'], player['z']), target)
         if exact and route and len(route) > 1:
             waypoint = route[1]
         else:
-            waypoint = target                          # straight at the switch/fence across rooms
+            waypoint = target                          # straight at the switch/fence/P1 across rooms
         keys, escaping = self._unwedge(slot, player, waypoint, now)
         commands.append((slot, keys, .40))
         moves[slot] = (player, waypoint, nav, False)
         steering[slot] = (player, waypoint, (label + '_unwedge') if escaping else label)
+        if slot == 2:
+            st = getattr(self.inputs, 'stats', None)
+            if isinstance(st, dict):
+                st['p2_role'] = label
+                st['p2_coord_drive'] = int(not exact)
         return True
 
     def load_directive(self, now):
@@ -2045,6 +2058,11 @@ class Controller:
                 if self._fence_obj is not None and not near_enemy and self.fence_role(
                         state, slot, player, now, commands, moves, steering):
                     continue
+                _st2 = getattr(self.inputs, 'stats', None)
+                if isinstance(_st2, dict):
+                    _st2['p2_role'] = 'swarm'
+                    _st2['p2_near_enemy'] = int(near_enemy)
+                    _st2['p2_fence_obj'] = int(self._fence_obj is not None)
                 # P2 (and later P3/P4) are pure swarm-followers: orbit and defend
                 # P1, with NO independent navigation. P1 is the single navigating
                 # brain and never waits on a follower - this ends the deadlock.
