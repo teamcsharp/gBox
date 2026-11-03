@@ -580,7 +580,13 @@ def boss_target(ad):
         wp_dist = round(_planar(pos, player), 1) if player is not None else None
         # Recommended STAND point: orbit center for a circling boss (hold here, fire outward),
         # else the weak point itself. boss_hold_ready once a lap has been sampled.
-        if name in HOLD_ORBIT:
+        # Center-hold (stand at the orbit center, fire outward) applies ONLY to a TRUE circling
+        # boss: a SINGLE moving body (the Dragon). For a multi-body boss (Vol Opt's ~30 monitors,
+        # De Rol Le's head+joints) the nearest weak point jumps between scattered entities, so a
+        # centroid lands in empty space far from every target - never center-hold those. Default
+        # is TARGET-FOLLOW: hold_pos = the weak point, so nav walks UP to it and fires point-blank.
+        # (Operator: "if there is a target in the level, the bot must be firing on it like mad.")
+        if name in HOLD_ORBIT and len(bosses) == 1:
             hold_pos, hold_n = _orbit_center(ad, (episode, floor, visit), pos)
         else:
             hold_pos, hold_n = pos, 999
