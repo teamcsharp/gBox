@@ -209,6 +209,16 @@ SPECIAL_ACTION_STATES = {"Dragon": {21, 22}, "Gol Dragon": {21, 22}}
 CTRL_MODE_OFF = 0x324
 INVULN_CTRL_MODE = 2
 
+# Bosses that CIRCLE the arena at ground level (grounded + vulnerable throughout) rather than
+# staying put. Chasing their position strands the bot on the perimeter (200+u on the far arc,
+# beyond any gun). For these, the bot should HOLD the orbit CENTER and fire outward as the boss
+# circles (from center the boss is only its orbit radius away). boss_hold_pos returns that stand
+# point (a running centroid of the weak-point positions, which converges to the ring center);
+# for all other bosses boss_hold_pos is just the weak point (stand near it). Confirmed live for
+# the Dragon (y=0.1 grounded, ring radius ~93-160 around origin); Gol Dragon / Gal Gryphon are
+# the Ep2 flying beasts assumed to share it (refine when captured).
+HOLD_ORBIT = {"Dragon", "Gol Dragon", "Gal Gryphon"}
+
 # Per-boss ADD / hazard entity classes that are NOT the weak point (the bot should avoid/clear
 # them, not aim at them). Matched as case-sensitive substrings of the live class name. Confirmed
 # live: De Rol Le spawns 'TBoss2Mine' mine adds. Others fill in as each boss is captured.
@@ -270,6 +280,25 @@ def _planar(a, b):
 
 def _clock(ad):
     return getattr(ad, "_pso_boss_clock", time.monotonic)
+
+
+def _orbit_center(ad, key, pos):
+    """Running centroid of the weak-point position for a circling boss -> converges to the ring
+    center (the stand point). Reset per boss-floor visit. Capped running mean so it stays stable
+    once a lap is sampled but can still drift if the arena center differs."""
+    st = getattr(ad, "_pso_boss_orbit", None)
+    if not isinstance(st, dict) or st.get("key") != key:
+        st = {"key": key, "cx": pos["x"], "cz": pos["z"], "n": 1}
+        try:
+            ad._pso_boss_orbit = st
+        except Exception:
+            pass
+    else:
+        st["n"] += 1
+        a = 1.0 / min(st["n"], 64)
+        st["cx"] += (pos["x"] - st["cx"]) * a
+        st["cz"] += (pos["z"] - st["cz"]) * a
+    return {"x": round(st["cx"], 2), "z": round(st["cz"], 2), "y": pos["y"]}, st["n"]
 
 
 def _visit_token(ad, floor):
@@ -418,7 +447,7 @@ def _inactive(reason=None):
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
            "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
            "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0, "boss_weakpoint_dist": None,
-           "boss_vulnerable": None,
+           "boss_vulnerable": None, "boss_hold_x": None, "boss_hold_z": None, "boss_hold_dist": None,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -447,6 +476,11 @@ def boss_target(ad):
                           emptied for >= DEAD_GRACE_S (confident defeat), None off a boss floor.
       boss_cleared      : True once boss_alive has latched defeated for this visit.
       boss_hp_frac      : best-effort main-body HP fraction (0..1) or None (HP offset unverified).
+      hold_pos          : recommended STAND point {"x","z","y"}. For a circling boss (Dragon) it is
+                          the orbit CENTER (hold here and fire outward as the boss circles, rather
+                          than chasing it to the perimeter 200u+ away); for other bosses it is the
+                          weak point itself. Flat: boss_hold_x/z/dist; boss_hold_ready once a lap
+                          is sampled. nav: MOVE to hold_pos, FACE+FIRE at weakpoint_pos.
       boss_vulnerable   : the weak point takes damage THIS tick (weak-point +0x324 != 2). False while
                           the boss is in its invulnerable control-mode (shell closed / airborne) -
                           crit/never-miss can't help then. None off a boss floor / unknown read.
@@ -538,6 +572,13 @@ def boss_target(ad):
         # Diagnostic: planar distance from P1 to the weak point. A large value means the bots are
         # not in weapon range of the boss (a positioning/weapon-reach problem, not an aim problem).
         wp_dist = round(_planar(pos, player), 1) if player is not None else None
+        # Recommended STAND point: orbit center for a circling boss (hold here, fire outward),
+        # else the weak point itself. boss_hold_ready once a lap has been sampled.
+        if name in HOLD_ORBIT:
+            hold_pos, hold_n = _orbit_center(ad, (episode, floor, visit), pos)
+        else:
+            hold_pos, hold_n = pos, 999
+        hold_dist = round(_planar(hold_pos, player), 1) if player is not None else None
 
         out = {"active": True, "boss": name, "phase": phase, "weakpoint_pos": pos,
                "weakpoint": weak, "element": result["element"], "action": result["action"],
@@ -547,12 +588,14 @@ def boss_target(ad):
                "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
                "action_state": action_state, "boss_special_state": special,
                "ctrl_mode": ctrl_mode, "boss_vulnerable": vulnerable,
+               "hold_pos": hold_pos, "boss_hold_ready": hold_n >= 4,
                "adds": [a["pos"] for a in adds], "add_classes": sorted({a["entity"].get("class") for a in adds}),
                # flat telemetry mirrors
                "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
                "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state,
-               "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist, "boss_vulnerable": vulnerable}
+               "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist, "boss_vulnerable": vulnerable,
+               "boss_hold_x": hold_pos["x"], "boss_hold_z": hold_pos["z"], "boss_hold_dist": hold_dist}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -578,5 +621,5 @@ def boss_telemetry(ad):
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
             "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
-            "boss_weakpoint_dist", "boss_vulnerable")
+            "boss_weakpoint_dist", "boss_vulnerable", "boss_hold_x", "boss_hold_z", "boss_hold_dist")
     return {k: adv.get(k) for k in keys}

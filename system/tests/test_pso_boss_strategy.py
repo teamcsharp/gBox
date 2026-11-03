@@ -231,6 +231,35 @@ def test_dragon_action_state_marks_attacking():
     assert r1["boss_phase"] == "head_attacking"
 
 
+def test_hold_pos_orbit_center_for_circling_dragon():
+    # The Dragon circles the arena; hold_pos should converge to the orbit CENTER (~0,0),
+    # not track the Dragon to the perimeter.
+    import struct as _s
+    ad = build(episode=0, floor=11, enemies=[("TBoss1Dragon", 2500, 2500, (100.0, 0.0, 0.0))])
+    dragon_ptr = OBJ_BASE + 0x400
+    ring = [(100.0, 0.0), (0.0, 100.0), (-100.0, 0.0), (0.0, -100.0), (70.0, 70.0), (-70.0, -70.0)]
+    last = None
+    for (x, z) in ring:
+        for i, b in enumerate(_s.pack(">f", x)):      # weak-point x at +0x38
+            ad._mem[dragon_ptr + 0x38 + i] = b
+        for i, b in enumerate(_s.pack(">f", z)):      # weak-point z at +0x40
+            ad._mem[dragon_ptr + 0x40 + i] = b
+        last = B.boss_target(ad)
+    assert last["boss"] == "Dragon"
+    assert last["boss_hold_ready"] is True                      # >=4 samples
+    assert abs(last["hold_pos"]["x"]) < 5 and abs(last["hold_pos"]["z"]) < 5   # centroid ~ origin
+    assert last["boss_hold_x"] == last["hold_pos"]["x"]
+    # the weak point is still the live Dragon position (perimeter), not the hold point
+    assert last["weakpoint_pos"]["x"] == -70.0 and last["weakpoint_pos"]["z"] == -70.0
+
+
+def test_hold_pos_is_weakpoint_for_stationary_boss():
+    r = B.boss_target(build(episode=0, floor=13, enemies=[
+        ("TBoss3VoloptMonitor", 420, 420, (3.0, 0.0, 2.0))]))
+    assert r["hold_pos"] == r["weakpoint_pos"]       # stand at the monitor, no orbit
+    assert r["boss_hold_x"] == r["weakpoint_pos"]["x"]
+
+
 def test_boss_vulnerable_gate_from_ctrl_mode():
     # Damage gate: weak-point +0x324 == 2 -> invulnerable (boss_vulnerable False); != 2 -> vulnerable.
     ad = build(episode=0, floor=11, enemies=[("TBoss1Dragon", 2500, 2500, (10.0, 0.0, 20.0))])
@@ -355,7 +384,8 @@ def test_boss_telemetry_flat_scalars_only():
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
                       "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
                       "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
-                      "boss_weakpoint_dist", "boss_vulnerable"}
+                      "boss_weakpoint_dist", "boss_vulnerable", "boss_hold_x", "boss_hold_z",
+                      "boss_hold_dist"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
     assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())
