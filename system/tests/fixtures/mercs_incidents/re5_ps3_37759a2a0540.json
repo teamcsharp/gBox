@@ -1,0 +1,1135 @@
+{
+  "schema": "gbox.mercs.incident-replay/1",
+  "title": "BLUS30491",
+  "event_id": "37759a2a05404ddcbd019e44e8603278",
+  "observed_at": 1793720400.6026206,
+  "hp_before": 216,
+  "hp_after": 20,
+  "hp_max": 1000,
+  "loss": 196,
+  "held": [
+    "l1",
+    "rdown",
+    "rleft"
+  ],
+  "snapshot": {
+    "player": {
+      "ptr": 808608656,
+      "pos": [
+        2651.75341796875,
+        476.02825927734375,
+        -22025.28125
+      ],
+      "rot": -1.1491087761743382,
+      "pitch": -0.08259763568639755,
+      "action": 6,
+      "state": 6,
+      "hp": 20,
+      "hp_max": 1000
+    },
+    "enemies": [
+      {
+        "slot": 0,
+        "ptr": 810748912,
+        "pos": [
+          2543.6259765625,
+          0.014778971672058105,
+          -16274.138671875
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 1,
+        "ptr": 810766160,
+        "pos": [
+          1576.31103515625,
+          -1.3113021850585938e-06,
+          -13342.8037109375
+        ],
+        "hp": 700,
+        "hp_max": 700
+      },
+      {
+        "slot": 2,
+        "ptr": 810783408,
+        "pos": [
+          2653.76513671875,
+          -50.0,
+          -14208.876953125
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 3,
+        "ptr": 810792032,
+        "pos": [
+          1506.62353515625,
+          600.91015625,
+          -20540.0703125
+        ],
+        "hp": 700,
+        "hp_max": 700
+      },
+      {
+        "slot": 4,
+        "ptr": 810809280,
+        "pos": [
+          1881.7586669921875,
+          -113.98173522949219,
+          -15626.447265625
+        ],
+        "hp": 1,
+        "hp_max": 1
+      },
+      {
+        "slot": 5,
+        "ptr": 810817776,
+        "pos": [
+          1439.7154541015625,
+          298.0843200683594,
+          -19142.34375
+        ],
+        "hp": 1,
+        "hp_max": 1
+      },
+      {
+        "slot": 6,
+        "ptr": 810800656,
+        "pos": [
+          2482.73046875,
+          473.76611328125,
+          -22056.568359375
+        ],
+        "hp": 3720,
+        "hp_max": 4000
+      },
+      {
+        "slot": 7,
+        "ptr": 810623152,
+        "pos": [
+          2249.840087890625,
+          492.1468811035156,
+          -21823.072265625
+        ],
+        "hp": 0,
+        "hp_max": 800
+      },
+      {
+        "slot": 8,
+        "ptr": 810774784,
+        "pos": [
+          1404.57568359375,
+          597.0,
+          -20075.80078125
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 9,
+        "ptr": 810731664,
+        "pos": [
+          3890.3095703125,
+          1262.869873046875,
+          -20093.216796875
+        ],
+        "hp": 800,
+        "hp_max": 800
+      },
+      {
+        "slot": 10,
+        "ptr": 811048672,
+        "pos": [
+          2525.882080078125,
+          475.10247802734375,
+          -21921.822265625
+        ],
+        "hp": 0,
+        "hp_max": 700
+      },
+      {
+        "slot": 11,
+        "ptr": 810740288,
+        "pos": [
+          1039.346435546875,
+          1400.0001220703125,
+          -20342.314453125
+        ],
+        "hp": 800,
+        "hp_max": 800
+      }
+    ],
+    "timer": 188.86,
+    "timer_start": 120.0,
+    "score": 5010,
+    "kills": 14,
+    "combo": 5,
+    "combo_timer": 9.6,
+    "control_player": 1,
+    "recovery_active": false,
+    "inventory": [
+      {
+        "slot": 0,
+        "id": 297,
+        "type": 1,
+        "item": 41,
+        "rounds": 15,
+        "cap": 15,
+        "grid": 3,
+        "grid_raw": 3,
+        "hand": false
+      },
+      {
+        "slot": 1,
+        "id": 281,
+        "type": 1,
+        "item": 25,
+        "rounds": 6,
+        "cap": 6,
+        "grid": 5,
+        "grid_raw": 5,
+        "hand": false
+      },
+      {
+        "slot": 2,
+        "id": 282,
+        "type": 1,
+        "item": 26,
+        "rounds": 8,
+        "cap": 8,
+        "grid": 1,
+        "grid_raw": 1,
+        "hand": true
+      },
+      {
+        "slot": 3,
+        "id": 513,
+        "type": 2,
+        "item": 1,
+        "rounds": 30,
+        "cap": 50,
+        "grid": 0,
+        "grid_raw": 0,
+        "hand": false
+      },
+      {
+        "slot": 4,
+        "id": 515,
+        "type": 2,
+        "item": 3,
+        "rounds": 10,
+        "cap": 30,
+        "grid": 2,
+        "grid_raw": 2,
+        "hand": false
+      },
+      {
+        "slot": 5,
+        "id": 291,
+        "type": 1,
+        "item": 35,
+        "rounds": 1,
+        "cap": 1,
+        "grid_raw": 9,
+        "hand": false
+      },
+      {
+        "slot": 6,
+        "id": 256,
+        "type": 1,
+        "item": 0,
+        "rounds": 0,
+        "cap": 0,
+        "grid_raw": 11,
+        "hand": false
+      }
+    ],
+    "laser": {
+      "from": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "at": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "camera": {
+      "eye": [
+        2707.760986328125,
+        667.0991821289062,
+        -22078.0859375
+      ],
+      "at": [
+        2448.255859375,
+        586.3630981445312,
+        -22004.8671875
+      ]
+    },
+    "bonuses": [
+      {
+        "ptr": 808923040,
+        "pos": [
+          2668.146240234375,
+          13.0,
+          -12457.0859375
+        ],
+        "r": 28.351011276245117,
+        "kind": "time",
+        "kind_word": 3147777,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 808930000,
+        "pos": [
+          876.714599609375,
+          19.096190929412842,
+          -14511.9033203125
+        ],
+        "r": 28.351064682006836,
+        "kind": "time",
+        "kind_word": 3148033,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 808936960,
+        "pos": [
+          1228.60693359375,
+          1013.0,
+          -20208.17578125
+        ],
+        "r": 28.351316452026367,
+        "kind": "time",
+        "kind_word": 3148289,
+        "collected": false,
+        "seconds": 90
+      },
+      {
+        "ptr": 808950880,
+        "pos": [
+          1231.612060546875,
+          3.9952239990234375,
+          -19221.3203125
+        ],
+        "r": 28.351327896118164,
+        "kind": "time",
+        "kind_word": 3148801,
+        "collected": false,
+        "seconds": 60
+      },
+      {
+        "ptr": 808957840,
+        "pos": [
+          2927.229736328125,
+          -36.9998779296875,
+          -14261.712890625
+        ],
+        "r": 28.351011276245117,
+        "kind": "time",
+        "kind_word": 3149057,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 808964800,
+        "pos": [
+          3463.012451171875,
+          318.155029296875,
+          -19201.1328125
+        ],
+        "r": 28.351289749145508,
+        "kind": "time",
+        "kind_word": 3149313,
+        "collected": false,
+        "seconds": 30
+      },
+      {
+        "ptr": 808971760,
+        "pos": [
+          1788.8900146484375,
+          -87.0,
+          -15626.28125
+        ],
+        "r": 28.351045608520508,
+        "kind": "time",
+        "kind_word": 3149569,
+        "collected": false,
+        "seconds": 60
+      }
+    ],
+    "ground_mines": {},
+    "health_items": [],
+    "stage_prompt": false,
+    "prompt_optional": false,
+    "mercenaries_phase": 1,
+    "mercenaries_mode": "mercenaries",
+    "stage_index": 1,
+    "character_index": 9,
+    "players": [
+      {
+        "id": "p1",
+        "slot": 1,
+        "control": "bot",
+        "actor": 808608656,
+        "ptr": 808608656,
+        "pos": [
+          2644.571044921875,
+          475.78692626953125,
+          -22023.85546875
+        ],
+        "hp": 20,
+        "hp_max": 1000,
+        "native_actor_verified": true,
+        "provenance": {
+          "kind": "native_ram",
+          "read_only": true,
+          "native_actor_verified": true,
+          "title": "BLUS30491",
+          "manager": 948136384,
+          "slot_address": 948136424,
+          "actor_index_address": 808620708,
+          "actor_index": 0,
+          "native_functions": [
+            "001AD7B4",
+            "001AE010"
+          ],
+          "control_source": "operator_assignment_and_bot_input_fence",
+          "inputs_observed": false
+        }
+      }
+    ],
+    "assistance": {
+      "classification": "mod_assisted",
+      "verified": false,
+      "effects": [
+        "bullet_damage",
+        "extra_time_per_kill",
+        "fire_animation_speed",
+        "fire_rate",
+        "infinite_ammunition"
+      ],
+      "source": "native_readback_and_worker_mod_state",
+      "reason": "Original rules, all loadouts and prior round writes have not been fully verified."
+    },
+    "input_provenance": {
+      "source": "bot_decisions",
+      "control_player": 1
+    }
+  },
+  "counters": {
+    "stalemate_cut_s": 5,
+    "bot_player": 1,
+    "menu_presses": 22,
+    "ram_progress": 797,
+    "rounds": 1,
+    "_merc_unlock_at": 1793720284.5483341,
+    "operator_idle_s": 3.0,
+    "operator_takeovers": 0,
+    "operator_control_s": 0.0,
+    "confirmation_presses": 1,
+    "cursor": 9,
+    "rounds_hooked": 1,
+    "loading_s": 3.2,
+    "player_damage_events": 4,
+    "bow_confirmed_hits": 0,
+    "bow_confirmed_misses": 0,
+    "shots": 17,
+    "hits": 12,
+    "misses": 4,
+    "headshots": 0,
+    "accuracy": 0.75,
+    "miss_short": 0,
+    "miss_past": 2,
+    "miss_beside": 1,
+    "miss_moved": 1,
+    "finishers": 0,
+    "reloads": 0,
+    "pitch_writes": 0,
+    "stun_runs": 0,
+    "legshots": 0,
+    "shots_s": 0,
+    "kills_seen": 13,
+    "max_combo": 4,
+    "turns": 0,
+    "backoffs": 0,
+    "stuck": 0,
+    "pursuits": 6,
+    "unsighted": 0,
+    "prompt_presses": 3,
+    "qte_native_progress_writes": 0,
+    "fire_animation_writes": 30,
+    "mine_animation_writes": 0,
+    "egg_animation_writes": 0,
+    "same_round_streak": 3,
+    "round_shots": 17,
+    "round_hits": 12,
+    "round_accuracy": 0.706,
+    "round_intro_wait_s": 0.0,
+    "combat_player_index": 0,
+    "bow_pending_observations": 0,
+    "headshot_pct": 0.0,
+    "shots_per_kill": 1.31,
+    "nearby_enemies": 2,
+    "enemy_awareness_count": 12,
+    "nav_visited_triangles": 1142,
+    "nav_observed_crossings": 7851,
+    "nav_route_arrivals": 33,
+    "nav_failed_portals": 26,
+    "nav_oscillating_portals": 146,
+    "nav_damage_risk_nodes": 403,
+    "nav_damage_incidents_retained": 128,
+    "mine_sites_learned": 83,
+    "timer": 179.43,
+    "combo": 4,
+    "score": 4710,
+    "kills": 13,
+    "mercenaries_phase": 1,
+    "stage_index": 1,
+    "character_roster_size": 10,
+    "round_semantic_recalled": 0,
+    "round_memory_recalled": 5,
+    "prior_stage_rounds": 5,
+    "prior_best_bonus_count": 4,
+    "bonus_commitment_patience_s": 16.0,
+    "navigation_atlas_queued": 189,
+    "navigation_atlas_dropped": 0,
+    "motion_turn_rate_var": 3.9497,
+    "motion_idle_spin_s": 23.99,
+    "motion_motion_s": 106.9,
+    "motion_samples": 790,
+    "look_idle_among_foes_s": 0.0,
+    "look_walls_shot": 0,
+    "round_idle_among_foes_s": 19.1,
+    "round_gun_down_close_s": 8.8,
+    "round_walls_shot": 0,
+    "round_floor_shots": 0,
+    "stalemate_patience_s": 45.0,
+    "stalemate_idle_s": 0.0,
+    "mine_detonations_observed": 0,
+    "mine_ground_count": 0,
+    "mine_armed_count": 0,
+    "mine_interval_s": 10.0,
+    "enemies": 4,
+    "spawns": 12,
+    "time_bonuses_remaining": 7,
+    "combo_bonuses_remaining": 0,
+    "unreachable_bonuses": 7,
+    "nearest_eta_s": 1.3,
+    "traversal_attempts": 1,
+    "qte_presses": 1,
+    "mash_presses": 3,
+    "traversals_completed": 1,
+    "boss_retreats": 7,
+    "player_damage_pending": 0,
+    "player_damage_last_loss": 196,
+    "nav_damage_samples_learned": 4,
+    "impacts": 4,
+    "weapon_switch_attempts": 3,
+    "quick_turns": 4,
+    "weapon_switch_failures": 1,
+    "weapon_switches": 2,
+    "los_held_fire": 69,
+    "threat_blasts": 15,
+    "laser_rejected": 3,
+    "kill_time_added_s": 140.0,
+    "kills_seen_by_combat": 13,
+    "damage_events": 13,
+    "clock_gain_s": 156.5,
+    "clock_jumps": 13,
+    "aim_guards": 1,
+    "combos_lost": 4,
+    "bonus_presses": 2,
+    "presses_wiggle": 2,
+    "bonus_actor_removals": 1,
+    "bonuses_taken": 1,
+    "bonus_s": 28.819999999999993,
+    "combo_pursuits": 24,
+    "combo_pursuit_fits": 7,
+    "blocked_switches": 2,
+    "front_first": 52,
+    "combat_stalls_broken": 2,
+    "nav_recoveries": 1,
+    "idle_route_replans": 1
+  },
+  "decision": {
+    "phase": "clear_nearby"
+  },
+  "preceding_history": [
+    {
+      "at": 1793720395.4094837,
+      "pos": [
+        2614.58349609375,
+        474.1048889160156,
+        -21959.974609375
+      ],
+      "rot": 1.2108478233070734,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rleft"
+      ],
+      "plan": {
+        "phase": "boss_range",
+        "target": {
+          "kind": "boss_range",
+          "id": 810800656,
+          "pos": [
+            3200.4040070145797,
+            474.4234924316406,
+            -21826.238418544253
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "boss_range",
+        "route": "5 wp, next d 146 dy +20",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720395.9601746,
+      "pos": [
+        2632.739013671875,
+        474.7911071777344,
+        -21972.869140625
+      ],
+      "rot": 2.3130092480599895,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "cross",
+        "lup"
+      ],
+      "plan": {
+        "phase": "boss_range",
+        "target": {
+          "kind": "boss_range",
+          "id": 810800656,
+          "pos": [
+            3183.9221744646366,
+            474.1048889160156,
+            -21770.624485765606
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "boss_range",
+        "route": "5 wp, next d 142 dy +20",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720396.2366812,
+      "pos": [
+        2672.86474609375,
+        476.5702209472656,
+        -22016.115234375
+      ],
+      "rot": 2.1332970142314434,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rright"
+      ],
+      "plan": {
+        "phase": "boss_range",
+        "target": {
+          "kind": "boss_range",
+          "id": 810800656,
+          "pos": [
+            3207.4290101585175,
+            474.7911071777344,
+            -21800.44116163614
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "boss_range",
+        "route": "5 wp, next d 135 dy +20",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720396.4958284,
+      "pos": [
+        2669.51220703125,
+        476.3617248535156,
+        -22009.138671875
+      ],
+      "rot": 1.407512250378364,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rright"
+      ],
+      "plan": {
+        "phase": "boss_range",
+        "target": {
+          "kind": "boss_range",
+          "id": 810800656,
+          "pos": [
+            3267.544548626324,
+            476.41412353515625,
+            -21995.37395057847
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "boss_range",
+        "route": "7 wp, next d 75 dy +14",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720396.7712405,
+      "pos": [
+        2678.5869140625,
+        476.5702819824219,
+        -22008.029296875
+      ],
+      "rot": 0.6805560608251766,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rright"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 6,
+          "pos": [
+            2507.37060546875,
+            473.2403564453125,
+            -22016.47265625
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720397.0376275,
+      "pos": [
+        2674.3017578125,
+        476.5590515136719,
+        -22013.455078125
+      ],
+      "rot": -0.04701358792323207,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rright"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 6,
+          "pos": [
+            2532.894775390625,
+            473.1544189453125,
+            -22005.056640625
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720397.3011699,
+      "pos": [
+        2673.16015625,
+        476.4007873535156,
+        -22006.177734375
+      ],
+      "rot": -0.7729595222346326,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "rright"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 6,
+          "pos": [
+            2498.25439453125,
+            473.2492980957031,
+            -22017.6796875
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720397.5733154,
+      "pos": [
+        2685.238037109375,
+        476.42547607421875,
+        -21990.494140625
+      ],
+      "rot": -1.3185970939859508,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "lleft"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 6,
+          "pos": [
+            2492.00634765625,
+            473.2571716308594,
+            -22018.734375
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720397.7771564,
+      "pos": [
+        2688.32177734375,
+        476.2720642089844,
+        -21977.517578125
+      ],
+      "rot": -1.3185970939859508,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "l1"
+      ],
+      "plan": {
+        "phase": "fight",
+        "target": {
+          "kind": "enemy",
+          "id": 8,
+          "pos": [
+            2039.4107666015625,
+            544.5294799804688,
+            -21758.001953125
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "fight",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720398.1867998,
+      "pos": [
+        2688.31494140625,
+        476.2471618652344,
+        -21976.126953125
+      ],
+      "rot": -1.3185970939859508,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "l1"
+      ],
+      "plan": {
+        "phase": "fight",
+        "target": {
+          "kind": "enemy",
+          "id": 8,
+          "pos": [
+            2052.29638671875,
+            537.7483520507812,
+            -21762.904296875
+          ]
+        },
+        "note": ""
+      },
+      "score": 4410,
+      "combo": 3,
+      "kills": 12,
+      "navigation": {
+        "stuck": 0,
+        "phase": "fight",
+        "route": "6 wp, next d 139 dy +18",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720398.6564288,
+      "pos": [
+        2688.31494140625,
+        476.2471618652344,
+        -21976.126953125
+      ],
+      "rot": -1.3185970939859508,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "l1",
+        "r1",
+        "rleft"
+      ],
+      "plan": {
+        "phase": "fight",
+        "target": {
+          "kind": "enemy",
+          "id": 7,
+          "pos": [
+            2098.2509765625,
+            517.05712890625,
+            -21794.78515625
+          ]
+        },
+        "note": ""
+      },
+      "score": 4710,
+      "combo": 4,
+      "kills": 13,
+      "navigation": {
+        "stuck": 0,
+        "phase": "fight",
+        "route": "stationary: discarding stale route; awaiting supported movement",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720399.093916,
+      "pos": [
+        2685.4228515625,
+        476.2735290527344,
+        -21981.697265625
+      ],
+      "rot": -1.0360710685961068,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "lright"
+      ],
+      "plan": {
+        "phase": "fight",
+        "target": {
+          "kind": "enemy",
+          "id": 3,
+          "pos": [
+            1506.62353515625,
+            600.91015625,
+            -20540.0703125
+          ]
+        },
+        "note": ""
+      },
+      "score": 4710,
+      "combo": 4,
+      "kills": 13,
+      "navigation": {
+        "stuck": 0,
+        "phase": "fight",
+        "route": "stationary: discarding stale route; awaiting supported movement",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720399.5369835,
+      "pos": [
+        2656.1865234375,
+        476.205322265625,
+        -22029.86328125
+      ],
+      "rot": -1.0360710685961068,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "l1",
+        "rright"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 10,
+          "pos": [
+            2523.20263671875,
+            474.29150390625,
+            -21931.783203125
+          ]
+        },
+        "note": ""
+      },
+      "score": 4710,
+      "combo": 4,
+      "kills": 13,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "stationary: discarding stale route; awaiting supported movement",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720400.0684562,
+      "pos": [
+        2656.5146484375,
+        476.2069091796875,
+        -22028.69140625
+      ],
+      "rot": -1.3143894276497916,
+      "hp": 216,
+      "action": 6,
+      "held": [
+        "l1",
+        "r1",
+        "rdown",
+        "rleft"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 10,
+          "pos": [
+            2525.50048828125,
+            474.31689453125,
+            -21931.466796875
+          ]
+        },
+        "note": ""
+      },
+      "score": 4710,
+      "combo": 4,
+      "kills": 13,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "stationary: discarding stale route; awaiting supported movement",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    },
+    {
+      "at": 1793720400.6026206,
+      "pos": [
+        2651.75341796875,
+        476.02825927734375,
+        -22025.28125
+      ],
+      "rot": -1.1491087761743382,
+      "hp": 20,
+      "action": 6,
+      "held": [
+        "l1",
+        "rdown",
+        "rleft"
+      ],
+      "plan": {
+        "phase": "clear_nearby",
+        "target": {
+          "kind": "enemy",
+          "id": 10,
+          "pos": [
+            2522.99560546875,
+            473.6941833496094,
+            -21939.1171875
+          ]
+        },
+        "note": ""
+      },
+      "score": 5010,
+      "combo": 5,
+      "kills": 14,
+      "navigation": {
+        "stuck": 0,
+        "phase": "clear_nearby",
+        "route": "stationary: discarding stale route; awaiting supported movement",
+        "nav_recovery": "probe 1: returning to nearby same-level floor"
+      },
+      "mine_events": []
+    }
+  ],
+  "cluster": {
+    "id": "fba3e558be591a5b",
+    "game_id": "e7ca89bbeb67360d",
+    "signature": "low_hp_no_heal",
+    "label": "low health with no tablet or heal"
+  }
+}
