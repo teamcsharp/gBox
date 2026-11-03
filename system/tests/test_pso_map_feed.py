@@ -82,6 +82,30 @@ def test_build_model_prefers_live_memory_over_stale_steering():
     assert model["plan"]["crit_path"] == [2, 5, 12] and model["plan"]["target_room"] == 5
 
 
+# ----------------------------------------------------------------------------- run plan parsing
+def test_parse_plan_prefers_json_string_then_dict_then_scalars():
+    plan = {"area": "a1", "current_room": 2, "target_room": 5, "crit_path": [2, 5, 12],
+            "edges": {"2": {"d0": 5}}, "centroids": {"2": [0.0, 0.0], "5": [100.0, 0.0]}}
+    # JSON string wins (survives the telemetry path; a nested dict can be dropped)
+    got = F.parse_plan({"pso_plan_json": json.dumps(plan), "pso_plan": {"current_room": 999}})
+    assert got["current_room"] == 2 and got["crit_path"] == [2, 5, 12]
+    # dict form when no string
+    assert F.parse_plan({"pso_plan": plan})["target_room"] == 5
+    # flat scalar mirrors when the rich forms were dropped
+    flat = F.parse_plan({"pso_plan_current_room": 3, "pso_plan_target_room": 7, "pso_plan_crit_len": 4})
+    assert flat["current_room"] == 3 and flat["target_room"] == 7 and flat["crit_path"] == []
+    # nothing published yet
+    assert F.parse_plan({}) is None and F.parse_plan({"pso_plan_json": "not json"}) is None
+
+
+def test_plan_centroids_frame_the_bounds_without_a_surface():
+    tel = {"running": True, "stats": {"episode": 1, "floor": 5,
+           "pso_plan_json": json.dumps({"centroids": {"2": [0.0, 0.0], "5": [400.0, 300.0]}})}}
+    model = F.build_model("s", tel, None, {}, peek=None, now=1.0)
+    assert model["plan"]["centroids"]["5"] == [400.0, 300.0]
+    assert model["bounds"] is not None and model["bounds"][2] >= 400.0   # framed to include the graph
+
+
 # ----------------------------------------------------------------------------- bounds / crystal index
 def test_bounds_list_and_learned_areas():
     assert F.bounds_list({"min_x": -600, "min_z": -560, "max_x": 540, "max_z": 560}) == [-600, -560, 540, 560]

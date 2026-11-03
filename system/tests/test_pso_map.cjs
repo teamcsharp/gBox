@@ -88,6 +88,25 @@ test('draw paints the floor cells, the goal line and the marks', () => {
   assert.ok(ctx._calls.some(c => c[0] === 'stroke'), 'drew the goal line / marks');
 });
 
+test('planGraph places room nodes at centroids with door edges and the route to the goal', () => {
+  const m = { plan: { centroids: { '2': [0, 0], '5': [100, 0], '12': [200, 0] },
+    edges: { '2': { d0: 5 }, '5': { d1: 12 } }, crit_path: [2, 5, 12], current_room: 5, target_room: 12 } };
+  const v = P.viewOf(P.fitCamera({ bounds: [-50, -50, 250, 50] }), SIZE);
+  const g = P.planGraph(m, v);
+  assert.equal(g.nodes.length, 3);
+  assert.ok(g.nodes.find(n => n.room === 5).current, 'current room flagged');
+  assert.ok(g.nodes.find(n => n.room === 12).goal, 'last crit-path room is the goal');
+  assert.ok(g.nodes.find(n => n.room === 12).target, 'target room ringed');
+  assert.ok(g.nodes.find(n => n.room === 2).visited, 'rooms before current are visited');
+  assert.equal(g.edges.length, 2, 'two door edges');
+  assert.equal(g.route.length, 3, 'route runs through all three centroids');
+  assert.equal(P.planGraph({}, v), null);
+  // first-run (no recalled crit_path): the visited path is the route, with no known goal
+  const g2 = P.planGraph({ plan: { centroids: { '2': [0, 0], '7': [50, 0] }, path: [2, 7], current_room: 7 } }, v);
+  assert.equal(g2.route.length, 2);
+  assert.ok(!g2.nodes.some(n => n.goal), 'no goal flagged before a route is learned');
+});
+
 test('draw paints motion trails behind the players when given a trail buffer', () => {
   const theme = { void: '#000', floor: '#fff', ink: '#111', halo: '#fff', muted: '#888', player: '#2a78d6',
     leader: '#1746c9', plan: '#1baf7a', locked: '#e34948', open: '#1baf7a', switchOn: '#1baf7a',

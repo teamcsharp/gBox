@@ -186,6 +186,43 @@ def learned_areas(rooms) -> list[dict]:
     return out
 
 
+# ----------------------------------------------------------------------------- run plan (pure)
+def parse_plan(stats) -> dict | None:
+    """The run plan (learned room-adjacency graph + critical path + per-room world centroids) that
+    pso_coop publishes. Prefer the bounded JSON STRING `pso_plan_json` (it survives the telemetry
+    path the same way steering_evidence_json does - a nested dict can be dropped), then the dict form
+    `pso_plan`, then the flat scalar mirrors (enough for the plan strip even if the rich forms were
+    dropped). None when the bot has not published a plan yet."""
+    stats = stats or {}
+    raw = stats.get("pso_plan_json")
+    if isinstance(raw, str) and raw:
+        try:
+            doc = json.loads(raw)
+            if isinstance(doc, dict):
+                return doc
+        except (ValueError, TypeError):
+            pass
+    if isinstance(stats.get("pso_plan"), dict):
+        return stats["pso_plan"]
+    cur, tgt = stats.get("pso_plan_current_room"), stats.get("pso_plan_target_room")
+    if cur is not None or tgt is not None or stats.get("pso_plan_crit_len") is not None:
+        return {"current_room": cur, "target_room": tgt, "crit_path": [], "path": [],
+                "edges": {}, "centroids": {}, "crit_len": stats.get("pso_plan_crit_len"),
+                "rooms_visited": stats.get("pso_plan_rooms_visited")}
+    return None
+
+
+def plan_centroid_points(plan) -> list[dict]:
+    """The plan's per-room world centroids as {x,z} points, so the map frames the whole known graph
+    (not just the two players) when there is no collision surface to set the bounds."""
+    out = []
+    cen = plan.get("centroids") if isinstance(plan, dict) else None
+    for xz in (cen or {}).values():
+        if isinstance(xz, (list, tuple)) and len(xz) >= 2 and all(isinstance(v, (int, float)) for v in xz[:2]):
+            out.append({"x": xz[0], "z": xz[1]})
+    return out
+
+
 # ----------------------------------------------------------------------------- model assembly
 def build_model(sid, tel, surface, rooms, *, peek=None, actor="agent", now=None) -> dict:
     """Assemble the read-only map model from telemetry + the current area's surface + the crystal
@@ -221,10 +258,10 @@ def build_model(sid, tel, surface, rooms, *, peek=None, actor="agent", now=None)
             "boss_weakpoint_x": stats.get("boss_weakpoint_x"),
             "boss_weakpoint_z": stats.get("boss_weakpoint_z"),
         },
-        # The run plan: the learned room-adjacency graph + critical path, published by pso_coop into
-        # stats["pso_plan"] (the i9 crystal file is not reachable from this server). None until the
+        # The run plan: the learned room-adjacency graph + critical path + per-room world centroids,
+        # published by pso_coop (the i9 crystal file is not reachable from this server). None until the
         # bot publishes it - the client then shows "exploring / building the map".
-        "plan": stats.get("pso_plan") if isinstance(stats.get("pso_plan"), dict) else None,
+        "plan": parse_plan(stats),
         "players_source": "none",
     }
     if isinstance(surface, dict):
@@ -270,7 +307,8 @@ def build_model(sid, tel, surface, rooms, *, peek=None, actor="agent", now=None)
                     g["set"] = flag_set(group, g["flag"])        # switch pressed / gate open
 
     if not model["bounds"]:
-        model["bounds"] = bounds_from_points(model["players"], model["gates"], model["warps"])
+        model["bounds"] = bounds_from_points(model["players"], model["gates"], model["warps"],
+                                             plan_centroid_points(model["plan"]))
     return model
 
 

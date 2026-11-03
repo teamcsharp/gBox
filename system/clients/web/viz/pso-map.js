@@ -117,11 +117,53 @@
     return out;
   }
 
+  // ---- the room graph (pure): the learned plan drawn ON the map in world space ----
+  // model.plan = { centroids:{room:[x,z]}, edges:{from:{door:to}}, crit_path:[...], path:[...],
+  //               current_room, target_room }. Nodes = rooms at their world centroid; edges = doors;
+  //               the critical path (recalled) or the visited path (first run) = the route to the goal.
+  function planGraph(model, v) {
+    const plan = model && model.plan;
+    if (!plan || typeof plan !== "object") return null;
+    const cen = plan.centroids || {};
+    const pos = r => { const c = cen[r] != null ? cen[r] : cen[String(r)];
+      return (Array.isArray(c) && num(c[0]) && num(c[1])) ? c : null; };
+    const crit = Array.isArray(plan.crit_path) ? plan.crit_path.filter(Number.isFinite) : [];
+    const trail = Array.isArray(plan.path) ? plan.path.filter(Number.isFinite) : [];
+    const route = crit.length ? crit : trail;                 // recalled crit path, else the visited path
+    const cur = num(plan.current_room) ? plan.current_room : null;
+    const tgt = num(plan.target_room) ? plan.target_room : null;
+    const goal = crit.length ? crit[crit.length - 1] : null;  // only a known exit on a recalled area
+    const curIdx = cur != null ? route.indexOf(cur) : -1;
+    const edges = [];
+    for (const fr of Object.keys(plan.edges || {})) {
+      const a = pos(fr); if (!a) continue;
+      for (const to of Object.values(plan.edges[fr] || {})) {
+        const b = pos(to); if (!b) continue;
+        const pa = project(v, a[0], a[1]), pb = project(v, b[0], b[1]);
+        edges.push([pa[0], pa[1], pb[0], pb[1]]);
+      }
+    }
+    const routePx = [];
+    for (const r of route) { const c = pos(r); if (c) routePx.push(project(v, c[0], c[1])); }
+    const rooms = new Set();
+    for (const k of Object.keys(cen)) { const n = parseInt(k, 10); if (Number.isFinite(n)) rooms.add(n); }
+    for (const r of route) rooms.add(r);
+    const nodes = [];
+    for (const r of rooms) {
+      const c = pos(r); if (!c) continue;
+      const [x, y] = project(v, c[0], c[1]);
+      const idx = route.indexOf(r);
+      nodes.push({ x, y, room: r, current: r === cur, target: r === tgt, goal: r === goal,
+        visited: curIdx >= 0 && idx >= 0 && idx < curIdx });
+    }
+    return { edges, route: routePx, nodes };
+  }
+
   // ---- drawing ----
   const THEME = { void: "#121218", floor: "#e9edf5", ink: "#10131a", halo: "#ffffff", muted: "#8a8a96",
     player: "#2a78d6", leader: "#1746c9", plan: "#1baf7a", locked: "#e34948", open: "#1baf7a",
     switchOn: "#1baf7a", switchOff: "#eda100", warp: "#8a5cf6", exit: "#13b5c8",
-    trail: "#9db7e8", trailLead: "#5a8ae0" };
+    trail: "#9db7e8", trailLead: "#5a8ae0", node: "#c9d4e8", edge: "#6b7490" };
   function themeOf() { return THEME; }
 
   function draw(ctx, s) {
@@ -152,6 +194,21 @@
         }
       });
       ctx.globalAlpha = 1;
+    }
+    // Room graph (the plan): door edges, then the critical/visited route to the goal, then room nodes.
+    const pg = planGraph(m, v);
+    if (pg) {
+      ctx.lineWidth = 1.5; ctx.strokeStyle = t.edge || t.muted; ctx.globalAlpha = 0.55; ctx.setLineDash([]);
+      for (const [ax, ay, bx, by] of pg.edges) { ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      if (pg.route.length > 1) {
+        ctx.setLineDash([]); ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.lineWidth = 6; ctx.strokeStyle = t.halo; ctx.globalAlpha = 0.55;
+        ctx.beginPath(); pg.route.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.lineWidth = 3; ctx.strokeStyle = t.plan;
+        ctx.beginPath(); pg.route.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+      }
+      for (const n of pg.nodes) drawNode(ctx, n, t);
     }
     const ms = marks(m, v);
     // P1's active GOTO: a line from P1 to the target + a crosshair (the pathfinding result of a click)
@@ -211,6 +268,21 @@
       if (m.leader) { ctx.lineWidth = 1.5; ctx.strokeStyle = t.ink; ctx.stroke(); }
     }
   }
+  function drawNode(ctx, n, t) {
+    const r = n.current ? 11 : n.goal ? 10 : 8;
+    const fill = n.current ? t.leader : n.goal ? t.exit : (t.node || "#c9d4e8");
+    ctx.globalAlpha = n.visited ? 0.55 : 1;
+    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI);
+    ctx.lineWidth = 3; ctx.strokeStyle = t.halo; ctx.stroke();
+    ctx.fillStyle = fill; ctx.fill();
+    if (n.target) { ctx.lineWidth = 2.5; ctx.strokeStyle = t.plan; ctx.beginPath(); ctx.arc(n.x, n.y, r + 3.5, 0, 2 * Math.PI); ctx.stroke(); }
+    ctx.lineWidth = 1; ctx.strokeStyle = t.ink; ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, 2 * Math.PI); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = (n.current || n.goal) ? "#ffffff" : t.ink;
+    ctx.font = "700 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(String(n.room), n.x, n.y);
+    ctx.textAlign = "start";
+  }
   function scaleBar(ctx, v, t) {
     if (!(v.scale > 0)) return;
     const target = v.w / 4 / v.scale;
@@ -255,38 +327,38 @@
   const CSS = `.psomap{display:flex;flex-direction:column;gap:6px;font-size:12px;min-width:0}
     .psomap .pm-hud{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-height:20px}
     .psomap .pm-where{font-weight:600}
-    .psomap .pm-obj{color:var(--mut);width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .psomap .pm-obj{color:var(--mut,#8a8a96);width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .psomap .pm-obj:empty{display:none}
-    .psomap .pm-stage{position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line);background:#121218;touch-action:none}
+    .psomap .pm-stage{position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line,#33384a);background:#121218;touch-action:none}
     .psomap canvas{display:block;width:100%;cursor:grab}
     .psomap .pm-status{position:absolute;left:8px;right:8px;top:8px;text-align:center;pointer-events:none;font-weight:600;
       color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}
     .psomap .pm-status:empty{display:none}
-    .psomap .pm-tip{position:absolute;pointer-events:none;padding:3px 7px;border-radius:6px;background:var(--bg);color:var(--fg);
-      border:1px solid var(--line);box-shadow:0 4px 14px #0004;white-space:nowrap;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis}
+    .psomap .pm-tip{position:absolute;pointer-events:none;padding:3px 7px;border-radius:6px;background:var(--bg,#1b1f29);color:var(--fg,#e7ebf3);
+      border:1px solid var(--line,#33384a);box-shadow:0 4px 14px #0004;white-space:nowrap;max-width:calc(100% - 12px);overflow:hidden;text-overflow:ellipsis}
     .psomap .pm-bar{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
     .psomap .pm-bar button{font-size:11px;padding:2px 8px}
-    .psomap .pm-order{color:var(--mut)}
-    .psomap .pm-legend{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--mut)}
+    .psomap .pm-order{color:var(--mut,#8a8a96)}
+    .psomap .pm-legend{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--mut,#8a8a96)}
     .psomap .pm-legend span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
     .psomap .pm-sw{width:10px;height:10px;border-radius:50%;display:inline-block}
     .psomap .pm-banner{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 8px;font-weight:700;
-      border-radius:8px;padding:6px 10px;font-size:13px;border:1px solid var(--line);letter-spacing:.2px}
+      border-radius:8px;padding:6px 10px;font-size:13px;border:1px solid var(--line,#33384a);letter-spacing:.2px}
     .psomap .pm-banner small{font-weight:500;font-size:11.5px;opacity:.92}
     .psomap .pm-banner[data-state="moving"]{background:#0f7d4d;color:#fff;border-color:#0b5f3a}
     .psomap .pm-banner[data-state="stuck"]{background:#c62f2e;color:#fff;border-color:#962020;animation:pm-pulse 1.1s ease-in-out infinite}
-    .psomap .pm-banner[data-state="wait"]{background:var(--bg);color:var(--mut)}
+    .psomap .pm-banner[data-state="wait"]{background:var(--bg,#1b1f29);color:var(--mut,#8a8a96)}
     @keyframes pm-pulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.25)}}
     @media (prefers-reduced-motion: reduce){.psomap .pm-banner[data-state="stuck"]{animation:none}}
     .psomap .pm-plan{display:flex;flex-wrap:wrap;align-items:center;gap:3px;font-size:11px;min-height:18px}
     .psomap .pm-plan:empty{display:none}
     .psomap .pm-room{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:19px;
-      padding:0 5px;border-radius:5px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+      padding:0 5px;border-radius:5px;border:1px solid var(--line,#33384a);background:var(--bg,#1b1f29);color:var(--fg,#e7ebf3)}
     .psomap .pm-room.visited{background:#3a6ea52e}
     .psomap .pm-room.current{background:#1746c9;color:#fff;border-color:#1746c9;font-weight:700}
     .psomap .pm-room.target{outline:2px solid #1baf7a;outline-offset:1px}
     .psomap .pm-room.goal{background:#13b5c8;color:#07303a;border-color:#13b5c8;font-weight:700}
-    .psomap .pm-arrow,.psomap .pm-note{color:var(--mut)}`;
+    .psomap .pm-arrow,.psomap .pm-note{color:var(--mut,#8a8a96)}`;
 
   function html(sid) {
     return `<details data-dock="psomap" class="sect" data-psomap="${ESC(sid)}" open hidden>` +
@@ -380,26 +452,29 @@
     }
     function renderPlan() {
       const el = $("plan"); if (!el) return;
+      if (!model || !model.live) { el.innerHTML = ""; return; }
       const plan = model && model.plan, fwd = (model && model.forward) || {};
-      const path = plan && Array.isArray(plan.crit_path) ? plan.crit_path.filter(r => Number.isFinite(r)) : [];
+      const crit = plan && Array.isArray(plan.crit_path) ? plan.crit_path.filter(Number.isFinite) : [];
+      const trail = plan && Array.isArray(plan.path) ? plan.path.filter(Number.isFinite) : [];
+      const usingCrit = crit.length > 0, path = usingCrit ? crit : trail;
       const cur = plan && num(plan.current_room) ? plan.current_room
                 : num(fwd.room) ? fwd.room : (model && num(model.room) ? model.room : null);
       const target = plan && num(plan.target_room) ? plan.target_room : null;
-      if (!model || !model.live) { el.innerHTML = ""; return; }
       if (!path.length) {
-        const seen = num(fwd.rooms_visited) ? fwd.rooms_visited : null;
+        const seen = num(fwd.rooms_visited) ? fwd.rooms_visited
+                   : (plan && num(plan.rooms_visited) ? plan.rooms_visited : null);
         el.innerHTML = `<span class="pm-note">Exploring${num(model.floor) ? " floor " + model.floor : ""} — building the map` +
           `${seen != null ? " · " + seen + " room" + (seen === 1 ? "" : "s") + " seen" : ""}` +
           `${num(cur) ? " · in room " + cur : ""} (no learned route yet)</span>`;
         return;
       }
-      const curIdx = path.indexOf(cur), out = [`<span class="pm-note">Plan:</span>`];
+      const curIdx = path.indexOf(cur), out = [`<span class="pm-note">${usingCrit ? "Plan:" : "Mapped:"}</span>`];
       path.forEach((r, i) => {
         const cls = ["pm-room"];
         if (r === cur) cls.push("current"); else if (curIdx >= 0 && i < curIdx) cls.push("visited");
         if (r === target) cls.push("target");
-        if (i === path.length - 1) cls.push("goal");
-        out.push(`<span class="${cls.join(" ")}">${i === path.length - 1 ? "&#9873; " : ""}${ESC(r)}</span>`);
+        if (usingCrit && i === path.length - 1) cls.push("goal");          // the exit is known only on a recalled area
+        out.push(`<span class="${cls.join(" ")}">${usingCrit && i === path.length - 1 ? "&#9873; " : ""}${ESC(r)}</span>`);
         if (i < path.length - 1) out.push(`<span class="pm-arrow">&rsaquo;</span>`);
       });
       el.innerHTML = out.join("");
@@ -520,7 +595,7 @@
   function detach() { if (current) current.stop(); current = null; }
 
   const api = { html, mount, detach, create, viewOf, project, unproject, panView, zoomView, fitCamera,
-    surfaceCells, marks, draw, classColor, VIEW };
+    surfaceCells, marks, planGraph, draw, classColor, VIEW };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxPsoMap = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

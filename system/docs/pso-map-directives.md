@@ -210,5 +210,47 @@ all, leaving an empty void. This layer fixes that, feed + client, without touchi
   published and degrades to the exploring note otherwise.
 
 All client changes are F5-applicable. The feed changes (memory players, `forward`, `plan`) need a
-`gbox.service` restart to go live; the `plan` strip additionally needs `pso_coop` to publish
-`stats["pso_plan"]` (coordinate with the nav agent).
+`gbox.service` restart to go live; the `plan` strip additionally needs `pso_coop` to publish the plan.
+
+### `stats["pso_plan"]` contract (published by `pso_coop`, 2026-11-03)
+
+The nav agent publishes the plan THREE ways; the feed reads them in this order (a nested dict can be
+dropped by the telemetry path, so the JSON string is authoritative):
+1. `stats["pso_plan_json"]` — a bounded (<=7 KB) JSON STRING (same pattern as `steering_evidence_json`);
+2. `stats["pso_plan"]` — the same as a dict;
+3. flat scalars `pso_plan_current_room` / `pso_plan_target_room` / `pso_plan_crit_len` / `pso_plan_rooms_visited`.
+
+Shape: `{ area, episode, floor, current_room, target_room, crit_path:[room,...], path:[room,...],
+edges:{"<from>":{"<door>":<to>}}, centroids:{"<room>":[x,z]} }`. `crit_path` is non-empty only on a
+RECALLED area (2nd+ visit); first visit grows `path` (rooms reached) instead. `centroids` = last-seen
+P1 (x,z) per room, so the client places room nodes spatially. The feed frames the map bounds to include
+the centroids when there is no collision surface, and the client draws the room graph ON the map:
+door edges, the critical/visited route to the goal, and a numbered node per room (current filled,
+target ringed, goal = the exit).
+
+---
+
+# The general live "task map" viewer — every hooked title (2026-11-03)
+
+The operator's map viewer is the desktop window `clients/desktop/mercs-window.*` ("gBox · Mercenaries":
+a session dropdown + "Live map"/"Run reviewer" tabs). It is really a GENERAL dashboard for every
+currently-playing/hooked/mapped title, not Mercs-specific. It used to mount the Mercenaries tactical
+map for every session, so a PSO session rendered BLANK. It now picks the renderer per session by title.
+
+- **Provider registry** `clients/web/viz/live-maps.js` (`GBoxLiveMaps`): `register(provider)`,
+  `pick(session)->provider`, `classify(session)->id`. A provider is a title-matched adapter
+  `{ id, label, match(session), note, html(sid), mount(doc,{sid,api}), detach }`. Built-ins: `pso`
+  (→ `GBoxPsoMap`) and `mercs` (→ `GBoxTacticalMap`, also the fallback). A new hooked title plugs in by
+  registering its own provider — no viewer change. Match order is most-specific-first.
+- **Desktop window** (`mercs-window.js`): `mapFor(sid)` classifies the selected session (PSO Dolphin →
+  the PSO map with dots/trails/MOVING-STUCK banner/plan; everything else → the tactical map) and mounts
+  the matching renderer, through INJECTED renderers so it stays unit-testable. The PSO map's `api` is the
+  window's Electron bridge (so it works under the window's `connect-src 'none'` CSP). `mercs-window.html`
+  now also loads `pso-map.js` + `live-maps.js`.
+- **Still to build (reported to the coordinator):** (2) concurrent multi-pane so PSO + Mercs show at once
+  during a rotation's "psoTime" segment; (3) a generic top-down provider for hooked titles with no
+  bespoke renderer. The registry is the seam for both.
+
+Deploy: these are client files served statically — a client hard-refresh / reopen of the window picks
+them up once the files are on disk where the app loads them; no additional server restart beyond the
+one that already shipped the feed.

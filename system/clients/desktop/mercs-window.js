@@ -32,14 +32,34 @@
     }
     return null;
   }
-  function mount(doc,bridge,{reviewer=root.GBoxMercsReviewer,tactical=root.GBoxTacticalMap,setTimer=root.setInterval,clearTimer=root.clearInterval}={}){
+  // PSO (Dolphin) sessions get the RAM-derived PSO co-op map; every other hooked title keeps the
+  // tactical map. The renderer is chosen per session by title - via the GBoxLiveMaps provider registry
+  // when loaded (extensible: new titles register their own renderer), else a local PSO title check.
+  const isPso=row=>{const t=String((row&&(row.title||row.game_id))||'');return /phantasy star online/i.test(t)||/^GP[OS]/i.test(String((row&&row.game_id)||''))||/\bpso\b/i.test(t);};
+  function mount(doc,bridge,{reviewer=root.GBoxMercsReviewer,tactical=root.GBoxTacticalMap,pso=root.GBoxPsoMap,registry=root.GBoxLiveMaps,setTimer=root.setInterval,clearTimer=root.clearInterval}={}){
     const $=id=>doc.getElementById(id);let state=null,dead=false,map=null,review=null,busy=false,revision=0,anchor=null;
+    const titles=new Map();let mapSid=null,mapKind=null;                 // the session row titles + the mounted renderer
     const api=(path,body,method)=>bridge.api(path,body,method);
     const message=value=>{$('status').textContent=value||'';};
-    function mapFor(sid){map?.stop();map=null;tactical?.detach?.();$('map').replaceChildren();
-      $('map-note').hidden=false;$('map-note').textContent=sid?'Hover to hold the map; wheel to zoom; drag to pan. Click a bonus or recovery item to request collection.':'Choose a session to watch its measured map. Gameplay continues in its own window.';
-      if(!sid||!tactical)return;
-      $('map').innerHTML=tactical.html(sid);map=tactical.mount(doc,{sid,api});
+    const renderers={mercs:tactical,pso};
+    function sessionRow(sid){return sid?{session_id:sid,title:titles.get(sid)||''}:null;}
+    function kindFor(row){                                               // -> 'pso' | 'mercs' (a renderer we have)
+      let id=null;try{id=registry&&typeof registry.classify==='function'?registry.classify(row):null;}catch(e){id=null;}
+      if(!id)id=(pso&&isPso(row))?'pso':'mercs';
+      return renderers[id]?id:'mercs';
+    }
+    function mapFor(sid){
+      const kind=sid?kindFor(sessionRow(sid)):null;
+      if(sid===mapSid&&kind===mapKind&&map)return;                       // already showing the right map for this session
+      map?.stop();map=null;tactical?.detach?.();pso?.detach?.();$('map').replaceChildren();
+      mapSid=sid;mapKind=kind;
+      const rend=kind?renderers[kind]:null;
+      $('map-note').hidden=false;
+      $('map-note').textContent=!sid?'Choose a session to watch its measured map. Gameplay continues in its own window.'
+        :kind==='pso'?'Live PSO map - both players, motion trails, the MOVING/STUCK banner and the run plan. Double-click an open spot to send P1; click a gate to open it; Resume autonomous when idle.'
+        :'Hover to hold the map; wheel to zoom; drag to pan. Click a bonus or recovery item to request collection.';
+      if(!sid||!rend)return;
+      $('map').innerHTML=rend.html(sid);map=rend.mount(doc,{sid,api});
     }
     function mode(value){if(!state)return;state.mode=value==='map'?'map':'reviewer';const live=state.mode==='map';
       $('live-view').hidden=!live;$('review-view').hidden=live;
@@ -50,12 +70,13 @@
     async function sessions(){if(dead||busy||!state)return;busy=true;const token=revision;
       try{const rows=await api('/api/sessions?include_ended=false');if(dead||token!==revision)return;
         let selected=state.sid;const choices=(Array.isArray(rows)?rows:[]).filter(s=>s&&s.state==='running');
+        for(const row of choices)titles.set(row.session_id,row.title||row.game_id||'');
         const rotationState=await api('/api/mercmode').catch(()=>null);
         if(dead||token!==revision)return;
         const playing=current(selected,choices,rotationState?.hosts);
         if(playing&&playing.session_id!==selected){state.sid=selected=playing.session_id;anchor={sid:selected,game:playing.game_id};mapFor(selected);}
         const selectedRow=choices.find(s=>s.session_id===selected);
-        if(selectedRow)anchor={sid:selected,game:selectedRow.game_id};
+        if(selectedRow){anchor={sid:selected,game:selectedRow.game_id};mapFor(selected);}   // title now known: pick PSO vs tactical (no-op if already right)
         else if(selected){
           const next=await replacement(selected,choices,api,()=>!dead&&token===revision&&state.sid===selected,
                                        anchor?.sid===selected?anchor.game:null);
@@ -75,7 +96,7 @@
     $('top').onchange=async()=>{try{$('top').checked=await bridge.alwaysOnTop($('top').checked);}catch(error){message(error.message);}};
     const unsubscribe=bridge.onScope(adopt);const ready=bridge.info().then(adopt).catch(error=>message(error.message));
     const timer=setTimer(()=>sessions(),5000);
-    return {ready,sessions,adopt,dispose(){dead=true;revision++;clearTimer(timer);unsubscribe?.();map?.stop();tactical?.detach?.();review?.dispose();}};
+    return {ready,sessions,adopt,dispose(){dead=true;revision++;clearTimer(timer);unsubscribe?.();map?.stop();tactical?.detach?.();pso?.detach?.();review?.dispose();}};
   }
   const api={mount,replacement,rotation};if(typeof module==='object'&&module.exports)module.exports=api;else{root.GBoxMercsWindow=api;const control=mount(root.document,root.mercsWindow);root.addEventListener('pagehide',()=>control.dispose(),{once:true});}
 })(typeof window!=='undefined'?window:globalThis);

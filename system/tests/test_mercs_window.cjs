@@ -185,6 +185,31 @@ test('manual session selection wins a pending lineage request without another ma
   }finally{f.control.dispose();}
 });
 
+test('viewer renders the PSO map for PSO sessions and the tactical map for the rest',async()=>{
+  const psoMaps=[],mercMaps=[],nodes=new Map();
+  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',children:[],hidden:false,checked:false,textContent:'',_html:'',
+    replaceChildren(){this.children=[];},append(i){this.children.push(i);},setAttribute(){},
+    set innerHTML(v){this._html=v;},get innerHTML(){return this._html;}});return nodes.get(id);};
+  const doc={getElementById:node,createElement:()=>({})};
+  const psoSid='c'.repeat(16)+'-'+'d'.repeat(16),mercSid='e'.repeat(16)+'-'+'f'.repeat(16);
+  let live=[{session_id:psoSid,game_id:'GPSE8P',state:'running',title:'Phantasy Star Online Episode I & II Plus (USA)'}];
+  const bridge={info:async()=>({origin:'http://spark:8765',sid:psoSid,mode:'map'}),onScope:()=>()=>{},alwaysOnTop:async on=>on,
+    api:async p=>p==='/api/sessions?include_ended=false'?live:p==='/api/mercmode'?{hosts:[]}:[]};
+  const control=viewer.mount(doc,bridge,{reviewer:null,registry:null,
+    tactical:{html:id=>id,mount:(_d,{sid})=>{mercMaps.push(sid);return{stop(){}};},detach(){}},
+    pso:{html:id=>id,mount:(_d,{sid})=>{psoMaps.push(sid);return{stop(){}};},detach(){}},
+    setTimer:()=>1,clearTimer(){}});
+  try{await control.ready;await settle();
+    assert.deepEqual(psoMaps,[psoSid],'the PSO session mounts the PSO map renderer');
+    assert.match(node('map-note').textContent,/PSO map/);
+    // switching to a Mercenaries session mounts the tactical map, not the PSO map
+    live=[{session_id:mercSid,game_id:'RE5',state:'running',title:'Resident Evil 5'}];
+    node('sessions').value=mercSid;node('sessions').onchange();await settle();
+    assert.ok(mercMaps.includes(mercSid),'the RE session mounts the tactical map');
+    assert.ok(!psoMaps.includes(mercSid),'the RE session never mounts the PSO map');
+  }finally{control.dispose();}
+});
+
 test('practice-route binding requires exact live worker and grants polling only its created job',async t=>{
   const f=fixture(t);await f.manager.open({origin:'http://spark:8765'});const event=f.event(f.windows[0]);
   const body={tool:'mercs_team',agent_use:false,require_worker:'a'.repeat(16),input:{session_id:sid,op:'configure',selected_route_id:route}};
