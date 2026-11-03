@@ -801,11 +801,10 @@ STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
 BOSS_CHASE_CAP = 220.0       # approach a boss up to (real gun reach + this) before holding; beyond = relocating, don't chase
-BOSS_FIRE_RANGE_FALLBACK = 50.0  # fire range when the weapon envelope is UNVERIFIED - close in so the shot can't fall short
-                             # (never-miss can't rescue a shot beyond the gun's true reach; the real reach is envelope.horizontal)
-BOSS_FIRE_RANGE_MAX = 60.0   # hard cap on boss fire range: the live verifier proved damage lands at ~38u but NOT ~219u, so
-                             # never fire from beyond this (shots fall short) - CLOSE to it first; widen when the exact PMT is pinned
-BOSS_FIRE_CONE = 25.0        # fire when facing the weak point within this cone (never-miss is forgiving; don't micro-rotate forever)
+BOSS_FIRE_MARGIN = 0.95      # fire within this fraction of the EQUIPPED gun's real reach (build PMT: rifle 178.5u, shot 110.5,
+                             # handgun 144.5, mechgun 72.25) - a shot from beyond the gun's reach falls short and never connects.
+                             # Using the live weapon envelope auto-gives the mobile Dragon its full ~170u firing range (not a tight 60).
+BOSS_FIRE_RANGE_FALLBACK = 70.0  # fire range when the weapon envelope is UNVERIFIED (mechgun-safe; close enough to connect for any gun)
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -2541,7 +2540,9 @@ class Controller:
         bx, bz = boss_row["x"], boss_row["z"]
         bdist = math.hypot(bx - player["x"], bz - player["z"])
         env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
-        half = max(envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8., BOSS_FIRE_CONE)
+        # Fire within the gun's REAL cone (rifle 10deg is narrow -> needs tight aim on a
+        # moving boss; the build layer forces the wide-cone Shot for the mobile Dragon).
+        half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
         _, angle, _vok = attack_geometry(player, boss_row, envelope)
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
         vuln = adv.get("boss_vulnerable")
@@ -2551,8 +2552,10 @@ class Controller:
         # from beyond it falls short and never-miss can't rescue it (the ~220u void-fire bug).
         # Unverified envelope -> close in to BOSS_FIRE_RANGE_FALLBACK so the shot connects.
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
-        fire_range = env_h if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
-        fire_range = min(fire_range, BOSS_FIRE_RANGE_MAX)   # the verifier proved shots fall short past ~60u; close in first
+        # Fire range = the EQUIPPED gun's real reach (envelope horizontal) with a small
+        # margin - NOT a fixed cap. Auto-gives the rifle ~170u / shot ~105u so the mobile
+        # Dragon is fired on whenever it's in real reach, not only when crowded close.
+        fire_range = (env_h * BOSS_FIRE_MARGIN) if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
         in_fire = bdist <= fire_range
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)

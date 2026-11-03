@@ -1346,15 +1346,15 @@ def test_follower_boss_fires_in_reach_approaches_mid_and_holds_when_far(tmp_path
                               "x": x, "z": 0., "y": 0.}}
     st = state(floor=12)
     st["players"][2].update(x=-75., z=5., room=10)
-    env = dict(C.FALLBACK, horizontal=200., horizontal_half_angle=30., verified=True)   # reach capped at 60
+    env = dict(C.FALLBACK, horizontal=200., horizontal_half_angle=30., verified=True)   # reach 200 -> fire_range ~190
     def run(x):
         ctrl._boss_adv = adv(x)
         cmds, mv, steer = [], {}, {}
         ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], env, cmds, mv, steer, {})
         return steer[2][2]
-    assert run(-30.) in ("boss_fire", "boss_line", "boss_hold")       # ~45u <=60 cap -> fire the line
-    assert run(100.) in ("boss_approach", "boss_approach_unwedge")    # ~175u, cap..cap+chase -> approach
-    assert run(300.) == "boss_hold_far"                               # ~375u, too far -> hold, don't chase
+    assert run(0.) in ("boss_fire", "boss_line", "boss_hold")         # ~75u <=190 reach -> fire the line
+    assert run(250.) in ("boss_approach", "boss_approach_unwedge")    # ~325u, reach..reach+chase -> approach
+    assert run(400.) == "boss_hold_far"                               # ~475u, too far -> hold, don't chase
 
 
 def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path):
