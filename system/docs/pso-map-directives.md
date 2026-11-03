@@ -161,3 +161,54 @@ Zoom (wheel) / pan (drag) reuse the tactical map's world↔pixel transform; it f
 first frame and re-fits when the area (`fingerprint`) changes. Client changes are F5-applicable; the
 feed + directive endpoints need a `gbox.service` restart to go live — until then the client degrades
 (keeps polling, shows "Waiting for the PSO map feed…").
+
+---
+
+# Live-motion layer — "are they moving, and toward what?" (2026-11-03)
+
+The operator kept seeing the party *sitting still* and asked for a map where motion (or its absence)
+is obvious at a glance. The original layer above drew the collision surface + a single player from
+`steering_evidence_json` — but that stream carries ONLY P1 and can lag many minutes, so the map showed
+one stale, frozen dot; and when geometry is unverified (`map_surface_skip`) no surface publishes at
+all, leaving an empty void. This layer fixes that, feed + client, without touching `pso_coop`.
+
+## Feed (`gbox/pso_map_feed.py`) — new model fields
+
+- **`players` now come from RAM, both of them.** `players_from_memory(sid, peek, actor, now)` reads the
+  party slot pointer table at `PLAYER_PTR_TABLE 0x8050EA10` (P1..P4 object pointers, 4×u32 BE in one
+  read), then each live object's world pose (`x/y/z` = big-endian f32 at object `+0x38/+0x3C/+0x40`).
+  Bounded + cached ~4 Hz, read-only (never perturbs the bot). This is the authoritative, always-live,
+  BOTH-players source; `steering_evidence_json` is used only to enrich HP by slot, and as a fallback
+  (then the surface file). `model.players_source` ∈ `memory|steering|surface|none` says which won.
+- **`forward`** — the bot's own progress/stuck telemetry, surfaced so the map can show it:
+  `{room, rooms_visited, time_since_new_room_s, stuck, fallback_target, fallback_dist, fallback_action,
+    floor_advances, nav_target_dist, nav_route_cells, nav_route_exact, nav_blocked, boss_active,
+    boss_weakpoint_x, boss_weakpoint_z}`. `model.room` falls back to `forward.room` when no surface.
+- **`plan`** — the run plan, i.e. the learned room-adjacency graph + critical path. The crystal file
+  lives on the WORKER (`<runtime>/autoplay/pso-coop/<id>/pso-knowledge.json`) and is **not reachable
+  from the control-plane server**, so this is read from telemetry `stats["pso_plan"]` (published by
+  `pso_coop`), `null` until the bot publishes it. Expected shape (map agent ⇄ nav agent contract):
+  `{ "area": "<area_fingerprint>", "floor": 5, "episode": 1, "current_room": 2, "target_room": 5,
+     "crit_path": [2,5,12,...], "edges": {"2": {"<door_key>": 5}, ...},
+     "forward_room": 2, "forward_rooms_visited": 2 }`
+  (`current_room` = P1's room; `target_room` = `_path_next(current_room)`; `crit_path` =
+  `KnowledgeStore.critical_path(area)`; `edges` = `KnowledgeStore.area_edges(area)`.)
+
+## Client (`clients/web/viz/pso-map.js`)
+
+- **Motion trails** — a fading world-space tail behind each player dot (P1 bold). A dot with a tail is
+  moving; a dot with no tail is sitting still. Computed in the client from successive `players` poses,
+  so it works regardless of what the bot reports.
+- **MOVING / STUCK banner** — a big colored bar above the map. GREEN **MOVING → `<objective/target>`**
+  when the dots are moving; RED **STUCK · not moving** (dots frozen, client-detected over a ~2.5 s
+  window) or **STALLED · no new room** (bot's `forward.stuck`), with the stationary seconds, the
+  fallback objective and distance-to-goal. This is the glanceable answer to "are they stuck?".
+- **Plan strip** — the critical path as a left→right chain of room pills: visited rooms dimmed, the
+  current room highlighted, the `target_room` ringed, the last pill flagged as the GOAL/exit. Before a
+  route is learned it reads "Exploring floor N — building the map · K rooms seen · in room R". This is
+  the "how the run is planned / toward the goal" view; it lights up once `stats["pso_plan"]` is
+  published and degrades to the exploring note otherwise.
+
+All client changes are F5-applicable. The feed changes (memory players, `forward`, `plan`) need a
+`gbox.service` restart to go live; the `plan` strip additionally needs `pso_coop` to publish
+`stats["pso_plan"]` (coordinate with the nav agent).

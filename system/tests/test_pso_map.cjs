@@ -88,6 +88,20 @@ test('draw paints the floor cells, the goal line and the marks', () => {
   assert.ok(ctx._calls.some(c => c[0] === 'stroke'), 'drew the goal line / marks');
 });
 
+test('draw paints motion trails behind the players when given a trail buffer', () => {
+  const theme = { void: '#000', floor: '#fff', ink: '#111', halo: '#fff', muted: '#888', player: '#2a78d6',
+    leader: '#1746c9', plan: '#1baf7a', locked: '#e34948', open: '#1baf7a', switchOn: '#1baf7a',
+    switchOff: '#eda100', warp: '#8a5cf6', exit: '#13b5c8', trail: '#9db7e8', trailLead: '#5a8ae0' };
+  const v = P.viewOf(P.fitCamera(model()), SIZE);
+  const bare = recorder(); P.draw(bare, { model: model(), view: v, theme });
+  const trails = new Map([[1, [{ x: 100, z: 100 }, { x: 150, z: 120 }, { x: 200, z: 200 }]]]);
+  const withT = recorder(); P.draw(withT, { model: model(), view: v, theme, trails });
+  const strokes = c => c._calls.filter(x => x[0] === 'stroke').length;
+  assert.ok(strokes(withT) > strokes(bare), 'trail segments add stroke calls');
+  // safe when trails is absent or not a Map
+  assert.doesNotThrow(() => P.draw(recorder(), { model: model(), view: v, theme, trails: null }));
+});
+
 test('draw is safe with an empty model', () => {
   const ctx = recorder();
   const ms = P.draw(ctx, { model: null, view: P.viewOf({ cx: 0, cz: 0, radius: 100, rot: 0 }, SIZE), theme: { void: '#000' } });

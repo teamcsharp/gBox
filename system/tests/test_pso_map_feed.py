@@ -27,6 +27,61 @@ def test_players_from_steering_and_surface():
     assert {p["slot"]: p["role"] for p in surf} == {1: "leader", 2: "swarm"}
 
 
+# ----------------------------------------------------------------------------- live players from RAM
+def _pose_mem(ptrs, poses):
+    """A peek() that serves the P1..P4 pointer table at PLAYER_PTR_TABLE and each object's x/y/z
+    pose (big-endian f32 at +0x38). `ptrs` = [p1,p2,p3,p4]; `poses` = {ptr: (x,y,z)}."""
+    import struct
+
+    def peek(sid, addr, n, actor):
+        if addr == F.PLAYER_PTR_TABLE:
+            return struct.pack(">IIII", *ptrs).hex()
+        for obj, (x, y, z) in poses.items():
+            if addr == obj + F.PLAYER_POS_OFF:
+                return struct.pack(">fff", x, y, z).hex()
+        raise AssertionError(f"unexpected read {addr:#x}")
+    return peek
+
+
+def test_players_from_memory_reads_both_players():
+    F._players_cache.clear()
+    peek = _pose_mem([0x80DA62A0, 0x80DA8830, 0, 0],
+                     {0x80DA62A0: (-10.0, 0.0, -130.0), 0x80DA8830: (10.0, 0.0, -130.0)})
+    ps = F.players_from_memory("s", peek, "agent", 1.0)
+    by = {p["slot"]: p for p in ps}
+    assert by[1]["role"] == "leader" and by[1]["x"] == -10.0 and by[1]["z"] == -130.0
+    assert by[2]["role"] == "swarm" and by[2]["x"] == 10.0 and by[2]["ptr"] == "80DA8830"
+    assert 3 not in by and 4 not in by               # null pointers are skipped
+
+
+def test_players_from_memory_bad_pointer_skipped():
+    F._players_cache.clear()
+    peek = _pose_mem([0x00000000, 0x80DA8830, 0, 0], {0x80DA8830: (1.0, 0.0, 2.0)})
+    ps = F.players_from_memory("s2", peek, "agent", 1.0)
+    assert [p["slot"] for p in ps] == [2]            # P1 pointer null -> only P2
+
+
+def test_build_model_prefers_live_memory_over_stale_steering():
+    F._players_cache.clear()
+    peek = _pose_mem([0x80DA62A0, 0x80DA8830, 0, 0],
+                     {0x80DA62A0: (-10.0, 0.0, -130.0), 0x80DA8830: (10.0, 0.0, -130.0)})
+    tel = {"running": True, "stats": {"episode": 1, "floor": 5, "forward_room": 2, "forward_stuck": True,
+           "forward_time_since_new_room_s": 99.9, "forward_fallback_target": "TLazerFenceSw",
+           "forward_fallback_dist": 758.6, "floor_advances": 4, "nav_route_cells": 64,
+           "pso_plan": {"area": "a1", "current_room": 2, "target_room": 5, "crit_path": [2, 5, 12],
+                        "edges": {"2": {"d0": 5}}},
+           "steering_evidence_json": json.dumps({"events": [{"players": {
+               "1": {"after": {"x": 51.7, "z": 18.9, "hp": 40}}}}]})}}
+    model = F.build_model("s3", tel, None, {}, peek=peek, actor="agent", now=10.0)
+    assert model["players_source"] == "memory"
+    by = {p["slot"]: p for p in model["players"]}
+    assert set(by) == {1, 2} and by[1]["x"] == -10.0     # live RAM pose, not the stale steering (51.7)
+    assert by[1]["hp"] == 40                              # HP enriched from steering by slot
+    assert model["forward"]["stuck"] is True and model["forward"]["time_since_new_room_s"] == 99.9
+    assert model["room"] == 2                             # falls back to forward_room with no surface
+    assert model["plan"]["crit_path"] == [2, 5, 12] and model["plan"]["target_room"] == 5
+
+
 # ----------------------------------------------------------------------------- bounds / crystal index
 def test_bounds_list_and_learned_areas():
     assert F.bounds_list({"min_x": -600, "min_z": -560, "max_x": 540, "max_z": 560}) == [-600, -560, 540, 560]

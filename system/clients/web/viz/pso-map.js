@@ -120,7 +120,8 @@
   // ---- drawing ----
   const THEME = { void: "#121218", floor: "#e9edf5", ink: "#10131a", halo: "#ffffff", muted: "#8a8a96",
     player: "#2a78d6", leader: "#1746c9", plan: "#1baf7a", locked: "#e34948", open: "#1baf7a",
-    switchOn: "#1baf7a", switchOff: "#eda100", warp: "#8a5cf6", exit: "#13b5c8" };
+    switchOn: "#1baf7a", switchOff: "#eda100", warp: "#8a5cf6", exit: "#13b5c8",
+    trail: "#9db7e8", trailLead: "#5a8ae0" };
   function themeOf() { return THEME; }
 
   function draw(ctx, s) {
@@ -134,6 +135,22 @@
         const a = project(v, x0, z0), b = project(v, x1, z1);
         ctx.fillRect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]) + 0.8, Math.abs(b[1] - a[1]) + 0.8);
       }
+      ctx.globalAlpha = 1;
+    }
+    // Motion trails: a fading tail behind each player (world-space). The whole point of the map for
+    // the operator - a dot leaving a tail is moving; a dot with no tail is sitting still.
+    if (s.trails && typeof s.trails.forEach === "function") {
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      s.trails.forEach((pts, slot) => {
+        if (!Array.isArray(pts) || pts.length < 2) return;
+        const lead = slot === 1, col = lead ? (t.trailLead || t.leader) : (t.trail || t.player);
+        ctx.lineWidth = lead ? 3.5 : 2.5; ctx.strokeStyle = col;
+        for (let i = 1; i < pts.length; i++) {
+          const a = project(v, pts[i - 1].x, pts[i - 1].z), b = project(v, pts[i].x, pts[i].z);
+          ctx.globalAlpha = 0.1 + 0.6 * (i / pts.length);
+          ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+        }
+      });
       ctx.globalAlpha = 1;
     }
     const ms = marks(m, v);
@@ -252,7 +269,24 @@
     .psomap .pm-order{color:var(--mut)}
     .psomap .pm-legend{display:flex;flex-wrap:wrap;gap:2px 10px;color:var(--mut)}
     .psomap .pm-legend span{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
-    .psomap .pm-sw{width:10px;height:10px;border-radius:50%;display:inline-block}`;
+    .psomap .pm-sw{width:10px;height:10px;border-radius:50%;display:inline-block}
+    .psomap .pm-banner{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 8px;font-weight:700;
+      border-radius:8px;padding:6px 10px;font-size:13px;border:1px solid var(--line);letter-spacing:.2px}
+    .psomap .pm-banner small{font-weight:500;font-size:11.5px;opacity:.92}
+    .psomap .pm-banner[data-state="moving"]{background:#0f7d4d;color:#fff;border-color:#0b5f3a}
+    .psomap .pm-banner[data-state="stuck"]{background:#c62f2e;color:#fff;border-color:#962020;animation:pm-pulse 1.1s ease-in-out infinite}
+    .psomap .pm-banner[data-state="wait"]{background:var(--bg);color:var(--mut)}
+    @keyframes pm-pulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.25)}}
+    @media (prefers-reduced-motion: reduce){.psomap .pm-banner[data-state="stuck"]{animation:none}}
+    .psomap .pm-plan{display:flex;flex-wrap:wrap;align-items:center;gap:3px;font-size:11px;min-height:18px}
+    .psomap .pm-plan:empty{display:none}
+    .psomap .pm-room{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:19px;
+      padding:0 5px;border-radius:5px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+    .psomap .pm-room.visited{background:#3a6ea52e}
+    .psomap .pm-room.current{background:#1746c9;color:#fff;border-color:#1746c9;font-weight:700}
+    .psomap .pm-room.target{outline:2px solid #1baf7a;outline-offset:1px}
+    .psomap .pm-room.goal{background:#13b5c8;color:#07303a;border-color:#13b5c8;font-weight:700}
+    .psomap .pm-arrow,.psomap .pm-note{color:var(--mut)}`;
 
   function html(sid) {
     return `<details data-dock="psomap" class="sect" data-psomap="${ESC(sid)}" open hidden>` +
@@ -260,6 +294,8 @@
       `<div class="psomap">` +
       `<div class="pm-hud" role="status" aria-live="polite"><span class="pm-where" data-pm="where">–</span>` +
       `<span class="mut" data-pm="count"></span><span class="pm-obj" data-pm="objective"></span></div>` +
+      `<div class="pm-banner" data-pm="banner" data-state="wait" role="status" aria-live="assertive">Waiting for the PSO map feed…</div>` +
+      `<div class="pm-plan" data-pm="plan" aria-label="Run plan"></div>` +
       `<div class="pm-stage"><canvas role="img" tabindex="0" aria-label="Top-down PSO level map"></canvas>` +
       `<div class="pm-status" data-pm="status"></div><div class="pm-tip" data-pm="tip" hidden></div></div>` +
       `<div class="mut">Double-click an open spot to send P1 there. Click a gate/switch to press it, an enemy to attack. Wheel zooms; drag pans.</div>` +
@@ -295,6 +331,80 @@
     let camera = null, manual = false, over = false, drag = null, busyCmd = false;
     const visible = () => !stopped && sect.isConnected && sect.open && !sect.hidden && doc.visibilityState !== "hidden";
 
+    // ---- motion trails + "are they moving?" detection (the operator's key signal) ----
+    const trails = new Map();                      // slot -> [{x,z,t}] world-space tail
+    const TRAIL_MS = 9000, TRAIL_MAX = 64, MOVE_EPS = 4;   // world units; below this over the window = not moving
+    const nowMs = () => (root.performance && root.performance.now ? root.performance.now() : Date.now());
+    function pushTrail(f) {
+      const t0 = nowMs(), players = (f && f.players) || [];
+      for (const p of players) {
+        if (!(num(p.x) && num(p.z))) continue;
+        let tr = trails.get(p.slot); if (!tr) trails.set(p.slot, tr = []);
+        const last = tr[tr.length - 1];
+        if (!last || Math.hypot(p.x - last.x, p.z - last.z) >= 0.75) tr.push({ x: p.x, z: p.z, t: t0 });
+        else last.t = t0;                          // still: keep the tail point, just refresh its time
+        while (tr.length > TRAIL_MAX) tr.shift();
+        while (tr.length > 1 && t0 - tr[0].t > TRAIL_MS) tr.shift();
+      }
+      const live = new Set(players.map(p => p.slot));
+      for (const slot of [...trails.keys()]) if (!live.has(slot)) trails.delete(slot);
+    }
+    function recentMove(slot, windowMs = 2500) {
+      const tr = trails.get(slot); if (!tr || tr.length < 2) return 0;
+      const cur = tr[tr.length - 1]; let ref = tr[0];
+      for (let i = tr.length - 1; i >= 0; i--) { if (cur.t - tr[i].t >= windowMs) { ref = tr[i]; break; } }
+      return Math.hypot(cur.x - ref.x, cur.z - ref.z);
+    }
+    function renderBanner() {
+      const banner = $("banner"); if (!banner) return;
+      const players = (model && model.players) || [], fwd = (model && model.forward) || {};
+      const haveMotion = players.some(p => (trails.get(p.slot) || []).length >= 2);
+      const moved = players.length ? players.reduce((m, p) => Math.max(m, recentMove(p.slot)), 0) : 0;
+      const idle = haveMotion && moved < MOVE_EPS;
+      let state = "wait", head, sub = "";
+      if (!model || !model.live) { head = model ? "Run not live" : "Waiting for the PSO map feed…"; }
+      else if (!players.length) { head = "No player positions yet…"; }
+      else if (idle || fwd.stuck) {
+        state = "stuck"; head = idle ? "STUCK · not moving" : "STALLED · no new room";
+        const secs = num(fwd.time_since_new_room_s) ? Math.round(fwd.time_since_new_room_s) + "s stationary" : "";
+        sub = [secs, fwd.fallback_target ? "→ " + fwd.fallback_target : "",
+               num(fwd.fallback_dist) ? Math.round(fwd.fallback_dist) + "u to goal" : ""].filter(Boolean).join(" · ");
+      } else {
+        state = "moving"; head = "MOVING";
+        const tgt = model.objective || (model.plan && num(model.plan.target_room) ? "room " + model.plan.target_room : "");
+        sub = [tgt ? "→ " + tgt : "",
+               num(fwd.time_since_new_room_s) ? Math.round(fwd.time_since_new_room_s) + "s since new room" : ""].filter(Boolean).join(" · ");
+      }
+      banner.dataset.state = state;
+      banner.innerHTML = `<span>${ESC(head)}</span>${sub ? `<small>${ESC(sub)}</small>` : ""}`;
+    }
+    function renderPlan() {
+      const el = $("plan"); if (!el) return;
+      const plan = model && model.plan, fwd = (model && model.forward) || {};
+      const path = plan && Array.isArray(plan.crit_path) ? plan.crit_path.filter(r => Number.isFinite(r)) : [];
+      const cur = plan && num(plan.current_room) ? plan.current_room
+                : num(fwd.room) ? fwd.room : (model && num(model.room) ? model.room : null);
+      const target = plan && num(plan.target_room) ? plan.target_room : null;
+      if (!model || !model.live) { el.innerHTML = ""; return; }
+      if (!path.length) {
+        const seen = num(fwd.rooms_visited) ? fwd.rooms_visited : null;
+        el.innerHTML = `<span class="pm-note">Exploring${num(model.floor) ? " floor " + model.floor : ""} — building the map` +
+          `${seen != null ? " · " + seen + " room" + (seen === 1 ? "" : "s") + " seen" : ""}` +
+          `${num(cur) ? " · in room " + cur : ""} (no learned route yet)</span>`;
+        return;
+      }
+      const curIdx = path.indexOf(cur), out = [`<span class="pm-note">Plan:</span>`];
+      path.forEach((r, i) => {
+        const cls = ["pm-room"];
+        if (r === cur) cls.push("current"); else if (curIdx >= 0 && i < curIdx) cls.push("visited");
+        if (r === target) cls.push("target");
+        if (i === path.length - 1) cls.push("goal");
+        out.push(`<span class="${cls.join(" ")}">${i === path.length - 1 ? "&#9873; " : ""}${ESC(r)}</span>`);
+        if (i < path.length - 1) out.push(`<span class="pm-arrow">&rsaquo;</span>`);
+      });
+      el.innerHTML = out.join("");
+    }
+
     function fit() {
       const w = Math.round(stageEl.clientWidth) || 300;
       const h = Math.round(Math.max(240, Math.min(w * 0.9, 560)));
@@ -312,15 +422,18 @@
       const dpr = canvas.width / Math.max(size.w, 1);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!camera) camera = fitCamera(model);
-      ms = draw(ctx, { model, view: viewOf(camera, size), theme: themeOf() });
+      ms = draw(ctx, { model, view: viewOf(camera, size), theme: themeOf(), trails, now: nowMs() });
       $("where").textContent = model ? `Ep ${model.episode ?? "?"} · Floor ${model.floor ?? "?"}${model.room != null ? " · room " + model.room : ""}` : "–";
-      $("count").textContent = model ? `${(model.gates || []).length} gates · ${(model.players || []).length} players${(model.cells || []).length ? " · " + model.cells.length + " cells" : ""}` : "";
+      const adv = model && model.forward && num(model.forward.floor_advances) ? ` · ${model.forward.floor_advances} floor adv` : "";
+      $("count").textContent = model ? `${(model.players || []).length} players${(model.gates || []).length ? " · " + (model.gates || []).length + " gates" : ""}${(model.cells || []).length ? " · " + model.cells.length + " cells" : ""}${adv}` : "";
       $("objective").textContent = model && model.objective ? `Objective: ${model.objective}` : (model && model.map_directive ? `P1: ${model.map_directive.op || "goto"} (${model.map_directive.state || "navigating"})` : "");
-      $("status").textContent = model ? (model.cells && model.cells.length ? "" : "Surface not extracted yet — showing players/objective") : "Waiting for the PSO map feed…";
+      $("status").textContent = model ? (model.cells && model.cells.length ? "" : (model.players && model.players.length ? "" : "Surface not extracted yet — showing players/objective")) : "Waiting for the PSO map feed…";
+      renderBanner(); renderPlan();
     }
     function show(f) {
       const newArea = f && (!model || model.fingerprint !== f.fingerprint);
       model = f;
+      pushTrail(f);
       if (newArea && !manual) camera = null;              // re-fit when the area changes
       if (!!f === sect.hidden) { sect.hidden = !f; root.dispatchEvent && root.dispatchEvent(new Event("resize")); }
       render();

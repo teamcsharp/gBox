@@ -25,7 +25,9 @@ run's root as the one whose directive/crystal/surfaces were written most recentl
 from __future__ import annotations
 
 import json
+import math
 import re
+import struct
 import time
 import uuid
 from pathlib import Path
@@ -40,6 +42,58 @@ SCHEMA = "gbox.pso.map/1"
 _FINGERPRINT_RE = re.compile(r"\A[0-9a-f]{8,128}\Z")
 _STAGE_CACHE_TTL = 1.0
 _stage_cache: dict[str, tuple[float, bytes]] = {}
+
+# Live player world positions, read straight from RAM (verified live this session): the party-slot
+# object-pointer table and each object's world pose. This is the authoritative, always-live, BOTH-
+# players source for the moving dots - steering_evidence_json only ever carries P1 and can lag many
+# minutes behind, which made the map show a single frozen dot. Pointers 0x8050EA10..1C (P1..P4);
+# each object's x/y/z are big-endian f32 at object+0x38/+0x3C/+0x40.
+PLAYER_PTR_TABLE = 0x8050EA10
+PLAYER_POS_OFF = 0x38
+_PLAYERS_CACHE_TTL = 0.25
+_players_cache: dict[str, tuple[float, list]] = {}
+
+
+def _valid_gc_ptr(addr) -> bool:
+    return isinstance(addr, int) and 0x80000000 <= addr < 0x81800000
+
+
+def players_from_memory(sid, peek, actor, now) -> list[dict]:
+    """P1..P4 live world positions straight from RAM via `peek`. Reads the 4-slot pointer table in
+    one go, then each live object's x/y/z pose. Bounded + cached (~4 Hz); read-only, so it never
+    perturbs the running bot. Returns [] on any miss (the model then falls back to steering)."""
+    if peek is None:
+        return []
+    cached = _players_cache.get(sid)
+    if cached and now - cached[0] < _PLAYERS_CACHE_TTL:
+        return cached[1]
+    try:
+        table = bytes.fromhex(peek(sid, PLAYER_PTR_TABLE, 16, actor))
+    except Exception:                       # noqa: BLE001 - a missed read just leaves positions to steering
+        return []
+    if len(table) != 16:
+        return []
+    out = []
+    for i, slot in enumerate((1, 2, 3, 4)):
+        obj = struct.unpack_from(">I", table, i * 4)[0]
+        if not _valid_gc_ptr(obj):
+            continue
+        try:
+            pose = bytes.fromhex(peek(sid, obj + PLAYER_POS_OFF, 12, actor))
+        except Exception:                   # noqa: BLE001
+            continue
+        if len(pose) != 12:
+            continue
+        x, y, z = struct.unpack_from(">fff", pose, 0)
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            continue
+        out.append({"slot": slot, "role": "leader" if slot == 1 else "swarm",
+                    "x": round(x, 3), "y": round(y, 3), "z": round(z, 3), "ptr": f"{obj:08X}"})
+    _players_cache[sid] = (now, out)
+    if len(_players_cache) > 64:
+        for k in sorted(_players_cache, key=lambda k: _players_cache[k][0])[:-64]:
+            _players_cache.pop(k, None)
+    return out
 
 
 # ----------------------------------------------------------------------------- stage flags (pure)
@@ -148,6 +202,30 @@ def build_model(sid, tel, surface, rooms, *, peek=None, actor="agent", now=None)
         "map_directive": stats.get("map_directive") if isinstance(stats.get("map_directive"), dict) else None,
         "objective": stats.get("forward_fallback_target") or "", "learned_areas": learned_areas(rooms),
         "stage_flags": None, "generated": now,
+        # Progress / stuck telemetry - the bot already knows when the party has gone nowhere; the map
+        # surfaces it so a frozen run is obvious at a glance instead of looking like a quiet one.
+        "forward": {
+            "room": stats.get("forward_room"),
+            "rooms_visited": stats.get("forward_rooms_visited"),
+            "time_since_new_room_s": stats.get("forward_time_since_new_room_s"),
+            "stuck": bool(stats.get("forward_stuck")),
+            "fallback_target": stats.get("forward_fallback_target"),
+            "fallback_dist": stats.get("forward_fallback_dist"),
+            "fallback_action": stats.get("forward_fallback_action"),
+            "floor_advances": stats.get("floor_advances"),
+            "nav_target_dist": stats.get("nav_target_dist"),
+            "nav_route_cells": stats.get("nav_route_cells"),
+            "nav_route_exact": stats.get("nav_route_exact"),
+            "nav_blocked": stats.get("nav_blocked"),
+            "boss_active": bool(stats.get("boss_active")),
+            "boss_weakpoint_x": stats.get("boss_weakpoint_x"),
+            "boss_weakpoint_z": stats.get("boss_weakpoint_z"),
+        },
+        # The run plan: the learned room-adjacency graph + critical path, published by pso_coop into
+        # stats["pso_plan"] (the i9 crystal file is not reachable from this server). None until the
+        # bot publishes it - the client then shows "exploring / building the map".
+        "plan": stats.get("pso_plan") if isinstance(stats.get("pso_plan"), dict) else None,
+        "players_source": "none",
     }
     if isinstance(surface, dict):
         for k in ("episode", "floor", "room", "fingerprint", "size"):
@@ -161,7 +239,24 @@ def build_model(sid, tel, surface, rooms, *, peek=None, actor="agent", now=None)
     else:
         surf_players = []
 
-    model["players"] = players_from_steering(stats.get("steering_evidence_json")) or surf_players
+    # BOTH live players straight from RAM (authoritative + current). Enrich with HP from the latest
+    # steering sample by slot (positions stay live; HP changes slowly). Fall back to steering, then
+    # the surface file, if the memory read misses.
+    mem_players = players_from_memory(sid, peek, actor, now)
+    steer_players = players_from_steering(stats.get("steering_evidence_json"))
+    if mem_players:
+        hp_by_slot = {p["slot"]: p.get("hp") for p in steer_players if p.get("hp") is not None}
+        for p in mem_players:
+            if p["slot"] in hp_by_slot:
+                p["hp"] = hp_by_slot[p["slot"]]
+        model["players"], model["players_source"] = mem_players, "memory"
+    elif steer_players:
+        model["players"], model["players_source"] = steer_players, "steering"
+    elif surf_players:
+        model["players"], model["players_source"] = surf_players, "surface"
+
+    if model["room"] is None:
+        model["room"] = stats.get("forward_room")
 
     # Live gate/switch open|pressed from the stage-flag array (bounded, cached, read-only).
     floor = model.get("floor")
