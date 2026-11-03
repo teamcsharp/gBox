@@ -773,6 +773,8 @@ WEDGE_ESCAPE_REACH = 45.0     # first strafe/back-off detour (18 was too small t
 WEDGE_ESCAPE_GROW = 35.0      # each successive wedged phase widens the detour by this
 WEDGE_ESCAPE_MAX = 180.0      # cap the detour so an escape never flings a buddy across the whole area
 FALLBACK_STUCK_S = 15.0       # operator fail-safe threshold: a room with no forward progress
+FORCE_DOOR_DIST = 60.0        # P1 this close to the forward door it can't cross -> force-open that door
+FORCE_DOOR_RETRY_S = 20.0     # re-arm a specific door's force-open this often (in case a flag was contested)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -814,6 +816,7 @@ class Controller:
         self.forward_kind = {}      # slot -> 'press' | 'approach_switch' | 'walk_through'
         self.room_dwell = {}    # P1 dwell tracking for the stuck-room fail-safe telemetry
         self.forced_rooms = set()   # (episode,floor,room,geometry) already force-unlocked this run
+        self._forced_doors = {}     # gkey -> until: a SPECIFIC forward door force-opened (per-door, not per-room)
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1308,6 +1311,15 @@ class Controller:
             st['nav_blocked'] = len(nav.blocked)
             st['nav_target_dist'] = target_dist
             st['nav_recovery_grid'] = int(recov)
+        # At the forward door but can't path PAST it (route_exact False) means the
+        # door is shut onto a different room - force-open THAT specific door's own
+        # stage flag so P1 crosses out of the cluster. Per-door, so it fires even
+        # after the room's one-shot generic fail-safe. Then the committed walk-through
+        # hold below carries P1 over the threshold.
+        if (slot == 1 and self.forward_kind.get(slot) == 'walk_through' and not route_exact
+                and isinstance(self._p1_door, tuple) and len(self._p1_door) == 3
+                and math.hypot(self._p1_door[1] - player["x"], self._p1_door[2] - player["z"]) <= FORCE_DOOR_DIST):
+            self.force_adjacent_door(state, player, self._p1_door, now)
         # Approach a near panel in SHORT pulses so the actor lands on it (and the
         # next tick presses it) instead of orbiting the small target; drive a door
         # through with a committed, gusto-length hold.
@@ -1544,6 +1556,80 @@ class Controller:
                 'base': hex(gates.STAGE_FLAG_BASE), 'recalled': recalled is not None}
         self._remember_gate(state, player, flags)
         return sorted(flags)
+
+    def force_adjacent_door(self, state, player, gkey, now):
+        """Open the SPECIFIC forward door/gate P1 is physically adjacent to but cannot
+        path PAST (its far side is a different, still-closed room), by setting THAT
+        object's own native stage flag (+0xC8 low16) in the verified 3OE2 array, plus
+        the room's switch / nearest-barrier flags in case the door is switch-gated.
+        Keyed PER-DOOR (not per-room), so it fires for the cluster-EXIT door even after
+        the room's one-shot generic fail-safe already ran - that generic pass only sets
+        switches + the nearest barrier and never a plain TObjDoor's own flag, which is
+        exactly why the exit door stayed shut. Same hard guards as force_forward_unlock."""
+        from . import pso_coop_gates as gates
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if ad is None or not callable(getattr(ad, 'write_memory', None)) or not callable(getattr(ad, 'read_memory', None)):
+            return None
+        if (state.get('verified') is not True or state.get('phase') != 14
+                or type(state.get('floor')) is not int or not 1 <= state['floor'] <= 17
+                or set(state.get('players', {})) != {1, 2} or not player):
+            return None
+        if self._forced_doors.get(gkey, 0.) > now:
+            return None
+        read, floor, room = ad.read_memory, state['floor'], player.get('room')
+        if not gates.stage_flag_code_ok(read):
+            self._force_log(room, 'adj_build_signature_mismatch')
+            return None
+        try:
+            group = struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0]
+        except (struct.error, OSError):
+            return None
+        if group != floor:
+            self._force_log(room, f'adj_group_{group}_ne_floor_{floor}')
+            return None
+        ent = None
+        for e in state.get('entities', ())[:512]:
+            try:
+                if (str(e.get('class')), round(float(e['x']), 1), round(float(e['z']), 1)) == gkey:
+                    ent = e
+                    break
+            except (KeyError, TypeError, ValueError):
+                continue
+        if ent is None:
+            return None
+        try:
+            idxs = [struct.unpack('>I', read(int(ent['ptr'], 16) + 0xC8, 4))[0] & 0xffff]
+        except (ValueError, KeyError, TypeError, struct.error, OSError):
+            return None
+        for f in self._live_forward_flags(state, player, room):   # switch / nearest-barrier flags too
+            if f not in idxs:
+                idxs.append(f)
+        loci = []
+        for idx in idxs:
+            locus = gates.stage_flag_locus(group, idx)
+            if locus is None:
+                self._force_log(room, f'adj_flag_out_of_range_{idx}')
+                return None
+            loci.append((locus[0], locus[1]))
+        if not gates.stage_flag_code_ok(read) or struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0] != floor:
+            self._force_log(room, 'adj_binding_changed')
+            return None
+        written = []
+        for (addr, mask), idx in zip(loci, idxs):
+            try:
+                current = read(addr, 1)[0]
+            except (IndexError, OSError):
+                continue
+            if current & mask:
+                continue
+            ad.write_memory(addr, bytes([current | mask]))
+            written.append(idx)
+        self._forced_doors[gkey] = now + FORCE_DOOR_RETRY_S
+        stats = getattr(self.inputs, 'stats', None)
+        if isinstance(stats, dict):
+            stats['forced_adjacent_door'] = {'room': room, 'floor': floor, 'group': group,
+                'door': str(gkey), 'flags': sorted(idxs), 'written': sorted(written)}
+        return sorted(idxs)
 
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
