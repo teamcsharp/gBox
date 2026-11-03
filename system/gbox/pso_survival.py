@@ -151,6 +151,9 @@ def _make_record(m, p, player_index, hp, maxhp, cause, run):
 
 
 HEAVY_INTERVAL_S = 2.0          # native inventory/stock/survival cadence; the revive runs EVERY tick
+SURVIVAL_HP_FLOOR = 9999        # raise max HP (+0x2B8) to this each tick so a low-level char can tank
+#                                 boss hits; the current-HP pin then heals into the big pool. u16-safe
+#                                 (0x270F). Written every tick so an engine recompute can't hold it low.
 
 
 def _do_revive(ad, player_index, p, maxhp, m=None):
@@ -210,11 +213,26 @@ def apply_survival(ad, player_index, m=None, p=None, inv_rows=None):
         except Exception:
             pass
 
-        # --- every tick: instant revive on a true death; log only the transition into death ---
-        if hp == 0:
-            if not pst.get("was_dead"):
-                _record_death(ad, _make_record(g, p, player_index, 0, maxhp, "hp_zero", run))
-            _do_revive(ad, player_index, p, maxhp, m=m)
+        # --- every tick: RAISE MAX HP then PIN current HP to it, so a level 1-2 glass cannon (maxHP
+        # ~40) can actually TANK boss hits instead of being one-shot. A 40-HP pool heals to 40 and a
+        # >40 boss hit still zeroes it; raising maxHP (+0x2B8) to a big floor and topping current HP
+        # (+0x32C) into that pool every tick is the real never-die. Both are cheap u16 writes; we
+        # rewrite them every tick so an engine recompute of maxHP from level can't hold it low. A
+        # true death still logs on the transition and uses the native revive to clear the downed
+        # actor state. (If a live re-read shows +0x2B8 reverting next tick, maxHP is recomputed every
+        # frame and the level route is needed - see apply_master_build / the coordinator.)
+        floor = SURVIVAL_HP_FLOOR if maxhp < SURVIVAL_HP_FLOOR else maxhp
+        try:
+            if maxhp < floor:
+                g.write(p + 0x2B8, struct.pack(">H", floor))      # raise MAX HP
+            if hp == 0:
+                if not pst.get("was_dead"):
+                    _record_death(ad, _make_record(g, p, player_index, 0, maxhp, "hp_zero", run))
+                _do_revive(ad, player_index, p, floor, m=m)       # native revive clears the downed state
+            if g.u16(p + 0x32C) < floor:
+                g.write(p + 0x32C, struct.pack(">H", floor))      # pin CURRENT HP into the big pool
+        except Exception as e:
+            out.setdefault("errors", {})["hp_pin"] = str(e)[:80]
         pst["was_dead"] = hp == 0
 
         # --- throttled: native inventory / restock / Virtual Scape Doll / scape-consumption log ---

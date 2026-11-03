@@ -71,13 +71,22 @@ def test_heavy_work_is_throttled_but_revive_is_every_tick():
 def test_hp_zero_is_logged_once_and_revived_instantly():
     m = FakeM(hp=0, maxhp=150, dolls=10)
     S.apply_survival(m, 0, m=m, p=P)
-    assert m.u16(P + 0x32C) == 150 and m.revived >= 1          # instant revive
+    # max HP is raised to the survival floor and current HP is topped into it (not just to 150).
+    assert m.u16(P + 0x2B8) == S.SURVIVAL_HP_FLOOR and m.u16(P + 0x32C) == S.SURVIVAL_HP_FLOOR
+    assert m.revived >= 1                                      # instant native revive on death
     recs = S.read_deaths(m)
-    assert len(recs) == 1 and recs[-1]["cause"] == "hp_zero" and recs[-1]["max_hp"] == 150
+    assert len(recs) == 1 and recs[-1]["cause"] == "hp_zero" and recs[-1]["max_hp"] == 150  # maxHP at death
     assert recs[-1]["x"] == 1.5 and recs[-1]["floor"] == 3
     S.apply_survival(m, 0, m=m, p=P)                           # alive now -> no duplicate death
     assert len(S.read_deaths(m)) == 1
     assert S.death_stats(m)["revives_p1"] == 1
+
+
+def test_low_maxhp_is_raised_to_the_survival_floor_each_tick():
+    m = FakeM(hp=21, maxhp=40, dolls=10)                       # the live level-1/2 glass-cannon case
+    S.apply_survival(m, 0, m=m, p=P)
+    assert m.u16(P + 0x2B8) == S.SURVIVAL_HP_FLOOR             # max HP raised so a boss hit can't one-shot
+    assert m.u16(P + 0x32C) == S.SURVIVAL_HP_FLOOR             # current HP pinned into the big pool
 
 
 def test_persistent_death_does_not_spam_the_log(monkeypatch):
