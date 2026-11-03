@@ -73,3 +73,68 @@ def test_probe_is_fail_soft_on_bad_reads():
         def u16(self, a): return 0
     out = S.probe_tick(SimpleNamespace(), 0, Bad(), _P)
     assert "speed_probe_err" in out
+
+
+# --- phase (b): dispatcher-v5 extra-update, both gate variants (prepared, inert) ---
+import struct
+
+from gbox import pso_gc_live as L
+
+
+def _words(b):
+    return struct.unpack(">%dI" % (len(b) // 4), b)
+
+
+def test_default_dispatcher_is_byte_identical_no_regression():
+    # The shipped GBPSOGC4 dispatcher must be untouched when no speed gate is requested.
+    assert L.dispatcher() == L.CODE
+    assert L.dispatcher(speed_gate=None) == L.CODE
+
+
+def test_speed_factor_must_be_at_least_two():
+    with pytest.raises(ValueError, match="speed_factor"):
+        L.dispatcher(speed_gate=S.GATE_A8, speed_factor=1)
+
+
+def test_both_gate_variants_build_fit_and_extend_the_stock_dispatcher():
+    for gate in (S.GATE_A8, S.gate_from_326([1, 5])):
+        v5 = S.dispatcher_v5(gate, factor=3)
+        assert len(v5) < 0x300                      # still fits below HEADER
+        assert len(v5) > len(L.CODE)                # the extra-update block was spliced in
+        assert v5[:24] == L.CODE[:24]               # same prologue (shared dispatcher)
+
+
+_BASE = _words(L.CODE)
+
+
+def test_a8_gate_tests_hit_record_count_and_runs_factor_minus_one_updates():
+    w = _words(S.dispatcher_v5(S.GATE_A8, factor=3))
+    assert 0x818300A8 in w                          # lwz r12,0xA8(r3)  (active hit-records)
+    assert 0x40850000 in [x & 0xFFFF0000 for x in w]  # ble cr1,skip (attacking iff > 0)
+    # exactly one extra bcctrl (the loop body) over the stock dispatcher's own queue calls
+    assert w.count(0x4E800421) == _BASE.count(0x4E800421) + 1
+    assert 0x3BE00002 in w                          # li r31,2  == factor-1 extra updates
+    assert w.count(0x4E800420) == _BASE.count(0x4E800420) == 1   # stock tail-chain bctr preserved
+
+
+def test_326_gate_tests_action_state_against_each_locked_value():
+    w = _words(S.dispatcher_v5(S.gate_from_326([1, 5]), factor=3))
+    assert 0xA1830326 in w                          # lhz r12,0x326(r3)
+    assert 0x2C8C0001 in w and 0x2C8C0005 in w      # cmpwi cr1,r12,1 ; cmpwi cr1,r12,5
+    assert w.count(0x4E800421) == _BASE.count(0x4E800421) + 1
+
+
+def test_gate_from_probe_uses_a_locked_326_gate_else_falls_back_to_a8():
+    ad = SimpleNamespace()
+    assert S.gate_from_probe(ad) is None            # nothing probed yet
+    assert S.preferred_gate(ad) is S.GATE_A8        # deterministic fallback
+    ad._pso_speed_probe = {0: {"n": 300, "atk": 200,
+                               "gate": {"off": 0x326, "values": [1], "desc": "x", "locked": True}}}
+    g = S.gate_from_probe(ad)
+    assert g and g["kind"] == "s326" and g["values"] == [1]
+    assert S.preferred_gate(ad) is g or S.preferred_gate(ad)["values"] == [1]
+
+
+def test_326_gate_not_locked_is_ignored_by_gate_from_probe():
+    ad = SimpleNamespace(_pso_speed_probe={0: {"gate": {"off": 0x326, "values": [1], "locked": False}}})
+    assert S.gate_from_probe(ad) is None

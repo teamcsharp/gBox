@@ -90,9 +90,21 @@ ATTACK_STATE_OFF = None     # TObjPlayer offset of the attack-animation state u1
 ATTACK_STATE_MATCH = None   # the value at that offset meaning "attacking"
 
 
+# Phase (b) go-live gates. Both are human/live gates, set True ONLY by a person after the step:
+#   NAV_SIGNOFF   - nav has signed off on the GBPSOGC4 -> GBPSOGC5 dispatcher change.
+#   LIVE_VERIFIED - a guarded, reversible live write-test confirmed re-running the stock update
+#                   N times is side-effect-safe on GC (as it is on DC) with no corruption/desync.
+# The gate itself (either the deterministic +0xA8>0 or the probe-locked +0x326 value-set) and the
+# full GBPSOGC5 dispatcher bytes are prepared NOW (see dispatcher_v5); these flags stay False until
+# the live-verified go-ahead, so set_enabled refuses and nothing is written to the game.
+NAV_SIGNOFF = False
+LIVE_VERIFIED = False
+
+
 def configured():
-    """True once the two outstanding unknowns are filled; gates every live action."""
-    return None not in (HOOK_FUNC, HOOK_ORIGINAL, ATTACK_STATE_OFF, ATTACK_STATE_MATCH)
+    """True once phase (b) is cleared to go live (nav sign-off + a guarded live write-test).
+    The gate and the GBPSOGC5 bytes are ready regardless; these flags are the remaining gates."""
+    return bool(NAV_SIGNOFF and LIVE_VERIFIED)
 
 
 # --- phase (a): in-bot attack-state probe (read-only, safe; resolves ATTACK_STATE_OFF/MATCH) ---
@@ -174,19 +186,63 @@ def speed_probe_status(ad):
                 for pi, d in st.items()}
 
 
+# --- phase (b): the dispatcher-v5 extra-update, PREPARED (both gate variants) but INERT ------------
+# Phase (b) gets 3x attack speed by re-running the stock player update (FACTOR-1) extra times for a
+# local offline PLAYER that is attacking (the DC speed model), spliced into the shared VT_UPDATE
+# dispatcher before its FPR restore (pso_gc_live.dispatcher(speed_gate=...)). Two ready gate variants:
+GATE_A8 = {'kind': 'a8',
+           'desc': 'player+0xA8 > 0 (active attack hit-records; deterministic, needs no probe lock)'}
+
+
+def gate_from_326(values):
+    """The +0x326 gate: attacking iff the action-state is one of the probe-locked values."""
+    vals = sorted({int(v) & 0xFFFF for v in values})
+    if not vals:
+        raise ValueError('need at least one +0x326 attack value')
+    return {'kind': 's326', 'values': vals, 'desc': 'player+0x326 in %s' % vals}
+
+
+def gate_from_probe(ad):
+    """Build the +0x326 gate from the live probe if any player has LOCKED a +0x326 gate, else None.
+    When this returns None (the probe did not converge on +0x326), use GATE_A8 — see dispatcher_v5."""
+    vals = set()
+    for info in speed_probe_status(ad).values():
+        g = info.get('gate')
+        if g and g.get('locked') and g.get('off') == 0x326:
+            vals.update(g.get('values', ()))
+    return gate_from_326(vals) if vals else None
+
+
+def preferred_gate(ad):
+    """The gate phase (b) would use: the probe-locked +0x326 if it converged, else the deterministic
+    +0xA8>0 fallback (the coordinator's decision: ship the deterministic gate if +0x326 won't lock)."""
+    return gate_from_probe(ad) or GATE_A8
+
+
+def dispatcher_v5(gate, factor=FACTOR):
+    """Prepared GBPSOGC5 dispatcher bytes carrying the extra-update gate (DATA ONLY - not installed).
+    gate is GATE_A8 or a gate_from_326(...) dict. Identical to the shipped GBPSOGC4 dispatcher plus
+    the inert extra-update block; installing it (GBPSOGC4->GBPSOGC5 migration) is the nav-signed-off,
+    live-verified step that configured()/set_enabled still refuse until NAV_SIGNOFF and LIVE_VERIFIED."""
+    from . import pso_gc_live as L
+    return L.dispatcher(speed_gate=gate, speed_factor=factor)
+
+
 def status(ad, platform):
     if platform != 'gamecube':
         raise Unsupported('3x attack speed is for the GameCube 3OE2 build only')
     if not configured():
         return {'attack_speed_3x': False, 'configured': False, 'factor': FACTOR,
-                'reason': 'prepared but not configured: HOOK_FUNC + attack-state pending the clean-i9 '
-                          'restart live snapshot (see gbox.pso_speed docstring)'}
-    raise Unsupported('pso_speed configured but the cave generator/install is not implemented in this '
-                      'scaffold build; finish per the module docstring')
+                'nav_signoff': NAV_SIGNOFF, 'live_verified': LIVE_VERIFIED,
+                'gate_ready': True, 'preferred_gate': preferred_gate(ad)['desc'],
+                'reason': 'phase (b) prepared (both gate variants + GBPSOGC5 bytes ready) but held: '
+                          'needs nav sign-off on GBPSOGC4->GBPSOGC5 and a guarded live write-test'}
+    raise Unsupported('pso_speed is cleared but the GBPSOGC5 live install is nav-coordinated; run it '
+                      'through the dispatcher migration under the live write-test, not this scaffold')
 
 
 def set_enabled(ad, platform, on):
     if platform != 'gamecube':
         raise Unsupported('3x attack speed is for the GameCube 3OE2 build only')
-    raise Unsupported('3x attack speed is prepared but not yet enabled: the animation-advance hook point '
-                      'and the attack-state offset need the post-restart RE/live snapshot (gbox.pso_speed)')
+    raise Unsupported('3x attack speed is prepared but not yet enabled: phase (b) (GBPSOGC4->GBPSOGC5 '
+                      'extra-update) is held for nav sign-off and a guarded live write-test')

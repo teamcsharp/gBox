@@ -52,8 +52,20 @@ GUARDS.update({
 def d(op,rt,ra,imm):return op<<26|rt<<21|ra<<16|(imm&0xffff)
 
 
-def dispatcher(survival=True,header=None,survival_address=None):
-    """PPC EABI wrapper: preserve update args/CR/FPRs, run bounded calls, tail-chain stock update."""
+def dispatcher(survival=True,header=None,survival_address=None,speed_gate=None,speed_factor=1):
+    """PPC EABI wrapper: preserve update args/CR/FPRs, run bounded calls, tail-chain stock update.
+
+    speed_gate (phase-(b) 3x attack speed, INERT until nav-signed-off + live-verified): when a
+    gate dict is passed, before the FPR restore the wrapper re-runs the stock update
+    (speed_factor-1) extra times for a local offline PLAYER that is 'attacking', so the final
+    tail-chain is the speed_factor-th update (DC speed model). Gate kinds:
+      {'kind':'a8'}                     -> attacking iff *(player+0xA8) > 0 (active hit-records; deterministic)
+      {'kind':'s326','values':[...]}    -> attacking iff *(player+0x326) in values (the probe-locked action-state)
+    r3 (the update arg = player) is reloaded from 8(r1) each iteration; the counter r31 and any
+    clobbered GPRs/CR are overwritten by the stock lmw/CR restore at teardown, and FPRs are
+    restored AFTER the extra updates so the final update and the caller see the original FP state.
+    speed_gate=None reproduces the shipped GBPSOGC4 dispatcher byte-for-byte."""
+    if speed_gate is not None and speed_factor<2:raise ValueError('speed_factor must be >= 2 when a speed_gate is set')
     code=[];labels={};fix=[]
     def emit(*words):code.extend(words)
     def branch(word,label):fix.append((len(code),label));emit(word)
@@ -78,6 +90,27 @@ def dispatcher(survival=True,header=None,survival_address=None):
     emit(0x7d8903a6,0x4e800421,d(36,3,30,36),d(14,0,0,0),d(36,0,30,0))
     labels['next']=len(code)
     emit(d(14,30,30,QSZ),d(14,31,31,-1),d(11,0,31,0));branch(0x40820000,'loop')
+    if speed_gate is not None:
+        emit(d(32,3,1,8))                                              # lwz r3,8(r1)  (update arg = player)
+        emit(d(15,12,0,(PHASE+0x8000)>>16),d(32,12,12,PHASE&0xffff),d(11,4,12,14));branch(0x40860000,'speed_skip')  # offline only
+        emit(d(15,11,0,(PLAYER+0x8000)>>16))                           # lis r11,PLAYER@ha
+        for s in range(4):                                             # r3 must be a local PLAYER slot 0-3
+            emit(d(32,12,11,(PLAYER+s*4)&0xffff),0x7c836040);branch(0x41860000,'speed_go')  # lwz;cmplw cr1,r3,r12;beq
+        branch(0x48000000,'speed_skip')
+        labels['speed_go']=len(code)
+        if speed_gate.get('kind')=='a8':
+            emit(d(32,12,3,0xA8),d(11,4,12,0));branch(0x40850000,'speed_skip')  # attacking iff *(r3+0xA8)>0
+        elif speed_gate.get('kind')=='s326':
+            emit(d(40,12,3,0x326))                                     # lhz r12,0x326(r3)
+            for v in speed_gate['values']:emit(d(11,4,12,v&0xffff));branch(0x41860000,'speed_run')  # cmpwi cr1,r12,v;beq
+            branch(0x48000000,'speed_skip')
+            labels['speed_run']=len(code)
+        else:raise ValueError('unknown speed_gate kind')
+        emit(d(14,31,0,speed_factor-1))                               # li r31,factor-1  (nonvolatile counter)
+        labels['speed_loop']=len(code)
+        emit(d(32,3,1,8),d(15,12,0,(header+8+0x8000)>>16),d(32,12,12,(header+8)&0xffff),0x7d8903a6,0x4e800421)  # r3=player; ctr=*(header+8); bctrl
+        emit(d(13,31,31,-1));branch(0x40820000,'speed_loop')          # addic. r31,r31,-1 ; bne cr0,loop
+        labels['speed_skip']=len(code)
     for r in range(1,14):emit(d(50,r,1,0x88+(r-1)*8))
     emit(d(32,0,1,0x80),0x7c0ff120,d(46,3,1,8),d(32,0,1,0x104),0x7c0803a6,d(14,1,1,0x100),
          d(15,12,0,(header+8+0x8000)>>16),d(32,12,12,(header+8)&0xffff),0x7d8903a6,0x4e800420)
