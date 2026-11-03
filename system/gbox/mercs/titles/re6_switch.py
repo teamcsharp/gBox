@@ -3978,6 +3978,27 @@ class Bot:
             return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
                             f"one at {d:.0f} cm: quick shot (crowd control)" + (", backing out" if backing else ""))
         if abs(err) > CC_ATTACK_CONE:                            # on the flank: the camera to him
+            # grabbed_front batch: a front grab at arm's length lands while the camera is still turning to the
+            # flanker. If another one is at melee range in front (within 90 deg of facing), handle it first —
+            # the kick or quick shot kills the grabber before the turn exposes the flanks.
+            front = [z for z in live if flat(z) <= MELEE_R
+                     and abs(bearing(z)) < math.radians(90)]
+            if front:
+                f = min(front, key=flat)
+                fd, ferr = flat(f), bearing(f)
+                if fd < MELEE_R and abs(ferr) <= CC_ATTACK_CONE and now - self.melee_at >= kick_gap:
+                    self.melee_at = now
+                    self.stats["melee"] += 1
+                    self.stats["cc_kicks"] += 1
+                    return self._go("crowd", "cc_kick", {"hold": out + ("zr",) if backing else {"tap": "zr"}},
+                                    f"one at {fd:.0f} cm in front while turning: a kick before the turn")
+                if abs(ferr) <= CC_ATTACK_CONE and now - self.qshot_at >= qshot_gap:
+                    self.qshot_at = now
+                    self.stats["quick_shots"] += 1
+                    self.stats["cc_quick_shots"] += 1
+                    self.qshot_release = True
+                    return self._go("crowd", "cc_quick_shot", {"hold": out + ("zl", "zr") if backing else ("zl", "zr")},
+                                    f"one at {fd:.0f} cm in front while turning: quick shot before the turn")
             return self._go("crowd", "cc_turn", {"hold": self._turn(err)},
                             f"one at {d:.0f} cm on the flank ({math.degrees(err):+.0f} deg): turning")
         step = self._stick(self._open_heading(self._p, live), self._cam_yaw) if self._p else ("ldown",)

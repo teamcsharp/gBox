@@ -3211,3 +3211,47 @@ def test_down_fight_kicks_at_cc_kick_gap_not_melee_gap_for_a_grab_in_front():
     # The kick cadence is CC_KICK_GAP_S, not MELEE_GAP_S:
     assert R.CC_KICK_GAP_S < R.MELEE_GAP_S
 
+
+def test_a_front_grabber_at_melee_range_is_kicked_before_the_flank_turn():
+    # request #5050 (cluster grabbed_from_the_front, cc_turn examples): the bot was turning to a flanker
+    # (cc_turn) when a front grab at arm's length landed. The nearest enemy was the flanker (> CC_ATTACK_CONE),
+    # so the old code committed to cc_turn and exposed the flanks mid-turn; the front grabber finished him.
+    # The fix: when the nearest is a flanker, check for another enemy at melee range in front (< 90 deg).
+    # If found, kick or quick-shot the front one before turning.
+    import math as _m
+    flank_deg = _m.radians(80)   # the flanker: 80 deg from facing, within CC_CONE (100 deg)
+    flank_dist = 180.0           # within CC_R (200)
+    fx = flank_dist * _m.sin(flank_deg)
+    fz = flank_dist * _m.cos(flank_deg)
+    enemies = (
+        (fx, 0.0, fz, 700),        # flanker at 80 deg, 1.8 m (nearest, triggers cc_turn)
+        (0.0, 0.0, 100.0, 700),   # front grabber: 1 m ahead, within MELEE_R
+    )
+    bot, clock, snap = brain(round_guest(enemies=enemies))
+    acts = run(bot, snap, clock, 1)
+    # The bot should NOT commit to cc_turn; it should kick or quick-shot the front grabber first:
+    assert bot.doing == "crowd"
+    assert bot.stats.get("cc_kicks", 0) == 1 or bot.stats.get("cc_quick_shots", 0) == 1
+    # No cc_turn:
+    assert bot.stats.get("cc_turns", 0) == 0
+
+
+def test_a_front_grabber_at_melee_range_gets_quick_shot_when_kick_is_cooled():
+    # request #5050: same scenario as above, but the kick is on cooldown (melee_at was set recently).
+    # The bot should quick-shot the front grabber instead of turning to the flanker.
+    import math as _m
+    flank_deg = _m.radians(80)
+    flank_dist = 180.0
+    fx = flank_dist * _m.sin(flank_deg)
+    fz = flank_dist * _m.cos(flank_deg)
+    enemies = (
+        (fx, 0.0, fz, 700),        # flanker at 80 deg, 1.8 m
+        (0.0, 0.0, 100.0, 700),   # front grabber: 1 m ahead
+    )
+    bot, clock, snap = brain(round_guest(enemies=enemies))
+    bot.melee_at = clock[0]        # kick just happened: on cooldown
+    acts = run(bot, snap, clock, 1)
+    assert bot.doing == "crowd"
+    assert bot.stats.get("cc_quick_shots", 0) == 1
+    assert bot.stats.get("cc_turns", 0) == 0
+
