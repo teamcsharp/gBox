@@ -178,6 +178,29 @@ def test_zero_hp_entity_still_targeted():
     assert r["boss_alive"] is True and r["boss_cleared"] is False
 
 
+def test_collision_helpers_excluded_from_aim():
+    # Live Dragon layout: real body (HP bar + position) + TBoss1DragonColli_C helpers parked at
+    # (0,0,0) with hp_max=0. The helpers must NOT be aim targets; the body is.
+    r = B.boss_target(build(episode=0, floor=11, enemies=[
+        ("TBoss1Dragon", 2500, 2500, (27.0, 0.0, 10.0)),
+        ("TBoss1DragonColli_C", 65535, 0, (0.0, 0.0, 0.0)),
+        ("TBoss1DragonColli_C", 9, 0, (0.0, 0.0, 0.0)),
+        ("TBoss1DragonColli_C", 32987, 0, (0.0, 0.0, 0.0))]))
+    assert r["active"] is True and r["boss"] == "Dragon"
+    assert r["weakpoint"]["class"] == "TBoss1Dragon"
+    assert r["weakpoint_pos"] == {"x": 27.0, "z": 10.0, "y": 0.0}
+    assert r["boss_entity_count"] == 1          # the 3 collision helpers are excluded
+
+
+def test_only_collision_helpers_is_not_a_live_boss():
+    # Only origin collision helpers present (no real body yet) -> no aim target, boss not "seen",
+    # so boss_alive stays True (not spawned) and active is False.
+    r = B.boss_target(build(episode=0, floor=11, enemies=[
+        ("TBoss1DragonColli_C", 65535, 0, (0.0, 0.0, 0.0))]))
+    assert r["active"] is False and r["boss_floor"] is True
+    assert r["boss_alive"] is True and r["boss_cleared"] is False
+
+
 # --------------------------------------------------------------------------- conservative alive signal (nav warp gate)
 def test_boss_not_spawned_yet_stays_alive():
     # Boss floor, arena not yet populated, boss never seen -> alive True (do NOT warp), no lock.

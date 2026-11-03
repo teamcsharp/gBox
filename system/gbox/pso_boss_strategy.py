@@ -113,19 +113,27 @@ CONFIRMATION_NOTES = {
                     "'pso-gc-plus-us' (same path pso_campaign uses).",
     "globals": "CONFIRMED: floor *(0x805D5FC0), episode *(0x805D6060) [0=Ep1,1=Ep2], travelling *(0x805D49B8), "
                "phase *(0x804FE120)==14 free-play, difficulty *(0x805D5550).",
-    "ep1_boss_floors": "CONFIRMED by build agent: 11 Dragon, 12 De Rol Le, 13 Vol Opt, 14 Dark Falz.",
+    "ep1_boss_floors": "CONFIRMED by build agent + LIVE capture: 11 Dragon (live), 12 De Rol Le, 13 Vol Opt, "
+                       "14 Dark Falz.",
     "ep2_boss_floors": "NEEDS_LIVE_CONFIRM: 12 Gal Gryphon, 13 Olga Flow, 14 Barba Ray, 15 Gol Dragon (standard "
                        "PSO area-id table; corroborated by pso_campaign.FINAL_FLOORS[2]=13).",
-    "enemy_hp_offset": "NEEDS_LIVE_CONFIRM: HP u16 at +0x32C / max +0x2B8 is verified for TObjPlayer and a Forest "
-                       "wolf, but the build agent flags boss structs may differ. The advisor VALIDATES hp "
-                       "(0<=hp<=hp_max, hp_max>0) and, when invalid, treats the entity as alive and uses "
-                       "position only - it never gates on an unverified HP read.",
-    "weakpoint_subparts": "NEEDS_LIVE_CONFIRM: whether Vol Opt monitors, Dark Falz forms, De Rol Le/Barba Ray "
-                          "segments and Olga adds appear as separate entity-table entries or as child objects. "
-                          "The advisor assumes separate 'enemy'-kind entries on the boss floor and picks among "
-                          "them; the exact sub-part class strings + any phase/state byte need a live boss. The "
-                          "build agent offered to disassemble a boss update fn (via obj+0x18 vtable+0xC) once a "
-                          "live boss pointer is captured - that will pin the true weak-point/phase fields.",
+    "live_capture_dragon": "LIVE 2026-11-03 (Ep1 floor 11): main body class 'TBoss1Dragon' at obj 0x80DAEE90, "
+                           "HP 2500/2500 at +0x32C/+0x2B8 (so the TObjPlayer HP layout IS valid for this boss "
+                           "body), real position f32 at +0x38. It also spawns 3x 'TBoss1DragonColli_C' collision "
+                           "helpers parked at (0,0,0) with hp_max=0 - EXCLUDED from aiming by _targetable(). Boss "
+                           "class scheme = 'TBoss<episode?><Name>'; all start with 'TBoss' so the profile's enemy "
+                           "kind catches them. vtables: body update *(0x80481280+0xC), colli *(0x80481BD4+0xC) - "
+                           "handed to the build agent to pin the true HEAD weak-point + a phase/state byte.",
+    "enemy_hp_offset": "HP u16 at +0x32C / max +0x2B8 CONFIRMED valid for the live Dragon body (2500/2500) and "
+                       "for TObjPlayer/a Forest wolf; may still differ on other bosses' sub-parts. The advisor "
+                       "VALIDATES hp (0<=hp<=hp_max, hp_max>0) and never gates on an invalid read - a boss with a "
+                       "bad HP read is treated as alive and aimed at by position.",
+    "weakpoint_subparts": "PARTIALLY CONFIRMED (Dragon): the hittable sub-parts are 'TBoss1DragonColli_C' child "
+                          "collision volumes parked at origin (no world pos at +0x38), so the advisor currently "
+                          "aims at the main body center (TBoss1Dragon, the entity with a real position + HP bar). "
+                          "The build agent is disassembling the Dragon update fn to derive the true HEAD position "
+                          "and a grounded/burrow/breath phase byte; other bosses (Vol Opt monitors, Dark Falz "
+                          "forms, De Rol Le/Barba Ray segments, Olga adds) still need their own live capture.",
     "dark_falz_forms": "Element weaknesses CONFIRMED (PSO-World/StrategyWiki): F1 Zonde, F2 Barta, F3 Foie (F3 "
                        "Hard+ only). Current-form detection is a HEURISTIC (main-body HP fraction + difficulty) "
                        "pending a live form/state offset.",
@@ -166,6 +174,20 @@ def _pos(e):
     if _finite(x) and _finite(y) and _finite(z):
         return {"x": float(x), "z": float(z), "y": float(y)}
     return None
+
+
+def _valid_hp_max(e):
+    mx = e.get("hp_max")
+    return isinstance(mx, int) and mx > 0
+
+
+def _targetable(e, pos):
+    """A real aim target vs. a collision/logic helper. The live Dragon spawns
+    TBoss1DragonColli_C children parked at (0,0,0) with hp_max=0 - those are NOT aim targets.
+    A real boss body/segment has a valid HP bar OR a non-origin world position."""
+    if _valid_hp_max(e):
+        return True
+    return not (abs(pos["x"]) < 1.0 and abs(pos["z"]) < 1.0)
 
 
 def _hp_fraction(e):
@@ -374,7 +396,7 @@ def boss_target(ad):
             if e.get("kind") != "enemy":
                 continue
             pos = _pos(e)
-            if pos is None:
+            if pos is None or not _targetable(e, pos):
                 continue
             bosses.append({"entity": e, "pos": pos})
 
