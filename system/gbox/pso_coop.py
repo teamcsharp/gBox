@@ -1642,23 +1642,16 @@ class Controller:
         if group != floor:
             self._force_log(room, f'adj_group_{group}_ne_floor_{floor}')
             return skip(f'group_{group}_ne_floor_{floor}')
-        ent = None
-        for e in state.get('entities', ())[:512]:
-            try:
-                if (str(e.get('class')), round(float(e['x']), 1), round(float(e['z']), 1)) == gkey:
-                    ent = e
-                    break
-            except (KeyError, TypeError, ValueError):
-                continue
-        if ent is None:
-            return skip('door_not_in_entities')
-        # ONLY this door's own gating flag - not the room's other flags (that is
-        # force_forward_unlock's one-shot job). Setting unrelated stage flags on every
-        # re-arm across many doors risks corrupting progression, so keep it surgical.
-        try:
-            idxs = [struct.unpack('>I', read(int(ent['ptr'], 16) + 0xC8, 4))[0] & 0xffff]
-        except (ValueError, KeyError, TypeError, struct.error, OSError):
-            return skip('door_flag_read')
+        # A plain TObjDoor has NO own gating-flag index at +0xC8 (read live it was
+        # 48896, far outside the 0..255 stage range - it is some other packed field).
+        # Doors are opened by the ROOM's switch/barrier flags, so resolve them the
+        # SAME verified way force_forward_unlock does: _live_forward_flags returns the
+        # room's switch flags + the barrier NEAREST P1 - recomputed HERE from P1's
+        # position AT this door, so it targets THIS door's gate rather than whatever
+        # was nearest when the room's one-shot generic pass ran earlier elsewhere.
+        idxs = self._live_forward_flags(state, player, room)
+        if not idxs:
+            return skip('no_forward_flags')
         loci = []
         for idx in idxs:
             locus = gates.stage_flag_locus(group, idx)

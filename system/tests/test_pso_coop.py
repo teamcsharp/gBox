@@ -933,43 +933,27 @@ def test_force_unlock_sets_exactly_the_rooms_gate_flags(monkeypatch, tmp_path):
     assert ctrl.force_forward_unlock(st, 1, st["players"][1], now=1001.) is None and writes == []
 
 
-def test_force_adjacent_door_sets_the_specific_doors_own_flag(monkeypatch, tmp_path):
-    """The cluster-exit fix: a forward TObjDoor P1 is adjacent to but can't path past
-    is force-opened by setting ITS OWN +0xC8 stage flag - which the per-room generic
-    fail-safe (switches + nearest barrier only) never touches. Keyed per-door, so it
-    fires even in a room whose generic unlock already ran."""
+def test_force_adjacent_door_sets_the_rooms_gate_flags_for_the_pursued_door(monkeypatch, tmp_path):
+    """The cluster-exit fix: a plain TObjDoor has no valid own +0xC8 flag index, so
+    force_adjacent_door opens it with the ROOM's switch + nearest-barrier flags
+    (the verified force_forward_unlock resolution), recomputed from P1's position AT
+    the door. Keyed per-door with a re-arm window."""
     import gbox.pso_coop_gates as G
     monkeypatch.setattr(G, "stage_flag_code_ok", lambda read: True)
-    mem, writes = {}, []
-    door_ptr = 0x80DB9000
-    c8 = {door_ptr + 0xC8: 20}                          # the door's own gating flag index
-    def read(addr, n):
-        a = int(addr)
-        if a == G.STAGE_FLAG_GROUP_PTR:
-            return struct.pack(">I", 1)
-        if a in c8:
-            return struct.pack(">I", c8[a])
-        if G.STAGE_FLAG_BASE <= a < G.STAGE_FLAG_BASE + G.STAGE_FLAG_GROUPS * G.STAGE_GROUP_SIZE:
-            return bytes(mem.get(a + i, 0) for i in range(n))
-        return bytes(n)
-    def write(addr, data):
-        a = int(addr)
-        for i, b in enumerate(data):
-            mem[a + i] = b
-        writes.append((a, bytes(data)))
-    ad = SimpleNamespace(read_memory=read, write_memory=write)
+    ad, writes, mem = _flag_ad(floor=1)                 # switches flag 6,7 + nearest barrier flag 10
     ctrl = _controller(tmp_path, ad=ad)
-    door = {"class": "TObjDoor", "ptr": hex(door_ptr), "x": 100., "z": 0., "room": 10, "kind": "gate"}
-    st = _coop_room([door], p1=(0., 0.))
+    door = {"class": "TObjDoor", "ptr": "80DB9000", "x": 100., "z": 0., "room": 10, "kind": "gate"}
+    st = _coop_room(_room10_flag_entities() + [door], p1=(0., 0.))
     gkey = ("TObjDoor", 100.0, 0.0)
     result = ctrl.force_adjacent_door(st, st["players"][1], gkey, now=1000.)
-    assert result == [20]                               # the door's OWN flag (no switches/barriers in this room)
-    locus = G.stage_flag_locus(1, 20)
-    assert mem.get(locus[0], 0) & locus[1]              # that exact flag bit is now set
-    assert ctrl.inputs.stats["forced_adjacent_door"]["written"] == [20]
+    assert result == [6, 7, 10]                         # the room's gate flags, not the door's own field
+    assert mem[0x80515CE8] == 0x03 and mem[0x80515CE9] == 0x20   # flags 6|7 and 10 set
+    assert ctrl.inputs.stats["forced_adjacent_door"]["written"] == [6, 7, 10]
+    assert ctrl._adj_skip == "ok" and ctrl._adj_fires == 1
     # per-door one-shot within the re-arm window: an immediate second call writes nothing
     writes.clear()
     assert ctrl.force_adjacent_door(st, st["players"][1], gkey, now=1001.) is None and writes == []
+    assert ctrl._adj_skip == "rearm_window"
 
 
 def test_force_unlock_refuses_on_wrong_build_signature(tmp_path):
