@@ -1496,12 +1496,18 @@ class Combat:
             corridor = False
         ray = None if wid==0x36 else self._ray(snap, now)
         if ray is not None and self.ray_blocked(ray, tgt["pos"]):
-            corridor = False
+            # A measured ray ending short of him is cover the camera cannot see (the ray-confirmed path already vetoes
+            # it); the close-threat blast must not fire into it either - the 2026-10-27 cluster: laserless close shots
+            # with the dot on the wall beside him. A torn read (rejected -> None) leaves the blast as it was.
+            blast_ray_ok = False
+        else:
+            blast_ray_ok = True
         foot = tgt["pos"]
         facing = wrap(heading(foot[0]-p["pos"][0], foot[2]-p["pos"][2])-p["rot"])
         blast = (wid not in (0x0F, 0x36) and rounds is not None and rounds > 0 and p.get("action") != 4
                  and math.hypot(foot[0]-p["pos"][0], foot[2]-p["pos"][2]) < LASERLESS_BLAST_R
-                 and abs(foot[1]-p["pos"][1]) < 150.0)          # near: no corridor needed; fired once aligned
+                 and abs(foot[1]-p["pos"][1]) < 150.0
+                 and blast_ray_ok)            # near: no floor corridor needed; fired once aligned - but never into a measured wall
         if not corridor and not blast:
             self.bow_down_at = None
             self.needs_firing_position = True
