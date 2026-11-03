@@ -796,6 +796,8 @@ ADVANCE_STALL_S = 100.0      # PERPETUAL PLAY: warp to the next floor only after
 ADVANCE_WARP_GAP_S = 30.0    # minimum time between native floor warps (don't spam the loader)
 STALL_HARDCAP_S = 110.0      # ABSOLUTE anti-freeze: no new room for this long -> warp REGARDLESS of enemies/cleared
                              # state (unreachable enemies behind a gate must never pin the party). Non-negotiable.
+BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: never warp off a LIVE boss before this (~5.5 min anti-permafreeze last resort)
+BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # DODGE / combat positioning (operator 2026-11-02: "the bots should be learning to
 # dodge - basically moving and positioning during battle"). During combat the party
@@ -1049,6 +1051,12 @@ class Controller:
         self.death_memory = DeathMemory(getattr(reader, 'ad', None))  # death-driven learning consumer
         self._dodges = 0            # how many dodge (reposition-during-combat) pulses fired (flat telemetry)
         self._boss_adv = None       # per-tick boss weak-point advisor result (pso_boss_strategy)
+        self._bosses_defeated = 0   # confirmed boss kills this run (flat telemetry: goal "defeat every boss")
+        self._boss_present_now = False  # a boss entity is in the current state
+        self._boss_alive_now = False    # a boss entity is alive (hp>0 or hp unreadable)
+        self._boss_alive_at = 0.0       # last monotonic a boss read alive (inter-phase grace)
+        self._boss_seen_alive = False   # saw a live boss on the current boss floor (kill-credit guard)
+        self._boss_kill_key = None      # (episode, floor) already credited a kill for (no double-count)
         from .pso_coop_town import TownRoute
         self.town = TownRoute(getattr(reader, "ad", None))
         self.town_enabled = False
@@ -2313,6 +2321,16 @@ class Controller:
         dwell = now - rec['since'] if rec else 0.0
         if now - self._last_warp_at < ADVANCE_WARP_GAP_S:
             return False
+        # BOSS DEFEAT (operator: do NOT warp off a boss floor - KILL the boss). While a
+        # boss is alive (or was alive within BOSS_DEAD_GRACE_S, covering brief inter-phase
+        # hp==0), SUPPRESS both the graceful and the hardcap warp so the party stays and
+        # fights. Only a long anti-permafreeze cap (BOSS_SAFETY_S ~ 5.5 min) can warp off
+        # an apparently unkillable boss as a last resort. Once the boss is dead the normal
+        # progression warp is allowed (legit, not a skip).
+        boss_hold = (self._boss_present_now and
+                     (self._boss_alive_now or (now - self._boss_alive_at) < BOSS_DEAD_GRACE_S))
+        if boss_hold and dwell < BOSS_SAFETY_S:
+            return False
         # ABSOLUTE anti-freeze backstop (NON-NEGOTIABLE): no new room for STALL_HARDCAP_S
         # warps REGARDLESS of enemies / cleared state - unreachable enemies behind a gate
         # (floor-7 Mine2 pin) must never freeze the party. Below the cap, the GRACEFUL
@@ -2459,6 +2477,35 @@ class Controller:
                 'x': float(wp['x']), 'z': float(wp['z']),
                 'y': float(wp.get('y') if type(wp.get('y')) in (int, float) else (player.get('y') or 0.)),
                 'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
+
+    def _observe_boss(self, state, now):
+        """BOSS DEFEAT: read boss liveness from state entities (class TBoss*/TObjBoss*)
+        so advance_on_stall can SUPPRESS the warp while a boss lives (stay and kill it,
+        don't skip). Conservative: an unreadable boss HP counts as ALIVE so we never warp
+        off a boss we can't measure. Credits bosses_defeated once per (episode,floor) when
+        a boss that was seen alive is now present with all parts at hp<=0 (a confirmed
+        kill - a brief inter-phase hp==0 is covered by BOSS_DEAD_GRACE_S in the warp gate,
+        and the per-floor key prevents double counting multi-phase fights)."""
+        rows = [e for e in state.get("entities", ())[:512]
+                if str(e.get("class", "")).startswith(("TBoss", "TObjBoss"))]
+        present = bool(rows)
+        alive = any(type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0 for e in rows)
+        dead_confirmed = present and all(type(e.get("hp")) in (int, float) and e.get("hp", 0) <= 0 for e in rows)
+        self._boss_present_now = present
+        self._boss_alive_now = alive
+        if alive:
+            self._boss_alive_at = now
+            self._boss_seen_alive = True
+        key = (state.get("episode"), state.get("floor"))
+        if dead_confirmed and self._boss_seen_alive and self._boss_kill_key != key:
+            self._boss_kill_key = key
+            self._bosses_defeated += 1
+            self._boss_seen_alive = False
+        st = getattr(self.inputs, "stats", None)
+        if isinstance(st, dict):
+            st["boss_present"] = int(present)
+            st["boss_alive"] = int(alive)
+            st["bosses_defeated"] = self._bosses_defeated
 
     def survival_tick(self, state):
         """NEVER-DIE (operator 11-03: P2 died and stayed dead). The survival write-side
@@ -2706,6 +2753,9 @@ class Controller:
                     st.update({k: v for k, v in bt.items() if not isinstance(v, (dict, list))})
             except Exception:
                 self._boss_adv = None
+        # BOSS DEFEAT: read boss liveness BEFORE advance_on_stall so the warp is suppressed
+        # while a boss lives (stay and kill it, don't warp off the boss floor).
+        self._observe_boss(state, now)
         # Operator's guaranteed fail-safe: a stuck (or recognized) room's forward
         # gate is opened by setting its verified native stage flags - progression
         # never stalls. Done before movement so the same tick can walk through.
@@ -3044,6 +3094,18 @@ class Controller:
             commands.append((slot, movement_keys(player, waypoint), duration))
             moves[slot] = (player, waypoint, nav, not nearby)
             steering[slot] = (player, waypoint, 'native_route')
+        # NEVER STAND (operator: endless visible motion). If P1 produced NO command this
+        # tick - a combat defer/aim-pause/cooldown or a missing route would otherwise leave
+        # it standing - drive it forward toward the next objective so the navigator is
+        # always moving on screen. Only when truly idle (a fire/dodge/route tick already
+        # has a P1 command), alive, and not mid-area-load.
+        if not any(c[0] == 1 for c in commands) and not state.get("travelling"):
+            p1d = state["players"].get(1)
+            if p1d and p1d.get("hp", 0) > 0:
+                self.drive_forward(state, 1, p1d, now, commands, moves, steering, fallback_slots)
+                _sti = getattr(self.inputs, "stats", None)
+                if isinstance(_sti, dict):
+                    _sti["idle_drift"] = _sti.get("idle_drift", 0) + 1
         self._forward_dwell_telemetry(state, now, bool(fallback_slots))
         if self.field.revision != field_revision:
             # First route selection can perform several bounded searches.
@@ -3303,6 +3365,23 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     except Exception as exc:                       # noqa: BLE001 - never block play on the crystal
         from .pso_knowledge import KnowledgeStore
         stats["pso_knowledge_reload_error"] = str(exc)[:160]
+    # Hot-swap pso_survival the SAME way (operator: characters frozen on screen). This
+    # worker loaded pso_survival (via pso_master_build) BEFORE it was throttled, so the
+    # cached copy still does a native inventory round-trip for BOTH players EVERY tick
+    # (~40 native calls/sec), which STARVES the movement/input command queue - the
+    # characters physically can't move even while the bot drives them. The throttled
+    # build (module-level HEAVY_INTERVAL_S: heavy work ~1/sec, cheap HP-revive every
+    # tick) is on disk but pso_survival is NOT a BOT_MODULE, so a plain bot-reload won't
+    # pick it up. Reload it in place here (once, only if stale) so survival_tick and
+    # DeathMemory use the throttled copy. Fail-soft: never block play.
+    try:
+        import importlib
+        from . import pso_survival as _ps
+        if not hasattr(_ps, "HEAVY_INTERVAL_S"):
+            _ps = importlib.reload(_ps)
+        stats["pso_survival_throttled"] = hasattr(_ps, "HEAVY_INTERVAL_S")
+    except Exception as exc:                       # noqa: BLE001 - never block play on survival
+        stats["pso_survival_reload_error"] = str(exc)[:160]
     controller.knowledge = KnowledgeStore(root / "pso-knowledge.json")
     controller.map_root = root                       # published collision surfaces live here
     controller.directive_path = root / "pso-directive.json"   # operator RTS map clicks
@@ -3672,16 +3751,16 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                          native_control_during_recovery=True)
                         if build_rerolled:
                             # The master build re-rolled the weapon (it OWNS the weapon
-                            # slot; EquipmentRecovery's equip is disabled). The active
-                            # item changed: discard pre-call plans and reobserve
-                            # actors/menu/weapon ranges before any controller command.
+                            # slot). The active item changed, so DROP the stale weapon
+                            # ranges/plans - but do NOT stand still to "reobserve"
+                            # (operator: never freeze). Clear the caches and fall straight
+                            # into controller.tick, which recomputes the envelope fresh
+                            # this same tick and keeps the party MOVING/fighting.
                             invalidate_plan()
                             controller.weapon_ranges.cache.clear()
                             controller.weapon_ranges.attempted.clear()
                             controller.engagements.rows.clear()
-                            inputs.release()
-                            stats["action"] = "reobserving_after_master_build_weapon"
-                            continue
+                            stats["weapon_reroll_reobserved_inline"] = stats.get("weapon_reroll_reobserved_inline", 0) + 1
                         stats["action"] = "coordinated_native_combat_or_navigation"
                         controller.tick(state)
                 errors = 0
