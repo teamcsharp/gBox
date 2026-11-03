@@ -2024,6 +2024,15 @@ def apply_master_build_tick(ad, state, stats, *, force=False):
 
     apply_master_build OWNS the weapon slot (equips, re-rolls, and re-arms after a
     death), so pso_coop's EquipmentRecovery equip is left off to avoid fighting it."""
+    # Re-surface the LAST summary on EVERY call (even gated/throttled ones): the
+    # stats dict is rebuilt each loop, so setting it only on the 3s application tick
+    # made it flicker ~1 loop in every 3s and read as absent. Persist it on `ad`.
+    prior = getattr(ad, "_pso_master_build_summary", None)
+    if prior is not None:
+        stats["master_build"] = prior
+    prior_error = getattr(ad, "_pso_master_build_error", None)
+    if prior_error:
+        stats["master_build_error"] = prior_error
     if not (state.get("verified") and state.get("phase") == 14 and state.get("floor", 0) > 0):
         return False
     players = state.get("players") or {}
@@ -2039,17 +2048,22 @@ def apply_master_build_tick(ad, state, stats, *, force=False):
     try:
         from .pso_master_build import apply_master_build_all
         report = apply_master_build_all(ad)
-        summary = {}
+        summary = {"applied_wall": time.time()}
         for idx, rep in (report or {}).items():
             weapon = rep.get("weapon") or {}
             summary[str(idx)] = {"ok": rep.get("ok"), "lck": rep.get("lck"),
                                  "weapon": weapon.get("code"), "rerolled": weapon.get("rerolled"),
-                                 "errors": rep.get("errors") or {}}
+                                 "frame": rep.get("frame"), "units": rep.get("units"),
+                                 "mag": rep.get("mag"), "never_miss": rep.get("never_miss"),
+                                 "equip_any": rep.get("equip_any"), "errors": rep.get("errors") or {}}
             if weapon.get("rerolled"):
                 rerolled = True
+        ad._pso_master_build_summary = summary
+        ad._pso_master_build_error = None
         stats["master_build"] = summary
     except Exception as exc:                       # noqa: BLE001 - module absent pre-ff, or unexpected; never block play
-        stats["master_build_error"] = str(exc)[:160]
+        ad._pso_master_build_error = str(exc)[:160]
+        stats["master_build_error"] = ad._pso_master_build_error
     return rerolled
 
 
