@@ -383,11 +383,16 @@ def _analyze_generic(name, bosses, player, difficulty):
 
 
 def _analyze_surfaced(name, bosses, player, difficulty):
-    # De Rol Le / Barba Ray: the exposed, damageable part is the body segment/head ABOVE the water
-    # line. Live De Rol Le: the head sits at y~+7 while the submerged body joints are at y~-9..-30,
-    # so the greatest-y boss part is the surfaced weak point (mine adds already filtered out).
+    # De Rol Le / Barba Ray: the HEAD is the authoritative damageable object; the TBoss2Joint body
+    # segments are ARMOR (don't take HP damage - build-agent confirmed). So target the HEAD (the
+    # boss-body entity whose class is NOT a Joint/segment), and let boss_vulnerable (+0x324 gate)
+    # suppress fire while the head's shell is closed/submerged. Fall back to the greatest-y part
+    # only if no distinct head object is present. (mine adds already filtered out.)
     spec = WEAKPOINT_SPEC[name]
-    target = max(bosses, key=lambda b: b["pos"]["y"])
+    heads = [b for b in bosses if not any(s in str(b["entity"].get("class", ""))
+                                          for s in ("Joint", "Colli", "Segment", "Tail"))]
+    pool = heads or bosses
+    target = max(pool, key=lambda b: b["pos"]["y"])      # the head (or the highest surfaced part)
     return dict(phase=spec["aim"], target=target, element=spec["element"],
                 action=f"aim_{spec['aim']}", hazard=spec["hazard"], confidence="heuristic")
 
@@ -447,7 +452,8 @@ def _inactive(reason=None):
            "element": None, "action": None, "hazard": None, "episode": None, "floor": None,
            "confidence": None, "boss_floor": False, "boss_alive": None, "boss_cleared": False,
            "boss_hp_frac": None, "boss_action_state": None, "boss_add_count": 0, "boss_weakpoint_dist": None,
-           "boss_vulnerable": None, "boss_hold_x": None, "boss_hold_z": None, "boss_hold_dist": None,
+           "boss_vulnerable": None, "boss_hold_pos": None, "boss_hold_x": None, "boss_hold_z": None,
+           "boss_hold_dist": None, "boss_parts_remaining": 0,
            # flat telemetry mirrors (the telemetry endpoint keeps only flat scalars)
            "boss_active": False, "boss_name": None, "boss_phase": None,
            "boss_weakpoint_locked": False, "boss_weakpoint_x": None, "boss_weakpoint_z": None}
@@ -588,14 +594,15 @@ def boss_target(ad):
                "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
                "action_state": action_state, "boss_special_state": special,
                "ctrl_mode": ctrl_mode, "boss_vulnerable": vulnerable,
-               "hold_pos": hold_pos, "boss_hold_ready": hold_n >= 4,
+               "boss_hold_pos": hold_pos, "hold_pos": hold_pos, "boss_hold_ready": hold_n >= 4,
                "adds": [a["pos"] for a in adds], "add_classes": sorted({a["entity"].get("class") for a in adds}),
                # flat telemetry mirrors
                "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
                "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state,
                "boss_add_count": len(adds), "boss_weakpoint_dist": wp_dist, "boss_vulnerable": vulnerable,
-               "boss_hold_x": hold_pos["x"], "boss_hold_z": hold_pos["z"], "boss_hold_dist": hold_dist}
+               "boss_hold_x": hold_pos["x"], "boss_hold_z": hold_pos["z"], "boss_hold_dist": hold_dist,
+               "boss_parts_remaining": len(bosses)}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -621,5 +628,6 @@ def boss_telemetry(ad):
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
             "boss_floor", "boss_hp_frac", "boss_action_state", "boss_add_count",
-            "boss_weakpoint_dist", "boss_vulnerable", "boss_hold_x", "boss_hold_z", "boss_hold_dist")
+            "boss_weakpoint_dist", "boss_vulnerable", "boss_hold_x", "boss_hold_z", "boss_hold_dist",
+            "boss_parts_remaining")
     return {k: adv.get(k) for k in keys}
