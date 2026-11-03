@@ -1379,6 +1379,37 @@ def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path)
     assert not any(c[1] == ["a"] for c in cmds2) and steer2[1][2] == "boss_hold_far"
 
 
+def test_boss_combat_fires_at_a_monitor_when_hold_pos_equals_weakpoint(tmp_path):
+    """Vol Opt regression: hold_pos == the monitor (not a distinct orbit centre), so it must
+    NOT be treated as a centre-hold that stops at BOSS_HOLD_TOL - at 38u in range it FIRES."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
+    env = dict(C.FALLBACK, horizontal=110., horizontal_half_angle=45., verified=True)   # Shot ~104
+    monitor = {"class": "TObjBossVolOpt", "kind": "enemy", "hp": 500, "hp_max": 500,
+               "x": 0., "z": 38., "y": 0., "ptr": "V1"}
+    ctrl._boss_adv = {"active": True, "boss": "VolOpt", "boss_vulnerable": True,
+                      "weakpoint": monitor, "hold_pos": {"x": 0., "z": 38.}}            # == the monitor
+    cmds, mv, steer, arows = [], {}, {}, {}
+    ctrl.boss_combat(state(floor=13), 1, player, env, monitor, 100.0, cmds, mv, steer, [monitor], arows)
+    assert any(c[0] == 1 and c[1] == ["a"] for c in cmds) and steer[1][2] == "boss_fire"
+
+
+def test_boss_combat_closes_the_last_gap_when_gun_reach_is_short(tmp_path):
+    """If the gun's real reach is shorter than the bot's distance (38u) and hold_pos == the
+    weak point, it must CLOSE the last gap (not freeze at the hold tolerance) until in range."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
+    env = dict(C.FALLBACK, horizontal=20., horizontal_half_angle=45., verified=True)    # reach ~19 < 38
+    monitor = {"class": "TObjBossVolOpt", "kind": "enemy", "hp": 500, "hp_max": 500,
+               "x": 0., "z": 38., "y": 0., "ptr": "V1"}
+    ctrl._boss_adv = {"active": True, "boss": "VolOpt", "boss_vulnerable": True,
+                      "weakpoint": monitor, "hold_pos": {"x": 0., "z": 38.}}
+    cmds, mv, steer, arows = [], {}, {}, {}
+    ctrl.boss_combat(state(floor=13), 1, player, env, monitor, 100.0, cmds, mv, steer, [monitor], arows)
+    assert not any(c[1] == ["a"] for c in cmds)                     # 38u > 19 reach -> not firing yet
+    assert steer[1][2] in ("boss_approach", "boss_approach_unwedge") and steer[1][1] == (0., 38.)
+
+
 def test_boss_combat_holds_the_orbit_center_for_a_circling_boss(tmp_path):
     """DRAGON fix: a circling boss must be fired at from its ORBIT CENTRE (boss_hold_pos),
     not chased to the perimeter. When the weak point is on the far arc (out of reach), the

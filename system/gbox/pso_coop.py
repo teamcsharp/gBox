@@ -2353,16 +2353,18 @@ class Controller:
         # damage yet). Suppress the warp while a boss is ALIVE *and* we're still making
         # DAMAGE PROGRESS. Liveness prefers the boss agent's latched boss_alive (handles
         # inter-phase gaps: True=fight, False=confidently dead), falling back to my entity
-        # scan + grace. DAMAGE-PROGRESS escape: if HP/parts haven't dropped for BOSS_NOPROG_S
-        # (weak-point not pinned -> can't hurt it), release the hold so the normal warp loops
-        # us off to try again later. BOSS_SAFETY_S stays the absolute cap. Once the boss is
-        # dead, the hold releases and normal progression warps off (legit, not a skip).
+        # scan + grace. While HP/parts are DROPPING, NEVER warp - STAY until the kill
+        # (operator: a winnable boss was warped off at 50% HP by the old BOSS_SAFETY cap,
+        # throwing away the kill). The only escape is the DAMAGE-PROGRESS one: if nothing
+        # has dropped for BOSS_NOPROG_S (can't hurt it), release and let the normal warp
+        # loop us off. So a winnable boss is never warped mid-kill; an un-damageable one
+        # still frees the party after ~BOSS_NOPROG_S.
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
         boss_still_alive = ((adv.get('boss_floor') and adv.get('boss_alive') is not False)
             or (self._boss_present_now and (self._boss_alive_now
                 or (now - self._boss_alive_at) < BOSS_DEAD_GRACE_S)))
         making_progress = (now - self._boss_progress_at) < BOSS_NOPROG_S
-        if boss_still_alive and making_progress and dwell < BOSS_SAFETY_S:
+        if boss_still_alive and making_progress:
             return False
         # ABSOLUTE anti-freeze backstop (NON-NEGOTIABLE): no new room for STALL_HARDCAP_S
         # warps REGARDLESS of enemies / cleared state - unreachable enemies behind a gate
@@ -2562,22 +2564,23 @@ class Controller:
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
         fire_range = (env_h * BOSS_FIRE_MARGIN) if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
         in_fire = aim_dist <= fire_range
-        # Stand at hold_pos ONLY when doing so keeps the weak point in reach (circling Dragon:
-        # orbit radius < gun reach). For scattered targets (Vol Opt monitors) the centroid can
-        # be OUT of range of the current weak point and parks the bot firing at nothing - so
-        # fail-safe to closing on the weak point itself. Never idle at a hold point out of reach.
-        mx, mz, hold_covers = bx, bz, False
+        # A CENTRE-HOLD applies ONLY when hold_pos is a DISTINCT stand point (an orbit centre
+        # >= BOSS_HOLD_TOL away from the weak point) that still keeps the weak point in gun
+        # reach - i.e. the circling Dragon. When hold_pos == the weak point (Vol Opt monitors,
+        # De Rol Le head), there is NO centre to hold: do NOT stop at BOSS_HOLD_TOL - CLOSE
+        # DIRECTLY on the weak point until it is in fire range, then the FIRE branch fires.
+        center_hold, cx, cz = False, 0.0, 0.0
         if has_hold:
             hx0, hz0 = float(hold["x"]), float(hold["z"])
-            if math.hypot(hx0 - bx, hz0 - bz) <= fire_range:
-                mx, mz, hold_covers = hx0, hz0, True
-        move_dist = math.hypot(mx - player["x"], mz - player["z"])
+            if BOSS_HOLD_TOL <= math.hypot(hx0 - bx, hz0 - bz) <= fire_range:
+                center_hold, cx, cz = True, hx0, hz0
+        center_dist = math.hypot(cx - player["x"], cz - player["z"]) if center_hold else aim_dist
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(aim_dist, 1)
-            st["boss_hold_dist"] = round(move_dist, 1)
-            st["boss_hold_covers"] = int(bool(hold_covers))
+            st["boss_hold_dist"] = round(center_dist, 1)
+            st["boss_hold_covers"] = int(bool(center_hold))
             st["boss_fire_range"] = round(fire_range, 1)
             st["boss_in_range"] = int(in_fire)
             st["boss_vulnerable"] = int(bool(can_fire))
@@ -2630,12 +2633,13 @@ class Controller:
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
 
-        if hold_covers:
-            if move_dist > BOSS_HOLD_TOL:
-                drive_to(mx, mz)
+        if center_hold:
+            if center_dist > BOSS_HOLD_TOL:
+                drive_to(cx, cz)    # go to the orbit centre; from there the boss is in reach
                 return True
+            # at the centre, boss out of reach THIS instant (far arc) -> fall to hold/wait below
         elif aim_dist <= fire_range + BOSS_CHASE_CAP:
-            drive_to(bx, bz)        # close directly on the weak point
+            drive_to(bx, bz)        # close DIRECTLY on the weak point until in fire range
             return True
         # Holding the centre with the boss out of reach this instant (far arc), or the boss is
         # unreachably far/submerged/invulnerable -> dodge a telegraphed attack if close, else
