@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import math
 
-from .pso_coop_nav import room_key, geometry_view
+# NOTE: pso_coop_nav is imported FUNCTION-LOCALLY (not at module level) on purpose.
+# A module-level `from .pso_coop_nav import ...` makes the bot hot-reloader refuse to
+# reload pso_coop_nav whenever this module is outside the running process's
+# BOT_MODULES set (it was added later), because this module would bind stale names.
+# Keeping the import local lets pso_coop_nav (and fixes that live in it) hot-reload
+# with no worker-process restart. Do not hoist this back to module scope.
 
 SWITCH_CLASSES = frozenset({'TLazerFenceSw', 'TObjDoorKey'})
 GATE_CLASSES = frozenset({'TObjDoor', 'TObjLazerFenceNorm', 'TOBarrierEnergy01',
@@ -27,6 +32,7 @@ def extract_surface(state, player, *, max_cells=20000):
     cell (cx,cz) is world ((cx+0.5)*size, (cz+0.5)*size)."""
     if state.get('geometry_verified') is not True or not _finite(player.get('x'), player.get('z')):
         return None
+    from .pso_coop_nav import room_key, geometry_view   # function-local: keeps pso_coop_nav hot-reloadable
     # The walkable grid the player actually navigates is the Provider's per-player
     # projection (geometry_players[slot]); the top-level collision_grid is only set
     # by the optional campaign context reader and can be present-but-floorless, so
