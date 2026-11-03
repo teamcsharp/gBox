@@ -2600,22 +2600,34 @@ class Controller:
             if isinstance(st, dict):
                 st["boss_firing_line"] = 1
             return True
-        # POSITION toward the move target: the orbit centre ONLY if it keeps the weak point in
-        # reach (circling Dragon), otherwise the weak point itself (scattered Vol Opt monitors /
-        # any boss whose centroid is out of range) - so we always close to where we can fire,
-        # never park out of range. Covering hold points are always driven to; closing on the
-        # weak point keeps the chase bound so a far stationary boss isn't chased forever.
-        if move_dist > BOSS_HOLD_TOL and (hold_covers or aim_dist <= fire_range + BOSS_CHASE_CAP):
-            keys, escaping = self._unwedge(slot, player, (mx, mz), now)
+        # POSITION. Two cases:
+        #  - CIRCLING boss (hold_covers: the orbit centre keeps the weak point in reach):
+        #    drive to the centre and STOP there (within BOSS_HOLD_TOL); fire outward as it
+        #    circles. Don't chase the perimeter.
+        #  - MULTI-BODY / stationary boss (Vol Opt monitors, De Rol Le head): CLOSE DIRECTLY
+        #    on the weak point - no standoff - until it is within fire range (then the FIRE
+        #    branch above fires point-blank), walking to each next weak point as they die.
+        #    This is the pre-regression "walk up and fire like mad" behaviour.
+        if hold_covers:
+            if move_dist > BOSS_HOLD_TOL:
+                keys, escaping = self._unwedge(slot, player, (mx, mz), now)
+                commands.append((slot, keys, .18))
+                moves[slot] = (player, (mx, mz), self.maps.get(state, player), False)
+                steering[slot] = (player, (mx, mz), "boss_approach_unwedge" if escaping else "boss_approach")
+                if isinstance(st, dict):
+                    st["boss_approaching"] = 1
+                return True
+        elif aim_dist <= fire_range + BOSS_CHASE_CAP:
+            keys, escaping = self._unwedge(slot, player, (bx, bz), now)   # close on the weak point itself
             commands.append((slot, keys, .18))
-            moves[slot] = (player, (mx, mz), self.maps.get(state, player), False)
-            steering[slot] = (player, (mx, mz), "boss_approach_unwedge" if escaping else "boss_approach")
+            moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
+            steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
             return True
-        # At the stand point but the weak point is out of reach (boss on the far arc /
-        # submerged / invulnerable) -> dodge a telegraphed attack if close, else face the
-        # boss and wait for it to circle back into range.
+        # Holding the centre with the boss out of reach this instant (far arc), or the boss is
+        # unreachably far/submerged/invulnerable -> dodge a telegraphed attack if close, else
+        # face the boss and wait for it to come back into range.
         if enemies and boss_special:
             dodge = self.combat_dodge(state, slot, player, enemies, envelope, boss_row, now)
             if dodge is not None and dodge["act"]:
