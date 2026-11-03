@@ -56,7 +56,10 @@ BOT_MODULES = frozenset({
     # Per-run, read-only helpers the co-op loop imports (door/gate model, the RTS
     # map surfaces/directives, the durable room-knowledge store). So their changes
     # reload in place with the loop instead of needing a service restart.
-    "gbox.pso_coop_gates", "gbox.pso_map", "gbox.pso_knowledge"})
+    "gbox.pso_coop_gates", "gbox.pso_map", "gbox.pso_knowledge",
+    # Master-build combat/gear layer the co-op loop calls each tick (idempotent,
+    # fail-soft; its per-player state lives on the adapter, so it survives reload).
+    "gbox.pso_master_build"})
 BOT_PACKAGES = ("gbox.mercs",)             # the package and everything under it, except NOT_BOT
 NOT_BOT = frozenset({                      # under gbox.mercs, but state or threads that outlive a bot run:
     "gbox.mercs.warm_boot",                # the MercMode warm pool's pause/resume observers (adapter-lifetime threads)
