@@ -1389,7 +1389,7 @@ def test_boss_combat_holds_the_orbit_center_for_a_circling_boss(tmp_path):
     boss = {"class": "TBossDragon", "kind": "enemy", "hp": 2500, "hp_max": 2500,
             "x": 150., "z": 0., "y": 0.1, "ptr": "B1"}                                   # far arc, 290u off
     ctrl._boss_adv = {"active": True, "boss": "Dragon", "boss_vulnerable": True,
-                      "weakpoint": boss, "boss_hold_pos": {"x": 0., "z": 0.}}            # orbit centre
+                      "weakpoint": boss, "hold_pos": {"x": 0., "z": 0.}}                 # orbit centre (shipped key)
     cmds, mv, steer, arows = [], {}, {}, {}
     ctrl.boss_combat(state(floor=11), 1, player, env, boss, 100.0, cmds, mv, steer, [boss], arows)
     assert steer[1][2] in ("boss_approach", "boss_approach_unwedge")

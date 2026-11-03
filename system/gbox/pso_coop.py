@@ -2546,7 +2546,7 @@ class Controller:
         weakpoint_pos. Falls back to the weak point when boss_hold_pos is absent."""
         bx, bz = boss_row["x"], boss_row["z"]          # AIM target (the boss / weak point)
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
-        hold = adv.get("boss_hold_pos")
+        hold = adv.get("hold_pos") or adv.get("boss_hold_pos")   # boss agent's shipped key is hold_pos
         has_hold = isinstance(hold, dict) and type(hold.get("x")) in (int, float) and type(hold.get("z")) in (int, float)
         hx, hz = (float(hold["x"]), float(hold["z"])) if has_hold else (bx, bz)   # MOVE/stand target
         aim_dist = math.hypot(bx - player["x"], bz - player["z"])
