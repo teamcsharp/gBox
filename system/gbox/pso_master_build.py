@@ -347,6 +347,14 @@ def _apply_globals(ad, report):
         report["crit_always"] = bool(res.get("crit_always"))
     except Exception as error:
         report.setdefault("errors", {})["crit_always"] = str(error)[:140]
+    # Forced fence drop is wired but INERT until FENCE_FORCE_DOWN is flipped after a live test.
+    try:
+        from . import pso_fence
+        if pso_fence.FENCE_FORCE_DOWN:
+            res = pso_fence.set_enabled(ad, "gamecube", True)
+            report["fence_force_down"] = bool(res.get("fence_force_down"))
+    except Exception as error:
+        report.setdefault("errors", {})["fence_force_down"] = str(error)[:140]
 
 
 def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S, reroll_weapon=True):
