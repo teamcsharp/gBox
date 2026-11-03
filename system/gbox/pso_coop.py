@@ -2608,22 +2608,34 @@ class Controller:
         #    on the weak point - no standoff - until it is within fire range (then the FIRE
         #    branch above fires point-blank), walking to each next weak point as they die.
         #    This is the pre-regression "walk up and fire like mad" behaviour.
-        if hold_covers:
-            if move_dist > BOSS_HOLD_TOL:
-                keys, escaping = self._unwedge(slot, player, (mx, mz), now)
-                commands.append((slot, keys, .18))
-                moves[slot] = (player, (mx, mz), self.maps.get(state, player), False)
-                steering[slot] = (player, (mx, mz), "boss_approach_unwedge" if escaping else "boss_approach")
-                if isinstance(st, dict):
-                    st["boss_approaching"] = 1
-                return True
-        elif aim_dist <= fire_range + BOSS_CHASE_CAP:
-            keys, escaping = self._unwedge(slot, player, (bx, bz), now)   # close on the weak point itself
+        def drive_to(tx, tz):
+            # ROUTE toward the target over the collision grid (A* best-effort), not a blind
+            # straight drive - the bots were parking ~310u away at the Dragon-arena ENTRANCE
+            # (z~340) because a straight push wedged on the arena-mouth geometry. toward()
+            # walks to the nearest reachable cell on P1's component (up to / through the
+            # mouth), then the stage-flag force-unlock + walk-through carry it in. Falls back
+            # to the straight unwedge drive when no route (grid absent).
+            nav = self.maps.get(state, player)
+            waypoint = (tx, tz)
+            try:
+                route, _exact = nav.toward((player["x"], player["z"]), (tx, tz))
+                if route and len(route) > 1:
+                    waypoint = route[1]
+            except Exception:
+                pass
+            keys, escaping = self._unwedge(slot, player, waypoint, now)
             commands.append((slot, keys, .18))
-            moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
-            steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
+            moves[slot] = (player, waypoint, nav, False)
+            steering[slot] = (player, (tx, tz), "boss_approach_unwedge" if escaping else "boss_approach")
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
+
+        if hold_covers:
+            if move_dist > BOSS_HOLD_TOL:
+                drive_to(mx, mz)
+                return True
+        elif aim_dist <= fire_range + BOSS_CHASE_CAP:
+            drive_to(bx, bz)        # close directly on the weak point
             return True
         # Holding the centre with the boss out of reach this instant (far arc), or the boss is
         # unreachably far/submerged/invulnerable -> dodge a telegraphed attack if close, else
