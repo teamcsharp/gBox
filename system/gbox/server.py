@@ -2677,6 +2677,14 @@ def create_app(config: Config) -> FastAPI:
                              workers=lambda: workers(), wid=lambda x: _wid(x), origin_dep=request_origin,
                              job_request=JobRequest, rejected_state=JobState.REJECTED)
 
+    # --- storage overview + purge panel (operator 2026-11-03; gbox/storage_overview.py): GET /api/storage/usage,
+    #     POST/GET /api/storage/purge. Drives the PiP menu "Storage" panel; wraps the vetted purge above. ---
+    from . import storage_overview as storage_overview_mod
+    storage_overview_mod.routes(app, store, config, auth,
+                                submit=lambda req, actor, origin: submit(req, actor, origin),
+                                workers=lambda: workers(), wid=lambda x: _wid(x), origin_dep=request_origin,
+                                job_request=JobRequest, rejected_state=JobState.REJECTED)
+
     background_coordinator_cache = {'at': 0, 'runs': []}
     background_coordinator_lock = threading.Lock()
 

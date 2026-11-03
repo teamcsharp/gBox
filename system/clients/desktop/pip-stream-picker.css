@@ -59,3 +59,36 @@
 #pipmenu .pso-l-chip:hover:not(:disabled) { background:#26262e; border-color:#5a5a66; }
 #pipmenu .pso-l-chip.on { background:#3a5bd0; border-color:#4f6fe0; color:#fff; }
 #pipmenu .pso-l-chip:disabled { opacity:.5; cursor:default; }
+
+/* Storage breakdown + purge panel (operator 2026-11-03; storageOverviewPanel). Collapsed by default; fetches
+   GET /api/storage/usage on expand and drives POST /api/storage/purge (dry run first, then confirm). */
+#pipmenu .pip-storage { width: min(540px, calc(100vw - 34px)); max-width:100%; box-sizing:border-box; padding:6px 8px; border-bottom:1px solid var(--line, #41414a); }
+#pipmenu .pip-storage button.stor-toggle { width:100%; text-align:left; background:none; border:none; color:#d7d7e0; font-size:12px; padding:2px 1px; cursor:pointer; display:flex; justify-content:space-between; gap:8px; }
+#pipmenu .pip-storage button.stor-toggle:hover { color:#fff; }
+.stor-toggle > span.stor-sub { color:#aaaab8; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stor-body { padding:4px 1px 2px; }
+.stor-warn { background:#3a2422; border:1px solid #6a3b34; color:#f0c9c2; font-size:10px; border-radius:5px; padding:5px 7px; margin:2px 0 7px; line-height:1.35; }
+.stor-warn code { background:#1c1c22; padding:1px 4px; border-radius:3px; color:#ffd; font-size:9px; }
+.stor-sec { color:#9a9aa6; font-size:9px; letter-spacing:.06em; text-transform:uppercase; padding:6px 1px 3px; }
+.stor-row { display:flex; align-items:center; gap:7px; padding:1.5px 1px; }
+.stor-k { flex:1 1 auto; min-width:0; color:#c9c9d2; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stor-bar { flex:0 0 120px; height:7px; background:#111116; border-radius:4px; overflow:hidden; }
+.stor-bar > i { display:block; height:100%; border-radius:4px; }
+.stor-v { flex:0 0 58px; text-align:right; color:#d7d7e0; font-size:10px; white-space:nowrap; }
+.stor-g-library > i, .stor-g-runtime > i { background:#3a5bd0; }     /* the operator's — kept */
+.stor-g-cache > i { background:#e0b15a; }                            /* staged cache — tool-purgeable */
+.stor-g-autobuild > i, .stor-g-stale > i { background:#e0675a; }     /* auto-generated / stale — purge candidates */
+.stor-g-other > i { background:#3a3a44; }
+.stor-tag { flex:0 0 auto; font-size:8px; padding:1px 4px; border-radius:3px; color:#ccc; background:#26262e; }
+.stor-tag.purge { background:#4a2a27; color:#f0b8b0; }
+#pipmenu .pip-storage .stor-actions { display:flex; flex-wrap:wrap; gap:6px; padding:8px 1px 2px; }
+#pipmenu .pip-storage .stor-btn { padding:4px 9px; font-size:10px; color:#d7d7e0; background:#1c1c22; border:1px solid #41414a; border-radius:5px; cursor:pointer; width:auto; }
+#pipmenu .pip-storage .stor-btn:hover:not(:disabled) { background:#26262e; border-color:#5a5a66; }
+#pipmenu .pip-storage .stor-btn.danger { background:#4a2a27; border-color:#6a3b34; color:#ffd7cf; }
+#pipmenu .pip-storage .stor-btn.danger:hover:not(:disabled) { background:#5a332f; }
+#pipmenu .pip-storage .stor-btn:disabled { opacity:.5; cursor:default; }
+.stor-items { max-height:160px; overflow:auto; margin:6px 0 2px; border:1px solid #2a2a32; border-radius:5px; }
+.stor-item { display:flex; justify-content:space-between; gap:8px; padding:3px 7px; font-size:10px; color:#c9c9d2; border-bottom:1px solid #222228; }
+.stor-item:last-child { border-bottom:none; }
+.stor-item > span.stor-item-sz { color:#e0b15a; flex:0 0 auto; }
+.stor-note { color:#9a9aa6; font-size:9px; padding:4px 1px 0; line-height:1.35; }

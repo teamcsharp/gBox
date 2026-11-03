@@ -4574,7 +4574,7 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pso-launch class="pso-launch"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pso-launch class="pso-launch"></div><div data-pip-storage class="pip-storage"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
@@ -4597,6 +4597,7 @@ function pipMenu(x, y) {
   pipMercMode(m, opening);
   m.profiler?.stop(); m.profiler = pipProfiler(m, opening);
   m.psoLaunch?.stop(); m.psoLaunch = psoLaunchPicker(m, opening);
+  m.storage?.stop(); m.storage = storageOverviewPanel(m, opening);
   savedSlot().then(slot => {                                   // this game's kept save slot, once known
     const b = m.opening === opening && m.querySelector('[data-a="slot+"]');
     if (b && !b.disabled) b.textContent = `Save slot: ${slot}  ▸ next`;
@@ -4692,6 +4693,134 @@ function pipProfiler(m, opening, worker = 'lilspark') {
   tick();
   const id = setInterval(tick, 3000);
   return { stop() { clearInterval(id); } };
+}
+// Storage breakdown + purge panel (operator 2026-11-03): collapsed by default. On expand it fetches
+// GET /api/storage/usage (cached du of the Spark; per-mount + per-category, library vs auto-build/stale). The
+// "Purge auto-builds (dry run)" button runs POST /api/storage/purge {confirm:false} on lilspark via the vetted
+// per-PC purge tool (gbox/storage_purge.py), lists what WOULD go, and only on an explicit confirm deletes those
+// exact paths (confirm:true). The curated library mounts are never in a purge; nothing auto-deletes.
+function storageOverviewPanel(m, opening) {
+  const box = m.querySelector('[data-pip-storage]');
+  if (!box) return null;
+  let open = false, cancelled = false, pollId = 0, usage = null, dry = null;
+  const WORKER = 'lilspark';
+  const gb = b => b == null ? '—' : (b >= 1 << 30 ? (b / 2 ** 30).toFixed(b >= 100 * (1 << 30) ? 0 : 1) + ' GB' : (b / 2 ** 20).toFixed(0) + ' MB');
+  const stop = () => { cancelled = true; if (pollId) clearInterval(pollId); pollId = 0; };
+  const valid = () => !cancelled && m.opening === opening;
+  const toggle = sub => `<button class="stor-toggle" data-stor-toggle>${open ? '▾' : '▸'} 💾 Storage breakdown<span class="stor-sub">${esc(sub || '')}</span></button>`;
+  const PURGE_GROUPS = { autobuild: 1, stale: 1, cache: 1 };
+
+  function render() {
+    if (!open) { box.innerHTML = toggle('view & purge auto-builds'); wire(); return; }
+    if (!usage) { box.innerHTML = toggle('loading…'); wire(); return; }
+    const parts = [toggle(usage.computing ? 'measuring…' : (usage.age_s != null ? `as of ${Math.round(usage.age_s / 60)}m ago` : ''))];
+    const body = ['<div class="stor-body">'];
+    const ab = usage.autobuild_generation || {};
+    if (ab.generating) body.push(`<div class="stor-warn">⚠ Still auto-making builds (roulette cast builder is ON). New casts land in the central collection every ~10 min. To stop: <code>POST /api/autoplay-screensaver {"roulette": false}</code> (ask the operator — not changed from here).</div>`);
+    // mounts: the disks, library ones flagged
+    body.push('<div class="stor-sec">Disks</div>');
+    const maxM = Math.max(1, ...(usage.mounts || []).map(x => x.used || 0));
+    for (const mt of (usage.mounts || [])) {
+      const g = mt.role === 'library' ? 'library' : 'other';
+      body.push(row(`${esc(mt.label)}${mt.role === 'library' ? ' 🔒' : ''}`, mt.used, maxM, g, `${gb(mt.used)} / ${gb(mt.size)}`, mt.pct != null ? mt.pct + '%' : ''));
+    }
+    // categories: biggest first, purge candidates tagged
+    const cats = usage.categories || [];
+    if (cats.length) {
+      body.push('<div class="stor-sec">Where the space goes</div>');
+      const maxC = Math.max(1, ...cats.map(c => c.bytes || 0));
+      for (const c of cats.slice(0, 12)) body.push(row(esc(c.label), c.bytes, maxC, c.group, gb(c.bytes), '', c.purgeable));
+    } else if (usage.computing) body.push('<div class="stor-note">Measuring disk usage (first pass can take a minute on the 600 GB cache)…</div>');
+    // actions + dry-run results
+    body.push('<div class="stor-actions">');
+    body.push(`<button class="stor-btn" data-stor-dry ${dry && dry.state === 'running' ? 'disabled' : ''}>🧹 Purge auto-builds on ${esc(WORKER)} (dry run)</button>`);
+    body.push(`<button class="stor-btn" data-stor-refresh>↻ Re-measure</button>`);
+    body.push('</div>');
+    if (dry) body.push(dryHTML());
+    body.push('<div class="stor-note">Purge uses the vetted per-PC tool: it only ever frees this PC\'s cache (staged games, opt-in builds) — never the HyperSpin library, favorites or game files. On Linux the central build collection is never deleted by the tool; clean large auto-generated folders (artifacts, exports, Hermes worktrees) with help.</div>');
+    body.push('</div>');
+    parts.push(body.join(''));
+    box.innerHTML = parts.join('');
+    wire();
+  }
+  function row(label, val, max, group, right, pct, purgeable) {
+    const w = Math.max(2, Math.min(100, (val || 0) / max * 100));
+    return `<div class="stor-row"><span class="stor-k">${label}</span>`
+      + (purgeable ? '<span class="stor-tag purge">purge</span>' : '')
+      + `<span class="stor-bar stor-g-${esc(group)}"><i style="width:${w.toFixed(0)}%"></i></span>`
+      + `<span class="stor-v">${esc(right)}</span></div>`;
+  }
+  function dryHTML() {
+    if (dry.error) return `<div class="stor-warn">${esc(dry.error)}</div>`;
+    if (dry.state === 'running') return '<div class="stor-note">Running dry run on ' + esc(WORKER) + '…</div>';
+    const t = dry.totals || {}, items = dry.items || [];
+    if (!items.length) return `<div class="stor-note">Nothing purgeable right now (${dry.deletable === false ? 'preview only' : 'all cache is kept: favorites, recently played or in use'}).</div>`;
+    const lines = items.slice(0, 40).map(it => `<div class="stor-item"><span>${esc(it.title || it.game || it.folder || it.path)}${it.build ? ' · ' + esc(it.build) : ''}</span><span class="stor-item-sz">${gb(it.size)}</span></div>`).join('');
+    const freeable = gb(t.freed_bytes || 0);
+    const canDelete = dry.deletable !== false;
+    return `<div class="stor-note">${items.length} item(s) would be freed · <strong>${freeable}</strong>${items.length > 40 ? ' (showing 40)' : ''}</div>`
+      + `<div class="stor-items">${lines}</div>`
+      + `<div class="stor-actions">${canDelete
+        ? `<button class="stor-btn danger" data-stor-confirm>Delete these now (${freeable})</button>`
+        : '<span class="stor-note">Deleting needs the Spark\'s facts; run this on the control plane.</span>'}</div>`;
+  }
+  function wire() {
+    box.querySelector('[data-stor-toggle]')?.addEventListener('click', e => {
+      e.stopPropagation(); open = !open; render(); if (open && !usage) load();
+    });
+    box.querySelector('[data-stor-refresh]')?.addEventListener('click', e => { e.stopPropagation(); load(true); });
+    box.querySelector('[data-stor-dry]')?.addEventListener('click', e => { e.stopPropagation(); runPurge(false); });
+    box.querySelector('[data-stor-confirm]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      const t = (dry && dry.totals) || {};
+      if (confirm(`Delete ${t.items || 0} cache item(s) (~${gb(t.freed_bytes || 0)}) on ${WORKER}? This frees only auto/stale cache — not your library or favorites. This cannot be undone.`))
+        runPurge(true);
+    });
+  }
+  async function load(refresh) {
+    try {
+      const r = await gbox.api(`/api/storage/usage${refresh ? '?refresh=1' : ''}`);
+      if (!valid()) return;
+      if (!r.ok) throw Error(r.error || 'unavailable');
+      usage = r.data; render();
+      if (usage.computing && !pollId) pollId = setInterval(async () => {
+        if (!valid() || !open) { if (pollId) clearInterval(pollId); pollId = 0; return; }
+        const rr = await gbox.api('/api/storage/usage');
+        if (!valid()) return;
+        if (rr.ok) { usage = rr.data; render(); if (!usage.computing) { clearInterval(pollId); pollId = 0; } }
+      }, 5000);
+    } catch (error) { if (valid()) { usage = { mounts: [], categories: [], error: error.message }; render(); } }
+  }
+  async function runPurge(confirmDelete) {
+    try {
+      dry = { state: 'running' }; render();
+      const paths = confirmDelete ? (dry0items || []).map(it => it.path) : [];
+      const sub = await gbox.api('/api/storage/purge', { worker: WORKER, confirm: confirmDelete, paths }, 'POST');
+      if (!valid()) return;
+      if (!sub.ok) throw Error(sub.error || 'purge request failed');
+      const jobId = sub.data.job_id;
+      // poll the result until the job finishes
+      const finish = await pollJob(jobId);
+      if (!valid()) return;
+      dry = finish; dry0items = finish.items || dry0items; render();
+      if (confirmDelete) { toast(`Freed ${gb((finish.totals || {}).freed_bytes || 0)} on ${WORKER}`); load(true); }
+    } catch (error) { if (valid()) { dry = { error: error.message }; render(); } }
+  }
+  let dry0items = null;
+  async function pollJob(jobId) {
+    for (let i = 0; i < 120; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (!valid()) throw Error('closed');
+      const r = await gbox.api(`/api/storage/purge?worker=${encodeURIComponent(WORKER)}&job_id=${encodeURIComponent(jobId)}`);
+      if (r.ok && (r.data.state === 'succeeded' || r.data.state === 'failed')) {
+        if (r.data.state === 'failed') throw Error('the purge job failed');
+        return r.data;
+      }
+    }
+    throw Error('timed out waiting for the purge job');
+  }
+  render();
+  return { stop };
 }
 // PSO autobot entry: which Episode (1 / 2) and Difficulty (Normal / Hard / Very Hard / Ultimate; "Legendary" is
 // not a native PSO difficulty, so it maps to Ultimate for now) the two-player campaign enters its NEXT game on.
