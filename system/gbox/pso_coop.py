@@ -800,8 +800,10 @@ STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for 
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
-BOSS_CHASE_CAP = 170.0       # don't CHASE a boss past this (Dragon flies/burrows/teleports; De Rol Le head submerges)
-                             # - hold a central spot and fire when it returns to range, instead of chasing uncatchably
+BOSS_CHASE_CAP = 170.0       # don't CHASE a boss past (fire_range + this) (Dragon flies/teleports; De Rol Le submerges)
+BOSS_FIRE_RANGE = 220.0      # fire the forced long-range gun at a VULNERABLE boss within this (never-miss lands it) -
+                             # the live rifle reach; keep firing through the boss's movement instead of drifting out
+BOSS_FIRE_CONE = 25.0        # fire when facing the weak point within this cone (never-miss is forgiving; don't micro-rotate forever)
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -2525,63 +2527,52 @@ class Controller:
 
     def boss_combat(self, state, slot, player, envelope, boss_row, now, commands, moves, steering, enemies, attack_rows):
         """Own this slot's boss tick (always returns True so the caller stops here and the
-        generic dodge/nav never hijacks it). The earlier bug: inside the boss dodge radius
-        the generic dodge strafed every tick, so the bots never held a firing line (De Rol
-        Le oscillated 29<->282u, HP flat). Policy (coordinator + boss agent):
-          - STRIKE WINDOW (boss_special_state / phase '*_attacking' = Dragon grounded 21/22,
-            or any open-shell window): FIRE HARD at the weak point; the party is unkillable,
-            so damage beats evasion here. Approach fast if just out of range.
-          - In range otherwise: HOLD the line and FIRE persistently (don't strafe off it -
-            the head/body moves; keep firing, incl. De Rol Le which has no window flag yet).
-          - Reasonably close but out of range: APPROACH (coordinate-drive) to a firing spot.
-          - Far AND relocating (Dragon airborne/burrowed/teleporting; De Rol Le submerged):
-            DON'T chase across the arena - hold a central spot, dodge anything close, and
-            fire the instant it returns to range."""
+        generic dodge/nav never hijacks it). Fire gate is the game's ACTUAL damage flag -
+        adv['boss_vulnerable'] (boss agent: weak-point +0x324 != 2) - NOT boss_special_state
+        (the Dragon's state never hit 21/22 while fully vulnerable, so gating fire on it
+        never fired). Policy:
+          - Damageable + within the forced gun's reach: FIRE at the weak point and HOLD the
+            line through the boss's movement (never-miss + crit land it). Don't strafe off.
+          - Not in reach: coordinate-drive toward the weak point to get within range.
+          - Not damageable, or very far/relocating (Dragon airborne/teleport): hold a spot,
+            dodge the telegraphed attack (boss_special is a DODGE cue only), ready to fire."""
         bx, bz = boss_row["x"], boss_row["z"]
         bdist = math.hypot(bx - player["x"], bz - player["z"])
         env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
-        half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
-        _, angle, vok = attack_geometry(player, boss_row, envelope)
-        in_range = bdist <= env_h and vok
+        half = max(envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8., BOSS_FIRE_CONE)
+        _, angle, _vok = attack_geometry(player, boss_row, envelope)
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        vuln = adv.get("boss_vulnerable")
+        can_fire = vuln is True or vuln is None        # fire unless the game says invulnerable
         boss_special = bool(adv.get("boss_special_state") or str(adv.get("phase") or "").endswith("_attacking"))
+        fire_range = max(env_h, BOSS_FIRE_RANGE)       # the forced long-range gun's reach
+        in_fire = bdist <= fire_range
         speed = max(self.inputs.speed(), 1e-6)
         st = getattr(self.inputs, "stats", None)
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(bdist, 1)
-            st["boss_in_range"] = int(in_range)
+            st["boss_in_range"] = int(in_fire)
+            st["boss_vulnerable"] = int(bool(can_fire))
             st["boss_strike_window"] = int(boss_special)
 
-        def fire_or_face(label):
+        # FIRE whenever the boss is damageable and within the gun's reach - HOLD the line
+        # (face then press A; a tiny facing nudge between shots), never strafe off it.
+        if can_fire and in_fire:
             if abs(angle) > half:
                 commands.append((slot, ["lleft" if angle > 0 else "lright"], max(.02, min(.12, abs(angle) / 450))))
                 steering[slot] = (player, (bx, bz), "boss_line")
             elif now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / speed:
                 attack_rows.setdefault(slot, {"attempts": 0})
                 commands.append((slot, ["a"], .12))
-                steering[slot] = (player, (bx, bz), label)
+                steering[slot] = (player, (bx, bz), "boss_fire")
             else:
-                commands.append((slot, movement_keys(player, (bx, bz)), .04))   # hold facing between shots
+                commands.append((slot, movement_keys(player, (bx, bz)), .04))
                 steering[slot] = (player, (bx, bz), "boss_hold")
             if isinstance(st, dict):
                 st["boss_firing_line"] = 1
-
-        if boss_special:                               # grounded / open-shell: STRIKE
-            if in_range:
-                fire_or_face("boss_fire_strike")
-            elif bdist <= BOSS_CHASE_CAP:
-                keys, escaping = self._unwedge(slot, player, (bx, bz), now)
-                commands.append((slot, keys, .18))
-                moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
-                steering[slot] = (player, (bx, bz), "boss_strike_approach")
-            else:
-                commands.append((slot, movement_keys(player, (bx, bz)), .06))
-                steering[slot] = (player, (bx, bz), "boss_hold_far")
             return True
-        if in_range:                                   # persistent fire, hold the line
-            fire_or_face("boss_fire")
-            return True
-        if bdist <= BOSS_CHASE_CAP:                     # converge to a firing spot
+        # Out of reach (but not uncatchably far) -> drive toward the weak point to get in range.
+        if bdist <= fire_range + BOSS_CHASE_CAP:
             keys, escaping = self._unwedge(slot, player, (bx, bz), now)
             commands.append((slot, keys, .18))
             moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
@@ -2589,8 +2580,9 @@ class Controller:
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
             return True
-        # Far + relocating: HOLD (don't chase); dodge anything close; face, ready to fire.
-        if enemies:
+        # Invulnerable or very far/relocating -> hold a spot; dodge the telegraphed attack if
+        # it is close; otherwise face the weak point, ready to fire when it is damageable/near.
+        if enemies and boss_special:
             dodge = self.combat_dodge(state, slot, player, enemies, envelope, boss_row, now)
             if dodge is not None and dodge["act"]:
                 commands.append((slot, dodge["keys"], dodge["dur"]))

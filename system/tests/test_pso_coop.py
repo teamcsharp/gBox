@@ -1335,30 +1335,25 @@ def test_boss_hold_suppresses_warp_but_escapes_when_no_damage_progress(tmp_path)
     assert ctrl._floor_advances >= 1
 
 
-def test_follower_closes_distance_to_the_boss_within_chase_cap_but_holds_when_far(tmp_path):
-    """BOSS DEFEAT positioning: a follower with the boss weak point active CONVERGES toward
-    it when within BOSS_CHASE_CAP (boss_approach), but does NOT chase across the arena when
-    it's far/relocating (boss_hold_far) - it holds a spot and faces the weak point."""
+def test_follower_boss_fires_in_reach_approaches_mid_and_holds_when_far(tmp_path):
+    """BOSS DEFEAT positioning (follower): within the gun's reach (BOSS_FIRE_RANGE) it FIRES
+    at the weak point (hold the line); between reach and reach+chase-cap it APPROACHES to get
+    in range; beyond that (relocating/submerged) it HOLDS and faces - never chases uncatchably."""
     ctrl = _controller(tmp_path, ad=SimpleNamespace())
     def adv(x):
-        return {"active": True, "boss": "DeRolLe",
+        return {"active": True, "boss": "DeRolLe", "boss_vulnerable": True,
                 "weakpoint": {"ptr": "D1", "class": "TBoss2DeRolLe", "hp": 20000, "hp_max": 20000,
                               "x": x, "z": 0., "y": 0.}}
     st = state(floor=12)
-    st["players"][1].update(x=-75., z=0., room=10)
     st["players"][2].update(x=-75., z=5., room=10)
-    # Within the chase cap (~105u) -> approach toward the boss.
-    ctrl._boss_adv = adv(30.)
-    commands, moves, steering = [], {}, {}
-    ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), commands, moves, steering, {})
-    assert any(c[0] == 2 for c in commands)
-    assert steering[2][2] in ("boss_approach", "boss_approach_unwedge")
-    assert steering[2][1][0] > st["players"][2]["x"]                  # heading +x toward the boss
-    # Far/relocating (~250u) -> HOLD, don't chase across the arena.
-    ctrl._boss_adv = adv(175.)
-    commands, moves, steering = [], {}, {}
-    ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), commands, moves, steering, {})
-    assert steering[2][2] == "boss_hold_far"
+    def run(x):
+        ctrl._boss_adv = adv(x)
+        cmds, mv, steer = [], {}, {}
+        ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), cmds, mv, steer, {})
+        return steer[2][2]
+    assert run(30.) in ("boss_fire", "boss_line", "boss_hold")        # ~105u, within reach -> fire the line
+    assert run(200.) in ("boss_approach", "boss_approach_unwedge")    # ~275u, reach..reach+cap -> approach
+    assert run(400.) == "boss_hold_far"                               # ~475u, too far -> hold, don't chase
 
 
 def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path):
