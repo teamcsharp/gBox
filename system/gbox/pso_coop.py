@@ -778,6 +778,9 @@ FORCE_DOOR_RETRY_S = 20.0     # re-arm a specific door's force-open this often (
 COORD_DRIVE_AFTER_S = 3.0     # (B) after this long unable to A* past a forward door in a cleared room, drive straight at it
 COORD_FORCE_DIST = 110.0      # (B) looser force-open range while coordinate-driving the committed door
 COORD_DRIVE_MAX_S = 40.0      # (B) abandon a single coordinate-drive commit after this (re-pick a forward door)
+CROSS_DIST = 40.0            # (B) P1 this close to the committed door = ON it: plant and push straight through
+CROSS_HOLD_S = 4.0           # (B) push straight through a door this long (no wedge away-sweep) before giving up on it
+BLOCKED_GATE_S = 45.0        # (B) after a failed crossing, don't re-commit to that door for this long (explore elsewhere)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -823,8 +826,10 @@ class Controller:
         self._adj_fires = 0         # how many times force_adjacent_door engaged (flat telemetry)
         self._adj_last = {}         # last force_adjacent_door result {room, gkey, written, flags} (flat telemetry)
         self._adj_skip = ''         # last force_adjacent_door skip reason (flat telemetry: WHY it refused)
-        self._coord_target = {}     # (B) committed coordinate-drive forward door {gkey, dest, room, since}
+        self._coord_target = {}     # (B) committed coordinate-drive forward door {gkey, dest, room, since, at_door}
         self._coord_grace = {}      # (B) grace timer on a forward door before committing {gkey, since}
+        self._blocked_gates = {}    # (B) gkey -> until: a door that would not open on a committed push (explore elsewhere)
+        self._cross_failed = 0      # (B) how many committed crossings gave up (flat telemetry)
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1329,31 +1334,45 @@ class Controller:
         # carry P1 across. Combat still preempts (drive_forward only runs with no target),
         # and we re-check the room is clear here. Commit is per-door and time-bounded.
         door = self._p1_door if (isinstance(self._p1_door, tuple) and len(self._p1_door) == 3) else None
-        coord_drive = False
+        coord_drive = cross_push = False
         if slot == 1:
             room_clear = not any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float)
                                  and e['hp'] > 0 and e.get('room') == player.get('room')
                                  for e in state.get('entities', ())[:512])
             room = player.get('room')
+            self._blocked_gates = {g: t for g, t in self._blocked_gates.items() if t > now}
             lock = self._coord_target
             # Expire the commit when P1 leaves the room (crossed / moved on) or it times out.
             if lock and (lock.get('room') != room or (now - lock.get('since', now)) > COORD_DRIVE_MAX_S):
                 lock = self._coord_target = {}
+            ddist = -1.0
             if lock.get('gkey') and room_clear:
                 # HOLD the committed door: drive STRAIGHT at its STORED coords every tick,
-                # regardless of what forward_fallback re-picks this frame or route_exact -
-                # so door_dist shrinks monotonically instead of toggling to a new target.
+                # regardless of what forward_fallback re-picks this frame or route_exact.
                 coord_drive = True
                 cgkey, cdest = lock['gkey'], lock['dest']
                 waypoint = cdest
                 ddist = math.hypot(cgkey[1] - player["x"], cgkey[2] - player["z"])
                 if ddist <= COORD_FORCE_DIST:
                     self.force_adjacent_door(state, player, cgkey, now)
+                if ddist <= CROSS_DIST:
+                    # P1 is ON the door: PLANT and push straight THROUGH (suppress the
+                    # wedge away-sweep that was flinging P1 off the door). If still not
+                    # crossed (room unchanged) after CROSS_HOLD_S, this gate won't open
+                    # from the flags we can set (a switch/fence/quest gate) - cool it
+                    # down and release so P1 explores other doors instead of parking.
+                    lock.setdefault('at_door', now)
+                    cross_push = True
+                    if (now - lock['at_door']) >= CROSS_HOLD_S:
+                        self._blocked_gates[cgkey] = now + BLOCKED_GATE_S
+                        self._coord_target = {}
+                        self._cross_failed += 1
+                        coord_drive = cross_push = False
+                else:
+                    lock.pop('at_door', None)
             elif (door is not None and self.forward_kind.get(slot) == 'walk_through'
-                  and room_clear and not route_exact):
-                # Not committed yet: run a grace timer on THIS door; commit after the grace
-                # (then the HOLD branch above drives it). Also open it immediately if P1 is
-                # already right on it.
+                  and room_clear and not route_exact and self._blocked_gates.get(door, 0.) <= now):
+                # Not committed yet: run a grace timer on THIS door; commit after the grace.
                 grace = self._coord_grace
                 if grace.get('gkey') != door:
                     grace = self._coord_grace = {'gkey': door, 'since': now}
@@ -1366,20 +1385,26 @@ class Controller:
                         self.force_adjacent_door(state, player, door, now)
                 elif ddist <= FORCE_DOOR_DIST:
                     self.force_adjacent_door(state, player, door, now)   # already on it: open now
-            else:
-                ddist = (math.hypot(door[1] - player["x"], door[2] - player["z"]) if door else -1.0)
+            elif door:
+                ddist = math.hypot(door[1] - player["x"], door[2] - player["z"])
             if isinstance(getattr(self.inputs, 'stats', None), dict):
                 self.inputs.stats['coord_drive'] = int(coord_drive)
+                self.inputs.stats['coord_cross_push'] = int(cross_push)
+                self.inputs.stats['coord_cross_failed'] = self._cross_failed
                 self.inputs.stats['coord_drive_door_dist'] = round(ddist, 1)
         # Approach a near panel in SHORT pulses so the actor lands on it (and the
         # next tick presses it) instead of orbiting the small target; drive a door
         # through with a committed, gusto-length hold.
         approaching_switch = (not coord_drive and self.forward_kind.get(slot) == 'approach_switch'
                               and math.hypot(dest[0] - player["x"], dest[1] - player["z"]) <= SWITCH_FINE_DIST)
-        keys, escaping = self._unwedge(slot, player, waypoint, now)
+        if cross_push:
+            keys, escaping = movement_keys(player, waypoint), False   # committed straight push THROUGH the door
+        else:
+            keys, escaping = self._unwedge(slot, player, waypoint, now)
         commands.append((slot, keys, .40 if escaping else (.10 if approaching_switch else .40)))
         moves[slot] = (player, waypoint, nav, False)
-        steering[slot] = (player, waypoint, 'forward_unwedge' if escaping else
+        steering[slot] = (player, waypoint, 'forward_cross_push' if cross_push else
+                          'forward_unwedge' if escaping else
                           'forward_coord_drive' if coord_drive else
                           'forward_fine' if approaching_switch else 'forward_gusto')
         return True
