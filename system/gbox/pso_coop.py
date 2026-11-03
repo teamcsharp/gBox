@@ -3715,6 +3715,29 @@ def entry_mapping_decision(ad, driver, session_id):
     return 'raise'
 
 
+# DIRECTIVE #3 - how many failed town-probe attempts a continuous campaign tolerates
+# before it TRUSTS a structurally-verified mapping and enters anyway. Each attempt is a
+# full probe plus backoff (~1-5s), so this bounds the "stuck in Pioneer 2" retry window
+# to roughly 15-30s instead of forever, while still giving a genuine spawn time to settle.
+MAPPING_PROBE_FALLBACK_ATTEMPTS = 4
+
+
+def structural_mapping_ok(reader):
+    """True when the LIVE native state structurally confirms the two-player co-op
+    mapping WITHOUT sending input: a verified cooperative phase-14 session with two
+    distinct, correctly-indexed players (slot1 -> controller 1 / entity 0, slot2 ->
+    controller 2 / entity 1, distinct pointers). This is mapping_continuity._players'
+    exact invariant - strong corroboration that pad1 owns player 1 and pad2 owns
+    player 2 - used only as the last-resort gate for entering when the movement
+    receipt probe cannot complete. It never fabricates a mapping: a session that is
+    not structurally a valid 2P co-op keeps the campaign waiting."""
+    try:
+        mapping_continuity._players(reader.snapshot())
+        return True
+    except Exception:
+        return False
+
+
 def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     """A visible menu can coexist with phase 14; stop movement before either pad path."""
     paused = menu.observe_frame(frame, native_gameplay=bool(state.get("verified") and state.get("phase") == 14),
@@ -4132,6 +4155,25 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                 stats['controller_entry_probe_skipped_reason'] = str(exc)[:160]
                             elif decision == 'raise':
                                 raise
+                            elif (mapping_attempts + 1 >= MAPPING_PROBE_FALLBACK_ATTEMPTS
+                                  and structural_mapping_ok(reader)):
+                                # DIRECTIVE #3 - the town movement receipt CAN'T COMPLETE here
+                                # (e.g. a probe pulse flips the party off a pristine floor-0
+                                # lobby onto a teleporter/field, or input movement can't be
+                                # measured in Pioneer 2), so the two-pad probe retries forever
+                                # and the bot never ENTERS a game. After enough failed attempts,
+                                # if the LIVE NATIVE STATE structurally confirms two distinct,
+                                # correctly-indexed co-op players (pad1->slot0, pad2->slot1),
+                                # TRUST that verified mapping and ENTER - a continuous campaign
+                                # must play even when the movement receipt is unavailable
+                                # (operator: always playing). Still never fabricates a mapping:
+                                # a session that is not structurally two-player keeps retrying.
+                                mapping_attempts += 1
+                                stats['controller_mapping_source'] = 'entry_trusted_structural_after_probe_unavailable'
+                                stats['controller_mapping_entry_trusted'] = stats.get('controller_mapping_entry_trusted', 0) + 1
+                                stats['controller_receipt_entry_trusted'] = True
+                                stats['controller_entry_probe_skipped_reason'] = (
+                                    'town probe unavailable x%d: %s' % (mapping_attempts, exc))[:160]
                             else:
                                 invalidate_plan()
                                 inputs.release()
