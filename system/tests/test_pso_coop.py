@@ -1191,6 +1191,28 @@ def test_place_p2_on_switch_writes_p2_position_onto_the_switch(tmp_path):
     assert wrote and wrote[0] == struct.pack(">3f", -399.7, 12.5, 541.0)   # x/y/z onto the switch
 
 
+def test_place_p1_across_fence_writes_p1_past_the_fence(tmp_path):
+    """RAM fallback LAST step: when the fence's gate flag is already set but P1 can't
+    step across the threshold, P1's actor position is written to a point PAST the fence
+    (along its approach, at the fence's own y) so it lands in the next room."""
+    writes = []
+    ad = SimpleNamespace(read_memory=lambda a, n: bytes(n),
+                         write_memory=lambda a, d: writes.append((int(a), bytes(d))))
+    ctrl = _controller(tmp_path, ad=ad)
+    switch = {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "y": 12.5, "room": 5, "kind": "gate"}
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "y": 20.0, "room": 5, "kind": "gate"}
+    st = _coop_room([fence, switch], p1=(-400., 485.8), p2=(-399.7, 541.0), room=5)
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert ctrl._fence_obj is not None and ctrl._fence_obj["fy"] == 20.0
+    p1 = st["players"][1]
+    assert ctrl.place_p1_across_fence(st, p1, now=100.) is True and ctrl._p1_placed is True
+    addr = int(p1["ptr"], 16) + 0x38
+    wrote = [d for a, d in writes if a == addr]
+    assert wrote
+    x, y, z = struct.unpack(">3f", wrote[0])
+    assert abs(y - 20.0) < 0.01 and x < -420. and abs(z - 485.8) < 0.1   # past the fence, at the fence's y
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
