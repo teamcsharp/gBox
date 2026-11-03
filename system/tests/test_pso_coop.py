@@ -1426,6 +1426,25 @@ def test_boss_fire_skip_breadcrumb_pins_the_gate(tmp_path):
     assert run(sideways, mon, dict(base, boss_vulnerable=True), 103.0) == "aiming"
 
 
+def test_boss_combat_force_through_when_wedged_at_the_arena_mouth(tmp_path):
+    """CLOSING fix: if the boss approach stops getting closer (parked at an ungridded arena
+    mouth - Vol Opt 227u / Dragon 335u static), after BOSS_WEDGE_S it force-drives straight
+    at the target (boss_force_through=1, skip 'wedged') instead of sitting on the nav edge."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "80D01000", "hp": 40}
+    env = dict(C.FALLBACK, horizontal=110., horizontal_half_angle=45., verified=True)
+    mon = {"class": "TObjBossVolOpt", "kind": "enemy", "hp": 500, "hp_max": 500,
+           "x": 0., "z": 200., "y": 0., "ptr": "V1"}                               # 200u, beyond ~104 reach
+    ctrl._boss_adv = {"active": True, "boss": "VolOpt", "boss_vulnerable": True,
+                      "weakpoint": mon, "hold_pos": {"x": 0., "z": 200.}}
+    s = ctrl.inputs.stats
+    ctrl.boss_combat(state(floor=13), 1, player, env, mon, 100.0, [], {}, {}, [mon], {})   # seed close tracker
+    assert s.get("boss_force_through", 0) == 0 and s["boss_fire_skip"] == "closing"
+    # player hasn't gotten closer (still 200u) past BOSS_WEDGE_S -> force-through engages.
+    ctrl.boss_combat(state(floor=13), 1, player, env, mon, 100.0 + C.BOSS_WEDGE_S + 1, [], {}, {}, [mon], {})
+    assert s["boss_force_through"] == 1 and s["boss_fire_skip"] == "wedged"
+
+
 def test_boss_combat_closes_the_last_gap_when_gun_reach_is_short(tmp_path):
     """If the gun's real reach is shorter than the bot's distance (38u) and hold_pos == the
     weak point, it must CLOSE the last gap (not freeze at the hold tolerance) until in range."""

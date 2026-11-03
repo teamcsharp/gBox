@@ -811,6 +811,7 @@ BOSS_FIRE_MARGIN = 0.95      # fire within this fraction of the EQUIPPED gun's r
                              # Using the live weapon envelope auto-gives the mobile Dragon its full ~170u firing range (not a tight 60).
 BOSS_FIRE_RANGE_FALLBACK = 70.0  # fire range when the weapon envelope is UNVERIFIED (mechgun-safe; close enough to connect for any gun)
 BOSS_HOLD_TOL = 40.0         # "positioned" when within this of the stand point (orbit centre for a circling boss like the Dragon)
+BOSS_WEDGE_S = 2.5           # boss approach not getting CLOSER for this long = wedged (arena mouth) -> straight force-through
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -1078,6 +1079,10 @@ class Controller:
         self._boss_floor_key = None     # (episode, floor) the per-visit boss trackers are anchored to
         self._boss_hp_best = None       # lowest boss hp_frac seen this visit (damage-progress signal)
         self._boss_damaged = False      # we have landed damage this visit (HP dropped / a part died) -> hold to the kill
+        self._boss_nearest_row = None   # nearest live boss entity (weak-point fallback when the advisor is inactive)
+        self._boss_wp_prev = None       # previous tick's distance to the weak point (boss_approach_delta)
+        self._boss_close_best = None    # closest the boss approach has gotten to its drive target (wedge detection)
+        self._boss_close_at = 0.0       # last monotonic the boss approach got closer (stale -> wedged -> force-through)
         self._boss_parts_prev = None    # live boss-part count last tick (a drop = damage progress)
         self._boss_progress_at = 0.0    # last monotonic the boss took damage (hp dropped or a part died)
         self._boss_approach_best = None # closest P1 has gotten to the weak point this visit (closing-progress)
@@ -2533,13 +2538,21 @@ class Controller:
         targeting is unchanged. Weak point is the boss body-centre until sub-part offsets
         are pinned (interface stays the same when the build agent refines it)."""
         adv = self._boss_adv
-        if not isinstance(adv, dict) or not adv.get('active'):
-            return None
-        wp = adv.get('weakpoint') if isinstance(adv.get('weakpoint'), dict) else adv.get('weakpoint_pos')
-        if not isinstance(wp, dict) or type(wp.get('x')) not in (int, float) or type(wp.get('z')) not in (int, float):
-            return None
-        return {'kind': 'enemy', 'class': wp.get('class') or adv.get('boss') or 'TBoss',
-                'ptr': wp.get('ptr') or ('boss:%s' % (adv.get('boss') or adv.get('floor'))),
+        wp = None
+        if isinstance(adv, dict) and adv.get('active'):
+            wp = adv.get('weakpoint') if isinstance(adv.get('weakpoint'), dict) else adv.get('weakpoint_pos')
+        if not (isinstance(wp, dict) and type(wp.get('x')) in (int, float) and type(wp.get('z')) in (int, float)):
+            # FALLBACK: advisor inactive/no locked weak point this tick but a boss IS present
+            # -> aim the nearest live boss entity so engagement stays CONTINUOUS (don't revert
+            # to explore/idle and leave the boss un-fought between advisor ticks).
+            nr = self._boss_nearest_row
+            if isinstance(nr, dict) and type(nr.get('x')) in (int, float) and type(nr.get('z')) in (int, float):
+                wp = nr
+            else:
+                return None
+        _advd = adv if isinstance(adv, dict) else {}
+        return {'kind': 'enemy', 'class': wp.get('class') or _advd.get('boss') or 'TBoss',
+                'ptr': wp.get('ptr') or ('boss:%s' % (_advd.get('boss') or _advd.get('floor') or 'x')),
                 'x': float(wp['x']), 'z': float(wp['z']),
                 'y': float(wp.get('y') if type(wp.get('y')) in (int, float) else (player.get('y') or 0.)),
                 'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
@@ -2601,6 +2614,9 @@ class Controller:
         if slot == 1 and isinstance(st, dict):
             st["boss_approach_dist"] = round(aim_dist, 1)
             st["boss_weakpoint_dist"] = round(aim_dist, 1)
+            if self._boss_wp_prev is not None:
+                st["boss_approach_delta"] = round(self._boss_wp_prev - aim_dist, 2)   # + = closing, ~0 = wedged
+            self._boss_wp_prev = aim_dist
             st["boss_hold_dist"] = round(center_dist, 1)
             st["boss_hold_covers"] = int(bool(center_hold))
             st["boss_fire_range"] = round(fire_range, 1)
@@ -2656,26 +2672,35 @@ class Controller:
         #    branch above fires point-blank), walking to each next weak point as they die.
         #    This is the pre-regression "walk up and fire like mad" behaviour.
         def drive_to(tx, tz):
-            # ROUTE toward the target over the collision grid (A* best-effort), not a blind
-            # straight drive - the bots were parking ~310u away at the Dragon-arena ENTRANCE
-            # (z~340) because a straight push wedged on the arena-mouth geometry. toward()
-            # walks to the nearest reachable cell on P1's component (up to / through the
-            # mouth), then the stage-flag force-unlock + walk-through carry it in. Falls back
-            # to the straight unwedge drive when no route (grid absent).
+            # ROUTE toward the target over the collision grid (A* best-effort). toward() walks
+            # to the nearest reachable cell on P1's component (up to / through the arena mouth),
+            # then the stage-flag force-unlock + walk-through carry it in. WEDGE FORCE-THROUGH:
+            # if the approach hasn't gotten CLOSER for BOSS_WEDGE_S (parked at an ungridded
+            # arena mouth - Vol Opt 227u / Dragon 335u static), stop deferring to toward()'s
+            # mouth-edge cell and drive STRAIGHT at the target with a long hold to push through
+            # (combined with the per-tick force-unlock). Universal: all bosses.
             nav = self.maps.get(state, player)
+            d = math.hypot(tx - player["x"], tz - player["z"])
+            if self._boss_close_best is None or d < self._boss_close_best - 3.0:
+                self._boss_close_best, self._boss_close_at = d, now
+            wedged = (now - self._boss_close_at) > BOSS_WEDGE_S
             waypoint = (tx, tz)
-            try:
-                route, _exact = nav.toward((player["x"], player["z"]), (tx, tz))
-                if route and len(route) > 1:
-                    waypoint = route[1]
-            except Exception:
-                pass
+            if not wedged:
+                try:
+                    route, _exact = nav.toward((player["x"], player["z"]), (tx, tz))
+                    if route and len(route) > 1:
+                        waypoint = route[1]
+                except Exception:
+                    pass
             keys, escaping = self._unwedge(slot, player, waypoint, now)
-            commands.append((slot, keys, .18))
+            commands.append((slot, keys, .30 if wedged else .18))       # long straight push when forcing the mouth
             moves[slot] = (player, waypoint, nav, False)
-            steering[slot] = (player, (tx, tz), "boss_approach_unwedge" if escaping else "boss_approach")
+            steering[slot] = (player, (tx, tz),
+                              "boss_force_through" if wedged else ("boss_approach_unwedge" if escaping else "boss_approach"))
             if isinstance(st, dict):
                 st["boss_approaching"] = 1
+                st["boss_force_through"] = int(wedged)
+            mark("not_vulnerable" if not can_fire else ("wedged" if wedged else "closing"))
 
         if center_hold:
             if center_dist > BOSS_HOLD_TOL:
@@ -2715,6 +2740,19 @@ class Controller:
                 if str(e.get("class", "")).startswith(("TBoss", "TObjBoss"))]
         present = bool(rows)
         alive = any(type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0 for e in rows)
+        # Nearest LIVE boss part to P1, as a weak-point FALLBACK when the advisor flickers
+        # inactive (no locked weak point for a tick) - so boss engagement is CONTINUOUS and
+        # the bot keeps closing/firing instead of reverting to explore/idle those ticks.
+        p1 = state.get("players", {}).get(1) or {}
+        px, pz = p1.get("x"), p1.get("z")
+        live = [e for e in rows if (type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0)
+                and type(e.get("x")) in (int, float) and type(e.get("z")) in (int, float)]
+        if live and type(px) in (int, float) and type(pz) in (int, float):
+            self._boss_nearest_row = min(live, key=lambda e: math.hypot(e["x"] - px, e["z"] - pz))
+        elif live:
+            self._boss_nearest_row = live[0]
+        else:
+            self._boss_nearest_row = None
         dead_confirmed = present and all(type(e.get("hp")) in (int, float) and e.get("hp", 0) <= 0 for e in rows)
         live_parts = sum(1 for e in rows if type(e.get("hp")) not in (int, float) or e.get("hp", 0) > 0)
         adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
@@ -2731,6 +2769,9 @@ class Controller:
             self._boss_approach_at = now
             self._boss_seen_alive = False
             self._boss_damaged = False
+            self._boss_wp_prev = None
+            self._boss_close_best = None
+            self._boss_close_at = now
         self._boss_present_now = present
         self._boss_alive_now = alive
         if alive:
