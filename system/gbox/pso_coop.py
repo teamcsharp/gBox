@@ -797,6 +797,31 @@ ADVANCE_WARP_GAP_S = 30.0    # minimum time between native floor warps (don't sp
 STALL_HARDCAP_S = 110.0      # ABSOLUTE anti-freeze: no new room for this long -> warp REGARDLESS of enemies/cleared
                              # state (unreachable enemies behind a gate must never pin the party). Non-negotiable.
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
+# DODGE / combat positioning (operator 2026-11-02: "the bots should be learning to
+# dodge - basically moving and positioning during battle"). During combat the party
+# MOVES to avoid attacks instead of standing still tanking: when a threat is HOT
+# (close, facing the bot, or a boss) and there is no clean shot to take THIS tick,
+# the bot STRAFES perpendicular to the strongest threat's attack line (side-stepping
+# out of it) and backs off when critically close, biased away from spots that have
+# gotten the party killed before (see DeathMemory). When a shot IS lined up it fires,
+# then dodges the next tick - so it fights WHILE moving. These bound the behaviour.
+DODGE_DANGER_RADIUS = 58.0    # consider a regular enemy a threat to dodge within this
+DODGE_BOSS_RADIUS = 130.0     # bosses telegraph big attacks - react from much farther out
+DODGE_HOT_RADIUS = 36.0       # a regular enemy closer than this -> prioritise repositioning
+DODGE_BOSS_HOT = 95.0         # a boss closer than this -> prioritise repositioning
+DODGE_CRITICAL = 20.0         # this close -> blend straight repulsion in (gain spacing, not just strafe)
+DODGE_FACING_CONE = 55.0      # enemy heading within this of its bearing-to-player = aimed at the bot
+DODGE_STEP = 30.0             # how far ahead the strafe waypoint is placed (telemetry/steering)
+DEATH_BIAS_GAIN = 14.0        # weight of the learned fatal-spot avoidance in the strafe-side choice
+# DEATH-DRIVEN LEARNING (operator: "keep track of each and every time they die and
+# file a report for gBox to adjust the logic of their pathfinding and boss
+# management"). The WRITE side (down-and-revive logging) lives in pso_master_build;
+# DeathMemory below is the CONSUMER: it reads those records and turns each fatal
+# position into a spatial repulsion field, so pathfinding and boss-fight positioning
+# learn to avoid where the party died, improving run over run.
+DEATH_GRID = 40.0             # fatal-spot bucket size in world units (coarse so nearby deaths pool)
+DEATH_AVOID_RADIUS = 120.0    # a fatal bucket repels the bot within this range
+DEATH_REFRESH_S = 4.0         # re-read the death log at most this often (cheap, failure-tolerant)
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
 # swarm-followers: orbit P1 and defend him, with NO independent navigation (that
@@ -815,6 +840,200 @@ FOCUS_WAIT_BACKOFF_S = 0.5
 FOCUS_WAIT_MARK = "must be active to send emulator input"
 
 
+class DeathMemory:
+    """DEATH-DRIVEN LEARNING consumer (my half of the loop; pso_master_build owns the
+    WRITE half - the Scape-Doll/revive backstop that logs each down-and-revive event).
+
+    A "death" is now a down-and-revive (the party is effectively unkillable), but it is
+    still the strongest signal of a bad position / pattern. This class reads those
+    records and buckets each fatal spot into a coarse per-area grid, exposing:
+      - penalty(ep, floor, x, z): 0..~1, how deadly the bot's CURRENT spot has been,
+      - avoid_vector(ep, floor, x, z): a unit-ish vector pointing AWAY from nearby
+        fatal buckets (feeds the dodge strafe-side choice + boss positioning).
+    So pathfinding and boss management bias away from where the party died, and that
+    bias strengthens as deaths accumulate run over run.
+
+    Reading is SCHEMA-ADAPTIVE and fail-soft (it must never break perpetual play): it
+    tries, in order, (1) a live list the build side appends to the shared adapter
+    (ad._pso_deaths), (2) pso_master_build.read_deaths(ad) if present, (3) a JSONL file
+    under the campaign runtime root. Each record is normalised over common key spellings
+    so it works whatever exact names the build side settles on."""
+
+    def __init__(self, ad):
+        self._ad = ad
+        self._buckets = {}          # (ep, floor, bx, bz) -> count
+        self._by_area = {}          # (ep, floor) -> list of (cx, cz, count)
+        self._seen_ids = set()      # dedup keys for records already ingested
+        self._count = 0
+        self._refresh_at = 0.0
+        self._file_mtime = None
+        self._source = 'none'
+        self._last_cause = ''
+        self._last_floor = None
+        self._revives_p1 = 0        # from pso_survival.death_stats (operator wants exact revive counts)
+        self._revives_p2 = 0
+        self._last_death_str = ''   # "<area>@<x>,<z>:<cause>" of the most recent down event
+
+    @staticmethod
+    def _num(v):
+        return v if type(v) in (int, float) and math.isfinite(v) else None
+
+    def _normalise(self, rec):
+        if not isinstance(rec, dict):
+            return None
+        g = rec.get
+        x = self._num(g('x', g('pos_x', g('px'))))
+        z = self._num(g('z', g('pos_z', g('pz'))))
+        if x is None or z is None:
+            return None
+        ep = g('episode', g('ep', g('target')))
+        floor = g('floor', g('area', g('area_id')))
+        cause = g('cause', g('reason', g('attacker', g('enemy', g('killer_class', '')))))
+        ts = g('timestamp', g('ts', g('time', g('at'))))
+        pid = g('id', g('death_id'))
+        player = g('player', g('slot', g('player_index')))
+        ident = pid if pid is not None else (player, ep, floor, round(float(x), 1), round(float(z), 1), ts)
+        return {'ep': ep, 'floor': floor, 'x': float(x), 'z': float(z),
+                'cause': str(cause)[:48], 'ident': ident}
+
+    def _records(self):
+        ad = self._ad
+        # (1) AUTHORITATIVE: the build side's pso_survival reader (shipped f14f4bc3). It
+        # returns recent down-and-revive events (newest last) and is fail-soft.
+        try:
+            from . import pso_survival
+            fn = getattr(pso_survival, 'read_deaths', None)
+            if callable(fn):
+                recs = fn(ad, limit=400)
+                if recs:
+                    self._source = 'pso_survival.read_deaths'
+                    return list(recs)
+        except Exception:
+            pass
+        # (2) shared live list on the adapter, if the build side exposes one that way.
+        live = getattr(ad, '_pso_deaths', None)
+        if isinstance(live, (list, tuple)) and live:
+            self._source = 'ad._pso_deaths'
+            return list(live)
+        # (3) a JSONL log under the campaign runtime root.
+        root = getattr(ad, '_pso_map_root', None)
+        for base in (root,):
+            if not base:
+                continue
+            for name in ('deaths.jsonl', 'pso_deaths.jsonl'):
+                try:
+                    p = (base / name) if hasattr(base, '__truediv__') else None
+                    if p is None or not p.exists():
+                        continue
+                    mt = p.stat().st_mtime
+                    if self._source == 'file:%s' % name and mt == self._file_mtime:
+                        return []                       # unchanged since last read
+                    self._file_mtime = mt
+                    self._source = 'file:%s' % name
+                    out = []
+                    for line in p.read_text(encoding='utf-8').splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            out.append(json.loads(line))
+                        except ValueError:
+                            continue
+                    return out
+                except OSError:
+                    continue
+        return []
+
+    def refresh(self, now, root=None):
+        if root is not None and self._ad is not None:
+            try:
+                self._ad._pso_map_root = root
+            except Exception:
+                pass
+        if now - self._refresh_at < DEATH_REFRESH_S:
+            return
+        self._refresh_at = now
+        # Exact revive counts + last-death summary (operator: "keep track of each and
+        # every time they die"). From the build side's pso_survival.death_stats; fail-soft.
+        try:
+            from . import pso_survival
+            fn = getattr(pso_survival, 'death_stats', None)
+            ds = fn(self._ad) if callable(fn) else None
+            if isinstance(ds, dict):
+                if type(ds.get('revives_p1')) in (int, float):
+                    self._revives_p1 = ds['revives_p1']
+                if type(ds.get('revives_p2')) in (int, float):
+                    self._revives_p2 = ds['revives_p2']
+                last = ds.get('last_death')
+                if isinstance(last, dict):
+                    lx, lz = DeathMemory._num(last.get('x')), DeathMemory._num(last.get('z'))
+                    self._last_death_str = '%s@%s,%s:%s' % (
+                        last.get('area', last.get('floor', '?')),
+                        ('%.0f' % lx) if lx is not None else '?',
+                        ('%.0f' % lz) if lz is not None else '?',
+                        str(last.get('cause', ''))[:24])
+        except Exception:
+            pass
+        try:
+            records = self._records()
+        except Exception:
+            records = []
+        for raw in records[:4096]:
+            rec = self._normalise(raw)
+            if rec is None or rec['ident'] in self._seen_ids:
+                continue
+            self._seen_ids.add(rec['ident'])
+            self._count += 1
+            self._last_cause = rec['cause']
+            self._last_floor = rec['floor']
+            key = (rec['ep'], rec['floor'], round(rec['x'] / DEATH_GRID), round(rec['z'] / DEATH_GRID))
+            self._buckets[key] = self._buckets.get(key, 0) + 1
+            area = self._by_area.setdefault((rec['ep'], rec['floor']), [])
+            cx, cz = round(rec['x'] / DEATH_GRID) * DEATH_GRID, round(rec['z'] / DEATH_GRID) * DEATH_GRID
+            for i, (ex, ez, c) in enumerate(area):
+                if ex == cx and ez == cz:
+                    area[i] = (ex, ez, c + 1)
+                    break
+            else:
+                area.append((cx, cz, 1))
+
+    def penalty(self, episode, floor, x, z):
+        area = self._by_area.get((episode, floor))
+        if not area or type(x) not in (int, float) or type(z) not in (int, float):
+            return 0.0
+        worst = 0.0
+        for cx, cz, c in area:
+            d = math.hypot(cx - x, cz - z)
+            if d <= DEATH_AVOID_RADIUS:
+                worst = max(worst, (1.0 - d / DEATH_AVOID_RADIUS) * min(c, 4) / 4.0)
+        return worst
+
+    def avoid_vector(self, episode, floor, x, z):
+        area = self._by_area.get((episode, floor))
+        if not area or type(x) not in (int, float) or type(z) not in (int, float):
+            return (0.0, 0.0)
+        vx = vz = 0.0
+        for cx, cz, c in area:
+            dx, dz = x - cx, z - cz
+            d = math.hypot(dx, dz)
+            if 0 < d <= DEATH_AVOID_RADIUS:
+                w = (1.0 - d / DEATH_AVOID_RADIUS) * min(c, 4)
+                vx += dx / d * w
+                vz += dz / d * w
+        n = math.hypot(vx, vz)
+        return (vx / n, vz / n) if n > 1e-6 else (0.0, 0.0)
+
+    def stats(self, episode=None, floor=None, x=None, z=None):
+        out = {'deaths_seen': self._count, 'death_buckets': len(self._buckets),
+               'death_source': self._source, 'death_last_cause': self._last_cause,
+               'death_last_floor': self._last_floor,
+               'revives_p1': self._revives_p1, 'revives_p2': self._revives_p2,
+               'last_death': self._last_death_str}
+        if episode is not None:
+            out['death_penalty_here'] = round(self.penalty(episode, floor, x, z), 3)
+        return out
+
+
 class Controller:
     def __init__(self, reader, inputs, maps):
         self.reader, self.inputs, self.maps = reader, inputs, maps
@@ -826,6 +1045,8 @@ class Controller:
         self.weapon_ranges = WeaponRanges(getattr(reader, 'ad', None))
         self.engagements = Engagements()
         self.combat_status = {}
+        self.death_memory = DeathMemory(getattr(reader, 'ad', None))  # death-driven learning consumer
+        self._dodges = 0            # how many dodge (reposition-during-combat) pulses fired (flat telemetry)
         from .pso_coop_town import TownRoute
         self.town = TownRoute(getattr(reader, "ad", None))
         self.town_enabled = False
@@ -1519,6 +1740,17 @@ class Controller:
         threats = sorted((e for e in enemies if relevant(e)),
                          key=lambda e: math.hypot(e["x"] - px, e["z"] - pz))
         target = next((e for e in threats if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+        # DODGE (follower): a swarm bot also moves out of attacks instead of tanking.
+        # When a threat is hot and no clean shot is lined up this tick, strafe out of the
+        # attack line (biased away from learned fatal spots) rather than standing to aim.
+        if enemies:
+            dodge = self.combat_dodge(state, slot, player, enemies, envelope, target, now)
+            if dodge is not None and dodge["act"]:
+                commands.append((slot, dodge["keys"], dodge["dur"]))
+                steering[slot] = (player, dodge["point"], "swarm_dodge")
+                self.combat_status[slot].update(role="swarm_dodge", dodge_min_dist=dodge["min_dist"])
+                self._dodge_telemetry(dodge)
+                return
         if target is not None:
             dist, angle, vertical_ok = attack_geometry(player, target, envelope)
             self.combat_status[slot].update(target=target.get("class"), distance=round(dist, 2),
@@ -2106,6 +2338,102 @@ class Controller:
             st['floor_advance'] = result if isinstance(result, dict) else {'ok': bool(result)}
         return True
 
+    def combat_dodge(self, state, slot, player, enemies, envelope, target, now):
+        """DODGE: reposition during battle to AVOID attacks instead of standing still.
+
+        Returns None when no threat is near. Otherwise a dict describing a strafe
+        waypoint and whether to ACT on it THIS tick. A threat is HOT when an enemy is
+        close, is facing the bot (aimed), or is a boss within its (larger) telegraph
+        range; the hot radius widens on spots the party has died at before. When hot
+        AND there is no clean shot to take this tick, the bot STRAFES perpendicular to
+        the strongest threat's attack line (side-stepping out of it), blending straight
+        repulsion when critically close, and picking the side that both increases
+        distance from every threat and moves away from learned fatal spots. When a shot
+        is lined up it fires instead (act=False) and dodges the next tick - so it fights
+        WHILE moving, never tanking in place."""
+        px, pz = player.get("x"), player.get("z")
+        if type(px) not in (int, float) or type(pz) not in (int, float):
+            return None
+        ep, floor = state.get("episode"), state.get("floor")
+        pen = self.death_memory.penalty(ep, floor, px, pz) if self.death_memory else 0.0
+        threats = []
+        for e in enemies:
+            ex, ez = e.get("x"), e.get("z")
+            if type(ex) not in (int, float) or type(ez) not in (int, float):
+                continue
+            if type(e.get("hp")) in (int, float) and e["hp"] <= 0:
+                continue
+            boss = str(e.get("class", "")).startswith(("TBoss", "TObjBoss"))
+            radius = DODGE_BOSS_RADIUS if boss else DODGE_DANGER_RADIUS
+            d = math.hypot(ex - px, ez - pz)
+            if d > radius:
+                continue
+            eh = e.get("heading_deg")
+            aimed = False
+            if type(eh) in (int, float) and d > 1:
+                bearing = math.degrees(math.atan2(px - ex, pz - ez))
+                aimed = abs(delta(bearing, eh)) <= DODGE_FACING_CONE
+            hot = (d <= DODGE_HOT_RADIUS * (1.0 + pen) or (boss and d <= DODGE_BOSS_HOT)
+                   or (aimed and d <= radius * 0.8))
+            w = (1.0 / max(d, 6.0)) * (2.4 if boss else 1.0) * (1.7 if aimed else 1.0)
+            threats.append((ex, ez, d, w, aimed, boss, hot))
+        if not threats:
+            return None
+        min_dist = min(t[2] for t in threats)
+        anyhot = any(t[6] for t in threats)
+        # A clean shot available THIS tick? Then take it (don't dodge) and dodge next tick.
+        fire_ready = False
+        if target is not None and isinstance(envelope, dict):
+            dist, angle, vok = attack_geometry(player, target, envelope)
+            fire_ready = (vok and dist <= envelope.get("horizontal", 0)
+                          and abs(angle) <= envelope.get("horizontal_half_angle", 0)
+                          and now - self.last_attack.get(slot, 0) >= .52 / max(self.inputs.speed(), 1e-6))
+        # Strafe perpendicular to the strongest threat; choose the side that gains the
+        # most distance from all threats and aligns with the fatal-spot avoid vector.
+        strong = max(threats, key=lambda t: t[3])
+        sx, sz = px - strong[0], pz - strong[1]
+        n = math.hypot(sx, sz) or 1.0
+        perp = (-sz / n, sx / n)
+        avoid = self.death_memory.avoid_vector(ep, floor, px, pz) if self.death_memory else (0.0, 0.0)
+        best = None
+        for sign in (1.0, -1.0):
+            ux, uz = perp[0] * sign, perp[1] * sign
+            nx, nz = px + ux * 26.0, pz + uz * 26.0
+            score = sum((math.hypot(nx - ex, nz - ez) - d) * w for ex, ez, d, w, *_ in threats)
+            score += (ux * avoid[0] + uz * avoid[1]) * DEATH_BIAS_GAIN
+            if best is None or score > best[0]:
+                best = (score, ux, uz)
+        ux, uz = best[1], best[2]
+        if min_dist <= DODGE_CRITICAL:
+            rx = ry = 0.0
+            for ex, ez, d, w, *_ in threats:
+                dx, dz = px - ex, pz - ez
+                m = math.hypot(dx, dz) or 1.0
+                rx += dx / m * w
+                ry += dz / m * w
+            rn = math.hypot(rx, ry) or 1.0
+            ux, uz = ux * 0.5 + rx / rn * 0.7, uz * 0.5 + ry / rn * 0.7
+        un = math.hypot(ux, uz) or 1.0
+        ux, uz = ux / un, uz / un
+        point = (px + ux * DODGE_STEP, pz + uz * DODGE_STEP)
+        return {"act": bool(anyhot and not fire_ready), "keys": movement_keys(player, point),
+                "dur": .10, "point": point, "min_dist": round(min_dist, 1),
+                "hot": anyhot, "boss": any(t[5] for t in threats),
+                "aimed": any(t[4] for t in threats), "penalty": round(pen, 3)}
+
+    def _dodge_telemetry(self, dodge):
+        st = getattr(self.inputs, "stats", None)
+        if not isinstance(st, dict):
+            return
+        self._dodges += 1
+        st["dodges"] = self._dodges
+        st["dodge_active"] = 1
+        st["dodge_min_dist"] = dodge["min_dist"]
+        st["dodge_hot"] = int(dodge["hot"])
+        st["dodge_boss"] = int(dodge["boss"])
+        st["dodge_aimed"] = int(dodge["aimed"])
+        st["dodge_death_penalty"] = dodge["penalty"]
+
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
         keep the current directive. Cheap and failure-tolerant - a missing or bad
@@ -2305,6 +2633,16 @@ class Controller:
         # area-to-area and loops the game. Done before movement so a stalled tick acts.
         if self.advance_on_stall(state, now):
             return False
+        # DEATH-DRIVEN LEARNING: refresh the fatal-spot map (down-and-revive records the
+        # build side logs) so dodge + boss positioning avoid where the party died.
+        _st0 = getattr(self.inputs, "stats", None)
+        if self.death_memory is not None:
+            self.death_memory.refresh(now, self.map_root)
+            if isinstance(_st0, dict):
+                p1 = state["players"].get(1) or {}
+                _st0.update(self.death_memory.stats(state.get("episode"), state.get("floor"),
+                                                    p1.get("x"), p1.get("z")))
+                _st0["dodge_active"] = 0           # set to 1 for the tick a dodge actually fires
         # RTS map: publish this area's collision surface (once) and read any
         # operator GOTO/PRESS/ATTACK click. P1 consumes it below; else autonomous.
         self.publish_surface(state)
@@ -2425,6 +2763,18 @@ class Controller:
                                  if math.hypot(e["x"] - player["x"], e["z"] - player["z"]) <= COMBAT_NEARBY_RADIUS),
                                 key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+            # DODGE (P1): move out of attacks during battle instead of standing still.
+            # When a threat is hot and no clean shot is lined up this tick, strafe out of
+            # the attack line (biased away from learned fatal spots); a lined-up shot
+            # fires normally and dodges next tick. Preempts the fence objective - never
+            # park on a fence while being attacked.
+            if enemies:
+                dodge = self.combat_dodge(state, slot, player, enemies, envelope, target, now)
+                if dodge is not None and dodge["act"]:
+                    commands.append((slot, dodge["keys"], dodge["dur"]))
+                    steering[slot] = (player, dodge["point"], "combat_dodge")
+                    self._dodge_telemetry(dodge)
+                    continue
             # Two-player hold-fence crossing (P1 side): with no enemy to fight and a
             # fence objective active, P1 drives THROUGH the fence while P2 holds the
             # switch - instead of oscillating in the hub. Combat still preempts (target).
@@ -2757,6 +3107,15 @@ def _flatten_master_build(stats, summary):
         stats[f"mb_units_{suffix}"] = len(units) if isinstance(units, list) else 0
         if rep.get("never_miss") is not None:
             stats[f"mb_never_miss_{suffix}"] = int(bool(rep.get("never_miss")))
+        # Survival backstop mirrors (build side: Scape Doll + revive/down state).
+        if rep.get("scapedoll") is not None:
+            stats[f"mb_scapedoll_{suffix}"] = int(bool(rep.get("scapedoll")))
+        if rep.get("scapedoll_ok") is not None:
+            stats[f"mb_scapedoll_ok_{suffix}"] = int(bool(rep.get("scapedoll_ok")))
+        if type(rep.get("revives")) in (int, float):
+            stats[f"mb_revives_{suffix}"] = rep.get("revives")
+        if rep.get("downed") is not None:
+            stats[f"mb_downed_{suffix}"] = int(bool(rep.get("downed")))
 
 
 def apply_master_build_tick(ad, state, stats, *, force=False):

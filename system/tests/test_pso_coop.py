@@ -1342,6 +1342,61 @@ def test_menu_unstick_warps_instead_of_stopping_and_is_throttled(monkeypatch):
     assert stats["menu_stuck_warps"] == 3 and stats["menu_stuck_warp_ok"] is False
 
 
+def test_death_memory_ingests_records_and_repels_from_fatal_spots():
+    """DEATH-DRIVEN LEARNING consumer: reads down-and-revive records (schema-adaptive
+    over common key spellings), buckets fatal spots per area, and exposes a penalty +
+    an avoid vector so positioning biases AWAY from where the party died. Dedups and
+    is throttled so re-reads don't double-count."""
+    ad = SimpleNamespace()
+    dm = C.DeathMemory(ad)
+    ad._pso_deaths = [
+        {"player": 1, "episode": 1, "floor": 11, "x": 100.0, "z": 0.0, "cause": "TBossDragon", "timestamp": 1},
+        {"player": 2, "ep": 1, "floor": 11, "pos_x": 105.0, "pos_z": 5.0, "reason": "fire", "ts": 2},
+        {"player": 1, "episode": 1, "floor": 11},                       # no position -> ignored
+    ]
+    dm.refresh(now=1000.0)
+    assert dm._count == 2                                                # two with positions ingested, one skipped
+    assert dm.penalty(1, 11, 100.0, 0.0) > 0                            # on the fatal cluster
+    assert dm.penalty(1, 11, 1000.0, 1000.0) == 0.0                     # far away
+    assert dm.penalty(1, 2, 100.0, 0.0) == 0.0                         # a different area is unaffected
+    vx, vz = dm.avoid_vector(1, 11, 60.0, 0.0)                          # west of the cluster (~x100)
+    assert vx < 0 and abs(vx) >= abs(vz)                                # pushed further west, away from it
+    dm.refresh(now=1000.5)                                              # throttled + dedup -> no change
+    assert dm._count == 2
+    s = dm.stats(1, 11, 100.0, 0.0)
+    assert s["deaths_seen"] == 2 and s["death_buckets"] >= 1 and s["death_penalty_here"] > 0
+    assert s["death_source"] == "ad._pso_deaths"
+
+
+def test_combat_dodge_strafes_out_of_a_hot_attack_but_fires_a_lined_up_shot(tmp_path):
+    """DODGE: during combat a bot STRAFES out of a hot attack line instead of standing
+    still - unless a clean shot is lined up THIS tick, in which case it fires (and
+    dodges next tick). A logged fatal spot biases the strafe to the opposite side."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    st = state(floor=11)
+    p1 = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "80D01000", "hp": 40}
+    env = dict(C.FALLBACK)
+    # Hot threat 15u directly ahead, facing the bot, but OUTSIDE the 10u weapon range:
+    # no clean shot -> dodge. It strafes laterally, never charges straight in.
+    enemy = {"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 0., "z": 15., "y": 0.,
+             "heading_deg": 180., "ptr": "A1"}
+    d = ctrl.combat_dodge(st, 1, p1, [enemy], env, enemy, now=100.)
+    assert d is not None and d["act"] is True and d["hot"] is True and d["aimed"] is True
+    assert ("lleft" in d["keys"] or "lright" in d["keys"]) and "lup" not in d["keys"]
+    # Same enemy now in range and aligned -> take the shot, do NOT dodge this tick.
+    shot = dict(enemy, z=8.)
+    d2 = ctrl.combat_dodge(st, 1, p1, [shot], env, shot, now=100.)
+    assert d2 is not None and d2["act"] is False
+    # No enemy anywhere near -> nothing to dodge.
+    far = dict(enemy, x=500., z=500.)
+    assert ctrl.combat_dodge(st, 1, p1, [far], env, far, now=100.) is None
+    # Death bias: a logged fatal spot on the +x side pushes the strafe to -x (lright).
+    ctrl.death_memory._ad._pso_deaths = [{"episode": 1, "floor": 11, "x": 40., "z": 0., "ts": 1}]
+    ctrl.death_memory.refresh(now=200.)
+    d3 = ctrl.combat_dodge(st, 1, p1, [enemy], env, enemy, now=200.)
+    assert d3["act"] is True and "lright" in d3["keys"]
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
