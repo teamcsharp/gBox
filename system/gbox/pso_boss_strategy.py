@@ -121,9 +121,18 @@ CONFIRMATION_NOTES = {
                            "HP 2500/2500 at +0x32C/+0x2B8 (so the TObjPlayer HP layout IS valid for this boss "
                            "body), real position f32 at +0x38. It also spawns 3x 'TBoss1DragonColli_C' collision "
                            "helpers parked at (0,0,0) with hp_max=0 - EXCLUDED from aiming by _targetable(). Boss "
-                           "class scheme = 'TBoss<episode?><Name>'; all start with 'TBoss' so the profile's enemy "
-                           "kind catches them. vtables: body update *(0x80481280+0xC), colli *(0x80481BD4+0xC) - "
-                           "handed to the build agent to pin the true HEAD weak-point + a phase/state byte.",
+                           "class scheme = 'TBoss<episode><Name>' CONFIRMED; all start with 'TBoss' so the "
+                           "profile's enemy kind catches them.",
+    "dragon_disasm": "CONFIRMED by build-agent ELF disasm of the Dragon update fn 0x8002985C: action-state at "
+                     "obj+0x326 (u16, TObject-standard: +0x324 control mode, +0x326 action id); states {21,22} are "
+                     "the grounded-attack / fire-breath / eruption window (the update sets flag 0x0800 at +0x30 "
+                     "for them) - the advisor reads +0x326 (ACTION_STATE_OFF) and marks phase '*_attacking' for "
+                     "the Dragon-type bosses. DEFEAT: HP +0x32C==0 is the real signal (plus +0x3C0 bit 0x40 = "
+                     "dying/despawn) - the advisor keeps the conservative PRESENCE+grace boss_alive as primary "
+                     "(HP can live on a sub-part for other bosses) and exposes boss_hp_frac/boss_action_state. "
+                     "HEAD weak-point: the TBoss1DragonColli_C volumes ARE the damageable collision meshes but "
+                     "carry NO readable world pos (anchored to the body transform), so aiming the TBoss1Dragon "
+                     "body center is the correct pragmatic target; a true head-world-pos is NEEDS_RE (deep).",
     "enemy_hp_offset": "HP u16 at +0x32C / max +0x2B8 CONFIRMED valid for the live Dragon body (2500/2500) and "
                        "for TObjPlayer/a Forest wolf; may still differ on other bosses' sub-parts. The advisor "
                        "VALIDATES hp (0<=hp<=hp_max, hp_max>0) and never gates on an invalid read - a boss with a "
@@ -146,6 +155,20 @@ _MIN_FINITE, _MAX_FINITE = 0.0, 1e5
 def _read_u32(read, address):
     import struct
     return struct.unpack(">I", read(address, 4))[0]
+
+
+def _read_u16(read, address):
+    import struct
+    return struct.unpack(">H", read(address, 2))[0]
+
+
+# TObject action-state offset (build-agent RE of the Dragon update fn, confirmed TObject-standard:
+# +0x324 = control/update mode, +0x326 = action id). Per-boss "special" action-state ids where the
+# boss is mid wind-up / exposed-attack (grounded-attack / fire-breath / eruption window) - the bot
+# should press the attack AND be ready to dodge. Dragon = {21,22} (confirmed from the ELF); Gol
+# Dragon (the Ep2 Dragon-type) is assumed to share them (heuristic until its own live capture).
+ACTION_STATE_OFF = 0x326
+SPECIAL_ACTION_STATES = {"Dragon": {21, 22}, "Gol Dragon": {21, 22}}
 
 
 def _extractor(ad):
@@ -418,16 +441,32 @@ def boss_target(ad):
         weak = {"ptr": e.get("ptr"), "class": e.get("class"), "hp": e.get("hp"),
                 "hp_max": e.get("hp_max"), "x": pos["x"], "z": pos["z"], "y": pos["y"]}
 
-        out = {"active": True, "boss": name, "phase": result["phase"], "weakpoint_pos": pos,
+        # Read the boss body's TObject action-state (+0x326). For the Dragon-type bosses, states
+        # {21,22} are the grounded-attack / fire-breath / eruption window: mark the phase 'active'
+        # so nav presses the attack on the exposed boss AND is ready to dodge the breath/erupt.
+        action_state = None
+        try:
+            ptr = int(e["ptr"], 16)
+            if 0x80000000 <= ptr < 0x81800000:
+                action_state = _read_u16(read, ptr + ACTION_STATE_OFF)
+        except Exception:
+            action_state = None
+        phase = result["phase"]
+        special = action_state in SPECIAL_ACTION_STATES.get(name, set())
+        if special:
+            phase = f"{phase}_attacking"
+
+        out = {"active": True, "boss": name, "phase": phase, "weakpoint_pos": pos,
                "weakpoint": weak, "element": result["element"], "action": result["action"],
                "hazard": result["hazard"], "episode": episode, "floor": floor,
                "confidence": result["confidence"], "boss_entity_count": len(bosses),
                "note": spec["note"], "boss_floor": True, "boss_alive": alive, "boss_cleared": cleared,
                "boss_hp_frac": round(hp_frac, 3) if hp_frac is not None else None,
+               "action_state": action_state, "boss_special_state": special,
                # flat telemetry mirrors
-               "boss_active": True, "boss_name": name, "boss_phase": result["phase"],
+               "boss_active": True, "boss_name": name, "boss_phase": phase,
                "boss_weakpoint_locked": True, "boss_weakpoint_x": round(pos["x"], 2),
-               "boss_weakpoint_z": round(pos["z"], 2)}
+               "boss_weakpoint_z": round(pos["z"], 2), "boss_action_state": action_state}
         if result.get("extra"):
             out.update(result["extra"])
         return out
@@ -452,5 +491,5 @@ def boss_telemetry(ad):
     adv = boss_target(ad)
     keys = ("boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
             "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-            "boss_floor", "boss_hp_frac")
+            "boss_floor", "boss_hp_frac", "boss_action_state")
     return {k: adv.get(k) for k in keys}

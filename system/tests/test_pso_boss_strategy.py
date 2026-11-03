@@ -192,6 +192,21 @@ def test_collision_helpers_excluded_from_aim():
     assert r["boss_entity_count"] == 1          # the 3 collision helpers are excluded
 
 
+def test_dragon_action_state_marks_attacking():
+    # +0x326 action-state (build-agent ELF confirm): {21,22} = grounded-attack / fire-breath /
+    # eruption window -> phase '<aim>_attacking' and boss_special_state True.
+    ad = build(episode=0, floor=11, enemies=[("TBoss1Dragon", 2500, 2500, (27.0, 0.0, 10.0))])
+    r0 = B.boss_target(ad)
+    assert r0["phase"] == "head" and r0["boss_special_state"] is False and r0["action_state"] == 0
+    dragon_ptr = OBJ_BASE + 0x400                 # player idx0, dragon idx1
+    for i, b in enumerate(struct.pack(">H", 22)):
+        ad._mem[dragon_ptr + 0x326 + i] = b
+    r1 = B.boss_target(ad)
+    assert r1["phase"] == "head_attacking" and r1["boss_special_state"] is True
+    assert r1["action_state"] == 22 and r1["boss_action_state"] == 22
+    assert r1["boss_phase"] == "head_attacking"
+
+
 def test_only_collision_helpers_is_not_a_live_boss():
     # Only origin collision helpers present (no real body yet) -> no aim target, boss not "seen",
     # so boss_alive stays True (not spawned) and active is False.
@@ -302,7 +317,7 @@ def test_boss_telemetry_flat_scalars_only():
     t = B.boss_telemetry(ad)
     assert set(t) == {"boss_active", "boss_name", "boss_phase", "boss_weakpoint_locked",
                       "boss_weakpoint_x", "boss_weakpoint_z", "boss_alive", "boss_cleared",
-                      "boss_floor", "boss_hp_frac"}
+                      "boss_floor", "boss_hp_frac", "boss_action_state"}
     assert t["boss_active"] is True and t["boss_name"] == "Dragon"
     assert t["boss_alive"] is True and t["boss_floor"] is True and t["boss_hp_frac"] == 1.0
     assert all(not isinstance(v, (dict, list)) for v in t.values())
