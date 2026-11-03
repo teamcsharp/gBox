@@ -1880,64 +1880,41 @@ class Controller:
         p2 = state.get('players', {}).get(2) or {}
         p2_on = (type(p2.get('x')) in (int, float)
                  and math.hypot(obj['sx'] - p2['x'], obj['sz'] - p2['z']) <= FENCE_SWITCH_ON)
-        # P2 stuck-timer: if P2 cannot physically get closer to the switch for
-        # P2_PLACE_AFTER_S (wedged at the boundary P1 crossed), RAM-WRITE P2 onto the
-        # switch - the deterministic fallback after 5+ rounds of P2 navigation failing.
-        if slot == 2:
-            if p2_on:
-                self._p2_sw_best = None
-            else:
-                sd = math.hypot(obj['sx'] - player['x'], obj['sz'] - player['z'])
-                if self._p2_sw_best is None or sd < self._p2_sw_best - 5:
-                    self._p2_sw_best, self._p2_sw_best_at = sd, now
-                if now - self._p2_sw_best_at >= P2_PLACE_AFTER_S and self.place_p2_on_switch(state, player, now):
-                    st = getattr(self.inputs, 'stats', None)
-                    if isinstance(st, dict):
-                        st['p2_role'] = 'fence_switch_placed'
-                    self._p2_sw_best = None
-                    return True
+        # NOTE: the RAM position-writes (place P2 on the switch / P1 past the fence) are
+        # PROVEN DEAD for this gate - the laser fence is a LIVE COLLISION check, so a
+        # teleport onto the switch doesn't fire its sensor and a teleport past the fence
+        # snaps back. Only the legitimate mechanic works: P2 PHYSICALLY walks onto the
+        # switch (collision overlap drops the fence) and P1 PHYSICALLY walks through.
         if slot == 1:
-            fdist = math.hypot(obj['fx'] - player['x'], obj['fz'] - player['z'])
-            if p2_on and fdist <= CROSS_DIST:
-                # P1 is AT the (flag-open) fence with P2 holding the switch. If it still
-                # can't step across the threshold into the next room for P1_CROSS_PLACE_S
-                # (the disconnected-component problem), RAM-write P1 PAST the fence - the
-                # deterministic last step, symmetric to placing P2 on the switch.
-                if not self._p1_cross_at:
-                    self._p1_cross_at = now
-                if now - self._p1_cross_at >= P1_CROSS_PLACE_S and self.place_p1_across_fence(state, player, now):
-                    st = getattr(self.inputs, 'stats', None)
-                    if isinstance(st, dict):
-                        st['p1_role'] = 'fence_cross_placed'
-                    self._p1_cross_at = 0.0
-                    return True
-            else:
-                self._p1_cross_at = 0.0
             overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
             label = 'fence_cross' if p2_on else 'fence_wait'
         else:
-            # P2 must first be in the switch's ROOM. If it isn't, ROUTE door-by-door
-            # using the crystal room-graph P1 built (not a straight-drive that wedges on
-            # the boundary wall): drive P2 THROUGH the door from its room toward the
-            # switch's room. Once P2 is in the switch's room, go to the switch. If the
-            # graph has no path yet (e.g. P1's crossing edge not recorded), trail P1's
-            # position as a fallback, else aim at the switch.
+            # P2 PHYSICALLY to the switch. In the switch's room -> the switch. Else ROUTE
+            # door-by-door via the crystal graph (undirected) toward the switch's room.
+            # If P2's room is OFF P1's recorded network (graph has no path - P2 stranded
+            # in room 13), first REGROUP: route toward P1's CURRENT room to get back onto
+            # the network, then the next tick's graph route carries it to the switch.
+            # Only if even that has no graph edge do we drive straight at P1's position.
             sroom = obj.get('sroom')
+            p1pos = state.get('players', {}).get(1) or {}
             if player.get('room') == sroom:
                 target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
             else:
                 door_str = self._next_door_toward(player.get('room'), sroom)
+                regroup = False
+                if door_str is None and type(p1pos.get('room')) is int:
+                    door_str = self._next_door_toward(player.get('room'), p1pos.get('room'))
+                    regroup = door_str is not None
                 ent = self._live_gate_for(state, player.get('room'), door_str) if door_str else None
                 if ent is not None:
                     target = gates.through_point(player['x'], player['z'], ent['x'], ent['z'], FENCE_CROSS_OVERSHOOT)
-                    label = 'fence_route'
+                    label = 'fence_regroup' if regroup else 'fence_route'
+                elif type(p1pos.get('x')) in (int, float):
+                    # P2's room is entirely off the graph: drive toward P1 to rejoin the network.
+                    target, label = (p1pos['x'], p1pos['z']), 'fence_to_p1'
                 else:
-                    p1pos = state.get('players', {}).get(1) or {}
-                    if type(p1pos.get('x')) in (int, float) and p1pos.get('room') == sroom:
-                        target, label = (p1pos['x'], p1pos['z']), 'fence_follow_p1'
-                    else:
-                        target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
+                    target, label = (obj['sx'], obj['sz']), 'fence_switch_hold'
         # COORDINATE-DRIVE: A* cannot path to a target in a disconnected room (P2 stranded
         # from the room-5 switch). When toward() can't reach it exactly, drive STRAIGHT at
         # the coords (bypassing A*'s nearest-reachable), and let the escalating wedge-escape
