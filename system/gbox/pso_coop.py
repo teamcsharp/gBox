@@ -1279,6 +1279,17 @@ class Controller:
             return True
         route = nav.route((player["x"], player["z"]), dest)
         waypoint = route[1] if route and len(route) > 1 else dest
+        # Diagnostic (slot 1): does A* return a path to the forward target, or does it
+        # fall back to a straight line (route None)? Plus the grid's coverage. This is
+        # the ground truth for the routing fix - route_cells=0 with a non-empty floor
+        # means the surface can't connect P1 to the target; route_cells=0 with floor
+        # None means an empty grid (open A*) that the learned-wall detour must solve.
+        if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
+            self.inputs.stats['nav_diag'] = {
+                'route_cells': len(route) if route else 0,
+                'floor': (len(nav.floor) if nav.floor is not None else None),
+                'heights': len(nav.heights), 'walls': len(nav.walls), 'blocked': len(nav.blocked),
+                'target_dist': round(math.hypot(dest[0] - player["x"], dest[1] - player["z"]), 1)}
         # Approach a near panel in SHORT pulses so the actor lands on it (and the
         # next tick presses it) instead of orbiting the small target; drive a door
         # through with a committed, gusto-length hold.
