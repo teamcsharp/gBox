@@ -247,10 +247,21 @@ map for every session, so a PSO session rendered BLANK. It now picks the rendere
   the matching renderer, through INJECTED renderers so it stays unit-testable. The PSO map's `api` is the
   window's Electron bridge (so it works under the window's `connect-src 'none'` CSP). `mercs-window.html`
   now also loads `pso-map.js` + `live-maps.js`.
-- **Still to build (reported to the coordinator):** (2) concurrent multi-pane so PSO + Mercs show at once
-  during a rotation's "psoTime" segment; (3) a generic top-down provider for hooked titles with no
-  bespoke renderer. The registry is the seam for both.
+- **Concurrent multi-pane (built 2026-11-03):** pane 0 is the existing `#map`/`#sessions` (keeps the
+  rotation-follow). An **"+ Add map pane"** button spawns extra panes into `#extra-maps` (a responsive
+  grid), each with its own session picker that renders that session's title via the registry — so the
+  operator watches PSO + the Mercs map (and more) live at once, e.g. during a rotation's "psoTime".
+  Each pane is independently interactive. Because the map modules are singletons, a given renderer
+  (PSO / tactical / generic) can be open in only ONE pane at a time; a second pane that would reuse a
+  renderer already in use is refused with a note (PSO + Mercs is fine — different modules). Making a
+  module multi-instance (two Mercs panes) is deferred and needs the tactical-map owner's sign-off.
+- **Generic provider (built 2026-11-03):** `clients/web/viz/generic-map.js` (`GBoxGenericMap`) is the
+  registry fallback for any hooked title with no bespoke renderer. It polls the title-agnostic
+  `/api/autoplay/telemetry/<sid>`, plots whatever world positions it finds (steering-evidence poses or
+  a `positions` array) with motion trails, and otherwise shows the live session status — never blank.
+  The `mercs` provider now matches only RE/Mercenaries titles, so other titles fall through to generic.
 
 Deploy: these are client files served statically — a client hard-refresh / reopen of the window picks
-them up once the files are on disk where the app loads them; no additional server restart beyond the
-one that already shipped the feed.
+them up once the files are on disk where the app loads them. The feed changes (`pso_map_feed.py`:
+`pso_plan_json` + centroid bounds) need the one `gbox.service` restart noted above; increments 2 & 3
+are client-only (no further server restart).

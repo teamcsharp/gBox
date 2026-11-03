@@ -210,6 +210,34 @@ test('viewer renders the PSO map for PSO sessions and the tactical map for the r
   }finally{control.dispose();}
 });
 
+function paneNode(){return {value:'',children:[],hidden:false,checked:false,textContent:'',className:'',title:'',_html:'',onchange:null,
+  replaceChildren(){this.children=[];},append(c){this.children.push(c);},setAttribute(){},remove(){this._removed=true;},
+  set innerHTML(v){this._html=v;},get innerHTML(){return this._html;}};}
+
+test('a concurrent extra pane renders a second title alongside pane 0, and refuses a same-title duplicate',async()=>{
+  const psoMaps=[],mercMaps=[],nodes=new Map();
+  const node=id=>{if(!nodes.has(id))nodes.set(id,paneNode());return nodes.get(id);};
+  const doc={getElementById:node,createElement:()=>paneNode()};
+  const psoSid='c'.repeat(16)+'-'+'d'.repeat(16),re2='e'.repeat(16)+'-'+'f'.repeat(16);
+  const live=[{session_id:sid,game_id:'RE5',state:'running',title:'Resident Evil 5'},
+              {session_id:psoSid,game_id:'GPSE8P',state:'running',title:'Phantasy Star Online Episode I & II'},
+              {session_id:re2,game_id:'RE6',state:'running',title:'Resident Evil 6'}];
+  const bridge={info:async()=>({origin:'http://spark:8765',sid,mode:'map'}),onScope:()=>()=>{},alwaysOnTop:async on=>on,
+    api:async p=>p==='/api/sessions?include_ended=false'?live:p==='/api/mercmode'?{hosts:[]}:[]};
+  const control=viewer.mount(doc,bridge,{reviewer:null,registry:null,
+    tactical:{html:id=>id,mount:(_d,{sid})=>{mercMaps.push(sid);return{stop(){}};},detach(){}},
+    pso:{html:id=>id,mount:(_d,{sid})=>{psoMaps.push(sid);return{stop(){}};},detach(){}},
+    generic:{html:id=>id,mount:()=>({stop(){}}),detach(){}},setTimer:()=>1,clearTimer(){}});
+  try{await control.ready;await settle();
+    assert.ok(mercMaps.includes(sid),'pane 0 shows the Mercs tactical map');
+    control.addPane(psoSid);
+    assert.ok(psoMaps.includes(psoSid),'the extra pane shows the PSO map at the same time');
+    const before=mercMaps.length;
+    control.addPane(re2);                                   // a second RE session = the tactical singleton again
+    assert.equal(mercMaps.length,before,'a same-renderer pane is refused (deferred), not double-mounted');
+  }finally{control.dispose();}
+});
+
 test('practice-route binding requires exact live worker and grants polling only its created job',async t=>{
   const f=fixture(t);await f.manager.open({origin:'http://spark:8765'});const event=f.event(f.windows[0]);
   const body={tool:'mercs_team',agent_use:false,require_worker:'a'.repeat(16),input:{session_id:sid,op:'configure',selected_route_id:route}};

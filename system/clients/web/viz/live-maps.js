@@ -42,18 +42,33 @@
     mount: (doc, ctx) => (root.GBoxPsoMap ? root.GBoxPsoMap.mount(doc, ctx) : null),
     detach: () => root.GBoxPsoMap && root.GBoxPsoMap.detach && root.GBoxPsoMap.detach(),
   };
+  // Mercenaries / Resident Evil titles -> the existing tactical map (only these; other titles fall
+  // through to the generic view rather than a blank tactical map).
+  const isMercs = s => /resident evil|mercenar/i.test(titleOf(s)) || /\bRE[456]\b/i.test(gameOf(s)) || /^(BL|BC|NP)[A-Z]{2}\d/.test(gameOf(s));
   const mercs = {
-    id: "mercs", label: "Tactical map", match: () => true,
+    id: "mercs", label: "Tactical map", match: isMercs,
     available: () => !!root.GBoxTacticalMap,
     note: () => "Hover to hold the map; wheel to zoom; drag to pan. Click a bonus or recovery item to request collection.",
     html: sid => (root.GBoxTacticalMap ? root.GBoxTacticalMap.html(sid) : ""),
     mount: (doc, ctx) => (root.GBoxTacticalMap ? root.GBoxTacticalMap.mount(doc, ctx) : null),
     detach: () => root.GBoxTacticalMap && root.GBoxTacticalMap.detach && root.GBoxTacticalMap.detach(),
   };
-  const fallback = mercs;             // the tactical map remains the default until a more specific provider matches
-  register(pso);                      // PSO is the one specific provider today; add more here / via register()
+  // Generic top-down view for any OTHER hooked/mapped title (positions + motion from telemetry) -
+  // the universal fallback, so a new title shows something immediately instead of a blank pane.
+  const generic = {
+    id: "generic", label: "Live map", match: () => true,
+    available: () => !!root.GBoxGenericMap,
+    note: () => "Generic top-down view (positions + motion) — no bespoke map for this title yet.",
+    html: sid => (root.GBoxGenericMap ? root.GBoxGenericMap.html(sid) : ""),
+    mount: (doc, ctx) => (root.GBoxGenericMap ? root.GBoxGenericMap.mount(doc, ctx) : null),
+    detach: () => root.GBoxGenericMap && root.GBoxGenericMap.detach && root.GBoxGenericMap.detach(),
+  };
+  const fallback = generic;           // every unmatched title gets the generic view
+  register(generic);                  // registered too, so it also wins as the last matcher
+  register(mercs);                    // RE / Mercenaries -> tactical map
+  register(pso);                      // PSO (Dolphin) -> the PSO co-op map (checked first: most specific)
 
-  const api = { register, pick, classify, list, isPso, builtins: { pso, mercs }, fallback };
+  const api = { register, pick, classify, list, isPso, isMercs, builtins: { pso, mercs, generic }, fallback };
   if (typeof module === "object" && module.exports) module.exports = api;
   root.GBoxLiveMaps = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

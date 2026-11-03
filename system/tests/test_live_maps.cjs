@@ -5,14 +5,16 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const R=require('../clients/web/viz/live-maps.js');
 
-test('classifies PSO sessions as pso and everything else as the tactical fallback',()=>{
+test('classifies PSO as pso, RE/Mercs as mercs, and any other title as the generic fallback',()=>{
   assert.equal(R.classify({title:'Phantasy Star Online Episode I & II Plus (USA)'}),'pso');
   assert.equal(R.classify({game_id:'GPSE8P'}),'pso');            // GameCube PSO disc id
   assert.equal(R.classify({game_id:'GPOE8P'}),'pso');
   assert.equal(R.classify({title:'Resident Evil 5',game_id:'RE5'}),'mercs');
-  assert.equal(R.classify({title:'Dead or Alive 2'}),'mercs');
-  assert.equal(R.classify({}),'mercs');                          // unknown -> tactical fallback (today's behaviour)
+  assert.equal(R.classify({title:'Resident Evil 4 — Mercenaries'}),'mercs');
+  assert.equal(R.classify({title:'Dead or Alive 2'}),'generic');  // no bespoke map -> generic view
+  assert.equal(R.classify({}),'generic');
   assert.equal(R.isPso({title:'PSO Blue Burst'}),true);
+  assert.equal(R.isMercs({title:'Resident Evil 6'}),true);
 });
 
 test('a newly registered title provider is tried before the fallback',()=>{

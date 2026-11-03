@@ -36,12 +36,13 @@
   // tactical map. The renderer is chosen per session by title - via the GBoxLiveMaps provider registry
   // when loaded (extensible: new titles register their own renderer), else a local PSO title check.
   const isPso=row=>{const t=String((row&&(row.title||row.game_id))||'');return /phantasy star online/i.test(t)||/^GP[OS]/i.test(String((row&&row.game_id)||''))||/\bpso\b/i.test(t);};
-  function mount(doc,bridge,{reviewer=root.GBoxMercsReviewer,tactical=root.GBoxTacticalMap,pso=root.GBoxPsoMap,registry=root.GBoxLiveMaps,setTimer=root.setInterval,clearTimer=root.clearInterval}={}){
+  function mount(doc,bridge,{reviewer=root.GBoxMercsReviewer,tactical=root.GBoxTacticalMap,pso=root.GBoxPsoMap,generic=root.GBoxGenericMap,registry=root.GBoxLiveMaps,setTimer=root.setInterval,clearTimer=root.clearInterval}={}){
     const $=id=>doc.getElementById(id);let state=null,dead=false,map=null,review=null,busy=false,revision=0,anchor=null;
-    const titles=new Map();let mapSid=null,mapKind=null;                 // the session row titles + the mounted renderer
+    const titles=new Map();let mapSid=null,mapKind=null,liveChoices=[];   // session titles, the mounted renderer, latest live rows
+    const extra=[];                                                       // extra concurrent panes [{sid,kind,map,...}]
     const api=(path,body,method)=>bridge.api(path,body,method);
     const message=value=>{$('status').textContent=value||'';};
-    const renderers={mercs:tactical,pso};
+    const renderers={mercs:tactical,pso,generic};
     function sessionRow(sid){return sid?{session_id:sid,title:titles.get(sid)||''}:null;}
     function kindFor(row){                                               // -> 'pso' | 'mercs' (a renderer we have)
       let id=null;try{id=registry&&typeof registry.classify==='function'?registry.classify(row):null;}catch(e){id=null;}
@@ -61,6 +62,45 @@
       if(!sid||!rend)return;
       $('map').innerHTML=rend.html(sid);map=rend.mount(doc,{sid,api});
     }
+    // ---- concurrent extra panes: watch several titles' maps AT ONCE (e.g. a Mercs round + psoTime) ----
+    // Pane 0 is the existing #map/#sessions above (keeps the rotation-follow). Each extra pane picks its
+    // own session and renders that title's map via the registry. The map modules are singletons, so a
+    // title's renderer can be open in only ONE pane at a time (PSO + Mercs = different modules = fine;
+    // two of the same title is refused with a note until the modules are made multi-instance).
+    function usedKinds(except){const k=new Set();if(mapKind)k.add(mapKind);for(const p of extra)if(p!==except&&p.kind)k.add(p.kind);return k;}
+    function fillOptions(sel,selected){
+      const keep=selected!=null?selected:(sel.value||'');sel.replaceChildren();
+      const add=(v,l)=>{const o=doc.createElement('option');o.value=v;o.textContent=l;sel.append(o);};
+      add('','Choose a live session');
+      for(const row of liveChoices)add(row.session_id,`${row.title||row.game_id} · ${(row.detail&&row.detail.worker_name)||row.session_id.slice(0,8)}`);
+      if(keep&&!liveChoices.some(r=>r.session_id===keep))add(keep,'Saved session · waiting to reconnect');
+      sel.value=keep;
+    }
+    function renderPane(pane){
+      pane.map?.stop();pane.map=null;pane.kind=null;pane.host.replaceChildren();
+      const sid=pane.sid;
+      if(!sid){pane.note.textContent='Choose a session to watch its map alongside the others.';return;}
+      const kind=kindFor(sessionRow(sid));
+      if(usedKinds(pane).has(kind)){pane.note.textContent='That title’s map is already open in another pane (same-title concurrent view is coming soon). Pick a different title.';return;}
+      const rend=renderers[kind];if(!rend){pane.note.textContent='No map renderer for this title yet.';return;}
+      pane.kind=kind;
+      pane.note.textContent=kind==='pso'?'PSO map — live. Double-click to send P1; click a gate to open it.'
+        :kind==='mercs'?'Tactical map — live. Click a bonus or recovery item to request collection.'
+        :'Generic top-down view — positions + motion.';
+      pane.host.innerHTML=rend.html(sid);pane.map=rend.mount(doc,{sid,api});
+    }
+    function addPane(sid){
+      const wrap=doc.createElement('div');wrap.className='pane';
+      const bar=doc.createElement('div');bar.className='pane-bar';
+      const sel=doc.createElement('select');const close=doc.createElement('button');close.className='pane-close';close.textContent='Close';
+      const note=doc.createElement('p');note.className='pane-note';const host=doc.createElement('div');host.className='pane-map';
+      bar.append(sel,close);wrap.append(bar,note,host);$('extra-maps').append(wrap);
+      const pane={sid:sid||null,kind:null,map:null,host,note,select:sel,wrap};extra.push(pane);
+      fillOptions(sel,pane.sid);
+      sel.onchange=()=>{pane.sid=sel.value||null;renderPane(pane);};
+      close.onclick=()=>{pane.map?.stop();wrap.remove();const i=extra.indexOf(pane);if(i>=0)extra.splice(i,1);};
+      renderPane(pane);
+    }
     function mode(value){if(!state)return;state.mode=value==='map'?'map':'reviewer';const live=state.mode==='map';
       $('live-view').hidden=!live;$('review-view').hidden=live;
       $('live-tab').setAttribute('aria-pressed',String(live));$('review-tab').setAttribute('aria-pressed',String(!live));
@@ -70,7 +110,8 @@
     async function sessions(){if(dead||busy||!state)return;busy=true;const token=revision;
       try{const rows=await api('/api/sessions?include_ended=false');if(dead||token!==revision)return;
         let selected=state.sid;const choices=(Array.isArray(rows)?rows:[]).filter(s=>s&&s.state==='running');
-        for(const row of choices)titles.set(row.session_id,row.title||row.game_id||'');
+        liveChoices=choices;for(const row of choices)titles.set(row.session_id,row.title||row.game_id||'');
+        for(const pane of extra)fillOptions(pane.select,pane.sid);        // keep each pane's picker current
         const rotationState=await api('/api/mercmode').catch(()=>null);
         if(dead||token!==revision)return;
         const playing=current(selected,choices,rotationState?.hosts);
@@ -92,11 +133,12 @@
     function adopt(value){if(dead)return;revision++;anchor=null;state={...value};$('authority').textContent=state.origin;
       $('top').checked=!!state.top;mapFor(state.sid);mode(state.mode);sessions();}
     $('live-tab').onclick=()=>mode('map');$('review-tab').onclick=()=>mode('reviewer');$('refresh').onclick=sessions;
+    if($('add-pane'))$('add-pane').onclick=()=>addPane();
     $('sessions').onchange=()=>{revision++;anchor=null;state.sid=$('sessions').value||null;mapFor(state.sid);};
     $('top').onchange=async()=>{try{$('top').checked=await bridge.alwaysOnTop($('top').checked);}catch(error){message(error.message);}};
     const unsubscribe=bridge.onScope(adopt);const ready=bridge.info().then(adopt).catch(error=>message(error.message));
     const timer=setTimer(()=>sessions(),5000);
-    return {ready,sessions,adopt,dispose(){dead=true;revision++;clearTimer(timer);unsubscribe?.();map?.stop();tactical?.detach?.();pso?.detach?.();review?.dispose();}};
+    return {ready,sessions,adopt,addPane,dispose(){dead=true;revision++;clearTimer(timer);unsubscribe?.();map?.stop();for(const p of extra)p.map?.stop();tactical?.detach?.();pso?.detach?.();generic?.detach?.();review?.dispose();}};
   }
   const api={mount,replacement,rotation};if(typeof module==='object'&&module.exports)module.exports=api;else{root.GBoxMercsWindow=api;const control=mount(root.document,root.mercsWindow);root.addEventListener('pagehide',()=>control.dispose(),{once:true});}
 })(typeof window!=='undefined'?window:globalThis);
