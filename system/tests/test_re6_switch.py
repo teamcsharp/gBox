@@ -829,6 +829,24 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     assert bot.stats["bomb_drops"] == 0
 
 
+def test_surrounded_grenade_cluster_bomb_burst_lobs_five_at_burst_speed():
+    # operator 2026-11-03: "take a moment every few minutes to spam some grenades (at least 5) in rapid succession via
+    # 5x animation speed at the enemies when they are surrounded" / "cluster-bomb the crowd"
+    ring = tuple((40.0 * i - 100, 0.0, 120.0 + 10 * i, 700) for i in range(6))     # six encircling him (within BURST_SURROUND_R)
+    bot, clock, snap = brain(round_guest(enemies=ring, cam_yaw=0.0))
+    snap["player"].update(equipped=0, nades={0x113: (9, 5), 0x114: (10, 5), 0x115: (11, 5)})
+    run(bot, snap, clock, 2)
+    assert bot.stats["re6_grenade_bursts"] == 0                                    # not in the first BURST_COOLDOWN_S
+    clock[0] += R.BURST_COOLDOWN_S + 1
+    run(bot, snap, clock, 3)                                                       # the burst begins and equips
+    assert bot._gburst is not None and bot.stats["burst_throw_speed"] == R.BURST_THROW_SPEED_X
+    snap["player"]["equipped"] = 9                                                 # the hand grenade stays in hand (infinite)
+    run(bot, snap, clock, 200)
+    assert bot.stats["re6_grenade_bursts"] == 1 and bot.stats["re6_last_burst_grenades"] >= R.BURST_GRENADES
+    assert bot.stats["grenade_throws"] >= R.BURST_GRENADES
+    assert bot._gburst is None and bot.stats["burst_throw_speed"] == 0.0           # ended, the throw speed restored
+
+
 def test_a_cluster_off_at_seven_metres_gets_a_grenade_and_its_kills_are_counted(monkeypatch):
     monkeypatch.setattr(R, "NADES", True)                                    # (off in play until the wheel is measured)
     cluster = ((0.0, 0.0, 750.0, 700), (120.0, 0.0, 800.0, 700), (-120.0, 0.0, 780.0, 700))
@@ -2158,7 +2176,8 @@ def test_point_blank_quick_shots_never_leave_one_even_when_they_miss():
                                          laser=((0.0, R.CHEST_H, 150.0), (0.0, R.CHEST_H, 0.0), 0.86)))
     bot.held = lambda p, now: False
     run(bot, snap, clock, int(4 * R.CC_QSHOT_GAP_S / 0.05))
-    assert bot.stats["cc_blocks"] == 0 and bot.doing == "crowd" and bot.stats["cc_quick_shots"] >= 4
+    # doing may land on the quick-shot trigger-release (part of the crowd quick-shot cycle) or the crowd step
+    assert bot.stats["cc_blocks"] == 0 and bot.doing in ("crowd", "quick_shot") and bot.stats["cc_quick_shots"] >= 4
     bot._block(snap["enemies"][0], clock[0], "los_blocks")                    # whatever said so
     assert not bot.is_blocked(snap["enemies"][0], clock[0]) and bot.stats["los_blocks"] == 0
 
@@ -2934,12 +2953,15 @@ def test_fire_rate_speeds_up_every_guns_interval_only_and_writes_the_builds_back
     out = mods.run(ad, "rapid_fire", multiplier=4)
     assert out["verified"] and out["fire_rate_x"] == 4.0 and out["writes"] == len(guns)
     assert sorted(a for a, _ in ad.writes) == sorted(cell(i) for i in guns)            # the interval cells, nothing else
-    assert math.isclose(iv(0x0F), 0.025, rel_tol=1e-6) and math.isclose(iv(0x07), 0.2, rel_tol=1e-6)
+    # the magnums get their own rapid-fire rate (operator 2026-11-03), like the snipers - orig / MAGNUM_FIRE_X whenever
+    # fire_rate is on, bypassing the per-gun multiplier
+    assert math.isclose(iv(0x0F), 0.025, rel_tol=1e-6) and math.isclose(iv(0x07), 0.8 / mods.MAGNUM_FIRE_X, rel_tol=1e-6)
     assert iv(0x13) == 2.0 and iv(0x16) == 2.0 and iv(0x00) == 10.0 and iv(0x18) == 10.0   # thrown / melee: theirs
     assert struct.unpack("<f", g.rd(table + mods.FIRE_STRIDE * 0x0F + 0x30, 4))[0] == pytest.approx(0.24)
     ad.writes.clear()
     assert mods.run(ad, "fire_rate", multiplier=4)["writes"] == 0 and ad.writes == []       # already there
-    assert mods.run(ad, "fire", multiplier=80)["writes"] == len(guns) - len(mods.SNIPER_RECORDS)
+    # at a higher multiplier only the ordinary guns change; the snipers and the magnums keep their own override rate
+    assert mods.run(ad, "fire", multiplier=80)["writes"] == len(guns) - len(mods.SNIPER_RECORDS) - len(mods.MAGNUM_RECORDS)
     assert iv(0x0F) == pytest.approx(mods.FIRE_FLOOR) and iv(0x0B) == pytest.approx(2.25 / 30)  # sniper override, floor elsewhere
     off = mods.run(ad, "fire_rate", on=False)
     assert off["fire_rate_x"] == 1.0 and off["writes"] == len(guns)
@@ -3111,7 +3133,8 @@ def test_zombies_up_close_get_quick_shots_and_kicks_and_the_ones_further_back_th
     bot.held = lambda p, now: False                                          # (the frozen snapshot never moves him)
     acts = run(bot, snap, clock, 30)                                         # 1.5 s
     assert acts[0] == {"hold": ("zl", "zr")} and bot.doing == "crowd"         # the gun down: the quick shot at once
-    assert bot.stats["cc_quick_shots"] == 3 and bot.stats["quick_shots"] == 3 # one every CC_QSHOT_GAP_S
+    # operator 2026-11-03 aggression (QA_FAST): a quick shot every CC_FAST_GAP_S, many more than the old one-per-0.5 s
+    assert bot.stats["cc_quick_shots"] >= 6 and bot.stats["quick_shots"] == bot.stats["cc_quick_shots"]
     assert all("zl" not in a.get("hold", ()) or a == {"hold": ("zl", "zr")} for a in acts)   # never the gun up
     assert any(set(a.get("hold", ())) & {"lup", "ldown", "lleft", "lright"} and "zl" not in a.get("hold", ())
                for a in acts)                                                 # toward open space between them
@@ -3255,7 +3278,9 @@ def test_crowd_hold_set_by_cc_kick_path():
     acts = run(bot, snap, clock, 12)
     assert bot.crowd_hold_until > 0.0, "crowd_hold_until must be set when cc_kick fires with 4+ within 2m"
     assert bot.stats["cc_kicks"] > 0
-    assert bot.doing == "crowd" or any(a.get("doing") == "crowd" for a in acts)
+    # cc_kicks > 0 proves the crowd path fired; with the 2026-11-03 faster cadence the bounded gun acquisition may
+    # raise the gun by the end of the window (after two ineffective kicks), so the final doing can be crowd or a raise
+    assert bot.doing in ("crowd", "raise", "aim", "fire") or any(a.get("doing") == "crowd" for a in acts)
 
 
 def test_crowd_hold_not_set_with_fewer_than_four():
@@ -3491,7 +3516,9 @@ def test_a_hit_answers_with_a_series_of_quick_shots():
     snap["player"]["hp"] = 780                                               # bitten
     acts = run(bot, snap, clock, int(R.HIT_QS_N * (R.HIT_QS_GAP_S / 0.05)) + 6)
     shots = [a for a in acts if a == {"hold": ("zl", "zr")}]
-    assert bot.stats["hit_responses"] == 1 and bot.stats["hit_quick_shots"] == R.HIT_QS_N == len(shots)
+    # the hit still queues the HIT_QS_N dedicated quick shots back; with the 2026-11-03 aggression (QA_FAST) the
+    # crowd-control path then keeps the quick shots coming, so the window holds at least that many
+    assert bot.stats["hit_responses"] == 1 and bot.stats["hit_quick_shots"] == R.HIT_QS_N and len(shots) >= R.HIT_QS_N
     bot2, clock2, snap2 = brain(round_guest(hp=900, enemies=((0.0, 0.0, 3000.0, 700),), cam_yaw=0.0))
     run(bot2, snap2, clock2, 2)
     snap2["player"]["hp"] = 780                                              # shot from afar: nobody close to hit back

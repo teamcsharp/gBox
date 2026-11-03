@@ -105,6 +105,11 @@ CAP_MAX = 200                                            # a capacity above this
 CHECK_S = 0.25                                           # maintain tops up at most this often
 FIRE_MAX = 5.0                                               # operator 2026-10-28: "make the max fire rate multiplier for a weapon 5x"
 SNIPER_FIRE_X = 30.0                                         # operator 2026-11-01, sniper weapons only
+# magnum rapid-fire (operator 2026-11-03: "the gun fires slow and with massive recoil; I want the magnum firing 20x a
+# second"): the magnums (MAGNUM_RECORDS) get their own per-weapon rate like the snipers, bypassing FIRE_MAX, whenever
+# fire_rate is on - orig / MAGNUM_FIRE_X (0x07's 0.8 s -> 30/s, 0x08's 1.2 s -> 20/s, both >= the operator's 20/s). The
+# recoil is cut by MAGNUM_SPEED_X below (the recoil animation's mDeltaTime). An explicit fire_rate magnum= still tunes it.
+MAGNUM_FIRE_X = 24.0                                         # operator 2026-11-03, every magnum iteration
 # Verified lookup 10ECE20 + jump table 218A034: 109/10A use 09/0A;
 # 10B uses 0B normally and 2A in alternate mode. 09's native interval is 10s.
 SNIPER_RECORDS = frozenset({0x09, 0x0A, 0x0B, 0x2A})
@@ -129,7 +134,7 @@ DOWN_FIRE_X, DOWN_FIRE_MAX = 3.0, 10.0
 # MAGNUM_RECORDS), his mDeltaTime (cUnit +0x30, as quick_attack) at MAGNUM_SPEED_X, 1.0 back after; fire_rate's table
 # stays (the magnum's 8). Only once fire_rate has set the table this boot; the op sets the factor (1 = off). status
 # magnum_fast counts the fire actions sped up.
-MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 3.0, 6.0
+MAGNUM_SPEED_X, MAGNUM_SPEED_MAX = 6.0, 6.0   # operator 2026-11-03 "little/no recoil": the recoil animation at the cap
 # throw_speed (operator 19:01: "When throwing grenades give them 20x grenade throwing speed animation"): his mDeltaTime
 # at THROW_SPEED_X while the throw runs (the gun's fire action with a grenade in hand: records THROW_RECORDS), as the
 # magnum's; status throw_fast counts them.
@@ -1096,8 +1101,8 @@ def fire_interval(index: int, k: float, magnum: float | None = None, throw: floa
         return max(FIRE_FLOOR, orig / SNIPER_FIRE_X)
     if index in THROW_RECORDS and throw and throw > 1.0:
         return max(FIRE_FLOOR, orig / throw)
-    if index in MAGNUM_RECORDS and magnum and magnum > 1.0:
-        return max(FIRE_FLOOR, orig / magnum)
+    if index in MAGNUM_RECORDS and (k > 1.0 or (magnum and magnum > 1.0)):
+        return max(FIRE_FLOOR, orig / (magnum if (magnum and magnum > 1.0) else MAGNUM_FIRE_X))
     if k == 1.0 or index in FIRE_SKIP or not 0.0 < orig < FIRE_GUN_MAX:
         return orig
     return max(FIRE_FLOOR, orig / k)
@@ -1140,7 +1145,7 @@ def fire_rate(g: RE6Switch, mult, magnum=None, throw=None) -> dict:
     if not 1.0 <= k <= 80.0 or any(x is not None and not 1.0 <= x <= 80.0 for x in (magnum, throw)):
         raise ValueError("fire_rate multiplier / magnum / throw: 1..80 (1 = the game's)")
     k = min(k, FIRE_MAX)                                     # the operator's cap per weapon (2026-10-28: 5x): clamped
-    magnum = min(magnum, FIRE_MAX) if magnum is not None else None
+    magnum = min(magnum, MAGNUM_FIRE_X) if magnum is not None else None   # the magnums get their own cap (rapid-fire)
     throw = min(throw, FIRE_MAX) if throw is not None else None
     recs = fire_records(g)
     if recs is None:

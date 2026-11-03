@@ -1606,7 +1606,7 @@ TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (g
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
 FINE_YAW, FINE_PITCH = math.radians(6), math.radians(12)  # the aim's stick in pulses inside these (pitch is fast)
 QUICK_ERR, QUICK_GAP_S, QUICK_SETTLE_S = math.radians(130), 1.5, 0.45
-MELEE_R, MELEE_CONE, MELEE_GAP_S = 140.0, math.radians(40), 0.7
+MELEE_R, MELEE_CONE, MELEE_GAP_S = 140.0, math.radians(40), 0.4   # operator 2026-11-03: a faster quick-attack cadence
 CROWD_R, CROWD_N = 260.0, 2             # this many this near, or one within KEEP_R: he steps back while he fires
 KEEP_R = 200.0
 QSHOT_R, QSHOT_CONE, QSHOT_GAP_S = 200.0, math.radians(35), 1.5   # point blank only (450 until 16:30)
@@ -1653,8 +1653,13 @@ CC_R, CC_CONE = 200.0, math.radians(100)   # point blank only (operator 16:30; 3
 CC_FLANK_CONE = math.radians(130)          # damage cluster fc45a6229fe006d0: flanking enemies 100-137 deg off-facing
                                         # fell outside CC_CONE (100 deg), so the bot raised its aim into them instead
                                         # of dropping the gun for quick attacks; 130 deg catches the observed cluster
-CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.5, 0.4, math.radians(60)
-QA_FAST, CC_FAST_GAP_S = False, 0.15    # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
+# operator 2026-11-03 (watching RE6 live): "they aren't using enough quick attacks ... attacks too slowly/infrequently
+# and gets overwhelmed ... constantly, rapidly attacking rather than pausing between hits". The crowd-control cadence is
+# tightened (0.5 / 0.4 -> 0.3 / 0.22 s) and QA_FAST is on so that, with the quick_attack mod (x10 animation), the kicks
+# and quick shots go out back to back at CC_FAST_GAP_S; the gauge is kept full by infinite_stamina, and an input that
+# lands mid-animation is simply dropped by the game (fail-soft - it never stalls the tick).
+CC_QSHOT_GAP_S, CC_KICK_GAP_S, CC_ATTACK_CONE = 0.3, 0.22, math.radians(60)
+QA_FAST, CC_FAST_GAP_S = True, 0.12     # with quick_attack on (re6_switch_mods: his quick attacks x10) they go out back to
                                         # back: this often, the gauge kept full by infinite_stamina
 CC_BACK_N, CC_BACK_R = 3, 400.0         # this many within this: he steps back while he fires (the earlier back-off)
 # Dying (RE6's 1-health state: he crawls; every death in the 2026-10-27 runs came through it, at 1 health for 3 s and
@@ -1851,6 +1856,27 @@ NADE_THROW_S, FLASH_BURST_S, FLASH_BURST_AIM_S = 0.3, 3.0, 0.1
 # and failing to fight"): the flurry only while FLASH_BURST_N are within FLASH_BURST_R (truly swarmed), and the next
 # flash FLASH_GAP_S after the last - the stun's window is for the fever's kicks and shots, not more throws.
 FLASH_BURST_N, FLASH_BURST_R = 5, 300.0
+# Grenade cluster-bomb burst (operator 2026-11-03: "take a moment every few minutes to spam some grenades (at least 5) in
+# rapid succession via 5x animation speed at the enemies when they are surrounded"; the expanded spec: "lobbing a mass of
+# grenades to cluster-bomb the crowd"). When GRENADE_BURST is on and BURST_SURROUND_N or more enemies stand within
+# BURST_SURROUND_R (roughly encircling him) and BURST_COOLDOWN_S has passed since the last burst, he throws BURST_GRENADES
+# grenades back to back at the crowd - whichever of the hand / incendiary / flash the wheel holds, re-aimed between throws
+# like the flash flurry. The throw animation is forced to at least BURST_THROW_SPEED_X via re6_switch_mods.throw_speed
+# (the player's mDeltaTime at cUnit+0x30 while the grenade-fire action runs; _mods restores the prior value when the
+# burst ends), so the 5+ grenades come out in a couple of seconds. Fail-soft: the burst ends on BURST_MAX_S whatever
+# happens and never waits on a mod (if fire_rate is off the throw_speed field does nothing and the burst still lobs them
+# as fast as the wheel + throw machine allow). stats re6_grenade_bursts, re6_last_burst_grenades.
+GRENADE_BURST = True
+BURST_SURROUND_N, BURST_SURROUND_R = 5, 450.0
+BURST_GRENADES, BURST_COOLDOWN_S, BURST_MAX_S = 5, 180.0, 6.0
+BURST_THROW_SPEED_X = 5.0
+# Ledge / sniper / rocket threat awareness (operator 2026-11-03: "full awareness of enemy locations in 3D, including
+# enemies UP HIGH, on LEDGES, and at DISTANCE ... any zombie pointing a LASER SIGHT (sniper), or a rocket/sniper threat,
+# becomes a PRIORITY TARGET"). windup() already flags a ranged action within RANGED_R; LEDGE_RANGED_R extends that for
+# the distant / elevated shooters (their GunAim / Shoot / Bow / Rocket action read on any floor). A ranged threat is a
+# top target in _choose, and the tick counts re6_threats_tracked (live enemies with a 3D position) and re6_sniper_targets
+# (those reading a ranged action). LONGSHOT_R: beyond it a ranged/elevated threat is engaged as a long shot (re6_longshots).
+LEDGE_RANGED_R, LONGSHOT_R = 4000.0, 1500.0
 # Where it lands (operator 2026-10-28 05:0x: "she is throwing the grenades off of a cliff and is facing a wall. I need her
 # throwing them at the ground and then using the commotion to dispatch, melee, flee"): every grenade, the flash too,
 # faces them first, and the aim lock holds the camera on the ground among them (NADE_GROUND_MIN out at least, on his
@@ -2035,7 +2061,9 @@ def windup(e, me=None) -> str | None:
     d = math.hypot(e["pos"][0] - me[0], e["pos"][2] - me[2]) if me is not None else 0.0
     if any(k in a for k in WINDUP_KEYS) and d <= WINDUP_R:
         return "melee"
-    if any(k in a for k in RANGED_KEYS) and d <= RANGED_R:
+    # operator 2026-11-03: a laser-sight / sniper / rocket shooter is a priority threat at ANY range, including up high
+    # on a ledge and at distance - so the ranged read reaches LEDGE_RANGED_R (not just the melee RANGED_R)
+    if any(k in a for k in RANGED_KEYS) and d <= LEDGE_RANGED_R:
         return "ranged"
     return None
 # Threats only (operator 19:09, a frame at low health aiming up at the ceiling with nothing there: "Aiming up for no reason
@@ -2186,7 +2214,11 @@ class Bot:
                   "yellows_taken", "greens_taken", "combo_saves", "bonus_unseen",
                   "aim_locks", "lock_write_ok", "lock_write_fail", "lock_overwritten", "lock_fallbacks", "lock_ray_misses", "aimed_shots",
                   "aimed_hits", "boss_damage", "down_shots", "down_kills", "down_recoveries", "dying_deaths",
-                  "hazard_marks", "sweeps", "targets_shot"):
+                  "hazard_marks", "sweeps", "targets_shot",
+                  # operator 2026-11-03 RE6 combat overhaul: the magnum rapid-fire, the cluster-bomb grenade burst and
+                  # the ledge/sniper/rocket threat awareness (flat telemetry)
+                  "re6_grenade_bursts", "re6_last_burst_grenades", "re6_threats_tracked", "re6_sniper_targets",
+                  "re6_longshots", "re6_rocket_barrages", "re6_magnum_rps"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s", "down_s", "hazard_s",
                   "cc_vs_aimed"):
@@ -2312,6 +2344,8 @@ class Bot:
         self.push: dict | None = None                        # the push-through after a flash: its way out
         self.combo_prev, self.combo_urgent = 0, False
         self.surrounded = False                              # 8+ within 4 m last tick
+        self._gburst = None                                  # the grenade cluster-bomb burst: {"left", "since", "thrown"}; None when idle
+        self._gburst_last = -1e9                             # when the last burst began (BURST_COOLDOWN_S)
         self._p, self._cam_yaw = None, 0.0
         self.long_shot = {}                                  # zombie -> when the trigger was last on him past LONG_KILL_R
         self.qa_in, self.qa_at, self.qa_kills_k = False, None, None   # in a quick attack; when the last began; kills then
@@ -2842,6 +2876,12 @@ class Bot:
         if within >= SURROUND_N and not self.surrounded:
             self.stats["surround_events"] += 1
         self.surrounded = within >= SURROUND_N
+        # Full 3D threat awareness (operator 2026-11-03): every live enemy in the snapshot (sEnemy's whole list - any
+        # floor, up high on a ledge, at distance), and how many are pointing a gun / laser sight / rocket at him (the
+        # ranged read, now out to LEDGE_RANGED_R). These are flat telemetry; the ranged ones are prioritized in _choose.
+        all_enemies = [e for e in (snap.get("enemies") or ()) if (e.get("hp") or 0) > 0 and e.get("pos")]
+        self.stats["re6_threats_tracked"] = len(all_enemies)
+        self.stats["re6_sniper_targets"] = sum(1 for e in all_enemies if windup(e, p["pos"]) == "ranged")
         state = p.get("state")                               # None: no state byte (the health / stick heuristics)
         held = state in HELD_STATES
         if self.in_hold and not held:                        # a hold read in RAM just ended: how it was freed
@@ -2926,7 +2966,8 @@ class Bot:
             close_by = [e for e in live if flat(e) <= HIT_QS_R]
             if not close_by:
                 self.hit_qs = 0
-            elif (not self.down and p.get("state") in (0, None) and now - self.qshot_at >= HIT_QS_GAP_S
+            elif (not self.down and p.get("state") in (0, None)
+                  and now - self.qshot_at >= (CC_FAST_GAP_S if QA_FAST else HIT_QS_GAP_S)   # keep pace with the fast cadence
                   and p.get("ammo") != 0 and any(self._measured_contact(e, now) for e in close_by)
                   and not any(q.get('key') not in (None, 'r', 'y') for q in self._prompt_shown)
                   and not ((p.get('tablets') or 0) > 0 and (p.get('hp') or 0) <= TABLET_CRITICAL_HP * (p.get('hp_max') or 0))):
@@ -3541,7 +3582,10 @@ class Bot:
             if set(back) & {"lup", "ldown", "lleft", "lright"}:
                 self.stats["moving_shots"] += 1
             if on_e is not None and dist > LONG_KILL_R:
-                self.long_shot[on_e.get("ptr", on_e.get("slot"))] = now
+                tid = on_e.get("ptr", on_e.get("slot"))
+                if tid not in self.long_shot:                    # a fresh long shot at a distant / elevated target
+                    self.stats["re6_longshots"] += 1             # (operator 2026-11-03: long shots with the magnum)
+                self.long_shot[tid] = now
         if not on and not back and dist <= AIM_WALK_R and self.aim_since is not None and now - self.aim_since > AIM_WALK_S:
             back = ("lup",)                                      # never standing among them: in at him while aiming
         if on:                                                   # the trigger on him: his health must fall (NOHIT_S)
@@ -4342,35 +4386,39 @@ class Bot:
                 return None                                # establish a loaded gun before an optional item cycle
             if (getattr(self, '_operator_primary', None) or {}).get('locked'):
                 return None                            # an automatic item request cannot displace a locked gun
-            if not (NADES or FLASH) or now - self.nade_last < FLASH_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
-                return None
             nades = p.get("nades") or {}
             group, kind = None, None
-            near = [e for e in vis if flat(e) <= FLASH_R]
-            winding = sum(1 for e in near if windup(e, p["pos"]) == "melee")
-            close3 = sum(1 for e in vis if flat(e) <= FLASH_NEAR_R)
-            if ((len(near) >= FLASH_N or winding >= 1 or close3 >= FLASH_NEAR_N or self._overwhelmed(p, live, flat, now))
-                    and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0 and now - self.flash_last >= FLASH_GAP_S
-                    and now >= self.fever_until):                # (not again on the stunned ones of its own fever)
-                group, kind = near or [min(live, key=flat)], "flash"
-            elif now - self.nade_last < NADE_GAP_S:
-                return None
-            elif (not NADES                                          # (FLASH alone: no grenades)
-                  or (now - self.frag_last < FRAG_GAP_S and self._clusters(vis, flat) < SPAM_CLUSTERS)):
+            burst = self._burst_begin(p, vis, live, flat, now)   # the surround cluster-bomb burst (its own cooldown)
+            if burst is not None:
+                kind, group = burst
+            elif not (NADES or FLASH) or now - self.nade_last < FLASH_GAP_S or not vis or (p.get("bomb") or {}).get("out"):
                 return None
             else:
-                for e in vis:
-                    if not NADE_MIN_R <= flat(e) <= NADE_MAX_R:
-                        continue
-                    c = [z for z in vis if math.hypot(z["pos"][0] - e["pos"][0], z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R]
-                    if len(c) >= NADE_N and all(flat(z) >= NADE_MIN_R * 0.8 for z in c):
-                        turn = ("fire", "frag") if self.stats["fires"] < self.stats["frags"] else ("frag", "fire")
-                        for k in turn:                               # the hand and incendiary grenades in turn
-                            if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0:
-                                group, kind = c, k
+                near = [e for e in vis if flat(e) <= FLASH_R]
+                winding = sum(1 for e in near if windup(e, p["pos"]) == "melee")
+                close3 = sum(1 for e in vis if flat(e) <= FLASH_NEAR_R)
+                if ((len(near) >= FLASH_N or winding >= 1 or close3 >= FLASH_NEAR_N or self._overwhelmed(p, live, flat, now))
+                        and (nades.get(NADE_TYPES["flash"]) or (0, 0))[1] > 0 and now - self.flash_last >= FLASH_GAP_S
+                        and now >= self.fever_until):                # (not again on the stunned ones of its own fever)
+                    group, kind = near or [min(live, key=flat)], "flash"
+                elif now - self.nade_last < NADE_GAP_S:
+                    return None
+                elif (not NADES                                          # (FLASH alone: no grenades)
+                      or (now - self.frag_last < FRAG_GAP_S and self._clusters(vis, flat) < SPAM_CLUSTERS)):
+                    return None
+                else:
+                    for e in vis:
+                        if not NADE_MIN_R <= flat(e) <= NADE_MAX_R:
+                            continue
+                        c = [z for z in vis if math.hypot(z["pos"][0] - e["pos"][0], z["pos"][2] - e["pos"][2]) <= NADE_CLUSTER_R]
+                        if len(c) >= NADE_N and all(flat(z) >= NADE_MIN_R * 0.8 for z in c):
+                            turn = ("fire", "frag") if self.stats["fires"] < self.stats["frags"] else ("frag", "fire")
+                            for k in turn:                               # the hand and incendiary grenades in turn
+                                if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0:
+                                    group, kind = c, k
+                                    break
+                            if group:
                                 break
-                        if group:
-                            break
             if group is None:
                 return None
             cx = sum(e["pos"][0] for e in group) / len(group)
@@ -4380,9 +4428,9 @@ class Bot:
                              "gun": eq if isinstance(eq, int) and eq < WEAPON_INDEXES else None}
         if n["seen"][-1] != eq:
             n["seen"].append(eq)
-        if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"]
+        if (n["kind"] != "flash" and n["phase"] == "equip" and eq != n["index"] and self._gburst is None
                 and any(flat(e) < MELEE_R for e in live)):      # one on him before it is in hand: the fight instead
-            self.stats["nade_aborts"] += 1
+            self.stats["nade_aborts"] += 1                      # (the cluster-bomb burst lobs into the near crowd on purpose)
             n.update(phase="back", at=now - NADE_STEP_S, steps=0)
         if n["phase"] == "equip":
             if eq == n["index"]:
@@ -4445,6 +4493,14 @@ class Bot:
                 self.frag_last = now
                 self.nade_kills = (snap.get("kills"), now)
             self.stats["grenade_throws"] += 1
+            if self._gburst is not None:                         # the cluster-bomb burst: count this lob, retarget the mass
+                self._gburst["thrown"] += 1
+                self._gburst["left"] -= 1
+                self.stats["re6_last_burst_grenades"] = self._gburst["thrown"]
+                mass = [e for e in (vis or live) if flat(e) <= BURST_SURROUND_R] or (vis or live)
+                if mass:
+                    n["to"] = (sum(e["pos"][0] for e in mass) / len(mass),
+                               sum(e["pos"][2] for e in mass) / len(mass))
             return self._go("nade", "nade_" + n["kind"], {"hold": ("zl", "zr")}, f"the {n['kind']} grenade thrown")
         if n["phase"] == "throw":
             self._nade_ground(p, live, snap, now, n)
@@ -4454,6 +4510,13 @@ class Bot:
         if n["phase"] == "thrown":
             if now - n["at"] < NADE_RELEASE_S:                   # ZR let go, ZL still held: the throw goes now
                 return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)}, f"the {n['kind']} grenade let go")
+            if (self._gburst is not None and self._gburst["left"] > 0 and now - self._gburst["since"] < BURST_MAX_S
+                    and eq == n["index"] and ((p.get("nades") or {}).get(NADE_TYPES[n["kind"]]) or (0, 0))[1] > 0):
+                n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the cluster-bomb: the next grenade at once
+                return self._go("nade", "nade_" + n["kind"], {"hold": ("zl",)},
+                                f"cluster-bomb burst: another grenade ({self._gburst['left']} left)")
+            if self._gburst is not None:                         # the burst is done (count reached, time, or out of grenades)
+                self._burst_end(now)
             if (n["kind"] == "flash" and now - n["since"] < FLASH_BURST_S and eq == n["index"]
                     and sum(1 for e in live if flat(e) <= FLASH_BURST_R) >= FLASH_BURST_N):
                 n.update(phase="aim", at=now - NADE_AIM_S + FLASH_BURST_AIM_S)   # the flurry: another one at once
@@ -4562,6 +4625,43 @@ class Bot:
         log.append({"kind": n["kind"], "to": n["index"], "seen": n["seen"][-12:]})
         del log[:-NADE_WHEEL_N]
         self.nade, self.nade_last = None, now
+        if self._gburst is not None:                             # the burst ended with this throw cycle: restore the speed
+            self._burst_end(now)
+
+    def _burst_begin(self, p, vis, live, flat, now):
+        """Start a grenade cluster-bomb burst (operator 2026-11-03) when BURST_SURROUND_N or more enemies encircle him
+        within BURST_SURROUND_R and BURST_COOLDOWN_S has passed since the last burst: pick a grenade the wheel holds
+        (hand, then incendiary, then flash) and the crowd to lob the mass at. Returns (kind, group) or None. Fail-soft -
+        any missing state simply declines the burst; it sets self.stats['burst_throw_speed'] so _mods forces the throw
+        animation to BURST_THROW_SPEED_X for its duration."""
+        if not GRENADE_BURST or self._gburst is not None or self.nade is not None:
+            return None
+        if self._round_started is None:
+            return None
+        anchor = max(self._gburst_last, self._round_started)     # no burst in the first BURST_COOLDOWN_S of a round, then
+        if now - anchor < BURST_COOLDOWN_S or (p.get("bomb") or {}).get("out"):   # at most one every BURST_COOLDOWN_S
+            return None
+        ring = [e for e in live if flat(e) <= BURST_SURROUND_R]
+        if len(ring) < BURST_SURROUND_N:
+            return None
+        nades = p.get("nades") or {}
+        kind = next((k for k in ("frag", "fire", "flash") if (nades.get(NADE_TYPES[k]) or (0, 0))[1] > 0), None)
+        if kind is None:                                         # no grenade in the wheel: nothing to lob
+            return None
+        group = [e for e in vis if flat(e) <= BURST_SURROUND_R] or ring
+        self._gburst = {"left": int(BURST_GRENADES), "since": now, "thrown": 0}
+        self._gburst_last = now
+        self.stats["re6_grenade_bursts"] += 1
+        self.stats["re6_last_burst_grenades"] = 0
+        self.stats["burst_throw_speed"] = BURST_THROW_SPEED_X
+        return kind, group
+
+    def _burst_end(self, now) -> None:
+        """End the cluster-bomb burst: record the lobbed count and let _mods restore the normal throw speed."""
+        if self._gburst is not None:
+            self.stats["re6_last_burst_grenades"] = self._gburst.get("thrown", 0)
+            self._gburst = None
+        self.stats["burst_throw_speed"] = 0.0
 
     # --- line of sight ---------------------------------------------------------------------------------------------
     def _measured_contact(self, e, now) -> bool:
@@ -4762,7 +4862,7 @@ class Bot:
             last = getattr(self, '_cc_last_kick', None)
             safe_raise = not any(windup(z, p.get('pos')) == 'melee' and flat(z) < MELEE_R for z in live)
             if (last and last[:2] == (e.get('ptr', e.get('slot')), e.get('hp')) and last[2] >= 2
-                    and safe_raise and now - self.melee_at >= CC_KICK_GAP_S):
+                    and safe_raise and now - self.melee_at >= (CC_FAST_GAP_S if QA_FAST else CC_KICK_GAP_S)):
                 self._cc_last_kick = None
                 self._cc_gun_until = now + .9
                 self._cc_gun_target = e.get('ptr', e.get('slot'))
@@ -5633,6 +5733,29 @@ class RE6Switch(Driver):
             self.stats["throw_x"] = st.get("throw_speed", re6_switch_mods.THROW_SPEED_X) if st.get("fire_rate") else 1.0
             self.stats["throw_fast"] = st.get("throw_fast", 0)
             self.stats["magnum_fast"] = st.get("magnum_fast", 0)
+            # The grenade cluster-bomb burst forces the throw animation to at least BURST_THROW_SPEED_X while the Bot's
+            # burst runs (self.stats['burst_throw_speed']); the prior throw_speed is restored when it ends (operator
+            # 2026-11-03). The live st dict (not the "or {}" copy above) carries the override across ticks.
+            st_live = re6_switch_mods.ORIG.get(id(ad))
+            if st_live is not None:
+                burst = self.stats.get("burst_throw_speed") or 0.0
+                if burst and st_live.get("fire_rate"):
+                    if "_burst_throw_prev" not in st_live:
+                        st_live["_burst_throw_prev"] = st_live.get("throw_speed", None)   # None = was the implicit default
+                    cur = st_live.get("throw_speed", re6_switch_mods.THROW_SPEED_X) or 1.0
+                    st_live["throw_speed"] = max(float(burst), cur)                       # never slower than the live setting
+                elif "_burst_throw_prev" in st_live:
+                    prev = st_live.pop("_burst_throw_prev")
+                    if prev is None:
+                        st_live.pop("throw_speed", None)
+                    else:
+                        st_live["throw_speed"] = prev
+                if st_live.get("fire_rate"):                                              # configured magnum rounds/sec (record 0x07)
+                    try:
+                        iv = re6_switch_mods.fire_interval(0x07, st_live.get("fire_rate") or 1.0, st_live.get("fire_magnum"))
+                        self.stats["re6_magnum_rps"] = round(1.0 / iv, 1) if iv > 0 else 0
+                    except Exception:   # noqa: BLE001 - telemetry only, never break the snapshot
+                        pass
             if not res.get("verified", True):
                 self.stats["mod_reason"] = res.get("reason", "")
 
