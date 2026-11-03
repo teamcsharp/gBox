@@ -1135,11 +1135,11 @@ def test_two_player_hold_fence_crossing_targets_fence_and_switch(tmp_path):
     assert obj is not None and obj["fence"] == ("TObjLazerFenceNorm", -420.0, 485.8)
     assert round(obj["sx"], 1) == -399.7 and round(obj["sz"], 1) == 541.0
     ctrl._fence_obj = obj
-    # P2 far from the switch -> P1 WAITS at the fence (doesn't bounce the raised fence).
+    # Fence up -> P1 goes to FLIP the switch itself (walk to the panel), not wait for P2.
     cmds, moves, steer = [], {}, {}
     assert ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer) is True
-    assert steer[1][2].startswith("fence_wait")
-    # P2 drives to hold the switch.
+    assert steer[1][2].startswith("fence_switch")
+    # P2 also drives toward the switch (swarm/redundant hold).
     cmds, moves, steer = [], {}, {}
     assert ctrl.fence_role(st, 2, st["players"][2], 100.0, cmds, moves, steer) is True
     assert steer[2][2].startswith("fence_switch")
@@ -1150,6 +1150,22 @@ def test_two_player_hold_fence_crossing_targets_fence_and_switch(tmp_path):
     assert steer[1][2].startswith("fence_cross")
     ctrl._crossed_fences.add(obj["fence"])
     assert ctrl.select_fence_objective(st, st["players"][1]) is None   # a crossed fence is not re-targeted
+
+
+def test_p1_flips_the_fence_switch_itself(tmp_path):
+    """Operator "walk up to the door, flip the switch": when the fence is up, P1 walks to
+    the switch and, standing on the plate, PRESSES A to toggle it (no P2-hold dependency)."""
+    ad = SimpleNamespace(read_memory=lambda a, n: bytes(n), write_memory=lambda a, d: None)
+    ctrl = _controller(tmp_path, ad=ad)
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "kind": "gate"}
+    switch = {"class": "TLazerFenceSw", "x": -400., "z": 500., "room": 5, "kind": "gate"}
+    st = _coop_room([fence, switch], p1=(-400., 500.), p2=(10., 0.), room=5)   # P1 ON the switch plate
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    assert ctrl._fence_obj is not None
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer) is True
+    assert any(c[0] == 1 and c[1] == ["a"] for c in cmds)                      # presses A to flip the switch
+    assert steer[1][2] == "fence_flip_switch" and ctrl.inputs.stats["fence_flip"] >= 1
 
 
 def test_p2_routes_door_by_door_to_the_switch_room(tmp_path):
@@ -1269,7 +1285,7 @@ def test_physical_hold_p2_fine_approach_and_p1_crosses_only_when_fence_down(tmp_
     assert steer[2][2] == "fence_switch_fine" and cmds[0][2] == 0.08          # tight terminal approach
     cmds, moves, steer = [], {}, {}
     ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer)
-    assert steer[1][2] == "fence_wait"                                        # fence up -> P1 waits
+    assert steer[1][2] == "fence_switch_approach"                             # fence up -> P1 goes to FLIP the switch
     coll["v"] = 0                                                            # sensor fired -> laser physically down
     cmds, moves, steer = [], {}, {}
     ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer)

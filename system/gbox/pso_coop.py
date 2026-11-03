@@ -2240,16 +2240,37 @@ class Controller:
         fence_down = self._fence_is_down(state)
         fine = False
         if slot == 1:
-            # PHYSICAL CROSSING ONLY. The +0x14 collision write and the teleport-across
-            # are proven dead (snap-back), so no RAM write here: P1 WALKS THROUGH the
-            # fence only when it is actually DOWN (P2 physically on the switch fired the
-            # sensor) or P2 is confirmed on it; otherwise it WAITS at the fence (no
-            # overshoot) so it doesn't bounce the raised laser. Frame-sync: the moment
-            # the fence reads down, P1 commits the overshoot and clears before P2 steps off.
-            go = fence_down or p2_on
-            overshoot = FENCE_CROSS_OVERSHOOT if go else 0.0
-            target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
-            label = 'fence_cross' if go else 'fence_wait'
+            # P1 FLIPS THE SWITCH ITSELF (operator: "walk up to the door, flip the switch,
+            # toggle it"). The old two-player HOLD (P1 waits while P2 stands on the plate) is
+            # dead (P2-to-switch unreliable), so P1 no longer WAITS: when the fence is UP it
+            # WALKS to the switch and PRESSES A on the panel to toggle the fence open (the
+            # stage-flag force-unlock in maybe_force_unlock drops the laser once P1 is at the
+            # gate's room); when the fence reads DOWN it commits THROUGH. P2 swarm-follows.
+            if fence_down or p2_on:
+                target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], FENCE_CROSS_OVERSHOOT)
+                label = 'fence_cross'
+            else:
+                sx, sz, sroom = obj['sx'], obj['sz'], obj.get('sroom')
+                sdist = math.hypot(sx - player['x'], sz - player['z'])
+                if sdist <= FENCE_SWITCH_ON or (player.get('room') == sroom and sdist <= FENCE_FINE_DIST):
+                    # ON / onto the switch plate: press A to toggle it and stand on it.
+                    commands.append((slot, ["a"], .25))
+                    moves[slot] = (player, (sx, sz), nav, False)
+                    steering[slot] = (player, (sx, sz), "fence_flip_switch")
+                    _fs = getattr(self.inputs, "stats", None)
+                    if isinstance(_fs, dict):
+                        _fs["fence_flip"] = _fs.get("fence_flip", 0) + 1
+                    return True
+                if player.get('room') == sroom:
+                    target, label = (sx, sz), 'fence_switch_approach'   # in the switch room, walk onto it
+                else:
+                    door_str = self._next_door_toward(player.get('room'), sroom)
+                    ent = self._live_gate_for(state, player.get('room'), door_str) if door_str else None
+                    if ent is not None:
+                        target = gates.through_point(player['x'], player['z'], ent['x'], ent['z'], FENCE_CROSS_OVERSHOOT)
+                        label = 'fence_to_switch_door'
+                    else:
+                        target, label = (sx, sz), 'fence_switch_direct'   # route straight at the switch
         else:
             # P2 PHYSICALLY onto the switch plate so the collision SENSOR fires. In the
             # switch's room: drive to the plate, and within FENCE_FINE_DIST switch to a
