@@ -829,6 +829,25 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     assert bot.stats["bomb_drops"] == 0
 
 
+def test_a_close_enemy_in_front_is_fired_on_by_geometry_without_the_laser():
+    # operator 2026-11-03: "raising their weapon and NOT firing ... firing like mad". With NO laser ray, a close enemy
+    # in front (within GEOM_CLOSE_R, clear line) is still fired on - the trigger (zr) is pulled, via geometry.
+    on_close = ((0.0, 0.0, 300.0, 700),)                                     # 3 m straight ahead, no laser
+    bot, clock, snap = brain(round_guest(enemies=on_close, cam_yaw=0.0))
+    bot.held = lambda p, now: False
+    acts = run(bot, snap, clock, int(R.LASER_WAIT_S / 0.05) + 8)
+    assert any("zr" in a.get("hold", ()) for a in acts)                      # it discharges (geometry), no laser needed
+    assert bot.stats.get("re6_geometry_fires", 0) >= 1 and bot.stats["confirmed_shots"] >= 1
+    assert "via geometry" in bot.stats["aim"]
+    # but a FAR enemy with no laser and no mesh is still not blind-fired at (no proof the line clears a wall)
+    far = ((0.0, 0.0, 1200.0, 700),)                                         # 12 m, no laser, no mesh
+    bot2, clock2, snap2 = brain(round_guest(enemies=far, cam_yaw=0.0))
+    bot2.held = lambda p, now: False
+    acts2 = run(bot2, snap2, clock2, int(R.LASER_WAIT_S / 0.05) + 8)
+    assert all("zr" not in a.get("hold", ()) for a in acts2)
+    assert bot2.stats.get("re6_geometry_fires", 0) == 0
+
+
 def test_the_one_right_in_front_is_the_target_not_a_distant_sniper():
     # operator 2026-11-03: "if someone is right in front of him, point his weapon at them" - a far ranged / sniper
     # threat must not steal the aim from a close enemy in front (regression from the ledge-sniper priority).

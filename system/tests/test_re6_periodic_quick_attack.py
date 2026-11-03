@@ -173,8 +173,10 @@ def test_two_ineffective_close_kicks_yield_to_bounded_gun_acquisition():
     bot,clock,snap=brain(round_guest(enemies=((0.,0.,100.,700),)))
     outs=run(bot,snap,clock,22)
     assert bot.stats['cc_kicks']==2
-    assert any('zl' in out.get('hold',()) for out in outs)
-    assert bot.stats['shots']==0  # acquiring a camera line does not prove a shot
+    assert any('zl' in out.get('hold',()) for out in outs)   # yields to bounded gun acquisition: the gun comes up
+    # operator 2026-11-03: once the gun is up and aimed at the enemy right in front (1 m, within GEOM_CLOSE_R, clear
+    # line), it fires on geometry instead of standing raised and silent waiting for the flaky laser
+    assert bot.stats['shots'] >= 1 and bot.stats.get('re6_geometry_fires', 0) >= 1
     snap['laser']={'from':(0.,R.CHEST_H,0.),'at':(0.,R.CHEST_H,100.),'up':True}
     outs=run(bot,snap,clock,8)
     assert any('zr' in out.get('hold',()) for out in outs)

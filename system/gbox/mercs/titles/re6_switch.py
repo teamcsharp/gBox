@@ -1601,6 +1601,13 @@ def near_ray(origin, dot, point, radius: float, slack: float = FIRE_SLACK) -> bo
 ENGAGE_R, MAX_DY = 1800.0, 300.0
 FRONT_CONE = math.radians(60)           # a zombie this close to the aim within ENGAGE_R: the gun comes up and stays up
 AIM_CONE = FRONT_CONE                   # (the camera turning with the gun down raises it once he is this close)
+# operator 2026-11-03 "the bot is raising their weapon and NOT firing ... I need them firing like mad and blasting":
+# the citron laser sight is flaky (it fires then stops), so FIRE is gated on GEOMETRY, not on the laser being read -
+# the aim is on an enemy (within GEOM_FIRE_ERR / GEOM_FIRE_PITCH of its chest), in range, and the line is clear: the
+# enemy is close enough that no wall is between them (GEOM_CLOSE_R) OR the nav mesh proves the straight line clear
+# (enemy reached before any wall). That keeps the no-wall-shot rule by geometry instead of the laser. GEOM_CLOSE_R is
+# below the camera-only guard distances so a far enemy with neither a laser nor a mesh is still not blind-fired at.
+GEOM_FIRE_ERR, GEOM_FIRE_PITCH, GEOM_CLOSE_R = math.radians(8), math.radians(10), 500.0
 UNAIM_ERR = math.radians(100)           # aiming, the target this far off the line with none in front: gun down, turn
 TURN_TOL, TURN_FINE = math.radians(8), math.radians(30)   # the camera's turn (gun down): pulsed inside TURN_FINE
 YAW_DEAD, PITCH_DEAD = math.radians(0.8), math.radians(1.0)
@@ -2218,7 +2225,7 @@ class Bot:
                   # operator 2026-11-03 RE6 combat overhaul: the magnum rapid-fire, the cluster-bomb grenade burst and
                   # the ledge/sniper/rocket threat awareness (flat telemetry)
                   "re6_grenade_bursts", "re6_last_burst_grenades", "re6_threats_tracked", "re6_sniper_targets",
-                  "re6_longshots", "re6_rocket_barrages", "re6_magnum_rps"):
+                  "re6_longshots", "re6_rocket_barrages", "re6_magnum_rps", "re6_geometry_fires"):
             self.stats.setdefault(k, 0)
         for k in ("trigger_s", "first_pull_s", "bomb_face_s", "kite_s", "bonus_time_s", "down_s", "hazard_s",
                   "cc_vs_aimed"):
@@ -3580,6 +3587,17 @@ class Bot:
         on = (on_e is not None and source == "laser" and p.get("ammo") != 0
               and getattr(self, "lock_redirect_at", None) != now
               and segment_hits(origin, dot, on_e["pos"]))
+        # operator 2026-11-03: fire on GEOMETRY when the laser ray does not confirm (it is flaky on citron) - the aim is
+        # on the enemy (tight cone), in range, not line-of-sight-blocked, and the line is clear (close enough that no
+        # wall is between them, or the nav mesh proves it). So the bot fires relentlessly at the one in front instead of
+        # standing with the gun raised; a shot that takes no health self-limits via the NOHIT_S fire_track below.
+        if (not on and p.get("ammo") != 0 and dist <= ENGAGE_R
+                and abs(yaw_err) <= GEOM_FIRE_ERR and abs(pitch_err) <= GEOM_FIRE_PITCH
+                and getattr(self, "lock_redirect_at", None) != now
+                and not self.is_blocked(aim_at, now)
+                and (dist <= GEOM_CLOSE_R or self._mesh_clear(aim_at, now))):
+            on, on_e, source = True, aim_at, "geometry"
+            self.stats["re6_geometry_fires"] = self.stats.get("re6_geometry_fires", 0) + 1
         auto = p.get("weapon_id") in AUTO_IDS
         cooldown = p.get('fire_cooldown_s')
         ready = auto or cooldown is None or cooldown <= 0
@@ -3588,7 +3606,7 @@ class Bot:
         self.stats['fire_cooldown_s'] = cooldown
         self.stats['fire_trigger_requested'] = bool(trig)
         if trig:
-            if source == "laser":
+            if source in ("laser", "geometry"):
                 self.stats["confirmed_shots"] += 1               # verified trigger request; actual damage is tracked separately
             if set(back) & {"lup", "ldown", "lleft", "lright"}:
                 self.stats["moving_shots"] += 1
@@ -4724,6 +4742,15 @@ class Bot:
             self._sight_cache.clear()
         self._sight_cache[tid] = (now, ok)
         return ok
+
+    def _mesh_clear(self, e, now) -> bool:
+        """The nav mesh PROVES the straight line from him to e is clear (no wall before the enemy). True only when a mesh
+        exists, e is on his level (within MAX_DY) and mesh.clear is True - never the off-mesh / off-level 'defer' case.
+        This is the geometry no-wall-shot check that lets fire be decoupled from the laser sight."""
+        mesh, me = getattr(self, "_mesh", None), self._ppos
+        if mesh is None or me is None or abs(e["pos"][1] - me[1]) > MAX_DY:
+            return False
+        return mesh.clear((me[0], me[1], me[2]), e["pos"]) is True
 
     def _block(self, e, now, why: str) -> None:
         """A zombie out of sight for BLOCK_S (stats <why>): never fired at, never the target while another is open."""
