@@ -1640,6 +1640,21 @@ def test_weak_menu_visible_on_a_field_floor_does_not_freeze_play(monkeypatch):
     assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 0)) is True
 
 
+def test_frontier_waypoint_targets_nearest_unvisited_room(tmp_path):
+    """FULL EXPLORATION: P1 steers to the NEAREST unvisited room, using the centroid of that
+    room's loaded entities as the walk-to target (frontier rooms have no P1 centroid yet)."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    ctrl._frontier = [11, 20]
+    st = {"entities": [
+        {"room": 11, "x": 50., "z": 0.}, {"room": 11, "x": 70., "z": 0.},   # room 11 centroid (60,0) - near
+        {"room": 20, "x": 0., "z": 300.},                                    # room 20 - far
+        {"room": 10, "x": 5., "z": 5.},                                      # not a frontier room - ignored
+    ]}
+    assert ctrl._frontier_waypoint(st, {"x": 0., "z": 0.}) == (60.0, 0.0)    # nearest frontier (room 11)
+    ctrl._frontier = []
+    assert ctrl._frontier_waypoint(st, {"x": 0., "z": 0.}) is None           # nothing to explore
+
+
 def test_publish_plan_emits_compact_room_graph_for_the_live_map(tmp_path):
     """LIVE MAP: publish_plan emits a compact room-graph (current/target room, crit path,
     edges, per-room centroids) as a bounded JSON string + flat scalars the map feed reads;

@@ -2813,6 +2813,31 @@ class Controller:
                     if _k in rep:
                         st[_k] = rep[_k]
 
+    def _frontier_waypoint(self, state, player):
+        """FULL EXPLORATION: the world position of the NEAREST unvisited area room, so P1 can
+        walk INTO it. A frontier room has no P1 centroid yet (never entered), but its loaded
+        entities DO carry positions - use the centroid of that room's entities as the target.
+        Returns (x,z) or None (no frontier / no positioned entity there)."""
+        if not self._frontier:
+            return None
+        px, pz = player.get("x"), player.get("z")
+        if type(px) not in (int, float) or type(pz) not in (int, float):
+            return None
+        fset = set(self._frontier)
+        sums = {}  # room -> [sx, sz, n]
+        for e in state.get("entities", ())[:1024]:
+            r = e.get("room")
+            if r in fset and type(e.get("x")) in (int, float) and type(e.get("z")) in (int, float):
+                acc = sums.setdefault(r, [0.0, 0.0, 0])
+                acc[0] += e["x"]; acc[1] += e["z"]; acc[2] += 1
+        best = None
+        for r, (sx, sz, n) in sums.items():
+            cx, cz = sx / n, sz / n
+            d = math.hypot(cx - px, cz - pz)
+            if best is None or d < best[0]:
+                best = (d, cx, cz)
+        return (best[1], best[2]) if best else None
+
     def publish_plan(self, state, now):
         """Publish a compact room-graph PLAN for the operator's live 2D map (the map agent
         reads it from telemetry; the i9 crystal file is not reachable from the lilspark
@@ -3085,7 +3110,9 @@ class Controller:
         # advance_on_stall consults self._frontier to EXPLORE before advancing.
         self._area_rooms = {e.get("room") for e in state.get("entities", ())[:1024]
                             if type(e.get("room")) is int and 0 <= e.get("room") < 65535}
-        self._frontier = sorted(self._area_rooms - self.p1_visited)
+        _cur_room = (state.get("players", {}).get(1) or {}).get("room")
+        _here = {_cur_room} if type(_cur_room) is int else set()
+        self._frontier = sorted(self._area_rooms - self.p1_visited - _here)   # other rooms not yet entered
         # BOSS DEFEAT: read boss liveness BEFORE advance_on_stall so the warp is suppressed
         # while a boss lives (stay and kill it, don't warp off the boss floor).
         self._observe_boss(state, now)
@@ -3271,6 +3298,33 @@ class Controller:
             if target is None and self._fence_obj is not None and self.fence_role(
                     state, slot, player, now, commands, moves, steering):
                 continue
+            # FULL EXPLORATION (operator: go room to room, battle enemies, complete the level
+            # - do NOT beeline the exit). P1 (the sole navigator) actively walks to the NEAREST
+            # UNVISITED area room; entering it marks it visited (coverage ticks up) and its
+            # enemies become combat targets. Only once EVERY room is visited (frontier empty)
+            # does the normal forward nav below take the area exit/telepipe - so the exit is
+            # deferred until the area is fully explored. P2 swarm-follows P1. Combat preempts
+            # (target set), so this only fires in a cleared room with rooms still to explore.
+            if slot == 1 and target is None and self._frontier:
+                fw = self._frontier_waypoint(state, player)
+                if fw is not None:
+                    nav = self.maps.get(state, player)
+                    waypoint = fw
+                    try:
+                        route, _exact = nav.toward((player["x"], player["z"]), fw)
+                        if route and len(route) > 1:
+                            waypoint = route[1]
+                    except Exception:
+                        pass
+                    keys, escaping = self._unwedge(slot, player, waypoint, now)
+                    commands.append((slot, keys, .18))
+                    moves[slot] = (player, waypoint, nav, False)
+                    steering[slot] = (player, fw, "explore_unwedge" if escaping else "explore_frontier")
+                    _se = getattr(self.inputs, "stats", None)
+                    if isinstance(_se, dict):
+                        _se["explore_frontier"] = len(self._frontier)
+                        _se["explore_frontier_dist"] = round(math.hypot(fw[0] - player["x"], fw[1] - player["z"]), 1)
+                    continue
             nav = self.maps.get(state, player)
             field_owned = bool(state.get("floor", 0) > 0 and state.get("geometry_verified"))
             field_destination = self.field.destination(state, slot, nav, now) if field_owned else None
