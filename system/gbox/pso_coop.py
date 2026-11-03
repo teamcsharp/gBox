@@ -3836,6 +3836,10 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
     restored = checkpoint.restore(ledger)
     ad._pso_coop_progress = ledger
     stats["progress_restored"] = restored
+    # Operator's sidebar pick (GET/POST /api/pso/launch-config) of which Episode + Difficulty to enter
+    # a game on. Applied here at launch and, below, only at a between-games boundary - never mid-floor.
+    from . import pso_launch_config
+    pso_launch_config.apply(ledger, root, initial=True, stats=stats)
     maps = Maps(root / "room-memory")
     controller = Controller(reader, inputs, maps)
     # Activate the convergence crystal without a worker-process restart: this worker
@@ -3944,6 +3948,8 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 seen_buddies = identity_context["existing_buddies"]
                 ad._pso_coop_buddies_observed = seen_buddies
                 ledger.observe(state)
+                # Honor the operator's episode/difficulty pick on the next game entry only (no-op mid-run).
+                pso_launch_config.apply(ledger, root, stats=stats)
                 checkpoint.save(ledger)
                 controller.town_enabled = ledger.target == 1 and not ledger.awaiting_entry
                 while ledger.pending_receipts:

@@ -4502,7 +4502,7 @@ function capMissing(op) {
 }
 function closePipMenu() {
   const m = $("#pipmenu");
-  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.profiler?.stop(); m.profiler = null; m.style.display = "none"; m.opening = null; }
+  if (m) { m.modifiers?.stop(); m.modifiers = null; m.streamPicker?.stop(); m.streamPicker = null; m.profiler?.stop(); m.profiler = null; m.psoLaunch?.stop(); m.psoLaunch = null; m.style.display = "none"; m.opening = null; }
   GM.menu = false; EMB.last = "";
 }
 async function pipModifiers(m, opening) {
@@ -4574,7 +4574,7 @@ function pipMenu(x, y) {
                  ["pad", "🎮 Controller settings (emulator menu)"], ["mapping", "🕹 Controller mapping"], ["trouble", "🛠 Troubleshoot gameplay…"], ["-"],
                  ["main", "↩ Main view"], ["pip", "▣ Picture-in-picture"], isFull() ? ["main", "⤡ Exit full screen   Alt+Enter"] : ["full", "⛶ Full screen   Alt+Enter"],
                  ["S", "Size: small"], ["M", "Size: medium"], ["L", "Size: large"]];
-  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
+  m.innerHTML = '<div data-pip-stream-picker></div><div data-pip-profiler class="pip-profiler"></div><div data-pso-launch class="pso-launch"></div><div data-pip-modifiers>Loading game controls…</div>' + items.map(([a, t, off]) => a === "-" ? "<hr>" : a === "mercmode"
     ? '<div data-pip-mercmode class="pip-mercmode"><small>MercMode…</small></div>' : off
     ? `<button data-a="${a}" disabled title="${esc(off)}" style="opacity:.55">${t} <span class="mut">· ${esc(off)}</span></button>`
     : `<button data-a="${a}">${t}</button>`).join("");
@@ -4596,6 +4596,7 @@ function pipMenu(x, y) {
   pipModifiers(m, opening);
   pipMercMode(m, opening);
   m.profiler?.stop(); m.profiler = pipProfiler(m, opening);
+  m.psoLaunch?.stop(); m.psoLaunch = psoLaunchPicker(m, opening);
   savedSlot().then(slot => {                                   // this game's kept save slot, once known
     const b = m.opening === opening && m.querySelector('[data-a="slot+"]');
     if (b && !b.disabled) b.textContent = `Save slot: ${slot}  ▸ next`;
@@ -4691,6 +4692,70 @@ function pipProfiler(m, opening, worker = 'lilspark') {
   tick();
   const id = setInterval(tick, 3000);
   return { stop() { clearInterval(id); } };
+}
+// PSO autobot entry: which Episode (1 / 2) and Difficulty (Normal / Hard / Very Hard / Ultimate; "Legendary" is
+// not a native PSO difficulty, so it maps to Ultimate for now) the two-player campaign enters its NEXT game on.
+// Only shown on a Phantasy Star Online session. On change it POSTs /api/pso/launch-config; the pick applies on the
+// next game entry (title → Options → Start Game) and never interrupts a floor already in progress.
+function psoLaunchPicker(m, opening) {
+  const box = m.querySelector('[data-pso-launch]');
+  if (!box) return null;
+  const PSO_IDS = new Set(['436e0bb84d5337d1', '7a3692dc0cbc9b82', '6b55435e3c565370']);
+  const gid = compactSession?.game_id || '';
+  const title = String(compactTitle || compactSession?.title || compactSession?.detail?.title || '').toLowerCase();
+  if (!PSO_IDS.has(gid) && !title.includes('phantasy star online')) { box.innerHTML = ''; return null; }   // not PSO: hide
+  let cancelled = false;
+  const head = note => `<div class="pso-l-head"><strong>PSO entry</strong><span>${esc(note)}</span></div>`;
+  function render(d) {
+    const cfg = d.config || {};
+    const eps = (d.episodes || [1, 2]).map(e =>
+      `<button data-pso-ep="${e}" class="pso-l-chip${cfg.episode === e ? ' on' : ''}">Ep ${e}</button>`).join('');
+    const diffs = (d.difficulties || []).concat([{ value: 'legendary', label: 'Legendary' }]).map(x => {
+      const on = x.value === 'legendary' ? cfg.legendary : (!cfg.legendary && cfg.difficulty === x.value);
+      return `<button data-pso-diff="${x.value}" class="pso-l-chip${on ? ' on' : ''}"`
+        + `${x.value === 'legendary' ? ' title="Not a native PSO difficulty — maps to Ultimate for now"' : ''}>${esc(x.label)}</button>`;
+    }).join('');
+    const now = `Now: ${esc(cfg.episode_label || ('Episode ' + cfg.episode))} · ${esc(cfg.legendary ? 'Legendary→Ultimate' : (cfg.difficulty_label || cfg.difficulty))}`;
+    box.innerHTML = head(d.live_run ? 'applies on next game entry' : 'saved · applies when a run launches')
+      + `<div class="pso-l-now">${now}</div>`
+      + `<div class="pso-l-group"><span class="pso-l-k">Episode</span><div class="pso-l-chips">${eps}</div></div>`
+      + `<div class="pso-l-group"><span class="pso-l-k">Difficulty</span><div class="pso-l-chips">${diffs}</div></div>`;
+  }
+  async function post(patch) {
+    const r = await gbox.api('/api/pso/launch-config', patch, 'POST');
+    if (!r.ok) throw Error(r.error || 'request failed');
+    return r.data;
+  }
+  let state = null;
+  async function load() {
+    try {
+      const r = await gbox.api('/api/pso/launch-config');
+      if (cancelled || m.opening !== opening) return;
+      if (!r.ok) throw Error(r.error || 'unavailable');
+      state = r.data; render(state);
+    } catch (error) { if (!cancelled && m.opening === opening) box.innerHTML = head(error.message); }
+  }
+  box.addEventListener('click', async e => {
+    const chip = e.target.closest('[data-pso-ep],[data-pso-diff]');
+    if (!chip) return;
+    e.stopPropagation();
+    if (chip.classList.contains('on') || !state) return;
+    const cur = state.config || {};
+    const patch = chip.dataset.psoEp
+      ? { episode: Number(chip.dataset.psoEp), difficulty: cur.legendary ? 'legendary' : (cur.difficulty || 'normal') }
+      : { episode: cur.episode || 1, difficulty: chip.dataset.psoDiff };
+    box.querySelectorAll('.pso-l-chip').forEach(b => b.disabled = true);
+    try {
+      const data = await post(patch);
+      if (cancelled || m.opening !== opening) return;
+      state = { ...state, config: data.config, live_run: data.applied_to_live_run };
+      render(state);
+      toast(`PSO entry: Episode ${data.config.episode} · ${data.config.legendary ? 'Legendary→Ultimate' : data.config.difficulty_label} (${data.applied_to_live_run ? 'applies on next game entry' : 'saved'})`);
+    } catch (error) { toast(error.message); if (!cancelled && m.opening === opening) render(state); }
+  });
+  box.innerHTML = head('loading…');
+  load();
+  return { stop() { cancelled = true; } };
 }
 document.addEventListener('contextmenu', event => {
   if (!COMPACT.on || event.target.closest?.('.game-analysis, .ga-toggle, .pso-review-window, #pipmenu, [data-flash], .flash-shortcut-menu, [data-primary-weapon], .merc-weapon-menu, [data-round-replay], [data-stage-preferences], .merc-round-menu, [data-grenade-ring], [data-grenade-ring-kind], .ring-kind-menu')) return;

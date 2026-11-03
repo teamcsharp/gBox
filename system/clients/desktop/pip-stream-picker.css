@@ -44,3 +44,18 @@
 .pip-prof-idle { background:#3a3a44; }
 .pip-prof-v { flex:0 0 auto; color:#d7d7e0; font-size:10px; min-width:104px; text-align:right; white-space:nowrap; }
 @media (max-width:420px) { .pip-prof-v { min-width:84px; } }
+
+/* PSO autobot entry picker: which Episode + Difficulty the campaign enters its next game on. */
+#pipmenu .pso-launch { width: min(540px, calc(100vw - 34px)); max-width:100%; box-sizing:border-box; padding:7px 8px 8px; border-bottom:1px solid var(--line, #41414a); }
+#pipmenu .pso-launch:empty { display:none; }   /* hidden on non-PSO sessions */
+.pso-l-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 1px 4px; }
+.pso-l-head > strong { font-size:12px; }
+.pso-l-head > span { color:#aaaab8; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pso-l-now { color:#d7d7e0; font-size:10px; padding:0 1px 5px; }
+.pso-l-group { display:flex; align-items:center; gap:7px; padding:2px 1px; }
+.pso-l-k { flex:0 0 52px; color:#b9b9c5; font-size:10px; letter-spacing:.04em; }
+.pso-l-chips { flex:1; min-width:0; display:flex; flex-wrap:wrap; gap:4px; }
+#pipmenu .pso-l-chip { padding:3px 8px; font-size:10px; line-height:1.3; color:#d7d7e0; background:#1c1c22; border:1px solid #41414a; border-radius:5px; cursor:pointer; white-space:nowrap; width:auto; }
+#pipmenu .pso-l-chip:hover:not(:disabled) { background:#26262e; border-color:#5a5a66; }
+#pipmenu .pso-l-chip.on { background:#3a5bd0; border-color:#4f6fe0; color:#fff; }
+#pipmenu .pso-l-chip:disabled { opacity:.5; cursor:default; }

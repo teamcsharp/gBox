@@ -2525,6 +2525,59 @@ def create_app(config: Config) -> FastAPI:
             "gpu_name": gpu.get("name") or None,
         }
 
+    # --- PSO co-op launch selection: which Episode + Difficulty the autobot enters a game on ---
+    # Mirrors the RTS map-directive plumbing (pso_map_feed.live_root): the pick is written into the live
+    # campaign's own root so the bot picks it up at its next game-entry boundary (never mid-floor). A durable
+    # copy in the store lets the sidebar show the last pick even between runs. It applies on the next game
+    # entry; it never interrupts a floor already in progress.
+    class PsoLaunchIn(BaseModel):
+        episode: int = Field(ge=1, le=2)
+        difficulty: str
+
+    @app.get("/api/pso/launch-config")
+    def pso_launch_config_get(actor=Depends(auth)):
+        from . import pso_launch_config as plc
+        from .pso_map_feed import live_root
+        root = live_root(config)
+        current = plc.read(root) if root else None
+        if current is None:
+            stored = store.get("config", "pso_launch")
+            if isinstance(stored, dict):
+                try:
+                    ep, slug, idx = plc.normalize(stored.get("episode"), stored.get("difficulty"))
+                    current = plc.describe(ep, slug, idx, source="stored",
+                                           requested=stored.get("requested_difficulty_input"))
+                    if stored.get("updated_at") is not None:
+                        current["updated_at"] = stored["updated_at"]
+                except ValueError:
+                    current = None
+        return {"config": current or plc.defaults(), "live_run": root is not None,
+                "episodes": [1, 2],
+                "difficulties": [{"value": s, "label": plc.LABELS[s]} for s in plc.DIFFICULTIES],
+                "legendary_maps_to": "ultimate",
+                "note": "Applies on the next game entry (title → Options → Start Game); "
+                        "a floor already in progress is not interrupted."}
+
+    @app.post("/api/pso/launch-config")
+    def pso_launch_config_set(body: PsoLaunchIn, actor=Depends(auth)):
+        from . import pso_launch_config as plc
+        from .pso_map_feed import live_root
+        try:
+            ep, slug, idx = plc.normalize(body.episode, body.difficulty)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        doc = plc.describe(ep, slug, idx, source="stored", requested=body.difficulty)
+        doc.update(updated_at=time.time(), by=str(actor)[:64])
+        store.put("config", "pso_launch", doc)
+        root = live_root(config)
+        written = plc.write(root, ep, body.difficulty, by=actor) if root is not None else None
+        store.audit(actor, "pso.launch_config", "current", {"episode": ep, "difficulty": slug})
+        return {"config": written or doc, "applied_to_live_run": root is not None,
+                "legendary": doc["legendary"],
+                "note": "Applies on the next game entry; a floor already in progress is not interrupted."
+                        + ("" if root is not None else
+                           " No live PSO co-op run yet; saved and applied when one launches.")}
+
     # --- which PCs background testing may use (#1383): ticked in the Tasks icon menu, keyed by worker name ---
     class TestingIn(BaseModel):
         available: bool | None = None
