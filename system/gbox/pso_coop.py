@@ -1277,26 +1277,32 @@ class Controller:
             commands.append((slot, ["a"], .12))
             steering[slot] = (player, (player["x"], player["z"]), 'forward_switch_press')
             return True
-        route = nav.route((player["x"], player["z"]), dest)
-        waypoint = route[1] if route and len(route) > 1 else dest
-        # Diagnostic (slot 1): does A* return a path to the forward target, or does it
-        # fall back to a straight line (route None)? Plus the grid's coverage. This is
-        # the ground truth for the routing fix - route_cells=0 with a non-empty floor
-        # means the surface can't connect P1 to the target; route_cells=0 with floor
-        # None means an empty grid (open A*) that the learned-wall detour must solve.
+        # toward() ALWAYS heads at the target: exact path when reachable, else the path
+        # to the nearest reachable cell on P1's OWN floor component. P1 cannot A* to a
+        # point just past a closed door (it is a disconnected component / a door-in-wall
+        # cell), so instead of straight-lining into the wall and wedging, it walks up to
+        # the door (the committed walk-through + stage-flag force-unlock carry it across).
+        route, route_exact = nav.toward((player["x"], player["z"]), dest)
+        waypoint = route[1] if route and len(route) > 1 else (route[0] if route else dest)
+        # Diagnostic (slot 1): route_cells>0 = A* produced a path (exact or best-effort
+        # toward the target); route_exact=0 means the target itself was unreachable
+        # (across a door / off P1's component) and P1 is approaching the nearest cell.
         if slot == 1 and isinstance(getattr(self.inputs, 'stats', None), dict):
             st = self.inputs.stats
             route_cells = len(route) if route else 0
             floor_n = (len(nav.floor) if nav.floor is not None else -1)
             target_dist = round(math.hypot(dest[0] - player["x"], dest[1] - player["z"]), 1)
             recov = bool(getattr(nav, 'recovery', False))
-            st['nav_diag'] = {'route_cells': route_cells, 'floor': (None if floor_n < 0 else floor_n),
+            st['nav_diag'] = {'route_cells': route_cells, 'exact': bool(route_exact),
+                              'floor': (None if floor_n < 0 else floor_n),
                               'heights': len(nav.heights), 'walls': len(nav.walls), 'blocked': len(nav.blocked),
                               'target_dist': target_dist, 'recovery': recov}
             # FLAT scalar mirrors (the telemetry endpoint drops nested dicts): the
             # ground truth for the routing fix. nav_grid_floor=-1 means an open grid
-            # (no floor set); nav_recovery_grid=1 means the relaxable recovery surface.
+            # (no floor set); nav_recovery_grid=1 means the relaxable recovery surface;
+            # nav_route_exact=0 with route_cells>0 means best-effort approach to a door.
             st['nav_route_cells'] = route_cells
+            st['nav_route_exact'] = int(bool(route_exact))
             st['nav_grid_floor'] = floor_n
             st['nav_grid_walls'] = len(nav.walls)
             st['nav_blocked'] = len(nav.blocked)

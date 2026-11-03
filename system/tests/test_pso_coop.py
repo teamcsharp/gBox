@@ -1067,6 +1067,19 @@ def test_recovery_grid_relaxes_a_partial_floor_but_a_complete_grid_does_not():
     assert path is not None and path[-1] == recovered.center((5, 5))   # recovery grid: relaxed, routes to the target
 
 
+def test_toward_approaches_an_unreachable_goal_to_the_nearest_reachable_cell():
+    """The full-floor-can't-reach-far-target fix: toward() returns the exact path when
+    the goal is reachable, else the path to the nearest reachable cell on P1's OWN
+    component (so P1 walks UP TO a door it can't path past, instead of straight-lining
+    into the wall). exact flags which happened; it never returns None from a usable start."""
+    floor = [[i, 0] for i in range(0, 6)]            # cells (0..5, 0); start cell (0,0)
+    m = RoomMap(size=10.0, floor=floor)
+    reachable, exact = m.toward((5., 5.), (55., 5.))   # goal cell (5,0) is ON the floor
+    assert exact is True and reachable[-1] == m.center((5, 0))
+    approach, exact2 = m.toward((5., 5.), (105., 5.))  # goal cell (10,0) is OFF the floor (disconnected)
+    assert exact2 is False and approach is not None and approach[-1] == m.center((5, 0))  # best-effort to the edge
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True

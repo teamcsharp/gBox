@@ -145,6 +145,42 @@ class RoomMap:
         finally:
             self._relax = False
 
+    def toward(self, start, goal, limit=6000):
+        """A* that ALWAYS makes progress toward goal: the exact path when goal is
+        reachable, otherwise the path to the reachable cell CLOSEST to goal. This is
+        what the forward driver wants - P1 cannot path to a point just past a closed
+        door (it is in the next room's disconnected floor component, or a door cell
+        that reads as wall), so routing to the nearest reachable cell on P1's OWN
+        component walks it up to the door (then the committed walk-through + the
+        stage-flag force-unlock carry it across). Returns None only if start can't
+        even step. Safe: honors walls, learned blocked edges and real height steps -
+        it never invents a path across a cliff, it just stops at the component edge.
+        Returns (path, exact)."""
+        start, goal = self.cell(start), self.cell(goal)
+        self._relax = False
+        h = lambda c: math.hypot(c[0] - goal[0], c[1] - goal[1])
+        frontier, previous, costs = [(h(start), start)], {start: None}, {start: 0.0}
+        best, best_h, reached = start, h(start), False
+        while frontier and len(previous) <= limit:
+            _, cell = heapq.heappop(frontier)
+            if cell == goal:
+                best, reached = cell, True
+                break
+            if h(cell) < best_h:
+                best, best_h = cell, h(cell)
+            for dx, dz in ((0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                nxt = cell[0] + dx, cell[1] + dz
+                if nxt in previous or not self.allowed(cell, nxt):
+                    continue
+                costs[nxt], previous[nxt] = costs[cell] + math.hypot(dx, dz) * (1 if nxt in self.walked else 1.6), cell
+                heapq.heappush(frontier, (costs[nxt] + h(nxt), nxt))
+        if best == start:
+            return None, False
+        path = [best]
+        while previous[path[-1]] is not None:
+            path.append(previous[path[-1]])
+        return [self.center(c) for c in reversed(path)], reached
+
     def observe(self, before, after, intended, *, reliable):
         """Only stable movement with no combat/menu/transition can teach a wall."""
         if not reliable:
