@@ -277,8 +277,25 @@ def _ensure_gear(m, p, state, report):
     report["mag"] = {"id": state.get("mag_id"), "maxed": state.get("mag_maxed", False)}
 
 
+# Long-range weapons for boss floors: a boss (e.g. De Rol Le across the water, Dragon at
+# arena range) can't be hit with a melee saber, so on a boss floor the random cycle is
+# restricted to guns (Handgun/Rifle/Mechgun/Shot) so shots actually reach. never-miss + crit
+# still only land once nav positions the bot within weapon range (positioning is the nav lane).
+RANGED_WEAPON_CODES = ("000700", "000900", "000800", "000600")   # Rifle, Shot, Mechgun, Handgun
+_BOSS_FLOORS_BY_EP = {0: frozenset({11, 12, 13, 14}), 1: frozenset({12, 13, 14, 15})}
+
+
+def _boss_floor(m):
+    try:
+        from .pso_fence import FLOOR, EPISODE_FLOOR
+        return m.u32(FLOOR) in _BOSS_FLOORS_BY_EP.get(m.u32(EPISODE_FLOOR), frozenset())
+    except Exception:
+        return False
+
+
 def _reroll_weapon(m, p, state, report, interval):
-    """Equip a random weapon, re-rolling on an interval (the 'random weapons' cycle)."""
+    """Equip a random weapon, re-rolling on an interval (the 'random weapons' cycle). On a
+    boss floor the pool is restricted to ranged weapons so the bot can reach the boss."""
     now = time.monotonic()
     inv = _inv_by_id(m)
     wid = state.get("weapon_id")
@@ -298,7 +315,8 @@ def _reroll_weapon(m, p, state, report, interval):
         report["weapon"] = {"id": wid, "code": state.get("weapon_code"), "rerolled": False,
                            "note": "inventory full"}
         return
-    code = random.choice(WEAPON_CODES)
+    boss = _boss_floor(m)
+    code = random.choice(RANGED_WEAPON_CODES if boss else WEAPON_CODES)
     try:
         made = m.give(code)
     except Exception as error:

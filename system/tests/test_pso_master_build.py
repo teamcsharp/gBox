@@ -9,6 +9,21 @@ from gbox import pso_gc_live as G
 from test_pso_gc_live import RAM
 
 
+def test_boss_floors_use_ranged_weapons():
+    assert all(MB._is_hex3(c) for c in MB.RANGED_WEAPON_CODES)
+    assert all(c.startswith("00") for c in MB.RANGED_WEAPON_CODES)
+
+    class M:
+        def __init__(self, floor, ep): self.floor, self.ep = floor, ep
+        def u32(self, a):
+            from gbox.pso_fence import FLOOR, EPISODE_FLOOR
+            return {FLOOR: self.floor, EPISODE_FLOOR: self.ep}.get(a, 0)
+    assert MB._boss_floor(M(12, 0)) is True       # Ep1 De Rol Le
+    assert MB._boss_floor(M(3, 0)) is False       # Ep1 Cave1 (normal)
+    assert MB._boss_floor(M(15, 1)) is True       # Ep2 Gol Dragon
+    assert MB._boss_floor(M(11, 1)) is False      # 11 is not an Ep2 boss floor
+
+
 def test_item_codes_are_well_formed_three_byte_codes():
     assert all(MB._is_hex3(c) for c in MB.WEAPON_CODES)
     assert all(MB._is_hex3(c) for c in MB.UNIT_CODES)
