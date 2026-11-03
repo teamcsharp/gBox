@@ -2459,9 +2459,20 @@ class Bot:
         return d * (1.0 + abs(wrap(heading(e["pos"][0] - px, e["pos"][2] - pz) - yaw)) / math.pi)
 
     def _choose(self, p, yaw, live, now):
-        wound = [e for e in live if windup(e, p["pos"])]
+        px0, _, pz0 = p["pos"]
+        flat0 = lambda e: math.hypot(e["pos"][0] - px0, e["pos"][2] - pz0)
+        # operator 2026-11-03 ("he is failing to aim at the one right in front"): an incoming MELEE wind-up is stopped
+        # first (always within WINDUP_R), but a ranged / sniper wind-up no longer steals the target from a closer enemy
+        # he should be shooting now - a far shooter is prioritized only when it is also (about) the nearest threat;
+        # otherwise it falls to the normal nearest / cost pick below. This keeps the "point the weapon at the one in
+        # front" behavior while still answering a near sniper (re6_sniper_targets still counts them all).
+        wound = [e for e in live if windup(e, p["pos"]) == "melee"]
+        if not wound and live and min(flat0(e) for e in live) > CLOSE_R:
+            # nothing is close in front: only now does a ranged / sniper threat become the priority target (P2). When
+            # an enemy IS within CLOSE_R, it wins via the nearest / cost pick below - the one in front is shot first.
+            wound = [e for e in live if windup(e, p["pos"]) == "ranged"]
         if wound:                                                # about to attack him: stopped first
-            best = min(wound, key=lambda e: math.dist(p["pos"], e["pos"]))
+            best = min(wound, key=flat0)
             if self.target != best.get("ptr", best.get("slot")):
                 self.target_at = now
             self.target = best.get("ptr", best.get("slot"))

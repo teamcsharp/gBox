@@ -829,6 +829,22 @@ def test_the_throw_is_held_and_flashes_come_in_a_flurry_while_they_crowd_him(mon
     assert bot.stats["bomb_drops"] == 0
 
 
+def test_the_one_right_in_front_is_the_target_not_a_distant_sniper():
+    # operator 2026-11-03: "if someone is right in front of him, point his weapon at them" - a far ranged / sniper
+    # threat must not steal the aim from a close enemy in front (regression from the ledge-sniper priority).
+    bot, _clock, _snap = brain(round_guest(enemies=((0.0, 0.0, 150.0, 700),), cam_yaw=0.0))
+    p = {"pos": (0.0, 0.0, 0.0)}
+    close = {"pos": (0.0, 0.0, 150.0), "hp": 700, "slot": 1, "action": None}             # 1.5 m right in front
+    far_sniper = {"pos": (0.0, 0.0, 2500.0), "hp": 700, "slot": 2, "action": "cEm1000ActWalkGunR"}  # 25 m, gun raised
+    assert bot._choose(p, 0.0, [close, far_sniper], 0.0) is close                        # the one in front, not the sniper
+    assert bot._choose(p, 0.0, [far_sniper, close], 0.0) is close                        # order-independent
+    # a near shooter at 3 m does not outrank the one at 1.5 m in front either
+    near_sniper = {"pos": (0.0, 0.0, 300.0), "hp": 700, "slot": 3, "action": "cEm1000ActShoot"}
+    assert bot._choose(p, 0.0, [close, near_sniper], 0.0) is close
+    # with nothing close, the ranged threat IS answered (P2 kept)
+    assert bot._choose(p, 0.0, [far_sniper], 0.0) is far_sniper
+
+
 def test_surrounded_grenade_cluster_bomb_burst_lobs_five_at_burst_speed():
     # operator 2026-11-03: "take a moment every few minutes to spam some grenades (at least 5) in rapid succession via
     # 5x animation speed at the enemies when they are surrounded" / "cluster-bomb the crowd"
