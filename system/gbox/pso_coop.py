@@ -3691,6 +3691,30 @@ def mid_field_reload(state):
                 and not state.get("travelling") and set(state.get("players", {})) == {1, 2})
 
 
+def entry_mapping_decision(ad, driver, session_id):
+    """How play() handles a controller precondition (MappingPending / Unsupported)
+    raised in the LOBBY/ENTRY path - it must NEVER terminate play(). This is the
+    Pioneer-2 unblock: the bot was stranded at CONTROLLER VERIFICATION because the
+    fresh-launch two-pad town probe raised probe_failed and killed the loop even
+    though the controllers were already verified. Returns one of:
+      'trust' - the pads were already PROVEN on this adapter (the marker survives a
+                bot-reload: play() re-runs but `ad` persists). TRUST that and ENTER
+                the game without re-running the run-start town probe - the probe is
+                a run-START gate, not a per-entry gate. Mirrors mid_field_reload's
+                trust and the crash-resilient tick: a failed lobby step proceeds.
+      'retry' - continuous play that was NEVER yet verified: the spawn/town may not
+                be ready, so wait + retry; the precondition still never propagates.
+      'raise' - a one-shot cold start that was never verified: surface it, so a
+                genuine first-run controller misconfiguration is not hidden.
+    Only a full worker relaunch (a fresh adapter) clears the marker and re-requires
+    one real probe; a probe_failed never blocks entry once the mapping is verified."""
+    if getattr(ad, '_pso_controller_ever_verified', False):
+        return 'trust'
+    if continuous_requested(driver, session_id):
+        return 'retry'
+    return 'raise'
+
+
 def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     """A visible menu can coexist with phase 14; stop movement before either pad path."""
     paused = menu.observe_frame(frame, native_gameplay=bool(state.get("verified") and state.get("phase") == 14),
@@ -4082,32 +4106,56 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         try:
                             stats["controller_mapping"] = mapping_continuity.prove(
                                 ad, reader, inputs, state, session_id, game or {}, stopped, mapping_probe)
+                            stats['controller_mapping_source'] = 'two_pad_movement_probe'
                         except (MappingPending, Unsupported) as exc:
-                            # Never let a mapping precondition KILL play() during continuous
-                            # play (that rolls back a hot-reload). Mid-run we cannot run the
-                            # town probe, so wait + retry instead of propagating; only a true
-                            # non-continuous start still raises.
-                            if not continuous_requested(driver, session_id):
+                            # A controller precondition must NEVER terminate play() in the
+                            # lobby/entry path (that is how the bot got stranded in Pioneer 2
+                            # at CONTROLLER VERIFICATION: the fresh-launch town probe raised
+                            # probe_failed and killed the loop even though the mapping was
+                            # already verified). Three guarded outcomes, none of them "stop":
+                            #   1. VERIFIED-BEFORE on this adapter -> TRUST it and ENTER the
+                            #      game without re-passing the town probe. The two-pad probe
+                            #      is a run-START gate, not a per-entry gate; the controllers
+                            #      were proven here already (prior verification survives a
+                            #      bot-reload on the same adapter). Mirrors mid_field_reload's
+                            #      trust and the crash-resilient tick: one failed lobby step
+                            #      proceeds, it never dies.
+                            #   2. continuous play, NEVER yet verified -> wait + retry (the
+                            #      spawn/town may not be ready); still never propagates.
+                            #   3. a true one-shot cold start that was never verified -> raise,
+                            #      so a genuine first-run misconfiguration still surfaces.
+                            decision = entry_mapping_decision(ad, driver, session_id)
+                            if decision == 'trust':
+                                stats['controller_mapping_source'] = 'entry_trusted_prior_verification'
+                                stats['controller_mapping_entry_trusted'] = stats.get('controller_mapping_entry_trusted', 0) + 1
+                                stats['controller_receipt_entry_trusted'] = True
+                                stats['controller_entry_probe_skipped_reason'] = str(exc)[:160]
+                            elif decision == 'raise':
                                 raise
-                            invalidate_plan()
-                            inputs.release()
-                            ad._pso_verified_player_slots = set()
-                            mapping_attempts += 1
-                            delay = min(5, 2 ** min(mapping_attempts - 1, 3))
-                            stats.update(controller_mapping_verified=False, mapping_attempts=mapping_attempts,
-                                mapping_retry_backoff_s=delay, mapping_last_error=str(exc),
-                                action="waiting_for_spawn_ready")
-                            solo.wait(delay, lambda: stopped() or not continuous_requested(driver, session_id))
-                            if stopped() or not continuous_requested(driver, session_id):
-                                break
-                            continue
+                            else:
+                                invalidate_plan()
+                                inputs.release()
+                                ad._pso_verified_player_slots = set()
+                                mapping_attempts += 1
+                                delay = min(5, 2 ** min(mapping_attempts - 1, 3))
+                                stats.update(controller_mapping_verified=False, mapping_attempts=mapping_attempts,
+                                    mapping_retry_backoff_s=delay, mapping_last_error=str(exc),
+                                    action="waiting_for_spawn_ready")
+                                solo.wait(delay, lambda: stopped() or not continuous_requested(driver, session_id))
+                                if stopped() or not continuous_requested(driver, session_id):
+                                    break
+                                continue
                         finally:
                             stats.update(mapping_continuity.diagnostics(ad))
-                        stats['controller_mapping_source'] = 'two_pad_movement_probe'
                     if stopped():
                         raise InterruptedError('PSO stopped before activating controller mapping')
                     mapped = True
                     ad._pso_verified_player_slots = {0, 1}
+                    # Durable across bot-reloads on the same adapter (play() re-runs but `ad`
+                    # persists): once the controllers are proven, a later entry in Pioneer 2
+                    # TRUSTS this instead of re-running the run-start town probe. Only a full
+                    # worker relaunch (fresh adapter) clears it and re-requires one real probe.
+                    ad._pso_controller_ever_verified = True
                     mapping_attempts = 0
                     stats.update(controller_mapping_verified=True, mapping_retry_backoff_s=0, mapping_last_error="")
                     apply_default_speed(ad, stats)
