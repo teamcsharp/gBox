@@ -1135,12 +1135,19 @@ def test_two_player_hold_fence_crossing_targets_fence_and_switch(tmp_path):
     assert obj is not None and obj["fence"] == ("TObjLazerFenceNorm", -420.0, 485.8)
     assert round(obj["sx"], 1) == -399.7 and round(obj["sz"], 1) == 541.0
     ctrl._fence_obj = obj
+    # P2 far from the switch -> P1 WAITS at the fence (doesn't bounce the raised fence).
     cmds, moves, steer = [], {}, {}
     assert ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer) is True
-    assert steer[1][2].startswith("fence_cross")            # P1 drives through the fence
+    assert steer[1][2].startswith("fence_wait")
+    # P2 drives to hold the switch.
     cmds, moves, steer = [], {}, {}
     assert ctrl.fence_role(st, 2, st["players"][2], 100.0, cmds, moves, steer) is True
-    assert steer[2][2].startswith("fence_switch")           # P2 drives to hold the switch
+    assert steer[2][2].startswith("fence_switch")
+    # With P2 standing ON the switch, P1 COMMITS through the fence.
+    st["players"][2]["x"], st["players"][2]["z"] = -399.7, 541.0
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer) is True
+    assert steer[1][2].startswith("fence_cross")
     ctrl._crossed_fences.add(obj["fence"])
     assert ctrl.select_fence_objective(st, st["players"][1]) is None   # a crossed fence is not re-targeted
 
