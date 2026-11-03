@@ -790,13 +790,15 @@ FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it land
 P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
 FENCE_GIVEUP_S = 28.0        # ANTI-STALL: attempt a fence hold at most this long, then give up and keep MOVING
 FENCE_RETRY_S = 45.0         # after giving up on a fence, explore/fight this long before re-attempting it
-ADVANCE_STALL_S = 15.0       # PERPETUAL PLAY (operator 11-03: ENDLESS movement, parking is unacceptable): a CLEARED
-                             # room with NO new room for this long warps to the next floor. The timer RESETS on every
-                             # new room, so natural progression is still preferred - but a gate that can't be passed
-                             # never parks the party more than ~15-20s. Boss floors are exempt (stay + kill the boss).
-ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't spam the loader, but allow the ~20s cadence)
-STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for this long -> warp REGARDLESS of enemies/
-                             # cleared state. The party must reach a new room or new floor within ~20s, ALWAYS. Non-negotiable.
+ADVANCE_STALL_S = 90.0       # FULL EXPLORATION (operator 11-03: explore + MAP every room before advancing; warp is
+                             # LAST-RESORT anti-stuck, NOT normal progress). Normal progress = walking door-to-door,
+                             # clearing each room; the timer RESETS on every NEW room, so a bot that keeps exploring
+                             # never warps. Only when a CLEARED area yields NO new room for this long (reachable rooms
+                             # exhausted) does it advance to the next floor. Never-stand (wander/idle-drift) keeps it
+                             # MOVING through these windows - exploration IS constant movement. Boss floors exempt.
+ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't spam the loader)
+STALL_HARDCAP_S = 120.0      # ABSOLUTE anti-freeze (non-boss) last resort: no new room for this long -> warp REGARDLESS
+                             # of enemies/cleared state (a gate that genuinely can't be crossed must never permafreeze).
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
@@ -2784,10 +2786,21 @@ class Controller:
             target = self._path_next(room) if type(room) is int else None
         except Exception:
             target = None
+        # EXPLORATION COVERAGE: visited rooms (this run) + the FRONTIER = rooms the known
+        # edges lead to that P1 hasn't entered yet. Empty frontier => the reachable area is
+        # fully explored (the "fully mapped + studied" signal; also when the area may advance).
+        visited = set(self.p1_visited)
+        reachable = {to for doors in self._area_graph.values() for to in doors.values() if type(to) is int}
+        reachable |= visited
+        frontier = sorted(reachable - visited)[:64]
+        covered = len(visited)
+        total = max(len(reachable), covered)
         plan = {"area": self._area, "episode": state.get("episode"), "floor": state.get("floor"),
                 "current_room": room if type(room) is int else None, "target_room": target,
                 "crit_path": [r for r in self._crit_path][:64],
                 "path": [r for r in self._p1_path][:64],
+                "visited": sorted(visited)[:96], "frontier": frontier,
+                "coverage": round(covered / total, 3) if total else 1.0,
                 "edges": {str(k): {str(dk): v for dk, v in d.items()}
                           for k, d in list(self._area_graph.items())[:80]},
                 "centroids": {str(k): v for k, v in self._room_centroid.items()}}
@@ -2802,6 +2815,9 @@ class Controller:
         st["pso_plan_target_room"] = target if type(target) is int else -1
         st["pso_plan_crit_len"] = len(self._crit_path)
         st["pso_plan_rooms_visited"] = len(self._p1_path)
+        st["pso_plan_frontier"] = len(frontier)              # reachable rooms not yet entered
+        st["pso_plan_coverage"] = plan["coverage"]
+        st["pso_plan_explored"] = int(not frontier)          # 1 = reachable area fully explored
 
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
