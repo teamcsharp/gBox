@@ -417,6 +417,13 @@ def apply_master_build(ad, player_index=0, *, weapon_interval=WEAPON_INTERVAL_S,
     except Exception as error:
         report["errors"]["survival"] = str(error)[:140]
 
+    # 3x-attack-speed phase (a): read-only in-bot attack-state probe (learns the gate; harmless).
+    try:
+        from . import pso_speed
+        report.update(pso_speed.probe_tick(ad, player_index, m, p))
+    except Exception as error:
+        report["errors"]["speed_probe"] = str(error)[:120]
+
     # critical attacks: raise LCK to the crit cap (only upward; never fight gear that is already higher)
     try:
         shown = m.shown_stats().get("lck", 0)

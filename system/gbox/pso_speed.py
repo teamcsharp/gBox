@@ -75,6 +75,8 @@ reversible+idempotent, cave gates both slots + attack-state + preserves cr0, bod
 FACTOR times), ping nav the final HOOK_FUNC + cave base/extent for a last clear-check,
 then add `pso_speed.set_enabled(ad,'gamecube',True)` to pso_master_build._apply_globals.
 """
+import threading
+
 from .registry import Unsupported
 
 CAVE, VARS, HEADER, END = 0x80005400, 0x800054C0, 0x800054E0, 0x80005500
@@ -91,6 +93,70 @@ ATTACK_STATE_MATCH = None   # the value at that offset meaning "attacking"
 def configured():
     """True once the two outstanding unknowns are filled; gates every live action."""
     return None not in (HOOK_FUNC, HOOK_ORIGINAL, ATTACK_STATE_OFF, ATTACK_STATE_MATCH)
+
+
+# --- phase (a): in-bot attack-state probe (read-only, safe; resolves ATTACK_STATE_OFF/MATCH) ---
+_probe_guard = threading.Lock()
+PROBE_SAMPLE_GOAL = 300          # ticks observed before a gate is considered "locked"
+
+
+def _derive_gate(ps):
+    """A candidate field+value-set that occurs while attacking (player+0xA8 hit-records > 0)
+    but NEVER while idle, with enough samples on both sides, is a confident attack gate."""
+    best = None
+    for field, off in (("s2e4", 0x2E4), ("s324", 0x324)):
+        atk, idle = ps[f"{field}_atk"], ps[f"{field}_idle"]
+        if sum(atk.values()) < 30 or sum(idle.values()) < 30:
+            continue
+        attack_only = {v for v in atk if v not in idle}
+        if not attack_only:
+            continue
+        locked = sum(atk[v] for v in attack_only) >= 20 and ps["n"] >= PROBE_SAMPLE_GOAL
+        cand = {"off": off, "values": sorted(attack_only),
+                "desc": f"player+0x{off:X} in {sorted(attack_only)}", "locked": locked}
+        if best is None or (cand["locked"] and not best["locked"]):
+            best = cand
+    return best
+
+
+def probe_tick(ad, player_index, m, p):
+    """Read-only in-bot attack-state probe. The confirmed 'attack active' signal is
+    player+0xA8 (the live attack hit-record count the hitbox updater 0x80154E3C iterates
+    during a swing); this samples the candidate gate fields (+0x324 control mode, +0x2E4
+    action id) against it and learns which values mean 'attacking'. Fail-soft; returns flat
+    telemetry. Resolves ATTACK_STATE_OFF/MATCH for the phase-(b) dispatcher-v5 extra-update."""
+    try:
+        a8 = m.u32(p + 0xA8)
+        s324 = m.u16(p + 0x324)
+        s2e4 = m.u16(p + 0x2E4)
+        attacking = a8 > 0
+        with _probe_guard:
+            st = getattr(ad, "_pso_speed_probe", None)
+            if st is None:
+                st = {}
+                ad._pso_speed_probe = st
+            ps = st.setdefault(player_index, {"n": 0, "atk": 0, "s324_atk": {}, "s324_idle": {},
+                                              "s2e4_atk": {}, "s2e4_idle": {}})
+            ps["n"] += 1
+            ps["atk"] += int(attacking)
+            for field, val in (("s324", s324), ("s2e4", s2e4)):
+                b = ps[f"{field}_atk" if attacking else f"{field}_idle"]
+                b[val] = b.get(val, 0) + 1
+            gate = _derive_gate(ps)
+            ps["gate"] = gate
+            return {"speed_probe_n": ps["n"], "speed_probe_atk": ps["atk"],
+                    "speed_probe_gate": gate["desc"] if gate else None,
+                    "speed_probe_locked": bool(gate and gate["locked"])}
+    except Exception as e:
+        return {"speed_probe_err": str(e)[:80]}
+
+
+def speed_probe_status(ad):
+    """The learned attack-state gate per player (for nav / the coordinator to read)."""
+    with _probe_guard:
+        st = getattr(ad, "_pso_speed_probe", {}) or {}
+        return {pi: {"n": d.get("n"), "attacking_samples": d.get("atk"), "gate": d.get("gate")}
+                for pi, d in st.items()}
 
 
 def status(ad, platform):
