@@ -1332,7 +1332,11 @@ def test_health_falling_with_nobody_near_marks_a_hazard_and_he_moves_out_of_it()
     snap["player"]["hp"] = 760                                                # smoke: nobody within 2.5 m
     acts = run(bot, snap, clock, 3)
     assert bot.stats["hazard_marks"] == 1 and bot.hazard is not None and bot.stats["hazard_s"] > 0
-    assert any(set(a.get("hold", ())) & {"lup", "ldown", "lleft", "lright"} for a in acts)
+    # #5056: the bot just took ranged damage, so it breaks out and turns to fight the enemy (ranged_break)
+    # instead of walking out of the hazard (hazard_out). The turn may produce no stick movement if the
+    # enemy is directly in front, but the bot.doing should be "turn" or "walk".
+    assert bot.doing in ("turn", "walk"), \
+        f"expected doing in ('turn', 'walk') (ranged_break), got {bot.doing}"
     clock[0] += R.HAZARD_S + 0.1
     run(bot, snap, clock, 1)
     assert bot.hazard is None
@@ -3676,3 +3680,81 @@ def test_stall_timer_resets_on_meaningful_progress():
     bot.nav_path = None
     out = bot._pursue(snap["player"], snap, t3)
     assert bot._stall_since is None, f"stall timer should reset on progress, got {bot._stall_since}"
+
+
+def test_hazard_break_due_fires_on_ranged_damage_with_no_enemy_near():
+    """#5056: when the bot just took HP loss and no enemy is within HAZARD_CONTACT_R (2.5 m),
+    _hazard_break_due returns True so the bot breaks out of its current decision mode and
+    fights the ranged enemy or moves to safety, rather than continuing the action that left
+    it exposed (cc_kick, quick_turn, bonus_run, etc.)."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 400.0, 700),),   # 4 m away: beyond HAZARD_CONTACT_R (250 cm)
+        cam_yaw=0.0))
+    t0 = clock[0]
+    p = snap["player"]
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    # Set HP to a known value so the tick can register a drop
+    bot._hz_hp = 700
+    p["hp"] = 700
+    # Tick 1: establish baseline
+    bot._hazard_tick(p, snap["enemies"], flat, t0)
+    assert bot._hz_hp == 700
+    # Tick 2: HP drops (took damage) with no enemy within HAZARD_CONTACT_R
+    t1 = t0 + 0.1
+    p["hp"] = 680
+    bot._hazard_tick(p, snap["enemies"], flat, t1)
+    assert bot._hz_hp == 680
+    # _hazard_break_due should be True: HP just dropped, no enemy within 2.5 m
+    assert bot._hazard_break_due(p, snap["enemies"], flat, t1) is True, \
+        "expected ranged break after HP drop with no enemy near"
+
+
+def test_hazard_break_due_does_not_fire_when_enemy_is_near():
+    """#5056: when the bot just took HP loss but an enemy is within HAZARD_CONTACT_R (2.5 m),
+    _hazard_break_due returns False — the damage is from a melee attacker, not a ranged one,
+    and the bot should stay in its current decision mode (e.g. cc_kick)."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 200.0, 700),),   # 2 m away: within HAZARD_CONTACT_R (250 cm)
+        cam_yaw=0.0))
+    t0 = clock[0]
+    p = snap["player"]
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    bot._hz_hp = 700
+    p["hp"] = 700
+    bot._hazard_tick(p, snap["enemies"], flat, t0)
+    assert bot._hz_hp == 700
+    # Tick 2: HP drops with an enemy within 2.5 m
+    t1 = t0 + 0.1
+    p["hp"] = 680
+    bot._hazard_tick(p, snap["enemies"], flat, t1)
+    # _hazard_break_due should be False: enemy is within 2.5 m (melee attacker)
+    assert bot._hazard_break_due(p, snap["enemies"], flat, t1) is False, \
+        "expected no ranged break when enemy is within HAZARD_CONTACT_R"
+
+
+def test_ranged_break_in_decide_turns_to_fight_ranged_enemy():
+    """#5056: when _hazard_break_due fires in _decide (bot just took ranged damage, no enemy
+    within 2.5 m), the bot breaks out of its current mode and turns to fight the ranged enemy."""
+    bot, clock, snap = brain(round_guest(
+        enemies=((0.0, 0.0, 700.0, 700),),   # 7 m away: beyond FIRE_ZONE_R (600 cm) and HAZARD_CONTACT_R (250 cm)
+        cam_yaw=0.0))
+    t0 = clock[0]
+    p = snap["player"]
+    flat = lambda e: math.hypot(e["pos"][0] - p["pos"][0], e["pos"][2] - p["pos"][2])
+    # Set the bot into a "bonus_run" state (weapon down, running for a bonus)
+    bot.doing = "bonus_run"
+    bot.hazards = []
+    bot._hz_hp = 700
+    p["hp"] = 700
+    bot._hazard_tick(p, snap["enemies"], flat, t0)
+    # Tick 2: HP drops (took ranged damage)
+    t1 = t0 + 0.1
+    p["hp"] = 680
+    bot._hazard_tick(p, snap["enemies"], flat, t1)
+    # Now _decide should produce a ranged_break action (breaking out of bonus_run)
+    out = bot._decide(snap["player"], snap["enemies"], flat, None, math.inf, snap, t1)
+    assert out is not None, "_decide returned None (should have produced a ranged_break)"
+    assert bot.doing == "turn", \
+        f"expected doing='turn' (ranged_break), got {bot.doing}: out={out}"
+    assert bot.why.startswith("just took ranged damage"), \
+        f"expected ranged_break reason, got: {bot.why}"
