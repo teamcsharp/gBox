@@ -800,8 +800,8 @@ STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for 
 STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: absolute cap - never hold a boss floor past this (~5.5 min last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
-BOSS_APPROACH_STALL_S = 2.5  # P1 can't get CLOSER to the weak point for this long -> platform/wall boss (De Rol Le):
-                             # stop driving into the edge, hold the best line and FIRE the forced long-range gun
+BOSS_CHASE_CAP = 170.0       # don't CHASE a boss past this (Dragon flies/burrows/teleports; De Rol Le head submerges)
+                             # - hold a central spot and fire when it returns to range, instead of chasing uncatchably
 BOSS_NOPROG_S = 75.0         # DAMAGE-PROGRESS escape: boss HP/parts not dropping for this long -> can't kill it yet,
                              # warp off and loop back (don't burn the full BOSS_SAFETY_S on an un-damageable boss)
 PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
@@ -1770,10 +1770,14 @@ class Controller:
         threats = sorted((e for e in enemies if relevant(e)),
                          key=lambda e: math.hypot(e["x"] - px, e["z"] - pz))
         target = next((e for e in threats if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
-        # BOSS DEFEAT: followers also focus-fire the advisor's boss weak point.
+        # BOSS DEFEAT: followers run the SAME owned boss logic (fire in range / strike the
+        # grounded window / converge / hold-don't-chase) so they also land damage instead of
+        # strafing at the boss or keeping station on the leader.
         boss_row = self._boss_target_row(player)
         if boss_row is not None:
-            target = boss_row
+            self.boss_combat(state, slot, player, envelope, boss_row, now,
+                             commands, moves, steering, enemies, attack_rows)
+            return
         # DODGE (follower): a swarm bot also moves out of attacks instead of tanking.
         # When a threat is hot and no clean shot is lined up this tick, strafe out of the
         # attack line (biased away from learned fatal spots) rather than standing to aim.
@@ -2519,6 +2523,86 @@ class Controller:
                 'y': float(wp.get('y') if type(wp.get('y')) in (int, float) else (player.get('y') or 0.)),
                 'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
 
+    def boss_combat(self, state, slot, player, envelope, boss_row, now, commands, moves, steering, enemies, attack_rows):
+        """Own this slot's boss tick (always returns True so the caller stops here and the
+        generic dodge/nav never hijacks it). The earlier bug: inside the boss dodge radius
+        the generic dodge strafed every tick, so the bots never held a firing line (De Rol
+        Le oscillated 29<->282u, HP flat). Policy (coordinator + boss agent):
+          - STRIKE WINDOW (boss_special_state / phase '*_attacking' = Dragon grounded 21/22,
+            or any open-shell window): FIRE HARD at the weak point; the party is unkillable,
+            so damage beats evasion here. Approach fast if just out of range.
+          - In range otherwise: HOLD the line and FIRE persistently (don't strafe off it -
+            the head/body moves; keep firing, incl. De Rol Le which has no window flag yet).
+          - Reasonably close but out of range: APPROACH (coordinate-drive) to a firing spot.
+          - Far AND relocating (Dragon airborne/burrowed/teleporting; De Rol Le submerged):
+            DON'T chase across the arena - hold a central spot, dodge anything close, and
+            fire the instant it returns to range."""
+        bx, bz = boss_row["x"], boss_row["z"]
+        bdist = math.hypot(bx - player["x"], bz - player["z"])
+        env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
+        half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
+        _, angle, vok = attack_geometry(player, boss_row, envelope)
+        in_range = bdist <= env_h and vok
+        adv = self._boss_adv if isinstance(self._boss_adv, dict) else {}
+        boss_special = bool(adv.get("boss_special_state") or str(adv.get("phase") or "").endswith("_attacking"))
+        speed = max(self.inputs.speed(), 1e-6)
+        st = getattr(self.inputs, "stats", None)
+        if slot == 1 and isinstance(st, dict):
+            st["boss_approach_dist"] = round(bdist, 1)
+            st["boss_in_range"] = int(in_range)
+            st["boss_strike_window"] = int(boss_special)
+
+        def fire_or_face(label):
+            if abs(angle) > half:
+                commands.append((slot, ["lleft" if angle > 0 else "lright"], max(.02, min(.12, abs(angle) / 450))))
+                steering[slot] = (player, (bx, bz), "boss_line")
+            elif now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / speed:
+                attack_rows.setdefault(slot, {"attempts": 0})
+                commands.append((slot, ["a"], .12))
+                steering[slot] = (player, (bx, bz), label)
+            else:
+                commands.append((slot, movement_keys(player, (bx, bz)), .04))   # hold facing between shots
+                steering[slot] = (player, (bx, bz), "boss_hold")
+            if isinstance(st, dict):
+                st["boss_firing_line"] = 1
+
+        if boss_special:                               # grounded / open-shell: STRIKE
+            if in_range:
+                fire_or_face("boss_fire_strike")
+            elif bdist <= BOSS_CHASE_CAP:
+                keys, escaping = self._unwedge(slot, player, (bx, bz), now)
+                commands.append((slot, keys, .18))
+                moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
+                steering[slot] = (player, (bx, bz), "boss_strike_approach")
+            else:
+                commands.append((slot, movement_keys(player, (bx, bz)), .06))
+                steering[slot] = (player, (bx, bz), "boss_hold_far")
+            return True
+        if in_range:                                   # persistent fire, hold the line
+            fire_or_face("boss_fire")
+            return True
+        if bdist <= BOSS_CHASE_CAP:                     # converge to a firing spot
+            keys, escaping = self._unwedge(slot, player, (bx, bz), now)
+            commands.append((slot, keys, .18))
+            moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
+            steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
+            if isinstance(st, dict):
+                st["boss_approaching"] = 1
+            return True
+        # Far + relocating: HOLD (don't chase); dodge anything close; face, ready to fire.
+        if enemies:
+            dodge = self.combat_dodge(state, slot, player, enemies, envelope, boss_row, now)
+            if dodge is not None and dodge["act"]:
+                commands.append((slot, dodge["keys"], dodge["dur"]))
+                steering[slot] = (player, dodge["point"], "boss_evade")
+                self._dodge_telemetry(dodge)
+                return True
+        commands.append((slot, movement_keys(player, (bx, bz)), .06))
+        steering[slot] = (player, (bx, bz), "boss_hold_far")
+        if isinstance(st, dict):
+            st["boss_hold_far"] = 1
+        return True
+
     def _observe_boss(self, state, now):
         """BOSS DEFEAT: read boss liveness from state entities (class TBoss*/TObjBoss*) so
         advance_on_stall can SUPPRESS the warp while a boss lives (stay and kill it, don't
@@ -3026,44 +3110,15 @@ class Controller:
                 # at the weak point (coordinate-drive + wedge-escape, bypassing the A* gate)
                 # until within the weapon envelope, THEN fall through to aim/fire. Dodge
                 # (below) still handles close-quarters evasion once in range.
-                env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
-                bx, bz = boss_row["x"], boss_row["z"]
-                bdist = math.hypot(bx - player["x"], bz - player["z"])
-                _sb = getattr(self.inputs, "stats", None)
-                if slot == 1 and isinstance(_sb, dict):
-                    _sb["boss_approach_dist"] = round(bdist, 1)
-                # Closing-progress: did we get CLOSER? (platform bosses like De Rol Le can't
-                # be walked to - the serpent is across water - so the distance stalls at the
-                # platform edge.)
-                if self._boss_approach_best is None or bdist < self._boss_approach_best - 3.0:
-                    self._boss_approach_best, self._boss_approach_at = bdist, now
-                approach_stalled = (now - self._boss_approach_at) > BOSS_APPROACH_STALL_S
-                if bdist > max(env_h * 0.85, 14.0) and not approach_stalled:
-                    # APPROACHABLE boss: drive straight at the weak point (coordinate-drive +
-                    # wedge-escape, bypassing the A* gate that gives up across an arena) until
-                    # within the gun's reach, THEN fall through to aim/fire.
-                    keys, escaping = self._unwedge(slot, player, (bx, bz), now)
-                    commands.append((slot, keys, .18))
-                    moves[slot] = (player, (bx, bz), self.maps.get(state, player), False)
-                    steering[slot] = (player, (bx, bz), "boss_approach_unwedge" if escaping else "boss_approach")
-                    if isinstance(_sb, dict):
-                        _sb["boss_approaching"] = 1
-                    continue
-                if bdist > max(env_h * 0.85, 14.0) and approach_stalled:
-                    # PLATFORM/WALL boss: can't close further. Hold the BEST LINE and FIRE the
-                    # forced long-range gun (never-miss + crit make it land). Face the weak
-                    # point, then press A on cadence - don't keep driving into the edge.
-                    _, angle, _vok = attack_geometry(player, boss_row, envelope)
-                    half = envelope.get("horizontal_half_angle", 8.) if isinstance(envelope, dict) else 8.
-                    if abs(angle) > half:
-                        commands.append((slot, ["lleft" if angle > 0 else "lright"],
-                                         max(.02, min(.12, abs(angle) / 450))))
-                        steering[slot] = (player, (bx, bz), "boss_line")
-                    elif now - self.last_attack.get(slot, 0) >= ATTACK_CADENCE_S / max(self.inputs.speed(), 1e-6):
-                        commands.append((slot, ["a"], .12))
-                        steering[slot] = (player, (bx, bz), "boss_fire_line")
-                    if isinstance(_sb, dict):
-                        _sb["boss_firing_line"] = 1
+                # This branch fully OWNS P1's boss tick (it always continues), so the generic
+                # dodge below never hijacks it - the earlier bug: once inside the boss dodge
+                # radius, dodge strafed every tick and P1 never held a firing line (De Rol Le
+                # oscillated 29<->282u, HP flat). Priority: EVADE only during the telegraphed
+                # attack window; FIRE whenever in range (hold the line through the boss's
+                # movement); APPROACH when reasonably close; HOLD (don't chase) a teleporting/
+                # airborne boss across the arena and fire when it returns to range.
+                if self.boss_combat(state, slot, player, envelope, boss_row, now,
+                                    commands, moves, steering, enemies, attack_rows):
                     continue
             # DODGE (P1): move out of attacks during battle instead of standing still.
             # When a threat is hot and no clean shot is lined up this tick, strafe out of

@@ -1335,22 +1335,52 @@ def test_boss_hold_suppresses_warp_but_escapes_when_no_damage_progress(tmp_path)
     assert ctrl._floor_advances >= 1
 
 
-def test_follower_closes_distance_to_the_boss_weakpoint(tmp_path):
-    """BOSS DEFEAT - CLOSE THE DISTANCE: the bots were landing zero damage because they
-    stood ~250u from the boss and only aimed. A follower with the boss weak point active
-    and out of range must DRIVE toward it (swarm_approach), not keep station on the leader."""
+def test_follower_closes_distance_to_the_boss_within_chase_cap_but_holds_when_far(tmp_path):
+    """BOSS DEFEAT positioning: a follower with the boss weak point active CONVERGES toward
+    it when within BOSS_CHASE_CAP (boss_approach), but does NOT chase across the arena when
+    it's far/relocating (boss_hold_far) - it holds a spot and faces the weak point."""
     ctrl = _controller(tmp_path, ad=SimpleNamespace())
-    ctrl._boss_adv = {"active": True, "boss": "DeRolLe",
-                      "weakpoint": {"ptr": "D1", "class": "TBoss2DeRolLe", "hp": 20000, "hp_max": 20000,
-                                    "x": 175., "z": 0., "y": 0.}}
+    def adv(x):
+        return {"active": True, "boss": "DeRolLe",
+                "weakpoint": {"ptr": "D1", "class": "TBoss2DeRolLe", "hp": 20000, "hp_max": 20000,
+                              "x": x, "z": 0., "y": 0.}}
     st = state(floor=12)
     st["players"][1].update(x=-75., z=0., room=10)
     st["players"][2].update(x=-75., z=5., room=10)
+    # Within the chase cap (~105u) -> approach toward the boss.
+    ctrl._boss_adv = adv(30.)
     commands, moves, steering = [], {}, {}
     ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), commands, moves, steering, {})
     assert any(c[0] == 2 for c in commands)
-    assert steering.get(2) and steering[2][2] == "swarm_approach"
-    assert steering[2][1][0] > st["players"][2]["x"]                  # heading +x toward the boss at x=175
+    assert steering[2][2] in ("boss_approach", "boss_approach_unwedge")
+    assert steering[2][1][0] > st["players"][2]["x"]                  # heading +x toward the boss
+    # Far/relocating (~250u) -> HOLD, don't chase across the arena.
+    ctrl._boss_adv = adv(175.)
+    commands, moves, steering = [], {}, {}
+    ctrl.swarm_follow(st, 2, st["players"][2], 100.0, [], dict(C.FALLBACK), commands, moves, steering, {})
+    assert steering[2][2] == "boss_hold_far"
+
+
+def test_boss_combat_fires_in_range_and_holds_without_chasing_when_far(tmp_path):
+    """BOSS DEFEAT core: when the weak point is IN RANGE the bot FIRES (holds the line,
+    doesn't strafe off it - the old bug); when it's far/relocating it HOLDS (no chase) and
+    does not fire. Firing seeds attack_rows[slot] so the tick-end accounting won't KeyError."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "heading_deg": 0., "ptr": "P1", "hp": 40}
+    env = dict(C.FALLBACK); env["horizontal"] = 200.; env["horizontal_half_angle"] = 30.
+    boss = {"class": "TBossDragon", "kind": "enemy", "hp": 2500, "hp_max": 2500,
+            "x": 0., "z": 100., "y": 0., "ptr": "B1"}
+    ctrl._boss_adv = {"active": True, "boss": "Dragon", "weakpoint": boss}
+    cmds, moves, steer, arows = [], {}, {}, {}
+    assert ctrl.boss_combat(state(floor=11), 1, player, env, boss, 100.0, cmds, moves, steer, [boss], arows) is True
+    assert any(c[0] == 1 and c[1] == ["a"] for c in cmds)             # in range + aligned -> FIRES
+    assert 1 in arows                                                  # attack row seeded (no tick-end KeyError)
+    # Far + relocating (beyond the chase cap, no strike window) -> HOLD, do not fire/chase.
+    far = dict(boss, z=400.)
+    ctrl._boss_adv = {"active": True, "boss": "Dragon", "weakpoint": far}
+    cmds2, steer2 = [], {}
+    ctrl.boss_combat(state(floor=11), 1, player, env, far, 100.0, cmds2, {}, steer2, [far], {})
+    assert not any(c[1] == ["a"] for c in cmds2) and steer2[1][2] == "boss_hold_far"
 
 
 def test_combat_dodge_is_none_when_boss_is_out_of_range(tmp_path):
