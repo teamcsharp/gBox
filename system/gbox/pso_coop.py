@@ -3013,6 +3013,27 @@ class Controller:
             boss_row = self._boss_target_row(player)
             if boss_row is not None:
                 target = boss_row
+                # BOSS DEFEAT - CLOSE THE DISTANCE. The bots were landing ZERO damage
+                # because they aim+fire from wherever they stand (~250u across the arena
+                # from the boss): field.combat_goal/A* gives up across a boss arena, so the
+                # normal path parks them and they never reach weapon range. Drive STRAIGHT
+                # at the weak point (coordinate-drive + wedge-escape, bypassing the A* gate)
+                # until within the weapon envelope, THEN fall through to aim/fire. Dodge
+                # (below) still handles close-quarters evasion once in range.
+                env_h = envelope.get("horizontal", 10.) if isinstance(envelope, dict) else 10.
+                bdist = math.hypot(boss_row["x"] - player["x"], boss_row["z"] - player["z"])
+                _sb = getattr(self.inputs, "stats", None)
+                if slot == 1 and isinstance(_sb, dict):
+                    _sb["boss_approach_dist"] = round(bdist, 1)
+                if bdist > max(env_h * 0.85, 14.0):
+                    keys, escaping = self._unwedge(slot, player, (boss_row["x"], boss_row["z"]), now)
+                    commands.append((slot, keys, .18))
+                    moves[slot] = (player, (boss_row["x"], boss_row["z"]), self.maps.get(state, player), False)
+                    steering[slot] = (player, (boss_row["x"], boss_row["z"]),
+                                      "boss_approach_unwedge" if escaping else "boss_approach")
+                    if isinstance(_sb, dict):
+                        _sb["boss_approaching"] = 1
+                    continue
             # DODGE (P1): move out of attacks during battle instead of standing still.
             # When a threat is hot and no clean shot is lined up this tick, strafe out of
             # the attack line (biased away from learned fatal spots); a lined-up shot
