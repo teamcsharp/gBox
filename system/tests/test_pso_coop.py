@@ -1301,7 +1301,7 @@ def test_advance_on_stall_warps_when_cleared_room_stalls_but_fights_first(tmp_pa
     st2 = _coop_room([], room=10)
     st2["floor"] = 2
     st2["entities"].append({"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 1., "z": 0., "room": 10})
-    assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 5) is False   # below hard cap: fight first
+    assert ctrl.advance_on_stall(st2, now=C.ADVANCE_STALL_S + 1) is False   # below hard cap: fight first
     # ABSOLUTE anti-freeze: past STALL_HARDCAP_S it warps DESPITE the live enemies.
     ctrl._last_warp_at = 0.
     assert ctrl.advance_on_stall(st2, now=C.STALL_HARDCAP_S + 1) is True
@@ -1443,6 +1443,31 @@ def test_weak_menu_visible_on_a_field_floor_does_not_freeze_play(monkeypatch):
     monkeypatch.setattr(M, "observe", lambda f: {"recognized": False})
     assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 7)) is False
     assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 0)) is True
+
+
+def test_publish_plan_emits_compact_room_graph_for_the_live_map(tmp_path):
+    """LIVE MAP: publish_plan emits a compact room-graph (current/target room, crit path,
+    edges, per-room centroids) as a bounded JSON string + flat scalars the map feed reads;
+    throttled so it republishes at most every PLAN_PUBLISH_S."""
+    import json as _json
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    ctrl._area = "ep1_f5_g"
+    ctrl._area_graph = {10: {"g1": 11}, 11: {"g2": 12}}
+    ctrl._crit_path = [10, 11, 12]
+    ctrl._p1_path = [10, 11]
+    st = state(floor=5)
+    st["players"][1].update(room=11, x=5.0, z=7.0)
+    ctrl.publish_plan(st, now=100.0)
+    s = ctrl.inputs.stats
+    plan = _json.loads(s["pso_plan_json"])
+    assert plan["current_room"] == 11 and plan["target_room"] == 12    # _path_next along the crit path
+    assert plan["floor"] == 5 and plan["area"] == "ep1_f5_g"
+    assert plan["edges"]["10"] == {"g1": 11} and plan["crit_path"] == [10, 11, 12]
+    assert plan["centroids"]["11"] == [5.0, 7.0]
+    assert s["pso_plan_current_room"] == 11 and s["pso_plan_target_room"] == 12
+    st["players"][1]["room"] = 12                                      # throttled: no republish within the window
+    ctrl.publish_plan(st, now=100.1)
+    assert _json.loads(s["pso_plan_json"])["current_room"] == 11
 
 
 def test_mid_field_reload_trusts_prior_verification_only_mid_run():

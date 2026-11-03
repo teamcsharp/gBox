@@ -790,14 +790,17 @@ FENCE_PAST_OVERSHOOT = 75.0  # how far PAST the fence to RAM-place P1 so it land
 P1_CROSS_PLACE_S = 5.0       # P1 at an open fence this long without crossing -> RAM-write it past the fence
 FENCE_GIVEUP_S = 28.0        # ANTI-STALL: attempt a fence hold at most this long, then give up and keep MOVING
 FENCE_RETRY_S = 45.0         # after giving up on a fence, explore/fight this long before re-attempting it
-ADVANCE_STALL_S = 100.0      # PERPETUAL PLAY: warp to the next floor only after this long with NO new room (a real
-                             # stuck gate). The timer RESETS on every new room reached, so natural progression to the
-                             # area's exit/telepipe is always preferred; the warp is the fallback when truly blocked.
-ADVANCE_WARP_GAP_S = 30.0    # minimum time between native floor warps (don't spam the loader)
-STALL_HARDCAP_S = 110.0      # ABSOLUTE anti-freeze: no new room for this long -> warp REGARDLESS of enemies/cleared
-                             # state (unreachable enemies behind a gate must never pin the party). Non-negotiable.
+ADVANCE_STALL_S = 15.0       # PERPETUAL PLAY (operator 11-03: ENDLESS movement, parking is unacceptable): a CLEARED
+                             # room with NO new room for this long warps to the next floor. The timer RESETS on every
+                             # new room, so natural progression is still preferred - but a gate that can't be passed
+                             # never parks the party more than ~15-20s. Boss floors are exempt (stay + kill the boss).
+ADVANCE_WARP_GAP_S = 10.0    # minimum time between native floor warps (don't spam the loader, but allow the ~20s cadence)
+STALL_HARDCAP_S = 20.0       # ABSOLUTE anti-freeze (non-boss): no new room for this long -> warp REGARDLESS of enemies/
+                             # cleared state. The party must reach a new room or new floor within ~20s, ALWAYS. Non-negotiable.
+STUCK_MOVE_S = 3.0           # P1 hasn't physically TRANSLATED (>WEDGE_MOVE) for this long -> parked: wander to break it
 BOSS_SAFETY_S = 330.0        # BOSS DEFEAT: never warp off a LIVE boss before this (~5.5 min anti-permafreeze last resort)
 BOSS_DEAD_GRACE_S = 10.0     # keep holding the boss floor this long after a boss last read alive (covers inter-phase hp==0)
+PLAN_PUBLISH_S = 0.5         # throttle for the live-map room-graph PLAN publish (telemetry, map agent consumes it)
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # DODGE / combat positioning (operator 2026-11-02: "the bots should be learning to
 # dodge - basically moving and positioning during battle"). During combat the party
@@ -1057,6 +1060,11 @@ class Controller:
         self._boss_alive_at = 0.0       # last monotonic a boss read alive (inter-phase grace)
         self._boss_seen_alive = False   # saw a live boss on the current boss floor (kill-credit guard)
         self._boss_kill_key = None      # (episode, floor) already credited a kill for (no double-count)
+        self._p1_xz = None              # P1's last position where it had translated (physical-stuck detector)
+        self._p1_moved_at = 0.0         # last monotonic P1 translated > WEDGE_MOVE (parked if stale > STUCK_MOVE_S)
+        self._stuck_phase = 0           # rotating wander heading index to break a physical park
+        self._room_centroid = {}        # room -> [x,z] last-seen P1 position (spatial node placement for the live map)
+        self._plan_pub_at = 0.0         # throttle for the room-graph plan publish
         from .pso_coop_town import TownRoute
         self.town = TownRoute(getattr(reader, "ad", None))
         self.town_enabled = False
@@ -2542,6 +2550,46 @@ class Controller:
                     st['mb_revives_%s' % suffix] = rep['revives']
                 st['mb_downed_%s' % suffix] = int(bool(rep.get('downed')))
 
+    def publish_plan(self, state, now):
+        """Publish a compact room-graph PLAN for the operator's live 2D map (the map agent
+        reads it from telemetry; the i9 crystal file is not reachable from the lilspark
+        server). Bounded JSON string (like steering_evidence_json) so it survives the
+        telemetry path, plus the dict and a few flat scalars. Includes per-room world
+        centroids (last-seen P1 position per room) for spatial node placement. Throttled,
+        fail-soft; never raises into the loop."""
+        st = getattr(self.inputs, "stats", None)
+        if not isinstance(st, dict):
+            return
+        p1 = state.get("players", {}).get(1) or {}
+        room, px, pz = p1.get("room"), p1.get("x"), p1.get("z")
+        if type(room) is int and type(px) in (int, float) and type(pz) in (int, float):
+            self._room_centroid[room] = [round(px, 1), round(pz, 1)]
+        if now - self._plan_pub_at < PLAN_PUBLISH_S:
+            return
+        self._plan_pub_at = now
+        try:
+            target = self._path_next(room) if type(room) is int else None
+        except Exception:
+            target = None
+        plan = {"area": self._area, "episode": state.get("episode"), "floor": state.get("floor"),
+                "current_room": room if type(room) is int else None, "target_room": target,
+                "crit_path": [r for r in self._crit_path][:64],
+                "path": [r for r in self._p1_path][:64],
+                "edges": {str(k): {str(dk): v for dk, v in d.items()}
+                          for k, d in list(self._area_graph.items())[:80]},
+                "centroids": {str(k): v for k, v in self._room_centroid.items()}}
+        try:
+            raw = json.dumps(plan, allow_nan=False, separators=(",", ":"))
+            if len(raw.encode()) <= 7000:
+                st["pso_plan_json"] = raw
+                st["pso_plan"] = plan
+        except (TypeError, ValueError):
+            pass
+        st["pso_plan_current_room"] = room if type(room) is int else -1
+        st["pso_plan_target_room"] = target if type(target) is int else -1
+        st["pso_plan_crit_len"] = len(self._crit_path)
+        st["pso_plan_rooms_visited"] = len(self._p1_path)
+
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
         keep the current directive. Cheap and failure-tolerant - a missing or bad
@@ -2756,6 +2804,8 @@ class Controller:
         # BOSS DEFEAT: read boss liveness BEFORE advance_on_stall so the warp is suppressed
         # while a boss lives (stay and kill it, don't warp off the boss floor).
         self._observe_boss(state, now)
+        # Publish the compact room-graph plan for the operator's live 2D map (throttled).
+        self.publish_plan(state, now)
         # Operator's guaranteed fail-safe: a stuck (or recognized) room's forward
         # gate is opened by setting its verified native stage flags - progression
         # never stalls. Done before movement so the same tick can walk through.
@@ -3094,16 +3144,39 @@ class Controller:
             commands.append((slot, movement_keys(player, waypoint), duration))
             moves[slot] = (player, waypoint, nav, not nearby)
             steering[slot] = (player, waypoint, 'native_route')
-        # NEVER STAND (operator: endless visible motion). If P1 produced NO command this
-        # tick - a combat defer/aim-pause/cooldown or a missing route would otherwise leave
-        # it standing - drive it forward toward the next objective so the navigator is
-        # always moving on screen. Only when truly idle (a fire/dodge/route tick already
-        # has a P1 command), alive, and not mid-area-load.
-        if not any(c[0] == 1 for c in commands) and not state.get("travelling"):
-            p1d = state["players"].get(1)
-            if p1d and p1d.get("hp", 0) > 0:
+        # NEVER STAND (operator 11-03: ENDLESS visible motion; parked at a fence 80s is
+        # unacceptable). Two cases, both for P1 the navigator, alive and not mid-load:
+        #  (a) truly idle - produced NO command this tick (combat defer/aim-pause/cooldown
+        #      or a missing route): drive it forward toward the next objective.
+        #  (b) PHYSICALLY parked - it issued a command (e.g. pressing an unreachable gate)
+        #      but hasn't TRANSLATED for STUCK_MOVE_S: strip that stuck push and WANDER in
+        #      a rotating heading so it visibly moves around the room / toward another exit
+        #      instead of pressing the gate. Skipped on boss floors (stay + kill the boss;
+        #      dodge already keeps it moving there).
+        p1d = state["players"].get(1)
+        if p1d and p1d.get("hp", 0) > 0 and not state.get("travelling"):
+            px, pz = p1d.get("x"), p1d.get("z")
+            moved_fresh = True
+            if type(px) in (int, float) and type(pz) in (int, float):
+                if self._p1_xz is None or math.hypot(px - self._p1_xz[0], pz - self._p1_xz[1]) > WEDGE_MOVE:
+                    self._p1_xz, self._p1_moved_at = (px, pz), now
+                moved_fresh = (now - self._p1_moved_at) < STUCK_MOVE_S
+            has_p1_cmd = any(c[0] == 1 for c in commands)
+            parked = (not moved_fresh and not self._boss_alive_now
+                      and type(px) in (int, float) and type(pz) in (int, float))
+            _sti = getattr(self.inputs, "stats", None)
+            if parked:
+                commands[:] = [c for c in commands if c[0] != 1]   # drop the stuck gate-push
+                moves.pop(1, None)
+                self._stuck_phase = (self._stuck_phase + 1) % 8
+                ang = math.radians(self._stuck_phase * 45)
+                wander = (px + math.cos(ang) * WEDGE_ESCAPE_REACH, pz + math.sin(ang) * WEDGE_ESCAPE_REACH)
+                commands.append((1, movement_keys(p1d, wander), .22))
+                steering[1] = (p1d, wander, "wander_unstick")
+                if isinstance(_sti, dict):
+                    _sti["wander_unstick"] = _sti.get("wander_unstick", 0) + 1
+            elif not has_p1_cmd:
                 self.drive_forward(state, 1, p1d, now, commands, moves, steering, fallback_slots)
-                _sti = getattr(self.inputs, "stats", None)
                 if isinstance(_sti, dict):
                     _sti["idle_drift"] = _sti.get("idle_drift", 0) + 1
         self._forward_dwell_telemetry(state, now, bool(fallback_slots))
