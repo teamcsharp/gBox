@@ -794,6 +794,8 @@ ADVANCE_STALL_S = 100.0      # PERPETUAL PLAY: warp to the next floor only after
                              # stuck gate). The timer RESETS on every new room reached, so natural progression to the
                              # area's exit/telepipe is always preferred; the warp is the fallback when truly blocked.
 ADVANCE_WARP_GAP_S = 30.0    # minimum time between native floor warps (don't spam the loader)
+STALL_HARDCAP_S = 110.0      # ABSOLUTE anti-freeze: no new room for this long -> warp REGARDLESS of enemies/cleared
+                             # state (unreachable enemies behind a gate must never pin the party). Non-negotiable.
 COMBAT_NEARBY_RADIUS = 60.0   # engage an enemy this close even when its room id does not match
 # Party model (operator 2026-11-02): P1 is the SOLE navigator - it leads, unlocks
 # every door and completes the game, never waiting. P2 (and P3/P4) are dumb
@@ -853,6 +855,7 @@ class Controller:
         self._now_ref = 0.0           # latest tick time, so select_fence_objective can honor cooldowns
         self._last_warp_at = 0.0      # last native floor-advance warp (throttle)
         self._floor_advances = 0      # how many floor-advance warps fired (flat telemetry)
+        self._hardcap_warps = 0       # how many ABSOLUTE anti-freeze warps fired (ignored enemies) (flat telemetry)
         self._adv_floor = None        # floor the stall timer is anchored to (reset the window on a floor change)
         self._fence_arm = None      # {gkey, room}: P1 reached the fence; a later room change = crossed it
         self._p2_placed = False     # P2 was RAM-placed onto the hold-switch (flat telemetry)
@@ -2068,19 +2071,29 @@ class Controller:
             if rec:
                 rec['since'] = now
             return False
-        room = p1.get('room')
-        if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
-               and e.get('room') == room for e in state.get('entities', ())[:512]):
-            return False                                  # fight first; warp only when nothing to fight
         rec = self.room_dwell.get('_cur')
         dwell = now - rec['since'] if rec else 0.0
-        if dwell < ADVANCE_STALL_S or now - self._last_warp_at < ADVANCE_WARP_GAP_S:
+        if now - self._last_warp_at < ADVANCE_WARP_GAP_S:
             return False
+        # ABSOLUTE anti-freeze backstop (NON-NEGOTIABLE): no new room for STALL_HARDCAP_S
+        # warps REGARDLESS of enemies / cleared state - unreachable enemies behind a gate
+        # (floor-7 Mine2 pin) must never freeze the party. Below the cap, the GRACEFUL
+        # path warps only in a CLEARED room after ADVANCE_STALL_S (finish fights first).
+        hardcap = dwell >= STALL_HARDCAP_S
+        if not hardcap:
+            if dwell < ADVANCE_STALL_S:
+                return False
+            room = p1.get('room')
+            if any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
+                   and e.get('room') == room for e in state.get('entities', ())[:512]):
+                return False                              # graceful: fight first
         ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
         if ad is None:
             return False
         self._last_warp_at = now
         self._floor_advances += 1
+        if hardcap:
+            self._hardcap_warps += 1
         try:
             from .pso_fence import advance_floor
             result = advance_floor(ad)
@@ -2089,6 +2102,7 @@ class Controller:
         st = getattr(self.inputs, 'stats', None)
         if isinstance(st, dict):
             st['floor_advances'] = self._floor_advances
+            st['stall_hardcap_warps'] = self._hardcap_warps
             st['floor_advance'] = result if isinstance(result, dict) else {'ok': bool(result)}
         return True
 
