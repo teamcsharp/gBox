@@ -844,6 +844,9 @@ class Controller:
         self._p2_sw_best_at = 0.0   # when P2 last got closer to the switch
         self._p1_placed = False     # P1 was RAM-placed PAST the fence (flat telemetry)
         self._p1_cross_at = 0.0     # when P1 first parked at the fence (gate open) this objective
+        self._forced_fence_coll = set()   # fence actor addrs whose collision field was force-probed (one-shot)
+        self._fence_coll_before = None    # the fence collision field's value before the probe write
+        self._fence_coll_skip = ''        # why the collision probe didn't write (class_mismatch/bad_subptr) or 'wrote'
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1744,9 +1747,51 @@ class Controller:
                 continue                              # no hold-switch for this fence
             d = math.hypot(f['x'] - px, f['z'] - pz)
             if best is None or d < best['d']:
-                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'], 'fy': f.get('y'), 'sx': sw['x'], 'sz': sw['z'],
-                        'sy': sw.get('y'), 'sroom': sw.get('room'), 'd': d}
+                best = {'fence': fk, 'fx': f['x'], 'fz': f['z'], 'fy': f.get('y'), 'fptr': f.get('ptr'),
+                        'sx': sw['x'], 'sz': sw['z'], 'sy': sw.get('y'), 'sroom': sw.get('room'), 'd': d}
         return best
+
+    def force_fence_collision_off(self, state, now):
+        """BOUNDED PROBE (operator long-shot b): the fence's gate flag is already set yet
+        it physically blocks, so the laser's COLLISION is a separate field in its collision
+        sub-object (fence+0xA4 -> +0x14 == 1 on both live up-fences). Class-VERIFY the fence
+        (object+0x0 -> 'TObjLazerFenceNorm') and, fail-closed, write that sub-object's +0x14
+        to 0 to drop the laser collision. One-shot per fence; records before. Returns the
+        sub-object +0x14 address on a write, else None."""
+        obj = self._fence_obj
+        ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if (obj is None or ad is None or not callable(getattr(ad, 'write_memory', None))
+                or not callable(getattr(ad, 'read_memory', None))
+                or state.get('verified') is not True or state.get('phase') != 14
+                or set(state.get('players', {})) != {1, 2}):
+            return None
+        fptr = obj.get('fptr')
+        try:
+            faddr = int(fptr, 16) if isinstance(fptr, str) else int(fptr)
+        except (TypeError, ValueError):
+            return None
+        if not (0x80000000 <= faddr <= 0x81800000 - 0x100) or faddr in self._forced_fence_coll:
+            return None
+        read = ad.read_memory
+        try:
+            classptr = struct.unpack('>I', read(faddr, 4))[0]                 # object+0x0 -> class-name string
+            if not (0x80000000 <= classptr <= 0x81800000 - 0x20):
+                return None
+            if read(classptr, 18) != b'TObjLazerFenceNorm':                   # CLASS VERIFY (fail-closed)
+                self._fence_coll_skip = 'class_mismatch'
+                return None
+            subptr = struct.unpack('>I', read(faddr + 0xA4, 4))[0]            # the laser collision sub-object
+            if not (0x80000000 <= subptr <= 0x81800000 - 0x40):
+                self._fence_coll_skip = 'bad_subptr'
+                return None
+            before = struct.unpack('>I', read(subptr + 0x14, 4))[0]
+        except (struct.error, OSError):
+            return None
+        ad.write_memory(subptr + 0x14, struct.pack('>I', 0))                  # candidate: collision-enable -> off
+        self._forced_fence_coll.add(faddr)
+        self._fence_coll_before = before
+        self._fence_coll_skip = 'wrote'
+        return subptr + 0x14
 
     def place_p1_across_fence(self, state, p1, now):
         """RAM fallback for the LAST step: the fence's gate flag is already set (it is
@@ -1886,6 +1931,26 @@ class Controller:
         # snaps back. Only the legitimate mechanic works: P2 PHYSICALLY walks onto the
         # switch (collision overlap drops the fence) and P1 PHYSICALLY walks through.
         if slot == 1:
+            # BOUNDED COLLISION PROBE: P1 is physically AT the fence whose gate flag is
+            # already set (logically open) yet it blocks. After a short dwell, force the
+            # laser's collision field OFF (class-verified, one-shot) and RAM-place P1 past
+            # the fence. If P1 then STICKS past it, the fence's own collision was the
+            # blocker (-> productionize); if it snaps back, the barrier is deeper. This is
+            # the operator-authorized long-shot (b), not the earlier dead placements alone.
+            fdist = math.hypot(obj['fx'] - player['x'], obj['fz'] - player['z'])
+            if fdist <= CROSS_DIST:
+                if not self._p1_cross_at:
+                    self._p1_cross_at = now
+                if now - self._p1_cross_at >= P1_CROSS_PLACE_S:
+                    self.force_fence_collision_off(state, now)      # drop the laser collision (candidate +0x14)
+                    if self.place_p1_across_fence(state, player, now):   # then test the crossing
+                        st = getattr(self.inputs, 'stats', None)
+                        if isinstance(st, dict):
+                            st['p1_role'] = 'fence_collision_probe'
+                        self._p1_cross_at = 0.0
+                        return True
+            else:
+                self._p1_cross_at = 0.0
             overshoot = FENCE_CROSS_OVERSHOOT if p2_on else 0.0
             target = gates.through_point(player['x'], player['z'], obj['fx'], obj['fz'], overshoot)
             label = 'fence_cross' if p2_on else 'fence_wait'
@@ -2154,6 +2219,9 @@ class Controller:
             _fstats['fence_objective'] = int(self._fence_obj is not None)
             _fstats['p2_placed'] = int(self._p2_placed)
             _fstats['p1_placed'] = int(self._p1_placed)
+            _fstats['fence_coll_probe'] = self._fence_coll_skip
+            if self._fence_coll_before is not None:
+                _fstats['fence_coll_before'] = self._fence_coll_before
             if self._fence_obj and p1row:
                 _fstats['fence_dist_p1'] = round(math.hypot(self._fence_obj['fx'] - p1row['x'],
                                                             self._fence_obj['fz'] - p1row['z']), 1)
