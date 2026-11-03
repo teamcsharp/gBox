@@ -2009,6 +2009,50 @@ def apply_default_speed(ad, stats):
         stats["default_speed_error"] = str(exc)[:200]
 
 
+MASTER_BUILD_TICK_S = 3.0   # throttle for the periodic master-build re-check on the co-op loop
+
+
+def apply_master_build_tick(ad, state, stats, *, force=False):
+    """Apply the operator's master build (gbox.pso_master_build) to BOTH players on
+    the co-op loop: never-miss + crit rate + random gear/weapons + 4 units + maxed
+    mag. apply_master_build_all is idempotent and fail-soft (it never raises; it
+    re-rolls the weapon only on its own interval and re-checks patches rather than
+    rewriting), so this is safe to call often. Gated to live gameplay (phase 14 on a
+    real floor); throttled to MASTER_BUILD_TICK_S but FORCED at spawn (force=True)
+    and whenever P1's room changes (area/room change). Returns True when a player's
+    weapon was re-rolled this tick, so the caller reobserves weapon ranges.
+
+    apply_master_build OWNS the weapon slot (equips, re-rolls, and re-arms after a
+    death), so pso_coop's EquipmentRecovery equip is left off to avoid fighting it."""
+    if not (state.get("verified") and state.get("phase") == 14 and state.get("floor", 0) > 0):
+        return False
+    players = state.get("players") or {}
+    room = (players.get(1) or players.get("1") or {}).get("room")
+    now = time.monotonic()
+    last = getattr(ad, "_pso_master_build_at", 0.0)
+    prev_room = getattr(ad, "_pso_master_build_room", "__none__")
+    if not force and room == prev_room and (now - last) < MASTER_BUILD_TICK_S:
+        return False
+    ad._pso_master_build_at = now
+    ad._pso_master_build_room = room
+    rerolled = False
+    try:
+        from .pso_master_build import apply_master_build_all
+        report = apply_master_build_all(ad)
+        summary = {}
+        for idx, rep in (report or {}).items():
+            weapon = rep.get("weapon") or {}
+            summary[str(idx)] = {"ok": rep.get("ok"), "lck": rep.get("lck"),
+                                 "weapon": weapon.get("code"), "rerolled": weapon.get("rerolled"),
+                                 "errors": rep.get("errors") or {}}
+            if weapon.get("rerolled"):
+                rerolled = True
+        stats["master_build"] = summary
+    except Exception as exc:                       # noqa: BLE001 - module absent pre-ff, or unexpected; never block play
+        stats["master_build_error"] = str(exc)[:160]
+    return rerolled
+
+
 def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id="", upload=None, style=None):
     if driver is None:
         raise ValueError("PSO co-op requires an autoplay driver")
@@ -2186,6 +2230,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                     stats.update(controller_mapping_verified=True, mapping_retry_backoff_s=0, mapping_last_error="")
                     apply_default_speed(ad, stats)
                     state = reader.snapshot()
+                    apply_master_build_tick(ad, state, stats, force=True)   # master build at spawn
                 if access_policy.step(state, mapped=mapped, menu_paused=menu_paused, waiting=recovery.waiting):
                     # Reobserve flags, actors and menu after any native access work.
                     solo.wait(.05, stopped)
@@ -2349,16 +2394,17 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         if recovery.waiting:
                             stats.update(recovery_state="native_control_available_planner_retrying",
                                          native_control_during_recovery=True)
-                        if equipment.tick(state, menu_allowed=True):
-                            # Existing native equipment work may have changed the
-                            # active item. Discard all pre-call plans and reobserve
-                            # actors/menu before any controller command.
+                        if apply_master_build_tick(ad, state, stats):
+                            # The master build re-rolled the weapon (it OWNS the weapon
+                            # slot; EquipmentRecovery's equip is disabled). The active
+                            # item changed: discard pre-call plans and reobserve
+                            # actors/menu/weapon ranges before any controller command.
                             invalidate_plan()
                             controller.weapon_ranges.cache.clear()
                             controller.weapon_ranges.attempted.clear()
                             controller.engagements.rows.clear()
                             inputs.release()
-                            stats["action"] = "reobserving_after_equipment_recovery"
+                            stats["action"] = "reobserving_after_master_build_weapon"
                             continue
                         stats["action"] = "coordinated_native_combat_or_navigation"
                         controller.tick(state)
