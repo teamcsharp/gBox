@@ -4373,7 +4373,7 @@ class Bot:
             # by CC_FLANK_CONE), the slow camera pan is too late — the one has already closed.
             # Use the fast quick-turn instead (damage cluster fc45a6229fe006d0: grabbed-from-behind
             # incidents while cc_turn panned too slowly for flanking threats at 100-137 deg).
-            if abs(err) > CC_CONE and not (self.bomb_phase in ("walk", "wait") and self.bomb_at is not None):
+            if abs(err) > CC_CONE and self.bomb_phase is None:
                 self.stats["quick_turns"] += 1
                 self.stats["quick_turns_flank"] = self.stats.get("quick_turns_flank", 0) + 1
                 self.quick = 2
