@@ -822,7 +822,9 @@ class Controller:
         self._forced_doors = {}     # gkey -> until: a SPECIFIC forward door force-opened (per-door, not per-room)
         self._adj_fires = 0         # how many times force_adjacent_door engaged (flat telemetry)
         self._adj_last = {}         # last force_adjacent_door result {room, gkey, written, flags} (flat telemetry)
-        self._coord_target = {}     # (B) committed coordinate-drive forward door {gkey, since}
+        self._adj_skip = ''         # last force_adjacent_door skip reason (flat telemetry: WHY it refused)
+        self._coord_target = {}     # (B) committed coordinate-drive forward door {gkey, dest, room, since}
+        self._coord_grace = {}      # (B) grace timer on a forward door before committing {gkey, since}
         self.knowledge = None       # persistent per-room-template gate/flag store (set in play())
         self.wedge = {}             # slot -> per-slot translation-stall (wall-wedge) recovery state
         self.door_cooldown = {}     # P1 cross-room: gkey -> until; brief anti-rebounce on a just-crossed door
@@ -1328,22 +1330,44 @@ class Controller:
         # and we re-check the room is clear here. Commit is per-door and time-bounded.
         door = self._p1_door if (isinstance(self._p1_door, tuple) and len(self._p1_door) == 3) else None
         coord_drive = False
-        if slot == 1 and self.forward_kind.get(slot) == 'walk_through' and door is not None:
+        if slot == 1:
             room_clear = not any(e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float)
                                  and e['hp'] > 0 and e.get('room') == player.get('room')
                                  for e in state.get('entities', ())[:512])
+            room = player.get('room')
             lock = self._coord_target
-            if lock.get('gkey') != door or (now - lock.get('since', now)) > COORD_DRIVE_MAX_S:
-                lock = self._coord_target = {'gkey': door, 'since': now}
-            ddist = math.hypot(door[1] - player["x"], door[2] - player["z"])
-            if room_clear and not route_exact and (now - lock['since']) >= COORD_DRIVE_AFTER_S:
+            # Expire the commit when P1 leaves the room (crossed / moved on) or it times out.
+            if lock and (lock.get('room') != room or (now - lock.get('since', now)) > COORD_DRIVE_MAX_S):
+                lock = self._coord_target = {}
+            if lock.get('gkey') and room_clear:
+                # HOLD the committed door: drive STRAIGHT at its STORED coords every tick,
+                # regardless of what forward_fallback re-picks this frame or route_exact -
+                # so door_dist shrinks monotonically instead of toggling to a new target.
                 coord_drive = True
-                waypoint = dest                         # straight at the overshot door target, not A*'s waypoint
+                cgkey, cdest = lock['gkey'], lock['dest']
+                waypoint = cdest
+                ddist = math.hypot(cgkey[1] - player["x"], cgkey[2] - player["z"])
                 if ddist <= COORD_FORCE_DIST:
-                    self.force_adjacent_door(state, player, door, now)
-            elif ddist <= FORCE_DOOR_DIST and not route_exact:
-                # Already right at the door: open it immediately (original trigger).
-                self.force_adjacent_door(state, player, door, now)
+                    self.force_adjacent_door(state, player, cgkey, now)
+            elif (door is not None and self.forward_kind.get(slot) == 'walk_through'
+                  and room_clear and not route_exact):
+                # Not committed yet: run a grace timer on THIS door; commit after the grace
+                # (then the HOLD branch above drives it). Also open it immediately if P1 is
+                # already right on it.
+                grace = self._coord_grace
+                if grace.get('gkey') != door:
+                    grace = self._coord_grace = {'gkey': door, 'since': now}
+                ddist = math.hypot(door[1] - player["x"], door[2] - player["z"])
+                if (now - grace['since']) >= COORD_DRIVE_AFTER_S:
+                    self._coord_target = {'gkey': door, 'dest': dest, 'room': room, 'since': now}
+                    coord_drive = True
+                    waypoint = dest
+                    if ddist <= COORD_FORCE_DIST:
+                        self.force_adjacent_door(state, player, door, now)
+                elif ddist <= FORCE_DOOR_DIST:
+                    self.force_adjacent_door(state, player, door, now)   # already on it: open now
+            else:
+                ddist = (math.hypot(door[1] - player["x"], door[2] - player["z"]) if door else -1.0)
             if isinstance(getattr(self.inputs, 'stats', None), dict):
                 self.inputs.stats['coord_drive'] = int(coord_drive)
                 self.inputs.stats['coord_drive_door_dist'] = round(ddist, 1)
@@ -1595,26 +1619,29 @@ class Controller:
         switches + the nearest barrier and never a plain TObjDoor's own flag, which is
         exactly why the exit door stayed shut. Same hard guards as force_forward_unlock."""
         from . import pso_coop_gates as gates
+        def skip(reason):
+            self._adj_skip = reason           # flat-telemetry: WHY the door-force refused
+            return None
         ad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
         if ad is None or not callable(getattr(ad, 'write_memory', None)) or not callable(getattr(ad, 'read_memory', None)):
-            return None
+            return skip('no_adapter')
         if (state.get('verified') is not True or state.get('phase') != 14
                 or type(state.get('floor')) is not int or not 1 <= state['floor'] <= 17
                 or set(state.get('players', {})) != {1, 2} or not player):
-            return None
+            return skip('state_guard')
         if self._forced_doors.get(gkey, 0.) > now:
-            return None
+            return skip('rearm_window')       # already fired for this door within FORCE_DOOR_RETRY_S
         read, floor, room = ad.read_memory, state['floor'], player.get('room')
         if not gates.stage_flag_code_ok(read):
             self._force_log(room, 'adj_build_signature_mismatch')
-            return None
+            return skip('build_signature')
         try:
             group = struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0]
         except (struct.error, OSError):
-            return None
+            return skip('group_ptr_read')
         if group != floor:
             self._force_log(room, f'adj_group_{group}_ne_floor_{floor}')
-            return None
+            return skip(f'group_{group}_ne_floor_{floor}')
         ent = None
         for e in state.get('entities', ())[:512]:
             try:
@@ -1624,24 +1651,24 @@ class Controller:
             except (KeyError, TypeError, ValueError):
                 continue
         if ent is None:
-            return None
+            return skip('door_not_in_entities')
         # ONLY this door's own gating flag - not the room's other flags (that is
         # force_forward_unlock's one-shot job). Setting unrelated stage flags on every
         # re-arm across many doors risks corrupting progression, so keep it surgical.
         try:
             idxs = [struct.unpack('>I', read(int(ent['ptr'], 16) + 0xC8, 4))[0] & 0xffff]
         except (ValueError, KeyError, TypeError, struct.error, OSError):
-            return None
+            return skip('door_flag_read')
         loci = []
         for idx in idxs:
             locus = gates.stage_flag_locus(group, idx)
             if locus is None:
                 self._force_log(room, f'adj_flag_out_of_range_{idx}')
-                return None
+                return skip(f'flag_out_of_range_{idx}')
             loci.append((locus[0], locus[1]))
         if not gates.stage_flag_code_ok(read) or struct.unpack('>I', read(gates.STAGE_FLAG_GROUP_PTR, 4))[0] != floor:
             self._force_log(room, 'adj_binding_changed')
-            return None
+            return skip('binding_changed')
         written = []
         for (addr, mask), idx in zip(loci, idxs):
             try:
@@ -1654,6 +1681,7 @@ class Controller:
             written.append(idx)
         self._forced_doors[gkey] = now + FORCE_DOOR_RETRY_S
         self._adj_fires += 1
+        self._adj_skip = 'ok' if written else 'already_set'   # flags set (or all already set)
         self._adj_last = {'room': room, 'gkey': str(gkey), 'written': len(written), 'flags': len(idxs)}
         stats = getattr(self.inputs, 'stats', None)
         if isinstance(stats, dict):
@@ -1836,6 +1864,7 @@ class Controller:
             if e.get('kind') == 'enemy' and type(e.get('hp')) in (int, float) and e['hp'] > 0
             and e.get('room') == room)
         stats['forced_adj_door_fires'] = self._adj_fires
+        stats['forced_adj_door_skip'] = self._adj_skip
         if self._adj_last:
             stats['forced_adj_door_written'] = self._adj_last.get('written', 0)
             stats['forced_adj_door_room'] = self._adj_last.get('room')
