@@ -3171,6 +3171,17 @@ def state_identity(state):
             tuple((k, p["ptr"], p.get("room"), bool(p.get("hp"))) for k, p in sorted(state.get("players", {}).items())))
 
 
+def mid_field_reload(state):
+    """True when the live state is an ALREADY-RUNNING mid-FIELD co-op session: verified
+    phase-14 gameplay on a real floor (>0), settled (not travelling), both players present.
+    A hot-reload here must TRUST the run-start controller verification and skip the
+    Pioneer-2 two-pad town probe (which requires floor 0 and would raise Unsupported,
+    killing play() and rolling the reload back). Town starts (floor 0) return False, so
+    a genuine run-start still runs the real probe."""
+    return bool(state.get("verified") and state.get("phase") == 14 and state.get("floor", 0) > 0
+                and not state.get("travelling") and set(state.get("players", {})) == {1, 2})
+
+
 def observe_menu_controls(menu, frame, state, controller, inputs, stats):
     """A visible menu can coexist with phase 14; stop movement before either pad path."""
     paused = menu.observe_frame(frame, native_gameplay=bool(state.get("verified") and state.get("phase") == 14),
@@ -3525,15 +3536,34 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                 if state.get("verified") and not mapped and not menu_paused and not recovery.waiting:
                     retained = mapping_continuity.restore(ad, reader, session_id, game or {}, stopped)
                     stats.update(mapping_continuity.diagnostics(ad))
+                    # HOT-RELOAD INTO A RUNNING MID-FIELD SESSION (operator: the reload kept
+                    # rolling back). A fresh controller restarts mapping; when the reusable
+                    # attestation can't revalidate, prove() runs the TWO-PAD TOWN PROBE, which
+                    # requires Pioneer 2 (floor 0) and RAISES Unsupported on a real floor -
+                    # that uncaught raise killed play() and hot_reload reverted to the old
+                    # (starving) code. But the controllers were verified at run start and the
+                    # bot has been DRIVING them here (we are mid-field), so that probe is a
+                    # run-START gate, not a per-reload gate: trust the prior verification and
+                    # resume driving WITHOUT a town probe, instead of dying. The real town
+                    # probe still runs for a genuine floor-0 run start.
+                    mid_run_resume = (retained is None and mid_field_reload(state)
+                        and continuous_requested(driver, session_id))
                     if retained is not None:
                         stats["controller_mapping"] = retained['probe']
                         state = retained['state']
                         stats['controller_mapping_source'] = 'same_live_adapter_revalidated'
+                    elif mid_run_resume:
+                        stats['controller_mapping_source'] = 'mid_run_reload_trusted_prior_verification'
+                        stats['controller_mapping_mid_run_resumed'] = stats.get('controller_mapping_mid_run_resumed', 0) + 1
                     else:
                         try:
                             stats["controller_mapping"] = mapping_continuity.prove(
                                 ad, reader, inputs, state, session_id, game or {}, stopped, mapping_probe)
-                        except MappingPending as exc:
+                        except (MappingPending, Unsupported) as exc:
+                            # Never let a mapping precondition KILL play() during continuous
+                            # play (that rolls back a hot-reload). Mid-run we cannot run the
+                            # town probe, so wait + retry instead of propagating; only a true
+                            # non-continuous start still raises.
                             if not continuous_requested(driver, session_id):
                                 raise
                             invalidate_plan()
