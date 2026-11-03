@@ -104,8 +104,10 @@ def _derive_gate(ps):
     """A candidate field+value-set that occurs while attacking (player+0xA8 hit-records > 0)
     but NEVER while idle, with enough samples on both sides, is a confident attack gate."""
     best = None
-    for field, off in (("s2e4", 0x2E4), ("s324", 0x324)):
-        atk, idle = ps[f"{field}_atk"], ps[f"{field}_idle"]
+    # +0x326 is the TObject action-state (confirmed as the Dragon's phase field, and the
+    # DC attack-state analog); it's the primary candidate. +0x2E4 / +0x324 are fallbacks.
+    for field, off in (("s326", 0x326), ("s2e4", 0x2E4), ("s324", 0x324)):
+        atk, idle = ps.get(f"{field}_atk", {}), ps.get(f"{field}_idle", {})
         if sum(atk.values()) < 30 or sum(idle.values()) < 30:
             continue
         attack_only = {v for v in atk if v not in idle}
@@ -122,24 +124,26 @@ def _derive_gate(ps):
 def probe_tick(ad, player_index, m, p):
     """Read-only in-bot attack-state probe. The confirmed 'attack active' signal is
     player+0xA8 (the live attack hit-record count the hitbox updater 0x80154E3C iterates
-    during a swing); this samples the candidate gate fields (+0x324 control mode, +0x2E4
-    action id) against it and learns which values mean 'attacking'. Fail-soft; returns flat
-    telemetry. Resolves ATTACK_STATE_OFF/MATCH for the phase-(b) dispatcher-v5 extra-update."""
+    during a swing); this samples candidate gate fields against it and learns which values
+    mean 'attacking'. Primary candidate is player+0x326 (the TObject action-state), with
+    +0x2E4 / +0x324 as fallbacks. Fail-soft; returns flat telemetry. Resolves the attack
+    gate (ATTACK_STATE_OFF/MATCH) for the phase-(b) dispatcher-v5 extra-update."""
     try:
         a8 = m.u32(p + 0xA8)
-        s324 = m.u16(p + 0x324)
-        s2e4 = m.u16(p + 0x2E4)
+        fields = (("s326", m.u16(p + 0x326)), ("s2e4", m.u16(p + 0x2E4)), ("s324", m.u16(p + 0x324)))
         attacking = a8 > 0
         with _probe_guard:
             st = getattr(ad, "_pso_speed_probe", None)
             if st is None:
                 st = {}
                 ad._pso_speed_probe = st
-            ps = st.setdefault(player_index, {"n": 0, "atk": 0, "s324_atk": {}, "s324_idle": {},
-                                              "s2e4_atk": {}, "s2e4_idle": {}})
+            ps = st.setdefault(player_index, {"n": 0, "atk": 0})
+            for fld, _ in fields:                        # ensure buckets (persisted dicts may predate +0x326)
+                ps.setdefault(f"{fld}_atk", {})
+                ps.setdefault(f"{fld}_idle", {})
             ps["n"] += 1
             ps["atk"] += int(attacking)
-            for field, val in (("s324", s324), ("s2e4", s2e4)):
+            for field, val in fields:
                 b = ps[f"{field}_atk" if attacking else f"{field}_idle"]
                 b[val] = b.get(val, 0) + 1
             gate = _derive_gate(ps)
