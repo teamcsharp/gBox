@@ -2419,6 +2419,13 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                                  second_pad_polite_supported=inputs.has_polite)
                 native_retry_ready = (native_retry_identity == state_identity(state) and
                                       continuous_requested(driver, session_id))
+                # Maintain the operator's master build EVERY loop, INDEPENDENT of nav /
+                # recovery / mapping state, so never-miss + crit + gear persist (and
+                # stats["master_build"] stays populated) even while navigation is stuck
+                # or recovering - previously the only call sat inside the healthy-play
+                # branch below, so a stuck/recovering bot stopped re-applying the build.
+                # Idempotent and cheap; its own gate is phase-14 gameplay on a real floor.
+                build_rerolled = apply_master_build_tick(ad, state, stats)
                 if mapped and state.get("verified") and (not recovery.waiting or native_retry_ready):
                     # Reobserve after any planner input; Start/menu overlays leave
                     # native phase 14 unchanged and must never receive steering/L.
@@ -2427,7 +2434,7 @@ def play(ad, send, stopped, *, stats=None, driver=None, game=None, session_id=""
                         if recovery.waiting:
                             stats.update(recovery_state="native_control_available_planner_retrying",
                                          native_control_during_recovery=True)
-                        if apply_master_build_tick(ad, state, stats):
+                        if build_rerolled:
                             # The master build re-rolled the weapon (it OWNS the weapon
                             # slot; EquipmentRecovery's equip is disabled). The active
                             # item changed: discard pre-call plans and reobserve
