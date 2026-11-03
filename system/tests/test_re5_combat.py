@@ -644,6 +644,32 @@ def test_weapon_ready_action_and_first_hit_allow_fire_when_pose_byte_lags():
     assert bot.stats["shots"] == 0
 
 
+def test_unraised_gun_withheld_off_axis_even_at_close_range(monkeypatch):
+    # cluster #5128: an unraised gun (pose byte lagging behind the action object) fired at 211 cm, 47 deg off
+    # heading - the "coming up" exception is for a Majini at arm's length IN FRONT, not off-axis. The cluster's cause.
+    m = world(laser_dot=(0.0, 110.0, 400.0), aiming=False, act_vt=C.FIRE_VT)
+    m.put(LASER + C.LASER_ORIGIN, ">3f", 0.0, 0.0, 0.0)   # the ray is gone: the gate under test stands alone
+    bot = C.Combat(m, {}, lessons=lambda e: None)
+    s = snap(m, enemy=(0.0, 0.0, 400.0))
+    s["player"]["rot"] = -0.82  # 47 deg to the right of the target: outside READY_FIRE_FACING (25 deg)
+    s["player"]["action"] = 4   # hit-recovery: the action object says firing, the pose byte does not (act_seen keeps the fire vtable)
+    hold = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert "r1" not in hold and "l1" not in hold
+    assert bot.stats["fire_gate"] == "gun coming up: hold fire"
+
+
+def test_unraised_gate_still_fires_on_a_close_faced_target(monkeypatch):
+    # unchanged: the gate's original purpose - a Majini at 4 m with the aim on him gets the shot while the gun comes up.
+    m = world(laser_dot=(0.0, 110.0, 400.0), aiming=False, act_vt=C.FIRE_VT)
+    bot = C.Combat(m, {}, lessons=lambda e: None)
+    s = snap(m, enemy=(0.0, 0.0, 400.0))
+    s["player"]["rot"] = -0.2   # 11 deg off heading: inside the body's window
+    s["player"]["action"] = 2
+    hold = bot.tick(s, s["player"], s["enemies"][0], 0.0)["hold"]
+    assert {"l1", "r1"} <= hold
+    assert bot.stats["fire_gate"] == "on him"
+
+
 def test_close_hourglass_punch_still_wins_over_an_exposed_enemy(tmp_path):
     from gbox.mercs.titles import re5_ps3 as R
 
