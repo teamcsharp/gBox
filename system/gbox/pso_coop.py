@@ -1047,6 +1047,7 @@ class Controller:
         self.combat_status = {}
         self.death_memory = DeathMemory(getattr(reader, 'ad', None))  # death-driven learning consumer
         self._dodges = 0            # how many dodge (reposition-during-combat) pulses fired (flat telemetry)
+        self._boss_adv = None       # per-tick boss weak-point advisor result (pso_boss_strategy)
         from .pso_coop_town import TownRoute
         self.town = TownRoute(getattr(reader, "ad", None))
         self.town_enabled = False
@@ -1740,6 +1741,10 @@ class Controller:
         threats = sorted((e for e in enemies if relevant(e)),
                          key=lambda e: math.hypot(e["x"] - px, e["z"] - pz))
         target = next((e for e in threats if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+        # BOSS DEFEAT: followers also focus-fire the advisor's boss weak point.
+        boss_row = self._boss_target_row(player)
+        if boss_row is not None:
+            target = boss_row
         # DODGE (follower): a swarm bot also moves out of attacks instead of tanking.
         # When a threat is hot and no clean shot is lined up this tick, strafe out of the
         # attack line (biased away from learned fatal spots) rather than standing to aim.
@@ -2434,6 +2439,24 @@ class Controller:
         st["dodge_aimed"] = int(dodge["aimed"])
         st["dodge_death_penalty"] = dodge["penalty"]
 
+    def _boss_target_row(self, player):
+        """BOSS DEFEAT: turn the advisor's weak point into an enemy-shaped target row so
+        the existing aim/fire pipeline (attack_geometry + envelope + fire cadence) shoots
+        the boss's exposed section. Returns None off-boss / on any uncertainty, so normal
+        targeting is unchanged. Weak point is the boss body-centre until sub-part offsets
+        are pinned (interface stays the same when the build agent refines it)."""
+        adv = self._boss_adv
+        if not isinstance(adv, dict) or not adv.get('active'):
+            return None
+        wp = adv.get('weakpoint') if isinstance(adv.get('weakpoint'), dict) else adv.get('weakpoint_pos')
+        if not isinstance(wp, dict) or type(wp.get('x')) not in (int, float) or type(wp.get('z')) not in (int, float):
+            return None
+        return {'kind': 'enemy', 'class': wp.get('class') or adv.get('boss') or 'TBoss',
+                'ptr': wp.get('ptr') or ('boss:%s' % (adv.get('boss') or adv.get('floor'))),
+                'x': float(wp['x']), 'z': float(wp['z']),
+                'y': float(wp.get('y') if type(wp.get('y')) in (int, float) else (player.get('y') or 0.)),
+                'hp': wp.get('hp', 1), 'hp_max': wp.get('hp_max', 1), 'room': player.get('room')}
+
     def load_directive(self, now):
         """Poll the operator's map-directive file (RTS click) by mtime; parse and
         keep the current directive. Cheap and failure-tolerant - a missing or bad
@@ -2624,6 +2647,24 @@ class Controller:
         from .pso_coop_frontier import same_room_threats
         now = time.monotonic()
         enemies = [e for e in state["entities"] if e.get("kind") == "enemy" and e.get("hp", 0) > 0]
+        # BOSS DEFEAT: on a boss floor consult the read-only weak-point advisor
+        # (nav agent's gbox.pso_boss_strategy) ONCE per tick. When active it names the
+        # boss's exposed weak section to aim at + the hazard to dodge; both bots then
+        # PRIORITISE firing at it (via _boss_target_row below) instead of milling the
+        # arena. Cheap, fail-soft, read-only: active=False on any uncertainty, so normal
+        # rooms are untouched. Surfaces flat boss_* telemetry.
+        self._boss_adv = None
+        _bad = getattr(self.reader, 'ad', None) or getattr(self.inputs, 'ad', None)
+        if _bad is not None and state.get('floor', 0) > 0:
+            try:
+                from .pso_boss_strategy import boss_target, boss_telemetry
+                self._boss_adv = boss_target(_bad)
+                bt = boss_telemetry(_bad)
+                st = getattr(self.inputs, 'stats', None)
+                if isinstance(st, dict) and isinstance(bt, dict):
+                    st.update({k: v for k, v in bt.items() if not isinstance(v, (dict, list))})
+            except Exception:
+                self._boss_adv = None
         # Operator's guaranteed fail-safe: a stuck (or recognized) room's forward
         # gate is opened by setting its verified native stage flags - progression
         # never stalls. Done before movement so the same tick can walk through.
@@ -2763,6 +2804,12 @@ class Controller:
                                  if math.hypot(e["x"] - player["x"], e["z"] - player["z"]) <= COMBAT_NEARBY_RADIUS),
                                 key=lambda e: math.hypot(e["x"] - player["x"], e["z"] - player["z"]))
             target = next((e for e in nearby if self.cooldown.get((slot, e["ptr"]), 0) <= now), None)
+            # BOSS DEFEAT: on a boss floor, PRIORITISE the advisor's weak point over the
+            # nearest mob so the bot actually brings the boss down (aim/fire pipeline below
+            # handles it); dodge still keeps it moving between shots.
+            boss_row = self._boss_target_row(player)
+            if boss_row is not None:
+                target = boss_row
             # DODGE (P1): move out of attacks during battle instead of standing still.
             # When a threat is hot and no clean shot is lined up this tick, strafe out of
             # the attack line (biased away from learned fatal spots); a lined-up shot

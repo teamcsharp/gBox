@@ -47,6 +47,8 @@ class MenuProgress:
         self._cancel_frame = None
         self._exit_samples = 0
         self._exit_frame = None
+        self._field_clear = 0        # consecutive RAM-field-gameplay frames with NO menu visible (freeze-resume)
+        self._field_frame = None
         self._saved_selected = set()
         self.observation = {}
 
@@ -65,7 +67,16 @@ class MenuProgress:
         license_menu = observe(frame)
         self.observation = license_menu if license_menu.get('recognized') else observed
         area = tuple(identity[:3]) if isinstance(identity, (tuple, list)) and len(identity) >= 3 else None
-        visible = bool(license_menu.get('recognized') or observed.get('recognized') or observed.get('menu_visible'))
+        recognized_menu = bool(license_menu.get('recognized') or observed.get('recognized'))
+        field_now = bool(native_gameplay and area and area[0] == 14 and area[2] not in (None, 0))
+        visible = bool(recognized_menu or observed.get('menu_visible'))
+        # OPERATOR FREEZE FIX (2026-11-03): on a RAM-confirmed FIELD floor (phase 14,
+        # floor > 0), a weak HUD-only "menu_visible" with NO recognized menu layout must
+        # NOT freeze play - a boot/title/license layout cannot legitimately be on a real
+        # field floor, so trust RAM and keep navigating/fighting. A genuinely recognized
+        # in-game menu still pauses (handled by the menu path + the warp backstop).
+        if visible and field_now and not recognized_menu:
+            visible = False
         if visible:
             if not self._controls_paused:
                 self._pause_identity = area
@@ -83,11 +94,25 @@ class MenuProgress:
             elif observed.get('frame_sha256') != self._exit_frame:
                 self._exit_samples += 1
                 self._exit_frame = observed['frame_sha256']
-            if changed_area or self._exit_samples >= 2:
+            # OPERATOR FREEZE FIX (2026-11-03): PSO field play is RAM-driven. If RAM now
+            # confirms verified FIELD gameplay (phase 14, a real floor > 0) and the frame
+            # shows the gameplay HUD with NO menu visible, the pause latch was a transient
+            # or now-closed menu (there was no B-cancel, so _cancel_frame is None and the
+            # exit-sample path can never fire). Resume nav/combat after two stable gameplay
+            # frames instead of standing frozen until the floor changes - that latch was
+            # the "characters standing still for ~85s until the warp" the operator saw.
+            field_resume = bool(native_gameplay and area and area[0] == 14 and
+                area[2] not in (None, 0) and not visible and observed.get('gameplay_visible'))
+            if not field_resume:
+                self._field_clear, self._field_frame = 0, None
+            elif observed.get('frame_sha256') != self._field_frame:
+                self._field_clear += 1
+                self._field_frame = observed.get('frame_sha256')
+            if changed_area or self._exit_samples >= 2 or self._field_clear >= 2:
                 self._controls_paused = False
                 self._pause_identity = self._cancel_frame = None
-                self._exit_samples = 0
-                self._exit_frame = None
+                self._exit_samples = self._field_clear = 0
+                self._exit_frame = self._field_frame = None
         return self._controls_paused
 
     def review(self, plan, commands, identity, *, frame=None, fresh_frame=None, native_gameplay=False,

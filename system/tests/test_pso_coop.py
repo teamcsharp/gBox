@@ -1342,18 +1342,21 @@ def test_menu_unstick_warps_instead_of_stopping_and_is_throttled(monkeypatch):
     assert stats["menu_stuck_warps"] == 3 and stats["menu_stuck_warp_ok"] is False
 
 
-def test_death_memory_ingests_records_and_repels_from_fatal_spots():
-    """DEATH-DRIVEN LEARNING consumer: reads down-and-revive records (schema-adaptive
-    over common key spellings), buckets fatal spots per area, and exposes a penalty +
-    an avoid vector so positioning biases AWAY from where the party died. Dedups and
-    is throttled so re-reads don't double-count."""
-    ad = SimpleNamespace()
-    dm = C.DeathMemory(ad)
-    ad._pso_deaths = [
-        {"player": 1, "episode": 1, "floor": 11, "x": 100.0, "z": 0.0, "cause": "TBossDragon", "timestamp": 1},
-        {"player": 2, "ep": 1, "floor": 11, "pos_x": 105.0, "pos_z": 5.0, "reason": "fire", "ts": 2},
-        {"player": 1, "episode": 1, "floor": 11},                       # no position -> ignored
+def test_death_memory_ingests_records_and_repels_from_fatal_spots(monkeypatch):
+    """DEATH-DRIVEN LEARNING consumer: reads the build side's death log via
+    pso_survival.read_deaths (schema-adaptive over key spellings), buckets fatal spots
+    per area, and exposes a penalty + an avoid vector so positioning biases AWAY from
+    where the party died. Dedups and is throttled so re-reads don't double-count."""
+    from gbox import pso_survival
+    recs = [
+        {"player": 1, "episode": 1, "floor": 11, "x": 100.0, "z": 0.0, "cause": "hp_zero", "ts": 1},
+        {"player": 2, "ep": 1, "floor": 11, "pos_x": 105.0, "pos_z": 5.0, "reason": "scape_doll_consumed", "ts": 2},
+        {"player": 1, "episode": 1, "floor": 11, "ts": 3},              # no position -> ignored
     ]
+    monkeypatch.setattr(pso_survival, "read_deaths", lambda ad, limit=200: [dict(r) for r in recs])
+    monkeypatch.setattr(pso_survival, "death_stats", lambda ad: {"revives_p1": 1, "revives_p2": 1, "total": 2,
+        "last_death": {"area": "Dragon", "x": 105.0, "z": 5.0, "cause": "scape_doll_consumed"}})
+    dm = C.DeathMemory(SimpleNamespace())
     dm.refresh(now=1000.0)
     assert dm._count == 2                                                # two with positions ingested, one skipped
     assert dm.penalty(1, 11, 100.0, 0.0) > 0                            # on the fatal cluster
@@ -1365,10 +1368,12 @@ def test_death_memory_ingests_records_and_repels_from_fatal_spots():
     assert dm._count == 2
     s = dm.stats(1, 11, 100.0, 0.0)
     assert s["deaths_seen"] == 2 and s["death_buckets"] >= 1 and s["death_penalty_here"] > 0
-    assert s["death_source"] == "ad._pso_deaths"
+    assert s["death_source"] == "pso_survival.read_deaths"
+    assert s["revives_p1"] == 1 and s["revives_p2"] == 1
+    assert s["last_death"] == "Dragon@105,5:scape_doll_consumed"
 
 
-def test_combat_dodge_strafes_out_of_a_hot_attack_but_fires_a_lined_up_shot(tmp_path):
+def test_combat_dodge_strafes_out_of_a_hot_attack_but_fires_a_lined_up_shot(tmp_path, monkeypatch):
     """DODGE: during combat a bot STRAFES out of a hot attack line instead of standing
     still - unless a clean shot is lined up THIS tick, in which case it fires (and
     dodges next tick). A logged fatal spot biases the strafe to the opposite side."""
@@ -1390,11 +1395,75 @@ def test_combat_dodge_strafes_out_of_a_hot_attack_but_fires_a_lined_up_shot(tmp_
     # No enemy anywhere near -> nothing to dodge.
     far = dict(enemy, x=500., z=500.)
     assert ctrl.combat_dodge(st, 1, p1, [far], env, far, now=100.) is None
-    # Death bias: a logged fatal spot on the +x side pushes the strafe to -x (lright).
-    ctrl.death_memory._ad._pso_deaths = [{"episode": 1, "floor": 11, "x": 40., "z": 0., "ts": 1}]
+    # Death bias: an enemy at 45u (aimed -> hot, but beyond the critical blend) with a
+    # logged fatal spot on the +x side flips the strafe from +x (lleft) to -x (lright).
+    aim = {"class": "TObjEneMoja", "kind": "enemy", "hp": 50, "x": 0., "z": 45., "y": 0.,
+           "heading_deg": 180., "ptr": "A2"}
+    no_bias = ctrl.combat_dodge(st, 1, p1, [aim], env, aim, now=199.)
+    assert no_bias["act"] is True and "lleft" in no_bias["keys"]       # no deaths yet -> default +x strafe
+    from gbox import pso_survival
+    monkeypatch.setattr(pso_survival, "read_deaths",
+                        lambda ad, limit=200: [{"episode": 1, "floor": 11, "x": 40., "z": 0., "ts": 1}])
+    monkeypatch.setattr(pso_survival, "death_stats", lambda ad: {})
     ctrl.death_memory.refresh(now=200.)
-    d3 = ctrl.combat_dodge(st, 1, p1, [enemy], env, enemy, now=200.)
-    assert d3["act"] is True and "lright" in d3["keys"]
+    biased = ctrl.combat_dodge(st, 1, p1, [aim], env, aim, now=200.)
+    assert biased["act"] is True and "lright" in biased["keys"]       # fatal spot flips it to -x
+
+
+def test_menu_latch_resumes_on_ram_field_gameplay_without_area_change(monkeypatch):
+    """OPERATOR FREEZE FIX: a menu latch during RAM field gameplay must NOT freeze the
+    party until the floor warps. Once the menu is gone and RAM confirms field gameplay
+    (phase 14, floor > 0), two stable gameplay frames resume nav/combat - no area change
+    required (that latch was the ~85s standing-still-until-warp)."""
+    from gbox import pso_coop_menu as M
+    seq = {"menu": True}
+    def fake_boot(frame):
+        if seq["menu"]:
+            return {"recognized": True, "menu": "ingame_start", "menu_visible": True,
+                    "gameplay_visible": False, "frame_sha256": "m"}
+        return {"recognized": False, "menu": None, "menu_visible": False,
+                "gameplay_visible": True, "frame_sha256": frame}
+    monkeypatch.setattr(M, "observe_boot", fake_boot)
+    monkeypatch.setattr(M, "observe", lambda f: {"recognized": False})
+    guard = M.MenuProgress(2)
+    assert guard.observe_frame("f0", native_gameplay=True, identity=(14, 1, 7)) is True
+    assert guard.controls_paused
+    seq["menu"] = False
+    assert guard.observe_frame("f1", native_gameplay=True, identity=(14, 1, 7)) is True   # 1 clear frame
+    assert guard.observe_frame("f2", native_gameplay=True, identity=(14, 1, 7)) is False  # 2 -> resumed
+    assert not guard.controls_paused
+
+
+def test_weak_menu_visible_on_a_field_floor_does_not_freeze_play(monkeypatch):
+    """A weak HUD-only menu_visible (no recognized layout) must not latch on a real field
+    floor - RAM is the authority there. At town (floor 0) the same signal still pauses."""
+    from gbox import pso_coop_menu as M
+    monkeypatch.setattr(M, "observe_boot", lambda f: {"recognized": False, "menu_visible": True,
+                                                      "gameplay_visible": False, "frame_sha256": f})
+    monkeypatch.setattr(M, "observe", lambda f: {"recognized": False})
+    assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 7)) is False
+    assert M.MenuProgress(2).observe_frame("f", native_gameplay=True, identity=(14, 1, 0)) is True
+
+
+def test_boss_target_row_prioritises_the_advisor_weak_point(tmp_path):
+    """BOSS DEFEAT wiring: when the advisor is active the combat loop targets the boss
+    weak point (an enemy-shaped row the aim/fire pipeline uses); off-boss it is None so
+    normal targeting is unchanged."""
+    ctrl = _controller(tmp_path, ad=SimpleNamespace())
+    player = {"x": 0., "z": 0., "y": 0., "room": 5, "heading_deg": 0.}
+    ctrl._boss_adv = None
+    assert ctrl._boss_target_row(player) is None
+    ctrl._boss_adv = {"active": False}
+    assert ctrl._boss_target_row(player) is None
+    ctrl._boss_adv = {"active": True, "boss": "Dragon", "floor": 11,
+                      "weakpoint": {"ptr": "B1", "class": "TBossDragon", "hp": 9000, "hp_max": 9000,
+                                    "x": 120., "z": 10., "y": 2.}}
+    row = ctrl._boss_target_row(player)
+    assert row is not None and row["kind"] == "enemy" and row["ptr"] == "B1"
+    assert (row["x"], row["z"], row["room"]) == (120., 10., 5)
+    ctrl._boss_adv = {"active": True, "boss": "VolOpt", "weakpoint_pos": {"x": 5., "z": 6.}}
+    row2 = ctrl._boss_target_row(player)
+    assert row2 is not None and (row2["x"], row2["z"], row2["y"]) == (5., 6., 0.)
 
 
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
