@@ -1244,6 +1244,38 @@ def test_force_fence_collision_off_is_class_verified_and_writes_the_sub_object(t
     assert ctrl2.force_fence_collision_off(st, now=100.) is None
 
 
+def test_physical_hold_p2_fine_approach_and_p1_crosses_only_when_fence_down(tmp_path):
+    """The physical two-player hold primitive: P2 within FENCE_FINE_DIST of the plate
+    uses a TIGHT terminal approach (short precise pulses), and P1 physically crosses
+    ONLY when the fence's live collision reads DOWN (frame-synced), waiting otherwise."""
+    FENCE, SUB, coll = 0x80DB1ED0, 0x81495B20, {"v": 1}
+    def rd(a, n):
+        a = int(a)
+        if a == FENCE + 0xAC:
+            return struct.pack(">I", 7)
+        if a == FENCE + 0xA4:
+            return struct.pack(">I", SUB)
+        if a == SUB + 0x14:
+            return struct.pack(">I", coll["v"])
+        return bytes(n)
+    ad = SimpleNamespace(read_memory=rd, write_memory=lambda a, d: None)
+    ctrl = _controller(tmp_path, ad=ad)
+    fence = {"class": "TObjLazerFenceNorm", "x": -420., "z": 485.8, "room": 5, "ptr": hex(FENCE), "kind": "gate"}
+    switch = {"class": "TLazerFenceSw", "x": -399.7, "z": 541.0, "room": 5, "kind": "gate"}
+    st = _coop_room([fence, switch], p1=(-420., 485.8), p2=(-370., 560.), room=5)   # P2 ~35u from plate
+    ctrl._fence_obj = ctrl.select_fence_objective(st, st["players"][1])
+    cmds, moves, steer = [], {}, {}
+    assert ctrl.fence_role(st, 2, st["players"][2], 100.0, cmds, moves, steer) is True
+    assert steer[2][2] == "fence_switch_fine" and cmds[0][2] == 0.08          # tight terminal approach
+    cmds, moves, steer = [], {}, {}
+    ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer)
+    assert steer[1][2] == "fence_wait"                                        # fence up -> P1 waits
+    coll["v"] = 0                                                            # sensor fired -> laser physically down
+    cmds, moves, steer = [], {}, {}
+    ctrl.fence_role(st, 1, st["players"][1], 100.0, cmds, moves, steer)
+    assert steer[1][2] == "fence_cross" and ctrl.inputs.stats.get("fence_coll_live") == 0
+
+
 def test_master_build_tick_gates_throttles_and_flags_reroll(monkeypatch):
     """The co-op loop's master-build call: gated to live gameplay, throttled between
     ticks (but forced at spawn / on room change), reports per-player and returns True
