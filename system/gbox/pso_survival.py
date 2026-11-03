@@ -59,6 +59,12 @@ def _state(ad):
         if st is None:
             st = {"players": {0: {}, 1: {}}, "revives": {0: 0, 1: 0}, "log": [], "last_death": None}
             ad._pso_survival = st
+            # Alias the in-memory log so a consumer's ad._pso_deaths fallback resolves to
+            # the same list (mutated in place, so the reference stays valid across appends).
+            try:
+                ad._pso_deaths = st["log"]
+            except Exception:
+                pass
         return st
 
 
