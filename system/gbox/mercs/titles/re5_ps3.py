@@ -72,6 +72,7 @@ HEAL_IDS = {0x304, 0x305, 0x307, 0x309}
 HEAL_AT = 0.4                          # use one below this share of health
 HEAL_USE_EVERY_S, HEAL_ATTEMPT_S, HEAL_RETRY_S = 0.35, 4.0, 1.0
 HEAL_SAFE_R, HEAL_CRITICAL = 400.0, 0.25   # no heal started with a Majini this near unless health is this low: RE5's
+HEAL_CONTACT_R = 100.0                      # an in-progress heal is dropped only with a Majini this close at critical HP
                                        # inventory is real time, every heal in a crowd is eaten (operator 2026-10-26). Was
                                        # 500 / 0.15: 23 of today's 30 deaths came with a heal deferred, 14 from 1-3 HP -
                                        # one more ordinary hit (84-196 HP, 91 % under 200) killed at 15 %. The stage's own
@@ -3370,6 +3371,21 @@ class Bot:
         self.stats["heal_deferred_ticks"] = self.stats.get("heal_deferred_ticks", 0) + 1
         return False
 
+    def _heal_in_progress(self, p, snap, hp, hp_max) -> bool:
+        """An in-progress heal continues while health is above the (learned) critical threshold (the heal is safe
+        enough), or at or under it with no Majini within contact range (the heal is the only chance). At or under
+        critical with a Majini on top (within HEAL_CONTACT_R), the fight wins and the caller drops the heal
+        (request #5129: 14 Majini, 1 on top, pressing Y at 1-3 HP)."""
+        critical = self._heal_critical()
+        if hp_max <= 0:
+            return False
+        if hp > critical * hp_max:
+            return True
+        near = any((e.get("hp") or 0) > 0 and (e.get("hp_max") or 0) > 1
+                   and math.dist(p["pos"], e["pos"]) < HEAL_CONTACT_R
+                   for e in snap.get("enemies") or ())
+        return not near
+
     def _stage_key(self) -> str:
         return str(self.stats.get("stage") or "stage")
 
@@ -3446,6 +3462,16 @@ class Bot:
             self.inventory_heal.reset()
             return None
         if self.inventory_heal.active:
+            # Cluster 0a0a2e567c419ccb (request #5129, reopened window): the bounded inventory equip stood still
+            # for its whole 4 s budget under contact fire while health bled out (123 -> 1 HP, Majini 0-2 m away).
+            # The same fight-first rule that guards an in-hand use (_heal_in_progress) guards this slower path: at or
+            # under the learned critical threshold with a Majini within HEAL_CONTACT_R the fight wins and the
+            # inventory sequence is dropped; above critical, or at critical with no Majini on top, it continues.
+            if hp_max > 0 and not self._heal_in_progress(p, snap, hp, hp_max):
+                self.inventory_heal.reset()
+                self.stats["heal_status"] = ("inventory heal dropped; a Majini is close and health is at/below the "
+                                             "critical threshold: fight first")
+                return None
             self.bonus_commitment.pause(now)
             action = self.inventory_heal.tick(self.m,snap,None,now)
             if action is not None or self.inventory_heal.active:
@@ -3482,6 +3508,13 @@ class Bot:
                 return self._heal_return_weapon(inv, state, now)
             self.stats["phase"] = "healing"
             if item.get("hand"):
+                # The cluster (request #5129): the bot sat at 1-3 HP pressing Y - a heal already under way must not be
+                # dropped by the fight-first defer unless health is under the (learned) critical threshold; above it
+                # the use continues to its bounded end.
+                if not self._heal_in_progress(p, snap, hp, hp_max):
+                    self.healing, self.heal_at = None, now
+                    self.stats["heal_status"] = "use interrupted; a Majini is close and health is above the critical threshold: fight first"
+                    return None
                 if now - state["last_use"] >= HEAL_USE_EVERY_S:
                     state["last_use"], state["uses"] = now, state["uses"] + 1
                     self.stats["heal_use_presses"] = self.stats.get("heal_use_presses", 0) + 1
@@ -3510,6 +3543,13 @@ class Bot:
             return None
         quick = next((s for s in heals if s.get("hand")), None) or next((s for s in heals if re5_weapons.quick_key(s)), None)
         if quick is None:
+            if hp_max > 0 and not self._heal_in_progress(p, snap, hp, hp_max):
+                # Same rule at the start of the slow path (cluster 0a0a2e567c419ccb): never open the inventory
+                # menu while a Majini is within contact range at/below the learned critical threshold.
+                self.stats["heal_out_of_reach"] = heals[0]["slot"]
+                self.stats["heal_status"] = ("inventory heal not started; a Majini is close and health is at/below "
+                                             "the critical threshold: fight first")
+                return None
             self.switch_pending = None
             self.bonus_commitment.pause(now)
             action = self.inventory_heal.tick(self.m,snap,heals[0],now)
