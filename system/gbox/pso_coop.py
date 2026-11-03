@@ -1081,6 +1081,8 @@ class Controller:
         self._boss_damaged = False      # we have landed damage this visit (HP dropped / a part died) -> hold to the kill
         self._boss_nearest_row = None   # nearest live boss entity (weak-point fallback when the advisor is inactive)
         self._boss_wp_prev = None       # previous tick's distance to the weak point (boss_approach_delta)
+        self._boss_wp_xz = None         # last weak-point position (to tell a MOVING boss - circling Dragon - from a STATIC one)
+        self._boss_wp_moved_at = 0.0    # last monotonic the weak point moved > a step (recent => moving => centre-hold ok)
         self._boss_close_best = None    # closest the boss approach has gotten to its drive target (wedge detection)
         self._boss_close_at = 0.0       # last monotonic the boss approach got closer (stale -> wedged -> force-through)
         self._boss_parts_prev = None    # live boss-part count last tick (a drop = damage progress)
@@ -2613,13 +2615,18 @@ class Controller:
         env_verified = isinstance(envelope, dict) and bool(envelope.get("verified"))
         fire_range = (env_h * BOSS_FIRE_MARGIN) if (env_verified and env_h > 1.0) else BOSS_FIRE_RANGE_FALLBACK
         in_fire = aim_dist <= fire_range
-        # A CENTRE-HOLD applies ONLY when hold_pos is a DISTINCT stand point (an orbit centre
-        # >= BOSS_HOLD_TOL away from the weak point) that still keeps the weak point in gun
-        # reach - i.e. the circling Dragon. When hold_pos == the weak point (Vol Opt monitors,
-        # De Rol Le head), there is NO centre to hold: do NOT stop at BOSS_HOLD_TOL - CLOSE
-        # DIRECTLY on the weak point until it is in fire range, then the FIRE branch fires.
+        # Is the weak point MOVING (circling Dragon) or STATIC (Vol Opt monitor / surfaced
+        # De Rol Le head)? Track its position: a static target must be CLOSED ON (walk to it);
+        # only a moving/circling boss warrants a centre-hold. This stops the bot sitting at a
+        # centroid-ish hold_pos ~270u from a stationary monitor (the Vol Opt no-close blocker).
+        if self._boss_wp_xz is None or math.hypot(bx - self._boss_wp_xz[0], bz - self._boss_wp_xz[1]) > 25.0:
+            self._boss_wp_xz, self._boss_wp_moved_at = (bx, bz), now
+        wp_moving = (now - self._boss_wp_moved_at) < 3.0
+        # A CENTRE-HOLD applies ONLY to a MOVING weak point whose hold_pos is a DISTINCT orbit
+        # centre (>= BOSS_HOLD_TOL from it) still within gun reach - i.e. the circling Dragon.
+        # A STATIC weak point (hold_pos == it, or not moving) is CLOSED ON directly instead.
         center_hold, cx, cz = False, 0.0, 0.0
-        if has_hold:
+        if has_hold and wp_moving:
             hx0, hz0 = float(hold["x"]), float(hold["z"])
             if BOSS_HOLD_TOL <= math.hypot(hx0 - bx, hz0 - bz) <= fire_range:
                 center_hold, cx, cz = True, hx0, hz0
@@ -2828,6 +2835,7 @@ class Controller:
             # loop, so a stale 1 can't persist onto a non-boss floor - the reading is trustworthy.
             st["boss_firing_line"] = 0
             st["boss_approaching"] = 0
+            st["boss_force_through"] = 0
             st["boss_fire_skip"] = ""
 
     def survival_tick(self, state):
