@@ -361,8 +361,16 @@ class Screensaver:
         try:
             import platform
             from .comfy_coordinator import game_active
-            run = self.store.get(STATE, platform.node())
-            comfy.sync(game_active(run))
+            from . import mercmode
+            node = platform.node()
+            run = self.store.get(STATE, node)
+            # A warm title cold-booting in the background (state 'prelaunch') drives the GPU just as hard as the main
+            # run's own boot, so the render must yield during that boot too - not only once a run is launching/playing.
+            # (operator 2026-11-03: the hourly H3 Comfy render starved RE5 Switch's cold boot on the shared GB10 GPU and
+            # it BootHung; RE6, booting in the render's gaps, was fine.)
+            warming = any(r.get('state') == 'prelaunch'
+                          for r in (mercmode.warm_pool(self.store, node) or {}).values())
+            comfy.sync(game_active(run) or warming)
         except Exception as e:                               # noqa: BLE001 - a comfy hiccup must never stop the schedule
             print(f"comfy-coordinator: tick sync failed: {type(e).__name__}: {e}", flush=True)
 
